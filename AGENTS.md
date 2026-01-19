@@ -66,6 +66,17 @@ Follow the structure defined in `PLAN.md`. Key directories:
 
 ## Code Quality
 
+### Adding a New Language
+
+When adding a new language or file type to the project, update all validation layers:
+
+1. **flake.nix** - Add formatter/linter to `buildInputs`
+2. **lefthook.yml** - Add pre-commit format check, pre-push lint/test if applicable
+3. **.claude/settings.json** - Add PostToolUse auto-format hook, Stop warning hook
+4. **.github/workflows/ci.yml** - Add format check step
+5. **CONTRIBUTING.md** - Document formatting commands
+6. **This file** - Update formatting commands in Code Quality section
+
 ### Claude Code Hooks
 
 This project has Claude Code hooks configured in `.claude/settings.json`:
