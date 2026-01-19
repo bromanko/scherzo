@@ -539,17 +539,17 @@ tom = ">= 1.0.0"               # TOML parsing for config
 5. `CONTRIBUTING.md`: Dev setup instructions, workflow guidelines
 6. **Milestone: `nix develop` provides complete dev environment, CI runs on push**
 
-### Phase 1: Foundation
+### Phase 1: Foundation ✅
 7. Project setup: `gleam new scherzo`, gleam.toml with deps
 8. Core types: `types.gleam`, `task.gleam`, `event.gleam`
 9. CLI skeleton: `scherzo run`, `scherzo status` via glint
 10. Event bus actor: Simple pub/sub with gleam_otp
-11. State store: In-memory cache + JSON file persistence to `.scherzo/state/`
+11. State store: In-memory cache actor
 
-### Phase 2: Single Agent E2E
+### Phase 2: Single Agent E2E ✅
 12. Agent driver interface: `driver.gleam`
-13. Claude driver: Build command with --yolo, parse output
-14. Agent process actor: Spawn via erlexec, stream output
+13. Claude driver: Build command with --print, parse output
+14. Agent process actor: Spawn via shellout, capture output
 15. jj integration: Create change before agent, describe after
 16. **Milestone: Run single task through single Claude agent**
 
@@ -604,17 +604,18 @@ tom = ">= 1.0.0"               # TOML parsing for config
 49. **Milestone: Task passes through code review → security review → Rule of Five pipeline**
 
 ### Phase 6: Resilience & Recovery
-50. State recovery: Load state from `.scherzo/state/*.json` on startup
-51. Crash detection: Compare in-memory state vs jj working copy on restart
-52. Retry logic: Exponential backoff for failures
-53. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
-54. Handoff metrics: Track continuation count per task, detect infinite loops
-55. Supervision tree: Wire everything together
+50. State persistence: Add JSON file persistence to state store (`.scherzo/state/`)
+51. State recovery: Load state from `.scherzo/state/*.json` on startup
+52. Crash detection: Compare in-memory state vs jj working copy on restart
+53. Retry logic: Exponential backoff for failures
+54. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
+55. Handoff metrics: Track continuation count per task, detect infinite loops
+56. Supervision tree: Wire everything together
 
 ### Phase 7: Distribution
-56. Additional drivers: Codex, Gemini (with provider-specific hooks)
-57. Burrito build: Single binary for macOS/Linux
-58. Polish: Better status display, colors, keybindings
+57. Additional drivers: Codex, Gemini (with provider-specific hooks)
+58. Burrito build: Single binary for macOS/Linux
+59. Polish: Better status display, colors, keybindings
 
 ## Failure Handling
 
