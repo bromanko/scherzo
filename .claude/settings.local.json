@@ -13,7 +13,8 @@
       "WebFetch(domain:repo.hex.pm)",
       "WebFetch(domain:hex.pm)",
       "Bash(mkdir:*)",
-      "Bash(gleam test:*)"
+      "Bash(gleam test:*)",
+      "Bash(gleam run:*)"
     ],
     "deny": [],
     "ask": []
