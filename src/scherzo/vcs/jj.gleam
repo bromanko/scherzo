@@ -1,5 +1,5 @@
 /// Jujutsu (jj) version control integration
-
+import gleam/list
 import gleam/result
 import gleam/string
 import shellout
@@ -9,14 +9,26 @@ pub type ChangeId =
   String
 
 /// Create a new jj change for a task
-pub fn new_change(working_dir: String, message: String) -> Result(ChangeId, String) {
+pub fn new_change(
+  working_dir: String,
+  message: String,
+) -> Result(ChangeId, String) {
   run_jj(working_dir, ["new", "-m", message])
   |> result.try(fn(_) { get_current_change(working_dir) })
 }
 
 /// Get the current change ID
 pub fn get_current_change(working_dir: String) -> Result(ChangeId, String) {
-  run_jj(working_dir, ["log", "-r", "@", "-T", "change_id", "--no-graph", "-n", "1"])
+  run_jj(working_dir, [
+    "log",
+    "-r",
+    "@",
+    "-T",
+    "change_id",
+    "--no-graph",
+    "-n",
+    "1",
+  ])
   |> result.map(string.trim)
 }
 
@@ -50,16 +62,39 @@ pub fn edit(working_dir: String, change_id: ChangeId) -> Result(Nil, String) {
   |> result.map(fn(_) { Nil })
 }
 
+/// Create a new jj workspace at the specified path
+/// Returns the workspace name (derived from path)
+pub fn workspace_add(
+  repo_dir: String,
+  workspace_path: String,
+) -> Result(String, String) {
+  run_jj(repo_dir, ["workspace", "add", workspace_path])
+  |> result.map(fn(_) {
+    // Extract workspace name from path (last component)
+    workspace_path
+    |> string.split("/")
+    |> list.last
+    |> result.unwrap(workspace_path)
+  })
+}
+
+/// Remove a jj workspace (forgets it without deleting files)
+pub fn workspace_forget(
+  repo_dir: String,
+  workspace_name: String,
+) -> Result(Nil, String) {
+  run_jj(repo_dir, ["workspace", "forget", workspace_name])
+  |> result.map(fn(_) { Nil })
+}
+
+/// List all workspaces in a repository
+pub fn workspace_list(repo_dir: String) -> Result(String, String) {
+  run_jj(repo_dir, ["workspace", "list"])
+}
+
 /// Run a jj command and return the output
 fn run_jj(working_dir: String, args: List(String)) -> Result(String, String) {
-  case
-    shellout.command(
-      run: "jj",
-      with: args,
-      in: working_dir,
-      opt: [],
-    )
-  {
+  case shellout.command(run: "jj", with: args, in: working_dir, opt: []) {
     Ok(output) -> Ok(output)
     Error(#(_, err_output)) -> Error(err_output)
   }

@@ -1,10 +1,11 @@
 /// Agent process actor - manages the lifecycle of a CLI agent
-
 import gleam/erlang/process.{type Subject}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
 import scherzo/agent/driver.{type AgentResult, type Command, type Driver}
+import scherzo/agent/workspace.{type Workspace}
 import scherzo/core/task.{type Task}
 import scherzo/core/types.{type AgentConfig, type Id, type Timestamp}
 import scherzo/vcs/jj
@@ -41,6 +42,8 @@ pub type State {
     config: AgentConfig,
     driver: Driver,
     status: AgentProcessStatus,
+    /// Active workspace for the current task (if any)
+    workspace: Option(Workspace),
   )
 }
 
@@ -51,7 +54,7 @@ pub fn start(
   driver: Driver,
 ) -> Result(Subject(Message), actor.StartError) {
   let initial_state =
-    State(id: id, config: config, driver: driver, status: Idle)
+    State(id: id, config: config, driver: driver, status: Idle, workspace: None)
 
   actor.new(initial_state)
   |> actor.on_message(handle_message)
@@ -60,10 +63,7 @@ pub fn start(
 }
 
 /// Start working on a task
-pub fn start_task(
-  agent: Subject(Message),
-  task: Task,
-) -> StartResult {
+pub fn start_task(agent: Subject(Message), task: Task) -> StartResult {
   actor.call(agent, 60_000, Start(task, _))
 }
 
@@ -95,39 +95,54 @@ fn handle_start(
   task: Task,
   reply_to: Subject(StartResult),
 ) -> actor.Next(State, Message) {
-  // Create a new jj change for this task
-  let change_result =
-    jj.new_change(state.config.working_dir, "WIP: " <> task.title)
+  // Create workspace for this task (defaults to .scherzo/workspaces/ in project)
+  let workspace_config = workspace.default_config(state.config.working_dir)
 
-  case change_result {
+  case workspace.create(workspace_config, task) {
     Error(err) -> {
-      process.send(reply_to, StartFailed("Failed to create jj change: " <> err))
+      process.send(reply_to, StartFailed("Failed to create workspace: " <> err))
       actor.continue(state)
     }
 
-    Ok(change_id) -> {
-      // Build the command
-      let command = driver.build_command(state.driver, task, state.config)
+    Ok(ws) -> {
+      // Get the workspace's jj change ID
+      let change_id = case jj.get_current_change(ws.path) {
+        Ok(id) -> id
+        Error(_) -> "unknown"
+      }
+
+      // Build the command - run in the workspace directory
+      let workspace_config =
+        types.AgentConfig(..state.config, working_dir: ws.path)
+      let command = driver.build_command(state.driver, task, workspace_config)
 
       // Reply that we've started
       process.send(reply_to, Started(change_id))
 
-      // Update state to running
+      // Update state to running with workspace
       let running_state =
         State(
           ..state,
           status: Running(task_id: task.id, change_id: change_id, started_at: 0),
+          workspace: Some(ws),
         )
 
       // Run the agent (this blocks!)
       let agent_result = run_command(command, state.driver)
 
-      // Update jj change with result
-      let _ = update_change_on_completion(state.config.working_dir, task, agent_result)
+      // Update jj change with result in the workspace
+      let _ = update_change_on_completion(ws.path, task, agent_result)
+
+      // Cleanup workspace
+      let _ = workspace.destroy(ws)
 
       // Update state with result
       let final_state =
-        State(..running_state, status: Completed(task.id, agent_result))
+        State(
+          ..running_state,
+          status: Completed(task.id, agent_result),
+          workspace: None,
+        )
 
       actor.continue(final_state)
     }
@@ -136,17 +151,22 @@ fn handle_start(
 
 /// Run a command and get the result
 fn run_command(command: Command, drv: Driver) -> AgentResult {
+  // Build options including environment variables if any
+  let opts = case command.env {
+    [] -> []
+    env_vars -> [shellout.SetEnvironment(env_vars)]
+  }
+
   case
     shellout.command(
       run: command.executable,
       with: command.args,
       in: command.working_dir,
-      opt: [],
+      opt: opts,
     )
   {
     Ok(output) -> driver.detect_result(drv, output, 0)
-    Error(#(exit_code, output)) ->
-      driver.detect_result(drv, output, exit_code)
+    Error(#(exit_code, output)) -> driver.detect_result(drv, output, exit_code)
   }
 }
 

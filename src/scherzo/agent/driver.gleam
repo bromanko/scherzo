@@ -1,5 +1,4 @@
 /// Agent driver interface - abstraction for different CLI agents
-
 import scherzo/core/task.{type Task}
 import scherzo/core/types.{type AgentConfig}
 
@@ -57,11 +56,7 @@ pub type Driver {
 }
 
 /// Build a command using a driver
-pub fn build_command(
-  driver: Driver,
-  task: Task,
-  config: AgentConfig,
-) -> Command {
+pub fn build_command(driver: Driver, task: Task, config: AgentConfig) -> Command {
   driver.build_command(task, config)
 }
 

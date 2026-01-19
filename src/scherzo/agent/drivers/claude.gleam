@@ -1,5 +1,4 @@
 /// Claude Code CLI driver
-
 import gleam/int
 import gleam/string
 import scherzo/agent/driver.{
@@ -40,7 +39,8 @@ fn build_claude_command(task: Task, config: AgentConfig) -> Command {
     executable: "claude",
     args: args,
     working_dir: config.working_dir,
-    env: [],
+    // Set task ID for hooks to use
+    env: [#("SCHERZO_TASK_ID", task.id)],
   )
 }
 
@@ -86,7 +86,11 @@ fn detect_claude_result(output: String, exit_code: Int) -> AgentResult {
     _ ->
       case string.contains(output, "context") {
         True -> ContextExhausted(output)
-        False -> Failure("Claude exited with code " <> int.to_string(exit_code), exit_code)
+        False ->
+          Failure(
+            "Claude exited with code " <> int.to_string(exit_code),
+            exit_code,
+          )
       }
   }
 }
