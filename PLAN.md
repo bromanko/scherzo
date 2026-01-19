@@ -129,10 +129,7 @@ All orchestrator state lives in `.scherzo/` and is tracked by jj, giving automat
 
 ```
 project/
-├── .claude/
-│   └── hooks/
-│       └── scherzo.toml           # Injected by Scherzo for Claude
-├── .scherzo/                      # All jj-tracked
+├── .scherzo/                      # All jj-tracked (gitignored)
 │   ├── state/
 │   │   ├── tasks.json             # Task status and metadata
 │   │   ├── agents.json            # Agent pool status
@@ -143,6 +140,13 @@ project/
 │   │   │   ├── 002.json           # Incremental checkpoint
 │   │   │   └── final.json         # Final checkpoint on stop
 │   │   └── ...
+│   ├── workspaces/                # Per-agent isolated workspaces (jj workspaces)
+│   │   └── <task-id>/             # Each agent gets its own jj workspace
+│   │       ├── .claude/
+│   │       │   └── settings.json  # Agent-specific hooks (scherzo prime/checkpoint)
+│   │       ├── .scherzo/
+│   │       │   └── task.json      # Task metadata for hooks to read
+│   │       └── <project files>    # Full working copy from jj workspace
 │   ├── events/
 │   │   └── <date>.jsonl           # Event log (append-only)
 │   └── config.toml                # Orchestrator config
@@ -396,23 +400,23 @@ This separation ensures reviews are unbiased by the task agent's reasoning.
 scherzo/
 ├── gleam.toml
 ├── src/
-│   ├── scherzo.gleam              # Entry point, CLI
+│   ├── scherzo.gleam              # Entry point, CLI (run, status, prime, checkpoint)
 │   └── scherzo/
-│       ├── cli/
-│       │   └── commands.gleam     # CLI commands
 │       ├── core/
 │       │   ├── types.gleam        # Core domain types
 │       │   ├── task.gleam         # Task type
 │       │   └── event.gleam        # Event types
 │       ├── agent/
 │       │   ├── driver.gleam       # Driver interface
-│       │   ├── process.gleam      # Agent process actor
+│       │   ├── process.gleam      # Agent process actor (uses workspaces)
+│       │   ├── workspace.gleam    # jj workspace management per agent ✓
+│       │   ├── claude_settings.gleam # Generate .claude/settings.json for agents ✓
 │       │   ├── pool.gleam         # Agent pool supervisor
 │       │   ├── checkpoint.gleam   # Checkpoint types and persistence
 │       │   ├── hooks.gleam        # Hook config generation
 │       │   ├── handoff.gleam      # Context exhaustion handoff logic
 │       │   └── drivers/
-│       │       ├── claude.gleam   # Includes Claude hook generation
+│       │       ├── claude.gleam   # Claude driver (sets SCHERZO_TASK_ID env) ✓
 │       │       ├── codex.gleam    # Includes Codex hook generation
 │       │       └── gemini.gleam
 │       ├── task/
@@ -448,6 +452,9 @@ scherzo/
 # Start orchestrator (creates tmux session, reads from .tickets/)
 scherzo run --max-agents 4 --workdir ./project
 
+# Run a single task
+scherzo run "task title" "task description" --workdir ./project
+
 # Attach to running session
 scherzo attach
 
@@ -455,6 +462,10 @@ scherzo attach
 scherzo status
 scherzo tasks list --status pending
 scherzo squash  # Interactive jj squash of completed changes
+
+# Hook commands (called by .claude/settings.json hooks in agent workspaces)
+scherzo prime [task-id]       # Output task context for SessionStart hook ✓
+scherzo checkpoint [task-id]  # Save state for Stop hook ✓
 ```
 
 ## tmux UI
@@ -543,15 +554,22 @@ tom = ">= 1.0.0"               # TOML parsing for config
 16. **Milestone: Run single task through single Claude agent**
 
 ### Phase 2.5: Agent Continuity (Checkpointing)
+
+**Workspace Isolation (DONE):**
+- ✅ jj workspace per agent: `workspace.gleam` creates isolated workspaces in `.scherzo/workspaces/<task-id>/`
+- ✅ Per-agent .claude/settings.json: `claude_settings.gleam` generates hooks for each agent
+- ✅ Hook injection: SessionStart runs `scherzo prime`, Stop runs `scherzo checkpoint`
+- ✅ Task context: Written to workspace `.scherzo/task.json`, read by `scherzo prime`
+- ✅ CLI commands: `scherzo prime` and `scherzo checkpoint` implemented
+- ✅ Environment variables: `SCHERZO_TASK_ID` set for agent processes
+
+**Remaining:**
 17. Checkpoint types: `checkpoint.gleam` with Checkpoint, FileChange types
-18. Checkpoint CLI: `scherzo checkpoint incremental|final|pre-compact` commands
-19. Hook generation: `hooks.gleam` generates provider-specific hook configs
-20. Claude hooks: Inject `.claude/hooks/scherzo.toml` before agent start
-21. Checkpoint storage: Write/read JSON to `.scherzo/checkpoints/<task-id>/`
-22. Stop detection: AgentProcess detects exit reason (completion vs exhaustion vs crash)
-23. Handoff logic: `handoff.gleam` builds continuation prompt from checkpoint
-24. Continuation flow: Coordinator spawns fresh agent with handoff context
-25. **Milestone: Agent survives context exhaustion, fresh agent continues task**
+18. Checkpoint CLI: Enhance `scherzo checkpoint` to write state to `.scherzo/checkpoints/<task-id>/`
+19. Stop detection: AgentProcess detects exit reason (completion vs exhaustion vs crash)
+20. Handoff logic: `handoff.gleam` builds continuation prompt from checkpoint
+21. Continuation flow: Coordinator spawns fresh agent with handoff context
+22. **Milestone: Agent survives context exhaustion, fresh agent continues task**
 
 ### Phase 3: Ticket Integration
 26. Task source interface: `source.gleam`
@@ -687,47 +705,54 @@ pub type TaskSource {
 
 ## Version Control Strategy (jujutsu)
 
-Each agent works in its own jj change:
+Each agent works in its own **jj workspace** (similar to git worktrees):
 
 ```bash
-# Before agent starts task
-jj new -m "WIP: <task-title>"
+# Scherzo creates workspace for agent
+jj workspace add .scherzo/workspaces/<task-id>
 
-# Agent does work...
+# Agent works in isolated workspace with its own working copy
+# Workspace has its own .claude/settings.json with hooks
 
-# After agent completes
-jj describe -m "<task-title>
-
-<summary of changes>
-
-Closes: <task-id>"
+# After agent completes, workspace is cleaned up
+jj workspace forget <task-id>
+rm -rf .scherzo/workspaces/<task-id>
 ```
 
 Benefits:
+- **Full isolation**: Each agent has its own directory with its own `.claude` config
+- **Hook injection**: Per-agent `SessionStart`/`Stop` hooks via workspace's `.claude/settings.json`
+- **Context injection**: `scherzo prime` outputs task context, read from workspace's `.scherzo/task.json`
 - Multiple agents can work in parallel without conflicts
 - Easy to squash/reorder changes later
 - No branch management overhead
-- Changes are isolated until explicitly squashed
 
 ## Conflict Handling for Parallel Agents
 
-With jujutsu, parallel work is simpler:
+With jj workspaces, parallel work is fully isolated:
 
-1. Each agent works on a separate task in its own jj change
-2. Changes are independent until squash/merge time
-3. Scherzo coordinates which change is "active" when agent runs
+1. Each agent works in its own **workspace directory** (`.scherzo/workspaces/<task-id>/`)
+2. Each workspace has its own working copy of all files
+3. No coordination needed - agents can't interfere with each other
 4. If agents touch same files: jj handles conflict markers at squash time
 5. Coordinator can optionally prevent assigning tasks that touch same files
 
 ```bash
-# Scherzo creates change for agent
-jj new @- -m "Task: <id>"  # New change from parent of current
+# Scherzo creates workspace for agent
+jj workspace add .scherzo/workspaces/<task-id>
 
-# Agent works in that change
-# Scherzo switches to change before invoking agent
-jj edit <change-id>
+# Write agent-specific config
+# .scherzo/workspaces/<task-id>/.claude/settings.json (hooks)
+# .scherzo/workspaces/<task-id>/.scherzo/task.json (task metadata)
 
-# After completion
-jj describe -m "Complete: <title>"
-jj new  # Move to next change
+# Agent runs in workspace directory
+cd .scherzo/workspaces/<task-id> && claude --print "..."
+
+# SessionStart hook fires -> scherzo prime outputs context
+# Agent does work...
+# Stop hook fires -> scherzo checkpoint saves state
+
+# After completion, cleanup workspace
+jj workspace forget <task-id>
+rm -rf .scherzo/workspaces/<task-id>
 ```

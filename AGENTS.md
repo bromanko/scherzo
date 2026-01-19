@@ -54,7 +54,38 @@ Follow the structure defined in `PLAN.md`. Key directories:
 
 - `src/scherzo/` - Main source code organized by module
 - `test/` - Tests mirroring src structure
-- `.scherzo/` - Runtime state (not committed, jj-tracked during operation)
+- `.scherzo/` - Runtime state (gitignored, jj-tracked during operation)
+  - `.scherzo/workspaces/<task-id>/` - Per-agent jj workspaces with isolated `.claude` configs
+
+## Agent Workspace Architecture
+
+When Scherzo spawns an agent, it creates an isolated **jj workspace**:
+
+```
+.scherzo/workspaces/<task-id>/
+├── .claude/
+│   └── settings.json    # Agent-specific hooks (SessionStart → scherzo prime)
+├── .scherzo/
+│   └── task.json        # Task metadata for hooks to read
+└── <project files>      # Full working copy from jj workspace
+```
+
+**Key modules:**
+- `workspace.gleam` - Creates/destroys jj workspaces, writes settings.json and task.json
+- `claude_settings.gleam` - Generates `.claude/settings.json` with hooks
+- `scherzo.gleam` - Implements `scherzo prime` and `scherzo checkpoint` CLI commands
+
+**Flow:**
+1. `workspace.create()` creates jj workspace + writes config files
+2. Agent runs in workspace directory with `SCHERZO_TASK_ID` env var
+3. `SessionStart` hook calls `scherzo prime` → outputs task context
+4. Agent works on task
+5. `Stop` hook calls `scherzo checkpoint` → saves state
+6. `workspace.destroy()` cleans up
+
+## Task Management
+
+This project uses a CLI ticket system for task management. Run `tk help` when you need to use it.
 
 ## Development Workflow
 
@@ -71,11 +102,10 @@ Follow the structure defined in `PLAN.md`. Key directories:
 When adding a new language or file type to the project, update all validation layers:
 
 1. **flake.nix** - Add formatter/linter to `buildInputs`
-2. **lefthook.yml** - Add pre-commit format check, pre-push lint/test if applicable
-3. **.claude/settings.json** - Add PostToolUse auto-format hook, Stop warning hook
-4. **.github/workflows/ci.yml** - Add format check step
-5. **CONTRIBUTING.md** - Document formatting commands
-6. **This file** - Update formatting commands in Code Quality section
+2. **.claude/settings.json** - Add PostToolUse auto-format hook, Stop warning hook
+3. **.github/workflows/ci.yml** - Add format check step
+4. **CONTRIBUTING.md** - Document formatting commands
+5. **This file** - Update formatting commands in Code Quality section
 
 ### Claude Code Hooks
 
@@ -86,19 +116,18 @@ This project has Claude Code hooks configured in `.claude/settings.json`:
 
 These hooks help maintain code quality automatically during development.
 
-### Git Hooks
+### Code Quality Enforcement
 
-Git hooks (via lefthook) enforce quality on commit and push:
+Since this project uses jj (not git), traditional git hooks don't apply. Quality enforcement relies on:
+
+1. **Claude Code hooks** - Auto-format `.gleam` and `.nix` files after Edit/Write
+2. **CI checks** - GitHub Actions validates formatting (authoritative)
 
 ```bash
-# Gleam
+# Manual formatting if needed
 gleam format src test
-
-# Nix
 nixfmt flake.nix
 ```
-
-Pre-commit hooks check formatting. Pre-push hooks run tests and build.
 
 ## Testing
 
