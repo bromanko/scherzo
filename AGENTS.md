@@ -102,9 +102,53 @@ Pre-commit hooks check formatting. Pre-push hooks run tests and build.
 
 ## Testing
 
-- Write tests alongside implementation
-- Run full test suite: `gleam test`
-- Check formatting: `gleam format --check src test && nixfmt --check *.nix`
+**Tests are required for all new functionality.** Do not consider a phase complete without tests.
+
+### Test Structure
+
+Tests mirror the source structure:
+
+```
+src/scherzo/core/task.gleam    -> test/scherzo/core/task_test.gleam
+src/scherzo/event/bus.gleam    -> test/scherzo/event/bus_test.gleam
+src/scherzo/state/store.gleam  -> test/scherzo/state/store_test.gleam
+```
+
+### Running Tests
+
+```bash
+gleam test                    # Run all tests
+gleam test -- -m task_test    # Run specific module (if supported)
+```
+
+### Test Naming
+
+Use descriptive names that explain the behavior:
+
+```gleam
+pub fn is_terminal_returns_true_for_completed_test() { ... }
+pub fn save_and_get_task_test() { ... }
+pub fn unsubscribe_stops_receiving_events_test() { ... }
+```
+
+### What to Test
+
+- **Types/functions**: Pure functions, constructors, predicates
+- **Actors**: Start/stop, message handling, state changes
+- **Integration**: Component interactions when relevant
+
+### gleeunit Assertions
+
+```gleam
+import gleeunit/should
+
+value |> should.equal(expected)
+value |> should.be_true
+value |> should.be_false
+result |> should.be_ok
+result |> should.be_error
+list |> list.length |> should.equal(n)  // No have_length in gleeunit
+```
 
 ## Dependencies
 

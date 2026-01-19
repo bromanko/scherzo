@@ -21,7 +21,8 @@
   "sandbox": {
     "allowUnsandboxedCommands": true,
     "excludedCommands": [
-      "Bash(gleam:*)"
+      "Bash(gleam:*)",
+      "Bash(nix:*)"
     ]
   }
 }
