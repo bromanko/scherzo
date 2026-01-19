@@ -6,7 +6,8 @@
       "Bash(codex proto:*)",
       "WebFetch(domain:hexdocs.pm)",
       "WebFetch(domain:steve-yegge.medium.com)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(gleam new:*)"
     ],
     "deny": [],
     "ask": []
