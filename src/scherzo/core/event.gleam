@@ -1,5 +1,4 @@
 /// Event types for the event bus
-
 import scherzo/core/task.{type TaskStatus}
 import scherzo/core/types.{type AgentStatus, type Id, type Timestamp}
 

@@ -1,5 +1,4 @@
 /// Event bus actor for pub/sub messaging
-
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int

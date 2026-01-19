@@ -1,5 +1,4 @@
 /// Core domain types for Scherzo
-
 /// Unique identifier for entities
 pub type Id =
   String

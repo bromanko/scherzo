@@ -1,5 +1,4 @@
 /// State store actor with in-memory cache and JSON file persistence
-
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option}
@@ -38,11 +37,7 @@ pub type AgentState {
 
 /// Internal state of the store
 pub type State {
-  State(
-    tasks: Dict(Id, Task),
-    agents: Dict(Id, AgentState),
-    state_dir: String,
-  )
+  State(tasks: Dict(Id, Task), agents: Dict(Id, AgentState), state_dir: String)
 }
 
 /// Configuration for the state store

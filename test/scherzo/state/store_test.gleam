@@ -72,7 +72,13 @@ pub fn delete_task_removes_task_test() {
 pub fn save_and_get_agent_test() {
   let assert Ok(s) = store.start(StoreConfig(state_dir: "/tmp/scherzo-test"))
 
-  let config = AgentConfig(id: "agent-1", provider: Claude, working_dir: "/tmp", max_retries: 3)
+  let config =
+    AgentConfig(
+      id: "agent-1",
+      provider: Claude,
+      working_dir: "/tmp",
+      max_retries: 3,
+    )
   let agent = AgentState(config: config, status: Idle)
 
   store.save_agent(s, agent)
@@ -95,8 +101,20 @@ pub fn get_nonexistent_agent_returns_none_test() {
 pub fn get_all_agents_returns_all_saved_agents_test() {
   let assert Ok(s) = store.start(StoreConfig(state_dir: "/tmp/scherzo-test"))
 
-  let config1 = AgentConfig(id: "agent-1", provider: Claude, working_dir: "/tmp", max_retries: 3)
-  let config2 = AgentConfig(id: "agent-2", provider: Claude, working_dir: "/tmp", max_retries: 3)
+  let config1 =
+    AgentConfig(
+      id: "agent-1",
+      provider: Claude,
+      working_dir: "/tmp",
+      max_retries: 3,
+    )
+  let config2 =
+    AgentConfig(
+      id: "agent-2",
+      provider: Claude,
+      working_dir: "/tmp",
+      max_retries: 3,
+    )
   let agent1 = AgentState(config: config1, status: Idle)
   let agent2 = AgentState(config: config2, status: Idle)
 
@@ -112,7 +130,13 @@ pub fn get_all_agents_returns_all_saved_agents_test() {
 pub fn delete_agent_removes_agent_test() {
   let assert Ok(s) = store.start(StoreConfig(state_dir: "/tmp/scherzo-test"))
 
-  let config = AgentConfig(id: "agent-1", provider: Claude, working_dir: "/tmp", max_retries: 3)
+  let config =
+    AgentConfig(
+      id: "agent-1",
+      provider: Claude,
+      working_dir: "/tmp",
+      max_retries: 3,
+    )
   let agent = AgentState(config: config, status: Idle)
 
   store.save_agent(s, agent)

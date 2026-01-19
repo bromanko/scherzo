@@ -28,7 +28,8 @@ pub fn build_command_creates_correct_command_test() {
   command.working_dir |> should.equal("/tmp/project")
   // Should include --print and --dangerously-skip-permissions
   list.contains(command.args, "--print") |> should.be_true
-  list.contains(command.args, "--dangerously-skip-permissions") |> should.be_true
+  list.contains(command.args, "--dangerously-skip-permissions")
+  |> should.be_true
 }
 
 pub fn detect_result_returns_success_for_exit_0_test() {
