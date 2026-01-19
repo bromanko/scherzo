@@ -61,14 +61,28 @@ Follow the structure defined in `PLAN.md`. Key directories:
 1. Read `PLAN.md` to understand current phase and goals
 2. Use `nix develop` or `direnv allow` for environment
 3. Run `gleam test` before and after changes
-4. Run `gleam format src test` before committing
+4. Format code before committing (hooks will enforce this)
 5. Commit completed work before ending session
+
+## Code Quality
+
+Git hooks (via lefthook) enforce quality on commit and push. Format code proactively:
+
+```bash
+# Gleam
+gleam format src test
+
+# Nix
+nixfmt flake.nix
+```
+
+Pre-commit hooks check formatting. Pre-push hooks run tests and build.
 
 ## Testing
 
 - Write tests alongside implementation
 - Run full test suite: `gleam test`
-- Check formatting: `gleam format --check src test`
+- Check formatting: `gleam format --check src test && nixfmt --check *.nix`
 
 ## Dependencies
 

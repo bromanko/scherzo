@@ -43,6 +43,39 @@ The Nix flake provides:
 | jujutsu (jj) | Version control |
 | tmux | Terminal multiplexer |
 | just | Command runner |
+| nixfmt | Nix formatter |
+| lefthook | Git hooks manager |
+
+## Git Hooks
+
+Git hooks are managed by [lefthook](https://github.com/evilmartians/lefthook) and installed automatically when entering the dev shell.
+
+### Pre-commit
+
+Runs on every commit:
+- **gleam-format**: Checks Gleam code formatting
+- **nix-format**: Checks Nix code formatting
+
+### Pre-push
+
+Runs before pushing:
+- **gleam-test**: Runs test suite
+- **gleam-build**: Verifies build succeeds
+
+### Manual Hook Installation
+
+If hooks aren't installed automatically:
+```bash
+lefthook install
+```
+
+### Bypassing Hooks
+
+In rare cases where you need to skip hooks:
+```bash
+jj commit --no-verify -m "message"  # Skip pre-commit
+jj git push --no-verify             # Skip pre-push
+```
 
 ## Development Workflow
 
@@ -54,13 +87,16 @@ gleam test
 
 ### Formatting Code
 
+Gleam:
 ```bash
 gleam format src test
+gleam format --check src test  # Check only
 ```
 
-Check formatting without modifying:
+Nix:
 ```bash
-gleam format --check src test
+nixfmt flake.nix
+nixfmt --check flake.nix  # Check only
 ```
 
 ### Building

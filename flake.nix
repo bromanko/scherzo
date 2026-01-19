@@ -25,6 +25,10 @@
 
             # Development utilities
             just
+
+            # Formatting and linting
+            nixfmt-rfc-style
+            lefthook
           ];
 
           shellHook = ''
@@ -32,6 +36,9 @@
             echo "Gleam: $(gleam --version)"
             echo "Erlang: $(erl -eval 'erlang:display(erlang:system_info(otp_release)), halt().' -noshell)"
             echo "jj: $(jj --version)"
+
+            # Install git hooks via lefthook
+            lefthook install 2>/dev/null || true
           '';
         };
 

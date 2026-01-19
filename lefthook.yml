@@ -1,0 +1,23 @@
+pre-commit:
+  parallel: true
+  commands:
+    gleam-format:
+      glob: "*.gleam"
+      run: gleam format --check src test
+      fail_text: "Gleam formatting check failed. Run: gleam format src test"
+
+    nix-format:
+      glob: "*.nix"
+      run: nixfmt --check {staged_files}
+      fail_text: "Nix formatting check failed. Run: nixfmt {files}"
+
+pre-push:
+  parallel: true
+  commands:
+    gleam-test:
+      run: gleam test
+      fail_text: "Tests failed"
+
+    gleam-build:
+      run: gleam build
+      fail_text: "Build failed"
