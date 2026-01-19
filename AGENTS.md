@@ -1,5 +1,16 @@
 # Agent Guidelines for Scherzo
 
+## Maintaining This File
+
+This file should evolve with the project. Update AGENTS.md when you:
+
+- Discover patterns that future agents should follow
+- Encounter pitfalls that should be documented
+- Establish new conventions during implementation
+- Learn project-specific idioms or practices
+
+Keep instructions concrete and actionable. Remove guidance that becomes obsolete.
+
 ## Version Control Discipline
 
 This project uses **jujutsu (jj)** for version control. Agents must commit work incrementally.
