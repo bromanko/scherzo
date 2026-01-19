@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gleam format --check src test 2>/dev/null || echo 'Warning: Gleam formatting issues detected. Run: gleam format src test'"
+          },
+          {
+            "type": "command",
+            "command": "nixfmt --check *.nix 2>/dev/null || echo 'Warning: Nix formatting issues detected. Run: nixfmt *.nix'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [[ \"$CLAUDE_TOOL_ARG_FILE_PATH\" == *.gleam ]]; then gleam format \"$CLAUDE_TOOL_ARG_FILE_PATH\" 2>/dev/null; fi"
+          },
+          {
+            "type": "command",
+            "command": "if [[ \"$CLAUDE_TOOL_ARG_FILE_PATH\" == *.nix ]]; then nixfmt \"$CLAUDE_TOOL_ARG_FILE_PATH\" 2>/dev/null; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

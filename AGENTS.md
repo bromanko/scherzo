@@ -66,7 +66,18 @@ Follow the structure defined in `PLAN.md`. Key directories:
 
 ## Code Quality
 
-Git hooks (via lefthook) enforce quality on commit and push. Format code proactively:
+### Claude Code Hooks
+
+This project has Claude Code hooks configured in `.claude/settings.json`:
+
+- **PostToolUse**: Auto-formats `.gleam` and `.nix` files after Edit/Write
+- **Stop**: Warns about formatting issues before session ends
+
+These hooks help maintain code quality automatically during development.
+
+### Git Hooks
+
+Git hooks (via lefthook) enforce quality on commit and push:
 
 ```bash
 # Gleam
