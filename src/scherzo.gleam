@@ -1,10 +1,14 @@
 import argv
+import gleam/int
 import gleam/io
+import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import glint
+import scherzo/agent/checkpoint
 import scherzo/agent/workspace
-import scherzo/orchestrator.{OrchestratorConfig}
+import scherzo/orchestrator
 import simplifile
 
 pub fn main() {
@@ -54,7 +58,7 @@ fn run_command() -> glint.Command(Nil) {
       io.println("Working directory: " <> working_dir)
       io.println("")
 
-      let config = OrchestratorConfig(working_dir: working_dir, max_retries: 3)
+      let config = orchestrator.default_config(working_dir)
 
       case orchestrator.run_task(config, title, description) {
         orchestrator.RunSuccess(output, change_id) -> {
@@ -67,6 +71,17 @@ fn run_command() -> glint.Command(Nil) {
         orchestrator.RunFailed(reason) -> {
           io.println("Task failed: " <> reason)
         }
+        orchestrator.RunExhausted(continuations, last_output, change_id) -> {
+          io.println(
+            "Task exhausted after "
+            <> int.to_string(continuations)
+            <> " continuations",
+          )
+          io.println("Change ID: " <> change_id)
+          io.println("")
+          io.println("Last output:")
+          io.println(last_output)
+        }
       }
     }
 
@@ -76,7 +91,7 @@ fn run_command() -> glint.Command(Nil) {
       io.println("Working directory: " <> working_dir)
       io.println("")
 
-      let config = OrchestratorConfig(working_dir: working_dir, max_retries: 3)
+      let config = orchestrator.default_config(working_dir)
 
       case orchestrator.run_task(config, title, title) {
         orchestrator.RunSuccess(output, change_id) -> {
@@ -88,6 +103,17 @@ fn run_command() -> glint.Command(Nil) {
         }
         orchestrator.RunFailed(reason) -> {
           io.println("Task failed: " <> reason)
+        }
+        orchestrator.RunExhausted(continuations, last_output, change_id) -> {
+          io.println(
+            "Task exhausted after "
+            <> int.to_string(continuations)
+            <> " continuations",
+          )
+          io.println("Change ID: " <> change_id)
+          io.println("")
+          io.println("Last output:")
+          io.println(last_output)
         }
       }
     }
@@ -192,31 +218,135 @@ fn prime_command() -> glint.Command(Nil) {
   Nil
 }
 
+/// Flag for checkpoint type
+fn checkpoint_type_flag() {
+  glint.string_flag("type")
+  |> glint.flag_default("final")
+  |> glint.flag_help(
+    "Type of checkpoint: incremental, pre_compact, or final (default: final)",
+  )
+}
+
 /// Checkpoint command - save agent state (called by Stop hook)
 fn checkpoint_command() -> glint.Command(Nil) {
   use <- glint.command_help(
     "Save checkpoint state for an agent. Called by Stop hook.",
   )
-  use _, args, _ <- glint.command()
+  use type_getter <- glint.flag(checkpoint_type_flag())
+  use _, args, flags <- glint.command()
 
   let cwd = get_cwd()
+
+  // Get checkpoint type from flag
+  let checkpoint_type =
+    type_getter(flags)
+    |> result.unwrap("final")
+    |> parse_checkpoint_type()
 
   // Try to read task info from current directory (workspace)
   case workspace.read_task_info(cwd) {
     Ok(task_info) -> {
-      io.println("Checkpoint saved for task: " <> task_info.id)
-      // TODO: Actually save checkpoint state (jj status, work summary, etc.)
+      create_checkpoint(task_info, checkpoint_type, cwd)
     }
     Error(_) -> {
       case args {
         [task_id] -> {
-          io.println("Checkpoint saved for task: " <> task_id)
+          // Minimal checkpoint without full task info
+          let task_info =
+            workspace.TaskInfo(
+              id: task_id,
+              title: "Unknown task",
+              description: "",
+              repo_dir: cwd,
+            )
+          create_checkpoint(task_info, checkpoint_type, cwd)
         }
         _ -> {
           io.println("Warning: No task context found for checkpoint")
+          io.println("Usage: scherzo checkpoint [--type=final] [task-id]")
         }
       }
     }
   }
   Nil
+}
+
+/// Parse checkpoint type string to enum
+fn parse_checkpoint_type(type_str: String) -> checkpoint.CheckpointType {
+  case type_str {
+    "incremental" -> checkpoint.Incremental
+    "pre_compact" -> checkpoint.PreCompact
+    _ -> checkpoint.Final
+  }
+}
+
+/// Create and save a checkpoint
+fn create_checkpoint(
+  task_info: workspace.TaskInfo,
+  checkpoint_type: checkpoint.CheckpointType,
+  _workspace_dir: String,
+) -> Nil {
+  // Get agent ID from environment or use default
+  let agent_id = get_env("SCHERZO_AGENT_ID") |> result.unwrap("agent-1")
+
+  // Create checkpoint config using the repo_dir from task info
+  let config = checkpoint.default_config(task_info.repo_dir)
+
+  // For final checkpoints, we would ideally read work summary from stdin
+  // For now, use a placeholder that indicates what the agent was working on
+  let work_summary = case checkpoint_type {
+    checkpoint.Final -> "Agent completed work on task: " <> task_info.title
+    checkpoint.PreCompact ->
+      "Context compaction checkpoint for: " <> task_info.title
+    checkpoint.Incremental -> "Incremental checkpoint for: " <> task_info.title
+  }
+
+  // Next steps only for final checkpoints
+  let next_steps = case checkpoint_type {
+    checkpoint.Final -> Some("Review changes and verify task completion")
+    _ -> None
+  }
+
+  // Create the checkpoint
+  case
+    checkpoint.create(
+      config,
+      task_info.id,
+      agent_id,
+      checkpoint_type,
+      work_summary,
+      next_steps,
+    )
+  {
+    Ok(cp) -> {
+      let type_name = case checkpoint_type {
+        checkpoint.Incremental -> "Incremental"
+        checkpoint.PreCompact -> "PreCompact"
+        checkpoint.Final -> "Final"
+      }
+      io.println(
+        type_name
+        <> " checkpoint saved for task: "
+        <> task_info.id
+        <> " (seq: "
+        <> int.to_string(cp.sequence)
+        <> ")",
+      )
+      io.println("Change ID: " <> cp.jj_change_id)
+      io.println(
+        "Files modified: " <> int.to_string(list.length(cp.files_modified)),
+      )
+    }
+    Error(err) -> {
+      io.println("Failed to create checkpoint: " <> err)
+    }
+  }
+}
+
+/// Get environment variable
+@external(erlang, "os", "getenv")
+fn os_getenv(name: String) -> Result(String, Nil)
+
+fn get_env(name: String) -> Result(String, Nil) {
+  os_getenv(name)
 }

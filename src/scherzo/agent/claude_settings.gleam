@@ -57,7 +57,10 @@ fn stop_hooks(task_id: Id) -> json.Json {
             [
               json.object([
                 #("type", json.string("command")),
-                #("command", json.string("scherzo checkpoint " <> task_id)),
+                #(
+                  "command",
+                  json.string("scherzo checkpoint --type=final " <> task_id),
+                ),
               ]),
             ],
             fn(x) { x },

@@ -38,7 +38,8 @@
       "Bash(lefthook.yml )",
       "Bash(flake.nix )",
       "Bash(CONTRIBUTING.md )",
-      "Bash(.claude/settings.json)"
+      "Bash(.claude/settings.json)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

@@ -1,7 +1,10 @@
 /// Orchestrator - coordinates tasks and agents
+import gleam/int
+import scherzo/agent/checkpoint
 import scherzo/agent/driver.{type AgentResult}
 import scherzo/agent/drivers/claude
-import scherzo/core/task
+import scherzo/agent/handoff
+import scherzo/core/task.{type Task}
 import scherzo/core/types.{AgentConfig, Claude}
 import scherzo/vcs/jj
 import shellout
@@ -13,6 +16,17 @@ pub type OrchestratorConfig {
     working_dir: String,
     /// Maximum retries for failed tasks
     max_retries: Int,
+    /// Maximum continuations for context exhaustion (default: 5)
+    max_continuations: Int,
+  )
+}
+
+/// Create default config
+pub fn default_config(working_dir: String) -> OrchestratorConfig {
+  OrchestratorConfig(
+    working_dir: working_dir,
+    max_retries: 3,
+    max_continuations: 5,
   )
 }
 
@@ -20,6 +34,8 @@ pub type OrchestratorConfig {
 pub type RunResult {
   RunSuccess(output: String, change_id: String)
   RunFailed(reason: String)
+  /// Task exceeded max continuations without completing
+  RunExhausted(continuations: Int, last_output: String, change_id: String)
 }
 
 /// Run a single task with an agent (synchronous, for Phase 2)
@@ -32,38 +48,100 @@ pub fn run_task(
   let task_id = generate_task_id()
   let t = task.new(task_id, title, description)
 
-  // Create agent config
-  let agent_config =
-    AgentConfig(
-      id: "agent-" <> task_id,
-      provider: Claude,
-      working_dir: config.working_dir,
-      max_retries: config.max_retries,
-    )
+  // Start with continuation count 0
+  run_task_with_continuation(config, t, 0)
+}
 
-  // Create the claude driver
-  let drv = claude.new()
+/// Internal function that handles task execution with continuation support
+fn run_task_with_continuation(
+  config: OrchestratorConfig,
+  t: Task,
+  continuation_count: Int,
+) -> RunResult {
+  // Check if we've exceeded max continuations
+  case handoff.should_fail_task(continuation_count, config.max_continuations) {
+    True ->
+      RunExhausted(
+        continuation_count,
+        "Task exceeded maximum continuations ("
+          <> int.to_string(config.max_continuations)
+          <> ")",
+        t.id,
+      )
 
-  // Create a new jj change for this task
-  case jj.new_change(config.working_dir, "WIP: " <> title) {
-    Error(err) -> RunFailed("Failed to create jj change: " <> err)
+    False -> {
+      // Create agent config
+      let agent_id =
+        "agent-" <> t.id <> "-" <> int.to_string(continuation_count)
+      let agent_config =
+        AgentConfig(
+          id: agent_id,
+          provider: Claude,
+          working_dir: config.working_dir,
+          max_retries: config.max_retries,
+        )
 
-    Ok(change_id) -> {
-      // Build the command
-      let command = driver.build_command(drv, t, agent_config)
+      // Create the claude driver
+      let drv = claude.new()
 
-      // Run the agent synchronously
-      let agent_result = run_command(command, drv)
+      // Build the task description (with continuation context if needed)
+      let effective_task = case continuation_count {
+        0 -> t
+        _ -> {
+          // Load checkpoint and build continuation prompt
+          let checkpoint_config = checkpoint.default_config(config.working_dir)
+          case
+            handoff.load_handoff_context(
+              checkpoint_config,
+              t,
+              continuation_count,
+            )
+          {
+            Error(_) -> t
+            // No checkpoint, use original task
+            Ok(ctx) -> {
+              // Build continuation prompt and create new task with it
+              let continuation_prompt = handoff.build_continuation_prompt(ctx)
+              task.new(t.id, t.title <> " (continuation)", continuation_prompt)
+            }
+          }
+        }
+      }
 
-      // Update jj change with result
-      let _ = update_change_on_completion(config.working_dir, t, agent_result)
+      // Create a new jj change for this task (only on first run)
+      let change_result = case continuation_count {
+        0 -> jj.new_change(config.working_dir, "WIP: " <> t.title)
+        _ -> jj.get_current_change(config.working_dir)
+      }
 
-      case agent_result {
-        driver.Success(output) -> RunSuccess(output, change_id)
-        driver.Failure(reason, _) -> RunFailed(reason)
-        driver.ContextExhausted(output) ->
-          RunSuccess(output <> "\n(context exhausted)", change_id)
-        driver.Interrupted -> RunFailed("Agent was interrupted")
+      case change_result {
+        Error(err) -> RunFailed("Failed to create/get jj change: " <> err)
+
+        Ok(change_id) -> {
+          // Build the command
+          let command = driver.build_command(drv, effective_task, agent_config)
+
+          // Run the agent synchronously
+          let agent_result = run_command(command, drv)
+
+          // Update jj change with result
+          let _ =
+            update_change_on_completion(config.working_dir, t, agent_result)
+
+          case agent_result {
+            driver.Success(output) -> RunSuccess(output, change_id)
+
+            driver.Failure(reason, _) -> RunFailed(reason)
+
+            driver.ContextExhausted(_output) -> {
+              // Context exhausted - attempt handoff to a new agent
+              // The Stop hook should have already saved a checkpoint
+              run_task_with_continuation(config, t, continuation_count + 1)
+            }
+
+            driver.Interrupted -> RunFailed("Agent was interrupted")
+          }
+        }
       }
     }
   }
