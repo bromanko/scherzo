@@ -1,3 +1,4 @@
+import argv
 import gleam/io
 import glint
 
@@ -8,7 +9,7 @@ pub fn main() {
   |> glint.add(at: [], do: root_command())
   |> glint.add(at: ["run"], do: run_command())
   |> glint.add(at: ["status"], do: status_command())
-  |> glint.run(glint.default_args())
+  |> glint.run(argv.load().arguments)
 }
 
 fn root_command() -> glint.Command(Nil) {

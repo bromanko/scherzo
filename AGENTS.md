@@ -117,3 +117,45 @@ Add dependencies to `gleam.toml`. Key dependencies per PLAN.md:
 - `gleam_json` - JSON parsing
 - `shellout` - Shell commands
 - `tom` - TOML parsing
+- `argv` - Command line arguments
+
+## Gleam Patterns
+
+### gleam_otp Actor API
+
+Use the builder pattern for actors:
+
+```gleam
+// Create and start an actor
+pub fn start() -> Result(Subject(Message), actor.StartError) {
+  actor.new(initial_state)
+  |> actor.on_message(handle_message)
+  |> actor.start
+  |> result.map(fn(started) { started.data })
+}
+
+// Handler signature: (state, message) -> Next(State, Message)
+fn handle_message(state: State, message: Message) -> actor.Next(State, Message) {
+  case message {
+    SomeMessage -> actor.continue(new_state)
+    Shutdown -> actor.stop()
+  }
+}
+
+// Call with timeout: actor.call(subject, timeout_ms, message_fn)
+actor.call(store, 5000, GetItem(_, item_id))
+```
+
+### glint CLI
+
+Use `argv` for command line arguments:
+
+```gleam
+import argv
+
+pub fn main() {
+  glint.new()
+  |> glint.add(at: ["cmd"], do: my_command())
+  |> glint.run(argv.load().arguments)
+}
+```

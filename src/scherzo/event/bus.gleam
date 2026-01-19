@@ -2,9 +2,11 @@
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/otp/actor
-import scherzo/core/event.{type Event, type EventEnvelope}
+import gleam/result
+import scherzo/core/event.{type EventEnvelope}
 import scherzo/core/types.{type Id}
 
 /// Messages the event bus can receive
@@ -26,7 +28,10 @@ pub type State {
 
 /// Start a new event bus actor
 pub fn start() -> Result(Subject(Message), actor.StartError) {
-  actor.start(State(subscribers: dict.new(), next_id: 0), handle_message)
+  actor.new(State(subscribers: dict.new(), next_id: 0))
+  |> actor.on_message(handle_message)
+  |> actor.start
+  |> result.map(fn(started) { started.data })
 }
 
 /// Subscribe to events from the bus
@@ -56,12 +61,15 @@ pub fn stop(bus: Subject(Message)) -> Nil {
 }
 
 /// Handle incoming messages
-fn handle_message(message: Message, state: State) -> actor.Next(Message, State) {
+fn handle_message(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Subscribe(subscriber) -> {
-      let id = "sub_" <> int_to_string(state.next_id)
+      let id = "sub_" <> int.to_string(state.next_id)
       let new_subscribers = dict.insert(state.subscribers, id, subscriber)
-      actor.continue(State(..state, subscribers: new_subscribers, next_id: state.next_id + 1))
+      actor.continue(State(
+        subscribers: new_subscribers,
+        next_id: state.next_id + 1,
+      ))
     }
 
     Unsubscribe(subscriber) -> {
@@ -79,37 +87,7 @@ fn handle_message(message: Message, state: State) -> actor.Next(Message, State) 
     }
 
     Shutdown -> {
-      actor.Stop(process.Normal)
-    }
-  }
-}
-
-/// Convert int to string (helper)
-fn int_to_string(n: Int) -> String {
-  case n {
-    0 -> "0"
-    _ -> do_int_to_string(n, "")
-  }
-}
-
-fn do_int_to_string(n: Int, acc: String) -> String {
-  case n {
-    0 -> acc
-    _ -> {
-      let digit = n % 10
-      let char = case digit {
-        0 -> "0"
-        1 -> "1"
-        2 -> "2"
-        3 -> "3"
-        4 -> "4"
-        5 -> "5"
-        6 -> "6"
-        7 -> "7"
-        8 -> "8"
-        _ -> "9"
-      }
-      do_int_to_string(n / 10, char <> acc)
+      actor.stop()
     }
   }
 }

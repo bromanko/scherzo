@@ -7,9 +7,21 @@
       "WebFetch(domain:hexdocs.pm)",
       "WebFetch(domain:steve-yegge.medium.com)",
       "Bash(cat:*)",
-      "Bash(gleam new:*)"
+      "Bash(gleam new:*)",
+      "Bash(gleam build:*)",
+      "Bash(nix:*)",
+      "WebFetch(domain:repo.hex.pm)",
+      "WebFetch(domain:hex.pm)",
+      "Bash(mkdir:*)",
+      "Bash(gleam test:*)"
     ],
     "deny": [],
     "ask": []
+  },
+  "sandbox": {
+    "allowUnsandboxedCommands": true,
+    "excludedCommands": [
+      "Bash(gleam:*)"
+    ]
   }
 }

@@ -2,13 +2,10 @@
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
-import gleam/json
-import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 import gleam/otp/actor
 import gleam/result
-import gleam/string
-import scherzo/core/task.{type Task, type TaskStatus}
+import scherzo/core/task.{type Task}
 import scherzo/core/types.{type AgentConfig, type AgentStatus, type Id}
 import simplifile
 
@@ -60,7 +57,10 @@ pub const default_state_dir = ".scherzo/state"
 pub fn start(config: StoreConfig) -> Result(Subject(Message), actor.StartError) {
   let initial_state =
     State(tasks: dict.new(), agents: dict.new(), state_dir: config.state_dir)
-  actor.start(initial_state, handle_message)
+  actor.new(initial_state)
+  |> actor.on_message(handle_message)
+  |> actor.start
+  |> result.map(fn(started) { started.data })
 }
 
 /// Start with default configuration
@@ -71,11 +71,11 @@ pub fn start_default() -> Result(Subject(Message), actor.StartError) {
 // Public API functions
 
 pub fn get_task(store: Subject(Message), task_id: Id) -> Option(Task) {
-  actor.call(store, GetTask(_, task_id), 5000)
+  actor.call(store, 5000, GetTask(_, task_id))
 }
 
 pub fn get_all_tasks(store: Subject(Message)) -> List(Task) {
-  actor.call(store, GetAllTasks, 5000)
+  actor.call(store, 5000, GetAllTasks)
 }
 
 pub fn save_task(store: Subject(Message), task: Task) -> Nil {
@@ -87,11 +87,11 @@ pub fn delete_task(store: Subject(Message), task_id: Id) -> Nil {
 }
 
 pub fn get_agent(store: Subject(Message), agent_id: Id) -> Option(AgentState) {
-  actor.call(store, GetAgent(_, agent_id), 5000)
+  actor.call(store, 5000, GetAgent(_, agent_id))
 }
 
 pub fn get_all_agents(store: Subject(Message)) -> List(AgentState) {
-  actor.call(store, GetAllAgents, 5000)
+  actor.call(store, 5000, GetAllAgents)
 }
 
 pub fn save_agent(store: Subject(Message), agent: AgentState) -> Nil {
@@ -115,7 +115,7 @@ pub fn stop(store: Subject(Message)) -> Nil {
 }
 
 /// Handle incoming messages
-fn handle_message(message: Message, state: State) -> actor.Next(Message, State) {
+fn handle_message(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     GetTask(reply_to, task_id) -> {
       let task = dict.get(state.tasks, task_id) |> option.from_result
@@ -176,7 +176,7 @@ fn handle_message(message: Message, state: State) -> actor.Next(Message, State) 
     Shutdown -> {
       // Persist before shutdown
       let _ = persist_state(state)
-      actor.Stop(process.Normal)
+      actor.stop()
     }
   }
 }

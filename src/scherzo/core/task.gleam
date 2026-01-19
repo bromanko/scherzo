@@ -1,5 +1,6 @@
 /// Task types and lifecycle management
 
+import gleam/option.{type Option, None}
 import scherzo/core/types.{type Id, type Timestamp}
 
 /// Task lifecycle status
