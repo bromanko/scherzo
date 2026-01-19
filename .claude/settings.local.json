@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "Bash(codex exec:*)",
+      "Bash(codex proto:*)",
+      "WebFetch(domain:hexdocs.pm)",
+      "WebFetch(domain:steve-yegge.medium.com)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
