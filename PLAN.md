@@ -1,0 +1,733 @@
+# Scherzo: AI Agent Orchestrator
+
+## Overview
+
+Scherzo is a Gleam-based AI agent orchestrator - "Kubernetes for AI agents". It takes tasks from external sources and coordinates CLI-based AI agents (Claude, Codex, Gemini) to execute them autonomously.
+
+## Technology Choices
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Language | Gleam | Strong typing, clean syntax, runs on BEAM for actor model |
+| Runtime | Erlang/OTP | Battle-tested supervision trees, fault tolerance |
+| CLI Agents | claude, codex, gemini | Spawn as OS processes, not API calls |
+| Distribution | Burrito | Single binary distribution |
+| State | jj-backed JSON files | Durable by default, full history, crash recovery via `jj status`, debuggable via `jj log/diff` |
+
+## Architecture
+
+### Supervision Tree
+
+```
+ScherzoSupervisor (OneForAll)
+├── EventBus           # Central pub/sub
+├── StateStore         # In-memory cache + jj-backed JSON persistence
+├── TaskSourceSupervisor (OneForOne)
+│   └── TicketSource   # .tickets/ integration via tk CLI
+├── TaskQueue          # Priority queue of ready tasks
+├── Coordinator        # Matches tasks to agents
+└── AgentPoolSupervisor (Factory)
+    ├── AgentProcess_1 # Wraps OS process
+    ├── AgentProcess_2
+    └── ...
+```
+
+### Core Types
+
+```gleam
+// Agent providers
+pub type AgentProvider { Claude | Codex | Gemini }
+
+// Task lifecycle
+pub type TaskStatus {
+  Pending
+  Ready           // Dependencies resolved
+  Assigned(agent_id: Id)
+  InProgress(agent_id: Id, started_at: Timestamp)
+  Completed(agent_id: Id, completed_at: Timestamp)
+  Failed(agent_id: Id, reason: String, failed_at: Timestamp)
+  Blocked(reason: String)
+}
+
+// Agent status
+pub type AgentStatus {
+  Idle
+  Running(task_id: Id, started_at: Timestamp)
+  Failed(reason: String)
+}
+```
+
+### Agent Driver Interface
+
+Each CLI agent has a driver that knows how to:
+1. Build the command with appropriate flags (--yolo, --output-format, etc.)
+2. Parse streaming output
+3. Detect success/failure
+4. Generate hook configurations for checkpointing
+
+```gleam
+pub type Driver {
+  Driver(
+    name: String,
+    build_command: fn(Task, AgentConfig) -> Command,
+    parse_output: fn(String) -> ParsedOutput,
+    detect_failure: fn(String, Int) -> Option(String),
+    generate_hooks: fn(Task, CheckpointConfig) -> Result(HookConfig, String),
+  )
+}
+```
+
+### Hook-Based Checkpointing
+
+Scherzo leverages CLI agent hook systems (Claude Code hooks, Codex hooks) to enable agents to survive context exhaustion and seamlessly hand off work to fresh agents.
+
+#### Available Hooks by Provider
+
+| Hook | Claude Code | Codex | Purpose |
+|------|-------------|-------|---------|
+| Post-action | `PostToolUse` | `post_action` | Checkpoint after each file edit |
+| Stop | `Stop` | `on_exit` | Capture final state on agent stop |
+| Pre-compact | `PreCompact` | - | Capture state before context compaction |
+| Notification | `Notification` | - | Detect context limit warnings |
+
+#### Checkpoint Types
+
+```gleam
+pub type Checkpoint {
+  Checkpoint(
+    task_id: Id,
+    agent_id: Id,
+    sequence: Int,                    // Monotonic counter for ordering
+    timestamp: Timestamp,
+    checkpoint_type: CheckpointType,
+    files_modified: List(FileChange),
+    tool_calls_since_last: List(ToolCall),
+    work_summary: String,             // AI-generated via hook prompt
+    next_steps: Option(String),       // Remaining work (on Stop only)
+    jj_change_id: String,
+  )
+}
+
+pub type CheckpointType {
+  Incremental   // PostToolUse - periodic saves
+  PreCompact    // Before context compaction
+  Final         // Stop hook - agent finished or exhausted
+}
+
+pub type FileChange {
+  FileChange(
+    path: String,
+    change_type: FileChangeType,      // Added | Modified | Deleted
+    summary: Option(String),          // Brief description of change
+  )
+}
+```
+
+#### State & Checkpoint Storage (jj-backed)
+
+All orchestrator state lives in `.scherzo/` and is tracked by jj, giving automatic durability, history, and crash recovery.
+
+```
+project/
+├── .claude/
+│   └── hooks/
+│       └── scherzo.toml           # Injected by Scherzo for Claude
+├── .scherzo/                      # All jj-tracked
+│   ├── state/
+│   │   ├── tasks.json             # Task status and metadata
+│   │   ├── agents.json            # Agent pool status
+│   │   └── queue.json             # Current task queue
+│   ├── checkpoints/
+│   │   ├── <task-id>/
+│   │   │   ├── 001.json           # Incremental checkpoint
+│   │   │   ├── 002.json           # Incremental checkpoint
+│   │   │   └── final.json         # Final checkpoint on stop
+│   │   └── ...
+│   ├── events/
+│   │   └── <date>.jsonl           # Event log (append-only)
+│   └── config.toml                # Orchestrator config
+```
+
+**Benefits of jj-backed state:**
+- **Crash recovery**: `jj status` shows uncommitted state, nothing lost
+- **History**: `jj log -p .scherzo/` shows all state changes
+- **Debugging**: `jj diff -r <change>` to see what changed when
+- **Undo**: `jj undo` or `jj restore` to revert bad state
+- **Conflicts**: jj handles concurrent writes gracefully
+
+#### Context Exhaustion Flow
+
+```
+1. Agent working on task
+   ↓
+2. PostToolUse hook fires after each tool → writes incremental checkpoint
+   ↓
+3. Context nears limit:
+   - Notification hook detects warning, OR
+   - PreCompact hook fires, OR
+   - Agent stops with context_exhausted signal
+   ↓
+4. Stop hook fires → writes final checkpoint with:
+   - Summary of all work done
+   - Explicit "next steps" for continuation
+   - List of files modified with descriptions
+   ↓
+5. Scherzo's AgentProcess detects agent stopped
+   ↓
+6. Coordinator checks: crash vs context exhaustion vs completion
+   - If context exhaustion: trigger handoff
+   - If completion: mark task done
+   - If crash: retry or fail based on policy
+   ↓
+7. Handoff: Coordinator spawns fresh agent with continuation prompt:
+
+   "Continue task <task-id>: <title>
+
+   Previous agent completed the following work:
+   <work_summary from checkpoint>
+
+   Files modified:
+   <list of files with change summaries>
+
+   Remaining work:
+   <next_steps from checkpoint>
+
+   Review changes with: jj diff -r <change-id>
+   Continue working in jj change: <change-id>"
+
+   ↓
+8. New agent continues, inheriting the jj change and checkpoint history
+```
+
+#### Hook Generation
+
+Scherzo generates provider-specific hook configs. Example for Claude Code:
+
+```toml
+# .claude/hooks/scherzo.toml (generated)
+[[hooks]]
+event = "PostToolUse"
+match_tools = ["Edit", "Write", "Bash"]
+command = "scherzo checkpoint incremental --task-id={{task_id}} --agent-id={{agent_id}}"
+
+[[hooks]]
+event = "PreCompact"
+command = "scherzo checkpoint pre-compact --task-id={{task_id}} --agent-id={{agent_id}}"
+
+[[hooks]]
+event = "Stop"
+command = "scherzo checkpoint final --task-id={{task_id}} --agent-id={{agent_id}}"
+
+[[hooks]]
+event = "Notification"
+match_message = "context"
+command = "scherzo checkpoint notify --task-id={{task_id}} --type=context-warning"
+```
+
+The `scherzo checkpoint` CLI commands are lightweight - they write JSON to `.scherzo/checkpoints/` and optionally prompt the agent for a summary.
+
+### Completion Gates (Quality Pipeline)
+
+Before a task is marked complete, it passes through a configurable pipeline of validation gates. This ensures quality without needing a full workflow DSL.
+
+#### Boundary: Agent Hooks vs Orchestrator Gates
+
+| Mechanism | Responsibility | Examples |
+|-----------|---------------|----------|
+| **Agent hooks** (Claude/Codex native) | Command-based validation | Tests, lint, format, type-check, build |
+| **Orchestrator gates** (Scherzo) | Multi-agent coordination | Review agents, human approval, Rule of Five |
+
+Tests and lint are handled by the agent's native `Stop` hook - if the hook fails, the agent continues working. Scherzo only adds orchestrator-level gates that require spawning additional agents or human interaction.
+
+#### Gate Types
+
+```gleam
+pub type Gate {
+  // Spawn a review agent with specific focus
+  ReviewGate(
+    name: String,
+    agent_provider: AgentProvider,
+    review_prompt: String,     // What to focus on
+    pass_criteria: String,     // How agent signals "pass"
+  )
+
+  // Multiple review passes (Rule of Five)
+  MultiPassReview(
+    name: String,
+    agent_provider: AgentProvider,
+    passes: List(ReviewPass),  // Each pass has different focus
+    require_convergence: Bool, // Stop when agent says "converged"
+  )
+
+  // Human approval checkpoint
+  HumanGate(
+    name: String,
+    prompt: String,            // What to show human
+  )
+}
+
+pub type ReviewPass {
+  ReviewPass(
+    focus: String,             // "correctness", "security", "performance", etc.
+    prompt: String,
+  )
+}
+```
+
+#### Example Configuration
+
+**Agent hooks** (handled by Claude/Codex natively):
+```toml
+# .claude/settings.toml (or injected by Scherzo)
+[[hooks]]
+event = "Stop"
+command = "npm test && npm run lint && npm run typecheck"
+# Agent continues working if this fails
+```
+
+**Orchestrator gates** (Scherzo):
+```toml
+# .scherzo/config.toml
+
+[[completion_gates]]
+name = "code_review"
+type = "review"
+agent = "claude"
+prompt = """
+Review this change for:
+- Correctness: Does it do what the task asked?
+- Code quality: Is it clean, readable, maintainable?
+- Edge cases: Are error cases handled?
+
+Respond with PASS or FAIL with explanation.
+"""
+pass_criteria = "PASS"
+
+[[completion_gates]]
+name = "security_review"
+type = "review"
+agent = "claude"
+prompt = """
+Security review this change for:
+- Input validation
+- Injection vulnerabilities (SQL, XSS, command)
+- Authentication/authorization issues
+- Sensitive data exposure
+
+Respond with PASS or FAIL with explanation.
+"""
+pass_criteria = "PASS"
+
+[[completion_gates]]
+name = "rule_of_five"
+type = "multi_pass"
+agent = "claude"
+require_convergence = true
+
+[[completion_gates.passes]]
+focus = "correctness"
+prompt = "Review for logical correctness and bugs"
+
+[[completion_gates.passes]]
+focus = "completeness"
+prompt = "Review for missing functionality or incomplete implementation"
+
+[[completion_gates.passes]]
+focus = "edge_cases"
+prompt = "Review for unhandled edge cases and error conditions"
+
+[[completion_gates.passes]]
+focus = "clarity"
+prompt = "Review for code clarity and maintainability"
+
+[[completion_gates.passes]]
+focus = "final"
+prompt = "Final review - is this ready to merge? Say CONVERGED if satisfied."
+```
+
+#### Gate Execution Flow
+
+```
+Task Agent working...
+         ↓
+    ┌─────────────────┐
+    │  Agent's Stop   │ ←──── fail: agent continues working
+    │  hook (tests,   │       (native Claude/Codex behavior)
+    │  lint, etc.)    │
+    └────────┬────────┘
+             ↓ pass (agent signals done)
+             ↓
+    ┌─────────────────────────────────────────┐
+    │         Scherzo Orchestrator Gates       │
+    ├─────────────────┬───────────────────────┤
+    │  code_review    │ ←── fail: feedback to │
+    │  (review agent) │     task agent, retry │
+    ├─────────────────┼───────────────────────┤
+    │ security_review │ ←── fail: feedback to │
+    │  (review agent) │     task agent, retry │
+    ├─────────────────┼───────────────────────┤
+    │  rule_of_five   │ ←── iterate until     │
+    │  (multi-pass)   │     CONVERGED         │
+    └────────┬────────┴───────────────────────┘
+             ↓ all gates pass
+      Task Complete ✓
+```
+
+#### Retry Behavior
+
+| Gate Type | On Failure |
+|-----------|------------|
+| ReviewGate | Feed review feedback to task agent, agent fixes, restart pipeline |
+| MultiPassReview | Continue passes until convergence or max passes reached |
+| HumanGate | Block until human approves/rejects |
+
+#### Review Agents vs Task Agents
+
+Review agents are **separate** from the task agent:
+- They see only the jj diff (not full context)
+- They can't modify code - only provide feedback
+- Feedback goes back to the original task agent for fixes
+
+This separation ensures reviews are unbiased by the task agent's reasoning.
+
+## Project Structure
+
+```
+scherzo/
+├── gleam.toml
+├── src/
+│   ├── scherzo.gleam              # Entry point, CLI
+│   └── scherzo/
+│       ├── cli/
+│       │   └── commands.gleam     # CLI commands
+│       ├── core/
+│       │   ├── types.gleam        # Core domain types
+│       │   ├── task.gleam         # Task type
+│       │   └── event.gleam        # Event types
+│       ├── agent/
+│       │   ├── driver.gleam       # Driver interface
+│       │   ├── process.gleam      # Agent process actor
+│       │   ├── pool.gleam         # Agent pool supervisor
+│       │   ├── checkpoint.gleam   # Checkpoint types and persistence
+│       │   ├── hooks.gleam        # Hook config generation
+│       │   ├── handoff.gleam      # Context exhaustion handoff logic
+│       │   └── drivers/
+│       │       ├── claude.gleam   # Includes Claude hook generation
+│       │       ├── codex.gleam    # Includes Codex hook generation
+│       │       └── gemini.gleam
+│       ├── task/
+│       │   ├── source.gleam       # Task source interface
+│       │   ├── queue.gleam        # Task queue actor
+│       │   └── sources/
+│       │       └── ticket.gleam   # Ticket (tk) integration
+│       ├── vcs/
+│       │   └── jj.gleam           # jujutsu operations
+│       ├── orchestrator/
+│       │   ├── supervisor.gleam   # Main supervision tree
+│       │   └── coordinator.gleam  # Work coordination
+│       ├── gates/
+│       │   ├── pipeline.gleam     # Gate pipeline execution
+│       │   ├── review.gleam       # ReviewGate (spawn review agent)
+│       │   ├── multipass.gleam    # MultiPassReview (Rule of Five)
+│       │   └── human.gleam        # HumanGate (approval checkpoint)
+│       ├── state/
+│       │   ├── store.gleam        # In-memory state + jj file persistence
+│       │   └── schema.gleam       # JSON schema for state files
+│       ├── event/
+│       │   └── bus.gleam          # Event bus
+│       └── ui/
+│           ├── tmux.gleam         # tmux session/pane management
+│           ├── control.gleam      # Control pane REPL
+│           └── layout.gleam       # Pane layout calculations
+└── test/
+```
+
+## CLI Commands
+
+```bash
+# Start orchestrator (creates tmux session, reads from .tickets/)
+scherzo run --max-agents 4 --workdir ./project
+
+# Attach to running session
+scherzo attach
+
+# Standalone commands (outside tmux session)
+scherzo status
+scherzo tasks list --status pending
+scherzo squash  # Interactive jj squash of completed changes
+```
+
+## tmux UI
+
+`scherzo run` creates a dedicated tmux session with full control interface.
+
+### Session Layout
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ scherzo> status                              [Control Pane] │
+│ Active: 3/4 agents | Pending: 12 | Completed: 5 | Failed: 1 │
+│                                                             │
+│ scherzo> _                                                  │
+├─────────────────────────────────────────────────────────────┤
+│ [Agent 1: abc-123] Feature: Add auth        │ [Agent 2: def│
+│ Reading src/auth.gleam...                   │ Running tests │
+│ ▌                                           │ ✓ 12 passed   │
+├─────────────────────────────────────────────┼───────────────┤
+│ [Agent 3: ghi-789] Bug: Fix login           │ [Agent 4]     │
+│ Editing user_service.gleam                  │ (idle)        │
+│ ...                                         │               │
+└─────────────────────────────────────────────┴───────────────┘
+```
+
+### Control Pane Commands
+
+```
+status              # Show overall status
+tasks               # List all tasks with status
+agents              # Show agent status
+pause <id>          # Pause an agent
+resume <id>         # Resume a paused agent
+retry <id>          # Retry a failed task
+kill <id>           # Kill a running agent
+focus <id>          # Expand agent pane to full screen
+quit                # Graceful shutdown (finish current, don't start new)
+abort               # Immediate shutdown (kill all agents)
+```
+
+### Implementation Notes
+
+- Use `shellout` to call `tmux` commands from Gleam
+- Session lifecycle: `tmux new-session -d -s scherzo`, `tmux kill-session -t scherzo`
+- Pane creation: `tmux split-window`, `tmux select-layout tiled`
+- Output routing: Each agent process writes to a named pipe, tmux pane tails the pipe
+- Control pane: Gleam process reading stdin, parsing commands, sending messages to coordinator actor
+- Dynamic layout: Recalculate pane layout when agents join/leave
+
+## Key Dependencies
+
+```toml
+[dependencies]
+gleam_stdlib = ">= 0.44.0"
+gleam_otp = ">= 0.14.0"        # Actors, supervisors
+gleam_erlang = ">= 1.3.0"      # Ports, processes
+glint = ">= 1.0.0"             # CLI framework
+simplifile = ">= 2.0.0"        # File operations (read/write .scherzo/ JSON)
+gleam_json = ">= 2.0.0"        # JSON parsing for state files
+shellout = ">= 1.6.0"          # Shell commands (jj, tmux, agent CLIs)
+tom = ">= 1.0.0"               # TOML parsing for config
+```
+
+## Implementation Phases
+
+### Phase 0: Development Environment
+1. Nix flake: `flake.nix` with gleam, erlang, rebar3, jj, tmux
+2. direnv: `.envrc` with `use flake`
+3. GitHub Actions: `.github/workflows/ci.yml` for test/lint/build on PR
+4. GitHub Actions: `.github/workflows/release.yml` for Burrito builds on tag
+5. `CONTRIBUTING.md`: Dev setup instructions, workflow guidelines
+6. **Milestone: `nix develop` provides complete dev environment, CI runs on push**
+
+### Phase 1: Foundation
+7. Project setup: `gleam new scherzo`, gleam.toml with deps
+8. Core types: `types.gleam`, `task.gleam`, `event.gleam`
+9. CLI skeleton: `scherzo run`, `scherzo status` via glint
+10. Event bus actor: Simple pub/sub with gleam_otp
+11. State store: In-memory cache + JSON file persistence to `.scherzo/state/`
+
+### Phase 2: Single Agent E2E
+12. Agent driver interface: `driver.gleam`
+13. Claude driver: Build command with --yolo, parse output
+14. Agent process actor: Spawn via erlexec, stream output
+15. jj integration: Create change before agent, describe after
+16. **Milestone: Run single task through single Claude agent**
+
+### Phase 2.5: Agent Continuity (Checkpointing)
+17. Checkpoint types: `checkpoint.gleam` with Checkpoint, FileChange types
+18. Checkpoint CLI: `scherzo checkpoint incremental|final|pre-compact` commands
+19. Hook generation: `hooks.gleam` generates provider-specific hook configs
+20. Claude hooks: Inject `.claude/hooks/scherzo.toml` before agent start
+21. Checkpoint storage: Write/read JSON to `.scherzo/checkpoints/<task-id>/`
+22. Stop detection: AgentProcess detects exit reason (completion vs exhaustion vs crash)
+23. Handoff logic: `handoff.gleam` builds continuation prompt from checkpoint
+24. Continuation flow: Coordinator spawns fresh agent with handoff context
+25. **Milestone: Agent survives context exhaustion, fresh agent continues task**
+
+### Phase 3: Ticket Integration
+26. Task source interface: `source.gleam`
+27. Ticket source: Parse `.tickets/*.md`, call `tk` CLI
+28. Task queue: Priority queue respecting dependencies (`tk ready`)
+29. Status sync: Update ticket status on completion/failure
+30. **Milestone: Process all ready tickets from a project**
+
+### Phase 4: tmux UI
+31. tmux session management: Create, attach, destroy
+32. Pane layout: Control pane + agent panes
+33. Output routing: Agent output to designated panes
+34. Control REPL: Parse commands, dispatch to coordinator
+35. **Milestone: Run with tmux UI, interactive control**
+
+### Phase 5: Multi-Agent Orchestration
+36. Agent pool supervisor: Factory supervisor for N agents
+37. Coordinator: Match tasks to available agents
+38. Parallel execution: Multiple agents, multiple jj changes
+39. Dynamic panes: Add/remove panes as agents start/stop
+40. **Milestone: 4 agents in parallel with tmux visibility**
+
+### Phase 5.5: Completion Gates
+41. Gate types: `pipeline.gleam` with Gate, ReviewPass types
+42. Config parsing: Load `[[completion_gates]]` from `.scherzo/config.toml`
+43. Agent hook injection: Add Stop hook for tests/lint to agent's hook config
+44. Pipeline executor: Run orchestrator gates in sequence after agent signals done
+45. ReviewGate: Spawn review agent with jj diff context, parse PASS/FAIL
+46. Feedback loop: On review failure, feed feedback to task agent, restart pipeline
+47. MultiPassReview: Iterate passes until convergence or max
+48. HumanGate: Block pipeline, notify control pane, wait for approval
+49. **Milestone: Task passes through code review → security review → Rule of Five pipeline**
+
+### Phase 6: Resilience & Recovery
+50. State recovery: Load state from `.scherzo/state/*.json` on startup
+51. Crash detection: Compare in-memory state vs jj working copy on restart
+52. Retry logic: Exponential backoff for failures
+53. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
+54. Handoff metrics: Track continuation count per task, detect infinite loops
+55. Supervision tree: Wire everything together
+
+### Phase 7: Distribution
+56. Additional drivers: Codex, Gemini (with provider-specific hooks)
+57. Burrito build: Single binary for macOS/Linux
+58. Polish: Better status display, colors, keybindings
+
+## Failure Handling
+
+1. **Agent crashes mid-task**: Captured by supervisor, recover from latest checkpoint if available, otherwise retry from start
+2. **Context exhaustion**: Not a failure - trigger handoff to fresh agent with continuation prompt built from checkpoint
+3. **Retryable failures**: Network errors, timeouts → exponential backoff, re-queue
+4. **Non-retryable failures**: Bad task definition, code errors → mark terminal failure
+5. **Orchestrator crash**: State survives in `.scherzo/` (jj-tracked). On restart: load state files, detect interrupted tasks via checkpoints, resume or retry
+6. **Infinite handoff loop**: If task exceeds max continuation count (configurable), mark as failed with "task too complex" reason
+
+## Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Task Source | Ticket (tk) via adapter | Start with Ticket, adapter pattern for future Beans support |
+| Output Mode | Stream to terminal | Real-time visibility into agent work |
+| Parallelism | Multiple parallel agents | Different agents work on different tasks concurrently |
+| Version Control | jujutsu (jj) | Each agent creates a jj change, easier parallel work |
+| Agent Continuity | Hook-based checkpointing | Leverage CLI agent hooks (Claude/Codex) for state persistence, enables handoff on context exhaustion |
+| State Storage | jj-backed JSON files | All state in `.scherzo/`, tracked by jj. Crash recovery = reload files. History = `jj log`. Debug = `jj diff`. No database needed. |
+| Handoff Strategy | Continuation prompt | Build context from checkpoint + jj diff, let fresh agent continue naturally |
+| Quality Assurance | Completion gates pipeline | Configurable sequence of tests, reviews, approvals. Simpler than full workflow DSL, covers 80% of cases. |
+| Review Strategy | Separate review agents | Reviewers only see jj diff, can't modify code. Unbiased by task agent's reasoning. Supports Rule of Five pattern. |
+
+## Development
+
+| Tool | Purpose | Rationale |
+|------|---------|-----------|
+| Nix + direnv | Dev environment | Reproducible, auto-activates on `cd`, pins Gleam/Erlang/OTP versions |
+| GitHub Actions | CI pipeline | Test, lint, format check on PR; release builds on tag |
+| Burrito | Release builds | Single binary distribution for macOS/Linux |
+| jujutsu (jj) | Version control | Used for both Scherzo development and as runtime dependency |
+
+### CI Pipeline
+
+```yaml
+# .github/workflows/ci.yml (conceptual)
+on: [push, pull_request]
+jobs:
+  check:
+    - gleam format --check
+    - gleam test
+    - gleam build
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    - burrito build (macos-arm64, macos-x64, linux-x64)
+    - upload artifacts to GitHub release
+```
+
+### Dev Environment
+
+```nix
+# flake.nix provides:
+# - gleam, erlang, rebar3
+# - jj, tmux (runtime deps for testing)
+# - claude CLI (optional, for integration tests)
+```
+
+Detailed setup instructions in `CONTRIBUTING.md` (created when project scaffolded).
+
+## Task Source Adapter
+
+Abstract interface for task backends:
+
+```gleam
+pub type TaskSource {
+  TaskSource(
+    name: String,
+    fetch_tasks: fn() -> Result(List(Task), String),
+    update_status: fn(Id, TaskStatus) -> Result(Nil, String),
+    get_ready_tasks: fn() -> Result(List(Task), String),  // Deps resolved
+  )
+}
+```
+
+### Ticket Integration (Primary)
+
+- Reads from `.tickets/*.md` (YAML frontmatter + markdown body)
+- Uses `tk ready` to get tasks with resolved dependencies
+- Uses `tk start <id>` / `tk close <id>` for status updates
+- Uses `tk query --json` for structured data
+
+### Beans Integration (Future)
+
+- Reads from `.beans/` directory
+- Uses `beans prime` for AI context
+- GraphQL queries for structured access
+
+## Version Control Strategy (jujutsu)
+
+Each agent works in its own jj change:
+
+```bash
+# Before agent starts task
+jj new -m "WIP: <task-title>"
+
+# Agent does work...
+
+# After agent completes
+jj describe -m "<task-title>
+
+<summary of changes>
+
+Closes: <task-id>"
+```
+
+Benefits:
+- Multiple agents can work in parallel without conflicts
+- Easy to squash/reorder changes later
+- No branch management overhead
+- Changes are isolated until explicitly squashed
+
+## Conflict Handling for Parallel Agents
+
+With jujutsu, parallel work is simpler:
+
+1. Each agent works on a separate task in its own jj change
+2. Changes are independent until squash/merge time
+3. Scherzo coordinates which change is "active" when agent runs
+4. If agents touch same files: jj handles conflict markers at squash time
+5. Coordinator can optionally prevent assigning tasks that touch same files
+
+```bash
+# Scherzo creates change for agent
+jj new @- -m "Task: <id>"  # New change from parent of current
+
+# Agent works in that change
+# Scherzo switches to change before invoking agent
+jj edit <change-id>
+
+# After completion
+jj describe -m "Complete: <title>"
+jj new  # Move to next change
+```
