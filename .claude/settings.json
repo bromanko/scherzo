@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [[ \"$CLAUDE_TOOL_ARG_FILE_PATH\" == *.gleam ]]; then gleam format \"$CLAUDE_TOOL_ARG_FILE_PATH\" 2>/dev/null; fi"
+            "command": "if [[ \"$CLAUDE_TOOL_ARG_FILE_PATH\" == *.gleam ]]; then gleam format \"$CLAUDE_TOOL_ARG_FILE_PATH\"; fi"
           },
           {
             "type": "command",

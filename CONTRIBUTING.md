@@ -44,38 +44,13 @@ The Nix flake provides:
 | tmux | Terminal multiplexer |
 | just | Command runner |
 | nixfmt | Nix formatter |
-| lefthook | Git hooks manager |
 
-## Git Hooks
+## Code Quality
 
-Git hooks are managed by [lefthook](https://github.com/evilmartians/lefthook) and installed automatically when entering the dev shell.
+Since this project uses jj (not git), traditional git hooks don't apply. Code quality is enforced by:
 
-### Pre-commit
-
-Runs on every commit:
-- **gleam-format**: Checks Gleam code formatting
-- **nix-format**: Checks Nix code formatting
-
-### Pre-push
-
-Runs before pushing:
-- **gleam-test**: Runs test suite
-- **gleam-build**: Verifies build succeeds
-
-### Manual Hook Installation
-
-If hooks aren't installed automatically:
-```bash
-lefthook install
-```
-
-### Bypassing Hooks
-
-In rare cases where you need to skip hooks:
-```bash
-jj commit --no-verify -m "message"  # Skip pre-commit
-jj git push --no-verify             # Skip pre-push
-```
+1. **Claude Code hooks** - Auto-format files after Edit/Write operations
+2. **CI checks** - GitHub Actions validates formatting on push
 
 ## Development Workflow
 
