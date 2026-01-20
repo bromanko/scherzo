@@ -5,7 +5,6 @@
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
 import gleam/string
 import scherzo/core/task.{
   type Task, type TaskStatus, Assigned, Blocked, Completed, Failed, InProgress,

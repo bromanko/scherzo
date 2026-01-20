@@ -31,7 +31,7 @@ pub fn query_returns_tickets_test() {
   result |> should.be_ok
   let assert Ok(tickets) = result
   // Should have at least some tickets in the project
-  { list.length(tickets) > 0 } |> should.be_true
+  { tickets != [] } |> should.be_true
 }
 
 pub fn ready_returns_ids_test() {

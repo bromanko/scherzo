@@ -99,14 +99,45 @@ This project uses a CLI ticket system for task management. Run `tk help` when yo
 
 ### Compiler Warnings
 
-**Always fix compiler warnings.** Do not leave warnings in the codebase. This includes:
+**Always fix compiler warnings.** Do not leave warnings in the codebase. Run `gleam build` and verify zero warnings before committing.
 
-- Unused variables (remove or use them)
-- Unused imports (remove them)
-- Unused parameters (remove from signature or use them)
-- Deprecation warnings (update to non-deprecated APIs)
+Common warnings and fixes:
 
-If you encounter an unused parameter that seems intentional (e.g., for interface conformance), add a comment explaining why it exists.
+| Warning | Fix |
+|---------|-----|
+| Unused import | Remove the import line |
+| Unused imported item (`{None, Some}`) | Remove from import or use module prefix instead |
+| Unused imported type | Remove from import braces |
+| Unused variable | Prefix with `_` or remove |
+| Unreachable pattern | Remove the pattern (see below) |
+| Inefficient `list.length` for empty check | Use `list != []` instead of `list.length(list) > 0` |
+
+**Unreachable patterns in tests:** When you create a specific value and match on it, other patterns are unreachable:
+
+```gleam
+// BAD - compiler knows result is always RunSuccess
+let result = RunSuccess(output: "done", change_id: "abc")
+case result {
+  RunSuccess(output, _) -> output |> should.equal("done")
+  _ -> should.fail()  // Warning: unreachable
+}
+
+// GOOD - use let pattern instead
+let result = RunSuccess(output: "done", change_id: "abc")
+let RunSuccess(output, _) = result
+output |> should.equal("done")
+```
+
+**Import only what you use:** Prefer importing the module and using qualified names over importing specific constructors you might not use:
+
+```gleam
+// Preferred - clear and no unused import warnings
+import gleam/option
+option.Some(value)
+
+// Only import constructors if used frequently
+import gleam/option.{None, Some}
+```
 
 ### Adding a New Language
 

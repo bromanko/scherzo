@@ -83,24 +83,16 @@ pub fn run_success_contains_output_test() {
   let result =
     RunSuccess(output: "Task completed successfully", change_id: "abc")
 
-  case result {
-    RunSuccess(output, change_id) -> {
-      output |> should.equal("Task completed successfully")
-      change_id |> should.equal("abc")
-    }
-    _ -> should.fail()
-  }
+  let RunSuccess(output, change_id) = result
+  output |> should.equal("Task completed successfully")
+  change_id |> should.equal("abc")
 }
 
 pub fn run_failed_contains_reason_test() {
   let result = RunFailed(reason: "Command execution failed")
 
-  case result {
-    RunFailed(reason) -> {
-      reason |> should.equal("Command execution failed")
-    }
-    _ -> should.fail()
-  }
+  let RunFailed(reason) = result
+  reason |> should.equal("Command execution failed")
 }
 
 pub fn run_exhausted_contains_continuation_info_test() {
@@ -111,12 +103,8 @@ pub fn run_exhausted_contains_continuation_info_test() {
       change_id: "xyz",
     )
 
-  case result {
-    RunExhausted(continuations, last_output, change_id) -> {
-      continuations |> should.equal(5)
-      last_output |> should.equal("partial work")
-      change_id |> should.equal("xyz")
-    }
-    _ -> should.fail()
-  }
+  let RunExhausted(continuations, last_output, change_id) = result
+  continuations |> should.equal(5)
+  last_output |> should.equal("partial work")
+  change_id |> should.equal("xyz")
 }

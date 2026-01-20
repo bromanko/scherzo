@@ -3,11 +3,10 @@
 /// Provides the startup sequence for the scherzo tmux UI,
 /// initializing all actors and running the control REPL.
 import gleam/io
-import gleam/result
 import scherzo/state/store
 import scherzo/ui/commands
 import scherzo/ui/repl
-import scherzo/ui/session_manager.{type SessionManager}
+import scherzo/ui/session_manager
 
 /// Configuration for the UI runner
 pub type RunnerConfig {

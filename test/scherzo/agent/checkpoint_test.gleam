@@ -2,8 +2,8 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 import scherzo/agent/checkpoint.{
-  type Checkpoint, type CheckpointConfig, Added, Checkpoint, CheckpointConfig,
-  Deleted, FileChange, Final, Incremental, Modified, PreCompact,
+  type Checkpoint, Added, Checkpoint, CheckpointConfig, Deleted, FileChange,
+  Final, Incremental, Modified, PreCompact,
 }
 import scherzo/core/event
 import simplifile
