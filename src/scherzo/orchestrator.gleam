@@ -7,7 +7,7 @@ import scherzo/agent/driver.{type AgentResult}
 import scherzo/agent/drivers/claude
 import scherzo/agent/handoff
 import scherzo/core/task.{type Task, Completed, Failed, InProgress}
-import scherzo/core/types.{AgentConfig, Claude}
+import scherzo/core/types.{AgentConfig, Claude, default_timeout_ms}
 import scherzo/task/source.{type TaskSource}
 import scherzo/vcs/jj
 import shellout
@@ -92,6 +92,7 @@ fn run_task_with_continuation(
           provider: Claude,
           working_dir: config.working_dir,
           max_retries: config.max_retries,
+          timeout_ms: default_timeout_ms,
         )
 
       // Create the claude driver

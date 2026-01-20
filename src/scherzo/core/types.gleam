@@ -28,5 +28,10 @@ pub type AgentConfig {
     provider: AgentProvider,
     working_dir: String,
     max_retries: Int,
+    /// Command execution timeout in milliseconds (0 = no timeout, default: 30 minutes)
+    timeout_ms: Int,
   )
 }
+
+/// Default timeout: 30 minutes in milliseconds
+pub const default_timeout_ms = 1_800_000

@@ -36,6 +36,7 @@ pub fn build_command_uses_driver_function_test() {
       provider: Claude,
       working_dir: "/tmp",
       max_retries: 1,
+      timeout_ms: 60_000,
     )
 
   let command = driver.build_command(drv, t, config)

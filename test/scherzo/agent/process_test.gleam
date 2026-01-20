@@ -8,7 +8,7 @@ import scherzo/core/task.{type Task, Normal, Pending, Task}
 import scherzo/core/types.{type AgentConfig, AgentConfig, Claude}
 
 fn make_test_config() -> AgentConfig {
-  AgentConfig(id: "agent-1", provider: Claude, working_dir: ".", max_retries: 3)
+  AgentConfig(id: "agent-1", provider: Claude, working_dir: ".", max_retries: 3, timeout_ms: 60_000)
 }
 
 fn make_mock_driver() -> Driver {

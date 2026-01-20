@@ -131,7 +131,7 @@ fn handle_start(
         )
 
       // Run the agent (this blocks!)
-      let agent_result = run_command(command, state.driver)
+      let agent_result = run_command(command, state.driver, state.config.timeout_ms)
 
       // Update jj change with result in the workspace
       let _ = update_change_on_completion(ws.path, task, agent_result)
@@ -152,14 +152,21 @@ fn handle_start(
   }
 }
 
-/// Run a command and get the result
-fn run_command(command: Command, drv: Driver) -> AgentResult {
-  // Build options including environment variables if any
-  let opts = case command.env {
-    [] -> []
-    env_vars -> [shellout.SetEnvironment(env_vars)]
+/// Run a command and get the result, with optional timeout
+fn run_command(command: Command, drv: Driver, timeout_ms: Int) -> AgentResult {
+  // If timeout is 0 or negative, run without timeout
+  case timeout_ms <= 0 {
+    True -> run_command_sync(command, drv, command.env)
+    False -> run_command_with_timeout(command, drv, command.env, timeout_ms)
   }
+}
 
+/// Run command synchronously without timeout
+fn run_command_sync(command: Command, drv: Driver, env_vars: List(#(String, String))) -> AgentResult {
+  let opts = case env_vars {
+    [] -> []
+    vars -> [shellout.SetEnvironment(vars)]
+  }
   case
     shellout.command(
       run: command.executable,
@@ -172,6 +179,52 @@ fn run_command(command: Command, drv: Driver) -> AgentResult {
     Error(#(exit_code, output)) -> driver.detect_result(drv, output, exit_code)
   }
 }
+
+/// Run command with timeout using Erlang spawn
+fn run_command_with_timeout(
+  command: Command,
+  drv: Driver,
+  env_vars: List(#(String, String)),
+  timeout_ms: Int,
+) -> AgentResult {
+  // Create a subject to receive the result
+  let result_subject: Subject(AgentResult) = process.new_subject()
+
+  // Spawn a process to run the command using Erlang FFI
+  let _pid = erlang_spawn(fn() {
+    let opts = case env_vars {
+      [] -> []
+      vars -> [shellout.SetEnvironment(vars)]
+    }
+    let result = case
+      shellout.command(
+        run: command.executable,
+        with: command.args,
+        in: command.working_dir,
+        opt: opts,
+      )
+    {
+      Ok(output) -> driver.detect_result(drv, output, 0)
+      Error(#(exit_code, output)) -> driver.detect_result(drv, output, exit_code)
+    }
+    process.send(result_subject, result)
+  })
+
+  // Wait for result with timeout
+  case process.receive(result_subject, timeout_ms) {
+    Ok(result) -> result
+    Error(Nil) -> {
+      // Timeout occurred - the spawned process will continue but we ignore it
+      // Note: The subprocess may still be running, but it's unlinked so won't
+      // affect the parent. Proper cleanup would require OS-level process kill.
+      driver.Interrupted
+    }
+  }
+}
+
+/// Spawn an Erlang process (not linked)
+@external(erlang, "erlang", "spawn")
+fn erlang_spawn(func: fn() -> a) -> process.Pid
 
 /// Update the jj change description after completion
 fn update_change_on_completion(

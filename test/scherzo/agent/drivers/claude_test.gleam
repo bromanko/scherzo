@@ -20,6 +20,7 @@ pub fn build_command_creates_correct_command_test() {
       provider: Claude,
       working_dir: "/tmp/project",
       max_retries: 3,
+      timeout_ms: 60_000,
     )
 
   let command = driver.build_command(t, config)
