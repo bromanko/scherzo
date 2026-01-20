@@ -39,7 +39,8 @@ pub fn run_result_types_exist_test() {
   // Verify RunResult constructors exist
   let _ = RunSuccess(output: "done", change_id: "abc")
   let _ = RunFailed(reason: "error")
-  let _ = RunExhausted(continuations: 5, last_output: "partial", change_id: "xyz")
+  let _ =
+    RunExhausted(continuations: 5, last_output: "partial", change_id: "xyz")
   should.be_true(True)
 }
 
@@ -79,7 +80,8 @@ pub fn batch_result_type_test() {
 }
 
 pub fn run_success_contains_output_test() {
-  let result = RunSuccess(output: "Task completed successfully", change_id: "abc")
+  let result =
+    RunSuccess(output: "Task completed successfully", change_id: "abc")
 
   case result {
     RunSuccess(output, change_id) -> {
@@ -103,7 +105,11 @@ pub fn run_failed_contains_reason_test() {
 
 pub fn run_exhausted_contains_continuation_info_test() {
   let result =
-    RunExhausted(continuations: 5, last_output: "partial work", change_id: "xyz")
+    RunExhausted(
+      continuations: 5,
+      last_output: "partial work",
+      change_id: "xyz",
+    )
 
   case result {
     RunExhausted(continuations, last_output, change_id) -> {

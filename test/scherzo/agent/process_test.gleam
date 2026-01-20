@@ -8,19 +8,20 @@ import scherzo/core/task.{type Task, Normal, Pending, Task}
 import scherzo/core/types.{type AgentConfig, AgentConfig, Claude}
 
 fn make_test_config() -> AgentConfig {
-  AgentConfig(id: "agent-1", provider: Claude, working_dir: ".", max_retries: 3, timeout_ms: 60_000)
+  AgentConfig(
+    id: "agent-1",
+    provider: Claude,
+    working_dir: ".",
+    max_retries: 3,
+    timeout_ms: 60_000,
+  )
 }
 
 fn make_mock_driver() -> Driver {
   Driver(
     name: "mock",
     build_command: fn(_task, _config) {
-      Command(
-        executable: "echo",
-        args: ["test"],
-        working_dir: ".",
-        env: [],
-      )
+      Command(executable: "echo", args: ["test"], working_dir: ".", env: [])
     },
     parse_output: fn(line) { Output(line) },
     detect_result: fn(output, exit_code) {

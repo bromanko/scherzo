@@ -9,8 +9,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import scherzo/core/event
 import scherzo/agent/workspace
+import scherzo/core/event
 import scherzo/core/types.{type Id, type Timestamp}
 import scherzo/vcs/jj
 import simplifile
@@ -432,7 +432,8 @@ fn parse_status_line(line: String) -> Result(FileChange, Nil) {
           }
           case change_type {
             None -> Error(Nil)
-            Some(ct) -> Ok(FileChange(path: path, change_type: ct, summary: None))
+            Some(ct) ->
+              Ok(FileChange(path: path, change_type: ct, summary: None))
           }
         }
       }

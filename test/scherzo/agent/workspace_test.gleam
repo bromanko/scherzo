@@ -114,7 +114,8 @@ pub fn sanitize_id_allows_valid_task_id_test() {
 }
 
 pub fn sanitize_id_allows_underscores_test() {
-  workspace.sanitize_id("task_with_underscores") |> should.equal("task_with_underscores")
+  workspace.sanitize_id("task_with_underscores")
+  |> should.equal("task_with_underscores")
 }
 
 pub fn sanitize_id_allows_mixed_case_test() {

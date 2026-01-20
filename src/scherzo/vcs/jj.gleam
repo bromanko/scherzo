@@ -96,7 +96,10 @@ pub fn workspace_list(repo_dir: String) -> Result(String, String) {
 
 /// Restore a file to its state from the parent commit
 /// This undoes any modifications to the file in the working copy
-pub fn restore_file(working_dir: String, file_path: String) -> Result(Nil, String) {
+pub fn restore_file(
+  working_dir: String,
+  file_path: String,
+) -> Result(Nil, String) {
   run_jj(working_dir, ["restore", "--from", "@-", file_path])
   |> result.map(fn(_) { Nil })
 }

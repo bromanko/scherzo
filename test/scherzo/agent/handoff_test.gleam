@@ -47,7 +47,9 @@ pub fn build_continuation_prompt_includes_header_test() {
 
   let prompt = handoff.build_continuation_prompt(ctx)
 
-  prompt |> string.contains("# Continue Task: Test Task Title") |> should.be_true
+  prompt
+  |> string.contains("# Continue Task: Test Task Title")
+  |> should.be_true
 }
 
 pub fn build_continuation_prompt_includes_task_description_test() {
@@ -114,13 +116,10 @@ pub fn build_continuation_prompt_includes_guidelines_test() {
 
 pub fn build_continuation_prompt_includes_files_when_present_test() {
   let checkpoint =
-    Checkpoint(
-      ..make_test_checkpoint(),
-      files_modified: [
-        FileChange(path: "src/main.gleam", change_type: Modified, summary: None),
-        FileChange(path: "src/new.gleam", change_type: Added, summary: None),
-      ],
-    )
+    Checkpoint(..make_test_checkpoint(), files_modified: [
+      FileChange(path: "src/main.gleam", change_type: Modified, summary: None),
+      FileChange(path: "src/new.gleam", change_type: Added, summary: None),
+    ])
   let ctx =
     HandoffContext(
       task: make_test_task(),
@@ -179,12 +178,9 @@ pub fn build_continuation_prompt_omits_next_steps_when_none_test() {
 
 pub fn build_continuation_prompt_formats_deleted_files_test() {
   let checkpoint =
-    Checkpoint(
-      ..make_test_checkpoint(),
-      files_modified: [
-        FileChange(path: "src/old.gleam", change_type: Deleted, summary: None),
-      ],
-    )
+    Checkpoint(..make_test_checkpoint(), files_modified: [
+      FileChange(path: "src/old.gleam", change_type: Deleted, summary: None),
+    ])
   let ctx =
     HandoffContext(
       task: make_test_task(),
@@ -199,16 +195,13 @@ pub fn build_continuation_prompt_formats_deleted_files_test() {
 
 pub fn build_continuation_prompt_includes_file_summary_test() {
   let checkpoint =
-    Checkpoint(
-      ..make_test_checkpoint(),
-      files_modified: [
-        FileChange(
-          path: "src/main.gleam",
-          change_type: Modified,
-          summary: Some("Added error handling"),
-        ),
-      ],
-    )
+    Checkpoint(..make_test_checkpoint(), files_modified: [
+      FileChange(
+        path: "src/main.gleam",
+        change_type: Modified,
+        summary: Some("Added error handling"),
+      ),
+    ])
   let ctx =
     HandoffContext(
       task: make_test_task(),

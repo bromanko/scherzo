@@ -132,7 +132,8 @@ fn handle_start(
         )
 
       // Run the agent (this blocks!)
-      let agent_result = run_command(command, state.driver, state.config.timeout_ms)
+      let agent_result =
+        run_command(command, state.driver, state.config.timeout_ms)
 
       // Update jj change with result in the workspace
       case update_change_on_completion(ws.path, task, agent_result) {
@@ -172,7 +173,11 @@ fn run_command(command: Command, drv: Driver, timeout_ms: Int) -> AgentResult {
 }
 
 /// Run command synchronously without timeout
-fn run_command_sync(command: Command, drv: Driver, env_vars: List(#(String, String))) -> AgentResult {
+fn run_command_sync(
+  command: Command,
+  drv: Driver,
+  env_vars: List(#(String, String)),
+) -> AgentResult {
   let opts = case env_vars {
     [] -> []
     vars -> [shellout.SetEnvironment(vars)]
@@ -201,24 +206,26 @@ fn run_command_with_timeout(
   let result_subject: Subject(AgentResult) = process.new_subject()
 
   // Spawn a process to run the command using Erlang FFI
-  let _pid = erlang_spawn(fn() {
-    let opts = case env_vars {
-      [] -> []
-      vars -> [shellout.SetEnvironment(vars)]
-    }
-    let result = case
-      shellout.command(
-        run: command.executable,
-        with: command.args,
-        in: command.working_dir,
-        opt: opts,
-      )
-    {
-      Ok(output) -> driver.detect_result(drv, output, 0)
-      Error(#(exit_code, output)) -> driver.detect_result(drv, output, exit_code)
-    }
-    process.send(result_subject, result)
-  })
+  let _pid =
+    erlang_spawn(fn() {
+      let opts = case env_vars {
+        [] -> []
+        vars -> [shellout.SetEnvironment(vars)]
+      }
+      let result = case
+        shellout.command(
+          run: command.executable,
+          with: command.args,
+          in: command.working_dir,
+          opt: opts,
+        )
+      {
+        Ok(output) -> driver.detect_result(drv, output, 0)
+        Error(#(exit_code, output)) ->
+          driver.detect_result(drv, output, exit_code)
+      }
+      process.send(result_subject, result)
+    })
 
   // Wait for result with timeout
   case process.receive(result_subject, timeout_ms) {

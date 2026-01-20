@@ -115,7 +115,9 @@ pub fn encode_includes_work_summary_test() {
   let cp = make_test_checkpoint()
   let json_str = checkpoint.encode(cp)
 
-  json_str |> string.contains("\"work_summary\":\"Did some work\"") |> should.be_true
+  json_str
+  |> string.contains("\"work_summary\":\"Did some work\"")
+  |> should.be_true
 }
 
 pub fn encode_includes_jj_change_id_test() {
@@ -126,10 +128,13 @@ pub fn encode_includes_jj_change_id_test() {
 }
 
 pub fn encode_includes_next_steps_when_some_test() {
-  let cp = Checkpoint(..make_test_checkpoint(), next_steps: Some("Finish tests"))
+  let cp =
+    Checkpoint(..make_test_checkpoint(), next_steps: Some("Finish tests"))
   let json_str = checkpoint.encode(cp)
 
-  json_str |> string.contains("\"next_steps\":\"Finish tests\"") |> should.be_true
+  json_str
+  |> string.contains("\"next_steps\":\"Finish tests\"")
+  |> should.be_true
 }
 
 pub fn encode_includes_next_steps_null_when_none_test() {
@@ -141,17 +146,14 @@ pub fn encode_includes_next_steps_null_when_none_test() {
 
 pub fn encode_includes_files_modified_test() {
   let cp =
-    Checkpoint(
-      ..make_test_checkpoint(),
-      files_modified: [
-        FileChange(path: "src/main.gleam", change_type: Modified, summary: None),
-        FileChange(
-          path: "src/new.gleam",
-          change_type: Added,
-          summary: Some("New file"),
-        ),
-      ],
-    )
+    Checkpoint(..make_test_checkpoint(), files_modified: [
+      FileChange(path: "src/main.gleam", change_type: Modified, summary: None),
+      FileChange(
+        path: "src/new.gleam",
+        change_type: Added,
+        summary: Some("New file"),
+      ),
+    ])
   let json_str = checkpoint.encode(cp)
 
   json_str |> string.contains("\"files_modified\"") |> should.be_true

@@ -141,4 +141,3 @@ fn format_file_changes(files: List(FileChange)) -> String {
   })
   |> string.join("\n")
 }
-

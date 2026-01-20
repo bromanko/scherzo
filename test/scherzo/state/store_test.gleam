@@ -233,7 +233,8 @@ pub fn persist_with_various_task_statuses_test() {
   // Save tasks with different statuses
   let t1 = task.new("status-1", "Pending", "desc")
   let t2 = task.Task(..t1, id: "status-2", status: task.Ready)
-  let t3 = task.Task(..t1, id: "status-3", status: task.InProgress("agent-1", 1000))
+  let t3 =
+    task.Task(..t1, id: "status-3", status: task.InProgress("agent-1", 1000))
   let t4 =
     task.Task(..t1, id: "status-4", status: task.Completed("agent-1", 2000))
   let t5 =

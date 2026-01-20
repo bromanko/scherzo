@@ -126,7 +126,12 @@ fn run_task_with_continuation(
         Ok(ws) -> {
           // Run the agent in the workspace and get result
           let result =
-            run_agent_in_workspace(config, ws, effective_task, continuation_count)
+            run_agent_in_workspace(
+              config,
+              ws,
+              effective_task,
+              continuation_count,
+            )
 
           // Clean up workspace (changes persist in main repo)
           case workspace.destroy(ws) {
@@ -214,11 +219,7 @@ fn run_agent_in_workspace(
           // Context exhausted - need to continue with a new agent
           // The Stop hook should have already saved a checkpoint
           // We return a special marker and let the caller handle continuation
-          run_task_with_continuation(
-            config,
-            task,
-            continuation_count + 1,
-          )
+          run_task_with_continuation(config, task, continuation_count + 1)
         }
 
         driver.Interrupted -> RunFailed("Agent was interrupted")

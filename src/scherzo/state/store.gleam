@@ -12,8 +12,8 @@ import scherzo/core/task.{
   Critical, Failed, High, InProgress, Low, Normal, Pending, Ready, Task,
 }
 import scherzo/core/types.{
-  type AgentConfig, type AgentProvider, type AgentStatus, AgentConfig, Claude,
-  Codex, Gemini, type Id,
+  type AgentConfig, type AgentProvider, type AgentStatus, type Id, AgentConfig,
+  Claude, Codex, Gemini,
 }
 import simplifile
 

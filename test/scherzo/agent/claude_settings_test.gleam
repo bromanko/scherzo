@@ -40,7 +40,8 @@ pub fn generate_autonomous_settings_includes_task_id_in_commands_test() {
   // Task ID should appear in scherzo prime command
   result |> string.contains("scherzo prime my-task-456") |> should.be_true
   // Task ID should appear in scherzo checkpoint command
-  result |> string.contains("scherzo checkpoint --type=final my-task-456")
+  result
+  |> string.contains("scherzo checkpoint --type=final my-task-456")
   |> should.be_true
 }
 
@@ -67,9 +68,11 @@ pub fn generate_autonomous_settings_allows_dashes_test() {
 }
 
 pub fn generate_autonomous_settings_allows_underscores_test() {
-  let result = claude_settings.generate_autonomous_settings("task_with_underscores")
+  let result =
+    claude_settings.generate_autonomous_settings("task_with_underscores")
 
-  result |> string.contains("scherzo prime task_with_underscores")
+  result
+  |> string.contains("scherzo prime task_with_underscores")
   |> should.be_true
 }
 
@@ -100,14 +103,16 @@ pub fn generate_autonomous_settings_contains_command_type_test() {
 // Additional security tests for shell metacharacters
 
 pub fn generate_autonomous_settings_rejects_path_traversal_test() {
-  let result = claude_settings.generate_autonomous_settings("../../../etc/passwd")
+  let result =
+    claude_settings.generate_autonomous_settings("../../../etc/passwd")
 
   result |> string.contains("invalid-task-id") |> should.be_true
   result |> string.contains("../") |> should.be_false
 }
 
 pub fn generate_autonomous_settings_rejects_pipe_test() {
-  let result = claude_settings.generate_autonomous_settings("task|cat /etc/passwd")
+  let result =
+    claude_settings.generate_autonomous_settings("task|cat /etc/passwd")
 
   result |> string.contains("invalid-task-id") |> should.be_true
   result |> string.contains("|") |> should.be_false
