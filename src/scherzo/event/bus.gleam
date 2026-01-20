@@ -10,10 +10,10 @@ import scherzo/core/types.{type Id}
 
 /// Messages the event bus can receive
 pub type Message {
-  /// Subscribe to all events
-  Subscribe(subscriber: Subject(EventEnvelope))
-  /// Unsubscribe from events
-  Unsubscribe(subscriber: Subject(EventEnvelope))
+  /// Subscribe to all events, reply with subscriber ID
+  Subscribe(subscriber: Subject(EventEnvelope), reply_to: Subject(Id))
+  /// Unsubscribe from events using subscriber ID
+  Unsubscribe(subscriber_id: Id)
   /// Publish an event to all subscribers
   Publish(event: EventEnvelope)
   /// Shutdown the event bus
@@ -34,19 +34,21 @@ pub fn start() -> Result(Subject(Message), actor.StartError) {
 }
 
 /// Subscribe to events from the bus
+/// Returns the subscriber ID to use for unsubscribing
 pub fn subscribe(
   bus: Subject(Message),
   subscriber: Subject(EventEnvelope),
-) -> Nil {
-  actor.send(bus, Subscribe(subscriber))
+) -> Id {
+  let reply_subject = process.new_subject()
+  actor.send(bus, Subscribe(subscriber, reply_subject))
+  // Wait for the reply with the subscriber ID
+  let assert Ok(id) = process.receive(reply_subject, 5000)
+  id
 }
 
-/// Unsubscribe from events
-pub fn unsubscribe(
-  bus: Subject(Message),
-  subscriber: Subject(EventEnvelope),
-) -> Nil {
-  actor.send(bus, Unsubscribe(subscriber))
+/// Unsubscribe from events using subscriber ID
+pub fn unsubscribe(bus: Subject(Message), subscriber_id: Id) -> Nil {
+  actor.send(bus, Unsubscribe(subscriber_id))
 }
 
 /// Publish an event to all subscribers
@@ -62,19 +64,20 @@ pub fn stop(bus: Subject(Message)) -> Nil {
 /// Handle incoming messages
 fn handle_message(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
-    Subscribe(subscriber) -> {
+    Subscribe(subscriber, reply_to) -> {
       let id = "sub_" <> int.to_string(state.next_id)
       let new_subscribers = dict.insert(state.subscribers, id, subscriber)
+      // Send back the subscriber ID
+      process.send(reply_to, id)
       actor.continue(State(
         subscribers: new_subscribers,
         next_id: state.next_id + 1,
       ))
     }
 
-    Unsubscribe(subscriber) -> {
-      // Find and remove the subscriber
-      let new_subscribers =
-        dict.filter(state.subscribers, fn(_id, sub) { sub != subscriber })
+    Unsubscribe(subscriber_id) -> {
+      // Remove by ID - reliable lookup
+      let new_subscribers = dict.delete(state.subscribers, subscriber_id)
       actor.continue(State(..state, subscribers: new_subscribers))
     }
 

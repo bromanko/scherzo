@@ -1,6 +1,6 @@
 ---
 id: s-aea8
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-01-20T02:14:55Z

@@ -40,9 +40,9 @@ pub fn unsubscribe_stops_receiving_events_test() {
   // Create a subject to receive events
   let subscriber = process.new_subject()
 
-  // Subscribe then unsubscribe
-  bus.subscribe(event_bus, subscriber)
-  bus.unsubscribe(event_bus, subscriber)
+  // Subscribe then unsubscribe using the returned ID
+  let subscriber_id = bus.subscribe(event_bus, subscriber)
+  bus.unsubscribe(event_bus, subscriber_id)
 
   // Give unsubscribe time to process
   process.sleep(50)
