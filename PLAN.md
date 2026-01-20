@@ -593,15 +593,20 @@ tom = ">= 1.0.0"               # TOML parsing for config
 40. **Milestone: 4 agents in parallel with tmux visibility**
 
 ### Phase 5.5: Completion Gates
-41. Gate types: `pipeline.gleam` with Gate, ReviewPass types
-42. Config parsing: Load `[[completion_gates]]` from `.scherzo/config.toml`
-43. Agent hook injection: Add Stop hook for tests/lint to agent's hook config
-44. Pipeline executor: Run orchestrator gates in sequence after agent signals done
-45. ReviewGate: Spawn review agent with jj diff context, parse PASS/FAIL
-46. Feedback loop: On review failure, feed feedback to task agent, restart pipeline
-47. MultiPassReview: Iterate passes until convergence or max
-48. HumanGate: Block pipeline, notify control pane, wait for approval
-49. **Milestone: Task passes through code review → security review → Rule of Five pipeline**
+
+Parallel code review with synthesis, inspired by gastown's convoy pattern.
+
+41. Gate types: `gates/types.gleam` with ParallelReviewGate, MultiPassReview, HumanGate
+42. Review dimensions: Configurable per-repo, default to 7 (correctness, performance, security, elegance, resilience, style, smells)
+43. Parallel executor: Spawn N review agents concurrently, each sees `jj diff`, produces findings
+44. Synthesis agent: Combine all findings, dedupe, prioritize (P0 Critical / P1 Major / P2 Minor)
+45. Feedback loop: P0/P1 findings → feed back to task agent → fix → re-review (up to max iterations)
+46. MultiPassReview: Sequential refinement (Draft → Correctness → Clarity → Edge Cases → Excellence)
+47. HumanGate: Block pipeline, notify control pane, wait for approval
+48. Embedded formulas: Default review configs (code-review, security-audit, quick-review)
+49. **Milestone: Task passes parallel code review with synthesis before entering merge queue**
+
+See `docs/completion-gates.md` for detailed design.
 
 ### Phase 5.7: Merge Queue
 
@@ -652,8 +657,8 @@ See `docs/merge-queue.md` for detailed design.
 | Agent Continuity | Hook-based checkpointing | Leverage CLI agent hooks (Claude/Codex) for state persistence, enables handoff on context exhaustion |
 | State Storage | jj-backed JSON files | All state in `.scherzo/`, tracked by jj. Crash recovery = reload files. History = `jj log`. Debug = `jj diff`. No database needed. |
 | Handoff Strategy | Continuation prompt | Build context from checkpoint + jj diff, let fresh agent continue naturally |
-| Quality Assurance | Completion gates pipeline | Configurable sequence of tests, reviews, approvals. Simpler than full workflow DSL, covers 80% of cases. |
-| Review Strategy | Separate review agents | Reviewers only see jj diff, can't modify code. Unbiased by task agent's reasoning. Supports Rule of Five pattern. |
+| Quality Assurance | Completion gates pipeline | Parallel code review with synthesis, configurable per-repo. See `docs/completion-gates.md`. |
+| Review Strategy | Parallel review + synthesis | 7 dimensions run concurrently (correctness, performance, security, elegance, resilience, style, smells), then synthesis dedupes and prioritizes (P0/P1/P2). |
 | Merge Strategy | Merge queue with CI gating | Sequential rebase, squash, CI verify, then merge to main. Conflicts spawn resolution agents. See `docs/merge-queue.md`. |
 
 ## Development
