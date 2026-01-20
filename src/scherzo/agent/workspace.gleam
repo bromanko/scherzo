@@ -6,6 +6,7 @@
 /// - Clean separation of concurrent agent work
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/string
 import scherzo/agent/claude_settings
 import scherzo/core/task.{type Task}
@@ -224,9 +225,62 @@ fn parse_task_info(content: String) -> Result(TaskInfo, String) {
 }
 
 /// Sanitize a task ID for use in filesystem paths
-fn sanitize_id(id: Id) -> String {
-  id
-  |> string.replace("/", "-")
-  |> string.replace(" ", "-")
-  |> string.replace(":", "-")
+/// Uses whitelist approach: only alphanumeric, dash, and underscore allowed
+/// Rejects path traversal attempts and absolute paths
+pub fn sanitize_id(id: Id) -> String {
+  // First check for dangerous patterns
+  case is_dangerous_path(id) {
+    True -> "invalid-task-id"
+    False ->
+      id
+      |> string.to_graphemes
+      |> list.map(fn(c) {
+        case is_safe_char(c) {
+          True -> c
+          False -> "-"
+        }
+      })
+      |> string.join("")
+      |> collapse_dashes
+  }
+}
+
+/// Check for dangerous path patterns
+fn is_dangerous_path(path: String) -> Bool {
+  // Reject absolute paths (starts with /)
+  string.starts_with(path, "/")
+  // Reject .. path components
+  || string.contains(path, "..")
+  // Reject . path components that could be used for traversal
+  || path == "."
+  // Reject empty
+  || string.is_empty(path)
+}
+
+/// Check if a character is safe for filesystem paths
+fn is_safe_char(c: String) -> Bool {
+  case c {
+    // Lowercase letters
+    "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m"
+    | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y"
+    | "z" -> True
+    // Uppercase letters
+    "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
+    | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y"
+    | "Z" -> True
+    // Numbers
+    "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" -> True
+    // Safe punctuation
+    "-" | "_" -> True
+    // Everything else is unsafe
+    _ -> False
+  }
+}
+
+/// Collapse multiple consecutive dashes into a single dash
+fn collapse_dashes(s: String) -> String {
+  case string.contains(s, "--") {
+    True -> collapse_dashes(string.replace(s, "--", "-"))
+    False -> s
+  }
 }

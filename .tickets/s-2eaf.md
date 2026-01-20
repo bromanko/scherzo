@@ -1,6 +1,6 @@
 ---
 id: s-2eaf
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-01-20T03:11:51Z
