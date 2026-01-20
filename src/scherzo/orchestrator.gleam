@@ -7,7 +7,9 @@ import scherzo/agent/checkpoint
 import scherzo/agent/driver.{type AgentResult}
 import scherzo/agent/drivers/claude
 import scherzo/agent/handoff
-import scherzo/core/task.{type Task, Completed, Failed, InProgress}
+import scherzo/core/task.{
+  type Task, Completed, Failed, InProgress, new as new_task,
+}
 import scherzo/core/types.{AgentConfig, Claude, default_timeout_ms}
 import scherzo/task/source.{type TaskSource}
 import scherzo/vcs/jj
@@ -63,16 +65,16 @@ pub fn run_task(
 ) -> RunResult {
   // Create the task
   let task_id = generate_task_id()
-  let t = task.new(task_id, title, description)
+  let created_task = new_task(task_id, title, description)
 
   // Start with continuation count 0
-  run_task_with_continuation(config, t, 0)
+  run_task_with_continuation(config, created_task, 0)
 }
 
 /// Internal function that handles task execution with continuation support
 fn run_task_with_continuation(
   config: OrchestratorConfig,
-  t: Task,
+  task: Task,
   continuation_count: Int,
 ) -> RunResult {
   // Check if we've exceeded max continuations
@@ -83,13 +85,13 @@ fn run_task_with_continuation(
         "Task exceeded maximum continuations ("
           <> int.to_string(config.max_continuations)
           <> ")",
-        t.id,
+        task.id,
       )
 
     False -> {
       // Create agent config
       let agent_id =
-        "agent-" <> t.id <> "-" <> int.to_string(continuation_count)
+        "agent-" <> task.id <> "-" <> int.to_string(continuation_count)
       let agent_config =
         AgentConfig(
           id: agent_id,
@@ -104,23 +106,27 @@ fn run_task_with_continuation(
 
       // Build the task description (with continuation context if needed)
       let effective_task = case continuation_count {
-        0 -> t
+        0 -> task
         _ -> {
           // Load checkpoint and build continuation prompt
           let checkpoint_config = checkpoint.default_config(config.working_dir)
           case
             handoff.load_handoff_context(
               checkpoint_config,
-              t,
+              task,
               continuation_count,
             )
           {
-            Error(_) -> t
+            Error(_) -> task
             // No checkpoint, use original task
             Ok(ctx) -> {
               // Build continuation prompt and create new task with it
               let continuation_prompt = handoff.build_continuation_prompt(ctx)
-              task.new(t.id, t.title <> " (continuation)", continuation_prompt)
+              new_task(
+                task.id,
+                task.title <> " (continuation)",
+                continuation_prompt,
+              )
             }
           }
         }
@@ -128,7 +134,11 @@ fn run_task_with_continuation(
 
       // Create a new jj change for this task (only on first run)
       let change_result = case continuation_count {
-        0 -> jj.new_change(config.working_dir, "WIP: " <> sanitize_title(t.title))
+        0 ->
+          jj.new_change(
+            config.working_dir,
+            "WIP: " <> sanitize_title(task.title),
+          )
         _ -> jj.get_current_change(config.working_dir)
       }
 
@@ -143,11 +153,16 @@ fn run_task_with_continuation(
           let agent_result = run_command(command, drv)
 
           // Update jj change with result
-          case update_change_on_completion(config.working_dir, t, agent_result) {
+          case
+            update_change_on_completion(config.working_dir, task, agent_result)
+          {
             Ok(_) -> Nil
             Error(err) ->
               io.println(
-                "Warning: Failed to update jj change for task " <> t.id <> ": " <> err,
+                "Warning: Failed to update jj change for task "
+                <> task.id
+                <> ": "
+                <> err,
               )
           }
 
@@ -159,7 +174,7 @@ fn run_task_with_continuation(
             driver.ContextExhausted(_output) -> {
               // Context exhausted - attempt handoff to a new agent
               // The Stop hook should have already saved a checkpoint
-              run_task_with_continuation(config, t, continuation_count + 1)
+              run_task_with_continuation(config, task, continuation_count + 1)
             }
 
             driver.Interrupted -> RunFailed("Agent was interrupted")
@@ -188,24 +203,30 @@ fn run_command(command: driver.Command, drv: driver.Driver) -> AgentResult {
 /// Update the jj change description after completion
 fn update_change_on_completion(
   working_dir: String,
-  t: task.Task,
+  task: Task,
   result: AgentResult,
 ) -> Result(Nil, String) {
-  let safe_title = sanitize_title(t.title)
+  let safe_title = sanitize_title(task.title)
   let description = case result {
     driver.Success(_output) ->
-      safe_title <> "\n\nCompleted successfully.\n\nTask: " <> t.id
+      safe_title <> "\n\nCompleted successfully.\n\nTask: " <> task.id
 
     driver.Failure(reason, _) ->
-      "FAILED: " <> safe_title <> "\n\nError: " <> reason <> "\n\nTask: " <> t.id
+      "FAILED: "
+      <> safe_title
+      <> "\n\nError: "
+      <> reason
+      <> "\n\nTask: "
+      <> task.id
 
     driver.ContextExhausted(_) ->
       "WIP: "
       <> safe_title
       <> " (context exhausted, needs continuation)\n\nTask: "
-      <> t.id
+      <> task.id
 
-    driver.Interrupted -> "INTERRUPTED: " <> safe_title <> "\n\nTask: " <> t.id
+    driver.Interrupted ->
+      "INTERRUPTED: " <> safe_title <> "\n\nTask: " <> task.id
   }
 
   jj.describe(working_dir, description)
@@ -255,7 +276,7 @@ pub fn run_from_source(
       // Run tasks sequentially, collecting results
       let results =
         tasks_to_run
-        |> list.map(fn(t) { run_source_task(config, task_source, t) })
+        |> list.map(fn(task) { run_source_task(config, task_source, task) })
 
       // Separate completed and failed
       let completed =
@@ -289,36 +310,36 @@ pub fn run_from_source(
 fn run_source_task(
   config: OrchestratorConfig,
   task_source: TaskSource,
-  t: Task,
+  task: Task,
 ) -> TaskResult {
   // Mark task as in progress
-  case source.update_status(task_source, t.id, InProgress("", 0)) {
+  case source.update_status(task_source, task.id, InProgress("", 0)) {
     Ok(_) -> Nil
     Error(err) ->
       io.println(
-        "Warning: Failed to mark task " <> t.id <> " as in_progress: " <> err,
+        "Warning: Failed to mark task " <> task.id <> " as in_progress: " <> err,
       )
   }
-  io.println("Starting task: " <> t.title <> " (" <> t.id <> ")")
+  io.println("Starting task: " <> task.title <> " (" <> task.id <> ")")
 
   // Run the task
-  let result = run_existing_task(config, t)
+  let result = run_existing_task(config, task)
 
   // Update status based on result
   let status_result = case result {
     RunSuccess(_, _) -> {
-      io.println("Completed: " <> t.title)
-      source.update_status(task_source, t.id, Completed("", 0))
+      io.println("Completed: " <> task.title)
+      source.update_status(task_source, task.id, Completed("", 0))
     }
     RunFailed(reason) -> {
-      io.println("Failed: " <> t.title <> " - " <> reason)
-      source.update_status(task_source, t.id, Failed("", reason, 0))
+      io.println("Failed: " <> task.title <> " - " <> reason)
+      source.update_status(task_source, task.id, Failed("", reason, 0))
     }
     RunExhausted(_, _, _) -> {
-      io.println("Exhausted: " <> t.title)
+      io.println("Exhausted: " <> task.title)
       source.update_status(
         task_source,
-        t.id,
+        task.id,
         Failed("", "Exceeded max continuations", 0),
       )
     }
@@ -327,14 +348,14 @@ fn run_source_task(
     Ok(_) -> Nil
     Error(err) ->
       io.println(
-        "Warning: Failed to update status for task " <> t.id <> ": " <> err,
+        "Warning: Failed to update status for task " <> task.id <> ": " <> err,
       )
   }
 
-  TaskResult(task_id: t.id, title: t.title, result: result)
+  TaskResult(task_id: task.id, title: task.title, result: result)
 }
 
 /// Run an existing Task object (used by run_from_source)
-pub fn run_existing_task(config: OrchestratorConfig, t: Task) -> RunResult {
-  run_task_with_continuation(config, t, 0)
+pub fn run_existing_task(config: OrchestratorConfig, task: Task) -> RunResult {
+  run_task_with_continuation(config, task, 0)
 }
