@@ -1,11 +1,20 @@
 /// State store actor with in-memory cache and JSON file persistence
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
-import gleam/option.{type Option}
+import gleam/json
+import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import scherzo/core/task.{type Task}
-import scherzo/core/types.{type AgentConfig, type AgentStatus, type Id}
+import scherzo/core/task.{
+  type Priority, type Task, type TaskStatus, Assigned, Blocked, Completed,
+  Critical, Failed, High, InProgress, Low, Normal, Pending, Ready, Task,
+}
+import scherzo/core/types.{
+  type AgentConfig, type AgentProvider, type AgentStatus, AgentConfig, Claude,
+  Codex, Gemini, type Id,
+}
 import simplifile
 
 /// Messages the state store can receive
@@ -179,11 +188,28 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
 /// Persist state to JSON files
 fn persist_state(state: State) -> Result(Nil, simplifile.FileError) {
   // Ensure directory exists
-  let _ = simplifile.create_directory_all(state.state_dir)
+  use _ <- result.try(simplifile.create_directory_all(state.state_dir))
 
-  // For now, just ensure the directory structure exists
-  // Full JSON serialization will be implemented with proper encoders
-  Ok(Nil)
+  // Encode and write tasks
+  let tasks_json =
+    state.tasks
+    |> dict.values
+    |> json.array(encode_task)
+    |> json.to_string
+
+  use _ <- result.try(simplifile.write(
+    state.state_dir <> "/tasks.json",
+    tasks_json,
+  ))
+
+  // Encode and write agents
+  let agents_json =
+    state.agents
+    |> dict.values
+    |> json.array(encode_agent_state)
+    |> json.to_string
+
+  simplifile.write(state.state_dir <> "/agents.json", agents_json)
 }
 
 /// Load state from JSON files
@@ -191,9 +217,278 @@ fn load_state(state_dir: String) -> Result(State, simplifile.FileError) {
   // Check if directory exists
   case simplifile.is_directory(state_dir) {
     Ok(True) -> {
-      // For now, return empty state - full deserialization will be implemented
-      Ok(State(tasks: dict.new(), agents: dict.new(), state_dir: state_dir))
+      // Load tasks
+      let tasks = case simplifile.read(state_dir <> "/tasks.json") {
+        Error(_) -> dict.new()
+        Ok(content) ->
+          case decode_tasks(content) {
+            Error(_) -> dict.new()
+            Ok(task_list) ->
+              task_list
+              |> list.map(fn(t) { #(t.id, t) })
+              |> dict.from_list
+          }
+      }
+
+      // Load agents
+      let agents = case simplifile.read(state_dir <> "/agents.json") {
+        Error(_) -> dict.new()
+        Ok(content) ->
+          case decode_agents(content) {
+            Error(_) -> dict.new()
+            Ok(agent_list) ->
+              agent_list
+              |> list.map(fn(a) { #(a.config.id, a) })
+              |> dict.from_list
+          }
+      }
+
+      Ok(State(tasks: tasks, agents: agents, state_dir: state_dir))
     }
     _ -> Error(simplifile.Enoent)
+  }
+}
+
+// -- JSON Encoding --
+
+fn encode_task(t: Task) -> json.Json {
+  json.object([
+    #("id", json.string(t.id)),
+    #("title", json.string(t.title)),
+    #("description", json.string(t.description)),
+    #("status", encode_task_status(t.status)),
+    #("priority", encode_priority(t.priority)),
+    #("dependencies", json.array(t.dependencies, json.string)),
+    #("created_at", json.int(t.created_at)),
+    #("updated_at", json.int(t.updated_at)),
+    #("source_id", encode_option(t.source_id, json.string)),
+    #("jj_change_id", encode_option(t.jj_change_id, json.string)),
+  ])
+}
+
+fn encode_task_status(s: TaskStatus) -> json.Json {
+  case s {
+    Pending -> json.object([#("type", json.string("pending"))])
+    Ready -> json.object([#("type", json.string("ready"))])
+    Assigned(agent_id) ->
+      json.object([
+        #("type", json.string("assigned")),
+        #("agent_id", json.string(agent_id)),
+      ])
+    InProgress(agent_id, started_at) ->
+      json.object([
+        #("type", json.string("in_progress")),
+        #("agent_id", json.string(agent_id)),
+        #("started_at", json.int(started_at)),
+      ])
+    Completed(agent_id, completed_at) ->
+      json.object([
+        #("type", json.string("completed")),
+        #("agent_id", json.string(agent_id)),
+        #("completed_at", json.int(completed_at)),
+      ])
+    Failed(agent_id, reason, failed_at) ->
+      json.object([
+        #("type", json.string("failed")),
+        #("agent_id", json.string(agent_id)),
+        #("reason", json.string(reason)),
+        #("failed_at", json.int(failed_at)),
+      ])
+    Blocked(reason) ->
+      json.object([
+        #("type", json.string("blocked")),
+        #("reason", json.string(reason)),
+      ])
+  }
+}
+
+fn encode_priority(p: Priority) -> json.Json {
+  case p {
+    Low -> json.string("low")
+    Normal -> json.string("normal")
+    High -> json.string("high")
+    Critical -> json.string("critical")
+  }
+}
+
+fn encode_agent_state(a: AgentState) -> json.Json {
+  json.object([
+    #("config", encode_agent_config(a.config)),
+    #("status", encode_agent_status(a.status)),
+  ])
+}
+
+fn encode_agent_config(c: AgentConfig) -> json.Json {
+  json.object([
+    #("id", json.string(c.id)),
+    #("provider", encode_provider(c.provider)),
+    #("working_dir", json.string(c.working_dir)),
+    #("max_retries", json.int(c.max_retries)),
+  ])
+}
+
+fn encode_provider(p: AgentProvider) -> json.Json {
+  case p {
+    Claude -> json.string("claude")
+    Codex -> json.string("codex")
+    Gemini -> json.string("gemini")
+  }
+}
+
+fn encode_agent_status(s: AgentStatus) -> json.Json {
+  case s {
+    types.Idle -> json.object([#("type", json.string("idle"))])
+    types.Running(task_id, started_at) ->
+      json.object([
+        #("type", json.string("running")),
+        #("task_id", json.string(task_id)),
+        #("started_at", json.int(started_at)),
+      ])
+    types.Failed(reason) ->
+      json.object([
+        #("type", json.string("failed")),
+        #("reason", json.string(reason)),
+      ])
+  }
+}
+
+fn encode_option(opt: Option(a), encoder: fn(a) -> json.Json) -> json.Json {
+  case opt {
+    None -> json.null()
+    Some(value) -> encoder(value)
+  }
+}
+
+// -- JSON Decoding --
+
+fn decode_tasks(content: String) -> Result(List(Task), Nil) {
+  case json.parse(content, decode.list(decode_task())) {
+    Error(_) -> Error(Nil)
+    Ok(tasks) -> Ok(tasks)
+  }
+}
+
+fn decode_task() -> decode.Decoder(Task) {
+  use id <- decode.field("id", decode.string)
+  use title <- decode.field("title", decode.string)
+  use description <- decode.field("description", decode.string)
+  use status <- decode.field("status", decode_task_status())
+  use priority <- decode.field("priority", decode_priority())
+  use dependencies <- decode.field("dependencies", decode.list(decode.string))
+  use created_at <- decode.field("created_at", decode.int)
+  use updated_at <- decode.field("updated_at", decode.int)
+  use source_id <- decode.field("source_id", decode.optional(decode.string))
+  use jj_change_id <- decode.field(
+    "jj_change_id",
+    decode.optional(decode.string),
+  )
+  decode.success(Task(
+    id: id,
+    title: title,
+    description: description,
+    status: status,
+    priority: priority,
+    dependencies: dependencies,
+    created_at: created_at,
+    updated_at: updated_at,
+    source_id: source_id,
+    jj_change_id: jj_change_id,
+  ))
+}
+
+fn decode_task_status() -> decode.Decoder(TaskStatus) {
+  use status_type <- decode.field("type", decode.string)
+  case status_type {
+    "pending" -> decode.success(Pending)
+    "ready" -> decode.success(Ready)
+    "assigned" -> {
+      use agent_id <- decode.field("agent_id", decode.string)
+      decode.success(Assigned(agent_id))
+    }
+    "in_progress" -> {
+      use agent_id <- decode.field("agent_id", decode.string)
+      use started_at <- decode.field("started_at", decode.int)
+      decode.success(InProgress(agent_id, started_at))
+    }
+    "completed" -> {
+      use agent_id <- decode.field("agent_id", decode.string)
+      use completed_at <- decode.field("completed_at", decode.int)
+      decode.success(Completed(agent_id, completed_at))
+    }
+    "failed" -> {
+      use agent_id <- decode.field("agent_id", decode.string)
+      use reason <- decode.field("reason", decode.string)
+      use failed_at <- decode.field("failed_at", decode.int)
+      decode.success(Failed(agent_id, reason, failed_at))
+    }
+    "blocked" -> {
+      use reason <- decode.field("reason", decode.string)
+      decode.success(Blocked(reason))
+    }
+    _ -> decode.failure(Pending, "TaskStatus")
+  }
+}
+
+fn decode_priority() -> decode.Decoder(Priority) {
+  use s <- decode.then(decode.string)
+  case s {
+    "low" -> decode.success(Low)
+    "normal" -> decode.success(Normal)
+    "high" -> decode.success(High)
+    "critical" -> decode.success(Critical)
+    _ -> decode.failure(Normal, "Priority")
+  }
+}
+
+fn decode_agents(content: String) -> Result(List(AgentState), Nil) {
+  case json.parse(content, decode.list(decode_agent_state())) {
+    Error(_) -> Error(Nil)
+    Ok(agents) -> Ok(agents)
+  }
+}
+
+fn decode_agent_state() -> decode.Decoder(AgentState) {
+  use config <- decode.field("config", decode_agent_config())
+  use status <- decode.field("status", decode_agent_status())
+  decode.success(AgentState(config: config, status: status))
+}
+
+fn decode_agent_config() -> decode.Decoder(AgentConfig) {
+  use id <- decode.field("id", decode.string)
+  use provider <- decode.field("provider", decode_provider())
+  use working_dir <- decode.field("working_dir", decode.string)
+  use max_retries <- decode.field("max_retries", decode.int)
+  decode.success(AgentConfig(
+    id: id,
+    provider: provider,
+    working_dir: working_dir,
+    max_retries: max_retries,
+  ))
+}
+
+fn decode_provider() -> decode.Decoder(AgentProvider) {
+  use s <- decode.then(decode.string)
+  case s {
+    "claude" -> decode.success(Claude)
+    "codex" -> decode.success(Codex)
+    "gemini" -> decode.success(Gemini)
+    _ -> decode.failure(Claude, "AgentProvider")
+  }
+}
+
+fn decode_agent_status() -> decode.Decoder(AgentStatus) {
+  use status_type <- decode.field("type", decode.string)
+  case status_type {
+    "idle" -> decode.success(types.Idle)
+    "running" -> {
+      use task_id <- decode.field("task_id", decode.string)
+      use started_at <- decode.field("started_at", decode.int)
+      decode.success(types.Running(task_id, started_at))
+    }
+    "failed" -> {
+      use reason <- decode.field("reason", decode.string)
+      decode.success(types.Failed(reason))
+    }
+    _ -> decode.failure(types.Idle, "AgentStatus")
   }
 }
