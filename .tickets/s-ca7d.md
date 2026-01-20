@@ -1,6 +1,6 @@
 ---
 id: s-ca7d
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-01-20T02:30:30Z
