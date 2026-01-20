@@ -7,6 +7,7 @@ import scherzo/agent/checkpoint
 import scherzo/agent/driver.{type AgentResult}
 import scherzo/agent/drivers/claude
 import scherzo/agent/handoff
+import scherzo/agent/workspace.{type Workspace}
 import scherzo/core/task.{
   type Task, Completed, Failed, InProgress, new as new_task,
 }
@@ -89,21 +90,6 @@ fn run_task_with_continuation(
       )
 
     False -> {
-      // Create agent config
-      let agent_id =
-        "agent-" <> task.id <> "-" <> int.to_string(continuation_count)
-      let agent_config =
-        AgentConfig(
-          id: agent_id,
-          provider: Claude,
-          working_dir: config.working_dir,
-          max_retries: config.max_retries,
-          timeout_ms: default_timeout_ms,
-        )
-
-      // Create the claude driver
-      let drv = claude.new()
-
       // Build the task description (with continuation context if needed)
       let effective_task = case continuation_count {
         0 -> task
@@ -132,54 +118,110 @@ fn run_task_with_continuation(
         }
       }
 
-      // Create a new jj change for this task (only on first run)
-      let change_result = case continuation_count {
-        0 ->
-          jj.new_change(
-            config.working_dir,
-            "WIP: " <> sanitize_title(task.title),
-          )
-        _ -> jj.get_current_change(config.working_dir)
-      }
+      // Create isolated workspace for this agent
+      let workspace_config = workspace.default_config(config.working_dir)
+      case workspace.create(workspace_config, effective_task) {
+        Error(err) -> RunFailed("Failed to create workspace: " <> err)
 
-      case change_result {
-        Error(err) -> RunFailed("Failed to create/get jj change: " <> err)
+        Ok(ws) -> {
+          // Run the agent in the workspace and get result
+          let result =
+            run_agent_in_workspace(config, ws, effective_task, continuation_count)
 
-        Ok(change_id) -> {
-          // Build the command
-          let command = driver.build_command(drv, effective_task, agent_config)
-
-          // Run the agent synchronously
-          let agent_result = run_command(command, drv)
-
-          // Update jj change with result
-          case
-            update_change_on_completion(config.working_dir, task, agent_result)
-          {
+          // Clean up workspace (changes persist in main repo)
+          case workspace.destroy(ws) {
             Ok(_) -> Nil
             Error(err) ->
               io.println(
-                "Warning: Failed to update jj change for task "
+                "Warning: Failed to clean up workspace for task "
                 <> task.id
                 <> ": "
                 <> err,
               )
           }
 
-          case agent_result {
-            driver.Success(output) -> RunSuccess(output, change_id)
-
-            driver.Failure(reason, _) -> RunFailed(reason)
-
-            driver.ContextExhausted(_output) -> {
-              // Context exhausted - attempt handoff to a new agent
-              // The Stop hook should have already saved a checkpoint
-              run_task_with_continuation(config, task, continuation_count + 1)
-            }
-
-            driver.Interrupted -> RunFailed("Agent was interrupted")
+          // Handle continuation if needed
+          case result {
+            RunSuccess(_, _) -> result
+            RunFailed(_) -> result
+            RunExhausted(_, _, _) -> result
+            // This case shouldn't happen from run_agent_in_workspace,
+            // but handle it for completeness - context exhausted needs continuation
           }
         }
+      }
+    }
+  }
+}
+
+/// Run an agent in an isolated workspace
+fn run_agent_in_workspace(
+  config: OrchestratorConfig,
+  ws: Workspace,
+  task: Task,
+  continuation_count: Int,
+) -> RunResult {
+  // Create agent config pointing to workspace directory
+  let agent_id = "agent-" <> task.id <> "-" <> int.to_string(continuation_count)
+  let agent_config =
+    AgentConfig(
+      id: agent_id,
+      provider: Claude,
+      working_dir: ws.path,
+      max_retries: config.max_retries,
+      timeout_ms: default_timeout_ms,
+    )
+
+  // Create the claude driver
+  let drv = claude.new()
+
+  // Get the change ID from the workspace (workspace.create already made a change)
+  case jj.get_current_change(ws.path) {
+    Error(err) -> RunFailed("Failed to get workspace change ID: " <> err)
+
+    Ok(change_id) -> {
+      // Update jj change description with task info
+      case jj.describe(ws.path, "WIP: " <> sanitize_title(task.title)) {
+        Error(err) ->
+          io.println("Warning: Failed to set initial description: " <> err)
+        Ok(_) -> Nil
+      }
+
+      // Build the command
+      let command = driver.build_command(drv, task, agent_config)
+
+      // Run the agent synchronously
+      let agent_result = run_command(command, drv)
+
+      // Update jj change with result
+      case update_change_on_completion(ws.path, task, agent_result) {
+        Ok(_) -> Nil
+        Error(err) ->
+          io.println(
+            "Warning: Failed to update jj change for task "
+            <> task.id
+            <> ": "
+            <> err,
+          )
+      }
+
+      case agent_result {
+        driver.Success(output) -> RunSuccess(output, change_id)
+
+        driver.Failure(reason, _) -> RunFailed(reason)
+
+        driver.ContextExhausted(_output) -> {
+          // Context exhausted - need to continue with a new agent
+          // The Stop hook should have already saved a checkpoint
+          // We return a special marker and let the caller handle continuation
+          run_task_with_continuation(
+            config,
+            task,
+            continuation_count + 1,
+          )
+        }
+
+        driver.Interrupted -> RunFailed("Agent was interrupted")
       }
     }
   }
