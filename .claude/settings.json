@@ -30,5 +30,8 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "gleam@claude-code-lsps": true
   }
 }
