@@ -4,7 +4,6 @@ import gleam/io
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import gleam/string
 import scherzo/agent/driver.{type AgentResult, type Command, type Driver}
 import scherzo/agent/workspace.{type Workspace}
 import scherzo/core/task.{type Task}
@@ -136,7 +135,7 @@ fn handle_start(
         run_command(command, state.driver, state.config.timeout_ms)
 
       // Update jj change with result in the workspace
-      case update_change_on_completion(ws.path, task, agent_result) {
+      case jj.describe_task_completion(ws.path, task, agent_result) {
         Ok(_) -> Nil
         Error(err) ->
           io.println(
@@ -206,7 +205,7 @@ fn run_command_with_timeout(
   let result_subject: Subject(AgentResult) = process.new_subject()
 
   // Spawn a process to run the command using Erlang FFI
-  let _pid =
+  let pid =
     erlang_spawn(fn() {
       let opts = case env_vars {
         [] -> []
@@ -231,9 +230,9 @@ fn run_command_with_timeout(
   case process.receive(result_subject, timeout_ms) {
     Ok(result) -> result
     Error(Nil) -> {
-      // Timeout occurred - the spawned process will continue but we ignore it
-      // Note: The subprocess may still be running, but it's unlinked so won't
-      // affect the parent. Proper cleanup would require OS-level process kill.
+      // Timeout occurred - kill the spawned Erlang process
+      // This closes the port, sending SIGHUP to the subprocess
+      erlang_exit_kill(pid)
       driver.Interrupted
     }
   }
@@ -243,47 +242,7 @@ fn run_command_with_timeout(
 @external(erlang, "erlang", "spawn")
 fn erlang_spawn(func: fn() -> a) -> process.Pid
 
-/// Update the jj change description after completion
-fn update_change_on_completion(
-  working_dir: String,
-  task: Task,
-  result: AgentResult,
-) -> Result(Nil, String) {
-  let description = case result {
-    driver.Success(_output) ->
-      string.concat([
-        task.title,
-        "\n\n",
-        "Completed successfully.\n\n",
-        "Task: ",
-        task.id,
-      ])
-
-    driver.Failure(reason, _) ->
-      string.concat([
-        "FAILED: ",
-        task.title,
-        "\n\n",
-        "Error: ",
-        reason,
-        "\n\n",
-        "Task: ",
-        task.id,
-      ])
-
-    driver.ContextExhausted(_) ->
-      string.concat([
-        "WIP: ",
-        task.title,
-        " (context exhausted, needs continuation)",
-        "\n\n",
-        "Task: ",
-        task.id,
-      ])
-
-    driver.Interrupted ->
-      string.concat(["INTERRUPTED: ", task.title, "\n\n", "Task: ", task.id])
-  }
-
-  jj.describe(working_dir, description)
-}
+/// Kill an Erlang process with exit reason 'kill' (cannot be trapped)
+/// This will also close any ports owned by the process
+@external(erlang, "scherzo_process_ffi", "exit_kill")
+fn erlang_exit_kill(pid: process.Pid) -> Bool

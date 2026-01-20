@@ -2,22 +2,18 @@
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/string
 import scherzo/agent/checkpoint
 import scherzo/agent/driver.{type AgentResult}
 import scherzo/agent/drivers/claude
 import scherzo/agent/handoff
 import scherzo/agent/workspace.{type Workspace}
+import scherzo/core/shell
 import scherzo/core/task.{
   type Task, Completed, Failed, InProgress, new as new_task,
 }
 import scherzo/core/types.{AgentConfig, Claude, default_timeout_ms}
 import scherzo/task/source.{type TaskSource}
 import scherzo/vcs/jj
-import shellout
-
-/// Maximum length for task titles in jj descriptions
-const max_title_length = 200
 
 /// Configuration for the orchestrator
 pub type OrchestratorConfig {
@@ -186,7 +182,7 @@ fn run_agent_in_workspace(
 
     Ok(change_id) -> {
       // Update jj change description with task info
-      case jj.describe(ws.path, "WIP: " <> sanitize_title(task.title)) {
+      case jj.describe(ws.path, "WIP: " <> jj.sanitize_title(task.title)) {
         Error(err) ->
           io.println("Warning: Failed to set initial description: " <> err)
         Ok(_) -> Nil
@@ -195,11 +191,11 @@ fn run_agent_in_workspace(
       // Build the command
       let command = driver.build_command(drv, task, agent_config)
 
-      // Run the agent synchronously
-      let agent_result = run_command(command, drv)
+      // Run the agent synchronously (with 30 minute timeout)
+      let agent_result = run_command(command, drv, agent_config.timeout_ms)
 
       // Update jj change with result
-      case update_change_on_completion(ws.path, task, agent_result) {
+      case jj.describe_task_completion(ws.path, task, agent_result) {
         Ok(_) -> Nil
         Error(err) ->
           io.println(
@@ -228,64 +224,25 @@ fn run_agent_in_workspace(
   }
 }
 
-/// Run a command and get the result
-fn run_command(command: driver.Command, drv: driver.Driver) -> AgentResult {
+/// Run a command and get the result (with timeout)
+fn run_command(
+  command: driver.Command,
+  drv: driver.Driver,
+  timeout_ms: Int,
+) -> AgentResult {
   case
-    shellout.command(
-      run: command.executable,
-      with: command.args,
-      in: command.working_dir,
-      opt: [],
+    shell.run_with_timeout(
+      command.executable,
+      command.args,
+      command.working_dir,
+      timeout_ms,
     )
   {
-    Ok(output) -> driver.detect_result(drv, output, 0)
-    Error(#(exit_code, output)) -> driver.detect_result(drv, output, exit_code)
+    shell.Success(output) -> driver.detect_result(drv, output, 0)
+    shell.Failed(exit_code, output) ->
+      driver.detect_result(drv, output, exit_code)
+    shell.TimedOut -> driver.Interrupted
   }
-}
-
-/// Update the jj change description after completion
-fn update_change_on_completion(
-  working_dir: String,
-  task: Task,
-  result: AgentResult,
-) -> Result(Nil, String) {
-  let safe_title = sanitize_title(task.title)
-  let description = case result {
-    driver.Success(_output) ->
-      safe_title <> "\n\nCompleted successfully.\n\nTask: " <> task.id
-
-    driver.Failure(reason, _) ->
-      "FAILED: "
-      <> safe_title
-      <> "\n\nError: "
-      <> reason
-      <> "\n\nTask: "
-      <> task.id
-
-    driver.ContextExhausted(_) ->
-      "WIP: "
-      <> safe_title
-      <> " (context exhausted, needs continuation)\n\nTask: "
-      <> task.id
-
-    driver.Interrupted ->
-      "INTERRUPTED: " <> safe_title <> "\n\nTask: " <> task.id
-  }
-
-  jj.describe(working_dir, description)
-}
-
-/// Sanitize a task title for safe use in jj descriptions
-/// - Replaces newlines and carriage returns with spaces
-/// - Truncates to max_title_length characters
-/// - Trims leading/trailing whitespace
-fn sanitize_title(title: String) -> String {
-  title
-  |> string.replace("\n", " ")
-  |> string.replace("\r", " ")
-  |> string.replace("\t", " ")
-  |> string.trim
-  |> string.slice(0, max_title_length)
 }
 
 /// Generate a simple task ID

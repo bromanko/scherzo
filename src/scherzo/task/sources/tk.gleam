@@ -1,7 +1,7 @@
 /// tk CLI wrapper - interfaces with the ticket system CLI
 ///
 /// Provides low-level access to tk commands for ticket management.
-/// Note: Shell injection is not possible because shellout.command()
+/// Note: Shell injection is not possible because shell.run_with_timeout()
 /// passes arguments as a list, not through shell interpolation.
 import gleam/dynamic/decode
 import gleam/json
@@ -9,7 +9,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import scherzo/agent/workspace
-import shellout
+import scherzo/core/shell
 
 /// Maximum length for note content
 const max_note_length = 10_000
@@ -99,12 +99,10 @@ pub fn show(id: String) -> Result(String, String) {
   run_tk(["show", safe_id])
 }
 
-/// Run a tk command and return output
+/// Run a tk command and return output (with 30s timeout)
 fn run_tk(args: List(String)) -> Result(String, String) {
-  case shellout.command(run: "tk", with: args, in: ".", opt: []) {
-    Ok(output) -> Ok(output)
-    Error(#(_, err_output)) -> Error("tk error: " <> err_output)
-  }
+  shell.run_with_timeout("tk", args, ".", shell.tk_timeout_ms)
+  |> shell.to_result("tk")
 }
 
 /// Parse the JSONL output from tk query

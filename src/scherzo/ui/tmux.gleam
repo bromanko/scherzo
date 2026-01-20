@@ -6,7 +6,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import shellout
+import scherzo/core/shell
 
 /// Default session name for scherzo
 pub const default_session_name = "scherzo"
@@ -287,16 +287,13 @@ fn parse_pane_info(line: String) -> Result(PaneInfo, Nil) {
   }
 }
 
-/// Run a tmux command and return the output
+/// Run a tmux command and return the output (with 10s timeout)
 fn run_tmux(args: List(String)) -> Result(String, TmuxError) {
-  case shellout.command(run: "tmux", with: args, in: ".", opt: []) {
-    Ok(output) -> Ok(output)
-    Error(#(code, err_output)) -> {
-      case code {
-        127 -> Error(TmuxNotAvailable)
-        _ -> Error(CommandFailed(err_output))
-      }
-    }
+  case shell.run_with_timeout("tmux", args, ".", shell.tmux_timeout_ms) {
+    shell.Success(output) -> Ok(output)
+    shell.Failed(127, _) -> Error(TmuxNotAvailable)
+    shell.Failed(_, err_output) -> Error(CommandFailed(err_output))
+    shell.TimedOut -> Error(CommandFailed("tmux command timed out"))
   }
 }
 

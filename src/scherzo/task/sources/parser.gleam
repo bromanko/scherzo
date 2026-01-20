@@ -32,6 +32,9 @@ const min_priority = 0
 /// Maximum valid priority
 const max_priority = 4
 
+/// Default priority when not specified or invalid (Normal priority)
+const default_priority = 2
+
 /// Parsed ticket from a markdown file
 pub type ParsedTicket {
   ParsedTicket(
@@ -70,7 +73,10 @@ pub fn parse_content(content: String) -> Result(ParsedTicket, String) {
             title: truncate_string(title, max_title_length),
             description: truncate_string(description, max_description_length),
             status: option.unwrap(metadata.status, "open"),
-            priority: clamp_priority(option.unwrap(metadata.priority, 2)),
+            priority: clamp_priority(option.unwrap(
+              metadata.priority,
+              default_priority,
+            )),
             deps: list.take(metadata.deps, max_deps),
             tags: list.take(metadata.tags, max_tags),
           ))
@@ -131,8 +137,8 @@ fn parse_frontmatter(frontmatter: String) -> FrontmatterData {
         case key {
           "id" -> FrontmatterData(..acc, id: Some(workspace.sanitize_id(value)))
           "status" -> FrontmatterData(..acc, status: Some(value))
-          // Priority must be a valid integer; keep existing value on parse failure
-          // This enables lenient parsing of ticket files with invalid priority values
+          // Priority must be a valid integer; keep existing value on parse failure.
+          // If no valid priority is found, default_priority (2) is used at line 78.
           "priority" ->
             FrontmatterData(
               ..acc,

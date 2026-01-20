@@ -5,7 +5,7 @@
 import gleam/list
 import gleam/result
 import gleam/string
-import shellout
+import scherzo/core/shell
 import simplifile
 
 /// Default directory for pipes
@@ -77,10 +77,11 @@ pub fn create_pipe(
   // Remove existing pipe if present
   let _ = simplifile.delete(path)
 
-  // Create named pipe using mkfifo
-  case shellout.command(run: "mkfifo", with: [path], in: ".", opt: []) {
-    Ok(_) -> Ok(path)
-    Error(#(_, err)) -> Error(CreateError("mkfifo failed: " <> err))
+  // Create named pipe using mkfifo (with 5s timeout)
+  case shell.run_with_timeout("mkfifo", [path], ".", shell.util_timeout_ms) {
+    shell.Success(_) -> Ok(path)
+    shell.Failed(_, err) -> Error(CreateError("mkfifo failed: " <> err))
+    shell.TimedOut -> Error(CreateError("mkfifo timed out"))
   }
 }
 
@@ -103,10 +104,12 @@ pub fn remove_pipe(
 /// Note: Uses file_info instead of is_file because FIFOs are special files
 pub fn pipe_exists(config: PipeConfig, agent_id: String) -> Bool {
   let path = pipe_path(config, agent_id)
-  // Use test -p to check for named pipe (FIFO)
-  case shellout.command(run: "test", with: ["-p", path], in: ".", opt: []) {
-    Ok(_) -> True
-    Error(_) -> False
+  // Use test -p to check for named pipe (FIFO) with 5s timeout
+  case
+    shell.run_with_timeout("test", ["-p", path], ".", shell.util_timeout_ms)
+  {
+    shell.Success(_) -> True
+    _ -> False
   }
 }
 
@@ -170,17 +173,18 @@ pub fn write_to_pipe(
     False -> Error(PipeNotFound(agent_id))
     True -> {
       // Use shell echo with output redirection to avoid blocking
-      // The timeout ensures we don't hang forever if no reader
+      // The timeout ensures we don't hang forever if no reader (5s timeout)
       case
-        shellout.command(
-          run: "sh",
-          with: ["-c", "echo '" <> escape_for_shell(message) <> "' > " <> path],
-          in: ".",
-          opt: [],
+        shell.run_with_timeout(
+          "sh",
+          ["-c", "echo '" <> escape_for_shell(message) <> "' > " <> path],
+          ".",
+          shell.util_timeout_ms,
         )
       {
-        Ok(_) -> Ok(Nil)
-        Error(#(_, err)) -> Error(WriteError(err))
+        shell.Success(_) -> Ok(Nil)
+        shell.Failed(_, err) -> Error(WriteError(err))
+        shell.TimedOut -> Error(WriteError("write to pipe timed out"))
       }
     }
   }
