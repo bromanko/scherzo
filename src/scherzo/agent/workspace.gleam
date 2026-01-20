@@ -106,7 +106,12 @@ pub fn create(config: WorkspaceConfig, task: Task) -> Result(Workspace, String) 
 
 /// Destroy a workspace (forget from jj and delete files)
 pub fn destroy(workspace: Workspace) -> Result(Nil, String) {
-  // First, forget the workspace from jj
+  // First, restore the .claude/settings.json to its original state
+  // This removes our hook injection from the commit history
+  // Note: This may fail if the file didn't exist originally, which is fine
+  let _ = jj.restore_file(workspace.path, ".claude/settings.json")
+
+  // Forget the workspace from jj
   case jj.workspace_forget(workspace.repo_dir, workspace.workspace_name) {
     Error(err) -> Error("Failed to forget workspace: " <> err)
     Ok(_) -> {

@@ -94,6 +94,13 @@ pub fn workspace_list(repo_dir: String) -> Result(String, String) {
   run_jj(repo_dir, ["workspace", "list"])
 }
 
+/// Restore a file to its state from the parent commit
+/// This undoes any modifications to the file in the working copy
+pub fn restore_file(working_dir: String, file_path: String) -> Result(Nil, String) {
+  run_jj(working_dir, ["restore", "--from", "@-", file_path])
+  |> result.map(fn(_) { Nil })
+}
+
 /// Run a jj command and return the output
 fn run_jj(working_dir: String, args: List(String)) -> Result(String, String) {
   case shellout.command(run: "jj", with: args, in: working_dir, opt: []) {
