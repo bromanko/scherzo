@@ -10,6 +10,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/core/event
+import scherzo/agent/workspace
 import scherzo/core/types.{type Id, type Timestamp}
 import scherzo/vcs/jj
 import simplifile
@@ -130,7 +131,8 @@ pub fn save(
   config: CheckpointConfig,
   checkpoint: Checkpoint,
 ) -> Result(Nil, String) {
-  let task_dir = config.checkpoints_dir <> "/" <> checkpoint.task_id
+  let task_dir =
+    config.checkpoints_dir <> "/" <> workspace.sanitize_id(checkpoint.task_id)
 
   // Ensure directory exists
   case simplifile.create_directory_all(task_dir) {
@@ -177,7 +179,7 @@ pub fn load_latest(
   config: CheckpointConfig,
   task_id: Id,
 ) -> Result(Checkpoint, String) {
-  let task_dir = config.checkpoints_dir <> "/" <> task_id
+  let task_dir = config.checkpoints_dir <> "/" <> workspace.sanitize_id(task_id)
 
   // Check for final checkpoint first
   let final_path = task_dir <> "/final.json"
@@ -222,7 +224,7 @@ pub fn load_all(
   config: CheckpointConfig,
   task_id: Id,
 ) -> Result(List(Checkpoint), String) {
-  let task_dir = config.checkpoints_dir <> "/" <> task_id
+  let task_dir = config.checkpoints_dir <> "/" <> workspace.sanitize_id(task_id)
 
   case simplifile.read_directory(task_dir) {
     Error(err) ->
@@ -443,7 +445,7 @@ fn get_next_sequence(
   config: CheckpointConfig,
   task_id: Id,
 ) -> Result(Int, String) {
-  let task_dir = config.checkpoints_dir <> "/" <> task_id
+  let task_dir = config.checkpoints_dir <> "/" <> workspace.sanitize_id(task_id)
 
   case simplifile.read_directory(task_dir) {
     // No directory yet, start at 1

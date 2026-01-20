@@ -1,6 +1,6 @@
 ---
 id: s-0a1e
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-01-20T03:15:56Z

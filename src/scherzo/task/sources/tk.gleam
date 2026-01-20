@@ -1,12 +1,18 @@
 /// tk CLI wrapper - interfaces with the ticket system CLI
 ///
 /// Provides low-level access to tk commands for ticket management.
+/// Note: Shell injection is not possible because shellout.command()
+/// passes arguments as a list, not through shell interpolation.
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
+import scherzo/agent/workspace
 import shellout
+
+/// Maximum length for note content
+const max_note_length = 10_000
 
 /// Raw ticket data from tk query (JSON output)
 pub type TicketJson {
@@ -55,32 +61,42 @@ pub fn ready() -> Result(List(String), String) {
 }
 
 /// Start a ticket (set status to in_progress)
+/// ID is sanitized to prevent path traversal or injection
 pub fn start(id: String) -> Result(Nil, String) {
-  case run_tk(["start", id]) {
+  let safe_id = workspace.sanitize_id(id)
+  case run_tk(["start", safe_id]) {
     Error(err) -> Error(err)
     Ok(_) -> Ok(Nil)
   }
 }
 
 /// Close a ticket (set status to closed)
+/// ID is sanitized to prevent path traversal or injection
 pub fn close(id: String) -> Result(Nil, String) {
-  case run_tk(["close", id]) {
+  let safe_id = workspace.sanitize_id(id)
+  case run_tk(["close", safe_id]) {
     Error(err) -> Error(err)
     Ok(_) -> Ok(Nil)
   }
 }
 
 /// Add a note to a ticket
+/// ID is sanitized and note is truncated to max_note_length
+/// Note: Shell injection is not possible - shellout uses arg lists
 pub fn add_note(id: String, note: String) -> Result(Nil, String) {
-  case run_tk(["add-note", id, note]) {
+  let safe_id = workspace.sanitize_id(id)
+  let safe_note = string.slice(note, 0, max_note_length)
+  case run_tk(["add-note", safe_id, safe_note]) {
     Error(err) -> Error(err)
     Ok(_) -> Ok(Nil)
   }
 }
 
 /// Get ticket by ID (returns raw show output)
+/// ID is sanitized to prevent path traversal or injection
 pub fn show(id: String) -> Result(String, String) {
-  run_tk(["show", id])
+  let safe_id = workspace.sanitize_id(id)
+  run_tk(["show", safe_id])
 }
 
 /// Run a tk command and return output

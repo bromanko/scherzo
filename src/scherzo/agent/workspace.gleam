@@ -227,21 +227,30 @@ fn parse_task_info(content: String) -> Result(TaskInfo, String) {
 /// Sanitize a task ID for use in filesystem paths
 /// Uses whitelist approach: only alphanumeric, dash, and underscore allowed
 /// Rejects path traversal attempts and absolute paths
+/// Trims leading/trailing dashes that may result from unicode replacement
 pub fn sanitize_id(id: Id) -> String {
   // First check for dangerous patterns
   case is_dangerous_path(id) {
     True -> "invalid-task-id"
-    False ->
-      id
-      |> string.to_graphemes
-      |> list.map(fn(c) {
-        case is_safe_char(c) {
-          True -> c
-          False -> "-"
-        }
-      })
-      |> string.join("")
-      |> collapse_dashes
+    False -> {
+      let sanitized =
+        id
+        |> string.to_graphemes
+        |> list.map(fn(c) {
+          case is_safe_char(c) {
+            True -> c
+            False -> "-"
+          }
+        })
+        |> string.join("")
+        |> collapse_dashes
+        |> trim_dashes
+      // If the result is empty after sanitization, return a placeholder
+      case sanitized {
+        "" -> "invalid-task-id"
+        _ -> sanitized
+      }
+    }
   }
 }
 
@@ -281,6 +290,29 @@ fn is_safe_char(c: String) -> Bool {
 fn collapse_dashes(s: String) -> String {
   case string.contains(s, "--") {
     True -> collapse_dashes(string.replace(s, "--", "-"))
+    False -> s
+  }
+}
+
+/// Trim leading and trailing dashes from a string
+fn trim_dashes(s: String) -> String {
+  s
+  |> trim_start_char("-")
+  |> trim_end_char("-")
+}
+
+/// Recursively trim a character from the start of a string
+fn trim_start_char(s: String, char: String) -> String {
+  case string.starts_with(s, char) {
+    True -> trim_start_char(string.drop_start(s, 1), char)
+    False -> s
+  }
+}
+
+/// Recursively trim a character from the end of a string
+fn trim_end_char(s: String, char: String) -> String {
+  case string.ends_with(s, char) {
+    True -> trim_end_char(string.drop_end(s, 1), char)
     False -> s
   }
 }

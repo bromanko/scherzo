@@ -2,6 +2,7 @@
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/string
 import scherzo/agent/checkpoint
 import scherzo/agent/driver.{type AgentResult}
 import scherzo/agent/drivers/claude
@@ -11,6 +12,9 @@ import scherzo/core/types.{AgentConfig, Claude, default_timeout_ms}
 import scherzo/task/source.{type TaskSource}
 import scherzo/vcs/jj
 import shellout
+
+/// Maximum length for task titles in jj descriptions
+const max_title_length = 200
 
 /// Configuration for the orchestrator
 pub type OrchestratorConfig {
@@ -124,7 +128,7 @@ fn run_task_with_continuation(
 
       // Create a new jj change for this task (only on first run)
       let change_result = case continuation_count {
-        0 -> jj.new_change(config.working_dir, "WIP: " <> t.title)
+        0 -> jj.new_change(config.working_dir, "WIP: " <> sanitize_title(t.title))
         _ -> jj.get_current_change(config.working_dir)
       }
 
@@ -187,23 +191,37 @@ fn update_change_on_completion(
   t: task.Task,
   result: AgentResult,
 ) -> Result(Nil, String) {
+  let safe_title = sanitize_title(t.title)
   let description = case result {
     driver.Success(_output) ->
-      t.title <> "\n\nCompleted successfully.\n\nTask: " <> t.id
+      safe_title <> "\n\nCompleted successfully.\n\nTask: " <> t.id
 
     driver.Failure(reason, _) ->
-      "FAILED: " <> t.title <> "\n\nError: " <> reason <> "\n\nTask: " <> t.id
+      "FAILED: " <> safe_title <> "\n\nError: " <> reason <> "\n\nTask: " <> t.id
 
     driver.ContextExhausted(_) ->
       "WIP: "
-      <> t.title
+      <> safe_title
       <> " (context exhausted, needs continuation)\n\nTask: "
       <> t.id
 
-    driver.Interrupted -> "INTERRUPTED: " <> t.title <> "\n\nTask: " <> t.id
+    driver.Interrupted -> "INTERRUPTED: " <> safe_title <> "\n\nTask: " <> t.id
   }
 
   jj.describe(working_dir, description)
+}
+
+/// Sanitize a task title for safe use in jj descriptions
+/// - Replaces newlines and carriage returns with spaces
+/// - Truncates to max_title_length characters
+/// - Trims leading/trailing whitespace
+fn sanitize_title(title: String) -> String {
+  title
+  |> string.replace("\n", " ")
+  |> string.replace("\r", " ")
+  |> string.replace("\t", " ")
+  |> string.trim
+  |> string.slice(0, max_title_length)
 }
 
 /// Generate a simple task ID

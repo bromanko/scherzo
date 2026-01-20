@@ -96,3 +96,73 @@ pub fn generate_autonomous_settings_contains_command_type_test() {
 
   result |> string.contains("\"type\":\"command\"") |> should.be_true
 }
+
+// Additional security tests for shell metacharacters
+
+pub fn generate_autonomous_settings_rejects_path_traversal_test() {
+  let result = claude_settings.generate_autonomous_settings("../../../etc/passwd")
+
+  result |> string.contains("invalid-task-id") |> should.be_true
+  result |> string.contains("../") |> should.be_false
+}
+
+pub fn generate_autonomous_settings_rejects_pipe_test() {
+  let result = claude_settings.generate_autonomous_settings("task|cat /etc/passwd")
+
+  result |> string.contains("invalid-task-id") |> should.be_true
+  result |> string.contains("|") |> should.be_false
+}
+
+pub fn generate_autonomous_settings_rejects_ampersand_test() {
+  let result = claude_settings.generate_autonomous_settings("task&&rm -rf")
+
+  result |> string.contains("invalid-task-id") |> should.be_true
+  result |> string.contains("&&") |> should.be_false
+}
+
+pub fn generate_autonomous_settings_rejects_redirect_test() {
+  let result = claude_settings.generate_autonomous_settings("task>output.txt")
+
+  result |> string.contains("invalid-task-id") |> should.be_true
+  result |> string.contains(">") |> should.be_false
+}
+
+pub fn generate_autonomous_settings_rejects_parentheses_test() {
+  let result = claude_settings.generate_autonomous_settings("$(whoami)")
+
+  result |> string.contains("invalid-task-id") |> should.be_true
+  result |> string.contains("$(") |> should.be_false
+}
+
+pub fn generate_autonomous_settings_rejects_newline_test() {
+  let result = claude_settings.generate_autonomous_settings("task\nrm -rf /")
+
+  result |> string.contains("invalid-task-id") |> should.be_true
+}
+
+pub fn generate_autonomous_settings_rejects_null_byte_test() {
+  // Null byte could truncate strings in some contexts
+  let result =
+    claude_settings.generate_autonomous_settings("task\u{0000}malicious")
+
+  result |> string.contains("invalid-task-id") |> should.be_true
+}
+
+pub fn generate_autonomous_settings_rejects_quotes_test() {
+  let result = claude_settings.generate_autonomous_settings("task'injection")
+
+  result |> string.contains("invalid-task-id") |> should.be_true
+}
+
+pub fn generate_autonomous_settings_rejects_double_quotes_test() {
+  let result = claude_settings.generate_autonomous_settings("task\"injection")
+
+  result |> string.contains("invalid-task-id") |> should.be_true
+}
+
+pub fn generate_autonomous_settings_handles_empty_string_test() {
+  let result = claude_settings.generate_autonomous_settings("")
+
+  // Empty string should still produce valid JSON
+  result |> string.starts_with("{") |> should.be_true
+}

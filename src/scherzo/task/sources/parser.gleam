@@ -8,7 +8,29 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/agent/workspace
 import simplifile
+
+/// Maximum length for ticket ID
+const max_id_length = 128
+
+/// Maximum length for ticket title
+const max_title_length = 256
+
+/// Maximum length for ticket description
+const max_description_length = 10_000
+
+/// Maximum number of deps allowed
+const max_deps = 50
+
+/// Maximum number of tags allowed
+const max_tags = 50
+
+/// Minimum valid priority
+const min_priority = 0
+
+/// Maximum valid priority
+const max_priority = 4
 
 /// Parsed ticket from a markdown file
 pub type ParsedTicket {
@@ -44,17 +66,29 @@ pub fn parse_content(content: String) -> Result(ParsedTicket, String) {
         None -> Error("Ticket missing required 'id' field")
         Some(id) ->
           Ok(ParsedTicket(
-            id: id,
-            title: title,
-            description: description,
+            id: truncate_string(id, max_id_length),
+            title: truncate_string(title, max_title_length),
+            description: truncate_string(description, max_description_length),
             status: option.unwrap(metadata.status, "open"),
-            priority: option.unwrap(metadata.priority, 2),
-            deps: metadata.deps,
-            tags: metadata.tags,
+            priority: clamp_priority(option.unwrap(metadata.priority, 2)),
+            deps: list.take(metadata.deps, max_deps),
+            tags: list.take(metadata.tags, max_tags),
           ))
       }
     }
   }
+}
+
+/// Truncate a string to max_length characters
+fn truncate_string(s: String, max_length: Int) -> String {
+  string.slice(s, 0, max_length)
+}
+
+/// Clamp priority to valid range [0, 4]
+fn clamp_priority(priority: Int) -> Int {
+  priority
+  |> int.max(min_priority)
+  |> int.min(max_priority)
 }
 
 /// Split content into frontmatter and body
@@ -95,7 +129,7 @@ fn parse_frontmatter(frontmatter: String) -> FrontmatterData {
         let key = string.trim(key)
         let value = string.trim(value)
         case key {
-          "id" -> FrontmatterData(..acc, id: Some(value))
+          "id" -> FrontmatterData(..acc, id: Some(workspace.sanitize_id(value)))
           "status" -> FrontmatterData(..acc, status: Some(value))
           // Priority must be a valid integer; keep existing value on parse failure
           // This enables lenient parsing of ticket files with invalid priority values

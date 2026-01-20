@@ -156,6 +156,21 @@ pub fn sanitize_id_collapses_multiple_dashes_test() {
 }
 
 pub fn sanitize_id_handles_unicode_test() {
-  // Unicode characters should be replaced with dashes
-  workspace.sanitize_id("task-日本語") |> should.equal("task-")
+  // Unicode characters should be replaced with dashes, trailing dashes trimmed
+  workspace.sanitize_id("task-日本語") |> should.equal("task")
+}
+
+pub fn sanitize_id_trims_trailing_dashes_test() {
+  // Trailing dashes should be trimmed
+  workspace.sanitize_id("task---") |> should.equal("task")
+}
+
+pub fn sanitize_id_trims_leading_dashes_test() {
+  // Leading dashes should be trimmed
+  workspace.sanitize_id("---task") |> should.equal("task")
+}
+
+pub fn sanitize_id_returns_invalid_for_all_unicode_test() {
+  // If input is entirely unicode, result would be empty, return placeholder
+  workspace.sanitize_id("日本語") |> should.equal("invalid-task-id")
 }
