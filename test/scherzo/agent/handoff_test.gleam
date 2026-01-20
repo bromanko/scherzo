@@ -217,13 +217,17 @@ pub fn build_continuation_prompt_includes_file_summary_test() {
 }
 
 pub fn should_fail_task_returns_true_when_exceeded_test() {
-  handoff.should_fail_task(5, 5) |> should.be_true
+  // With max_continuations=5, we allow counts 0-5 (6 total runs)
+  // Fail only when count exceeds max (count > max)
   handoff.should_fail_task(6, 5) |> should.be_true
+  handoff.should_fail_task(10, 5) |> should.be_true
 }
 
-pub fn should_fail_task_returns_false_when_under_limit_test() {
+pub fn should_fail_task_returns_false_when_at_or_under_limit_test() {
   handoff.should_fail_task(0, 5) |> should.be_false
   handoff.should_fail_task(4, 5) |> should.be_false
+  // At exactly max_continuations, still allowed (it's the 5th continuation)
+  handoff.should_fail_task(5, 5) |> should.be_false
 }
 
 pub fn to_event_creates_handoff_initiated_event_test() {

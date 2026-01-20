@@ -5,6 +5,7 @@
 /// - Per-agent .claude/settings.json for hook injection
 /// - Clean separation of concurrent agent work
 import gleam/dynamic/decode
+import gleam/io
 import gleam/json
 import gleam/list
 import gleam/string
@@ -84,14 +85,14 @@ pub fn create(config: WorkspaceConfig, task: Task) -> Result(Workspace, String) 
           // Write the .scherzo/task.json with task info
           case write_task_info(workspace, task) {
             Error(err) -> {
-              let _ = destroy(workspace)
+              cleanup_on_error(workspace, "write_task_info")
               Error(err)
             }
             Ok(_) -> {
               // Write the .claude/settings.json with hooks
               case write_claude_settings(workspace, task.id) {
                 Error(err) -> {
-                  let _ = destroy(workspace)
+                  cleanup_on_error(workspace, "write_claude_settings")
                   Error(err)
                 }
                 Ok(_) -> Ok(workspace)
@@ -101,6 +102,20 @@ pub fn create(config: WorkspaceConfig, task: Task) -> Result(Workspace, String) 
         }
       }
     }
+  }
+}
+
+/// Clean up workspace on error, logging any cleanup failures
+fn cleanup_on_error(workspace: Workspace, context: String) -> Nil {
+  case destroy(workspace) {
+    Ok(_) -> Nil
+    Error(cleanup_err) ->
+      io.println(
+        "Warning: Failed to cleanup workspace after "
+        <> context
+        <> " error: "
+        <> cleanup_err,
+      )
   }
 }
 

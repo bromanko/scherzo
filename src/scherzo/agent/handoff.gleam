@@ -105,8 +105,10 @@ pub fn load_handoff_context(
 }
 
 /// Check if a task has exceeded max continuations
+/// With max_continuations=5, we allow up to 5 continuations (counts 1-5),
+/// plus the original run (count 0), for 6 total runs. Fails at count > 5.
 pub fn should_fail_task(continuation_count: Int, max_continuations: Int) -> Bool {
-  continuation_count >= max_continuations
+  continuation_count > max_continuations
 }
 
 /// Create a HandoffInitiated event

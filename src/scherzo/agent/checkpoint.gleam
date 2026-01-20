@@ -300,10 +300,10 @@ fn decode_checkpoint(content: String) -> Result(Checkpoint, String) {
     ))
   }
 
-  case json.parse(content, decoder) {
-    Error(_) -> Error("Failed to parse checkpoint JSON")
-    Ok(checkpoint) -> Ok(checkpoint)
-  }
+  json.parse(content, decoder)
+  |> result.map_error(fn(e) {
+    "Failed to parse checkpoint JSON: " <> string.inspect(e)
+  })
 }
 
 /// Encode checkpoint type to JSON

@@ -64,3 +64,44 @@ pub fn status_fails_for_non_repo_test() {
 
   result |> should.be_error
 }
+
+// extract_workspace_name tests
+
+pub fn extract_workspace_name_normal_path_test() {
+  jj.extract_workspace_name("/foo/bar/task-123")
+  |> should.be_ok
+  |> should.equal("task-123")
+}
+
+pub fn extract_workspace_name_no_slashes_test() {
+  jj.extract_workspace_name("task-123")
+  |> should.be_ok
+  |> should.equal("task-123")
+}
+
+pub fn extract_workspace_name_trailing_slash_test() {
+  jj.extract_workspace_name("/foo/bar/")
+  |> should.be_ok
+  |> should.equal("bar")
+}
+
+pub fn extract_workspace_name_multiple_trailing_slashes_test() {
+  jj.extract_workspace_name("/foo/bar///")
+  |> should.be_ok
+  |> should.equal("bar")
+}
+
+pub fn extract_workspace_name_empty_path_fails_test() {
+  jj.extract_workspace_name("")
+  |> should.be_error
+}
+
+pub fn extract_workspace_name_root_only_fails_test() {
+  jj.extract_workspace_name("/")
+  |> should.be_error
+}
+
+pub fn extract_workspace_name_multiple_slashes_only_fails_test() {
+  jj.extract_workspace_name("///")
+  |> should.be_error
+}

@@ -34,16 +34,18 @@ pub fn start() -> Result(Subject(Message), actor.StartError) {
 }
 
 /// Subscribe to events from the bus
-/// Returns the subscriber ID to use for unsubscribing
+/// Returns the subscriber ID to use for unsubscribing, or an error on timeout
 pub fn subscribe(
   bus: Subject(Message),
   subscriber: Subject(EventEnvelope),
-) -> Id {
+) -> Result(Id, String) {
   let reply_subject = process.new_subject()
   actor.send(bus, Subscribe(subscriber, reply_subject))
   // Wait for the reply with the subscriber ID
-  let assert Ok(id) = process.receive(reply_subject, 5000)
-  id
+  process.receive(reply_subject, 5000)
+  |> result.map_error(fn(_) {
+    "Subscription timed out waiting for event bus response"
+  })
 }
 
 /// Unsubscribe from events using subscriber ID

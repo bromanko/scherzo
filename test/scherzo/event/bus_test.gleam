@@ -16,7 +16,7 @@ pub fn subscribe_and_publish_delivers_event_test() {
   let subscriber = process.new_subject()
 
   // Subscribe to the bus
-  bus.subscribe(event_bus, subscriber)
+  let assert Ok(_) = bus.subscribe(event_bus, subscriber)
 
   // Create and publish an event
   let event = TaskCreated("task-1", "Test Task", 1000)
@@ -41,7 +41,7 @@ pub fn unsubscribe_stops_receiving_events_test() {
   let subscriber = process.new_subject()
 
   // Subscribe then unsubscribe using the returned ID
-  let subscriber_id = bus.subscribe(event_bus, subscriber)
+  let assert Ok(subscriber_id) = bus.subscribe(event_bus, subscriber)
   bus.unsubscribe(event_bus, subscriber_id)
 
   // Give unsubscribe time to process
@@ -67,8 +67,8 @@ pub fn multiple_subscribers_receive_events_test() {
   let subscriber1 = process.new_subject()
   let subscriber2 = process.new_subject()
 
-  bus.subscribe(event_bus, subscriber1)
-  bus.subscribe(event_bus, subscriber2)
+  let assert Ok(_) = bus.subscribe(event_bus, subscriber1)
+  let assert Ok(_) = bus.subscribe(event_bus, subscriber2)
 
   // Publish an event
   let event = TaskCreated("task-1", "Test Task", 1000)
