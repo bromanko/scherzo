@@ -45,7 +45,9 @@
       "Bash(tk create:*)",
       "Bash(tk start:*)",
       "Bash(tk query:*)",
-      "Bash(tk show:*)"
+      "Bash(tk show:*)",
+      "Bash(tk close:*)",
+      "Bash(tk ready)"
     ],
     "deny": [],
     "ask": []

@@ -1,6 +1,6 @@
 ---
 id: s-8a9b
-status: open
+status: in_progress
 deps: [s-8abf]
 links: []
 created: 2026-01-19T23:31:12Z
