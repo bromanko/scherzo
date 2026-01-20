@@ -603,19 +603,34 @@ tom = ">= 1.0.0"               # TOML parsing for config
 48. HumanGate: Block pipeline, notify control pane, wait for approval
 49. **Milestone: Task passes through code review → security review → Rule of Five pipeline**
 
+### Phase 5.7: Merge Queue
+
+After completion gates pass, task changes enter a merge queue for integration into main.
+
+50. jj extensions: `jj.gleam` with rebase, conflict detection, squash, bookmark operations
+51. Merge types: `merge/types.gleam` with MergeStatus, MergeRequest, MergeQueueConfig
+52. Merge events: Extend `event.gleam` with merge queue events
+53. CI runner: `merge/ci.gleam` for pre-merge verification
+54. MergeQueue actor: `merge/queue.gleam` - sequential processing with rebase, CI, merge
+55. Conflict resolution: `merge/resolution.gleam` - spawn agents for conflict resolution
+56. Orchestrator integration: Wire merge queue into task completion flow
+57. **Milestone: Completed tasks rebase, pass CI, squash, and merge to main automatically**
+
+See `docs/merge-queue.md` for detailed design.
+
 ### Phase 6: Resilience & Recovery
-50. State persistence: Add JSON file persistence to state store (`.scherzo/state/`)
-51. State recovery: Load state from `.scherzo/state/*.json` on startup
-52. Crash detection: Compare in-memory state vs jj working copy on restart
-53. Retry logic: Exponential backoff for failures
-54. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
-55. Handoff metrics: Track continuation count per task, detect infinite loops
-56. Supervision tree: Wire everything together
+58. State persistence: Add JSON file persistence to state store (`.scherzo/state/`)
+59. State recovery: Load state from `.scherzo/state/*.json` on startup
+60. Crash detection: Compare in-memory state vs jj working copy on restart
+61. Retry logic: Exponential backoff for failures
+62. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
+63. Handoff metrics: Track continuation count per task, detect infinite loops
+64. Supervision tree: Wire everything together
 
 ### Phase 7: Distribution
-57. Additional drivers: Codex, Gemini (with provider-specific hooks)
-58. Burrito build: Single binary for macOS/Linux
-59. Polish: Better status display, colors, keybindings
+65. Additional drivers: Codex, Gemini (with provider-specific hooks)
+66. Burrito build: Single binary for macOS/Linux
+67. Polish: Better status display, colors, keybindings
 
 ## Failure Handling
 
@@ -639,6 +654,7 @@ tom = ">= 1.0.0"               # TOML parsing for config
 | Handoff Strategy | Continuation prompt | Build context from checkpoint + jj diff, let fresh agent continue naturally |
 | Quality Assurance | Completion gates pipeline | Configurable sequence of tests, reviews, approvals. Simpler than full workflow DSL, covers 80% of cases. |
 | Review Strategy | Separate review agents | Reviewers only see jj diff, can't modify code. Unbiased by task agent's reasoning. Supports Rule of Five pattern. |
+| Merge Strategy | Merge queue with CI gating | Sequential rebase, squash, CI verify, then merge to main. Conflicts spawn resolution agents. See `docs/merge-queue.md`. |
 
 ## Development
 
