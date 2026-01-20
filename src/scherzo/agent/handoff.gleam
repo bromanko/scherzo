@@ -2,6 +2,7 @@
 ///
 /// When an agent exhausts its context, this module builds the continuation
 /// prompt that allows a fresh agent to pick up where the previous one left off.
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -55,7 +56,7 @@ pub fn build_continuation_prompt(ctx: HandoffContext) -> String {
     <> cp.jj_change_id
     <> "\n"
     <> "- Continuation #"
-    <> int_to_string(ctx.continuation_count)
+    <> int.to_string(ctx.continuation_count)
     <> "\n"
     <> "- Review previous changes: `jj diff -r "
     <> cp.jj_change_id
@@ -141,22 +142,3 @@ fn format_file_changes(files: List(FileChange)) -> String {
   |> string.join("\n")
 }
 
-/// Simple int to string conversion
-fn int_to_string(n: Int) -> String {
-  case n {
-    0 -> "0"
-    1 -> "1"
-    2 -> "2"
-    3 -> "3"
-    4 -> "4"
-    5 -> "5"
-    6 -> "6"
-    7 -> "7"
-    8 -> "8"
-    9 -> "9"
-    _ -> {
-      let digit = n % 10
-      int_to_string(n / 10) <> int_to_string(digit)
-    }
-  }
-}
