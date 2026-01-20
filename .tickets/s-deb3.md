@@ -1,6 +1,6 @@
 ---
 id: s-deb3
-status: open
+status: closed
 deps: [s-2449]
 links: []
 created: 2026-01-20T04:54:40Z

@@ -1,6 +1,6 @@
 ---
 id: s-d42f
-status: open
+status: closed
 deps: [s-368c]
 links: []
 created: 2026-01-20T04:54:35Z
