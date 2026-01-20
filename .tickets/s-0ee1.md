@@ -1,6 +1,6 @@
 ---
 id: s-0ee1
-status: open
+status: in_progress
 deps: [s-af50, s-8a9b, s-bc4d]
 links: []
 created: 2026-01-20T02:02:17Z

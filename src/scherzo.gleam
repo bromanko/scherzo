@@ -9,6 +9,7 @@ import glint
 import scherzo/agent/checkpoint
 import scherzo/agent/workspace
 import scherzo/orchestrator
+import scherzo/task/sources/ticket
 import simplifile
 
 pub fn main() {
@@ -38,97 +39,134 @@ fn workdir_flag() {
   |> glint.flag_help("Working directory for the agent")
 }
 
+/// Flag for running from tickets
+fn from_tickets_flag() {
+  glint.bool_flag("from-tickets")
+  |> glint.flag_default(False)
+  |> glint.flag_help("Process tasks from .tickets/ directory")
+}
+
+/// Flag for max tasks to process
+fn max_tasks_flag() {
+  glint.int_flag("max-tasks")
+  |> glint.flag_default(0)
+  |> glint.flag_help("Maximum tasks to process (0 = unlimited)")
+}
+
 fn run_command() -> glint.Command(Nil) {
   use <- glint.command_help(
-    "Run a task with an AI agent. Usage: scherzo run \"task title\" \"task description\"",
+    "Run tasks. Usage: scherzo run \"title\" \"desc\" OR scherzo run --from-tickets",
   )
   use workdir_getter <- glint.flag(workdir_flag())
+  use from_tickets_getter <- glint.flag(from_tickets_flag())
+  use max_tasks_getter <- glint.flag(max_tasks_flag())
   use _, args, flags <- glint.command()
 
-  // Get the working directory from flags
+  // Get flags
   let working_dir =
     workdir_getter(flags)
     |> result.unwrap(".")
     |> resolve_path()
 
-  // Parse arguments
-  case args {
-    [title, description] -> {
-      io.println("Running task: " <> title)
-      io.println("Working directory: " <> working_dir)
-      io.println("")
+  let from_tickets = from_tickets_getter(flags) |> result.unwrap(False)
+  let max_tasks = max_tasks_getter(flags) |> result.unwrap(0)
 
-      let config = orchestrator.default_config(working_dir)
-
-      case orchestrator.run_task(config, title, description) {
-        orchestrator.RunSuccess(output, change_id) -> {
-          io.println("Task completed successfully!")
-          io.println("Change ID: " <> change_id)
+  // Check if running from tickets
+  case from_tickets {
+    True -> run_from_tickets(working_dir, max_tasks)
+    False -> {
+      // Parse arguments for single task
+      case args {
+        [title, description] -> run_single_task(working_dir, title, description)
+        [title] -> run_single_task(working_dir, title, title)
+        _ -> {
+          io.println("Usage: scherzo run \"task title\" [\"task description\"]")
+          io.println("       scherzo run --from-tickets [--max-tasks N]")
           io.println("")
-          io.println("Output:")
-          io.println(output)
-        }
-        orchestrator.RunFailed(reason) -> {
-          io.println("Task failed: " <> reason)
-        }
-        orchestrator.RunExhausted(continuations, last_output, change_id) -> {
+          io.println("Examples:")
+          io.println("  scherzo run \"Fix the login bug\"")
           io.println(
-            "Task exhausted after "
-            <> int.to_string(continuations)
-            <> " continuations",
+            "  scherzo run \"Add feature\" \"Add user authentication to the API\"",
           )
-          io.println("Change ID: " <> change_id)
-          io.println("")
-          io.println("Last output:")
-          io.println(last_output)
+          io.println("  scherzo run --from-tickets")
+          io.println("  scherzo run --from-tickets --max-tasks 5")
         }
       }
-    }
-
-    [title] -> {
-      // If only title provided, use it as description too
-      io.println("Running task: " <> title)
-      io.println("Working directory: " <> working_dir)
-      io.println("")
-
-      let config = orchestrator.default_config(working_dir)
-
-      case orchestrator.run_task(config, title, title) {
-        orchestrator.RunSuccess(output, change_id) -> {
-          io.println("Task completed successfully!")
-          io.println("Change ID: " <> change_id)
-          io.println("")
-          io.println("Output:")
-          io.println(output)
-        }
-        orchestrator.RunFailed(reason) -> {
-          io.println("Task failed: " <> reason)
-        }
-        orchestrator.RunExhausted(continuations, last_output, change_id) -> {
-          io.println(
-            "Task exhausted after "
-            <> int.to_string(continuations)
-            <> " continuations",
-          )
-          io.println("Change ID: " <> change_id)
-          io.println("")
-          io.println("Last output:")
-          io.println(last_output)
-        }
-      }
-    }
-
-    _ -> {
-      io.println("Usage: scherzo run \"task title\" [\"task description\"]")
-      io.println("")
-      io.println("Examples:")
-      io.println("  scherzo run \"Fix the login bug\"")
-      io.println(
-        "  scherzo run \"Add feature\" \"Add user authentication to the API\"",
-      )
     }
   }
   Nil
+}
+
+/// Run a single task
+fn run_single_task(working_dir: String, title: String, description: String) {
+  io.println("Running task: " <> title)
+  io.println("Working directory: " <> working_dir)
+  io.println("")
+
+  let config = orchestrator.default_config(working_dir)
+
+  case orchestrator.run_task(config, title, description) {
+    orchestrator.RunSuccess(output, change_id) -> {
+      io.println("Task completed successfully!")
+      io.println("Change ID: " <> change_id)
+      io.println("")
+      io.println("Output:")
+      io.println(output)
+    }
+    orchestrator.RunFailed(reason) -> {
+      io.println("Task failed: " <> reason)
+    }
+    orchestrator.RunExhausted(continuations, last_output, change_id) -> {
+      io.println(
+        "Task exhausted after "
+        <> int.to_string(continuations)
+        <> " continuations",
+      )
+      io.println("Change ID: " <> change_id)
+      io.println("")
+      io.println("Last output:")
+      io.println(last_output)
+    }
+  }
+}
+
+/// Run tasks from tickets directory
+fn run_from_tickets(working_dir: String, max_tasks: Int) {
+  io.println("Processing tickets from: " <> working_dir <> "/.tickets/")
+  io.println("")
+
+  let config = orchestrator.default_config(working_dir)
+  let tickets_dir = ticket.default_tickets_dir(working_dir)
+  let task_source = ticket.new(tickets_dir)
+
+  case orchestrator.run_from_source(config, task_source, max_tasks) {
+    Error(err) -> {
+      io.println("Error: " <> err)
+    }
+    Ok(batch_result) -> {
+      io.println("")
+      io.println("=== Results ===")
+      io.println(
+        "Total: "
+        <> int.to_string(batch_result.total)
+        <> " | Completed: "
+        <> int.to_string(list.length(batch_result.completed))
+        <> " | Failed: "
+        <> int.to_string(list.length(batch_result.failed)),
+      )
+
+      case batch_result.failed {
+        [] -> Nil
+        failures -> {
+          io.println("")
+          io.println("Failed tasks:")
+          list.each(failures, fn(r) {
+            io.println("  - " <> r.title <> " (" <> r.task_id <> ")")
+          })
+        }
+      }
+    }
+  }
 }
 
 fn status_command() -> glint.Command(Nil) {

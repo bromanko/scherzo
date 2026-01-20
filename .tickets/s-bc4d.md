@@ -1,6 +1,6 @@
 ---
 id: s-bc4d
-status: open
+status: closed
 deps: [s-1472, s-af50]
 links: []
 created: 2026-01-20T02:02:07Z

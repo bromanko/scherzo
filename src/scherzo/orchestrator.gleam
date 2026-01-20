@@ -1,11 +1,14 @@
 /// Orchestrator - coordinates tasks and agents
 import gleam/int
+import gleam/io
+import gleam/list
 import scherzo/agent/checkpoint
 import scherzo/agent/driver.{type AgentResult}
 import scherzo/agent/drivers/claude
 import scherzo/agent/handoff
-import scherzo/core/task.{type Task}
+import scherzo/core/task.{type Task, Completed, Failed, InProgress}
 import scherzo/core/types.{AgentConfig, Claude}
+import scherzo/task/source.{type TaskSource}
 import scherzo/vcs/jj
 import shellout
 
@@ -36,6 +39,16 @@ pub type RunResult {
   RunFailed(reason: String)
   /// Task exceeded max continuations without completing
   RunExhausted(continuations: Int, last_output: String, change_id: String)
+}
+
+/// Result of a single task in a batch
+pub type TaskResult {
+  TaskResult(task_id: String, title: String, result: RunResult)
+}
+
+/// Result of running tasks from a source
+pub type BatchResult {
+  BatchResult(completed: List(TaskResult), failed: List(TaskResult), total: Int)
 }
 
 /// Run a single task with an agent (synchronous, for Phase 2)
@@ -198,3 +211,93 @@ fn erlang_system_time() -> Int
 
 @external(erlang, "erlang", "integer_to_binary")
 fn int_to_string(n: Int) -> String
+
+/// Run tasks from a TaskSource until queue is empty or max_tasks reached
+pub fn run_from_source(
+  config: OrchestratorConfig,
+  task_source: TaskSource,
+  max_tasks: Int,
+) -> Result(BatchResult, String) {
+  // Get ready tasks from source
+  case source.get_ready_tasks(task_source) {
+    Error(err) -> Error("Failed to get ready tasks: " <> err)
+    Ok(tasks) -> {
+      // Limit to max_tasks if specified
+      let tasks_to_run = case max_tasks > 0 {
+        True -> list.take(tasks, max_tasks)
+        False -> tasks
+      }
+
+      // Run tasks sequentially, collecting results
+      let results =
+        tasks_to_run
+        |> list.map(fn(t) { run_source_task(config, task_source, t) })
+
+      // Separate completed and failed
+      let completed =
+        results
+        |> list.filter(fn(r) {
+          case r.result {
+            RunSuccess(_, _) -> True
+            _ -> False
+          }
+        })
+
+      let failed =
+        results
+        |> list.filter(fn(r) {
+          case r.result {
+            RunSuccess(_, _) -> False
+            _ -> True
+          }
+        })
+
+      Ok(BatchResult(
+        completed: completed,
+        failed: failed,
+        total: list.length(tasks_to_run),
+      ))
+    }
+  }
+}
+
+/// Run a single task from a source, updating status
+fn run_source_task(
+  config: OrchestratorConfig,
+  task_source: TaskSource,
+  t: Task,
+) -> TaskResult {
+  // Mark task as in progress
+  let _ = source.update_status(task_source, t.id, InProgress("", 0))
+  io.println("Starting task: " <> t.title <> " (" <> t.id <> ")")
+
+  // Run the task
+  let result = run_existing_task(config, t)
+
+  // Update status based on result
+  let _ = case result {
+    RunSuccess(_, _) -> {
+      io.println("Completed: " <> t.title)
+      source.update_status(task_source, t.id, Completed("", 0))
+    }
+    RunFailed(reason) -> {
+      io.println("Failed: " <> t.title <> " - " <> reason)
+      source.update_status(task_source, t.id, Failed("", reason, 0))
+    }
+    RunExhausted(_, _, _) -> {
+      io.println("Exhausted: " <> t.title)
+      source.update_status(
+        task_source,
+        t.id,
+        Failed("", "Exceeded max continuations", 0),
+      )
+    }
+  }
+
+  TaskResult(task_id: t.id, title: t.title, result: result)
+}
+
+/// Run an existing Task object (used by run_from_source)
+pub fn run_existing_task(config: OrchestratorConfig, t: Task) -> RunResult {
+  run_task_with_continuation(config, t, 0)
+}
