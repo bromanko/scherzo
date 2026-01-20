@@ -553,9 +553,9 @@ tom = ">= 1.0.0"               # TOML parsing for config
 15. jj integration: Create change before agent, describe after
 16. **Milestone: Run single task through single Claude agent**
 
-### Phase 2.5: Agent Continuity (Checkpointing)
+### Phase 2.5: Agent Continuity (Checkpointing) ✅
 
-**Workspace Isolation (DONE):**
+**Workspace Isolation:**
 - ✅ jj workspace per agent: `workspace.gleam` creates isolated workspaces in `.scherzo/workspaces/<task-id>/`
 - ✅ Per-agent .claude/settings.json: `claude_settings.gleam` generates hooks for each agent
 - ✅ Hook injection: SessionStart runs `scherzo prime`, Stop runs `scherzo checkpoint`
@@ -563,20 +563,20 @@ tom = ">= 1.0.0"               # TOML parsing for config
 - ✅ CLI commands: `scherzo prime` and `scherzo checkpoint` implemented
 - ✅ Environment variables: `SCHERZO_TASK_ID` set for agent processes
 
-**Remaining:**
-17. Checkpoint types: `checkpoint.gleam` with Checkpoint, FileChange types
-18. Checkpoint CLI: Enhance `scherzo checkpoint` to write state to `.scherzo/checkpoints/<task-id>/`
-19. Stop detection: AgentProcess detects exit reason (completion vs exhaustion vs crash)
-20. Handoff logic: `handoff.gleam` builds continuation prompt from checkpoint
-21. Continuation flow: Coordinator spawns fresh agent with handoff context
-22. **Milestone: Agent survives context exhaustion, fresh agent continues task**
+**Checkpointing & Handoff:**
+- ✅ Checkpoint types: `checkpoint.gleam` with Checkpoint, FileChange types
+- ✅ Checkpoint CLI: `scherzo checkpoint` writes state to `.scherzo/checkpoints/<task-id>/`
+- ✅ Stop detection: AgentProcess detects exit reason (completion vs exhaustion vs crash)
+- ✅ Handoff logic: `handoff.gleam` builds continuation prompt from checkpoint
+- ✅ Continuation flow: Orchestrator spawns fresh agent with handoff context
+- ✅ **Milestone: Agent survives context exhaustion, fresh agent continues task**
 
-### Phase 3: Ticket Integration
-26. Task source interface: `source.gleam`
-27. Ticket source: Parse `.tickets/*.md`, call `tk` CLI
-28. Task queue: Priority queue respecting dependencies (`tk ready`)
-29. Status sync: Update ticket status on completion/failure
-30. **Milestone: Process all ready tickets from a project**
+### Phase 3: Ticket Integration ✅
+- ✅ Task source interface: `source.gleam`
+- ✅ Ticket source: Parse `.tickets/*.md`, call `tk` CLI
+- ✅ Task queue: Priority queue respecting dependencies (`tk ready`)
+- ✅ Status sync: Update ticket status on completion/failure
+- ✅ **Milestone: Process all ready tickets from a project**
 
 ### Phase 4: tmux UI
 31. tmux session management: Create, attach, destroy
