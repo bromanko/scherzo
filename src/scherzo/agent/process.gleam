@@ -1,5 +1,6 @@
 /// Agent process actor - manages the lifecycle of a CLI agent
 import gleam/erlang/process.{type Subject}
+import gleam/io
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
@@ -134,7 +135,16 @@ fn handle_start(
       let agent_result = run_command(command, state.driver, state.config.timeout_ms)
 
       // Update jj change with result in the workspace
-      let _ = update_change_on_completion(ws.path, task, agent_result)
+      case update_change_on_completion(ws.path, task, agent_result) {
+        Ok(_) -> Nil
+        Error(err) ->
+          io.println(
+            "Warning: Failed to update jj change for task "
+            <> task.id
+            <> ": "
+            <> err,
+          )
+      }
 
       // Cleanup workspace
       let _ = workspace.destroy(ws)
