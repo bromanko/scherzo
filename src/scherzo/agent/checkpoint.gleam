@@ -392,32 +392,50 @@ fn get_file_changes(repo_dir: String) -> Result(List(FileChange), String) {
 /// M path/to/modified.gleam
 /// A path/to/added.gleam
 /// D path/to/deleted.gleam
+/// R {old => new} (renamed files)
 fn parse_jj_status(output: String) -> List(FileChange) {
   output
   |> string.split("\n")
   |> list.filter_map(fn(line) {
     let trimmed = string.trim(line)
-    case string.split_once(trimmed, " ") {
-      Error(_) -> Error(Nil)
-      Ok(#(status, path)) -> {
-        let change_type = case status {
-          "A" -> Some(Added)
-          "M" -> Some(Modified)
-          "D" -> Some(Deleted)
-          _ -> None
-        }
-        case change_type {
-          None -> Error(Nil)
-          Some(ct) ->
-            Ok(FileChange(
-              path: string.trim(path),
-              change_type: ct,
-              summary: None,
-            ))
+    // Handle empty lines
+    case trimmed {
+      "" -> Error(Nil)
+      _ -> parse_status_line(trimmed)
+    }
+  })
+}
+
+/// Parse a single status line, handling various whitespace separators
+fn parse_status_line(line: String) -> Result(FileChange, Nil) {
+  // Split into graphemes to handle first char as status
+  let graphemes = string.to_graphemes(line)
+  case graphemes {
+    [] -> Error(Nil)
+    [status, ..rest] -> {
+      // Get the path by joining rest and trimming leading whitespace
+      let path = rest |> string.join("") |> string.trim_start
+      // Validate we have a path
+      case path {
+        "" -> Error(Nil)
+        _ -> {
+          // Map status character to change type
+          let change_type = case status {
+            "A" -> Some(Added)
+            "M" -> Some(Modified)
+            "D" -> Some(Deleted)
+            "R" -> Some(Modified)
+            // Treat rename as modification
+            _ -> None
+          }
+          case change_type {
+            None -> Error(Nil)
+            Some(ct) -> Ok(FileChange(path: path, change_type: ct, summary: None))
+          }
         }
       }
     }
-  })
+  }
 }
 
 /// Get the next sequence number for a task
