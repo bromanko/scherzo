@@ -71,6 +71,8 @@ pub fn workspace_add(
   run_jj(repo_dir, ["workspace", "add", workspace_path])
   |> result.map(fn(_) {
     // Extract workspace name from path (last component)
+    // Safe: split("/") always returns at least [""] for empty string,
+    // so list.last never fails. Fallback to full path is reasonable.
     workspace_path
     |> string.split("/")
     |> list.last

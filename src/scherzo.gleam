@@ -62,7 +62,7 @@ fn run_command() -> glint.Command(Nil) {
   use max_tasks_getter <- glint.flag(max_tasks_flag())
   use _, args, flags <- glint.command()
 
-  // Get flags
+  // Get flags (flag_default ensures these always succeed, unwrap provides defense-in-depth)
   let working_dir =
     workdir_getter(flags)
     |> result.unwrap(".")
@@ -275,7 +275,7 @@ fn checkpoint_command() -> glint.Command(Nil) {
 
   let cwd = get_cwd()
 
-  // Get checkpoint type from flag
+  // Get checkpoint type from flag (flag_default ensures this always succeeds)
   let checkpoint_type =
     type_getter(flags)
     |> result.unwrap("final")
@@ -324,7 +324,7 @@ fn create_checkpoint(
   checkpoint_type: checkpoint.CheckpointType,
   _workspace_dir: String,
 ) -> Nil {
-  // Get agent ID from environment or use default
+  // Get agent ID from environment (optional - default "agent-1" is safe for single-agent use)
   let agent_id = get_env("SCHERZO_AGENT_ID") |> result.unwrap("agent-1")
 
   // Create checkpoint config using the repo_dir from task info

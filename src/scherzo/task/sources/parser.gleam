@@ -97,6 +97,8 @@ fn parse_frontmatter(frontmatter: String) -> FrontmatterData {
         case key {
           "id" -> FrontmatterData(..acc, id: Some(value))
           "status" -> FrontmatterData(..acc, status: Some(value))
+          // Priority must be a valid integer; keep existing value on parse failure
+          // This enables lenient parsing of ticket files with invalid priority values
           "priority" ->
             FrontmatterData(
               ..acc,

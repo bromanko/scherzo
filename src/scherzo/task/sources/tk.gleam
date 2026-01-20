@@ -36,6 +36,8 @@ pub fn ready() -> Result(List(String), String) {
     Ok(output) -> {
       // Output format: "id   [status] - title <- [deps]" per line
       // We just need the IDs (first column)
+      // Safe: non-empty lines (filtered above) always have at least one element
+      // after split(" "), and we filter empty IDs as extra safety
       let ids =
         output
         |> string.split("\n")

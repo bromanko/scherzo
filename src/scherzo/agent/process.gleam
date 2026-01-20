@@ -105,7 +105,10 @@ fn handle_start(
     }
 
     Ok(ws) -> {
-      // Get the workspace's jj change ID
+      // Get the workspace's jj change ID for tracking
+      // Note: Using "unknown" on error allows task execution to continue even if jj
+      // is not available. This is acceptable because change_id is informational only
+      // and the task can still complete successfully without it.
       let change_id = case jj.get_current_change(ws.path) {
         Ok(id) -> id
         Error(_) -> "unknown"
