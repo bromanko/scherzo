@@ -1,31 +1,16 @@
 {
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "if echo \"$CLAUDE_TOOL_ARG_COMMAND\" | grep -qE '(jj commit|jj describe|git commit)'; then gleam format --check src test 2>/dev/null || { echo 'BLOCK: Gleam formatting issues. Run: gleam format src test'; exit 2; }; fi"
-          },
-          {
-            "type": "command",
-            "command": "if echo \"$CLAUDE_TOOL_ARG_COMMAND\" | grep -qE '(jj commit|jj describe|git commit)'; then nixfmt --check *.nix 2>/dev/null || { echo 'BLOCK: Nix formatting issues. Run: nixfmt *.nix'; exit 2; }; fi"
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "gleam format --check src test 2>/dev/null || echo 'Warning: Gleam formatting issues detected. Run: gleam format src test'"
+            "command": "gleam format src test 2>/dev/null; gleam format --check src test 2>/dev/null || echo 'Warning: Gleam formatting failed'"
           },
           {
             "type": "command",
-            "command": "nixfmt --check *.nix 2>/dev/null || echo 'Warning: Nix formatting issues detected. Run: nixfmt *.nix'"
+            "command": "nixfmt *.nix 2>/dev/null || true"
           }
         ]
       }

@@ -11,6 +11,7 @@ import simplifile
 // ---------------------------------------------------------------------------
 
 const test_session = "scherzo-session-test"
+
 const test_working_dir = "/tmp/claude/scherzo-session-test"
 
 fn cleanup() {
@@ -139,9 +140,12 @@ pub fn add_multiple_agents_test() {
 
       let assert Ok(manager) =
         session_manager.create(test_session, test_working_dir)
-      let assert Ok(#(manager, _)) = session_manager.add_agent(manager, "agent-1")
-      let assert Ok(#(manager, _)) = session_manager.add_agent(manager, "agent-2")
-      let assert Ok(#(manager, _)) = session_manager.add_agent(manager, "agent-3")
+      let assert Ok(#(manager, _)) =
+        session_manager.add_agent(manager, "agent-1")
+      let assert Ok(#(manager, _)) =
+        session_manager.add_agent(manager, "agent-2")
+      let assert Ok(#(manager, _)) =
+        session_manager.add_agent(manager, "agent-3")
 
       // Should have three agents
       session_manager.agent_count(manager)
@@ -168,7 +172,8 @@ pub fn remove_agent_cleans_up_test() {
 
       let assert Ok(manager) =
         session_manager.create(test_session, test_working_dir)
-      let assert Ok(#(manager, _)) = session_manager.add_agent(manager, "agent-1")
+      let assert Ok(#(manager, _)) =
+        session_manager.add_agent(manager, "agent-1")
 
       // Remove the agent
       let result = session_manager.remove_agent(manager, "agent-1")
@@ -207,7 +212,8 @@ pub fn get_agent_pipe_test() {
 
       let assert Ok(manager) =
         session_manager.create(test_session, test_working_dir)
-      let assert Ok(#(manager, _)) = session_manager.add_agent(manager, "agent-1")
+      let assert Ok(#(manager, _)) =
+        session_manager.add_agent(manager, "agent-1")
 
       // Should get pipe path for existing agent
       case session_manager.get_agent_pipe(manager, "agent-1") {
@@ -242,7 +248,8 @@ pub fn focus_control_test() {
 
       let assert Ok(manager) =
         session_manager.create(test_session, test_working_dir)
-      let assert Ok(#(manager, _)) = session_manager.add_agent(manager, "agent-1")
+      let assert Ok(#(manager, _)) =
+        session_manager.add_agent(manager, "agent-1")
 
       // Focus control should succeed
       session_manager.focus_control(manager)
@@ -264,7 +271,8 @@ pub fn focus_agent_test() {
 
       let assert Ok(manager) =
         session_manager.create(test_session, test_working_dir)
-      let assert Ok(#(manager, _)) = session_manager.add_agent(manager, "agent-1")
+      let assert Ok(#(manager, _)) =
+        session_manager.add_agent(manager, "agent-1")
 
       // Focus agent should succeed
       session_manager.focus_agent(manager, "agent-1")
@@ -294,8 +302,10 @@ pub fn destroy_cleans_up_everything_test() {
 
       let assert Ok(manager) =
         session_manager.create(test_session, test_working_dir)
-      let assert Ok(#(manager, _)) = session_manager.add_agent(manager, "agent-1")
-      let assert Ok(#(manager, _)) = session_manager.add_agent(manager, "agent-2")
+      let assert Ok(#(manager, _)) =
+        session_manager.add_agent(manager, "agent-1")
+      let assert Ok(#(manager, _)) =
+        session_manager.add_agent(manager, "agent-2")
 
       // Destroy
       session_manager.destroy(manager)

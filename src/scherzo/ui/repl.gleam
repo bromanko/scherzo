@@ -108,7 +108,8 @@ pub fn parse_command(input: String) -> Option(ParsedCommand) {
 
       case parts {
         [] -> None
-        [name, ..args] -> Some(ParsedCommand(name: string.lowercase(name), args: args))
+        [name, ..args] ->
+          Some(ParsedCommand(name: string.lowercase(name), args: args))
       }
     }
   }
@@ -219,10 +220,7 @@ pub fn add_command(
   name: String,
   handler: CommandHandler,
 ) -> ReplConfig {
-  ReplConfig(
-    ..config,
-    commands: dict.insert(config.commands, name, handler),
-  )
+  ReplConfig(..config, commands: dict.insert(config.commands, name, handler))
 }
 
 /// Add multiple commands to the registry

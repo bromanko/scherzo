@@ -81,14 +81,22 @@ fn execute_status(ctx: CommandContext) -> CommandResult {
 }
 
 /// Count tasks by status category
-fn count_task_statuses(
-  tasks: List(Task),
-) -> #(Int, Int, Int, Int) {
+fn count_task_statuses(tasks: List(Task)) -> #(Int, Int, Int, Int) {
   list.fold(tasks, #(0, 0, 0, 0), fn(acc, task) {
     let #(pending, in_progress, completed, failed) = acc
     case task.status {
-      Pending | Ready | Blocked(_) -> #(pending + 1, in_progress, completed, failed)
-      Assigned(_) | InProgress(_, _) -> #(pending, in_progress + 1, completed, failed)
+      Pending | Ready | Blocked(_) -> #(
+        pending + 1,
+        in_progress,
+        completed,
+        failed,
+      )
+      Assigned(_) | InProgress(_, _) -> #(
+        pending,
+        in_progress + 1,
+        completed,
+        failed,
+      )
       Completed(_, _) -> #(pending, in_progress, completed + 1, failed)
       Failed(_, _, _) -> #(pending, in_progress, completed, failed + 1)
     }
@@ -122,11 +130,7 @@ fn format_task_line(task: Task) -> String {
   let status_str = format_task_status(task.status)
   let id_short = string.slice(task.id, 0, 8)
 
-  id_short
-  <> " ["
-  <> status_str
-  <> "] "
-  <> task.title
+  id_short <> " [" <> status_str <> "] " <> task.title
 }
 
 /// Format task status for display

@@ -65,7 +65,10 @@ pub fn ensure_pipes_dir(config: PipeConfig) -> Result(Nil, PipeError) {
 
 /// Create a named pipe (FIFO) for an agent
 /// The pipe will be created at .scherzo/pipes/<agent-id>
-pub fn create_pipe(config: PipeConfig, agent_id: String) -> Result(String, PipeError) {
+pub fn create_pipe(
+  config: PipeConfig,
+  agent_id: String,
+) -> Result(String, PipeError) {
   // Ensure directory exists
   use _ <- result.try(ensure_pipes_dir(config))
 
@@ -82,7 +85,10 @@ pub fn create_pipe(config: PipeConfig, agent_id: String) -> Result(String, PipeE
 }
 
 /// Remove an agent's pipe
-pub fn remove_pipe(config: PipeConfig, agent_id: String) -> Result(Nil, PipeError) {
+pub fn remove_pipe(
+  config: PipeConfig,
+  agent_id: String,
+) -> Result(Nil, PipeError) {
   let path = pipe_path(config, agent_id)
 
   case simplifile.delete(path) {

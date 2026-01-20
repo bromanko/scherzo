@@ -97,10 +97,12 @@ pub fn add_agent_pane(
       // Apply tiled layout to arrange agent panes nicely
       let _ = tmux.apply_tiled_layout(layout.session)
 
-      Ok(Layout(
-        ..layout,
-        agent_panes: dict.insert(layout.agent_panes, agent_id, agent_config),
-      ))
+      Ok(
+        Layout(
+          ..layout,
+          agent_panes: dict.insert(layout.agent_panes, agent_id, agent_config),
+        ),
+      )
     }
   }
 }
@@ -120,10 +122,12 @@ pub fn add_agent_pane_with_command(
       // Apply tiled layout
       let _ = tmux.apply_tiled_layout(layout.session)
 
-      Ok(Layout(
-        ..layout,
-        agent_panes: dict.insert(layout.agent_panes, agent_id, agent_config),
-      ))
+      Ok(
+        Layout(
+          ..layout,
+          agent_panes: dict.insert(layout.agent_panes, agent_id, agent_config),
+        ),
+      )
     }
   }
 }
@@ -143,10 +147,12 @@ pub fn remove_agent_pane(
           // Re-apply layout after removing pane
           let _ = tmux.apply_tiled_layout(layout.session)
 
-          Ok(Layout(
-            ..layout,
-            agent_panes: dict.delete(layout.agent_panes, agent_id),
-          ))
+          Ok(
+            Layout(
+              ..layout,
+              agent_panes: dict.delete(layout.agent_panes, agent_id),
+            ),
+          )
         }
       }
     }

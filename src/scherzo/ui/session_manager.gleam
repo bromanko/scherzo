@@ -121,7 +121,8 @@ pub fn add_agent(
       let tail_cmd = pipes.tail_command(manager.pipe_config, agent_id)
 
       // Create pane running tail command
-      case layout.add_agent_pane_with_command(manager.layout, agent_id, tail_cmd)
+      case
+        layout.add_agent_pane_with_command(manager.layout, agent_id, tail_cmd)
       {
         Error(err) -> {
           // Clean up the pipe if pane creation fails
@@ -159,7 +160,10 @@ pub fn remove_agent(
 }
 
 /// Get the pipe path for an agent
-pub fn get_agent_pipe(manager: SessionManager, agent_id: String) -> Option(String) {
+pub fn get_agent_pipe(
+  manager: SessionManager,
+  agent_id: String,
+) -> Option(String) {
   case layout.get_agent_pane(manager.layout, agent_id) {
     None -> None
     Some(_) -> Some(pipes.pipe_path(manager.pipe_config, agent_id))

@@ -454,8 +454,7 @@ fn repl_command() -> glint.Command(Nil) {
   case runner.start_standalone(working_dir) {
     Ok(_) -> io.println("Goodbye!")
     Error(runner.StoreError(msg)) -> io.println("Error starting store: " <> msg)
-    Error(runner.SessionError(msg)) ->
-      io.println("Error with session: " <> msg)
+    Error(runner.SessionError(msg)) -> io.println("Error with session: " <> msg)
   }
 
   Nil
