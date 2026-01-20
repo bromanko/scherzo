@@ -42,7 +42,10 @@
       "Bash(find:*)",
       "Bash(tk help:*)",
       "Bash(tk ls:*)",
-      "Bash(tk create:*)"
+      "Bash(tk create:*)",
+      "Bash(tk start:*)",
+      "Bash(tk query:*)",
+      "Bash(tk show:*)"
     ],
     "deny": [],
     "ask": []
