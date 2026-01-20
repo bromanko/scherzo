@@ -97,6 +97,17 @@ This project uses a CLI ticket system for task management. Run `tk help` when yo
 
 ## Code Quality
 
+### Compiler Warnings
+
+**Always fix compiler warnings.** Do not leave warnings in the codebase. This includes:
+
+- Unused variables (remove or use them)
+- Unused imports (remove them)
+- Unused parameters (remove from signature or use them)
+- Deprecation warnings (update to non-deprecated APIs)
+
+If you encounter an unused parameter that seems intentional (e.g., for interface conformance), add a comment explaining why it exists.
+
 ### Adding a New Language
 
 When adding a new language or file type to the project, update all validation layers:
