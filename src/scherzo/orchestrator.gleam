@@ -138,8 +138,13 @@ fn run_task_with_continuation(
           let agent_result = run_command(command, drv)
 
           // Update jj change with result
-          let _ =
-            update_change_on_completion(config.working_dir, t, agent_result)
+          case update_change_on_completion(config.working_dir, t, agent_result) {
+            Ok(_) -> Nil
+            Error(err) ->
+              io.println(
+                "Warning: Failed to update jj change for task " <> t.id <> ": " <> err,
+              )
+          }
 
           case agent_result {
             driver.Success(output) -> RunSuccess(output, change_id)
@@ -268,14 +273,20 @@ fn run_source_task(
   t: Task,
 ) -> TaskResult {
   // Mark task as in progress
-  let _ = source.update_status(task_source, t.id, InProgress("", 0))
+  case source.update_status(task_source, t.id, InProgress("", 0)) {
+    Ok(_) -> Nil
+    Error(err) ->
+      io.println(
+        "Warning: Failed to mark task " <> t.id <> " as in_progress: " <> err,
+      )
+  }
   io.println("Starting task: " <> t.title <> " (" <> t.id <> ")")
 
   // Run the task
   let result = run_existing_task(config, t)
 
   // Update status based on result
-  let _ = case result {
+  let status_result = case result {
     RunSuccess(_, _) -> {
       io.println("Completed: " <> t.title)
       source.update_status(task_source, t.id, Completed("", 0))
@@ -292,6 +303,13 @@ fn run_source_task(
         Failed("", "Exceeded max continuations", 0),
       )
     }
+  }
+  case status_result {
+    Ok(_) -> Nil
+    Error(err) ->
+      io.println(
+        "Warning: Failed to update status for task " <> t.id <> ": " <> err,
+      )
   }
 
   TaskResult(task_id: t.id, title: t.title, result: result)
