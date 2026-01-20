@@ -10,6 +10,8 @@ import scherzo/agent/checkpoint
 import scherzo/agent/workspace
 import scherzo/orchestrator
 import scherzo/task/sources/ticket
+import scherzo/ui/runner
+import scherzo/ui/tmux
 import simplifile
 
 pub fn main() {
@@ -21,6 +23,8 @@ pub fn main() {
   |> glint.add(at: ["status"], do: status_command())
   |> glint.add(at: ["prime"], do: prime_command())
   |> glint.add(at: ["checkpoint"], do: checkpoint_command())
+  |> glint.add(at: ["attach"], do: attach_command())
+  |> glint.add(at: ["repl"], do: repl_command())
   |> glint.run(argv.load().arguments)
 }
 
@@ -387,4 +391,72 @@ fn os_getenv(name: String) -> Result(String, Nil)
 
 fn get_env(name: String) -> Result(String, Nil) {
   os_getenv(name)
+}
+
+// ---------------------------------------------------------------------------
+// Attach Command
+// ---------------------------------------------------------------------------
+
+fn attach_command() -> glint.Command(Nil) {
+  use <- glint.command_help("Attach to a running scherzo tmux session")
+  use _, _, _ <- glint.command()
+
+  let session_name = tmux.default_session_name
+
+  case tmux.session_exists(session_name) {
+    False -> {
+      io.println("No scherzo session found.")
+      io.println("")
+      io.println("Start a session with: scherzo run --from-tickets")
+      io.println("Or create one manually: tmux new-session -s " <> session_name)
+    }
+    True -> {
+      io.println("Attaching to scherzo session...")
+      case tmux.attach_session(session_name) {
+        Ok(_) -> Nil
+        Error(tmux.SessionNotFound(_)) -> {
+          io.println("Error: Session disappeared before attach")
+        }
+        Error(tmux.CommandFailed(msg)) -> {
+          io.println("Error attaching to session: " <> msg)
+        }
+        Error(tmux.SessionExists(_)) -> {
+          // This shouldn't happen for attach
+          io.println("Unexpected error: session exists")
+        }
+        Error(tmux.TmuxNotAvailable) -> {
+          io.println("Error: tmux is not available on this system")
+        }
+      }
+    }
+  }
+  Nil
+}
+
+// ---------------------------------------------------------------------------
+// REPL Command
+// ---------------------------------------------------------------------------
+
+fn repl_command() -> glint.Command(Nil) {
+  use <- glint.command_help("Start the interactive control REPL")
+  use workdir_getter <- glint.flag(workdir_flag())
+  use _, _, flags <- glint.command()
+
+  let working_dir =
+    workdir_getter(flags)
+    |> result.unwrap(".")
+    |> resolve_path()
+
+  io.println("Starting scherzo REPL...")
+  io.println("Working directory: " <> working_dir)
+  io.println("")
+
+  case runner.start_standalone(working_dir) {
+    Ok(_) -> io.println("Goodbye!")
+    Error(runner.StoreError(msg)) -> io.println("Error starting store: " <> msg)
+    Error(runner.SessionError(msg)) ->
+      io.println("Error with session: " <> msg)
+  }
+
+  Nil
 }
