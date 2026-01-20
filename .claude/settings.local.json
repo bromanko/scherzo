@@ -39,7 +39,10 @@
       "Bash(flake.nix )",
       "Bash(CONTRIBUTING.md )",
       "Bash(.claude/settings.json)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(tk help:*)",
+      "Bash(tk ls:*)",
+      "Bash(tk create:*)"
     ],
     "deny": [],
     "ask": []
