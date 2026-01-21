@@ -314,12 +314,12 @@ pub fn tasks_output_has_priority_indicators_test() {
   case commands.get_tasks(".") {
     Ok(output) -> {
       // Lines should start with priority indicator followed by task ID
-      // Low priority uses " . ", Normal uses "   ", High "!! ", Critical "!!!"
+      // Low priority uses " ↓ ", Normal uses "   ", High "!! ", Critical "!!!"
       // At minimum we should see some spacing before task IDs
       let has_indicator_pattern =
         string.contains(output, "    s-")
         // Normal priority (3 spaces + space before ID)
-        || string.contains(output, " .  s-")
+        || string.contains(output, " ↓  s-")
         // Low priority
         || string.contains(output, "!!  s-")
         // High priority
@@ -333,12 +333,12 @@ pub fn tasks_output_has_priority_indicators_test() {
   }
 }
 
-pub fn tasks_output_low_priority_has_dot_indicator_test() {
-  // Low priority tasks should have " . " indicator
+pub fn tasks_output_low_priority_has_arrow_indicator_test() {
+  // Low priority tasks should have " ↓ " indicator
   case commands.get_tasks(".") {
     Ok(output) -> {
       // We know this project has low priority tasks
-      string.contains(output, " .  s-")
+      string.contains(output, " ↓  s-")
       |> should.be_true
     }
     Error(_) -> should.be_true(True)

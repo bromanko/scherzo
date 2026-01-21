@@ -277,13 +277,13 @@ fn group_tasks_by_status(
 }
 
 /// Format priority as visual indicator
-/// Critical: !!!, High: !!, Normal: (space), Low: .
+/// Critical: !!!, High: !!, Normal: (space), Low: ↓
 fn format_priority(priority: Priority) -> String {
   case priority {
     Critical -> "!!!"
     High -> "!! "
     Normal -> "   "
-    Low -> " . "
+    Low -> " ↓ "
   }
 }
 
