@@ -429,3 +429,42 @@ pub fn parse_filter_args_pending_test() {
   { filter.status_filter == commands.ShowPending }
   |> should.be_true
 }
+
+// ---------------------------------------------------------------------------
+// Blocked Task Display Tests (s-52c1)
+// ---------------------------------------------------------------------------
+
+pub fn tasks_blocked_filter_shows_only_blocked_test() {
+  // --blocked filter should show only blocked tasks
+  let filter =
+    commands.TasksFilter(show_all: False, status_filter: commands.ShowBlocked)
+  case commands.get_tasks_filtered(".", filter) {
+    Ok(output) -> {
+      // May or may not have blocked tasks
+      // If there are blocked tasks, should contain blocked section
+      let is_empty = output == "" || string.contains(output, "No tasks")
+      let has_blocked = string.contains(output, "=== Blocked (")
+
+      // Either empty or has blocked section
+      { is_empty || has_blocked }
+      |> should.be_true
+
+      // Should NOT contain other sections
+      let has_pending = string.contains(output, "=== Pending (")
+      let has_completed = string.contains(output, "=== Completed (")
+
+      has_pending
+      |> should.be_false
+      has_completed
+      |> should.be_false
+    }
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn parse_filter_args_blocked_test() {
+  // --blocked should set status filter
+  let filter = commands.parse_filter_args(["--blocked"])
+  { filter.status_filter == commands.ShowBlocked }
+  |> should.be_true
+}

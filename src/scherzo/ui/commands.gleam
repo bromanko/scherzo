@@ -125,6 +125,7 @@ pub fn get_tasks_filtered(
             group_tasks_by_status(tasks)
 
           // Determine which groups to show based on filter
+          // Pass all tasks to blocked group for resolving blocker statuses
           let #(groups, hidden_count) = case filter.show_all {
             True -> {
               // Show all groups
@@ -132,7 +133,7 @@ pub fn get_tasks_filtered(
                 [
                   format_task_group("In Progress", in_progress),
                   format_task_group("Pending", pending),
-                  format_task_group("Blocked", blocked),
+                  format_task_group_with_context("Blocked", blocked, tasks),
                   format_task_group("Completed", completed),
                   format_task_group("Failed", failed),
                 ],
@@ -148,7 +149,7 @@ pub fn get_tasks_filtered(
                     [
                       format_task_group("In Progress", in_progress),
                       format_task_group("Pending", pending),
-                      format_task_group("Blocked", blocked),
+                      format_task_group_with_context("Blocked", blocked, tasks),
                       format_task_group("Failed", failed),
                     ],
                     completed_count,
@@ -163,7 +164,10 @@ pub fn get_tasks_filtered(
                   [format_task_group("Completed", completed)],
                   0,
                 )
-                ShowBlocked -> #([format_task_group("Blocked", blocked)], 0)
+                ShowBlocked -> #(
+                  [format_task_group_with_context("Blocked", blocked, tasks)],
+                  0,
+                )
                 ShowFailed -> #([format_task_group("Failed", failed)], 0)
               }
           }
@@ -272,34 +276,6 @@ fn group_tasks_by_status(
   )
 }
 
-/// Format a group of tasks with a header
-fn format_task_group(title: String, tasks: List(Task)) -> String {
-  case tasks {
-    [] -> ""
-    _ -> {
-      let count = list.length(tasks)
-      let header = "=== " <> title <> " (" <> int.to_string(count) <> ") ==="
-      // Sort by priority (critical first) before formatting
-      let sorted =
-        list.sort(tasks, fn(a, b) {
-          int.compare(
-            priority_sort_key(a.priority),
-            priority_sort_key(b.priority),
-          )
-        })
-      let lines = list.map(sorted, format_task_line_simple)
-      header <> "\n" <> string.join(lines, "\n")
-    }
-  }
-}
-
-/// Format a task line with priority indicator
-fn format_task_line_simple(task: Task) -> String {
-  let priority_indicator = format_priority(task.priority)
-  let id_short = string.slice(task.id, 0, 8)
-  priority_indicator <> " " <> id_short <> " " <> task.title
-}
-
 /// Format priority as visual indicator
 /// Critical: !!!, High: !!, Normal: (space), Low: .
 fn format_priority(priority: Priority) -> String {
@@ -319,6 +295,99 @@ fn priority_sort_key(priority: Priority) -> Int {
     Normal -> 2
     Low -> 3
   }
+}
+
+/// Format a status as a brief string for display
+fn format_status_brief(status: task.TaskStatus) -> String {
+  case status {
+    Pending -> "pending"
+    Ready -> "ready"
+    Assigned(_) -> "assigned"
+    InProgress(_, _) -> "in_progress"
+    Completed(_, _) -> "completed"
+    Failed(_, _, _) -> "failed"
+    Blocked(_) -> "blocked"
+  }
+}
+
+/// Check if a string looks like a task ID
+fn is_task_id(s: String) -> Bool {
+  string.starts_with(s, "s-")
+  || string.starts_with(s, "t-")
+  || string.starts_with(s, "task-")
+}
+
+/// Find a task by ID in a list
+fn find_task(id: String, tasks: List(Task)) -> Result(Task, Nil) {
+  list.find(tasks, fn(t) { t.id == id })
+}
+
+/// Format the blocking reason, resolving task references if possible
+fn format_block_reason(reason: String, all_tasks: List(Task)) -> String {
+  // Check if reason looks like a task ID (starts with s- or similar pattern)
+  case is_task_id(reason), find_task(reason, all_tasks) {
+    True, Ok(blocker_task) -> {
+      let status_str = format_status_brief(blocker_task.status)
+      "    Blocked by: " <> reason <> " (" <> status_str <> ")"
+    }
+    _, _ -> "    Blocked by: " <> reason
+  }
+}
+
+/// Format a blocked task with visual indicator and reason
+fn format_blocked_task_line(
+  id: String,
+  title: String,
+  reason: String,
+  all_tasks: List(Task),
+) -> String {
+  let header = "⛔  " <> id <> " " <> title
+  let reason_line = format_block_reason(reason, all_tasks)
+  header <> "\n" <> reason_line
+}
+
+/// Format a task line with status-aware formatting
+fn format_task_line(task: Task, all_tasks: List(Task)) -> String {
+  let id_short = string.slice(task.id, 0, 8)
+  case task.status {
+    Blocked(reason) ->
+      format_blocked_task_line(id_short, task.title, reason, all_tasks)
+    _ -> {
+      let priority_indicator = format_priority(task.priority)
+      priority_indicator <> " " <> id_short <> " " <> task.title
+    }
+  }
+}
+
+/// Format a group of tasks with optional context for resolving blockers
+fn format_task_group_with_context(
+  title: String,
+  tasks: List(Task),
+  all_tasks: List(Task),
+) -> String {
+  case tasks {
+    [] -> ""
+    _ -> {
+      let count = list.length(tasks)
+      let header = "=== " <> title <> " (" <> int.to_string(count) <> ") ==="
+      // Sort by priority (critical first) before formatting
+      let sorted =
+        list.sort(tasks, fn(a, b) {
+          int.compare(
+            priority_sort_key(a.priority),
+            priority_sort_key(b.priority),
+          )
+        })
+      let lines =
+        list.map(sorted, fn(task) { format_task_line(task, all_tasks) })
+      header <> "\n" <> string.join(lines, "\n")
+    }
+  }
+}
+
+/// Format a group of tasks with a header
+fn format_task_group(title: String, tasks: List(Task)) -> String {
+  format_task_group_with_context(title, tasks, [])
 }
 
 /// Count tasks by status category
