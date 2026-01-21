@@ -185,16 +185,9 @@ fn status_command() -> glint.Command(Nil) {
   use workdir_getter <- glint.flag(workdir_flag())
   use _, _, flags <- glint.command()
 
-  let working_dir =
-    workdir_getter(flags)
-    |> result.unwrap(".")
-    |> resolve_path()
-
-  case commands.get_status(working_dir) {
-    Ok(output) -> io.println(output)
-    Error(err) -> io.println("Error: " <> err)
-  }
-  Nil
+  get_working_dir(workdir_getter, flags)
+  |> commands.get_status
+  |> print_result
 }
 
 fn tasks_command() -> glint.Command(Nil) {
@@ -202,27 +195,36 @@ fn tasks_command() -> glint.Command(Nil) {
   use workdir_getter <- glint.flag(workdir_flag())
   use _, _, flags <- glint.command()
 
-  let working_dir =
-    workdir_getter(flags)
-    |> result.unwrap(".")
-    |> resolve_path()
-
-  case commands.get_tasks(working_dir) {
-    Ok(output) -> io.println(output)
-    Error(err) -> io.println("Error: " <> err)
-  }
-  Nil
+  get_working_dir(workdir_getter, flags)
+  |> commands.get_tasks
+  |> print_result
 }
 
 fn agents_command() -> glint.Command(Nil) {
   use <- glint.command_help("Show agent status")
   use _, _, _ <- glint.command()
 
-  case commands.get_agents() {
+  commands.get_agents()
+  |> print_result
+}
+
+/// Print a Result(String, String) - Ok prints output, Error prints error message
+fn print_result(result: Result(String, String)) -> Nil {
+  case result {
     Ok(output) -> io.println(output)
     Error(err) -> io.println("Error: " <> err)
   }
   Nil
+}
+
+/// Get working directory from flags, defaulting to current directory
+fn get_working_dir(
+  workdir_getter: fn(glint.Flags) -> Result(String, a),
+  flags: glint.Flags,
+) -> String {
+  workdir_getter(flags)
+  |> result.unwrap(".")
+  |> resolve_path()
 }
 
 /// Resolve a path (handle relative paths)

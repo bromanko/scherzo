@@ -36,7 +36,8 @@ pub fn get_status(working_dir: String) -> Result(String, String) {
   case task_source.fetch_tasks() {
     Error(err) -> Error("Failed to fetch tasks: " <> err)
     Ok(tasks) -> {
-      let #(pending, in_progress, completed, failed) = count_task_statuses(tasks)
+      let #(pending, in_progress, completed, failed) =
+        count_task_statuses(tasks)
 
       let output =
         "=== Scherzo Status ===\n"
