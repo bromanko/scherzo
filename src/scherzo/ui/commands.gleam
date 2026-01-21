@@ -290,9 +290,11 @@ fn render_task_tree(
   depth: Int,
 ) -> List(String) {
   let indent = string.repeat("  ", depth)
+  let priority_indicator = format_priority(task.priority)
   let id_short = string.slice(task.id, 0, 8)
   let status_indicator = format_status_indicator(task.status)
-  let line = indent <> id_short <> " " <> status_indicator <> task.title
+  let line =
+    indent <> priority_indicator <> " " <> id_short <> " " <> status_indicator <> task.title
 
   // Find children of this task
   let children =

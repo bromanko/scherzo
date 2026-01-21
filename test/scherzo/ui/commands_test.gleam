@@ -527,9 +527,11 @@ pub fn tasks_tree_view_shows_children_indented_test() {
     )
   case commands.get_tasks_filtered(".", filter) {
     Ok(output) -> {
-      // s-1900 has children, so we should see indented lines after it
-      // Look for two-space indentation pattern
-      string.contains(output, "\n  s-")
+      // s-1900 has children, so we should see indented child lines
+      // Child format: "  <priority> s-xxxx [status] title" (2-space indent + priority)
+      // Root format:  "<priority> s-xxxx [status] title" (no indent)
+      // Look for child with low priority under s-1900: "   ↓  s-" (2 indent + " ↓ " + space)
+      string.contains(output, "   ↓  s-")
       |> should.be_true
     }
     Error(_) -> should.be_true(True)

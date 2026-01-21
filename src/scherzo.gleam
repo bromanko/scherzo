@@ -218,6 +218,20 @@ fn completed_flag() {
   |> glint.flag_help("Show only completed tasks")
 }
 
+/// Flag for showing only blocked tasks
+fn blocked_flag() {
+  glint.bool_flag("blocked")
+  |> glint.flag_default(False)
+  |> glint.flag_help("Show only blocked tasks")
+}
+
+/// Flag for showing only failed tasks
+fn failed_flag() {
+  glint.bool_flag("failed")
+  |> glint.flag_default(False)
+  |> glint.flag_help("Show only failed tasks")
+}
+
 /// Flag for showing tasks in tree view
 fn tree_flag() {
   glint.bool_flag("tree")
@@ -226,12 +240,16 @@ fn tree_flag() {
 }
 
 fn tasks_command() -> glint.Command(Nil) {
-  use <- glint.command_help("List all tasks with status")
+  use <- glint.command_help(
+    "List tasks grouped by status. Default: hides completed tasks.",
+  )
   use workdir_getter <- glint.flag(workdir_flag())
   use all_getter <- glint.flag(all_flag())
   use pending_getter <- glint.flag(pending_flag())
   use in_progress_getter <- glint.flag(in_progress_flag())
   use completed_getter <- glint.flag(completed_flag())
+  use blocked_getter <- glint.flag(blocked_flag())
+  use failed_getter <- glint.flag(failed_flag())
   use tree_getter <- glint.flag(tree_flag())
   use _, _, flags <- glint.command()
 
@@ -242,14 +260,24 @@ fn tasks_command() -> glint.Command(Nil) {
   let show_pending = pending_getter(flags) |> result.unwrap(False)
   let show_in_progress = in_progress_getter(flags) |> result.unwrap(False)
   let show_completed = completed_getter(flags) |> result.unwrap(False)
+  let show_blocked = blocked_getter(flags) |> result.unwrap(False)
+  let show_failed = failed_getter(flags) |> result.unwrap(False)
   let show_tree = tree_getter(flags) |> result.unwrap(False)
 
-  // Build filter from flags
-  let status_filter = case show_pending, show_in_progress, show_completed {
-    True, _, _ -> commands.ShowPending
-    _, True, _ -> commands.ShowInProgress
-    _, _, True -> commands.ShowCompleted
-    _, _, _ -> commands.ShowActionable
+  // Build filter from flags (first matching filter wins)
+  let status_filter = case
+    show_pending,
+    show_in_progress,
+    show_completed,
+    show_blocked,
+    show_failed
+  {
+    True, _, _, _, _ -> commands.ShowPending
+    _, True, _, _, _ -> commands.ShowInProgress
+    _, _, True, _, _ -> commands.ShowCompleted
+    _, _, _, True, _ -> commands.ShowBlocked
+    _, _, _, _, True -> commands.ShowFailed
+    _, _, _, _, _ -> commands.ShowActionable
   }
 
   let filter =
