@@ -599,8 +599,8 @@ tom = ">= 1.0.0"               # TOML parsing for config
 34. ✅ Session manager: Coordinates layout + pipes (`ui/session_manager.gleam`)
 35. ✅ Control REPL: Parse commands, command registry (`ui/repl.gleam`, `ui/commands.gleam`)
 36. ✅ Runner: Wires REPL + session together (`ui/runner.gleam`)
-37. `scherzo console` CLI command: Entry point for tmux UI
-38. **Milestone: Run with tmux UI, interactive control**
+37. ✅ `scherzo console` CLI command: Entry point for tmux UI
+38. ✅ **Milestone: Run with tmux UI, interactive control**
 
 ### Phase 5: Multi-Agent Orchestration
 39. Agent pool supervisor: Factory supervisor for N agents

@@ -78,6 +78,18 @@ pub fn create_session_with_layout(
   }
 }
 
+/// Create a new session with a command running in the control pane
+/// This is used for `scherzo console` to run the REPL inside tmux
+pub fn create_session_with_command(
+  session: String,
+  command: String,
+) -> Result(Layout, LayoutError) {
+  case tmux.create_session_with_command(session, command) {
+    Error(err) -> Error(TmuxError(err))
+    Ok(_) -> create(session)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pane Management
 // ---------------------------------------------------------------------------

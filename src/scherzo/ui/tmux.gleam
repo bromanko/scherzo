@@ -7,6 +7,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import scherzo/core/shell
+import shellout
 
 /// Default session name for scherzo
 pub const default_session_name = "scherzo"
@@ -298,8 +299,13 @@ fn run_tmux(args: List(String)) -> Result(String, TmuxError) {
 }
 
 /// Run tmux attach (which needs special handling as it takes over the terminal)
-/// Uses shellout but in a way that allows terminal takeover
+/// Uses shellout with LetBeStdout to allow terminal passthrough
 fn run_tmux_exec(args: List(String)) -> Result(String, TmuxError) {
-  // For attach, we use the same approach but the process will take over
-  run_tmux(args)
+  // Use LetBeStdout so the terminal is passed through to tmux
+  // This allows interactive commands like attach to work properly
+  case shellout.command("tmux", args, ".", [shellout.LetBeStdout]) {
+    Ok(output) -> Ok(output)
+    Error(#(127, _)) -> Error(TmuxNotAvailable)
+    Error(#(_, err_output)) -> Error(CommandFailed(err_output))
+  }
 }

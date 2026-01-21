@@ -10,6 +10,7 @@ import scherzo/agent/checkpoint
 import scherzo/agent/workspace
 import scherzo/orchestrator
 import scherzo/task/sources/ticket
+import scherzo/ui/layout
 import scherzo/ui/runner
 import scherzo/ui/tmux
 import simplifile
@@ -501,24 +502,39 @@ fn console_command() -> glint.Command(Nil) {
       do_attach_session(session_name)
     }
     False -> {
-      // No session exists, create one with the REPL
+      // No session exists, create one with the REPL running inside tmux
       let working_dir =
         workdir_flag_value
         |> result.unwrap(".")
         |> resolve_path()
 
+      // Build the command to run the REPL inside the tmux session
+      // During development: gleam run -- repl --workdir=<dir>
+      // In production: scherzo repl --workdir=<dir>
+      let scherzo_dir = get_cwd()
+      let repl_command =
+        "cd "
+        <> scherzo_dir
+        <> " && gleam run -- repl --workdir="
+        <> working_dir
+
       io.println("Starting scherzo console...")
       io.println("Working directory: " <> working_dir)
-      io.println("")
 
-      let config = runner.default_config(working_dir)
-      case runner.start_with_session(config) {
-        Ok(_) -> io.println("Goodbye!")
-        Error(runner.StoreError(msg)) -> {
-          io.println("Error starting store: " <> msg)
+      // Create tmux session with REPL running in control pane
+      case layout.create_session_with_command(session_name, repl_command) {
+        Error(layout.TmuxError(tmux.TmuxNotAvailable)) -> {
+          io.println("Error: tmux is not available on this system")
         }
-        Error(runner.SessionError(msg)) -> {
-          io.println("Error creating session: " <> msg)
+        Error(layout.TmuxError(tmux.SessionExists(_))) -> {
+          io.println("Error: Session already exists (race condition)")
+        }
+        Error(_) -> {
+          io.println("Error: Failed to create tmux session")
+        }
+        Ok(_) -> {
+          // Attach to the newly created session
+          do_attach_session(session_name)
         }
       }
     }
