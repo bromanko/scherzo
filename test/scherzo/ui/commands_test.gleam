@@ -518,7 +518,7 @@ pub fn tasks_tree_view_has_header_test() {
 }
 
 pub fn tasks_tree_view_shows_children_indented_test() {
-  // Children should be indented under their parent
+  // Children should be indented under their parent with tree lines
   let filter =
     commands.TasksFilter(
       show_all: True,
@@ -527,11 +527,10 @@ pub fn tasks_tree_view_shows_children_indented_test() {
     )
   case commands.get_tasks_filtered(".", filter) {
     Ok(output) -> {
-      // s-1900 has children, so we should see indented child lines
-      // Child format: "  <priority> s-xxxx [status] title" (2-space indent + priority)
-      // Root format:  "<priority> s-xxxx [status] title" (no indent)
-      // Look for child with low priority under s-1900: "   ↓  s-" (2 indent + " ↓ " + space)
-      string.contains(output, "   ↓  s-")
+      // s-1900 has children, so we should see tree continuation lines
+      // Children are shown with "│   └── " or "│   ├── " prefixes
+      // Look for the tree continuation character indicating nested structure
+      string.contains(output, "│   ")
       |> should.be_true
     }
     Error(_) -> should.be_true(True)
@@ -550,8 +549,8 @@ pub fn tasks_tree_combines_with_filters_test() {
     Ok(output) -> {
       // Should have hierarchy header
       let has_header = string.contains(output, "=== Task Hierarchy ===")
-      // Should NOT have completed tasks (they use [✓])
-      let has_completed = string.contains(output, "[✓]")
+      // Should NOT have completed tasks (they use [x])
+      let has_completed = string.contains(output, "[x]")
 
       has_header
       |> should.be_true

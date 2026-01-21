@@ -280,21 +280,40 @@ fn build_tree_lines(tasks: List(Task)) -> List(String) {
     })
 
   // Render each root and its children
-  list.flat_map(sorted_roots, fn(root) { render_task_tree(root, tasks, 0) })
+  let root_count = list.length(sorted_roots)
+  sorted_roots
+  |> list.index_map(fn(root, idx) {
+    let is_last = idx == root_count - 1
+    render_task_tree(root, tasks, "", is_last)
+  })
+  |> list.flatten
 }
 
-/// Recursively render a task and its children
+/// Recursively render a task and its children with tree lines
 fn render_task_tree(
   task: Task,
   all_tasks: List(Task),
-  depth: Int,
+  prefix: String,
+  is_last: Bool,
 ) -> List(String) {
-  let indent = string.repeat("  ", depth)
+  // Tree branch characters
+  let branch = case is_last {
+    True -> "└── "
+    False -> "├── "
+  }
+
   let priority_indicator = format_priority(task.priority)
   let id_short = string.slice(task.id, 0, 8)
   let status_indicator = format_status_indicator(task.status)
   let line =
-    indent <> priority_indicator <> " " <> id_short <> " " <> status_indicator <> task.title
+    prefix
+    <> branch
+    <> priority_indicator
+    <> " "
+    <> id_short
+    <> " "
+    <> status_indicator
+    <> task.title
 
   // Find children of this task
   let children =
@@ -311,25 +330,35 @@ fn render_task_tree(
       int.compare(priority_sort_key(a.priority), priority_sort_key(b.priority))
     })
 
+  // Build prefix for children (continue line or space)
+  let child_prefix = case is_last {
+    True -> prefix <> "    "
+    False -> prefix <> "│   "
+  }
+
   // Render children recursively
+  let child_count = list.length(sorted_children)
   let child_lines =
-    list.flat_map(sorted_children, fn(child) {
-      render_task_tree(child, all_tasks, depth + 1)
+    sorted_children
+    |> list.index_map(fn(child, idx) {
+      let child_is_last = idx == child_count - 1
+      render_task_tree(child, all_tasks, child_prefix, child_is_last)
     })
+    |> list.flatten
 
   [line, ..child_lines]
 }
 
-/// Format a brief status indicator for tree view
+/// Format a brief status indicator for tree view (markdown-style)
 fn format_status_indicator(status: task.TaskStatus) -> String {
   case status {
-    Pending -> "[○] "
-    Ready -> "[●] "
-    Assigned(_) -> "[→] "
-    InProgress(_, _) -> "[▶] "
-    Completed(_, _) -> "[✓] "
-    Failed(_, _, _) -> "[✗] "
-    Blocked(_) -> "[⛔] "
+    Pending -> "[ ] "
+    Ready -> "[ ] "
+    Assigned(_) -> "[>] "
+    InProgress(_, _) -> "[>] "
+    Completed(_, _) -> "[x] "
+    Failed(_, _, _) -> "[!] "
+    Blocked(_) -> "[!] "
   }
 }
 
