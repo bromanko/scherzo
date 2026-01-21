@@ -7,6 +7,7 @@
 /// that can be called by both CLI and REPL.
 import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/core/task.{
   type Priority, type Task, Assigned, Blocked, Completed, Critical, Failed, High,
@@ -31,6 +32,8 @@ pub type TasksFilter {
     show_all: Bool,
     /// Show only specific status categories
     status_filter: StatusFilter,
+    /// Show tasks in tree view (by parent/child hierarchy)
+    show_tree: Bool,
   )
 }
 
@@ -52,7 +55,7 @@ pub type StatusFilter {
 
 /// Default filter - shows actionable tasks (hides completed)
 pub fn default_filter() -> TasksFilter {
-  TasksFilter(show_all: False, status_filter: ShowActionable)
+  TasksFilter(show_all: False, status_filter: ShowActionable, show_tree: False)
 }
 
 /// Parse filter arguments from command line args
@@ -65,6 +68,7 @@ pub fn parse_filter_args(args: List(String)) -> TasksFilter {
       "--completed" -> TasksFilter(..filter, status_filter: ShowCompleted)
       "--blocked" -> TasksFilter(..filter, status_filter: ShowBlocked)
       "--failed" -> TasksFilter(..filter, status_filter: ShowFailed)
+      "--tree" -> TasksFilter(..filter, show_tree: True)
       _ -> filter
     }
   })
@@ -121,76 +125,209 @@ pub fn get_tasks_filtered(
       case tasks {
         [] -> Ok("No tasks found in " <> tickets_dir)
         _ -> {
-          let #(in_progress, pending, blocked, completed, failed) =
-            group_tasks_by_status(tasks)
+          // Apply status filtering first
+          let filtered_tasks = filter_tasks_by_status(tasks, filter)
 
-          // Determine which groups to show based on filter
-          // Pass all tasks to blocked group for resolving blocker statuses
-          let #(groups, hidden_count) = case filter.show_all {
-            True -> {
-              // Show all groups
-              #(
-                [
-                  format_task_group("In Progress", in_progress),
-                  format_task_group("Pending", pending),
-                  format_task_group_with_context("Blocked", blocked, tasks),
-                  format_task_group("Completed", completed),
-                  format_task_group("Failed", failed),
-                ],
-                0,
-              )
-            }
-            False ->
-              case filter.status_filter {
-                ShowActionable -> {
-                  // Show actionable tasks, hide completed
-                  let completed_count = list.length(completed)
-                  #(
-                    [
-                      format_task_group("In Progress", in_progress),
-                      format_task_group("Pending", pending),
-                      format_task_group_with_context("Blocked", blocked, tasks),
-                      format_task_group("Failed", failed),
-                    ],
-                    completed_count,
-                  )
-                }
-                ShowPending -> #([format_task_group("Pending", pending)], 0)
-                ShowInProgress -> #(
-                  [format_task_group("In Progress", in_progress)],
-                  0,
-                )
-                ShowCompleted -> #(
-                  [format_task_group("Completed", completed)],
-                  0,
-                )
-                ShowBlocked -> #(
-                  [format_task_group_with_context("Blocked", blocked, tasks)],
-                  0,
-                )
-                ShowFailed -> #([format_task_group("Failed", failed)], 0)
-              }
+          // Tree view or grouped view?
+          case filter.show_tree {
+            True -> Ok(format_tree_view(filtered_tasks))
+            False -> Ok(format_grouped_view(tasks, filter))
           }
-
-          let filtered_output =
-            groups
-            |> list.filter(fn(s) { s != "" })
-            |> string.join("\n\n")
-
-          // Add hidden count message if applicable
-          let output = case hidden_count > 0 {
-            True ->
-              filtered_output
-              <> "\n\n"
-              <> int.to_string(hidden_count)
-              <> " completed tasks hidden. Use --all to show."
-            False -> filtered_output
-          }
-
-          Ok(output)
         }
       }
     }
+  }
+}
+
+/// Filter tasks by status according to filter settings
+fn filter_tasks_by_status(tasks: List(Task), filter: TasksFilter) -> List(Task) {
+  case filter.show_all {
+    True -> tasks
+    False ->
+      list.filter(tasks, fn(t) {
+        status_matches_filter(t.status, filter.status_filter)
+      })
+  }
+}
+
+/// Check if a task status matches the given filter
+fn status_matches_filter(status: task.TaskStatus, filter: StatusFilter) -> Bool {
+  case filter {
+    ShowActionable ->
+      case status {
+        Completed(_, _) -> False
+        _ -> True
+      }
+    ShowPending ->
+      case status {
+        Pending | Ready -> True
+        _ -> False
+      }
+    ShowInProgress ->
+      case status {
+        Assigned(_) | InProgress(_, _) -> True
+        _ -> False
+      }
+    ShowCompleted ->
+      case status {
+        Completed(_, _) -> True
+        _ -> False
+      }
+    ShowBlocked ->
+      case status {
+        Blocked(_) -> True
+        _ -> False
+      }
+    ShowFailed ->
+      case status {
+        Failed(_, _, _) -> True
+        _ -> False
+      }
+  }
+}
+
+/// Format tasks in grouped view (by status)
+fn format_grouped_view(tasks: List(Task), filter: TasksFilter) -> String {
+  let #(in_progress, pending, blocked, completed, failed) =
+    group_tasks_by_status(tasks)
+
+  // Determine which groups to show based on filter
+  // Pass all tasks to blocked group for resolving blocker statuses
+  let #(groups, hidden_count) = case filter.show_all {
+    True -> {
+      // Show all groups
+      #(
+        [
+          format_task_group("In Progress", in_progress),
+          format_task_group("Pending", pending),
+          format_task_group_with_context("Blocked", blocked, tasks),
+          format_task_group("Completed", completed),
+          format_task_group("Failed", failed),
+        ],
+        0,
+      )
+    }
+    False ->
+      case filter.status_filter {
+        ShowActionable -> {
+          // Show actionable tasks, hide completed
+          let completed_count = list.length(completed)
+          #(
+            [
+              format_task_group("In Progress", in_progress),
+              format_task_group("Pending", pending),
+              format_task_group_with_context("Blocked", blocked, tasks),
+              format_task_group("Failed", failed),
+            ],
+            completed_count,
+          )
+        }
+        ShowPending -> #([format_task_group("Pending", pending)], 0)
+        ShowInProgress -> #([format_task_group("In Progress", in_progress)], 0)
+        ShowCompleted -> #([format_task_group("Completed", completed)], 0)
+        ShowBlocked -> #(
+          [format_task_group_with_context("Blocked", blocked, tasks)],
+          0,
+        )
+        ShowFailed -> #([format_task_group("Failed", failed)], 0)
+      }
+  }
+
+  let filtered_output =
+    groups
+    |> list.filter(fn(s) { s != "" })
+    |> string.join("\n\n")
+
+  // Add hidden count message if applicable
+  case hidden_count > 0 {
+    True ->
+      filtered_output
+      <> "\n\n"
+      <> int.to_string(hidden_count)
+      <> " completed tasks hidden. Use --all to show."
+    False -> filtered_output
+  }
+}
+
+/// Format tasks in tree view (by parent/child hierarchy)
+fn format_tree_view(tasks: List(Task)) -> String {
+  case tasks {
+    [] -> "No tasks match the filter."
+    _ -> {
+      let header = "=== Task Hierarchy ==="
+      let tree_lines = build_tree_lines(tasks)
+      header <> "\n" <> string.join(tree_lines, "\n")
+    }
+  }
+}
+
+/// Build tree lines from a flat list of tasks
+fn build_tree_lines(tasks: List(Task)) -> List(String) {
+  // Find root tasks (no parent or parent not in list)
+  let task_ids = list.map(tasks, fn(t) { t.id })
+  let roots =
+    list.filter(tasks, fn(t) {
+      case t.parent {
+        None -> True
+        Some(parent_id) -> !list.contains(task_ids, parent_id)
+      }
+    })
+
+  // Sort roots by priority
+  let sorted_roots =
+    list.sort(roots, fn(a, b) {
+      int.compare(priority_sort_key(a.priority), priority_sort_key(b.priority))
+    })
+
+  // Render each root and its children
+  list.flat_map(sorted_roots, fn(root) { render_task_tree(root, tasks, 0) })
+}
+
+/// Recursively render a task and its children
+fn render_task_tree(
+  task: Task,
+  all_tasks: List(Task),
+  depth: Int,
+) -> List(String) {
+  let indent = string.repeat("  ", depth)
+  let id_short = string.slice(task.id, 0, 8)
+  let status_indicator = format_status_indicator(task.status)
+  let line = indent <> id_short <> " " <> status_indicator <> task.title
+
+  // Find children of this task
+  let children =
+    list.filter(all_tasks, fn(t) {
+      case t.parent {
+        Some(parent_id) -> parent_id == task.id
+        None -> False
+      }
+    })
+
+  // Sort children by priority
+  let sorted_children =
+    list.sort(children, fn(a, b) {
+      int.compare(priority_sort_key(a.priority), priority_sort_key(b.priority))
+    })
+
+  // Render children recursively
+  let child_lines =
+    list.flat_map(sorted_children, fn(child) {
+      render_task_tree(child, all_tasks, depth + 1)
+    })
+
+  [line, ..child_lines]
+}
+
+/// Format a brief status indicator for tree view
+fn format_status_indicator(status: task.TaskStatus) -> String {
+  case status {
+    Pending -> "[○] "
+    Ready -> "[●] "
+    Assigned(_) -> "[→] "
+    InProgress(_, _) -> "[▶] "
+    Completed(_, _) -> "[✓] "
+    Failed(_, _, _) -> "[✗] "
+    Blocked(_) -> "[⛔] "
   }
 }
 

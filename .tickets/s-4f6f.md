@@ -1,6 +1,6 @@
 ---
 id: s-4f6f
-status: open
+status: closed
 deps: [s-4ea5, s-71a2]
 links: []
 created: 2026-01-21T19:00:00Z

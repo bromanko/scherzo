@@ -260,7 +260,11 @@ pub fn tasks_output_has_completed_group_test() {
   // We know this project has completed tasks
   // Use --all filter since completed are hidden by default
   let filter =
-    commands.TasksFilter(show_all: True, status_filter: commands.ShowActionable)
+    commands.TasksFilter(
+      show_all: True,
+      status_filter: commands.ShowActionable,
+      show_tree: False,
+    )
   case commands.get_tasks_filtered(".", filter) {
     Ok(output) -> {
       // Should contain completed section since we have closed tickets
@@ -274,7 +278,11 @@ pub fn tasks_output_has_completed_group_test() {
 pub fn tasks_output_groups_separated_by_blank_lines_test() {
   // Use --all filter to ensure multiple groups are shown
   let filter =
-    commands.TasksFilter(show_all: True, status_filter: commands.ShowActionable)
+    commands.TasksFilter(
+      show_all: True,
+      status_filter: commands.ShowActionable,
+      show_tree: False,
+    )
   case commands.get_tasks_filtered(".", filter) {
     Ok(output) -> {
       // Groups should be separated by double newlines (blank line between groups)
@@ -370,7 +378,11 @@ pub fn tasks_default_filter_hides_completed_test() {
 pub fn tasks_all_filter_shows_completed_test() {
   // --all filter should show completed tasks
   let filter =
-    commands.TasksFilter(show_all: True, status_filter: commands.ShowActionable)
+    commands.TasksFilter(
+      show_all: True,
+      status_filter: commands.ShowActionable,
+      show_tree: False,
+    )
   case commands.get_tasks_filtered(".", filter) {
     Ok(output) -> {
       // Should contain completed section
@@ -389,7 +401,11 @@ pub fn tasks_all_filter_shows_completed_test() {
 pub fn tasks_pending_filter_shows_only_pending_test() {
   // --pending filter should show only pending tasks
   let filter =
-    commands.TasksFilter(show_all: False, status_filter: commands.ShowPending)
+    commands.TasksFilter(
+      show_all: False,
+      status_filter: commands.ShowPending,
+      show_tree: False,
+    )
   case commands.get_tasks_filtered(".", filter) {
     Ok(output) -> {
       // Should contain pending section
@@ -437,7 +453,11 @@ pub fn parse_filter_args_pending_test() {
 pub fn tasks_blocked_filter_shows_only_blocked_test() {
   // --blocked filter should show only blocked tasks
   let filter =
-    commands.TasksFilter(show_all: False, status_filter: commands.ShowBlocked)
+    commands.TasksFilter(
+      show_all: False,
+      status_filter: commands.ShowBlocked,
+      show_tree: False,
+    )
   case commands.get_tasks_filtered(".", filter) {
     Ok(output) -> {
       // May or may not have blocked tasks
@@ -467,4 +487,75 @@ pub fn parse_filter_args_blocked_test() {
   let filter = commands.parse_filter_args(["--blocked"])
   { filter.status_filter == commands.ShowBlocked }
   |> should.be_true
+}
+
+// ---------------------------------------------------------------------------
+// Tree View Tests (s-4f6f)
+// ---------------------------------------------------------------------------
+
+pub fn parse_filter_args_tree_test() {
+  // --tree should set show_tree to true
+  let filter = commands.parse_filter_args(["--tree"])
+  filter.show_tree
+  |> should.be_true
+}
+
+pub fn tasks_tree_view_has_header_test() {
+  // Tree view should have hierarchy header
+  let filter =
+    commands.TasksFilter(
+      show_all: True,
+      status_filter: commands.ShowActionable,
+      show_tree: True,
+    )
+  case commands.get_tasks_filtered(".", filter) {
+    Ok(output) -> {
+      string.contains(output, "=== Task Hierarchy ===")
+      |> should.be_true
+    }
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn tasks_tree_view_shows_children_indented_test() {
+  // Children should be indented under their parent
+  let filter =
+    commands.TasksFilter(
+      show_all: True,
+      status_filter: commands.ShowActionable,
+      show_tree: True,
+    )
+  case commands.get_tasks_filtered(".", filter) {
+    Ok(output) -> {
+      // s-1900 has children, so we should see indented lines after it
+      // Look for two-space indentation pattern
+      string.contains(output, "\n  s-")
+      |> should.be_true
+    }
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn tasks_tree_combines_with_filters_test() {
+  // Tree view should work with status filters
+  let filter =
+    commands.TasksFilter(
+      show_all: False,
+      status_filter: commands.ShowPending,
+      show_tree: True,
+    )
+  case commands.get_tasks_filtered(".", filter) {
+    Ok(output) -> {
+      // Should have hierarchy header
+      let has_header = string.contains(output, "=== Task Hierarchy ===")
+      // Should NOT have completed tasks (they use [✓])
+      let has_completed = string.contains(output, "[✓]")
+
+      has_header
+      |> should.be_true
+      has_completed
+      |> should.be_false
+    }
+    Error(_) -> should.be_true(True)
+  }
 }

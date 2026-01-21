@@ -218,6 +218,13 @@ fn completed_flag() {
   |> glint.flag_help("Show only completed tasks")
 }
 
+/// Flag for showing tasks in tree view
+fn tree_flag() {
+  glint.bool_flag("tree")
+  |> glint.flag_default(False)
+  |> glint.flag_help("Show tasks in hierarchy tree view")
+}
+
 fn tasks_command() -> glint.Command(Nil) {
   use <- glint.command_help("List all tasks with status")
   use workdir_getter <- glint.flag(workdir_flag())
@@ -225,6 +232,7 @@ fn tasks_command() -> glint.Command(Nil) {
   use pending_getter <- glint.flag(pending_flag())
   use in_progress_getter <- glint.flag(in_progress_flag())
   use completed_getter <- glint.flag(completed_flag())
+  use tree_getter <- glint.flag(tree_flag())
   use _, _, flags <- glint.command()
 
   let working_dir = get_working_dir(workdir_getter, flags)
@@ -234,24 +242,22 @@ fn tasks_command() -> glint.Command(Nil) {
   let show_pending = pending_getter(flags) |> result.unwrap(False)
   let show_in_progress = in_progress_getter(flags) |> result.unwrap(False)
   let show_completed = completed_getter(flags) |> result.unwrap(False)
+  let show_tree = tree_getter(flags) |> result.unwrap(False)
 
   // Build filter from flags
-  let filter = case show_all {
-    True ->
-      commands.TasksFilter(
-        show_all: True,
-        status_filter: commands.ShowActionable,
-      )
-    False -> {
-      let status_filter = case show_pending, show_in_progress, show_completed {
-        True, _, _ -> commands.ShowPending
-        _, True, _ -> commands.ShowInProgress
-        _, _, True -> commands.ShowCompleted
-        _, _, _ -> commands.ShowActionable
-      }
-      commands.TasksFilter(show_all: False, status_filter: status_filter)
-    }
+  let status_filter = case show_pending, show_in_progress, show_completed {
+    True, _, _ -> commands.ShowPending
+    _, True, _ -> commands.ShowInProgress
+    _, _, True -> commands.ShowCompleted
+    _, _, _ -> commands.ShowActionable
   }
+
+  let filter =
+    commands.TasksFilter(
+      show_all: show_all,
+      status_filter: status_filter,
+      show_tree: show_tree,
+    )
 
   commands.get_tasks_filtered(working_dir, filter)
   |> print_result
