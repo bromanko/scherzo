@@ -19,6 +19,7 @@ result-*
 # OS
 .DS_Store
 Thumbs.db
+.sprite
 
 # Scherzo runtime state (tracked separately by jj during operation)
 .scherzo/
