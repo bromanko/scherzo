@@ -2,6 +2,9 @@
 ///
 /// Provides command handlers for the REPL that query task state
 /// directly from the ticket system (single source of truth).
+///
+/// Info commands (status, tasks, agents) expose shared functions
+/// that can be called by both CLI and REPL.
 import gleam/int
 import gleam/list
 import gleam/string
@@ -10,9 +13,7 @@ import scherzo/core/task.{
   Pending, Ready,
 }
 import scherzo/task/sources/ticket
-import scherzo/ui/repl.{
-  type CommandHandler, type CommandResult, CommandError, CommandOutput,
-}
+import scherzo/ui/repl.{type CommandHandler, CommandError, CommandOutput}
 
 /// Context for command execution
 /// Uses the ticket system as the source of truth for tasks
@@ -24,23 +25,17 @@ pub type CommandContext {
 }
 
 // ---------------------------------------------------------------------------
-// Status Commands (s-8acb)
+// Shared Info Functions (used by both CLI and REPL)
 // ---------------------------------------------------------------------------
 
-/// Create status command handler
-pub fn status_command(ctx: CommandContext) -> CommandHandler {
-  fn(_args) { execute_status(ctx) }
-}
-
-/// Execute status command - show overall system status
-fn execute_status(ctx: CommandContext) -> CommandResult {
-  let tickets_dir = ticket.default_tickets_dir(ctx.working_dir)
+/// Get status output - shared by CLI and REPL
+pub fn get_status(working_dir: String) -> Result(String, String) {
+  let tickets_dir = ticket.default_tickets_dir(working_dir)
   let task_source = ticket.new(tickets_dir)
 
   case task_source.fetch_tasks() {
-    Error(err) -> CommandError("Failed to fetch tasks: " <> err)
+    Error(err) -> Error("Failed to fetch tasks: " <> err)
     Ok(tasks) -> {
-      // Count tasks by status
       let #(pending, in_progress, completed, failed) = count_task_statuses(tasks)
 
       let output =
@@ -62,10 +57,81 @@ fn execute_status(ctx: CommandContext) -> CommandResult {
         <> "  Total:       "
         <> int.to_string(list.length(tasks))
 
-      CommandOutput(output)
+      Ok(output)
     }
   }
 }
+
+/// Get tasks list output - shared by CLI and REPL
+pub fn get_tasks(working_dir: String) -> Result(String, String) {
+  let tickets_dir = ticket.default_tickets_dir(working_dir)
+  let task_source = ticket.new(tickets_dir)
+
+  case task_source.fetch_tasks() {
+    Error(err) -> Error("Failed to fetch tasks: " <> err)
+    Ok(tasks) -> {
+      case tasks {
+        [] -> Ok("No tasks found in " <> tickets_dir)
+        _ -> {
+          let lines =
+            tasks
+            |> list.map(format_task_line)
+            |> string.join("\n")
+
+          Ok("=== Tasks ===\n\n" <> lines)
+        }
+      }
+    }
+  }
+}
+
+/// Get agents output - shared by CLI and REPL
+pub fn get_agents() -> Result(String, String) {
+  Ok(
+    "No agents currently running.\n"
+    <> "\n"
+    <> "Agents are spawned when tasks are executed via 'scherzo run'.\n"
+    <> "Multi-agent support coming in Phase 5.",
+  )
+}
+
+// ---------------------------------------------------------------------------
+// REPL Command Handlers
+// ---------------------------------------------------------------------------
+
+/// Create status command handler for REPL
+pub fn status_command(ctx: CommandContext) -> CommandHandler {
+  fn(_args) {
+    case get_status(ctx.working_dir) {
+      Ok(output) -> CommandOutput(output)
+      Error(err) -> CommandError(err)
+    }
+  }
+}
+
+/// Create tasks command handler for REPL
+pub fn tasks_command(ctx: CommandContext) -> CommandHandler {
+  fn(_args) {
+    case get_tasks(ctx.working_dir) {
+      Ok(output) -> CommandOutput(output)
+      Error(err) -> CommandError(err)
+    }
+  }
+}
+
+/// Create agents command handler for REPL
+pub fn agents_command(_ctx: CommandContext) -> CommandHandler {
+  fn(_args) {
+    case get_agents() {
+      Ok(output) -> CommandOutput(output)
+      Error(err) -> CommandError(err)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helper Functions
+// ---------------------------------------------------------------------------
 
 /// Count tasks by status category
 fn count_task_statuses(tasks: List(Task)) -> #(Int, Int, Int, Int) {
@@ -90,34 +156,6 @@ fn count_task_statuses(tasks: List(Task)) -> #(Int, Int, Int, Int) {
   })
 }
 
-/// Create tasks command handler
-pub fn tasks_command(ctx: CommandContext) -> CommandHandler {
-  fn(_args) { execute_tasks(ctx) }
-}
-
-/// Execute tasks command - list all tasks with status
-fn execute_tasks(ctx: CommandContext) -> CommandResult {
-  let tickets_dir = ticket.default_tickets_dir(ctx.working_dir)
-  let task_source = ticket.new(tickets_dir)
-
-  case task_source.fetch_tasks() {
-    Error(err) -> CommandError("Failed to fetch tasks: " <> err)
-    Ok(tasks) -> {
-      case tasks {
-        [] -> CommandOutput("No tasks found in " <> tickets_dir)
-        _ -> {
-          let lines =
-            tasks
-            |> list.map(format_task_line)
-            |> string.join("\n")
-
-          CommandOutput("=== Tasks ===\n\n" <> lines)
-        }
-      }
-    }
-  }
-}
-
 /// Format a single task for display
 fn format_task_line(task: Task) -> String {
   let status_str = format_task_status(task.status)
@@ -137,23 +175,6 @@ fn format_task_status(status: TaskStatus) -> String {
     Completed(_, _) -> "done"
     Failed(_, reason, _) -> "failed: " <> string.slice(reason, 0, 15)
   }
-}
-
-/// Create agents command handler
-pub fn agents_command(_ctx: CommandContext) -> CommandHandler {
-  fn(_args) { execute_agents() }
-}
-
-/// Execute agents command - show agent status
-/// Note: Agent tracking is runtime-only, managed by the orchestrator during task execution.
-/// This will show active agents once multi-agent orchestration is implemented (Phase 5).
-fn execute_agents() -> CommandResult {
-  CommandOutput(
-    "No agents currently running.\n"
-    <> "\n"
-    <> "Agents are spawned when tasks are executed via 'scherzo run'.\n"
-    <> "Multi-agent support coming in Phase 5.",
-  )
 }
 
 // ---------------------------------------------------------------------------

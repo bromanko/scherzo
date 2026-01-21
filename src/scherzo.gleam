@@ -10,6 +10,7 @@ import scherzo/agent/checkpoint
 import scherzo/agent/workspace
 import scherzo/orchestrator
 import scherzo/task/sources/ticket
+import scherzo/ui/commands
 import scherzo/ui/layout
 import scherzo/ui/runner
 import scherzo/ui/tmux
@@ -22,6 +23,8 @@ pub fn main() {
   |> glint.add(at: [], do: root_command())
   |> glint.add(at: ["run"], do: run_command())
   |> glint.add(at: ["status"], do: status_command())
+  |> glint.add(at: ["tasks"], do: tasks_command())
+  |> glint.add(at: ["agents"], do: agents_command())
   |> glint.add(at: ["prime"], do: prime_command())
   |> glint.add(at: ["checkpoint"], do: checkpoint_command())
   |> glint.add(at: ["attach"], do: attach_command())
@@ -178,10 +181,47 @@ fn run_from_tickets(working_dir: String, max_tasks: Int) {
 }
 
 fn status_command() -> glint.Command(Nil) {
-  use <- glint.command_help("Show orchestrator status")
+  use <- glint.command_help("Show task status summary")
+  use workdir_getter <- glint.flag(workdir_flag())
+  use _, _, flags <- glint.command()
+
+  let working_dir =
+    workdir_getter(flags)
+    |> result.unwrap(".")
+    |> resolve_path()
+
+  case commands.get_status(working_dir) {
+    Ok(output) -> io.println(output)
+    Error(err) -> io.println("Error: " <> err)
+  }
+  Nil
+}
+
+fn tasks_command() -> glint.Command(Nil) {
+  use <- glint.command_help("List all tasks with status")
+  use workdir_getter <- glint.flag(workdir_flag())
+  use _, _, flags <- glint.command()
+
+  let working_dir =
+    workdir_getter(flags)
+    |> result.unwrap(".")
+    |> resolve_path()
+
+  case commands.get_tasks(working_dir) {
+    Ok(output) -> io.println(output)
+    Error(err) -> io.println("Error: " <> err)
+  }
+  Nil
+}
+
+fn agents_command() -> glint.Command(Nil) {
+  use <- glint.command_help("Show agent status")
   use _, _, _ <- glint.command()
-  io.println("Status: Ready")
-  io.println("Available agents: claude")
+
+  case commands.get_agents() {
+    Ok(output) -> io.println(output)
+    Error(err) -> io.println("Error: " <> err)
+  }
   Nil
 }
 
