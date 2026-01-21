@@ -21,9 +21,8 @@ Scherzo is a Gleam-based AI agent orchestrator - "Kubernetes for AI agents". It 
 ```
 ScherzoSupervisor (OneForAll)
 ├── EventBus           # Central pub/sub
-├── StateStore         # In-memory cache + jj-backed JSON persistence
 ├── TaskSourceSupervisor (OneForOne)
-│   └── TicketSource   # .tickets/ integration via tk CLI
+│   └── TicketSource   # .tickets/ integration via tk CLI (single source of truth)
 ├── TaskQueue          # Priority queue of ready tasks
 ├── Coordinator        # Matches tasks to agents
 └── AgentPoolSupervisor (Factory)
@@ -31,6 +30,8 @@ ScherzoSupervisor (OneForAll)
     ├── AgentProcess_2
     └── ...
 ```
+
+**Note:** Task state is stored in `.tickets/` files and queried directly via the ticket source adapter. This avoids state duplication and keeps tickets as the single source of truth. Runtime agent state (which agents are running, what tasks they're working on) is managed in-memory by the coordinator.
 
 ### Core Types
 
@@ -435,8 +436,7 @@ scherzo/
 │       │   ├── multipass.gleam    # MultiPassReview (Rule of Five)
 │       │   └── human.gleam        # HumanGate (approval checkpoint)
 │       ├── state/
-│       │   ├── store.gleam        # In-memory state + jj file persistence
-│       │   └── schema.gleam       # JSON schema for state files
+│       │   └── schema.gleam       # JSON schema for checkpoint files
 │       ├── event/
 │       │   └── bus.gleam          # Event bus
 │       └── ui/
@@ -558,7 +558,7 @@ tom = ">= 1.0.0"               # TOML parsing for config
 8. Core types: `types.gleam`, `task.gleam`, `event.gleam`
 9. CLI skeleton: `scherzo run`, `scherzo status` via glint
 10. Event bus actor: Simple pub/sub with gleam_otp
-11. State store: In-memory cache actor
+11. Core task types and status definitions
 
 ### Phase 2: Single Agent E2E ✅
 12. Agent driver interface: `driver.gleam`
@@ -641,9 +641,9 @@ After completion gates pass, task changes enter a merge queue for integration in
 See `docs/merge-queue.md` for detailed design.
 
 ### Phase 6: Resilience & Recovery
-61. State persistence: Add JSON file persistence to state store (`.scherzo/state/`)
-62. State recovery: Load state from `.scherzo/state/*.json` on startup
-63. Crash detection: Compare in-memory state vs jj working copy on restart
+61. Checkpoint recovery: Load checkpoints from `.scherzo/checkpoints/` on startup
+62. Ticket state sync: Ensure ticket status reflects interrupted work
+63. Crash detection: Compare checkpoints vs jj working copy on restart
 64. Retry logic: Exponential backoff for failures
 65. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
 66. Handoff metrics: Track continuation count per task, detect infinite loops
@@ -660,7 +660,7 @@ See `docs/merge-queue.md` for detailed design.
 2. **Context exhaustion**: Not a failure - trigger handoff to fresh agent with continuation prompt built from checkpoint
 3. **Retryable failures**: Network errors, timeouts → exponential backoff, re-queue
 4. **Non-retryable failures**: Bad task definition, code errors → mark terminal failure
-5. **Orchestrator crash**: State survives in `.scherzo/` (jj-tracked). On restart: load state files, detect interrupted tasks via checkpoints, resume or retry
+5. **Orchestrator crash**: Task state survives in `.tickets/` files, checkpoints survive in `.scherzo/checkpoints/`. On restart: query tickets, load checkpoints, detect interrupted tasks, resume or retry
 6. **Infinite handoff loop**: If task exceeds max continuation count (configurable), mark as failed with "task too complex" reason
 
 ## Design Decisions
@@ -672,7 +672,7 @@ See `docs/merge-queue.md` for detailed design.
 | Parallelism | Multiple parallel agents | Different agents work on different tasks concurrently |
 | Version Control | jujutsu (jj) | Each agent creates a jj change, easier parallel work |
 | Agent Continuity | Hook-based checkpointing | Leverage CLI agent hooks (Claude/Codex) for state persistence, enables handoff on context exhaustion |
-| State Storage | jj-backed JSON files | All state in `.scherzo/`, tracked by jj. Crash recovery = reload files. History = `jj log`. Debug = `jj diff`. No database needed. |
+| State Storage | Tickets as source of truth | Task state lives in `.tickets/` files, queried via ticket adapter. Runtime agent state in-memory. Checkpoints in `.scherzo/checkpoints/` for handoff. |
 | Handoff Strategy | Continuation prompt | Build context from checkpoint + jj diff, let fresh agent continue naturally |
 | Quality Assurance | Completion gates pipeline | Parallel code review with synthesis, configurable per-repo. See `docs/completion-gates.md`. |
 | Review Strategy | Parallel review + synthesis | 7 dimensions run concurrently (correctness, performance, security, elegance, resilience, style, smells), then synthesis dedupes and prioritizes (P0/P1/P2). |

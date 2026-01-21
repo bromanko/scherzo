@@ -1,8 +1,7 @@
 /// Control pane command implementations
 ///
-/// Provides command handlers for the REPL that query orchestrator state
-/// and manage agent lifecycle.
-import gleam/erlang/process.{type Subject}
+/// Provides command handlers for the REPL that query task state
+/// directly from the ticket system (single source of truth).
 import gleam/int
 import gleam/list
 import gleam/string
@@ -10,18 +9,17 @@ import scherzo/core/task.{
   type Task, type TaskStatus, Assigned, Blocked, Completed, Failed, InProgress,
   Pending, Ready,
 }
-import scherzo/core/types.{type AgentStatus}
-import scherzo/state/store.{type AgentState, type Message as StoreMessage}
+import scherzo/task/sources/ticket
 import scherzo/ui/repl.{
   type CommandHandler, type CommandResult, CommandError, CommandOutput,
 }
 
 /// Context for command execution
-/// Contains references to state and orchestrator actors
+/// Uses the ticket system as the source of truth for tasks
 pub type CommandContext {
   CommandContext(
-    /// State store for querying tasks and agents
-    store: Subject(StoreMessage),
+    /// Directory containing .tickets/ for this project
+    working_dir: String,
   )
 }
 
@@ -36,48 +34,37 @@ pub fn status_command(ctx: CommandContext) -> CommandHandler {
 
 /// Execute status command - show overall system status
 fn execute_status(ctx: CommandContext) -> CommandResult {
-  let tasks = store.get_all_tasks(ctx.store)
-  let agents = store.get_all_agents(ctx.store)
+  let tickets_dir = ticket.default_tickets_dir(ctx.working_dir)
+  let task_source = ticket.new(tickets_dir)
 
-  // Count tasks by status
-  let #(pending, in_progress, completed, failed) = count_task_statuses(tasks)
+  case task_source.fetch_tasks() {
+    Error(err) -> CommandError("Failed to fetch tasks: " <> err)
+    Ok(tasks) -> {
+      // Count tasks by status
+      let #(pending, in_progress, completed, failed) = count_task_statuses(tasks)
 
-  // Count active agents
-  let active_agents =
-    agents
-    |> list.filter(fn(a) {
-      case a.status {
-        types.Running(_, _) -> True
-        _ -> False
-      }
-    })
-    |> list.length
+      let output =
+        "=== Scherzo Status ===\n"
+        <> "\n"
+        <> "Tasks:\n"
+        <> "  Pending:     "
+        <> int.to_string(pending)
+        <> "\n"
+        <> "  In Progress: "
+        <> int.to_string(in_progress)
+        <> "\n"
+        <> "  Completed:   "
+        <> int.to_string(completed)
+        <> "\n"
+        <> "  Failed:      "
+        <> int.to_string(failed)
+        <> "\n"
+        <> "  Total:       "
+        <> int.to_string(list.length(tasks))
 
-  let output =
-    "=== Scherzo Status ===\n"
-    <> "\n"
-    <> "Tasks:\n"
-    <> "  Pending:     "
-    <> int.to_string(pending)
-    <> "\n"
-    <> "  In Progress: "
-    <> int.to_string(in_progress)
-    <> "\n"
-    <> "  Completed:   "
-    <> int.to_string(completed)
-    <> "\n"
-    <> "  Failed:      "
-    <> int.to_string(failed)
-    <> "\n"
-    <> "\n"
-    <> "Agents:\n"
-    <> "  Total:  "
-    <> int.to_string(list.length(agents))
-    <> "\n"
-    <> "  Active: "
-    <> int.to_string(active_agents)
-
-  CommandOutput(output)
+      CommandOutput(output)
+    }
+  }
 }
 
 /// Count tasks by status category
@@ -110,17 +97,23 @@ pub fn tasks_command(ctx: CommandContext) -> CommandHandler {
 
 /// Execute tasks command - list all tasks with status
 fn execute_tasks(ctx: CommandContext) -> CommandResult {
-  let tasks = store.get_all_tasks(ctx.store)
+  let tickets_dir = ticket.default_tickets_dir(ctx.working_dir)
+  let task_source = ticket.new(tickets_dir)
 
-  case tasks {
-    [] -> CommandOutput("No tasks found.")
-    _ -> {
-      let lines =
-        tasks
-        |> list.map(format_task_line)
-        |> string.join("\n")
+  case task_source.fetch_tasks() {
+    Error(err) -> CommandError("Failed to fetch tasks: " <> err)
+    Ok(tasks) -> {
+      case tasks {
+        [] -> CommandOutput("No tasks found in " <> tickets_dir)
+        _ -> {
+          let lines =
+            tasks
+            |> list.map(format_task_line)
+            |> string.join("\n")
 
-      CommandOutput("=== Tasks ===\n\n" <> lines)
+          CommandOutput("=== Tasks ===\n\n" <> lines)
+        }
+      }
     }
   }
 }
@@ -147,42 +140,20 @@ fn format_task_status(status: TaskStatus) -> String {
 }
 
 /// Create agents command handler
-pub fn agents_command(ctx: CommandContext) -> CommandHandler {
-  fn(_args) { execute_agents(ctx) }
+pub fn agents_command(_ctx: CommandContext) -> CommandHandler {
+  fn(_args) { execute_agents() }
 }
 
 /// Execute agents command - show agent status
-fn execute_agents(ctx: CommandContext) -> CommandResult {
-  let agents = store.get_all_agents(ctx.store)
-
-  case agents {
-    [] -> CommandOutput("No agents registered.")
-    _ -> {
-      let lines =
-        agents
-        |> list.map(format_agent_line)
-        |> string.join("\n")
-
-      CommandOutput("=== Agents ===\n\n" <> lines)
-    }
-  }
-}
-
-/// Format a single agent for display
-fn format_agent_line(agent: AgentState) -> String {
-  let status_str = format_agent_status(agent.status)
-  let id_short = string.slice(agent.config.id, 0, 12)
-
-  id_short <> " [" <> status_str <> "]"
-}
-
-/// Format agent status for display
-fn format_agent_status(status: AgentStatus) -> String {
-  case status {
-    types.Idle -> "idle"
-    types.Running(task_id, _) -> "running:" <> string.slice(task_id, 0, 8)
-    types.Failed(reason) -> "failed: " <> string.slice(reason, 0, 15)
-  }
+/// Note: Agent tracking is runtime-only, managed by the orchestrator during task execution.
+/// This will show active agents once multi-agent orchestration is implemented (Phase 5).
+fn execute_agents() -> CommandResult {
+  CommandOutput(
+    "No agents currently running.\n"
+    <> "\n"
+    <> "Agents are spawned when tasks are executed via 'scherzo run'.\n"
+    <> "Multi-agent support coming in Phase 5.",
+  )
 }
 
 // ---------------------------------------------------------------------------

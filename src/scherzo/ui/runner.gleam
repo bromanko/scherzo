@@ -1,9 +1,8 @@
-/// UI Runner - wires together REPL, commands, and orchestrator
+/// UI Runner - wires together REPL, commands, and ticket system
 ///
 /// Provides the startup sequence for the scherzo tmux UI,
-/// initializing all actors and running the control REPL.
+/// using the ticket system as the source of truth for tasks.
 import gleam/io
-import scherzo/state/store
 import scherzo/ui/commands
 import scherzo/ui/repl
 import scherzo/ui/session_manager
@@ -13,26 +12,18 @@ pub type RunnerConfig {
   RunnerConfig(
     /// Session name for tmux
     session_name: String,
-    /// Working directory
+    /// Working directory (contains .tickets/)
     working_dir: String,
-    /// State directory for persistence
-    state_dir: String,
   )
 }
 
 /// Default runner config
 pub fn default_config(working_dir: String) -> RunnerConfig {
-  RunnerConfig(
-    session_name: "scherzo",
-    working_dir: working_dir,
-    state_dir: working_dir <> "/.scherzo/state",
-  )
+  RunnerConfig(session_name: "scherzo", working_dir: working_dir)
 }
 
 /// Error during UI startup
 pub type RunnerError {
-  /// Failed to start state store
-  StoreError(String)
   /// Failed to create tmux session
   SessionError(String)
 }
@@ -40,36 +31,24 @@ pub type RunnerError {
 /// Start the UI with all components wired together
 /// This function blocks until the REPL exits
 pub fn start(config: RunnerConfig) -> Result(Nil, RunnerError) {
-  // Start state store
-  case store.start(store.StoreConfig(state_dir: config.state_dir)) {
-    Error(_) -> Error(StoreError("Failed to start state store"))
-    Ok(store_subject) -> {
-      // Load persisted state
-      store.load(store_subject)
+  // Create command context with working directory
+  // Tasks are queried directly from .tickets/ (single source of truth)
+  let command_ctx = commands.CommandContext(working_dir: config.working_dir)
 
-      // Create command context
-      let command_ctx = commands.CommandContext(store: store_subject)
+  // Create REPL config with all commands
+  let repl_config =
+    repl.default_config()
+    |> commands.register_all_commands(command_ctx)
 
-      // Create REPL config with all commands
-      let repl_config =
-        repl.default_config()
-        |> commands.register_all_commands(command_ctx)
+  // Print startup message
+  io.println("Scherzo Control REPL")
+  io.println("Type 'help' for available commands")
+  io.println("")
 
-      // Print startup message
-      io.println("Scherzo Control REPL")
-      io.println("Type 'help' for available commands")
-      io.println("")
+  // Run the REPL (blocks until quit)
+  repl.run(repl_config)
 
-      // Run the REPL (blocks until quit)
-      repl.run(repl_config)
-
-      // Persist state before shutdown
-      store.persist(store_subject)
-      store.stop(store_subject)
-
-      Ok(Nil)
-    }
-  }
+  Ok(Nil)
 }
 
 /// Start the UI with a tmux session
@@ -87,44 +66,28 @@ pub fn start_with_session(config: RunnerConfig) -> Result(Nil, RunnerError) {
       Error(SessionError(error_msg))
     }
     Ok(manager) -> {
-      // Start state store
-      case store.start(store.StoreConfig(state_dir: config.state_dir)) {
-        Error(_) -> {
-          // Clean up session on error
-          let _ = session_manager.destroy(manager)
-          Error(StoreError("Failed to start state store"))
-        }
-        Ok(store_subject) -> {
-          // Load persisted state
-          store.load(store_subject)
+      // Create command context with working directory
+      // Tasks are queried directly from .tickets/ (single source of truth)
+      let command_ctx = commands.CommandContext(working_dir: config.working_dir)
 
-          // Create command context
-          let command_ctx = commands.CommandContext(store: store_subject)
+      // Create REPL config with all commands
+      let repl_config =
+        repl.default_config()
+        |> commands.register_all_commands(command_ctx)
 
-          // Create REPL config with all commands
-          let repl_config =
-            repl.default_config()
-            |> commands.register_all_commands(command_ctx)
+      // Print startup message
+      io.println("Scherzo Control REPL")
+      io.println("Session: " <> config.session_name)
+      io.println("Type 'help' for available commands")
+      io.println("")
 
-          // Print startup message
-          io.println("Scherzo Control REPL")
-          io.println("Session: " <> config.session_name)
-          io.println("Type 'help' for available commands")
-          io.println("")
+      // Run the REPL (blocks until quit)
+      repl.run(repl_config)
 
-          // Run the REPL (blocks until quit)
-          repl.run(repl_config)
+      // Clean up tmux session
+      let _ = session_manager.destroy(manager)
 
-          // Persist state before shutdown
-          store.persist(store_subject)
-          store.stop(store_subject)
-
-          // Clean up tmux session
-          let _ = session_manager.destroy(manager)
-
-          Ok(Nil)
-        }
-      }
+      Ok(Nil)
     }
   }
 }
