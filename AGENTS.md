@@ -48,6 +48,27 @@ type: short description
 
 Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
 
+### Never Leave Commits Undescribed
+
+**Every commit must have a description.** Undescribed commits create confusion and make history hard to understand.
+
+- `jj commit` without `-m` will fail if no editor is configured - always use `jj commit -m "..."`
+- If you create a new change with `jj new`, describe it immediately with `jj describe -m "..."`
+- Before ending a session, run `jj log -n 5` to verify no commits are "(no description set)"
+- Empty commits (no file changes) should generally be abandoned with `jj abandon`
+
+```bash
+# BAD: Creates undescribed commit
+jj new
+
+# GOOD: Create and describe immediately
+jj new -m "feat: add user authentication"
+
+# Or describe after creating
+jj new
+jj describe -m "feat: add user authentication"
+```
+
 ## Project Structure
 
 Follow the structure defined in `PLAN.md`. Key directories:
