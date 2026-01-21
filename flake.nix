@@ -16,25 +16,28 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        ticket = pkgs.callPackage ./nix/pkgs/ticket.nix { };
       in
       {
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            # Gleam and Erlang
-            gleam
-            erlang
-            rebar3
+          buildInputs =
+            (with pkgs; [
+              # Gleam and Erlang
+              gleam
+              erlang
+              rebar3
 
-            # Runtime dependencies
-            jujutsu
-            tmux
+              # Runtime dependencies
+              jujutsu
+              tmux
 
-            # Development utilities
-            just
+              # Development utilities
+              just
 
-            # Formatting and linting
-            nixfmt-rfc-style
-          ];
+              # Formatting and linting
+              nixfmt-rfc-style
+            ])
+            ++ [ ticket ];
 
           shellHook = ''
             echo "Scherzo development environment"
