@@ -258,7 +258,10 @@ pub fn tasks_output_has_pending_group_test() {
 
 pub fn tasks_output_has_completed_group_test() {
   // We know this project has completed tasks
-  case commands.get_tasks(".") {
+  // Use --all filter since completed are hidden by default
+  let filter =
+    commands.TasksFilter(show_all: True, status_filter: commands.ShowActionable)
+  case commands.get_tasks_filtered(".", filter) {
     Ok(output) -> {
       // Should contain completed section since we have closed tickets
       string.contains(output, "=== Completed (")
@@ -269,7 +272,10 @@ pub fn tasks_output_has_completed_group_test() {
 }
 
 pub fn tasks_output_groups_separated_by_blank_lines_test() {
-  case commands.get_tasks(".") {
+  // Use --all filter to ensure multiple groups are shown
+  let filter =
+    commands.TasksFilter(show_all: True, status_filter: commands.ShowActionable)
+  case commands.get_tasks_filtered(".", filter) {
     Ok(output) -> {
       // Groups should be separated by double newlines (blank line between groups)
       // The format is: "...last task\n\n=== Next Group..."
@@ -337,4 +343,89 @@ pub fn tasks_output_low_priority_has_dot_indicator_test() {
     }
     Error(_) -> should.be_true(True)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Filtering Tests (s-182a)
+// ---------------------------------------------------------------------------
+
+pub fn tasks_default_filter_hides_completed_test() {
+  // Default filter should hide completed tasks
+  case commands.get_tasks(".") {
+    Ok(output) -> {
+      // Should NOT contain completed section
+      let has_completed = string.contains(output, "=== Completed (")
+      has_completed
+      |> should.be_false
+
+      // But should have a message about hidden tasks
+      let has_hidden_message = string.contains(output, "completed tasks hidden")
+      has_hidden_message
+      |> should.be_true
+    }
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn tasks_all_filter_shows_completed_test() {
+  // --all filter should show completed tasks
+  let filter =
+    commands.TasksFilter(show_all: True, status_filter: commands.ShowActionable)
+  case commands.get_tasks_filtered(".", filter) {
+    Ok(output) -> {
+      // Should contain completed section
+      string.contains(output, "=== Completed (")
+      |> should.be_true
+
+      // Should NOT have hidden message
+      let has_hidden_message = string.contains(output, "completed tasks hidden")
+      has_hidden_message
+      |> should.be_false
+    }
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn tasks_pending_filter_shows_only_pending_test() {
+  // --pending filter should show only pending tasks
+  let filter =
+    commands.TasksFilter(show_all: False, status_filter: commands.ShowPending)
+  case commands.get_tasks_filtered(".", filter) {
+    Ok(output) -> {
+      // Should contain pending section
+      string.contains(output, "=== Pending (")
+      |> should.be_true
+
+      // Should NOT contain completed or in-progress sections
+      let has_completed = string.contains(output, "=== Completed (")
+      let has_in_progress = string.contains(output, "=== In Progress (")
+
+      has_completed
+      |> should.be_false
+      has_in_progress
+      |> should.be_false
+    }
+    Error(_) -> should.be_true(True)
+  }
+}
+
+pub fn parse_filter_args_default_test() {
+  // No args should return default filter
+  let filter = commands.parse_filter_args([])
+  filter.show_all
+  |> should.be_false
+}
+
+pub fn parse_filter_args_all_test() {
+  // --all should set show_all to true
+  let filter = commands.parse_filter_args(["--all"])
+  filter.show_all
+  |> should.be_true
+}
+
+pub fn parse_filter_args_pending_test() {
+  // --pending should set status filter
+  let filter = commands.parse_filter_args(["--pending"])
+  { filter.status_filter == commands.ShowPending }
+  |> should.be_true
 }

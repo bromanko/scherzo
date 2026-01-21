@@ -190,13 +190,70 @@ fn status_command() -> glint.Command(Nil) {
   |> print_result
 }
 
+/// Flag for showing all tasks
+fn all_flag() {
+  glint.bool_flag("all")
+  |> glint.flag_default(False)
+  |> glint.flag_help("Show all tasks including completed")
+}
+
+/// Flag for showing only pending tasks
+fn pending_flag() {
+  glint.bool_flag("pending")
+  |> glint.flag_default(False)
+  |> glint.flag_help("Show only pending tasks")
+}
+
+/// Flag for showing only in-progress tasks
+fn in_progress_flag() {
+  glint.bool_flag("in-progress")
+  |> glint.flag_default(False)
+  |> glint.flag_help("Show only in-progress tasks")
+}
+
+/// Flag for showing only completed tasks
+fn completed_flag() {
+  glint.bool_flag("completed")
+  |> glint.flag_default(False)
+  |> glint.flag_help("Show only completed tasks")
+}
+
 fn tasks_command() -> glint.Command(Nil) {
   use <- glint.command_help("List all tasks with status")
   use workdir_getter <- glint.flag(workdir_flag())
+  use all_getter <- glint.flag(all_flag())
+  use pending_getter <- glint.flag(pending_flag())
+  use in_progress_getter <- glint.flag(in_progress_flag())
+  use completed_getter <- glint.flag(completed_flag())
   use _, _, flags <- glint.command()
 
-  get_working_dir(workdir_getter, flags)
-  |> commands.get_tasks
+  let working_dir = get_working_dir(workdir_getter, flags)
+
+  // Get flag values
+  let show_all = all_getter(flags) |> result.unwrap(False)
+  let show_pending = pending_getter(flags) |> result.unwrap(False)
+  let show_in_progress = in_progress_getter(flags) |> result.unwrap(False)
+  let show_completed = completed_getter(flags) |> result.unwrap(False)
+
+  // Build filter from flags
+  let filter = case show_all {
+    True ->
+      commands.TasksFilter(
+        show_all: True,
+        status_filter: commands.ShowActionable,
+      )
+    False -> {
+      let status_filter = case show_pending, show_in_progress, show_completed {
+        True, _, _ -> commands.ShowPending
+        _, True, _ -> commands.ShowInProgress
+        _, _, True -> commands.ShowCompleted
+        _, _, _ -> commands.ShowActionable
+      }
+      commands.TasksFilter(show_all: False, status_filter: status_filter)
+    }
+  }
+
+  commands.get_tasks_filtered(working_dir, filter)
   |> print_result
 }
 

@@ -24,6 +24,52 @@ pub type CommandContext {
   )
 }
 
+/// Filter options for tasks command
+pub type TasksFilter {
+  TasksFilter(
+    /// Show all tasks including completed (overrides other filters)
+    show_all: Bool,
+    /// Show only specific status categories
+    status_filter: StatusFilter,
+  )
+}
+
+/// Status filter options
+pub type StatusFilter {
+  /// Show actionable tasks (pending, in-progress, blocked, failed) - default
+  ShowActionable
+  /// Show only pending tasks
+  ShowPending
+  /// Show only in-progress tasks
+  ShowInProgress
+  /// Show only completed tasks
+  ShowCompleted
+  /// Show only blocked tasks
+  ShowBlocked
+  /// Show only failed tasks
+  ShowFailed
+}
+
+/// Default filter - shows actionable tasks (hides completed)
+pub fn default_filter() -> TasksFilter {
+  TasksFilter(show_all: False, status_filter: ShowActionable)
+}
+
+/// Parse filter arguments from command line args
+pub fn parse_filter_args(args: List(String)) -> TasksFilter {
+  list.fold(args, default_filter(), fn(filter, arg) {
+    case arg {
+      "--all" -> TasksFilter(..filter, show_all: True)
+      "--pending" -> TasksFilter(..filter, status_filter: ShowPending)
+      "--in-progress" -> TasksFilter(..filter, status_filter: ShowInProgress)
+      "--completed" -> TasksFilter(..filter, status_filter: ShowCompleted)
+      "--blocked" -> TasksFilter(..filter, status_filter: ShowBlocked)
+      "--failed" -> TasksFilter(..filter, status_filter: ShowFailed)
+      _ -> filter
+    }
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Shared Info Functions (used by both CLI and REPL)
 // ---------------------------------------------------------------------------
@@ -61,7 +107,11 @@ pub fn get_status(working_dir: String) -> Result(String, String) {
 }
 
 /// Get tasks list output - shared by CLI and REPL
-pub fn get_tasks(working_dir: String) -> Result(String, String) {
+/// Use default_filter() for standard behavior (hides completed)
+pub fn get_tasks_filtered(
+  working_dir: String,
+  filter: TasksFilter,
+) -> Result(String, String) {
   let tickets_dir = ticket.default_tickets_dir(working_dir)
   let task_source = ticket.new(tickets_dir)
 
@@ -74,25 +124,76 @@ pub fn get_tasks(working_dir: String) -> Result(String, String) {
           let #(in_progress, pending, blocked, completed, failed) =
             group_tasks_by_status(tasks)
 
-          // Format each group and filter out empty ones
-          let groups = [
-            format_task_group("In Progress", in_progress),
-            format_task_group("Pending", pending),
-            format_task_group("Blocked", blocked),
-            format_task_group("Completed", completed),
-            format_task_group("Failed", failed),
-          ]
+          // Determine which groups to show based on filter
+          let #(groups, hidden_count) = case filter.show_all {
+            True -> {
+              // Show all groups
+              #(
+                [
+                  format_task_group("In Progress", in_progress),
+                  format_task_group("Pending", pending),
+                  format_task_group("Blocked", blocked),
+                  format_task_group("Completed", completed),
+                  format_task_group("Failed", failed),
+                ],
+                0,
+              )
+            }
+            False ->
+              case filter.status_filter {
+                ShowActionable -> {
+                  // Show actionable tasks, hide completed
+                  let completed_count = list.length(completed)
+                  #(
+                    [
+                      format_task_group("In Progress", in_progress),
+                      format_task_group("Pending", pending),
+                      format_task_group("Blocked", blocked),
+                      format_task_group("Failed", failed),
+                    ],
+                    completed_count,
+                  )
+                }
+                ShowPending -> #([format_task_group("Pending", pending)], 0)
+                ShowInProgress -> #(
+                  [format_task_group("In Progress", in_progress)],
+                  0,
+                )
+                ShowCompleted -> #(
+                  [format_task_group("Completed", completed)],
+                  0,
+                )
+                ShowBlocked -> #([format_task_group("Blocked", blocked)], 0)
+                ShowFailed -> #([format_task_group("Failed", failed)], 0)
+              }
+          }
 
-          let output =
+          let filtered_output =
             groups
             |> list.filter(fn(s) { s != "" })
             |> string.join("\n\n")
+
+          // Add hidden count message if applicable
+          let output = case hidden_count > 0 {
+            True ->
+              filtered_output
+              <> "\n\n"
+              <> int.to_string(hidden_count)
+              <> " completed tasks hidden. Use --all to show."
+            False -> filtered_output
+          }
 
           Ok(output)
         }
       }
     }
   }
+}
+
+/// Get tasks list output with default filter (hides completed)
+/// Convenience wrapper for backward compatibility
+pub fn get_tasks(working_dir: String) -> Result(String, String) {
+  get_tasks_filtered(working_dir, default_filter())
 }
 
 /// Get agents output - shared by CLI and REPL
@@ -120,9 +221,11 @@ pub fn status_command(ctx: CommandContext) -> CommandHandler {
 }
 
 /// Create tasks command handler for REPL
+/// Supports: tasks, tasks --all, tasks --pending, tasks --in-progress, etc.
 pub fn tasks_command(ctx: CommandContext) -> CommandHandler {
-  fn(_args) {
-    case get_tasks(ctx.working_dir) {
+  fn(args) {
+    let filter = parse_filter_args(args)
+    case get_tasks_filtered(ctx.working_dir, filter) {
       Ok(output) -> CommandOutput(output)
       Error(err) -> CommandError(err)
     }
