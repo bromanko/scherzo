@@ -9,8 +9,8 @@ import gleam/int
 import gleam/list
 import gleam/string
 import scherzo/core/task.{
-  type Task, type TaskStatus, Assigned, Blocked, Completed, Failed, InProgress,
-  Pending, Ready,
+  type Priority, type Task, Assigned, Blocked, Completed, Critical, Failed, High,
+  InProgress, Low, Normal, Pending, Ready,
 }
 import scherzo/task/sources/ticket
 import scherzo/ui/repl.{type CommandHandler, CommandError, CommandOutput}
@@ -36,27 +36,24 @@ pub fn get_status(working_dir: String) -> Result(String, String) {
   case task_source.fetch_tasks() {
     Error(err) -> Error("Failed to fetch tasks: " <> err)
     Ok(tasks) -> {
-      let #(pending, in_progress, completed, failed) =
+      let #(pending, in_progress, blocked, completed, failed) =
         count_task_statuses(tasks)
 
       let output =
-        "=== Scherzo Status ===\n"
-        <> "\n"
-        <> "Tasks:\n"
-        <> "  Pending:     "
-        <> int.to_string(pending)
-        <> "\n"
-        <> "  In Progress: "
-        <> int.to_string(in_progress)
-        <> "\n"
-        <> "  Completed:   "
-        <> int.to_string(completed)
-        <> "\n"
-        <> "  Failed:      "
-        <> int.to_string(failed)
-        <> "\n"
-        <> "  Total:       "
-        <> int.to_string(list.length(tasks))
+        string.join(
+          [
+            "=== Scherzo Status ===",
+            "",
+            "Tasks:",
+            "  Pending:     " <> int.to_string(pending),
+            "  In Progress: " <> int.to_string(in_progress),
+            "  Blocked:     " <> int.to_string(blocked),
+            "  Completed:   " <> int.to_string(completed),
+            "  Failed:      " <> int.to_string(failed),
+            "  Total:       " <> int.to_string(list.length(tasks)),
+          ],
+          "\n",
+        )
 
       Ok(output)
     }
@@ -74,12 +71,24 @@ pub fn get_tasks(working_dir: String) -> Result(String, String) {
       case tasks {
         [] -> Ok("No tasks found in " <> tickets_dir)
         _ -> {
-          let lines =
-            tasks
-            |> list.map(format_task_line)
-            |> string.join("\n")
+          let #(in_progress, pending, blocked, completed, failed) =
+            group_tasks_by_status(tasks)
 
-          Ok("=== Tasks ===\n\n" <> lines)
+          // Format each group and filter out empty ones
+          let groups = [
+            format_task_group("In Progress", in_progress),
+            format_task_group("Pending", pending),
+            format_task_group("Blocked", blocked),
+            format_task_group("Completed", completed),
+            format_task_group("Failed", failed),
+          ]
+
+          let output =
+            groups
+            |> list.filter(fn(s) { s != "" })
+            |> string.join("\n\n")
+
+          Ok(output)
         }
       }
     }
@@ -134,48 +143,100 @@ pub fn agents_command(_ctx: CommandContext) -> CommandHandler {
 // Helper Functions
 // ---------------------------------------------------------------------------
 
+/// Group tasks by status category in a single pass
+/// Returns: #(in_progress, pending, blocked, completed, failed)
+fn group_tasks_by_status(
+  tasks: List(Task),
+) -> #(List(Task), List(Task), List(Task), List(Task), List(Task)) {
+  let #(in_progress, pending, blocked, completed, failed) =
+    list.fold(tasks, #([], [], [], [], []), fn(acc, task) {
+      let #(ip, pend, blk, comp, fail) = acc
+      case task.status {
+        Assigned(_) | InProgress(_, _) -> #([task, ..ip], pend, blk, comp, fail)
+        Pending | Ready -> #(ip, [task, ..pend], blk, comp, fail)
+        Blocked(_) -> #(ip, pend, [task, ..blk], comp, fail)
+        Completed(_, _) -> #(ip, pend, blk, [task, ..comp], fail)
+        Failed(_, _, _) -> #(ip, pend, blk, comp, [task, ..fail])
+      }
+    })
+  // Reverse to maintain original order
+  #(
+    list.reverse(in_progress),
+    list.reverse(pending),
+    list.reverse(blocked),
+    list.reverse(completed),
+    list.reverse(failed),
+  )
+}
+
+/// Format a group of tasks with a header
+fn format_task_group(title: String, tasks: List(Task)) -> String {
+  case tasks {
+    [] -> ""
+    _ -> {
+      let count = list.length(tasks)
+      let header = "=== " <> title <> " (" <> int.to_string(count) <> ") ==="
+      // Sort by priority (critical first) before formatting
+      let sorted =
+        list.sort(tasks, fn(a, b) {
+          int.compare(
+            priority_sort_key(a.priority),
+            priority_sort_key(b.priority),
+          )
+        })
+      let lines = list.map(sorted, format_task_line_simple)
+      header <> "\n" <> string.join(lines, "\n")
+    }
+  }
+}
+
+/// Format a task line with priority indicator
+fn format_task_line_simple(task: Task) -> String {
+  let priority_indicator = format_priority(task.priority)
+  let id_short = string.slice(task.id, 0, 8)
+  priority_indicator <> " " <> id_short <> " " <> task.title
+}
+
+/// Format priority as visual indicator
+/// Critical: !!!, High: !!, Normal: (space), Low: .
+fn format_priority(priority: Priority) -> String {
+  case priority {
+    Critical -> "!!!"
+    High -> "!! "
+    Normal -> "   "
+    Low -> " . "
+  }
+}
+
+/// Get sort key for priority (lower = higher priority)
+fn priority_sort_key(priority: Priority) -> Int {
+  case priority {
+    Critical -> 0
+    High -> 1
+    Normal -> 2
+    Low -> 3
+  }
+}
+
 /// Count tasks by status category
-fn count_task_statuses(tasks: List(Task)) -> #(Int, Int, Int, Int) {
-  list.fold(tasks, #(0, 0, 0, 0), fn(acc, task) {
-    let #(pending, in_progress, completed, failed) = acc
+/// Returns: #(pending, in_progress, blocked, completed, failed)
+fn count_task_statuses(tasks: List(Task)) -> #(Int, Int, Int, Int, Int) {
+  list.fold(tasks, #(0, 0, 0, 0, 0), fn(acc, task) {
+    let #(pending, in_progress, blocked, completed, failed) = acc
     case task.status {
-      Pending | Ready | Blocked(_) -> #(
-        pending + 1,
-        in_progress,
-        completed,
-        failed,
-      )
+      Pending | Ready -> #(pending + 1, in_progress, blocked, completed, failed)
       Assigned(_) | InProgress(_, _) -> #(
         pending,
         in_progress + 1,
+        blocked,
         completed,
         failed,
       )
-      Completed(_, _) -> #(pending, in_progress, completed + 1, failed)
-      Failed(_, _, _) -> #(pending, in_progress, completed, failed + 1)
+      Blocked(_) -> #(pending, in_progress, blocked + 1, completed, failed)
+      Completed(_, _) -> #(pending, in_progress, blocked, completed + 1, failed)
+      Failed(_, _, _) -> #(pending, in_progress, blocked, completed, failed + 1)
     }
   })
-}
-
-/// Format a single task for display
-fn format_task_line(task: Task) -> String {
-  let status_str = format_task_status(task.status)
-  let id_short = string.slice(task.id, 0, 8)
-
-  id_short <> " [" <> status_str <> "] " <> task.title
-}
-
-/// Format task status for display
-fn format_task_status(status: TaskStatus) -> String {
-  case status {
-    Pending -> "pending"
-    Ready -> "ready"
-    Blocked(reason) -> "blocked: " <> string.slice(reason, 0, 20)
-    Assigned(agent_id) -> "assigned:" <> string.slice(agent_id, 0, 8)
-    InProgress(agent_id, _) -> "running:" <> string.slice(agent_id, 0, 8)
-    Completed(_, _) -> "done"
-    Failed(_, reason, _) -> "failed: " <> string.slice(reason, 0, 15)
-  }
 }
 
 // ---------------------------------------------------------------------------
