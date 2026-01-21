@@ -25,6 +25,7 @@ pub fn main() {
   |> glint.add(at: ["checkpoint"], do: checkpoint_command())
   |> glint.add(at: ["attach"], do: attach_command())
   |> glint.add(at: ["repl"], do: repl_command())
+  |> glint.add(at: ["console"], do: console_command())
   |> glint.run(argv.load().arguments)
 }
 
@@ -37,10 +38,12 @@ fn root_command() -> glint.Command(Nil) {
 }
 
 /// Flag for working directory
+/// Note: No default so we can distinguish explicit from omitted
 fn workdir_flag() {
   glint.string_flag("workdir")
-  |> glint.flag_default(".")
-  |> glint.flag_help("Working directory for the agent")
+  |> glint.flag_help(
+    "Working directory for the agent (default: current directory)",
+  )
 }
 
 /// Flag for running from tickets
@@ -66,7 +69,7 @@ fn run_command() -> glint.Command(Nil) {
   use max_tasks_getter <- glint.flag(max_tasks_flag())
   use _, args, flags <- glint.command()
 
-  // Get flags (flag_default ensures these always succeed, unwrap provides defense-in-depth)
+  // Get flags
   let working_dir =
     workdir_getter(flags)
     |> result.unwrap(".")
@@ -288,7 +291,7 @@ fn checkpoint_command() -> glint.Command(Nil) {
   // Try to read task info from current directory (workspace)
   case workspace.read_task_info(cwd) {
     Ok(task_info) -> {
-      create_checkpoint(task_info, checkpoint_type, cwd)
+      create_checkpoint(task_info, checkpoint_type)
     }
     Error(_) -> {
       case args {
@@ -301,7 +304,7 @@ fn checkpoint_command() -> glint.Command(Nil) {
               description: "",
               repo_dir: cwd,
             )
-          create_checkpoint(task_info, checkpoint_type, cwd)
+          create_checkpoint(task_info, checkpoint_type)
         }
         _ -> {
           io.println("Warning: No task context found for checkpoint")
@@ -314,11 +317,17 @@ fn checkpoint_command() -> glint.Command(Nil) {
 }
 
 /// Parse checkpoint type string to enum
-fn parse_checkpoint_type(type_str: String) -> checkpoint.CheckpointType {
+pub fn parse_checkpoint_type(type_str: String) -> checkpoint.CheckpointType {
   case type_str {
     "incremental" -> checkpoint.Incremental
     "pre_compact" -> checkpoint.PreCompact
-    _ -> checkpoint.Final
+    "final" -> checkpoint.Final
+    other -> {
+      io.println(
+        "Warning: Unknown checkpoint type '" <> other <> "', using 'final'",
+      )
+      checkpoint.Final
+    }
   }
 }
 
@@ -326,7 +335,6 @@ fn parse_checkpoint_type(type_str: String) -> checkpoint.CheckpointType {
 fn create_checkpoint(
   task_info: workspace.TaskInfo,
   checkpoint_type: checkpoint.CheckpointType,
-  _workspace_dir: String,
 ) -> Nil {
   // Get agent ID from environment (optional - default "agent-1" is safe for single-agent use)
   let agent_id = get_env("SCHERZO_AGENT_ID") |> result.unwrap("agent-1")
@@ -394,6 +402,30 @@ fn get_env(name: String) -> Result(String, Nil) {
 }
 
 // ---------------------------------------------------------------------------
+// Attach Helpers
+// ---------------------------------------------------------------------------
+
+/// Attach to a tmux session with standardized error handling
+fn do_attach_session(session_name: String) -> Nil {
+  io.println("Attaching to scherzo session...")
+  case tmux.attach_session(session_name) {
+    Ok(_) -> Nil
+    Error(tmux.SessionNotFound(_)) -> {
+      io.println("Error: Session disappeared before attach")
+    }
+    Error(tmux.CommandFailed(msg)) -> {
+      io.println("Error attaching to session: " <> msg)
+    }
+    Error(tmux.SessionExists(_)) -> {
+      io.println("Unexpected error: session exists")
+    }
+    Error(tmux.TmuxNotAvailable) -> {
+      io.println("Error: tmux is not available on this system")
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Attach Command
 // ---------------------------------------------------------------------------
 
@@ -407,28 +439,10 @@ fn attach_command() -> glint.Command(Nil) {
     False -> {
       io.println("No scherzo session found.")
       io.println("")
-      io.println("Start a session with: scherzo run --from-tickets")
+      io.println("Start a session with: scherzo console")
       io.println("Or create one manually: tmux new-session -s " <> session_name)
     }
-    True -> {
-      io.println("Attaching to scherzo session...")
-      case tmux.attach_session(session_name) {
-        Ok(_) -> Nil
-        Error(tmux.SessionNotFound(_)) -> {
-          io.println("Error: Session disappeared before attach")
-        }
-        Error(tmux.CommandFailed(msg)) -> {
-          io.println("Error attaching to session: " <> msg)
-        }
-        Error(tmux.SessionExists(_)) -> {
-          // This shouldn't happen for attach
-          io.println("Unexpected error: session exists")
-        }
-        Error(tmux.TmuxNotAvailable) -> {
-          io.println("Error: tmux is not available on this system")
-        }
-      }
-    }
+    True -> do_attach_session(session_name)
   }
   Nil
 }
@@ -455,6 +469,59 @@ fn repl_command() -> glint.Command(Nil) {
     Ok(_) -> io.println("Goodbye!")
     Error(runner.StoreError(msg)) -> io.println("Error starting store: " <> msg)
     Error(runner.SessionError(msg)) -> io.println("Error with session: " <> msg)
+  }
+
+  Nil
+}
+
+// ---------------------------------------------------------------------------
+// Console Command
+// ---------------------------------------------------------------------------
+
+fn console_command() -> glint.Command(Nil) {
+  use <- glint.command_help(
+    "Start the scherzo console (creates tmux session or attaches if exists)",
+  )
+  use workdir_getter <- glint.flag(workdir_flag())
+  use _, _, flags <- glint.command()
+
+  let session_name = tmux.default_session_name
+  let workdir_flag_value = workdir_getter(flags)
+
+  case tmux.session_exists(session_name) {
+    True -> {
+      // Session already exists, attach to it
+      // Warn if --workdir was explicitly provided since it will be ignored
+      case workdir_flag_value {
+        Ok(_) -> {
+          io.println("Note: --workdir ignored, attaching to existing session")
+        }
+        Error(_) -> Nil
+      }
+      do_attach_session(session_name)
+    }
+    False -> {
+      // No session exists, create one with the REPL
+      let working_dir =
+        workdir_flag_value
+        |> result.unwrap(".")
+        |> resolve_path()
+
+      io.println("Starting scherzo console...")
+      io.println("Working directory: " <> working_dir)
+      io.println("")
+
+      let config = runner.default_config(working_dir)
+      case runner.start_with_session(config) {
+        Ok(_) -> io.println("Goodbye!")
+        Error(runner.StoreError(msg)) -> {
+          io.println("Error starting store: " <> msg)
+        }
+        Error(runner.SessionError(msg)) -> {
+          io.println("Error creating session: " <> msg)
+        }
+      }
+    }
   }
 
   Nil
