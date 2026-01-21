@@ -43,6 +43,8 @@ pub type Task {
     source_id: Option(String),
     /// jj change ID when work started
     jj_change_id: Option(String),
+    /// Parent task ID for hierarchical organization
+    parent: Option(Id),
   )
 }
 
@@ -59,6 +61,7 @@ pub fn new(id: Id, title: String, description: String) -> Task {
     updated_at: 0,
     source_id: None,
     jj_change_id: None,
+    parent: None,
   )
 }
 

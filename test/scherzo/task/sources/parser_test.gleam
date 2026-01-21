@@ -1,3 +1,4 @@
+import gleam/option.{None, Some}
 import gleeunit/should
 import scherzo/task/sources/parser
 
@@ -236,4 +237,45 @@ priority: not-a-number
 
   // Should fall back to default priority
   ticket.priority |> should.equal(2)
+}
+
+pub fn parse_content_extracts_parent_test() {
+  let content =
+    "---
+id: s-1234
+parent: s-0001
+---
+# Title"
+
+  let result = parser.parse_content(content)
+  let assert Ok(ticket) = result
+
+  ticket.parent |> should.equal(Some("s-0001"))
+}
+
+pub fn parse_content_defaults_parent_to_none_test() {
+  let content =
+    "---
+id: s-1234
+---
+# Title"
+
+  let result = parser.parse_content(content)
+  let assert Ok(ticket) = result
+
+  ticket.parent |> should.equal(None)
+}
+
+pub fn parse_content_handles_empty_parent_test() {
+  let content =
+    "---
+id: s-1234
+parent:
+---
+# Title"
+
+  let result = parser.parse_content(content)
+  let assert Ok(ticket) = result
+
+  ticket.parent |> should.equal(None)
 }

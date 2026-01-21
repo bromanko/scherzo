@@ -263,6 +263,7 @@ fn encode_task(t: Task) -> json.Json {
     #("updated_at", json.int(t.updated_at)),
     #("source_id", encode_option(t.source_id, json.string)),
     #("jj_change_id", encode_option(t.jj_change_id, json.string)),
+    #("parent", encode_option(t.parent, json.string)),
   ])
 }
 
@@ -383,6 +384,7 @@ fn decode_task() -> decode.Decoder(Task) {
     "jj_change_id",
     decode.optional(decode.string),
   )
+  use parent <- decode.field("parent", decode.optional(decode.string))
   decode.success(Task(
     id: id,
     title: title,
@@ -394,6 +396,7 @@ fn decode_task() -> decode.Decoder(Task) {
     updated_at: updated_at,
     source_id: source_id,
     jj_change_id: jj_change_id,
+    parent: parent,
   ))
 }
 

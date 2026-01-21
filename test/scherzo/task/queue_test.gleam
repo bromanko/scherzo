@@ -15,6 +15,7 @@ fn make_task(id: String, priority: task.Priority) -> Task {
     updated_at: 1000,
     source_id: None,
     jj_change_id: None,
+    parent: None,
   )
 }
 

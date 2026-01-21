@@ -94,6 +94,7 @@ fn ticket_to_task(ticket: parser.ParsedTicket) -> Task {
     updated_at: 0,
     source_id: Some(ticket.id),
     jj_change_id: None,
+    parent: ticket.parent,
   )
 }
 

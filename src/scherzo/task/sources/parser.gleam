@@ -45,6 +45,8 @@ pub type ParsedTicket {
     priority: Int,
     deps: List(String),
     tags: List(String),
+    /// Parent ticket ID for hierarchical organization
+    parent: Option(String),
   )
 }
 
@@ -79,6 +81,7 @@ pub fn parse_content(content: String) -> Result(ParsedTicket, String) {
             )),
             deps: list.take(metadata.deps, max_deps),
             tags: list.take(metadata.tags, max_tags),
+            parent: metadata.parent,
           ))
       }
     }
@@ -117,13 +120,21 @@ type FrontmatterData {
     priority: Option(Int),
     deps: List(String),
     tags: List(String),
+    parent: Option(String),
   )
 }
 
 /// Parse YAML-like frontmatter (simple key: value format)
 fn parse_frontmatter(frontmatter: String) -> FrontmatterData {
   let initial =
-    FrontmatterData(id: None, status: None, priority: None, deps: [], tags: [])
+    FrontmatterData(
+      id: None,
+      status: None,
+      priority: None,
+      deps: [],
+      tags: [],
+      parent: None,
+    )
 
   frontmatter
   |> string.split("\n")
@@ -148,6 +159,15 @@ fn parse_frontmatter(frontmatter: String) -> FrontmatterData {
             )
           "deps" -> FrontmatterData(..acc, deps: parse_list(value))
           "tags" -> FrontmatterData(..acc, tags: parse_list(value))
+          "parent" ->
+            case value {
+              "" -> acc
+              _ ->
+                FrontmatterData(
+                  ..acc,
+                  parent: Some(workspace.sanitize_id(value)),
+                )
+            }
           _ -> acc
         }
       }

@@ -20,6 +20,7 @@ fn make_test_task() -> Task {
     updated_at: 1000,
     source_id: None,
     jj_change_id: None,
+    parent: None,
   )
 }
 
