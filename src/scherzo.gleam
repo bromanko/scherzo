@@ -9,6 +9,7 @@ import glint
 import scherzo/agent/checkpoint
 import scherzo/agent/workspace
 import scherzo/orchestrator
+import scherzo/orchestrator/coordinator
 import scherzo/task/sources/ticket
 import scherzo/ui/commands
 import scherzo/ui/layout
@@ -117,17 +118,17 @@ fn run_single_task(working_dir: String, title: String, description: String) {
   let config = orchestrator.default_config(working_dir)
 
   case orchestrator.run_task(config, title, description) {
-    orchestrator.RunSuccess(output, change_id) -> {
+    coordinator.RunSuccess(output, change_id) -> {
       io.println("Task completed successfully!")
       io.println("Change ID: " <> change_id)
       io.println("")
       io.println("Output:")
       io.println(output)
     }
-    orchestrator.RunFailed(reason) -> {
+    coordinator.RunFailed(reason) -> {
       io.println("Task failed: " <> reason)
     }
-    orchestrator.RunExhausted(continuations, last_output, change_id) -> {
+    coordinator.RunExhausted(continuations, last_output, change_id) -> {
       io.println(
         "Task exhausted after "
         <> int.to_string(continuations)
@@ -137,6 +138,10 @@ fn run_single_task(working_dir: String, title: String, description: String) {
       io.println("")
       io.println("Last output:")
       io.println(last_output)
+    }
+    coordinator.RunGatesFailed(gate_name, feedback_summary) -> {
+      io.println("Gates failed: " <> gate_name)
+      io.println("Feedback: " <> feedback_summary)
     }
   }
 }

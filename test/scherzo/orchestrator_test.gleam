@@ -1,7 +1,9 @@
 import gleeunit/should
-import scherzo/orchestrator.{
-  BatchResult, OrchestratorConfig, RunExhausted, RunFailed, RunSuccess,
-  TaskResult,
+import scherzo/config/types as config
+import scherzo/orchestrator
+import scherzo/orchestrator/coordinator.{
+  BatchResult, CoordinatorConfig, RunExhausted, RunFailed, RunGatesFailed,
+  RunSuccess, TaskResult,
 }
 
 pub fn default_config_sets_working_dir_test() {
@@ -23,16 +25,18 @@ pub fn default_config_sets_max_continuations_test() {
 }
 
 pub fn orchestrator_config_can_be_customized_test() {
-  let config =
-    OrchestratorConfig(
+  let cfg =
+    CoordinatorConfig(
       working_dir: "/custom/path",
       max_retries: 5,
       max_continuations: 10,
+      gates_config: config.default_gates_config(),
+      retry_config: config.default_retry_config(),
     )
 
-  config.working_dir |> should.equal("/custom/path")
-  config.max_retries |> should.equal(5)
-  config.max_continuations |> should.equal(10)
+  cfg.working_dir |> should.equal("/custom/path")
+  cfg.max_retries |> should.equal(5)
+  cfg.max_continuations |> should.equal(10)
 }
 
 pub fn run_result_types_exist_test() {
@@ -41,6 +45,7 @@ pub fn run_result_types_exist_test() {
   let _ = RunFailed(reason: "error")
   let _ =
     RunExhausted(continuations: 5, last_output: "partial", change_id: "xyz")
+  let _ = RunGatesFailed(gate_name: "tests", feedback_summary: "1 error")
   should.be_true(True)
 }
 
@@ -107,4 +112,13 @@ pub fn run_exhausted_contains_continuation_info_test() {
   continuations |> should.equal(5)
   last_output |> should.equal("partial work")
   change_id |> should.equal("xyz")
+}
+
+pub fn run_gates_failed_contains_info_test() {
+  let result =
+    RunGatesFailed(gate_name: "typecheck", feedback_summary: "2 errors found")
+
+  let RunGatesFailed(gate_name, feedback_summary) = result
+  gate_name |> should.equal("typecheck")
+  feedback_summary |> should.equal("2 errors found")
 }
