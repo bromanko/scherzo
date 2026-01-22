@@ -282,8 +282,13 @@ fn do_initialize(
     |> result.map_error(map_fs_error),
   )
 
+  // Create agent config stubs
+  use agent_files <- result.try(create_agent_stubs(config_dir))
+
+  // Build list of created files
+  let created = list.append([".scherzo/config.toml"], agent_files)
+
   // Optionally create tickets directory
-  let created = [".scherzo/config.toml"]
   case with_tickets {
     False -> Ok(created)
     True -> {
@@ -294,6 +299,41 @@ fn do_initialize(
       Ok(list.append(created, [".tickets/"]))
     }
   }
+}
+
+/// Create agent configuration stubs
+fn create_agent_stubs(config_dir: String) -> Result(List(String), InitError) {
+  let agents_dir = config_dir <> "/agents/task"
+
+  // Create agents/task directory
+  use _ <- result.try(
+    simplifile.create_directory_all(agents_dir)
+    |> result.map_error(map_fs_error),
+  )
+
+  // Create CLAUDE.md stub with helpful template
+  let claude_md_content =
+    "# Task Agent Instructions
+
+<!-- These instructions REPLACE defaults. Customize how the agent works. -->
+
+## Project Context
+
+Describe your project here.
+
+## Coding Standards
+
+- Your conventions
+- Framework patterns
+- Testing requirements
+"
+
+  use _ <- result.try(
+    simplifile.write(agents_dir <> "/CLAUDE.md", claude_md_content)
+    |> result.map_error(map_fs_error),
+  )
+
+  Ok([".scherzo/agents/task/CLAUDE.md"])
 }
 
 /// Validate that all templates are known

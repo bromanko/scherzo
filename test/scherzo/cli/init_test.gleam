@@ -209,3 +209,64 @@ pub fn format_error_filesystem_error_test() {
   msg |> string.contains("Filesystem error") |> should.be_true
   msg |> string.contains("Permission denied") |> should.be_true
 }
+
+// -----------------------------------------------------------------------------
+// Agent stubs tests
+// -----------------------------------------------------------------------------
+
+pub fn initialize_creates_agent_stubs_test() {
+  with_temp_dir(fn(dir) {
+    let result = init.initialize(dir, [], False, False)
+    result |> should.be_ok
+
+    // Agent stub should exist
+    let claude_md_path = dir <> "/.scherzo/agents/task/CLAUDE.md"
+    simplifile.is_file(claude_md_path) |> should.equal(Ok(True))
+  })
+}
+
+pub fn initialize_agent_stub_contains_template_test() {
+  with_temp_dir(fn(dir) {
+    let _ = init.initialize(dir, [], False, False)
+
+    let claude_md_path = dir <> "/.scherzo/agents/task/CLAUDE.md"
+    let assert Ok(content) = simplifile.read(claude_md_path)
+
+    // Should contain helpful template sections
+    content |> string.contains("# Task Agent Instructions") |> should.be_true
+    content |> string.contains("## Project Context") |> should.be_true
+    content |> string.contains("## Coding Standards") |> should.be_true
+    content |> string.contains("REPLACE defaults") |> should.be_true
+  })
+}
+
+pub fn initialize_returns_agent_stub_in_created_files_test() {
+  with_temp_dir(fn(dir) {
+    let result = init.initialize(dir, [], False, False)
+    let assert Ok(created_files) = result
+
+    // Should include the agent stub path
+    created_files
+    |> string.join(",")
+    |> string.contains(".scherzo/agents/task/CLAUDE.md")
+    |> should.be_true
+  })
+}
+
+pub fn initialize_force_overwrites_agent_stub_test() {
+  with_temp_dir(fn(dir) {
+    // First initialization
+    let _ = init.initialize(dir, [], False, False)
+
+    // Modify the stub
+    let claude_md_path = dir <> "/.scherzo/agents/task/CLAUDE.md"
+    let _ = simplifile.write(claude_md_path, "# Custom content")
+
+    // Force reinitialize
+    let _ = init.initialize(dir, [], False, True)
+
+    // Should be overwritten with template
+    let assert Ok(content) = simplifile.read(claude_md_path)
+    content |> string.contains("# Task Agent Instructions") |> should.be_true
+  })
+}
