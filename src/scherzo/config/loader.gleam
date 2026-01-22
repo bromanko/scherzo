@@ -44,7 +44,9 @@ pub fn load(working_dir: String) -> Result(ScherzoConfig, LoadError) {
 }
 
 /// Load config when user config file exists
-fn load_with_user_config(config_path: String) -> Result(ScherzoConfig, LoadError) {
+fn load_with_user_config(
+  config_path: String,
+) -> Result(ScherzoConfig, LoadError) {
   case parser.parse_file(config_path) {
     Error(e) -> Error(ParseError(e))
     Ok(user_config) -> {
@@ -116,68 +118,65 @@ fn merge_retry_config(_base: RetryConfig, user: RetryConfig) -> RetryConfig {
 /// Code review formula - comprehensive 7-dimension parallel review
 fn code_review_formula() -> ScherzoConfig {
   ScherzoConfig(
-    gates: GatesConfig(
-      formula: Some("code-review"),
-      gates: [
-        // First run tests and type checking
-        CommandGate(
-          name: "tests",
-          command: "gleam test",
-          timeout_ms: 300_000,
-          serial: True,
-          fail_fast: False,
-        ),
-        CommandGate(
-          name: "check",
-          command: "gleam check",
-          timeout_ms: 60_000,
-          serial: True,
-          fail_fast: False,
-        ),
-        // Then parallel code review
-        ParallelReviewGate(
-          name: "code-review",
-          dimensions: [
-            ReviewDimension(
-              id: "correctness",
-              focus: "Functional correctness and bug detection",
-              prompt: "Review the code changes for correctness. Look for:\n- Logic errors and edge cases\n- Off-by-one errors\n- Null/None handling\n- Race conditions\n- Resource leaks",
-            ),
-            ReviewDimension(
-              id: "security",
-              focus: "Security vulnerabilities",
-              prompt: "Review the code changes for security issues. Look for:\n- Input validation gaps\n- Injection vulnerabilities\n- Authentication/authorization issues\n- Sensitive data exposure\n- Cryptographic weaknesses",
-            ),
-            ReviewDimension(
-              id: "performance",
-              focus: "Performance and efficiency",
-              prompt: "Review the code changes for performance. Look for:\n- Algorithmic complexity issues\n- Unnecessary allocations\n- N+1 query patterns\n- Missing caching opportunities\n- Blocking operations",
-            ),
-            ReviewDimension(
-              id: "maintainability",
-              focus: "Code clarity and maintainability",
-              prompt: "Review the code changes for maintainability. Look for:\n- Complex or unclear logic\n- Poor naming\n- Missing or misleading comments\n- Code duplication\n- Overly long functions",
-            ),
-            ReviewDimension(
-              id: "testing",
-              focus: "Test coverage and quality",
-              prompt: "Review the test changes (if any). Look for:\n- Missing test cases for new functionality\n- Edge cases not covered\n- Brittle tests\n- Unclear test names\n- Missing assertions",
-            ),
-            ReviewDimension(
-              id: "api-design",
-              focus: "API design and contracts",
-              prompt: "Review any API changes. Look for:\n- Breaking changes\n- Unclear contracts\n- Poor error handling\n- Missing documentation\n- Inconsistent naming",
-            ),
-            ReviewDimension(
-              id: "architecture",
-              focus: "Architectural concerns",
-              prompt: "Review for architectural issues. Look for:\n- Inappropriate coupling\n- Layer violations\n- Missing abstractions\n- Scalability concerns\n- Configuration management",
-            ),
-          ],
-          synthesis_prompt: "Synthesize the dimension reviews into a unified assessment. Prioritize findings by severity (P0 critical, P1 major, P2 minor, P3 suggestion). Focus on actionable feedback.",
-        ),
-      ],
-    ),
+    gates: GatesConfig(formula: Some("code-review"), gates: [
+      // First run tests and type checking
+      CommandGate(
+        name: "tests",
+        command: "gleam test",
+        timeout_ms: 300_000,
+        serial: True,
+        fail_fast: False,
+      ),
+      CommandGate(
+        name: "check",
+        command: "gleam check",
+        timeout_ms: 60_000,
+        serial: True,
+        fail_fast: False,
+      ),
+      // Then parallel code review
+      ParallelReviewGate(
+        name: "code-review",
+        dimensions: [
+          ReviewDimension(
+            id: "correctness",
+            focus: "Functional correctness and bug detection",
+            prompt: "Review the code changes for correctness. Look for:\n- Logic errors and edge cases\n- Off-by-one errors\n- Null/None handling\n- Race conditions\n- Resource leaks",
+          ),
+          ReviewDimension(
+            id: "security",
+            focus: "Security vulnerabilities",
+            prompt: "Review the code changes for security issues. Look for:\n- Input validation gaps\n- Injection vulnerabilities\n- Authentication/authorization issues\n- Sensitive data exposure\n- Cryptographic weaknesses",
+          ),
+          ReviewDimension(
+            id: "performance",
+            focus: "Performance and efficiency",
+            prompt: "Review the code changes for performance. Look for:\n- Algorithmic complexity issues\n- Unnecessary allocations\n- N+1 query patterns\n- Missing caching opportunities\n- Blocking operations",
+          ),
+          ReviewDimension(
+            id: "maintainability",
+            focus: "Code clarity and maintainability",
+            prompt: "Review the code changes for maintainability. Look for:\n- Complex or unclear logic\n- Poor naming\n- Missing or misleading comments\n- Code duplication\n- Overly long functions",
+          ),
+          ReviewDimension(
+            id: "testing",
+            focus: "Test coverage and quality",
+            prompt: "Review the test changes (if any). Look for:\n- Missing test cases for new functionality\n- Edge cases not covered\n- Brittle tests\n- Unclear test names\n- Missing assertions",
+          ),
+          ReviewDimension(
+            id: "api-design",
+            focus: "API design and contracts",
+            prompt: "Review any API changes. Look for:\n- Breaking changes\n- Unclear contracts\n- Poor error handling\n- Missing documentation\n- Inconsistent naming",
+          ),
+          ReviewDimension(
+            id: "architecture",
+            focus: "Architectural concerns",
+            prompt: "Review for architectural issues. Look for:\n- Inappropriate coupling\n- Layer violations\n- Missing abstractions\n- Scalability concerns\n- Configuration management",
+          ),
+        ],
+        synthesis_prompt: "Synthesize the dimension reviews into a unified assessment. Prioritize findings by severity (P0 critical, P1 major, P2 minor, P3 suggestion). Focus on actionable feedback.",
+      ),
+    ]),
     retry: types.default_retry_config(),
   )
 }
@@ -185,47 +184,44 @@ fn code_review_formula() -> ScherzoConfig {
 /// Security audit formula - focused security review
 fn security_audit_formula() -> ScherzoConfig {
   ScherzoConfig(
-    gates: GatesConfig(
-      formula: Some("security-audit"),
-      gates: [
-        // Run tests first
-        CommandGate(
-          name: "tests",
-          command: "gleam test",
-          timeout_ms: 300_000,
-          serial: True,
-          fail_fast: False,
-        ),
-        // Security-focused multi-pass review
-        MultiPassReviewGate(
-          name: "security-audit",
-          passes: [
-            ReviewPass(
-              focus: "Input Validation",
-              prompt: "Review all external inputs (user data, API calls, file reads) for proper validation. Check for injection vulnerabilities, buffer overflows, and type confusion.",
-            ),
-            ReviewPass(
-              focus: "Authentication & Authorization",
-              prompt: "Review authentication and authorization logic. Check for broken auth, privilege escalation, and missing access controls.",
-            ),
-            ReviewPass(
-              focus: "Data Protection",
-              prompt: "Review data handling for sensitive information. Check for exposure in logs, insecure storage, weak encryption, and data leakage.",
-            ),
-            ReviewPass(
-              focus: "Dependencies & Configuration",
-              prompt: "Review dependencies and configuration for security. Check for known vulnerabilities, insecure defaults, and exposed secrets.",
-            ),
-            ReviewPass(
-              focus: "Attack Surface",
-              prompt: "Final pass to identify any remaining attack surface. Consider the full threat model and potential abuse cases.",
-            ),
-          ],
-          require_convergence: True,
-          max_passes: 5,
-        ),
-      ],
-    ),
+    gates: GatesConfig(formula: Some("security-audit"), gates: [
+      // Run tests first
+      CommandGate(
+        name: "tests",
+        command: "gleam test",
+        timeout_ms: 300_000,
+        serial: True,
+        fail_fast: False,
+      ),
+      // Security-focused multi-pass review
+      MultiPassReviewGate(
+        name: "security-audit",
+        passes: [
+          ReviewPass(
+            focus: "Input Validation",
+            prompt: "Review all external inputs (user data, API calls, file reads) for proper validation. Check for injection vulnerabilities, buffer overflows, and type confusion.",
+          ),
+          ReviewPass(
+            focus: "Authentication & Authorization",
+            prompt: "Review authentication and authorization logic. Check for broken auth, privilege escalation, and missing access controls.",
+          ),
+          ReviewPass(
+            focus: "Data Protection",
+            prompt: "Review data handling for sensitive information. Check for exposure in logs, insecure storage, weak encryption, and data leakage.",
+          ),
+          ReviewPass(
+            focus: "Dependencies & Configuration",
+            prompt: "Review dependencies and configuration for security. Check for known vulnerabilities, insecure defaults, and exposed secrets.",
+          ),
+          ReviewPass(
+            focus: "Attack Surface",
+            prompt: "Final pass to identify any remaining attack surface. Consider the full threat model and potential abuse cases.",
+          ),
+        ],
+        require_convergence: True,
+        max_passes: 5,
+      ),
+    ]),
     retry: types.default_retry_config(),
   )
 }
@@ -233,26 +229,23 @@ fn security_audit_formula() -> ScherzoConfig {
 /// Quick review formula - fast feedback for small changes
 fn quick_review_formula() -> ScherzoConfig {
   ScherzoConfig(
-    gates: GatesConfig(
-      formula: Some("quick-review"),
-      gates: [
-        // Just tests and type check
-        CommandGate(
-          name: "tests",
-          command: "gleam test",
-          timeout_ms: 120_000,
-          serial: True,
-          fail_fast: True,
-        ),
-        CommandGate(
-          name: "check",
-          command: "gleam check",
-          timeout_ms: 30_000,
-          serial: True,
-          fail_fast: True,
-        ),
-      ],
-    ),
+    gates: GatesConfig(formula: Some("quick-review"), gates: [
+      // Just tests and type check
+      CommandGate(
+        name: "tests",
+        command: "gleam test",
+        timeout_ms: 120_000,
+        serial: True,
+        fail_fast: True,
+      ),
+      CommandGate(
+        name: "check",
+        command: "gleam check",
+        timeout_ms: 30_000,
+        serial: True,
+        fail_fast: True,
+      ),
+    ]),
     retry: RetryConfig(
       strategy: types.SameAgent,
       fresh_after_failures: 3,
@@ -270,8 +263,7 @@ pub fn available_formulas() -> List(String) {
 pub fn formula_description(name: String) -> String {
   case name {
     "none" -> "No gates configured"
-    "code-review" ->
-      "Comprehensive 7-dimension parallel code review with tests"
+    "code-review" -> "Comprehensive 7-dimension parallel code review with tests"
     "security-audit" -> "Security-focused multi-pass review"
     "quick-review" -> "Fast feedback with just tests and type check"
     _ -> "Unknown formula"

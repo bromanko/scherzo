@@ -3,8 +3,8 @@ import gleam/option.{None, Some}
 import gleeunit/should
 import scherzo/config/loader
 import scherzo/config/types.{
-  Auto, CommandGate, GatesConfig, ParallelReviewGate, RetryConfig,
-  ScherzoConfig, SameAgent,
+  Auto, CommandGate, GatesConfig, ParallelReviewGate, RetryConfig, SameAgent,
+  ScherzoConfig,
 }
 
 // Formula loading tests
@@ -94,35 +94,29 @@ pub fn merge_configs_none_override_test() {
 pub fn merge_configs_user_gates_override_test() {
   let base =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: Some("code-review"),
-        gates: [
-          CommandGate(
-            name: "tests",
-            command: "gleam test",
-            timeout_ms: 0,
-            serial: True,
-            fail_fast: False,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: Some("code-review"), gates: [
+        CommandGate(
+          name: "tests",
+          command: "gleam test",
+          timeout_ms: 0,
+          serial: True,
+          fail_fast: False,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
   let user =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: Some("custom"),
-        gates: [
-          CommandGate(
-            name: "custom-test",
-            command: "make test",
-            timeout_ms: 60_000,
-            serial: False,
-            fail_fast: True,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: Some("custom"), gates: [
+        CommandGate(
+          name: "custom-test",
+          command: "make test",
+          timeout_ms: 60_000,
+          serial: False,
+          fail_fast: True,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -139,18 +133,15 @@ pub fn merge_configs_user_gates_override_test() {
 pub fn merge_configs_empty_user_gates_keeps_base_test() {
   let base =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: Some("code-review"),
-        gates: [
-          CommandGate(
-            name: "tests",
-            command: "gleam test",
-            timeout_ms: 0,
-            serial: True,
-            fail_fast: False,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: Some("code-review"), gates: [
+        CommandGate(
+          name: "tests",
+          command: "gleam test",
+          timeout_ms: 0,
+          serial: True,
+          fail_fast: False,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 

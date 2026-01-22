@@ -82,7 +82,10 @@ fn validate_command_gate(
 
   // Name must not be empty
   let errors = case string.is_empty(string.trim(name)) {
-    True -> [ValidationError(path <> ".name", "Gate name cannot be empty"), ..errors]
+    True -> [
+      ValidationError(path <> ".name", "Gate name cannot be empty"),
+      ..errors
+    ]
     False -> errors
   }
 
@@ -121,7 +124,10 @@ fn validate_parallel_review_gate(
 
   // Name must not be empty
   let errors = case string.is_empty(string.trim(name)) {
-    True -> [ValidationError(path <> ".name", "Gate name cannot be empty"), ..errors]
+    True -> [
+      ValidationError(path <> ".name", "Gate name cannot be empty"),
+      ..errors
+    ]
     False -> errors
   }
 
@@ -169,7 +175,10 @@ fn validate_dimension(
 
   // ID must not be empty
   let errors = case string.is_empty(string.trim(dim.id)) {
-    True -> [ValidationError(path <> ".id", "Dimension ID cannot be empty"), ..errors]
+    True -> [
+      ValidationError(path <> ".id", "Dimension ID cannot be empty"),
+      ..errors
+    ]
     False -> errors
   }
 
@@ -205,7 +214,10 @@ fn validate_multipass_review_gate(
 
   // Name must not be empty
   let errors = case string.is_empty(string.trim(name)) {
-    True -> [ValidationError(path <> ".name", "Gate name cannot be empty"), ..errors]
+    True -> [
+      ValidationError(path <> ".name", "Gate name cannot be empty"),
+      ..errors
+    ]
     False -> errors
   }
 
@@ -253,7 +265,10 @@ fn validate_pass(
 
   // Focus must not be empty
   let errors = case string.is_empty(string.trim(pass.focus)) {
-    True -> [ValidationError(path <> ".focus", "Pass focus cannot be empty"), ..errors]
+    True -> [
+      ValidationError(path <> ".focus", "Pass focus cannot be empty"),
+      ..errors
+    ]
     False -> errors
   }
 
@@ -279,13 +294,19 @@ fn validate_human_gate(
 
   // Name must not be empty
   let errors = case string.is_empty(string.trim(name)) {
-    True -> [ValidationError(path <> ".name", "Gate name cannot be empty"), ..errors]
+    True -> [
+      ValidationError(path <> ".name", "Gate name cannot be empty"),
+      ..errors
+    ]
     False -> errors
   }
 
   // Prompt must not be empty
   let errors = case string.is_empty(string.trim(prompt)) {
-    True -> [ValidationError(path <> ".prompt", "Prompt cannot be empty"), ..errors]
+    True -> [
+      ValidationError(path <> ".prompt", "Prompt cannot be empty"),
+      ..errors
+    ]
     False -> errors
   }
 

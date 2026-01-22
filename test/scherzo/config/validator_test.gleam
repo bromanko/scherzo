@@ -17,18 +17,15 @@ pub fn valid_empty_config_test() {
 pub fn valid_command_gate_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          CommandGate(
-            name: "tests",
-            command: "gleam test",
-            timeout_ms: 0,
-            serial: True,
-            fail_fast: False,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        CommandGate(
+          name: "tests",
+          command: "gleam test",
+          timeout_ms: 0,
+          serial: True,
+          fail_fast: False,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -38,10 +35,9 @@ pub fn valid_command_gate_test() {
 pub fn valid_human_gate_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [HumanGate(name: "approval", prompt: "Please approve")],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        HumanGate(name: "approval", prompt: "Please approve"),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -51,22 +47,19 @@ pub fn valid_human_gate_test() {
 pub fn valid_parallel_review_gate_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          ParallelReviewGate(
-            name: "review",
-            dimensions: [
-              ReviewDimension(
-                id: "correctness",
-                focus: "Check bugs",
-                prompt: "Review for bugs",
-              ),
-            ],
-            synthesis_prompt: "Synthesize reviews",
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        ParallelReviewGate(
+          name: "review",
+          dimensions: [
+            ReviewDimension(
+              id: "correctness",
+              focus: "Check bugs",
+              prompt: "Review for bugs",
+            ),
+          ],
+          synthesis_prompt: "Synthesize reviews",
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -76,17 +69,14 @@ pub fn valid_parallel_review_gate_test() {
 pub fn valid_multipass_review_gate_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          MultiPassReviewGate(
-            name: "review",
-            passes: [ReviewPass(focus: "Structure", prompt: "Check structure")],
-            require_convergence: False,
-            max_passes: 3,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        MultiPassReviewGate(
+          name: "review",
+          passes: [ReviewPass(focus: "Structure", prompt: "Check structure")],
+          require_convergence: False,
+          max_passes: 3,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -98,18 +88,15 @@ pub fn valid_multipass_review_gate_test() {
 pub fn empty_command_gate_name_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          CommandGate(
-            name: "",
-            command: "gleam test",
-            timeout_ms: 0,
-            serial: True,
-            fail_fast: False,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        CommandGate(
+          name: "",
+          command: "gleam test",
+          timeout_ms: 0,
+          serial: True,
+          fail_fast: False,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -122,18 +109,15 @@ pub fn empty_command_gate_name_test() {
 pub fn empty_command_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          CommandGate(
-            name: "tests",
-            command: "   ",
-            timeout_ms: 0,
-            serial: True,
-            fail_fast: False,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        CommandGate(
+          name: "tests",
+          command: "   ",
+          timeout_ms: 0,
+          serial: True,
+          fail_fast: False,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -146,18 +130,15 @@ pub fn empty_command_test() {
 pub fn negative_timeout_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          CommandGate(
-            name: "tests",
-            command: "gleam test",
-            timeout_ms: -1,
-            serial: True,
-            fail_fast: False,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        CommandGate(
+          name: "tests",
+          command: "gleam test",
+          timeout_ms: -1,
+          serial: True,
+          fail_fast: False,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -172,10 +153,9 @@ pub fn negative_timeout_test() {
 pub fn empty_human_gate_prompt_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [HumanGate(name: "approval", prompt: "")],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        HumanGate(name: "approval", prompt: ""),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -190,16 +170,13 @@ pub fn empty_human_gate_prompt_test() {
 pub fn empty_parallel_review_dimensions_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          ParallelReviewGate(
-            name: "review",
-            dimensions: [],
-            synthesis_prompt: "Synthesize",
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        ParallelReviewGate(
+          name: "review",
+          dimensions: [],
+          synthesis_prompt: "Synthesize",
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -212,18 +189,15 @@ pub fn empty_parallel_review_dimensions_test() {
 pub fn empty_synthesis_prompt_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          ParallelReviewGate(
-            name: "review",
-            dimensions: [
-              ReviewDimension(id: "test", focus: "test", prompt: "test"),
-            ],
-            synthesis_prompt: "",
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        ParallelReviewGate(
+          name: "review",
+          dimensions: [
+            ReviewDimension(id: "test", focus: "test", prompt: "test"),
+          ],
+          synthesis_prompt: "",
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -236,16 +210,13 @@ pub fn empty_synthesis_prompt_test() {
 pub fn empty_dimension_fields_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          ParallelReviewGate(
-            name: "review",
-            dimensions: [ReviewDimension(id: "", focus: "", prompt: "")],
-            synthesis_prompt: "Synthesize",
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        ParallelReviewGate(
+          name: "review",
+          dimensions: [ReviewDimension(id: "", focus: "", prompt: "")],
+          synthesis_prompt: "Synthesize",
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -259,17 +230,14 @@ pub fn empty_dimension_fields_test() {
 pub fn empty_multipass_passes_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          MultiPassReviewGate(
-            name: "review",
-            passes: [],
-            require_convergence: False,
-            max_passes: 3,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        MultiPassReviewGate(
+          name: "review",
+          passes: [],
+          require_convergence: False,
+          max_passes: 3,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -282,17 +250,14 @@ pub fn empty_multipass_passes_test() {
 pub fn zero_max_passes_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          MultiPassReviewGate(
-            name: "review",
-            passes: [ReviewPass(focus: "test", prompt: "test")],
-            require_convergence: False,
-            max_passes: 0,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        MultiPassReviewGate(
+          name: "review",
+          passes: [ReviewPass(focus: "test", prompt: "test")],
+          require_convergence: False,
+          max_passes: 0,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -305,17 +270,14 @@ pub fn zero_max_passes_test() {
 pub fn empty_pass_fields_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          MultiPassReviewGate(
-            name: "review",
-            passes: [ReviewPass(focus: "", prompt: "")],
-            require_convergence: False,
-            max_passes: 3,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        MultiPassReviewGate(
+          name: "review",
+          passes: [ReviewPass(focus: "", prompt: "")],
+          require_convergence: False,
+          max_passes: 3,
+        ),
+      ]),
       retry: types.default_retry_config(),
     )
 
@@ -365,18 +327,15 @@ pub fn negative_fresh_after_failures_test() {
 pub fn multiple_errors_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(
-        formula: None,
-        gates: [
-          CommandGate(
-            name: "",
-            command: "",
-            timeout_ms: -1,
-            serial: True,
-            fail_fast: False,
-          ),
-        ],
-      ),
+      gates: GatesConfig(formula: None, gates: [
+        CommandGate(
+          name: "",
+          command: "",
+          timeout_ms: -1,
+          serial: True,
+          fail_fast: False,
+        ),
+      ]),
       retry: RetryConfig(
         strategy: Auto,
         fresh_after_failures: -1,

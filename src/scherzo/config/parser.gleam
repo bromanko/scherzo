@@ -10,10 +10,9 @@ import gleam/result
 import gleam/string
 import scherzo/config/types.{
   type GateConfig, type GatesConfig, type RetryConfig, type RetryStrategy,
-  type ReviewDimension, type ReviewPass, type ScherzoConfig, Auto,
-  CommandGate, FreshAgent, GatesConfig, HumanGate, MultiPassReviewGate,
-  ParallelReviewGate, RetryConfig, ReviewDimension, ReviewPass, SameAgent,
-  ScherzoConfig,
+  type ReviewDimension, type ReviewPass, type ScherzoConfig, Auto, CommandGate,
+  FreshAgent, GatesConfig, HumanGate, MultiPassReviewGate, ParallelReviewGate,
+  RetryConfig, ReviewDimension, ReviewPass, SameAgent, ScherzoConfig,
 }
 import simplifile
 import tom.{type Toml}
@@ -43,12 +42,7 @@ pub fn format_error(error: ParseError) -> String {
     MissingField(path, field) ->
       "Missing required field '" <> field <> "' at " <> path
     WrongType(path, expected, got) ->
-      "Wrong type at "
-      <> path
-      <> ": expected "
-      <> expected
-      <> ", got "
-      <> got
+      "Wrong type at " <> path <> ": expected " <> expected <> ", got " <> got
     UnknownGateType(name, gate_type) ->
       "Unknown gate type '"
       <> gate_type
@@ -83,8 +77,7 @@ fn format_tom_error(err: tom.ParseError) -> String {
   case err {
     tom.Unexpected(got, expected) ->
       "Unexpected '" <> got <> "', expected " <> expected
-    tom.KeyAlreadyInUse(key) ->
-      "Duplicate key: " <> string.join(key, ".")
+    tom.KeyAlreadyInUse(key) -> "Duplicate key: " <> string.join(key, ".")
   }
 }
 
@@ -218,14 +211,14 @@ fn parse_parallel_review_gate(
   path: String,
 ) -> Result(GateConfig, ParseError) {
   // Get required 'synthesis_prompt' field
-  use synthesis_prompt <- result.try(case
-    tom.get_string(table, ["synthesis_prompt"])
-  {
-    Ok(p) -> Ok(p)
-    Error(tom.NotFound(_)) -> Error(MissingField(path, "synthesis_prompt"))
-    Error(tom.WrongType(_, expected, got)) ->
-      Error(WrongType(path <> ".synthesis_prompt", expected, got))
-  })
+  use synthesis_prompt <- result.try(
+    case tom.get_string(table, ["synthesis_prompt"]) {
+      Ok(p) -> Ok(p)
+      Error(tom.NotFound(_)) -> Error(MissingField(path, "synthesis_prompt"))
+      Error(tom.WrongType(_, expected, got)) ->
+        Error(WrongType(path <> ".synthesis_prompt", expected, got))
+    },
+  )
 
   // Get dimensions array
   use dimensions <- result.try(case tom.get_array(table, ["dimensions"]) {
@@ -364,11 +357,12 @@ fn parse_retry_config(
       Error(WrongType("retry", expected, got))
     Ok(retry_table) -> {
       // Get strategy (optional, defaults to Auto)
-      use strategy <- result.try(case tom.get_string(retry_table, ["strategy"])
-      {
-        Error(_) -> Ok(Auto)
-        Ok(s) -> parse_strategy(s)
-      })
+      use strategy <- result.try(
+        case tom.get_string(retry_table, ["strategy"]) {
+          Error(_) -> Ok(Auto)
+          Ok(s) -> parse_strategy(s)
+        },
+      )
 
       // Get other optional fields with defaults
       let fresh_after_failures =
