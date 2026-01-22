@@ -71,6 +71,8 @@ fn help_command(_args: List(String)) -> CommandResult {
   let help_text =
     "Available commands:
   help              - Show this help message
+  run \"title\" [\"desc\"] - Run a single task
+  run --from-tickets    - Run tasks from .tickets/
   status            - Show orchestrator status
   tasks             - List all tasks
   agents            - Show agent status

@@ -8,11 +8,14 @@
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import scherzo/core/task.{
   type Priority, type Task, Assigned, Blocked, Completed, Critical, Epic, Failed,
   High, InProgress, Low, Normal, Pending, Ready,
 }
+import scherzo/orchestrator
+import scherzo/orchestrator/coordinator
 import scherzo/task/sources/ticket
 import scherzo/ui/repl.{type CommandHandler, CommandError, CommandOutput}
 
@@ -664,6 +667,153 @@ pub fn abort_command(_ctx: CommandContext) -> CommandHandler {
 }
 
 // ---------------------------------------------------------------------------
+// Run Command (s-xxxx)
+// ---------------------------------------------------------------------------
+
+/// Create run command handler - enqueue and execute tasks
+pub fn run_command(ctx: CommandContext) -> CommandHandler {
+  fn(args) {
+    case parse_run_args(args) {
+      RunSingleTask(title, description) ->
+        run_single_task(ctx.working_dir, title, description)
+      RunFromTickets(max_tasks) ->
+        run_from_tickets(ctx.working_dir, max_tasks)
+      RunShowUsage -> CommandOutput(run_usage())
+    }
+  }
+}
+
+/// Parsed run command arguments
+type RunArgs {
+  RunSingleTask(title: String, description: String)
+  RunFromTickets(max_tasks: Int)
+  RunShowUsage
+}
+
+/// Parse run command arguments
+fn parse_run_args(args: List(String)) -> RunArgs {
+  case args {
+    // run --from-tickets [--max-tasks N]
+    ["--from-tickets", ..rest] -> {
+      let max_tasks = parse_max_tasks(rest)
+      RunFromTickets(max_tasks)
+    }
+    // run "title" "description"
+    [title, description] -> RunSingleTask(title, description)
+    // run "title" (description defaults to title)
+    [title] -> RunSingleTask(title, title)
+    // No args or invalid
+    _ -> RunShowUsage
+  }
+}
+
+/// Parse --max-tasks N from remaining args
+fn parse_max_tasks(args: List(String)) -> Int {
+  case args {
+    ["--max-tasks", n, ..] ->
+      int.parse(n)
+      |> result.unwrap(0)
+    _ -> 0
+  }
+}
+
+/// Run a single task
+fn run_single_task(
+  working_dir: String,
+  title: String,
+  description: String,
+) -> repl.CommandResult {
+  let config = orchestrator.default_config(working_dir)
+
+  case orchestrator.run_task(config, title, description) {
+    coordinator.RunSuccess(output, change_id) -> {
+      let result =
+        string.join(
+          [
+            "Task completed successfully!",
+            "Change ID: " <> change_id,
+            "",
+            "Output:",
+            output,
+          ],
+          "\n",
+        )
+      CommandOutput(result)
+    }
+    coordinator.RunFailed(reason) -> CommandError("Task failed: " <> reason)
+    coordinator.RunExhausted(continuations, last_output, change_id) -> {
+      let result =
+        string.join(
+          [
+            "Task exhausted after "
+              <> int.to_string(continuations)
+              <> " continuations",
+            "Change ID: " <> change_id,
+            "",
+            "Last output:",
+            last_output,
+          ],
+          "\n",
+        )
+      CommandOutput(result)
+    }
+    coordinator.RunGatesFailed(gate_name, feedback_summary) -> {
+      CommandError("Gates failed: " <> gate_name <> "\nFeedback: " <> feedback_summary)
+    }
+  }
+}
+
+/// Run tasks from tickets directory
+fn run_from_tickets(working_dir: String, max_tasks: Int) -> repl.CommandResult {
+  let config = orchestrator.default_config(working_dir)
+  let tickets_dir = ticket.default_tickets_dir(working_dir)
+  let task_source = ticket.new(tickets_dir)
+
+  case orchestrator.run_from_source(config, task_source, max_tasks) {
+    Error(err) -> CommandError(err)
+    Ok(batch_result) -> {
+      let summary =
+        "Total: "
+        <> int.to_string(batch_result.total)
+        <> " | Completed: "
+        <> int.to_string(list.length(batch_result.completed))
+        <> " | Failed: "
+        <> int.to_string(list.length(batch_result.failed))
+
+      let failed_section = case batch_result.failed {
+        [] -> ""
+        failures -> {
+          let failed_lines =
+            list.map(failures, fn(r) {
+              "  - " <> r.title <> " (" <> r.task_id <> ")"
+            })
+          "\n\nFailed tasks:\n" <> string.join(failed_lines, "\n")
+        }
+      }
+
+      CommandOutput("=== Results ===\n" <> summary <> failed_section)
+    }
+  }
+}
+
+/// Usage text for run command
+fn run_usage() -> String {
+  string.join(
+    [
+      "Usage: run \"task title\" [\"task description\"]",
+      "       run --from-tickets [--max-tasks N]",
+      "",
+      "Examples:",
+      "  run \"Fix the login bug\"",
+      "  run \"Add feature\" \"Add user authentication to the API\"",
+      "  run --from-tickets",
+      "  run --from-tickets --max-tasks 5",
+    ],
+    "\n",
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Command Registration
 // ---------------------------------------------------------------------------
 
@@ -700,6 +850,15 @@ pub fn register_focus_commands(
   |> repl.add_command("abort", abort_command(ctx))
 }
 
+/// Register run command
+pub fn register_run_commands(
+  config: repl.ReplConfig,
+  ctx: CommandContext,
+) -> repl.ReplConfig {
+  config
+  |> repl.add_command("run", run_command(ctx))
+}
+
 /// Register all control commands
 pub fn register_all_commands(
   config: repl.ReplConfig,
@@ -709,4 +868,5 @@ pub fn register_all_commands(
   |> register_info_commands(ctx)
   |> register_lifecycle_commands(ctx)
   |> register_focus_commands(ctx)
+  |> register_run_commands(ctx)
 }
