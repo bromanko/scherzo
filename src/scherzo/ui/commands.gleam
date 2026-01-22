@@ -676,8 +676,7 @@ pub fn run_command(ctx: CommandContext) -> CommandHandler {
     case parse_run_args(args) {
       RunSingleTask(title, description) ->
         run_single_task(ctx.working_dir, title, description)
-      RunFromTickets(max_tasks) ->
-        run_from_tickets(ctx.working_dir, max_tasks)
+      RunFromTickets(max_tasks) -> run_from_tickets(ctx.working_dir, max_tasks)
       RunShowUsage -> CommandOutput(run_usage())
     }
   }
@@ -758,7 +757,9 @@ fn run_single_task(
       CommandOutput(result)
     }
     coordinator.RunGatesFailed(gate_name, feedback_summary) -> {
-      CommandError("Gates failed: " <> gate_name <> "\nFeedback: " <> feedback_summary)
+      CommandError(
+        "Gates failed: " <> gate_name <> "\nFeedback: " <> feedback_summary,
+      )
     }
   }
 }

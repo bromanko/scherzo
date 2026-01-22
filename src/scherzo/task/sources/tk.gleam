@@ -120,7 +120,7 @@ fn parse_ticket_json(line: String) -> Result(TicketJson, String) {
     use status <- decode.field("status", decode.string)
     use deps <- decode.field("deps", decode.list(decode.string))
     use ticket_type <- decode.field("type", decode.string)
-    use priority <- decode.field("priority", decode.string)
+    use priority <- decode.field("priority", priority_string_or_int())
     use tags <- decode.field("tags", decode.list(decode.string))
     decode.success(TicketJson(
       id: id,
@@ -137,6 +137,16 @@ fn parse_ticket_json(line: String) -> Result(TicketJson, String) {
     Ok(ticket) -> Ok(ticket)
   }
 }
+
+/// Decode priority as either string or int (converts int to string)
+fn priority_string_or_int() -> decode.Decoder(String) {
+  decode.one_of(decode.string, [
+    decode.int |> decode.map(int_to_string),
+  ])
+}
+
+@external(erlang, "erlang", "integer_to_list")
+fn int_to_string(i: Int) -> String
 
 /// Convert tk status string to a simple status enum
 pub type TicketStatus {

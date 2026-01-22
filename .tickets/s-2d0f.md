@@ -3,6 +3,7 @@ id: s-2d0f
 status: open
 deps: []
 links: []
+tags: []
 created: 2026-01-22T22:01:10Z
 type: feature
 priority: 2
