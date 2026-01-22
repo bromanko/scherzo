@@ -13,7 +13,11 @@ Keep instructions concrete and actionable. Remove guidance that becomes obsolete
 
 ## Version Control Discipline
 
-This project uses **jujutsu (jj)** for version control. Agents must commit work incrementally.
+This project uses **jujutsu (jj)** for version control, **not git directly**.
+
+> **Important:** Do not use `git` commands. Use `jj` instead. Run `/jj:commit` for guidance on committing with jujutsu.
+
+Agents must commit work incrementally.
 
 ### Commit Cadence
 
