@@ -131,6 +131,14 @@ All orchestrator state lives in `.scherzo/` and is tracked by jj, giving automat
 ```
 project/
 ├── .scherzo/                      # All jj-tracked (gitignored)
+│   ├── config.toml                # Orchestrator config
+│   ├── agents/                    # Custom agent configurations
+│   │   ├── task/                  # Main task agent customization
+│   │   │   ├── CLAUDE.md          # Custom instructions (replaces defaults)
+│   │   │   └── settings.json      # Settings overrides (merged with auto-generated)
+│   │   └── <gate-name>/           # Gate-specific agent customization
+│   │       ├── CLAUDE.md
+│   │       └── settings.json
 │   ├── state/
 │   │   ├── tasks.json             # Task status and metadata
 │   │   ├── agents.json            # Agent pool status
@@ -143,14 +151,14 @@ project/
 │   │   └── ...
 │   ├── workspaces/                # Per-agent isolated workspaces (jj workspaces)
 │   │   └── <task-id>/             # Each agent gets its own jj workspace
+│   │       ├── CLAUDE.md          # Custom instructions (if configured, restored on cleanup)
 │   │       ├── .claude/
-│   │       │   └── settings.json  # Agent-specific hooks (scherzo prime/checkpoint)
+│   │       │   └── settings.json  # Agent-specific hooks (merged, restored on cleanup)
 │   │       ├── .scherzo/
 │   │       │   └── task.json      # Task metadata for hooks to read
 │   │       └── <project files>    # Full working copy from jj workspace
 │   ├── events/
 │   │   └── <date>.jsonl           # Event log (append-only)
-│   └── config.toml                # Orchestrator config
 ```
 
 **Benefits of jj-backed state:**
@@ -434,6 +442,8 @@ scherzo/
 │       │   ├── types.gleam        # ScherzoConfig, GateConfig, ReviewDimension
 │       │   ├── parser.gleam       # Parse .scherzo/config.toml
 │       │   ├── loader.gleam       # Merge formula defaults with user overrides
+│       │   ├── agent_config.gleam # Load custom agent configs from .scherzo/agents/
+│       │   ├── settings_merger.gleam # Merge custom settings.json with auto-generated
 │       │   └── formulas/          # Default gate configurations (TOML)
 │       │       ├── code-review.toml
 │       │       ├── security-audit.toml
@@ -655,18 +665,31 @@ See `docs/gate-execution.md` for detailed design and `docs/completion-gates.md` 
 
 59. **Milestone: Task completion triggers gate evaluation; failures loop back to agent; passes proceed to merge queue**
 
+**5g. Custom Agent Configurations (Claude-only)**
+
+Allow users to customize Claude agent behavior via files in `.scherzo/agents/<name>/`. This enables per-project agent instructions and settings overrides. Gate agent config support deferred to Phase 5c-5e.
+
+See `docs/agent-config.md` for detailed design.
+
+60. Agent config loader: `config/agent_config.gleam` - load CLAUDE.md and settings.json from `.scherzo/agents/<agent_name>/`
+61. Settings merger: `config/settings_merger.gleam` - merge custom settings.json with auto-generated hooks (hooks merged by event, other settings override)
+62. Workspace integration: Modify `workspace.gleam` to accept optional custom config, write CLAUDE.md to workspace root, restore both files on cleanup
+63. Process integration: Modify `process.gleam` to load custom config and fail loudly on invalid JSON (no silent failures)
+64. Init agent stubs: Modify `init.gleam` to create `.scherzo/agents/task/CLAUDE.md` stub during initialization
+65. **Milestone: Custom CLAUDE.md instructions appear in agent workspace root; custom hooks merge with auto-generated hooks; invalid config fails loudly**
+
 ### Phase 6: Merge Queue
 
 After completion gates pass, task changes enter a merge queue for integration into main. Works with single agent.
 
-60. jj extensions: `jj.gleam` with rebase, conflict detection, squash, bookmark operations
-61. Merge types: `merge/types.gleam` with MergeStatus, MergeRequest, MergeQueueConfig
-62. Merge events: Extend `event.gleam` with merge queue events
-63. CI runner: `merge/ci.gleam` for pre-merge verification
-64. MergeQueue actor: `merge/queue.gleam` - sequential processing with rebase, CI, merge
-65. Conflict resolution: `merge/resolution.gleam` - spawn agents for conflict resolution
-66. Orchestrator integration: Wire merge queue into task completion flow
-67. **Milestone: Completed tasks rebase, pass CI, squash, and merge to main automatically**
+66. jj extensions: `jj.gleam` with rebase, conflict detection, squash, bookmark operations
+67. Merge types: `merge/types.gleam` with MergeStatus, MergeRequest, MergeQueueConfig
+68. Merge events: Extend `event.gleam` with merge queue events
+69. CI runner: `merge/ci.gleam` for pre-merge verification
+70. MergeQueue actor: `merge/queue.gleam` - sequential processing with rebase, CI, merge
+71. Conflict resolution: `merge/resolution.gleam` - spawn agents for conflict resolution
+72. Orchestrator integration: Wire merge queue into task completion flow
+73. **Milestone: Completed tasks rebase, pass CI, squash, and merge to main automatically**
 
 See `docs/merge-queue.md` for detailed design.
 
@@ -674,25 +697,25 @@ See `docs/merge-queue.md` for detailed design.
 
 Scale from single agent to parallel execution. Builds on completion gates and merge queue.
 
-68. Agent pool supervisor: Factory supervisor for N agents
-69. Coordinator: Match tasks to available agents
-70. Parallel execution: Multiple agents, multiple jj changes
-71. Dynamic panes: Add/remove panes as agents start/stop
-72. **Milestone: 4 agents in parallel with tmux visibility**
+74. Agent pool supervisor: Factory supervisor for N agents
+75. Coordinator: Match tasks to available agents
+76. Parallel execution: Multiple agents, multiple jj changes
+77. Dynamic panes: Add/remove panes as agents start/stop
+78. **Milestone: 4 agents in parallel with tmux visibility**
 
 ### Phase 8: Resilience & Recovery
-73. Checkpoint recovery: Load checkpoints from `.scherzo/checkpoints/` on startup
-74. Ticket state sync: Ensure ticket status reflects interrupted work
-75. Crash detection: Compare checkpoints vs jj working copy on restart
-76. Retry logic: Exponential backoff for failures
-77. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
-78. Handoff metrics: Track continuation count per task, detect infinite loops
-79. Supervision tree: Wire everything together
+79. Checkpoint recovery: Load checkpoints from `.scherzo/checkpoints/` on startup
+80. Ticket state sync: Ensure ticket status reflects interrupted work
+81. Crash detection: Compare checkpoints vs jj working copy on restart
+82. Retry logic: Exponential backoff for failures
+83. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
+84. Handoff metrics: Track continuation count per task, detect infinite loops
+85. Supervision tree: Wire everything together
 
 ### Phase 9: Distribution
-80. Additional drivers: Codex, Gemini (with provider-specific hooks)
-81. Burrito build: Single binary for macOS/Linux
-82. Polish: Better status display, colors, keybindings
+86. Additional drivers: Codex, Gemini (with provider-specific hooks)
+87. Burrito build: Single binary for macOS/Linux
+88. Polish: Better status display, colors, keybindings
 
 ## Failure Handling
 
