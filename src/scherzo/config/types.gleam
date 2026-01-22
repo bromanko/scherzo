@@ -2,8 +2,6 @@
 ///
 /// Defines the configuration structures for completion gates, retry behavior,
 /// and review dimensions.
-import gleam/option.{type Option}
-
 /// Top-level Scherzo configuration
 pub type ScherzoConfig {
   ScherzoConfig(
@@ -17,8 +15,6 @@ pub type ScherzoConfig {
 /// Configuration for completion gates
 pub type GatesConfig {
   GatesConfig(
-    /// Formula name to use as base ("code-review", "security-audit", "quick-review", "none")
-    formula: Option(String),
     /// List of gates to execute in order
     gates: List(GateConfig),
   )
@@ -105,7 +101,7 @@ pub fn default_config() -> ScherzoConfig {
 
 /// Create default gates configuration (no gates)
 pub fn default_gates_config() -> GatesConfig {
-  GatesConfig(formula: option.None, gates: [])
+  GatesConfig(gates: [])
 }
 
 /// Create default retry configuration

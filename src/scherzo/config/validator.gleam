@@ -48,9 +48,47 @@ pub fn format_errors(errors: ValidationResult) -> String {
 
 /// Validate gates configuration
 fn validate_gates_config(config: GatesConfig) -> ValidationResult {
-  config.gates
-  |> list.index_map(fn(gate, index) { validate_gate(gate, index) })
-  |> list.flatten
+  let gate_errors =
+    config.gates
+    |> list.index_map(fn(gate, index) { validate_gate(gate, index) })
+    |> list.flatten
+
+  let duplicate_errors = validate_unique_gate_names(config.gates)
+
+  list.append(gate_errors, duplicate_errors)
+}
+
+/// Check for duplicate gate names
+fn validate_unique_gate_names(gates: List(GateConfig)) -> ValidationResult {
+  gates
+  |> list.map(get_gate_name)
+  |> find_duplicates([])
+  |> list.map(fn(name) {
+    ValidationError("gates.gates", "Duplicate gate name: '" <> name <> "'")
+  })
+}
+
+/// Get the name from any gate type
+fn get_gate_name(gate: GateConfig) -> String {
+  case gate {
+    CommandGate(name, ..) -> name
+    ParallelReviewGate(name, ..) -> name
+    MultiPassReviewGate(name, ..) -> name
+    HumanGate(name, ..) -> name
+  }
+}
+
+/// Find duplicate strings in a list
+fn find_duplicates(names: List(String), seen: List(String)) -> List(String) {
+  case names {
+    [] -> []
+    [name, ..rest] -> {
+      case list.contains(seen, name) {
+        True -> [name, ..find_duplicates(rest, seen)]
+        False -> find_duplicates(rest, [name, ..seen])
+      }
+    }
+  }
 }
 
 /// Validate a single gate

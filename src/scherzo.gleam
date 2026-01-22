@@ -8,6 +8,7 @@ import gleam/string
 import glint
 import scherzo/agent/checkpoint
 import scherzo/agent/workspace
+import scherzo/cli/init
 import scherzo/orchestrator
 import scherzo/orchestrator/coordinator
 import scherzo/task/sources/ticket
@@ -22,6 +23,7 @@ pub fn main() {
   |> glint.with_name("scherzo")
   |> glint.pretty_help(glint.default_pretty_help())
   |> glint.add(at: [], do: root_command())
+  |> glint.add(at: ["init"], do: init.command())
   |> glint.add(at: ["run"], do: run_command())
   |> glint.add(at: ["status"], do: status_command())
   |> glint.add(at: ["tasks"], do: tasks_command())

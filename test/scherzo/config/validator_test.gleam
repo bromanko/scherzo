@@ -17,7 +17,7 @@ pub fn valid_empty_config_test() {
 pub fn valid_command_gate_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         CommandGate(
           name: "tests",
           command: "gleam test",
@@ -35,7 +35,7 @@ pub fn valid_command_gate_test() {
 pub fn valid_human_gate_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         HumanGate(name: "approval", prompt: "Please approve"),
       ]),
       retry: types.default_retry_config(),
@@ -47,7 +47,7 @@ pub fn valid_human_gate_test() {
 pub fn valid_parallel_review_gate_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         ParallelReviewGate(
           name: "review",
           dimensions: [
@@ -69,7 +69,7 @@ pub fn valid_parallel_review_gate_test() {
 pub fn valid_multipass_review_gate_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         MultiPassReviewGate(
           name: "review",
           passes: [ReviewPass(focus: "Structure", prompt: "Check structure")],
@@ -88,7 +88,7 @@ pub fn valid_multipass_review_gate_test() {
 pub fn empty_command_gate_name_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         CommandGate(
           name: "",
           command: "gleam test",
@@ -109,7 +109,7 @@ pub fn empty_command_gate_name_test() {
 pub fn empty_command_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         CommandGate(
           name: "tests",
           command: "   ",
@@ -130,7 +130,7 @@ pub fn empty_command_test() {
 pub fn negative_timeout_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         CommandGate(
           name: "tests",
           command: "gleam test",
@@ -153,7 +153,7 @@ pub fn negative_timeout_test() {
 pub fn empty_human_gate_prompt_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         HumanGate(name: "approval", prompt: ""),
       ]),
       retry: types.default_retry_config(),
@@ -170,7 +170,7 @@ pub fn empty_human_gate_prompt_test() {
 pub fn empty_parallel_review_dimensions_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         ParallelReviewGate(
           name: "review",
           dimensions: [],
@@ -189,7 +189,7 @@ pub fn empty_parallel_review_dimensions_test() {
 pub fn empty_synthesis_prompt_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         ParallelReviewGate(
           name: "review",
           dimensions: [
@@ -210,7 +210,7 @@ pub fn empty_synthesis_prompt_test() {
 pub fn empty_dimension_fields_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         ParallelReviewGate(
           name: "review",
           dimensions: [ReviewDimension(id: "", focus: "", prompt: "")],
@@ -230,7 +230,7 @@ pub fn empty_dimension_fields_test() {
 pub fn empty_multipass_passes_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         MultiPassReviewGate(
           name: "review",
           passes: [],
@@ -250,7 +250,7 @@ pub fn empty_multipass_passes_test() {
 pub fn zero_max_passes_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         MultiPassReviewGate(
           name: "review",
           passes: [ReviewPass(focus: "test", prompt: "test")],
@@ -270,7 +270,7 @@ pub fn zero_max_passes_test() {
 pub fn empty_pass_fields_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         MultiPassReviewGate(
           name: "review",
           passes: [ReviewPass(focus: "", prompt: "")],
@@ -322,12 +322,68 @@ pub fn negative_fresh_after_failures_test() {
   err.path |> should.equal("retry.fresh_after_failures")
 }
 
+// Duplicate gate name validation
+
+pub fn duplicate_gate_names_test() {
+  let config =
+    ScherzoConfig(
+      gates: GatesConfig(gates: [
+        CommandGate(
+          name: "tests",
+          command: "gleam test",
+          timeout_ms: 0,
+          serial: True,
+          fail_fast: False,
+        ),
+        CommandGate(
+          name: "tests",
+          command: "gleam check",
+          timeout_ms: 0,
+          serial: True,
+          fail_fast: False,
+        ),
+      ]),
+      retry: types.default_retry_config(),
+    )
+
+  let errors = validator.validate(config)
+  errors |> list.length |> should.equal(1)
+  let assert [err] = errors
+  err.path |> should.equal("gates.gates")
+  err.message |> should.equal("Duplicate gate name: 'tests'")
+}
+
+pub fn unique_gate_names_valid_test() {
+  let config =
+    ScherzoConfig(
+      gates: GatesConfig(gates: [
+        CommandGate(
+          name: "tests",
+          command: "gleam test",
+          timeout_ms: 0,
+          serial: True,
+          fail_fast: False,
+        ),
+        CommandGate(
+          name: "check",
+          command: "gleam check",
+          timeout_ms: 0,
+          serial: True,
+          fail_fast: False,
+        ),
+      ]),
+      retry: types.default_retry_config(),
+    )
+
+  validator.is_valid(config) |> should.be_true
+}
+
 // Multiple errors test
 
 pub fn multiple_errors_test() {
   let config =
     ScherzoConfig(
-      gates: GatesConfig(formula: None, gates: [
+      gates: GatesConfig(gates: [
         CommandGate(
           name: "",
           command: "",
@@ -390,5 +446,3 @@ pub fn validate_strict_invalid_test() {
   let result = validator.validate_strict(config)
   result |> should.be_error
 }
-
-import gleam/option.{None}

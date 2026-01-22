@@ -5,7 +5,6 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import scherzo/config/types.{
@@ -101,12 +100,6 @@ fn parse_gates_config(
     Error(tom.WrongType(_, expected, got)) ->
       Error(WrongType("gates", expected, got))
     Ok(gates_table) -> {
-      // Get formula (optional)
-      let formula = case tom.get_string(gates_table, ["formula"]) {
-        Ok(f) -> Some(f)
-        Error(_) -> None
-      }
-
       // Get gates array (optional)
       use gates <- result.try(case tom.get_array(gates_table, ["gates"]) {
         Error(tom.NotFound(_)) -> Ok([])
@@ -115,7 +108,7 @@ fn parse_gates_config(
         Ok(gates_array) -> parse_gates_array(gates_array, [], 0)
       })
 
-      Ok(GatesConfig(formula: formula, gates: gates))
+      Ok(GatesConfig(gates: gates))
     }
   }
 }

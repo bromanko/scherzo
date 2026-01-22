@@ -1,4 +1,4 @@
-import gleam/option.{None, Some}
+import gleam/list
 import gleeunit/should
 import scherzo/config/parser
 import scherzo/config/types.{
@@ -13,7 +13,6 @@ pub fn parse_empty_config_test() {
   config |> should.be_ok
 
   let assert Ok(cfg) = config
-  cfg.gates.formula |> should.equal(None)
   cfg.gates.gates |> should.equal([])
   cfg.retry.strategy |> should.equal(Auto)
   cfg.retry.max_iterations |> should.equal(3)
@@ -23,13 +22,11 @@ pub fn parse_minimal_gates_section_test() {
   let toml =
     "
 [gates]
-formula = \"code-review\"
 "
   let config = parser.parse_string(toml)
   config |> should.be_ok
 
   let assert Ok(cfg) = config
-  cfg.gates.formula |> should.equal(Some("code-review"))
   cfg.gates.gates |> should.equal([])
 }
 
@@ -213,7 +210,6 @@ pub fn parse_multiple_gates_test() {
   let toml =
     "
 [gates]
-formula = \"custom\"
 gates = [
   { type = \"command\", name = \"tests\", command = \"gleam test\" },
   { type = \"command\", name = \"check\", command = \"gleam check\" },
@@ -326,7 +322,6 @@ pub fn parse_full_config_test() {
   let toml =
     "
 [gates]
-formula = \"code-review\"
 gates = [
   { type = \"command\", name = \"tests\", command = \"gleam test\", timeout_ms = 300000 },
   { type = \"command\", name = \"check\", command = \"gleam check\" }
@@ -341,12 +336,8 @@ max_iterations = 3
   config |> should.be_ok
 
   let assert Ok(cfg) = config
-  cfg.gates.formula |> should.equal(Some("code-review"))
   cfg.gates.gates |> list.length |> should.equal(2)
   cfg.retry.strategy |> should.equal(Auto)
   cfg.retry.fresh_after_failures |> should.equal(2)
   cfg.retry.max_iterations |> should.equal(3)
 }
-
-// Import for list.length
-import gleam/list

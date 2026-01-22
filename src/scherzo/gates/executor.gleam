@@ -75,7 +75,7 @@ fn execute_single_gate(
 /// Create a Gleam-specific test configuration for development.
 /// This config runs `gleam test` and `gleam check` as gates.
 pub fn gleam_test_config() -> config.GatesConfig {
-  config.GatesConfig(formula: None, gates: [
+  config.GatesConfig(gates: [
     config.CommandGate(
       name: "tests",
       command: "gleam test",
