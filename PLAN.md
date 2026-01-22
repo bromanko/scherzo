@@ -429,14 +429,27 @@ scherzo/
 │       │   └── jj.gleam           # jujutsu operations
 │       ├── orchestrator/
 │       │   ├── supervisor.gleam   # Main supervision tree
-│       │   └── coordinator.gleam  # Work coordination
+│       │   └── coordinator.gleam  # Work coordination, gate triggering
+│       ├── config/
+│       │   ├── types.gleam        # ScherzoConfig, GateConfig, ReviewDimension
+│       │   ├── parser.gleam       # Parse .scherzo/config.toml
+│       │   ├── loader.gleam       # Merge formula defaults with user overrides
+│       │   └── formulas/          # Default gate configurations (TOML)
+│       │       ├── code-review.toml
+│       │       ├── security-audit.toml
+│       │       └── quick-review.toml
 │       ├── gates/
-│       │   ├── pipeline.gleam     # Gate pipeline execution
-│       │   ├── review.gleam       # ReviewGate (spawn review agent)
-│       │   ├── multipass.gleam    # MultiPassReview (Rule of Five)
-│       │   └── human.gleam        # HumanGate (approval checkpoint)
+│       │   ├── types.gleam        # Finding, Priority, GateFeedback, GateResult
+│       │   ├── executor.gleam     # Main gate execution loop
+│       │   ├── retry.gleam        # Retry logic, same/fresh agent decision
+│       │   ├── feedback.gleam     # Format findings for agent consumption
+│       │   ├── command.gleam      # Command gate (tests, lint, typecheck)
+│       │   ├── parallel_review.gleam  # Parallel review executor
+│       │   ├── synthesis.gleam    # Combine review findings
+│       │   ├── multipass.gleam    # Sequential multi-pass review (Rule of Five)
+│       │   └── human.gleam        # Human approval gate
 │       ├── state/
-│       │   └── schema.gleam       # JSON schema for checkpoint files
+│       │   └── store.gleam        # Persistent state management
 │       ├── event/
 │       │   └── bus.gleam          # Event bus
 │       └── ui/
@@ -602,57 +615,84 @@ tom = ">= 1.0.0"               # TOML parsing for config
 37. ✅ `scherzo console` CLI command: Entry point for tmux UI
 38. ✅ **Milestone: Run with tmux UI, interactive control**
 
-### Phase 5: Multi-Agent Orchestration
-39. Agent pool supervisor: Factory supervisor for N agents
-40. Coordinator: Match tasks to available agents
-41. Parallel execution: Multiple agents, multiple jj changes
-42. Dynamic panes: Add/remove panes as agents start/stop
-43. **Milestone: 4 agents in parallel with tmux visibility**
+### Phase 5: Completion Gates
 
-### Phase 5.5: Completion Gates
+Quality gates that evaluate task completion before merge. When an agent signals "done" via Stop hook, gates run automatically. Failed gates feed back to the agent for fixes, looping until pass or max iterations.
 
-Parallel code review with synthesis, inspired by gastown's convoy pattern.
+See `docs/gate-execution.md` for detailed design and `docs/completion-gates.md` for review dimensions.
 
-44. Gate types: `gates/types.gleam` with ParallelReviewGate, MultiPassReview, HumanGate
-45. Review dimensions: Configurable per-repo, default to 7 (correctness, performance, security, elegance, resilience, style, smells)
-46. Parallel executor: Spawn N review agents concurrently, each sees `jj diff`, produces findings
-47. Synthesis agent: Combine all findings, dedupe, prioritize (P0 Critical / P1 Major / P2 Minor)
-48. Feedback loop: P0/P1 findings → feed back to task agent → fix → re-review (up to max iterations)
-49. MultiPassReview: Sequential refinement (Draft → Correctness → Clarity → Edge Cases → Excellence)
-50. HumanGate: Block pipeline, notify control pane, wait for approval
-51. Embedded formulas: Default review configs (code-review, security-audit, quick-review)
-52. **Milestone: Task passes parallel code review with synthesis before entering merge queue**
+**5a. Orchestrator Refactor**
+39. Split orchestrator: Refactor `orchestrator.gleam` into `orchestrator/supervisor.gleam` (supervision tree) and `orchestrator/coordinator.gleam` (work coordination, gate triggering)
 
-See `docs/completion-gates.md` for detailed design.
+**5b. Configuration Infrastructure**
+40. Config types: `config/types.gleam` - ScherzoConfig, GateConfig, RetryConfig, ReviewDimension
+41. Config parser: `config/parser.gleam` - load `.scherzo/config.toml` using `tom` library
+42. Formula loader: `config/loader.gleam` - load TOML formula files from `config/formulas/`, merge with user overrides
+43. Config validation: Ensure gates valid, prompts non-empty, no circular dependencies
 
-### Phase 5.7: Merge Queue
+**5c. Core Gate Types & Execution**
+44. Task phases: Extend task.gleam with Working, Evaluating, NeedsFixes, GatesPassed, Stuck
+45. Gate types: `gates/types.gleam` - Finding, Priority (P0-P3), Location, GateFeedback, GateResult
+46. Gate events: Extend event.gleam with GateEvent variants (started, completed, failed, etc.)
+47. Gate executor: `gates/executor.gleam` - main loop: run gates in order, collect results, handle pass/fail (always restarts from beginning on retry)
 
-After completion gates pass, task changes enter a merge queue for integration into main.
+**5d. Retry & Feedback Loop**
+48. Retry controller: `gates/retry.gleam` - track iterations, decide same-agent vs fresh-agent
+49. Feedback builder: `gates/feedback.gleam` - format findings for agent consumption
+50. Agent re-trigger: Extend AgentProcess to receive feedback and continue working
+51. Coordinator integration: Wire gate completion signals into task lifecycle
 
-53. jj extensions: `jj.gleam` with rebase, conflict detection, squash, bookmark operations
-54. Merge types: `merge/types.gleam` with MergeStatus, MergeRequest, MergeQueueConfig
-55. Merge events: Extend `event.gleam` with merge queue events
-56. CI runner: `merge/ci.gleam` for pre-merge verification
-57. MergeQueue actor: `merge/queue.gleam` - sequential processing with rebase, CI, merge
-58. Conflict resolution: `merge/resolution.gleam` - spawn agents for conflict resolution
-59. Orchestrator integration: Wire merge queue into task completion flow
-60. **Milestone: Completed tasks rebase, pass CI, squash, and merge to main automatically**
+**5e. Gate Implementations**
+52. Command gate: `gates/command.gleam` - run shell commands (tests, lint, typecheck)
+53. Parallel review: `gates/parallel_review.gleam` - spawn N review agents, one per dimension, aggregate all findings
+54. Synthesis: `gates/synthesis.gleam` - combine reviewer findings, dedupe, prioritize (P0/P1/P2)
+55. Multi-pass review: `gates/multipass.gleam` - sequential refinement (Rule of Five)
+56. Human gate: `gates/human.gleam` - block indefinitely for human approval via control pane
+
+**5f. UI & Testing**
+57. UI integration: Show gate evaluation status in control pane (evaluating, needs fixes, stuck states)
+58. Gate tests: Unit tests for executor, retry logic, feedback formatting, and individual gate types
+
+59. **Milestone: Task completion triggers gate evaluation; failures loop back to agent; passes proceed to merge queue**
+
+### Phase 6: Merge Queue
+
+After completion gates pass, task changes enter a merge queue for integration into main. Works with single agent.
+
+60. jj extensions: `jj.gleam` with rebase, conflict detection, squash, bookmark operations
+61. Merge types: `merge/types.gleam` with MergeStatus, MergeRequest, MergeQueueConfig
+62. Merge events: Extend `event.gleam` with merge queue events
+63. CI runner: `merge/ci.gleam` for pre-merge verification
+64. MergeQueue actor: `merge/queue.gleam` - sequential processing with rebase, CI, merge
+65. Conflict resolution: `merge/resolution.gleam` - spawn agents for conflict resolution
+66. Orchestrator integration: Wire merge queue into task completion flow
+67. **Milestone: Completed tasks rebase, pass CI, squash, and merge to main automatically**
 
 See `docs/merge-queue.md` for detailed design.
 
-### Phase 6: Resilience & Recovery
-61. Checkpoint recovery: Load checkpoints from `.scherzo/checkpoints/` on startup
-62. Ticket state sync: Ensure ticket status reflects interrupted work
-63. Crash detection: Compare checkpoints vs jj working copy on restart
-64. Retry logic: Exponential backoff for failures
-65. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
-66. Handoff metrics: Track continuation count per task, detect infinite loops
-67. Supervision tree: Wire everything together
+### Phase 7: Multi-Agent Orchestration
 
-### Phase 7: Distribution
-68. Additional drivers: Codex, Gemini (with provider-specific hooks)
-69. Burrito build: Single binary for macOS/Linux
-70. Polish: Better status display, colors, keybindings
+Scale from single agent to parallel execution. Builds on completion gates and merge queue.
+
+68. Agent pool supervisor: Factory supervisor for N agents
+69. Coordinator: Match tasks to available agents
+70. Parallel execution: Multiple agents, multiple jj changes
+71. Dynamic panes: Add/remove panes as agents start/stop
+72. **Milestone: 4 agents in parallel with tmux visibility**
+
+### Phase 8: Resilience & Recovery
+73. Checkpoint recovery: Load checkpoints from `.scherzo/checkpoints/` on startup
+74. Ticket state sync: Ensure ticket status reflects interrupted work
+75. Crash detection: Compare checkpoints vs jj working copy on restart
+76. Retry logic: Exponential backoff for failures
+77. Resume flow: Detect interrupted tasks, rebuild from checkpoints + jj diff
+78. Handoff metrics: Track continuation count per task, detect infinite loops
+79. Supervision tree: Wire everything together
+
+### Phase 9: Distribution
+80. Additional drivers: Codex, Gemini (with provider-specific hooks)
+81. Burrito build: Single binary for macOS/Linux
+82. Polish: Better status display, colors, keybindings
 
 ## Failure Handling
 

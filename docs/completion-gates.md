@@ -234,9 +234,9 @@ pub type SynthesizedReview {
 }
 ```
 
-## Embedded Default Formulas
+## Default Formulas
 
-Scherzo ships with default review configurations:
+Scherzo ships with default review configurations as TOML files, loaded at runtime:
 
 | Formula | Dimensions | Use Case |
 |---------|------------|----------|
@@ -244,12 +244,21 @@ Scherzo ships with default review configurations:
 | `security-audit` | Security, Resilience, Correctness | Security-focused |
 | `quick-review` | Correctness, Security, Style | Fast feedback |
 
+Users can copy these files to `.scherzo/` and customize them, or reference them by name and override specific settings.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `src/scherzo/gates/types.gleam` | Gate and review types |
+| `src/scherzo/config/types.gleam` | ScherzoConfig, GateConfig, ReviewDimension types |
+| `src/scherzo/config/parser.gleam` | Parse `.scherzo/config.toml` using `tom` |
+| `src/scherzo/config/loader.gleam` | Load formula TOML files, merge with user overrides |
+| `src/scherzo/config/formulas/code-review.toml` | Default comprehensive review config |
+| `src/scherzo/config/formulas/security-audit.toml` | Security-focused review config |
+| `src/scherzo/config/formulas/quick-review.toml` | Fast feedback config |
+| `src/scherzo/gates/types.gleam` | Gate and review output types (Finding, Priority, etc.) |
+| `src/scherzo/gates/executor.gleam` | Main gate execution loop |
 | `src/scherzo/gates/parallel_review.gleam` | Parallel executor |
 | `src/scherzo/gates/synthesis.gleam` | Synthesis logic |
-| `src/scherzo/gates/pipeline.gleam` | Gate pipeline execution |
-| `src/scherzo/gates/formulas/*.toml` | Embedded default configs |
+| `src/scherzo/gates/multipass.gleam` | Sequential multi-pass review (Rule of Five) |
+| `src/scherzo/gates/human.gleam` | Human approval gate |
