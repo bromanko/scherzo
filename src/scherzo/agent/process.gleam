@@ -96,9 +96,10 @@ fn handle_start(
   reply_to: Subject(StartResult),
 ) -> actor.Next(State, Message) {
   // Create workspace for this task (defaults to .scherzo/workspaces/ in project)
+  // TODO(S-A704): Load and pass custom agent config here
   let workspace_config = workspace.default_config(state.config.working_dir)
 
-  case workspace.create(workspace_config, task) {
+  case workspace.create(workspace_config, task, None) {
     Error(err) -> {
       process.send(reply_to, StartFailed("Failed to create workspace: " <> err))
       actor.continue(state)

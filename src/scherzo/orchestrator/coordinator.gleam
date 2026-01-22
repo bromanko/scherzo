@@ -159,8 +159,9 @@ fn run_task_with_continuation(
       }
 
       // Create isolated workspace for this agent
+      // TODO(S-A704): Load and pass custom agent config here
       let workspace_config = workspace.default_config(config.working_dir)
-      case workspace.create(workspace_config, effective_task) {
+      case workspace.create(workspace_config, effective_task, None) {
         Error(err) -> RunFailed("Failed to create workspace: " <> err)
 
         Ok(ws) -> {

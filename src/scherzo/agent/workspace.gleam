@@ -8,8 +8,12 @@ import gleam/dynamic/decode
 import gleam/io
 import gleam/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/claude_settings
+import scherzo/config/agent_config.{type AgentCustomConfig}
+import scherzo/config/settings_merger
 import scherzo/core/task.{type Task}
 import scherzo/core/types.{type Id}
 import scherzo/vcs/jj
@@ -58,49 +62,85 @@ pub fn temp_config(repo_dir: String) -> WorkspaceConfig {
 }
 
 /// Create a new workspace for an agent task
-pub fn create(config: WorkspaceConfig, task: Task) -> Result(Workspace, String) {
-  // Create workspace path: <base>/<task_id>
+pub fn create(
+  config: WorkspaceConfig,
+  task: Task,
+  custom_config: Option(AgentCustomConfig),
+) -> Result(Workspace, String) {
   let workspace_path = config.workspaces_base <> "/" <> sanitize_id(task.id)
 
-  // Ensure the base directory exists
-  case simplifile.create_directory_all(config.workspaces_base) {
-    Error(err) ->
-      Error(
-        "Failed to create workspaces directory: "
-        <> simplifile.describe_error(err),
-      )
-    Ok(_) -> {
-      // Create jj workspace
-      case jj.workspace_add(config.repo_dir, workspace_path) {
-        Error(err) -> Error("Failed to create jj workspace: " <> err)
-        Ok(workspace_name) -> {
-          let workspace =
-            Workspace(
-              task_id: task.id,
-              path: workspace_path,
-              workspace_name: workspace_name,
-              repo_dir: config.repo_dir,
-            )
+  // Create base directory
+  use _ <- result.try(
+    simplifile.create_directory_all(config.workspaces_base)
+    |> result.map_error(fn(err) {
+      "Failed to create workspaces directory: " <> simplifile.describe_error(err)
+    }),
+  )
 
-          // Write the .scherzo/task.json with task info
-          case write_task_info(workspace, task) {
-            Error(err) -> {
-              cleanup_on_error(workspace, "write_task_info")
-              Error(err)
-            }
-            Ok(_) -> {
-              // Write the .claude/settings.json with hooks
-              case write_claude_settings(workspace, task.id) {
-                Error(err) -> {
-                  cleanup_on_error(workspace, "write_claude_settings")
-                  Error(err)
-                }
-                Ok(_) -> Ok(workspace)
-              }
-            }
-          }
-        }
-      }
+  // Create jj workspace
+  use workspace_name <- result.try(
+    jj.workspace_add(config.repo_dir, workspace_path)
+    |> result.map_error(fn(err) { "Failed to create jj workspace: " <> err }),
+  )
+
+  let workspace =
+    Workspace(
+      task_id: task.id,
+      path: workspace_path,
+      workspace_name: workspace_name,
+      repo_dir: config.repo_dir,
+    )
+
+  // Configure workspace files (with cleanup on failure)
+  configure_workspace(workspace, task, custom_config)
+}
+
+/// Configure workspace files, cleaning up on any failure
+fn configure_workspace(
+  workspace: Workspace,
+  task: Task,
+  custom_config: Option(AgentCustomConfig),
+) -> Result(Workspace, String) {
+  let custom_settings =
+    custom_config
+    |> option.then(fn(cfg) { cfg.settings_overrides })
+
+  // Write .scherzo/task.json
+  use _ <- try_with_cleanup(
+    workspace,
+    "write_task_info",
+    write_task_info(workspace, task),
+  )
+
+  // Write .claude/settings.json (merged with custom if present)
+  use _ <- try_with_cleanup(
+    workspace,
+    "write_claude_settings",
+    write_claude_settings(workspace, task.id, custom_settings),
+  )
+
+  // Write CLAUDE.md if custom instructions present
+  use _ <- try_with_cleanup(
+    workspace,
+    "write_claude_instructions",
+    write_claude_instructions(workspace, custom_config),
+  )
+
+  Ok(workspace)
+}
+
+/// Helper to run an operation and cleanup workspace on failure
+fn try_with_cleanup(
+  workspace: Workspace,
+  context: String,
+  result: Result(a, String),
+  next: fn(a) -> Result(b, String),
+) -> Result(b, String) {
+  case result {
+    Ok(value) -> next(value)
+    Error(err) -> {
+      cleanup_on_error(workspace, context)
+      Error(err)
     }
   }
 }
@@ -121,10 +161,10 @@ fn cleanup_on_error(workspace: Workspace, context: String) -> Nil {
 
 /// Destroy a workspace (forget from jj and delete files)
 pub fn destroy(workspace: Workspace) -> Result(Nil, String) {
-  // First, restore the .claude/settings.json to its original state
-  // This removes our hook injection from the commit history
-  // Note: This may fail if the file didn't exist originally, which is fine
+  // Restore files to their original state to prevent polluting commit history
+  // Note: These may fail if the files didn't exist originally, which is fine
   let _ = jj.restore_file(workspace.path, ".claude/settings.json")
+  let _ = jj.restore_file(workspace.path, "CLAUDE.md")
 
   // Forget the workspace from jj
   case jj.workspace_forget(workspace.repo_dir, workspace.workspace_name) {
@@ -144,9 +184,11 @@ pub fn destroy(workspace: Workspace) -> Result(Nil, String) {
 }
 
 /// Write .claude/settings.json with agent-specific hooks
+/// If custom_settings is provided, merges it with auto-generated settings
 fn write_claude_settings(
   workspace: Workspace,
   task_id: Id,
+  custom_settings: Option(String),
 ) -> Result(Nil, String) {
   let claude_dir = workspace.path <> "/.claude"
 
@@ -157,19 +199,57 @@ fn write_claude_settings(
         "Failed to create .claude directory: " <> simplifile.describe_error(err),
       )
     Ok(_) -> {
-      // Generate settings JSON
-      let settings_json = claude_settings.generate_autonomous_settings(task_id)
-      let settings_path = claude_dir <> "/settings.json"
+      // Generate base settings JSON
+      let base_settings = claude_settings.generate_autonomous_settings(task_id)
 
-      // Write settings file
-      case simplifile.write(settings_path, settings_json) {
-        Error(err) ->
-          Error(
-            "Failed to write settings.json: " <> simplifile.describe_error(err),
-          )
-        Ok(_) -> Ok(Nil)
+      // Merge with custom settings if provided
+      let final_settings = case custom_settings {
+        None -> Ok(base_settings)
+        Some(custom) -> settings_merger.merge(base_settings, custom)
+      }
+
+      case final_settings {
+        Error(err) -> Error("Failed to merge settings: " <> err)
+        Ok(settings_json) -> {
+          let settings_path = claude_dir <> "/settings.json"
+
+          // Write settings file
+          case simplifile.write(settings_path, settings_json) {
+            Error(err) ->
+              Error(
+                "Failed to write settings.json: "
+                <> simplifile.describe_error(err),
+              )
+            Ok(_) -> Ok(Nil)
+          }
+        }
       }
     }
+  }
+}
+
+/// Write CLAUDE.md to workspace root with custom instructions
+/// Only writes if custom config has instructions
+fn write_claude_instructions(
+  workspace: Workspace,
+  custom_config: Option(AgentCustomConfig),
+) -> Result(Nil, String) {
+  case custom_config {
+    None -> Ok(Nil)
+    Some(cfg) ->
+      case cfg.instructions {
+        None -> Ok(Nil)
+        Some(instructions) -> {
+          let claude_md_path = workspace.path <> "/CLAUDE.md"
+          case simplifile.write(claude_md_path, instructions) {
+            Error(err) ->
+              Error(
+                "Failed to write CLAUDE.md: " <> simplifile.describe_error(err),
+              )
+            Ok(_) -> Ok(Nil)
+          }
+        }
+      }
   }
 }
 

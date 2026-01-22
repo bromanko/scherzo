@@ -1,6 +1,8 @@
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 import scherzo/agent/workspace
+import scherzo/config/agent_config.{AgentCustomConfig}
 import simplifile
 
 pub fn default_config_sets_workspaces_in_repo_test() {
@@ -174,4 +176,57 @@ pub fn sanitize_id_trims_leading_dashes_test() {
 pub fn sanitize_id_returns_invalid_for_all_unicode_test() {
   // If input is entirely unicode, result would be empty, return placeholder
   workspace.sanitize_id("日本語") |> should.equal("invalid-task-id")
+}
+
+// -----------------------------------------------------------------------------
+// AgentCustomConfig type tests
+// These test the types used with workspace.create() custom_config parameter
+// Full integration tests require a jj repo - see docs/agent-config.md for manual testing
+// -----------------------------------------------------------------------------
+
+pub fn agent_custom_config_with_instructions_test() {
+  let config =
+    AgentCustomConfig(
+      name: "task",
+      instructions: Some("# Custom Instructions"),
+      settings_overrides: None,
+    )
+
+  config.name |> should.equal("task")
+  config.instructions |> should.equal(Some("# Custom Instructions"))
+  config.settings_overrides |> should.equal(None)
+}
+
+pub fn agent_custom_config_with_settings_test() {
+  let config =
+    AgentCustomConfig(
+      name: "task",
+      instructions: None,
+      settings_overrides: Some("{\"model\": \"opus\"}"),
+    )
+
+  config.name |> should.equal("task")
+  config.instructions |> should.equal(None)
+  config.settings_overrides |> should.equal(Some("{\"model\": \"opus\"}"))
+}
+
+pub fn agent_custom_config_with_both_test() {
+  let config =
+    AgentCustomConfig(
+      name: "task",
+      instructions: Some("# Instructions"),
+      settings_overrides: Some("{\"hooks\": {}}"),
+    )
+
+  config.name |> should.equal("task")
+  config.instructions |> should.equal(Some("# Instructions"))
+  config.settings_overrides |> should.equal(Some("{\"hooks\": {}}"))
+}
+
+pub fn agent_custom_config_empty_test() {
+  let config = agent_config.empty()
+
+  config.name |> should.equal("")
+  config.instructions |> should.equal(None)
+  config.settings_overrides |> should.equal(None)
 }
