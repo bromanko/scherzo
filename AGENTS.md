@@ -13,9 +13,22 @@ Keep instructions concrete and actionable. Remove guidance that becomes obsolete
 
 ## Version Control Discipline
 
-This project uses **jujutsu (jj)** for version control, **not git directly**.
+This project uses **jujutsu (jj)** for version control.
 
-> **Important:** Do not use `git` commands. Use `jj` instead. Run `/jj:commit` for guidance on committing with jujutsu.
+> **⚠️ CRITICAL: NEVER USE GIT COMMANDS ⚠️**
+>
+> Do NOT use `git add`, `git commit`, `git status`, or any other git commands.
+> Use `jj` equivalents instead. Git commands create detached HEAD states and
+> dangling commits that pollute the repository history.
+
+| ❌ NEVER use | ✅ ALWAYS use |
+|-------------|---------------|
+| `git status` | `jj st` |
+| `git add` | (not needed - jj tracks automatically) |
+| `git commit -m "..."` | `jj commit -m "..."` |
+| `git log` | `jj log` |
+| `git diff` | `jj diff` |
+| `git restore` | `jj restore` |
 
 Agents must commit work incrementally.
 
@@ -71,6 +84,25 @@ jj new -m "feat: add user authentication"
 # Or describe after creating
 jj new
 jj describe -m "feat: add user authentication"
+```
+
+### Cleaning Up Dangling Commits
+
+If you see dangling commits (orphaned branches in `jj log`), abandon them:
+
+```bash
+# Check for dangling commits (look for commits not on main line)
+jj log
+
+# Abandon specific commits by their change ID (the first ~8 chars)
+jj abandon <change-id>
+
+# Example: jj abandon npzytnzz lpkmmoku
+```
+
+**Always verify clean history before ending a session:**
+```bash
+jj log --limit 5  # Should show linear history, no dangling branches
 ```
 
 ## Project Structure
