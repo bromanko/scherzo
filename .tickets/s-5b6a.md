@@ -1,6 +1,6 @@
 ---
 id: s-5b6a
-status: open
+status: closed
 deps: [s-b1aa]
 links: []
 created: 2026-01-22T00:33:45Z
