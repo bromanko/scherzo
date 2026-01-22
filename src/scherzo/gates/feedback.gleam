@@ -2,7 +2,6 @@
 ///
 /// Formats gate findings into structured feedback that agents can use
 /// to fix issues. Groups findings by priority and includes actionable suggestions.
-
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}

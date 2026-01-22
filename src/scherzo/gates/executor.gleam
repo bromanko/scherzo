@@ -3,7 +3,6 @@
 /// Executes configured gates in order, collects results, and handles
 /// pass/fail transitions. Always restarts from the beginning on retry
 /// per design decision.
-
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/config/types as config

@@ -2,7 +2,6 @@
 ///
 /// Defines findings, priorities, feedback structures, and gate results
 /// used throughout the gate execution system.
-
 import gleam/list
 import gleam/option.{type Option}
 

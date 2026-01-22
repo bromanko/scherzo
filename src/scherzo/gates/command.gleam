@@ -6,7 +6,6 @@
 /// Note: This module only handles CommandGate types. Other gate types
 /// (ParallelReviewGate, MultiPassReviewGate, HumanGate) should be handled
 /// by their respective executor modules.
-
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -57,8 +56,11 @@ pub fn execute(
             GateFeedback(
               gate_name: name,
               findings: findings,
-              summary: "Command failed with exit code " <> int.to_string(exit_code),
-              suggested_action: "Fix the issues reported by " <> name <> " and try again",
+              summary: "Command failed with exit code "
+                <> int.to_string(exit_code),
+              suggested_action: "Fix the issues reported by "
+                <> name
+                <> " and try again",
             )
           GateFailed(name, feedback)
         }
@@ -74,7 +76,9 @@ pub fn execute(
                   issue: "Command timed out after "
                     <> int.to_string(effective_timeout / 1000)
                     <> " seconds",
-                  suggestion: Some("Check for infinite loops or hanging processes"),
+                  suggestion: Some(
+                    "Check for infinite loops or hanging processes",
+                  ),
                 ),
               ],
               summary: "Command timed out",
@@ -91,7 +95,12 @@ pub fn execute(
         name,
         GateFeedback(
           gate_name: name,
-          findings: [types.simple_finding(P0Critical, "ParallelReviewGate not yet implemented")],
+          findings: [
+            types.simple_finding(
+              P0Critical,
+              "ParallelReviewGate not yet implemented",
+            ),
+          ],
           summary: "Gate type not implemented",
           suggested_action: "Use CommandGate instead or wait for implementation",
         ),
@@ -102,7 +111,12 @@ pub fn execute(
         name,
         GateFeedback(
           gate_name: name,
-          findings: [types.simple_finding(P0Critical, "MultiPassReviewGate not yet implemented")],
+          findings: [
+            types.simple_finding(
+              P0Critical,
+              "MultiPassReviewGate not yet implemented",
+            ),
+          ],
           summary: "Gate type not implemented",
           suggested_action: "Use CommandGate instead or wait for implementation",
         ),
@@ -113,7 +127,9 @@ pub fn execute(
         name,
         GateFeedback(
           gate_name: name,
-          findings: [types.simple_finding(P0Critical, "HumanGate not yet implemented")],
+          findings: [
+            types.simple_finding(P0Critical, "HumanGate not yet implemented"),
+          ],
           summary: "Gate type not implemented",
           suggested_action: "Use CommandGate instead or wait for implementation",
         ),
