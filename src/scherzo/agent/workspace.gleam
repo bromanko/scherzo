@@ -73,7 +73,8 @@ pub fn create(
   use _ <- result.try(
     simplifile.create_directory_all(config.workspaces_base)
     |> result.map_error(fn(err) {
-      "Failed to create workspaces directory: " <> simplifile.describe_error(err)
+      "Failed to create workspaces directory: "
+      <> simplifile.describe_error(err)
     }),
   )
 

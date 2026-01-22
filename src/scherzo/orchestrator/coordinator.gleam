@@ -14,6 +14,7 @@ import scherzo/agent/driver.{type AgentResult}
 import scherzo/agent/drivers/claude
 import scherzo/agent/handoff
 import scherzo/agent/workspace.{type Workspace}
+import scherzo/config/agent_config
 import scherzo/config/types as config
 import scherzo/core/shell
 import scherzo/core/task.{
@@ -158,55 +159,68 @@ fn run_task_with_continuation(
         }
       }
 
-      // Create isolated workspace for this agent
-      // TODO(S-A704): Load and pass custom agent config here
-      let workspace_config = workspace.default_config(config.working_dir)
-      case workspace.create(workspace_config, effective_task, None) {
-        Error(err) -> RunFailed("Failed to create workspace: " <> err)
+      // Load custom agent config (returns empty config if directory doesn't exist,
+      // fails if config exists but is invalid)
+      case agent_config.load_task_config(config.working_dir) {
+        Error(err) -> RunFailed("Invalid agent config: " <> err)
 
-        Ok(ws) -> {
-          // Run the agent in the workspace and get result
-          let agent_result =
-            run_agent_in_workspace(
-              config,
-              ws,
+        Ok(custom_config) -> {
+          // Create isolated workspace for this agent
+          let workspace_config = workspace.default_config(config.working_dir)
+          case
+            workspace.create(
+              workspace_config,
               effective_task,
-              continuation_count,
+              Some(custom_config),
             )
+          {
+            Error(err) -> RunFailed("Failed to create workspace: " <> err)
 
-          // Handle the result - run gates BEFORE destroying workspace
-          // so gates can test the agent's changes
-          let final_result = case agent_result {
-            RunSuccess(output, change_id) -> {
-              // Agent completed - run gates in the workspace where changes were made
-              run_gates_and_handle_result(
-                config,
-                task,
-                ws.path,
-                continuation_count,
-                gate_iteration,
-                output,
-                change_id,
-              )
+            Ok(ws) -> {
+              // Run the agent in the workspace and get result
+              let agent_result =
+                run_agent_in_workspace(
+                  config,
+                  ws,
+                  effective_task,
+                  continuation_count,
+                )
+
+              // Handle the result - run gates BEFORE destroying workspace
+              // so gates can test the agent's changes
+              let final_result = case agent_result {
+                RunSuccess(output, change_id) -> {
+                  // Agent completed - run gates in the workspace where changes were made
+                  run_gates_and_handle_result(
+                    config,
+                    task,
+                    ws.path,
+                    continuation_count,
+                    gate_iteration,
+                    output,
+                    change_id,
+                  )
+                }
+                RunFailed(_) -> agent_result
+                RunExhausted(_, _, _) -> agent_result
+                RunGatesFailed(_, _) -> agent_result
+              }
+
+              // Clean up workspace after gates have run (changes persist in main repo)
+              case workspace.destroy(ws) {
+                Ok(_) -> Nil
+                Error(err) ->
+                  io.println(
+                    "Warning: Failed to clean up workspace for task "
+                    <> task.id
+                    <> ": "
+                    <> err,
+                  )
+              }
+
+              final_result
             }
-            RunFailed(_) -> agent_result
-            RunExhausted(_, _, _) -> agent_result
-            RunGatesFailed(_, _) -> agent_result
           }
-
-          // Clean up workspace after gates have run (changes persist in main repo)
-          case workspace.destroy(ws) {
-            Ok(_) -> Nil
-            Error(err) ->
-              io.println(
-                "Warning: Failed to clean up workspace for task "
-                <> task.id
-                <> ": "
-                <> err,
-              )
-          }
-
-          final_result
         }
       }
     }

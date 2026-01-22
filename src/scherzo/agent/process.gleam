@@ -6,6 +6,7 @@ import gleam/otp/actor
 import gleam/result
 import scherzo/agent/driver.{type AgentResult, type Command, type Driver}
 import scherzo/agent/workspace.{type Workspace}
+import scherzo/config/agent_config
 import scherzo/core/task.{type Task}
 import scherzo/core/types.{type AgentConfig, type Id, type Timestamp}
 import scherzo/vcs/jj
@@ -95,70 +96,88 @@ fn handle_start(
   task: Task,
   reply_to: Subject(StartResult),
 ) -> actor.Next(State, Message) {
-  // Create workspace for this task (defaults to .scherzo/workspaces/ in project)
-  // TODO(S-A704): Load and pass custom agent config here
-  let workspace_config = workspace.default_config(state.config.working_dir)
-
-  case workspace.create(workspace_config, task, None) {
+  // Load custom agent config (returns empty config if directory doesn't exist,
+  // fails if config exists but is invalid)
+  case agent_config.load_task_config(state.config.working_dir) {
     Error(err) -> {
-      process.send(reply_to, StartFailed("Failed to create workspace: " <> err))
+      process.send(reply_to, StartFailed("Invalid agent config: " <> err))
       actor.continue(state)
     }
 
-    Ok(ws) -> {
-      // Get the workspace's jj change ID for tracking
-      // Note: Using "unknown" on error allows task execution to continue even if jj
-      // is not available. This is acceptable because change_id is informational only
-      // and the task can still complete successfully without it.
-      let change_id = case jj.get_current_change(ws.path) {
-        Ok(id) -> id
-        Error(_) -> "unknown"
-      }
+    Ok(custom_config) -> {
+      // Create workspace for this task (defaults to .scherzo/workspaces/ in project)
+      let workspace_config = workspace.default_config(state.config.working_dir)
 
-      // Build the command - run in the workspace directory
-      let workspace_config =
-        types.AgentConfig(..state.config, working_dir: ws.path)
-      let command = driver.build_command(state.driver, task, workspace_config)
-
-      // Reply that we've started
-      process.send(reply_to, Started(change_id))
-
-      // Update state to running with workspace
-      let running_state =
-        State(
-          ..state,
-          status: Running(task_id: task.id, change_id: change_id, started_at: 0),
-          workspace: Some(ws),
-        )
-
-      // Run the agent (this blocks!)
-      let agent_result =
-        run_command(command, state.driver, state.config.timeout_ms)
-
-      // Update jj change with result in the workspace
-      case jj.describe_task_completion(ws.path, task, agent_result) {
-        Ok(_) -> Nil
-        Error(err) ->
-          io.println(
-            "Warning: Failed to update jj change for task "
-            <> task.id
-            <> ": "
-            <> err,
+      case workspace.create(workspace_config, task, Some(custom_config)) {
+        Error(err) -> {
+          process.send(
+            reply_to,
+            StartFailed("Failed to create workspace: " <> err),
           )
+          actor.continue(state)
+        }
+
+        Ok(ws) -> {
+          // Get the workspace's jj change ID for tracking
+          // Note: Using "unknown" on error allows task execution to continue even if jj
+          // is not available. This is acceptable because change_id is informational only
+          // and the task can still complete successfully without it.
+          let change_id = case jj.get_current_change(ws.path) {
+            Ok(id) -> id
+            Error(_) -> "unknown"
+          }
+
+          // Build the command - run in the workspace directory
+          let workspace_config =
+            types.AgentConfig(..state.config, working_dir: ws.path)
+          let command =
+            driver.build_command(state.driver, task, workspace_config)
+
+          // Reply that we've started
+          process.send(reply_to, Started(change_id))
+
+          // Update state to running with workspace
+          let running_state =
+            State(
+              ..state,
+              status: Running(
+                task_id: task.id,
+                change_id: change_id,
+                started_at: 0,
+              ),
+              workspace: Some(ws),
+            )
+
+          // Run the agent (this blocks!)
+          let agent_result =
+            run_command(command, state.driver, state.config.timeout_ms)
+
+          // Update jj change with result in the workspace
+          case jj.describe_task_completion(ws.path, task, agent_result) {
+            Ok(_) -> Nil
+            Error(err) ->
+              io.println(
+                "Warning: Failed to update jj change for task "
+                <> task.id
+                <> ": "
+                <> err,
+              )
+          }
+
+          // Cleanup workspace
+          let _ = workspace.destroy(ws)
+
+          // Update state with result
+          let final_state =
+            State(
+              ..running_state,
+              status: Completed(task.id, agent_result),
+              workspace: None,
+            )
+
+          actor.continue(final_state)
+        }
       }
-
-      // Cleanup workspace
-      let _ = workspace.destroy(ws)
-
-      // Update state with result
-      let final_state =
-        State(
-          ..running_state,
-          status: Completed(task.id, agent_result),
-          workspace: None,
-        )
-
-      actor.continue(final_state)
     }
   }
 }
