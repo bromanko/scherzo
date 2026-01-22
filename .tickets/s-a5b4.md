@@ -1,6 +1,6 @@
 ---
 id: s-a5b4
-status: open
+status: closed
 deps: [s-0571]
 links: []
 created: 2026-01-22T00:34:23Z

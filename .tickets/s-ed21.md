@@ -1,6 +1,6 @@
 ---
 id: s-ed21
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-01-22T00:33:00Z

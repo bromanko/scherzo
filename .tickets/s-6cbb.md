@@ -1,6 +1,6 @@
 ---
 id: s-6cbb
-status: open
+status: closed
 deps: [s-45f2]
 links: []
 created: 2026-01-22T00:35:21Z

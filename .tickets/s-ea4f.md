@@ -1,6 +1,6 @@
 ---
 id: s-ea4f
-status: open
+status: closed
 deps: [s-6cbb]
 links: []
 created: 2026-01-22T00:35:43Z
