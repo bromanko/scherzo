@@ -194,39 +194,29 @@ fn write_claude_settings(
   let claude_dir = workspace.path <> "/.claude"
 
   // Create .claude directory
-  case simplifile.create_directory_all(claude_dir) {
-    Error(err) ->
-      Error(
-        "Failed to create .claude directory: " <> simplifile.describe_error(err),
-      )
-    Ok(_) -> {
-      // Generate base settings JSON
-      let base_settings = claude_settings.generate_autonomous_settings(task_id)
+  use _ <- result.try(
+    simplifile.create_directory_all(claude_dir)
+    |> result.map_error(fn(err) {
+      "Failed to create .claude directory: " <> simplifile.describe_error(err)
+    }),
+  )
 
-      // Merge with custom settings if provided
-      let final_settings = case custom_settings {
-        None -> Ok(base_settings)
-        Some(custom) -> settings_merger.merge(base_settings, custom)
-      }
+  // Generate base settings JSON
+  let base_settings = claude_settings.generate_autonomous_settings(task_id)
 
-      case final_settings {
-        Error(err) -> Error("Failed to merge settings: " <> err)
-        Ok(settings_json) -> {
-          let settings_path = claude_dir <> "/settings.json"
+  // Merge with custom settings if provided
+  use settings_json <- result.try(case custom_settings {
+    None -> Ok(base_settings)
+    Some(custom) ->
+      settings_merger.merge(base_settings, custom)
+      |> result.map_error(fn(err) { "Failed to merge settings: " <> err })
+  })
 
-          // Write settings file
-          case simplifile.write(settings_path, settings_json) {
-            Error(err) ->
-              Error(
-                "Failed to write settings.json: "
-                <> simplifile.describe_error(err),
-              )
-            Ok(_) -> Ok(Nil)
-          }
-        }
-      }
-    }
-  }
+  // Write settings file
+  simplifile.write(claude_dir <> "/settings.json", settings_json)
+  |> result.map_error(fn(err) {
+    "Failed to write settings.json: " <> simplifile.describe_error(err)
+  })
 }
 
 /// Write CLAUDE.md to workspace root with custom instructions
@@ -259,33 +249,28 @@ fn write_task_info(workspace: Workspace, task: Task) -> Result(Nil, String) {
   let scherzo_dir = workspace.path <> "/.scherzo"
 
   // Create .scherzo directory
-  case simplifile.create_directory_all(scherzo_dir) {
-    Error(err) ->
-      Error(
-        "Failed to create .scherzo directory: "
-        <> simplifile.describe_error(err),
-      )
-    Ok(_) -> {
-      // Generate task JSON
-      let task_json =
-        json.object([
-          #("id", json.string(task.id)),
-          #("title", json.string(task.title)),
-          #("description", json.string(task.description)),
-          #("repo_dir", json.string(workspace.repo_dir)),
-        ])
-        |> json.to_string
+  use _ <- result.try(
+    simplifile.create_directory_all(scherzo_dir)
+    |> result.map_error(fn(err) {
+      "Failed to create .scherzo directory: " <> simplifile.describe_error(err)
+    }),
+  )
 
-      let task_path = scherzo_dir <> "/task.json"
+  // Generate task JSON
+  let task_json =
+    json.object([
+      #("id", json.string(task.id)),
+      #("title", json.string(task.title)),
+      #("description", json.string(task.description)),
+      #("repo_dir", json.string(workspace.repo_dir)),
+    ])
+    |> json.to_string
 
-      // Write task file
-      case simplifile.write(task_path, task_json) {
-        Error(err) ->
-          Error("Failed to write task.json: " <> simplifile.describe_error(err))
-        Ok(_) -> Ok(Nil)
-      }
-    }
-  }
+  // Write task file
+  simplifile.write(scherzo_dir <> "/task.json", task_json)
+  |> result.map_error(fn(err) {
+    "Failed to write task.json: " <> simplifile.describe_error(err)
+  })
 }
 
 /// Task info stored in workspace
