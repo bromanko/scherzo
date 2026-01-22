@@ -270,3 +270,74 @@ pub fn initialize_force_overwrites_agent_stub_test() {
     content |> string.contains("# Task Agent Instructions") |> should.be_true
   })
 }
+
+// -----------------------------------------------------------------------------
+// Gitignore configuration tests
+// -----------------------------------------------------------------------------
+
+pub fn initialize_creates_gitignore_with_runtime_patterns_test() {
+  with_temp_dir(fn(dir) {
+    let _ = init.initialize(dir, [], False, False)
+
+    let gitignore_path = dir <> "/.gitignore"
+    let assert Ok(content) = simplifile.read(gitignore_path)
+
+    // Should have runtime directory patterns
+    content |> string.contains(".scherzo/workspaces/") |> should.be_true
+    content |> string.contains(".scherzo/state/") |> should.be_true
+    content |> string.contains(".scherzo/pipes/") |> should.be_true
+
+    // Should NOT have blanket .scherzo/ ignore
+    content |> string.contains("\n.scherzo/\n") |> should.be_false
+  })
+}
+
+pub fn initialize_updates_existing_gitignore_test() {
+  with_temp_dir(fn(dir) {
+    // Create existing .gitignore with blanket pattern
+    let gitignore_path = dir <> "/.gitignore"
+    let _ =
+      simplifile.write(gitignore_path, "node_modules/\n.scherzo/\n*.log\n")
+
+    let _ = init.initialize(dir, [], False, False)
+
+    let assert Ok(content) = simplifile.read(gitignore_path)
+
+    // Should preserve other patterns
+    content |> string.contains("node_modules/") |> should.be_true
+    content |> string.contains("*.log") |> should.be_true
+
+    // Should have specific runtime patterns
+    content |> string.contains(".scherzo/workspaces/") |> should.be_true
+    content |> string.contains(".scherzo/state/") |> should.be_true
+  })
+}
+
+pub fn initialize_gitignore_is_idempotent_test() {
+  with_temp_dir(fn(dir) {
+    // First initialization
+    let _ = init.initialize(dir, [], False, False)
+    let gitignore_path = dir <> "/.gitignore"
+    let assert Ok(first_content) = simplifile.read(gitignore_path)
+
+    // Second initialization with force
+    let _ = init.initialize(dir, [], False, True)
+    let assert Ok(second_content) = simplifile.read(gitignore_path)
+
+    // Content should be the same (no duplicate patterns)
+    first_content |> should.equal(second_content)
+  })
+}
+
+pub fn initialize_reports_gitignore_in_created_files_test() {
+  with_temp_dir(fn(dir) {
+    let result = init.initialize(dir, [], False, False)
+    let assert Ok(created_files) = result
+
+    // Should report gitignore was updated
+    created_files
+    |> string.join(",")
+    |> string.contains(".gitignore")
+    |> should.be_true
+  })
+}

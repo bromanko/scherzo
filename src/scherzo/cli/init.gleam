@@ -285,8 +285,16 @@ fn do_initialize(
   // Create agent config stubs
   use agent_files <- result.try(create_agent_stubs(config_dir))
 
+  // Configure .gitignore (config_dir is working_dir/.scherzo)
+  let working_dir = string.drop_end(config_dir, 8)
+  use gitignore_modified <- result.try(configure_gitignore(working_dir))
+
   // Build list of created files
   let created = list.append([".scherzo/config.toml"], agent_files)
+  let created = case gitignore_modified {
+    True -> list.append(created, [".gitignore (updated)"])
+    False -> created
+  }
 
   // Optionally create tickets directory
   case with_tickets {
@@ -342,5 +350,69 @@ fn validate_templates(templates: List(String)) -> Result(Nil, InitError) {
   case list.find(templates, fn(t) { !list.contains(available, t) }) {
     Ok(invalid) -> Error(InvalidTemplate(invalid))
     Error(_) -> Ok(Nil)
+  }
+}
+
+/// Configure .gitignore to ignore runtime directories but track config
+/// Returns True if .gitignore was modified
+fn configure_gitignore(working_dir: String) -> Result(Bool, InitError) {
+  let gitignore_path = working_dir <> "/.gitignore"
+
+  // Patterns to add (runtime directories that shouldn't be tracked)
+  let patterns_to_add = [
+    ".scherzo/workspaces/",
+    ".scherzo/state/",
+    ".scherzo/pipes/",
+  ]
+
+  // Patterns to remove (blanket ignores that would hide config)
+  let patterns_to_remove = [".scherzo/", ".scherzo"]
+
+  // Read existing content or start empty
+  let existing_content = case simplifile.read(gitignore_path) {
+    Ok(content) -> content
+    Error(_) -> ""
+  }
+
+  // Split into lines and filter out blanket patterns
+  let existing_lines =
+    existing_content
+    |> string.split("\n")
+    |> list.filter(fn(line) { !list.contains(patterns_to_remove, line) })
+
+  // Check which patterns need to be added
+  let patterns_needed =
+    patterns_to_add
+    |> list.filter(fn(pattern) { !list.contains(existing_lines, pattern) })
+
+  // If nothing to change, return False
+  case patterns_needed {
+    [] ->
+      case
+        string.contains(existing_content, ".scherzo/\n")
+        || string.contains(existing_content, "\n.scherzo\n")
+      {
+        False -> Ok(False)
+        True -> {
+          // Need to remove blanket pattern even if no new patterns to add
+          let new_content = string.join(existing_lines, "\n")
+          use _ <- result.try(
+            simplifile.write(gitignore_path, new_content)
+            |> result.map_error(map_fs_error),
+          )
+          Ok(True)
+        }
+      }
+    _ -> {
+      // Add new patterns at the end
+      let new_lines = list.append(existing_lines, patterns_needed)
+      let new_content = string.join(new_lines, "\n")
+
+      use _ <- result.try(
+        simplifile.write(gitignore_path, new_content)
+        |> result.map_error(map_fs_error),
+      )
+      Ok(True)
+    }
   }
 }

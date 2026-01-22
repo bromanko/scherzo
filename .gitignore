@@ -21,8 +21,10 @@ result-*
 Thumbs.db
 .sprite
 
-# Scherzo runtime state (tracked separately by jj during operation)
-.scherzo/
+# Scherzo runtime directories (config is tracked)
+.scherzo/workspaces/
+.scherzo/state/
+.scherzo/pipes/
 
 # Claude Code local settings (user-specific)
 .claude/settings.local.json
