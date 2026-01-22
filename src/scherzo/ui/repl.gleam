@@ -97,16 +97,14 @@ fn quit_command(_args: List(String)) -> CommandResult {
 // ---------------------------------------------------------------------------
 
 /// Parse a line of input into a command
+/// Supports quoted strings: run "my task" "description here"
 pub fn parse_command(input: String) -> Option(ParsedCommand) {
   let trimmed = string.trim(input)
 
   case trimmed {
     "" -> None
     _ -> {
-      let parts =
-        trimmed
-        |> string.split(" ")
-        |> list.filter(fn(s) { s != "" })
+      let parts = tokenize(trimmed)
 
       case parts {
         [] -> None
@@ -114,6 +112,51 @@ pub fn parse_command(input: String) -> Option(ParsedCommand) {
           Some(ParsedCommand(name: string.lowercase(name), args: args))
       }
     }
+  }
+}
+
+/// Tokenize input respecting quoted strings
+/// Handles both double and single quotes
+fn tokenize(input: String) -> List(String) {
+  // quote_char is None when not in quotes, Some("\"") or Some("'") when inside
+  tokenize_loop(string.to_graphemes(input), [], "", None)
+  |> list.filter(fn(s) { s != "" })
+}
+
+/// Recursive tokenizer that handles quoted strings
+/// quote_char: None = not in quotes, Some(char) = looking for closing char
+fn tokenize_loop(
+  chars: List(String),
+  tokens: List(String),
+  current: String,
+  quote_char: Option(String),
+) -> List(String) {
+  case chars, quote_char {
+    // End of input
+    [], _ -> list.reverse([current, ..tokens])
+
+    // Start double quote (not in quotes)
+    ["\"", ..rest], None -> tokenize_loop(rest, tokens, current, Some("\""))
+
+    // End double quote
+    ["\"", ..rest], Some("\"") -> tokenize_loop(rest, tokens, current, None)
+
+    // Start single quote (not in quotes)
+    ["'", ..rest], None -> tokenize_loop(rest, tokens, current, Some("'"))
+
+    // End single quote
+    ["'", ..rest], Some("'") -> tokenize_loop(rest, tokens, current, None)
+
+    // Space outside quotes - end current token
+    [" ", ..rest], None -> {
+      case current {
+        "" -> tokenize_loop(rest, tokens, "", None)
+        _ -> tokenize_loop(rest, [current, ..tokens], "", None)
+      }
+    }
+
+    // Any character (space inside quotes or regular char)
+    [char, ..rest], state -> tokenize_loop(rest, tokens, current <> char, state)
   }
 }
 

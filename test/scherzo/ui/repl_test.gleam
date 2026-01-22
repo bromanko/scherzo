@@ -60,6 +60,53 @@ pub fn parse_command_preserves_arg_case_test() {
 }
 
 // ---------------------------------------------------------------------------
+// Quoted String Parsing Tests
+// ---------------------------------------------------------------------------
+
+pub fn parse_double_quoted_arg_test() {
+  repl.parse_command("run \"my task\"")
+  |> should.equal(Some(repl.ParsedCommand(name: "run", args: ["my task"])))
+}
+
+pub fn parse_double_quoted_args_test() {
+  repl.parse_command("run \"task title\" \"task description\"")
+  |> should.equal(
+    Some(
+      repl.ParsedCommand(name: "run", args: ["task title", "task description"]),
+    ),
+  )
+}
+
+pub fn parse_single_quoted_arg_test() {
+  repl.parse_command("run 'my task'")
+  |> should.equal(Some(repl.ParsedCommand(name: "run", args: ["my task"])))
+}
+
+pub fn parse_mixed_quoted_args_test() {
+  repl.parse_command("run \"task title\" 'task desc'")
+  |> should.equal(
+    Some(repl.ParsedCommand(name: "run", args: ["task title", "task desc"])),
+  )
+}
+
+pub fn parse_quoted_with_unquoted_test() {
+  repl.parse_command("run \"my task\" --verbose")
+  |> should.equal(
+    Some(repl.ParsedCommand(name: "run", args: ["my task", "--verbose"])),
+  )
+}
+
+pub fn parse_empty_quoted_string_test() {
+  repl.parse_command("run \"\"")
+  |> should.equal(Some(repl.ParsedCommand(name: "run", args: [])))
+}
+
+pub fn parse_quoted_with_special_chars_test() {
+  repl.parse_command("run \"fix bug #123\"")
+  |> should.equal(Some(repl.ParsedCommand(name: "run", args: ["fix bug #123"])))
+}
+
+// ---------------------------------------------------------------------------
 // Command Execution Tests
 // ---------------------------------------------------------------------------
 

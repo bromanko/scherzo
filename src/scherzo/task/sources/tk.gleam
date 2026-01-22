@@ -4,15 +4,13 @@
 /// Note: Shell injection is not possible because shell.run_with_timeout()
 /// passes arguments as a list, not through shell interpolation.
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
 import scherzo/agent/workspace
 import scherzo/core/shell
-
-/// Maximum length for note content
-const max_note_length = 10_000
 
 /// Raw ticket data from tk query (JSON output)
 pub type TicketJson {
@@ -42,8 +40,8 @@ pub fn ready() -> Result(List(String), String) {
     Ok(output) -> {
       // Output format: "id   [status] - title <- [deps]" per line
       // We just need the IDs (first column)
-      // Safe: non-empty lines (filtered above) always have at least one element
-      // after split(" "), and we filter empty IDs as extra safety
+      // Note: split(" ") on non-empty lines always returns at least one element,
+      // but we defensively filter empty IDs in case of unexpected whitespace
       let ids =
         output
         |> string.split("\n")
@@ -81,12 +79,11 @@ pub fn close(id: String) -> Result(Nil, String) {
 }
 
 /// Add a note to a ticket
-/// ID is sanitized and note is truncated to max_note_length
+/// ID is sanitized to prevent path traversal or injection
 /// Note: Shell injection is not possible - shellout uses arg lists
 pub fn add_note(id: String, note: String) -> Result(Nil, String) {
   let safe_id = workspace.sanitize_id(id)
-  let safe_note = string.slice(note, 0, max_note_length)
-  case run_tk(["add-note", safe_id, safe_note]) {
+  case run_tk(["add-note", safe_id, note]) {
     Error(err) -> Error(err)
     Ok(_) -> Ok(Nil)
   }
@@ -141,12 +138,9 @@ fn parse_ticket_json(line: String) -> Result(TicketJson, String) {
 /// Decode priority as either string or int (converts int to string)
 fn priority_string_or_int() -> decode.Decoder(String) {
   decode.one_of(decode.string, [
-    decode.int |> decode.map(int_to_string),
+    decode.int |> decode.map(int.to_string),
   ])
 }
-
-@external(erlang, "erlang", "integer_to_list")
-fn int_to_string(i: Int) -> String
 
 /// Convert tk status string to a simple status enum
 pub type TicketStatus {
