@@ -1,0 +1,165 @@
+# Scherzo Configuration
+# https://github.com/anthropics/scherzo
+
+[gates]
+
+[[gates.gates]]
+type = "command"
+name = "tests"
+command = "gleam test"
+timeout_ms = 300000
+serial = true
+fail_fast = false
+
+[[gates.gates]]
+type = "command"
+name = "check"
+command = "gleam check"
+timeout_ms = 60000
+serial = true
+fail_fast = false
+
+[[gates.gates]]
+type = "parallel-review"
+name = "code-review"
+synthesis_prompt = """
+Synthesize the dimension reviews into a unified assessment. Prioritize findings by severity (P0 critical, P1 major, P2 minor, P3 suggestion). Focus on actionable feedback.
+"""
+
+[[gates.gates.dimensions]]
+id = "correctness"
+focus = "Functional correctness and bug detection"
+prompt = """
+Review the code changes for correctness. Look for:
+- Logic errors and edge cases
+- Off-by-one errors
+- Null/None handling
+- Race conditions
+- Resource leaks
+"""
+[[gates.gates.dimensions]]
+id = "security"
+focus = "Security vulnerabilities"
+prompt = """
+Review the code changes for security issues. Look for:
+- Input validation gaps
+- Injection vulnerabilities
+- Authentication/authorization issues
+- Sensitive data exposure
+- Cryptographic weaknesses
+"""
+[[gates.gates.dimensions]]
+id = "performance"
+focus = "Performance and efficiency"
+prompt = """
+Review the code changes for performance. Look for:
+- Algorithmic complexity issues
+- Unnecessary allocations
+- N+1 query patterns
+- Missing caching opportunities
+- Blocking operations
+"""
+[[gates.gates.dimensions]]
+id = "maintainability"
+focus = "Code clarity and maintainability"
+prompt = """
+Review the code changes for maintainability. Look for:
+- Complex or unclear logic
+- Poor naming
+- Missing or misleading comments
+- Code duplication
+- Overly long functions
+"""
+[[gates.gates.dimensions]]
+id = "testing"
+focus = "Test coverage and quality"
+prompt = """
+Review the test changes (if any). Look for:
+- Missing test cases for new functionality
+- Edge cases not covered
+- Brittle tests
+- Unclear test names
+- Missing assertions
+"""
+[[gates.gates.dimensions]]
+id = "api-design"
+focus = "API design and contracts"
+prompt = """
+Review any API changes. Look for:
+- Breaking changes
+- Unclear contracts
+- Poor error handling
+- Missing documentation
+- Inconsistent naming
+"""
+[[gates.gates.dimensions]]
+id = "architecture"
+focus = "Architectural concerns"
+prompt = """
+Review for architectural issues. Look for:
+- Inappropriate coupling
+- Layer violations
+- Missing abstractions
+- Scalability concerns
+- Configuration management
+"""
+
+[[gates.gates]]
+type = "command"
+name = "tests"
+command = "gleam test"
+timeout_ms = 300000
+serial = true
+fail_fast = false
+
+[[gates.gates]]
+type = "multi-pass-review"
+name = "security-audit"
+require_convergence = true
+max_passes = 5
+
+[[gates.gates.passes]]
+focus = "Input Validation"
+prompt = """
+Review all external inputs (user data, API calls, file reads) for proper validation. Check for injection vulnerabilities, buffer overflows, and type confusion.
+"""
+[[gates.gates.passes]]
+focus = "Authentication & Authorization"
+prompt = """
+Review authentication and authorization logic. Check for broken auth, privilege escalation, and missing access controls.
+"""
+[[gates.gates.passes]]
+focus = "Data Protection"
+prompt = """
+Review data handling for sensitive information. Check for exposure in logs, insecure storage, weak encryption, and data leakage.
+"""
+[[gates.gates.passes]]
+focus = "Dependencies & Configuration"
+prompt = """
+Review dependencies and configuration for security. Check for known vulnerabilities, insecure defaults, and exposed secrets.
+"""
+[[gates.gates.passes]]
+focus = "Attack Surface"
+prompt = """
+Final pass to identify any remaining attack surface. Consider the full threat model and potential abuse cases.
+"""
+
+[[gates.gates]]
+type = "command"
+name = "tests"
+command = "gleam test"
+timeout_ms = 120000
+serial = true
+fail_fast = true
+
+[[gates.gates]]
+type = "command"
+name = "check"
+command = "gleam check"
+timeout_ms = 30000
+serial = true
+fail_fast = true
+[retry]
+strategy = "same"
+fresh_after_failures = 3
+max_iterations = 2
