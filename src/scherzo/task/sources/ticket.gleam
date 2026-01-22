@@ -5,8 +5,8 @@
 import gleam/list
 import gleam/option.{None, Some}
 import scherzo/core/task.{
-  type Task, type TaskStatus, Completed, Failed, InProgress, Normal, Pending,
-  Ready, Task,
+  type Task, type TaskStatus, Bug, Completed, Epic, Failed, Feature, InProgress,
+  Normal, Pending, Ready, RegularTask, Task,
 }
 import scherzo/core/types.{type Id}
 import scherzo/task/source.{type TaskSource, TaskSource}
@@ -83,12 +83,20 @@ fn ticket_to_task(ticket: parser.ParsedTicket) -> Task {
     _ -> Normal
   }
 
+  let task_type = case ticket.ticket_type {
+    parser.EpicTicket -> Epic
+    parser.BugTicket -> Bug
+    parser.FeatureTicket -> Feature
+    parser.TaskTicket -> RegularTask
+  }
+
   Task(
     id: ticket.id,
     title: ticket.title,
     description: ticket.description,
     status: status,
     priority: priority,
+    task_type: task_type,
     dependencies: ticket.deps,
     created_at: 0,
     updated_at: 0,

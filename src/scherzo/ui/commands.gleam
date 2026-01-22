@@ -10,8 +10,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/core/task.{
-  type Priority, type Task, Assigned, Blocked, Completed, Critical, Failed, High,
-  InProgress, Low, Normal, Pending, Ready,
+  type Priority, type Task, Assigned, Blocked, Completed, Critical, Epic, Failed,
+  High, InProgress, Low, Normal, Pending, Ready,
 }
 import scherzo/task/sources/ticket
 import scherzo/ui/repl.{type CommandHandler, CommandError, CommandOutput}
@@ -302,14 +302,17 @@ fn render_task_tree(
     False -> "├── "
   }
 
-  let priority_indicator = format_priority(task.priority)
+  // Epics get a box icon, regular tasks get priority indicator
+  let type_indicator = case task.task_type {
+    Epic -> "📦 "
+    _ -> format_priority(task.priority) <> " "
+  }
   let id_short = string.slice(task.id, 0, 8)
   let status_indicator = format_status_indicator(task.status)
   let line =
     prefix
     <> branch
-    <> priority_indicator
-    <> " "
+    <> type_indicator
     <> id_short
     <> " "
     <> status_indicator

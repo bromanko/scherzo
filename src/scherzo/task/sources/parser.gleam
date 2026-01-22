@@ -35,6 +35,18 @@ const max_priority = 4
 /// Default priority when not specified or invalid (Normal priority)
 const default_priority = 2
 
+/// Type of ticket for categorization
+pub type TicketType {
+  /// Regular task (default)
+  TaskTicket
+  /// Epic (container for related tasks)
+  EpicTicket
+  /// Bug fix
+  BugTicket
+  /// New feature
+  FeatureTicket
+}
+
 /// Parsed ticket from a markdown file
 pub type ParsedTicket {
   ParsedTicket(
@@ -43,6 +55,7 @@ pub type ParsedTicket {
     description: String,
     status: String,
     priority: Int,
+    ticket_type: TicketType,
     deps: List(String),
     tags: List(String),
     /// Parent ticket ID for hierarchical organization
@@ -79,6 +92,7 @@ pub fn parse_content(content: String) -> Result(ParsedTicket, String) {
               metadata.priority,
               default_priority,
             )),
+            ticket_type: metadata.ticket_type,
             deps: list.take(metadata.deps, max_deps),
             tags: list.take(metadata.tags, max_tags),
             parent: metadata.parent,
@@ -118,6 +132,7 @@ type FrontmatterData {
     id: Option(String),
     status: Option(String),
     priority: Option(Int),
+    ticket_type: TicketType,
     deps: List(String),
     tags: List(String),
     parent: Option(String),
@@ -131,6 +146,7 @@ fn parse_frontmatter(frontmatter: String) -> FrontmatterData {
       id: None,
       status: None,
       priority: None,
+      ticket_type: TaskTicket,
       deps: [],
       tags: [],
       parent: None,
@@ -157,6 +173,8 @@ fn parse_frontmatter(frontmatter: String) -> FrontmatterData {
                 |> result.map(Some)
                 |> result.unwrap(acc.priority),
             )
+          "type" ->
+            FrontmatterData(..acc, ticket_type: parse_ticket_type(value))
           "deps" -> FrontmatterData(..acc, deps: parse_list(value))
           "tags" -> FrontmatterData(..acc, tags: parse_list(value))
           "parent" ->
@@ -183,6 +201,16 @@ fn parse_list(value: String) -> List(String) {
   |> string.split(",")
   |> list.map(string.trim)
   |> list.filter(fn(s) { s != "" })
+}
+
+/// Parse ticket type string to enum
+fn parse_ticket_type(value: String) -> TicketType {
+  case string.lowercase(value) {
+    "epic" -> EpicTicket
+    "bug" -> BugTicket
+    "feature" -> FeatureTicket
+    _ -> TaskTicket
+  }
 }
 
 /// Parse markdown body to extract title and description

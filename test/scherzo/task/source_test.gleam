@@ -1,6 +1,6 @@
 import gleam/option.{None}
 import gleeunit/should
-import scherzo/core/task.{type Task, Normal, Pending, Ready, Task}
+import scherzo/core/task.{type Task, Normal, Pending, Ready, RegularTask, Task}
 import scherzo/task/source.{type TaskSource, TaskSource}
 
 fn make_test_task(id: String) -> Task {
@@ -10,6 +10,7 @@ fn make_test_task(id: String) -> Task {
     description: "Test task",
     status: Pending,
     priority: Normal,
+    task_type: RegularTask,
     dependencies: [],
     created_at: 1000,
     updated_at: 1000,

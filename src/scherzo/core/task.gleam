@@ -28,6 +28,18 @@ pub type Priority {
   Critical
 }
 
+/// Type of task for categorization
+pub type TaskType {
+  /// Regular task (default)
+  RegularTask
+  /// Epic (container for related tasks)
+  Epic
+  /// Bug fix
+  Bug
+  /// New feature
+  Feature
+}
+
 /// A task to be executed by an agent
 pub type Task {
   Task(
@@ -36,6 +48,7 @@ pub type Task {
     description: String,
     status: TaskStatus,
     priority: Priority,
+    task_type: TaskType,
     dependencies: List(Id),
     created_at: Timestamp,
     updated_at: Timestamp,
@@ -56,6 +69,7 @@ pub fn new(id: Id, title: String, description: String) -> Task {
     description: description,
     status: Pending,
     priority: Normal,
+    task_type: RegularTask,
     dependencies: [],
     created_at: 0,
     updated_at: 0,

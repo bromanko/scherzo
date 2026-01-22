@@ -6,7 +6,7 @@ import scherzo/agent/checkpoint.{
 }
 import scherzo/agent/handoff.{HandoffContext}
 import scherzo/core/event
-import scherzo/core/task.{type Task, Normal, Pending, Task}
+import scherzo/core/task.{type Task, Normal, Pending, RegularTask, Task}
 
 fn make_test_task() -> Task {
   Task(
@@ -15,6 +15,7 @@ fn make_test_task() -> Task {
     description: "This is a test task description.",
     status: Pending,
     priority: Normal,
+    task_type: RegularTask,
     dependencies: [],
     created_at: 1000,
     updated_at: 1000,

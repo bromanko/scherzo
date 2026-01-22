@@ -4,7 +4,7 @@ import scherzo/agent/driver.{
   type Driver, Command, Driver, Failure, Output, Success,
 }
 import scherzo/agent/process.{Idle, Running, StartFailed, Started}
-import scherzo/core/task.{type Task, Normal, Pending, Task}
+import scherzo/core/task.{type Task, Normal, Pending, RegularTask, Task}
 import scherzo/core/types.{type AgentConfig, AgentConfig, Claude}
 
 fn make_test_config() -> AgentConfig {
@@ -40,6 +40,7 @@ fn make_test_task() -> Task {
     description: "A test task",
     status: Pending,
     priority: Normal,
+    task_type: RegularTask,
     dependencies: [],
     created_at: 1000,
     updated_at: 1000,

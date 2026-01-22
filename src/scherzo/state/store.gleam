@@ -8,8 +8,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import scherzo/core/task.{
-  type Priority, type Task, type TaskStatus, Assigned, Blocked, Completed,
-  Critical, Failed, High, InProgress, Low, Normal, Pending, Ready, Task,
+  type Priority, type Task, type TaskStatus, type TaskType, Assigned, Blocked,
+  Bug, Completed, Critical, Epic, Failed, Feature, High, InProgress, Low, Normal,
+  Pending, Ready, RegularTask, Task,
 }
 import scherzo/core/types.{
   type AgentConfig, type AgentProvider, type AgentStatus, type Id, AgentConfig,
@@ -258,6 +259,7 @@ fn encode_task(t: Task) -> json.Json {
     #("description", json.string(t.description)),
     #("status", encode_task_status(t.status)),
     #("priority", encode_priority(t.priority)),
+    #("task_type", encode_task_type(t.task_type)),
     #("dependencies", json.array(t.dependencies, json.string)),
     #("created_at", json.int(t.created_at)),
     #("updated_at", json.int(t.updated_at)),
@@ -309,6 +311,15 @@ fn encode_priority(p: Priority) -> json.Json {
     Normal -> json.string("normal")
     High -> json.string("high")
     Critical -> json.string("critical")
+  }
+}
+
+fn encode_task_type(t: TaskType) -> json.Json {
+  case t {
+    RegularTask -> json.string("task")
+    Epic -> json.string("epic")
+    Bug -> json.string("bug")
+    Feature -> json.string("feature")
   }
 }
 
@@ -376,6 +387,11 @@ fn decode_task() -> decode.Decoder(Task) {
   use description <- decode.field("description", decode.string)
   use status <- decode.field("status", decode_task_status())
   use priority <- decode.field("priority", decode_priority())
+  use task_type_opt <- decode.field(
+    "task_type",
+    decode.optional(decode_task_type()),
+  )
+  let task_type = option.unwrap(task_type_opt, RegularTask)
   use dependencies <- decode.field("dependencies", decode.list(decode.string))
   use created_at <- decode.field("created_at", decode.int)
   use updated_at <- decode.field("updated_at", decode.int)
@@ -391,6 +407,7 @@ fn decode_task() -> decode.Decoder(Task) {
     description: description,
     status: status,
     priority: priority,
+    task_type: task_type,
     dependencies: dependencies,
     created_at: created_at,
     updated_at: updated_at,
@@ -441,6 +458,17 @@ fn decode_priority() -> decode.Decoder(Priority) {
     "high" -> decode.success(High)
     "critical" -> decode.success(Critical)
     _ -> decode.failure(Normal, "Priority")
+  }
+}
+
+fn decode_task_type() -> decode.Decoder(TaskType) {
+  use s <- decode.then(decode.string)
+  case s {
+    "task" -> decode.success(RegularTask)
+    "epic" -> decode.success(Epic)
+    "bug" -> decode.success(Bug)
+    "feature" -> decode.success(Feature)
+    _ -> decode.success(RegularTask)
   }
 }
 
