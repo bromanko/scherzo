@@ -9,6 +9,11 @@ run_command(Executable, Args, WorkingDir, TimeoutMs) ->
     ArgsList = [binary_to_list(A) || A <- Args],
     WD = binary_to_list(WorkingDir),
 
+    %% Debug: write command info to file
+    DebugFile = "/home/sprite/scherzo/.scherzo/ffi_debug.log",
+    DebugInfo = io_lib:format("Cmd: ~s~nArgs: ~p~nWD: ~s~n~n", [Cmd, ArgsList, WD]),
+    file:write_file(DebugFile, DebugInfo, [append]),
+
     %% Use open_port for better control
     PortSettings = [
         {cd, WD},
@@ -21,11 +26,17 @@ run_command(Executable, Args, WorkingDir, TimeoutMs) ->
 
     try
         Port = open_port({spawn_executable, Cmd}, PortSettings),
-        collect_output(Port, <<>>, TimeoutMs)
+        Result = collect_output(Port, <<>>, TimeoutMs),
+        %% Debug: log result
+        {ExitCode, Output} = Result,
+        file:write_file(DebugFile, io_lib:format("Exit: ~p~nOutput: ~s~n---~n", [ExitCode, Output]), [append]),
+        Result
     catch
         error:enoent ->
+            file:write_file(DebugFile, io_lib:format("ENOENT: ~s~n---~n", [Cmd]), [append]),
             {127, <<"Command not found: ", (list_to_binary(Cmd))/binary>>};
         _:Reason ->
+            file:write_file(DebugFile, io_lib:format("Error: ~p~n---~n", [Reason]), [append]),
             {1, list_to_binary(io_lib:format("Error: ~p", [Reason]))}
     end.
 

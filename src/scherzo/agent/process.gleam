@@ -1,16 +1,21 @@
 /// Agent process actor - manages the lifecycle of a CLI agent
 import gleam/erlang/process.{type Subject}
 import gleam/io
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import scherzo/agent/driver.{type AgentResult, type Command, type Driver}
+import gleam/string
+import scherzo/agent/driver.{
+  type AgentResult, type Command, type Driver, Command,
+}
 import scherzo/agent/workspace.{type Workspace}
 import scherzo/config/agent_config
 import scherzo/core/task.{type Task}
 import scherzo/core/types.{type AgentConfig, type Id, type Timestamp}
 import scherzo/vcs/jj
 import shellout
+import simplifile
 
 /// Messages the agent process can receive
 pub type Message {
@@ -184,11 +189,74 @@ fn handle_start(
 
 /// Run a command and get the result, with optional timeout
 fn run_command(command: Command, drv: Driver, timeout_ms: Int) -> AgentResult {
+  // Wrap command in a login shell to get the user's full PATH
+  let wrapped = wrap_in_login_shell(command)
+
+  // Debug: write to file
+  let debug_info =
+    "Command: "
+    <> wrapped.executable
+    <> " "
+    <> string.join(wrapped.args, " ")
+    <> "\nWorking dir: "
+    <> wrapped.working_dir
+    <> "\n"
+  let _ =
+    simplifile.append("/home/sprite/scherzo/.scherzo/debug.log", debug_info)
+
   // If timeout is 0 or negative, run without timeout
   case timeout_ms <= 0 {
-    True -> run_command_sync(command, drv, command.env)
-    False -> run_command_with_timeout(command, drv, command.env, timeout_ms)
+    True -> run_command_sync(wrapped, drv, command.env)
+    False -> run_command_with_timeout(wrapped, drv, command.env, timeout_ms)
   }
+}
+
+/// Wrap a command in a login shell to inherit the user's full environment
+/// This ensures commands like 'claude' can be found even when scherzo runs
+/// in a restricted environment (e.g., Nix devshell)
+fn wrap_in_login_shell(command: Command) -> Command {
+  // Build the full command string with proper escaping
+  let cmd_string = build_shell_command_string(command)
+
+  // Use bash login shell with -l (login) and -c (command)
+  Command(..command, executable: "bash", args: ["-l", "-c", cmd_string])
+}
+
+/// Build a shell command string from a Command, with proper escaping
+fn build_shell_command_string(command: Command) -> String {
+  // Build env var exports
+  let env_exports =
+    command.env
+    |> list.map(fn(pair) {
+      let #(key, value) = pair
+      "export " <> key <> "=" <> shell_escape(value)
+    })
+    |> string.join("; ")
+
+  // Build the command with args
+  let cmd_parts = [command.executable, ..command.args]
+  let cmd_string =
+    cmd_parts
+    |> list.map(shell_escape)
+    |> string.join(" ")
+
+  // Combine: cd to working dir, set env, run command
+  case env_exports {
+    "" -> "cd " <> shell_escape(command.working_dir) <> " && " <> cmd_string
+    exports ->
+      "cd "
+      <> shell_escape(command.working_dir)
+      <> " && "
+      <> exports
+      <> "; "
+      <> cmd_string
+  }
+}
+
+/// Escape a string for safe use in a shell command
+fn shell_escape(s: String) -> String {
+  // Use single quotes and escape any single quotes within
+  "'" <> string.replace(s, "'", "'\"'\"'") <> "'"
 }
 
 /// Run command synchronously without timeout
