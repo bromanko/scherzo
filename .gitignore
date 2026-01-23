@@ -30,3 +30,5 @@ Thumbs.db
 
 # Claude Code local settings (user-specific)
 .claude/settings.local.json
+.scherzo/ffi_debug.log
+.scherzo/debug.log
