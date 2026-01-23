@@ -15,12 +15,30 @@ pub type RunnerConfig {
     session_name: String,
     /// Working directory (contains .tickets/)
     working_dir: String,
+    /// Command to invoke scherzo (for hooks)
+    scherzo_bin: String,
   )
 }
 
-/// Default runner config
+/// Default runner config (assumes scherzo is in PATH)
 pub fn default_config(working_dir: String) -> RunnerConfig {
-  RunnerConfig(session_name: "scherzo", working_dir: working_dir)
+  RunnerConfig(
+    session_name: "scherzo",
+    working_dir: working_dir,
+    scherzo_bin: "scherzo",
+  )
+}
+
+/// Runner config with custom scherzo binary path
+pub fn config_with_scherzo_bin(
+  working_dir: String,
+  scherzo_bin: String,
+) -> RunnerConfig {
+  RunnerConfig(
+    session_name: "scherzo",
+    working_dir: working_dir,
+    scherzo_bin: scherzo_bin,
+  )
 }
 
 /// Error during UI startup
@@ -37,6 +55,7 @@ pub fn start(config: RunnerConfig) -> Result(Nil, RunnerError) {
     commands.CommandContext(
       working_dir: config.working_dir,
       session_manager: None,
+      scherzo_bin: config.scherzo_bin,
     )
 
   // Create REPL config with all commands
@@ -75,6 +94,7 @@ pub fn start_with_session(config: RunnerConfig) -> Result(Nil, RunnerError) {
         commands.CommandContext(
           working_dir: config.working_dir,
           session_manager: Some(manager),
+          scherzo_bin: config.scherzo_bin,
         )
 
       // Create REPL config with all commands
@@ -111,6 +131,7 @@ pub fn start_standalone(working_dir: String) -> Result(Nil, RunnerError) {
 pub fn start_in_session(
   session_name: String,
   working_dir: String,
+  scherzo_bin: String,
 ) -> Result(Nil, RunnerError) {
   // Attach to existing tmux session
   case session_manager.attach_to_session(session_name, working_dir) {
@@ -129,6 +150,7 @@ pub fn start_in_session(
         commands.CommandContext(
           working_dir: working_dir,
           session_manager: Some(manager),
+          scherzo_bin: scherzo_bin,
         )
 
       // Create REPL config with all commands

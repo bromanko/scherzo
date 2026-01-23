@@ -30,6 +30,10 @@ pub type CommandContext {
     working_dir: String,
     /// Optional session manager for tmux pane creation
     session_manager: Option(SessionManager),
+    /// Command to invoke scherzo (for hooks)
+    /// Development: "cd /path/to/scherzo && gleam run --"
+    /// Production: "scherzo"
+    scherzo_bin: String,
   )
 }
 
@@ -777,7 +781,14 @@ fn run_single_task(
   let new_task = task.new(task_id, title, description)
 
   // Spawn agent in background
-  case background.spawn_agent(ctx.working_dir, new_task, ctx.session_manager) {
+  case
+    background.spawn_agent(
+      ctx.working_dir,
+      new_task,
+      ctx.session_manager,
+      ctx.scherzo_bin,
+    )
+  {
     Error(reason) -> CommandError("Failed to spawn agent: " <> reason)
     Ok(#(spawn_result, _updated_manager)) -> {
       case spawn_result {
@@ -826,6 +837,7 @@ fn run_from_tickets(ctx: CommandContext, max_tasks: Int) -> repl.CommandResult {
                   ctx.working_dir,
                   tasks_to_run,
                   ctx.session_manager,
+                  ctx.scherzo_bin,
                 )
 
               let spawned_count =
@@ -868,12 +880,15 @@ fn spawn_agents_for_tasks(
   working_dir: String,
   tasks: List(Task),
   session_manager: Option(SessionManager),
+  scherzo_bin: String,
 ) -> List(background.SpawnResult) {
   // Spawn agents, threading the session_manager through
   let #(results, _final_manager) =
     list.fold(tasks, #([], session_manager), fn(acc, task) {
       let #(results_so_far, current_manager) = acc
-      case background.spawn_agent(working_dir, task, current_manager) {
+      case
+        background.spawn_agent(working_dir, task, current_manager, scherzo_bin)
+      {
         Error(reason) -> #(
           [background.SpawnFailed(reason), ..results_so_far],
           current_manager,

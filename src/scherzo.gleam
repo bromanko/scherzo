@@ -540,12 +540,15 @@ fn create_checkpoint(
   }
 }
 
-/// Get environment variable
-@external(erlang, "os", "getenv")
-fn os_getenv(name: String) -> Result(String, Nil)
+/// Get environment variable (returns empty string if not set)
+@external(erlang, "scherzo_env_ffi", "getenv")
+fn env_getenv(name: String) -> String
 
 fn get_env(name: String) -> Result(String, Nil) {
-  os_getenv(name)
+  case env_getenv(name) {
+    "" -> Error(Nil)
+    value -> Ok(value)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +615,10 @@ fn repl_command() -> glint.Command(Nil) {
   io.println("Working directory: " <> working_dir)
   io.println("")
 
+  // Compute scherzo command for hooks (development mode)
+  let scherzo_dir = get_cwd()
+  let scherzo_bin = "cd " <> scherzo_dir <> " && gleam run --"
+
   // Check if we're running inside the scherzo tmux session
   let session_name = tmux.default_session_name
   let in_scherzo_session = tmux.is_inside_session(session_name)
@@ -619,7 +626,7 @@ fn repl_command() -> glint.Command(Nil) {
   let result = case in_scherzo_session {
     True -> {
       // Attach to the existing session for agent pane management
-      runner.start_in_session(session_name, working_dir)
+      runner.start_in_session(session_name, working_dir, scherzo_bin)
     }
     False -> {
       // Run standalone without session management

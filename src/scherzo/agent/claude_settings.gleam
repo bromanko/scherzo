@@ -94,14 +94,19 @@ fn sanitize_task_id(task_id: Id) -> String {
 
 /// Generate settings.json for an autonomous agent
 /// The hooks will inject context via scherzo prime on session start
-pub fn generate_autonomous_settings(task_id: Id) -> String {
+/// scherzo_bin is the path/command to invoke scherzo (e.g., "scherzo" or "/path/to/scherzo")
+pub fn generate_autonomous_settings(
+  task_id: Id,
+  agent_id: String,
+  scherzo_bin: String,
+) -> String {
   json.object([
     #(
       "hooks",
       json.object([
-        #("SessionStart", session_start_hooks(task_id)),
-        #("Stop", stop_hooks(task_id)),
-        #("PreCompact", pre_compact_hooks(task_id)),
+        #("SessionStart", session_start_hooks(task_id, scherzo_bin)),
+        #("Stop", stop_hooks(task_id, agent_id, scherzo_bin)),
+        #("PreCompact", pre_compact_hooks(task_id, scherzo_bin)),
       ]),
     ),
   ])
@@ -109,7 +114,7 @@ pub fn generate_autonomous_settings(task_id: Id) -> String {
 }
 
 /// SessionStart hooks - inject context when agent session begins
-fn session_start_hooks(task_id: Id) -> json.Json {
+fn session_start_hooks(task_id: Id, scherzo_bin: String) -> json.Json {
   let safe_id = sanitize_task_id(task_id)
   json.array(
     [
@@ -121,7 +126,7 @@ fn session_start_hooks(task_id: Id) -> json.Json {
             [
               json.object([
                 #("type", json.string("command")),
-                #("command", json.string("scherzo prime " <> safe_id)),
+                #("command", json.string(scherzo_bin <> " prime " <> safe_id)),
               ]),
             ],
             fn(x) { x },
@@ -134,7 +139,7 @@ fn session_start_hooks(task_id: Id) -> json.Json {
 }
 
 /// Stop hooks - checkpoint state when agent stops
-fn stop_hooks(task_id: Id) -> json.Json {
+fn stop_hooks(task_id: Id, scherzo_bin: String) -> json.Json {
   let safe_id = sanitize_task_id(task_id)
   json.array(
     [
@@ -148,7 +153,13 @@ fn stop_hooks(task_id: Id) -> json.Json {
                 #("type", json.string("command")),
                 #(
                   "command",
-                  json.string("scherzo checkpoint --type=final " <> safe_id),
+                  json.string(
+                    scherzo_bin
+                    <> " checkpoint --type=final --agent-id="
+                    <> safe_agent_id
+                    <> " "
+                    <> safe_task_id,
+                  ),
                 ),
               ]),
             ],
@@ -162,7 +173,7 @@ fn stop_hooks(task_id: Id) -> json.Json {
 }
 
 /// PreCompact hooks - re-inject context before compaction
-fn pre_compact_hooks(task_id: Id) -> json.Json {
+fn pre_compact_hooks(task_id: Id, scherzo_bin: String) -> json.Json {
   let safe_id = sanitize_task_id(task_id)
   json.array(
     [
@@ -174,7 +185,7 @@ fn pre_compact_hooks(task_id: Id) -> json.Json {
             [
               json.object([
                 #("type", json.string("command")),
-                #("command", json.string("scherzo prime " <> safe_id)),
+                #("command", json.string(scherzo_bin <> " prime " <> safe_id)),
               ]),
             ],
             fn(x) { x },

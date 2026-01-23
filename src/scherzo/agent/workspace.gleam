@@ -42,14 +42,27 @@ pub type WorkspaceConfig {
     workspaces_base: String,
     /// Original repository directory
     repo_dir: String,
+    /// Path/command to invoke scherzo (for hooks)
+    /// In development: "cd /path/to/scherzo && gleam run --"
+    /// In production: "/usr/local/bin/scherzo" or just "scherzo"
+    scherzo_bin: String,
   )
 }
 
 /// Create a workspace config with default settings (workspaces in project dir)
 pub fn default_config(repo_dir: String) -> WorkspaceConfig {
+  default_config_with_scherzo_bin(repo_dir, "scherzo")
+}
+
+/// Create a workspace config with a custom scherzo binary path
+pub fn default_config_with_scherzo_bin(
+  repo_dir: String,
+  scherzo_bin: String,
+) -> WorkspaceConfig {
   WorkspaceConfig(
     workspaces_base: repo_dir <> "/.scherzo/workspaces",
     repo_dir: repo_dir,
+    scherzo_bin: scherzo_bin,
   )
 }
 
@@ -58,6 +71,7 @@ pub fn temp_config(repo_dir: String) -> WorkspaceConfig {
   WorkspaceConfig(
     workspaces_base: "/tmp/scherzo-workspaces",
     repo_dir: repo_dir,
+    scherzo_bin: "scherzo",
   )
 }
 
@@ -93,7 +107,13 @@ pub fn create(
     )
 
   // Configure workspace files (with cleanup on failure)
-  configure_workspace(workspace, task, custom_config)
+  configure_workspace(
+    workspace,
+    task,
+    agent_id,
+    custom_config,
+    config.scherzo_bin,
+  )
 }
 
 /// Configure workspace files, cleaning up on any failure
@@ -101,6 +121,7 @@ fn configure_workspace(
   workspace: Workspace,
   task: Task,
   custom_config: Option(AgentCustomConfig),
+  scherzo_bin: String,
 ) -> Result(Workspace, String) {
   let custom_settings =
     custom_config
@@ -117,7 +138,13 @@ fn configure_workspace(
   use _ <- try_with_cleanup(
     workspace,
     "write_claude_settings",
-    write_claude_settings(workspace, task.id, custom_settings),
+    write_claude_settings(
+      workspace,
+      task.id,
+      agent_id,
+      custom_settings,
+      scherzo_bin,
+    ),
   )
 
   // Write CLAUDE.md if custom instructions present
@@ -190,6 +217,7 @@ fn write_claude_settings(
   workspace: Workspace,
   task_id: Id,
   custom_settings: Option(String),
+  scherzo_bin: String,
 ) -> Result(Nil, String) {
   let claude_dir = workspace.path <> "/.claude"
 
@@ -201,8 +229,9 @@ fn write_claude_settings(
     }),
   )
 
-  // Generate base settings JSON
-  let base_settings = claude_settings.generate_autonomous_settings(task_id)
+  // Generate base settings JSON with scherzo_bin path for hooks
+  let base_settings =
+    claude_settings.generate_autonomous_settings(task_id, agent_id, scherzo_bin)
 
   // Merge with custom settings if provided
   use settings_json <- result.try(case custom_settings {
