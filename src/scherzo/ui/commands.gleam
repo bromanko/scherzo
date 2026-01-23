@@ -11,6 +11,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/agent/background
+import scherzo/core/names
 import scherzo/core/task.{
   type Priority, type Task, Assigned, Blocked, Completed, Critical, Epic, Failed,
   High, InProgress, Low, Normal, Pending, Ready,
@@ -406,13 +407,10 @@ fn format_agents_list(all_agents: List(agents_state.AgentState)) -> String {
   let lines =
     list.map(all_agents, fn(agent) {
       let status_str = format_agent_status(agent.status)
-      let id_short = string.slice(agent.config.id, 0, 12)
-      status_str
-      <> " "
-      <> id_short
-      <> " ["
-      <> format_provider(agent.config.provider)
-      <> "]"
+      // Generate human-readable name from agent ID
+      let friendly_name = names.from_agent_id(agent.config.id)
+      let provider = format_provider(agent.config.provider)
+      status_str <> " " <> friendly_name <> " [" <> provider <> "]"
     })
   header <> "\n" <> string.join(lines, "\n")
 }
@@ -420,12 +418,10 @@ fn format_agents_list(all_agents: List(agents_state.AgentState)) -> String {
 /// Format agent status for display
 fn format_agent_status(status: types.AgentStatus) -> String {
   case status {
-    types.Idle -> "⏸  Idle    "
-    types.Running(task_id, _started_at) ->
-      "▶  Running  " <> string.slice(task_id, 0, 8)
-    types.Completed(task_id, _completed_at) ->
-      "✓  Done     " <> string.slice(task_id, 0, 8)
-    types.Failed(reason) -> "✗  Failed   " <> string.slice(reason, 0, 20)
+    types.Idle -> "⏸  Idle   "
+    types.Running(_, _) -> "▶  Running"
+    types.Completed(_, _) -> "✓  Done   "
+    types.Failed(reason) -> "✗  Failed  " <> string.slice(reason, 0, 15)
   }
 }
 
@@ -794,10 +790,18 @@ fn run_single_task(
     Error(reason) -> CommandError("Failed to spawn agent: " <> reason)
     Ok(#(spawn_result, _updated_manager)) -> {
       case spawn_result {
-        background.SpawnSuccess(agent_id, _pipe_path) ->
+        background.SpawnSuccess(agent_id, _pipe_path) -> {
+          let friendly_name = names.from_agent_id(agent_id)
           CommandOutput(
-            "Spawned agent: " <> agent_id <> "\n\nUse 'agents' to check status.",
+            "Spawned agent "
+            <> friendly_name
+            <> " [task]\n"
+            <> "ID: "
+            <> agent_id
+            <> "\n\n"
+            <> "Use 'agents' to check status.",
           )
+        }
         background.SpawnFailed(reason) ->
           CommandError("Failed to spawn agent: " <> reason)
       }
@@ -842,32 +846,40 @@ fn run_from_tickets(ctx: CommandContext, max_tasks: Int) -> repl.CommandResult {
                   ctx.scherzo_bin,
                 )
 
-              let spawned_count =
-                list.filter(spawn_results, fn(r) {
+              let spawned_agents =
+                list.filter_map(spawn_results, fn(r) {
                   case r {
-                    background.SpawnSuccess(_, _) -> True
-                    background.SpawnFailed(_) -> False
+                    background.SpawnSuccess(agent_id, _) -> Ok(agent_id)
+                    background.SpawnFailed(_) -> Error(Nil)
                   }
                 })
-                |> list.length
 
+              let spawned_count = list.length(spawned_agents)
               let failed_count = list.length(spawn_results) - spawned_count
+
+              // Format spawned agent names
+              let agent_lines =
+                list.map(spawned_agents, fn(agent_id) {
+                  let friendly_name = names.from_agent_id(agent_id)
+                  "  " <> friendly_name <> " [task]"
+                })
 
               let result =
                 string.join(
                   [
-                    "Spawned "
-                      <> int.to_string(spawned_count)
-                      <> " agent(s) in background.",
-                    case failed_count > 0 {
-                      True -> int.to_string(failed_count) <> " failed to spawn."
-                      False -> ""
-                    },
-                    "",
-                    "Use 'agents' to check status.",
+                    "Spawned " <> int.to_string(spawned_count) <> " agent(s):",
+                    ..agent_lines
                   ],
                   "\n",
                 )
+                <> "\n"
+                <> case failed_count > 0 {
+                  True ->
+                    "\n" <> int.to_string(failed_count) <> " failed to spawn."
+                  False -> ""
+                }
+                <> "\n\nUse 'agents' to check status."
+
               CommandOutput(result)
             }
           }
