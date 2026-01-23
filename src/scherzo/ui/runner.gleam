@@ -84,6 +84,7 @@ pub fn start_with_session(config: RunnerConfig) -> Result(Nil, RunnerError) {
 
       // Print startup message
       io.println("Scherzo Control REPL")
+      io.println("Session: " <> config.session_name)
       io.println("Type 'help' for available commands")
       io.println("")
 

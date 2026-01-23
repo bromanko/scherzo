@@ -300,16 +300,16 @@ fn tasks_command() -> glint.Command(Nil) {
 
 fn agents_command() -> glint.Command(Nil) {
   use <- glint.command_help("Show agent status")
-  use _, _, _ <- glint.command()
+  use workdir_getter <- glint.flag(workdir_flag())
+  use _, _, flags <- glint.command()
 
-  case store.start_default() {
-    Error(_) -> io.println("Error: Failed to start state store")
-    Ok(state_store) -> {
-      commands.get_agents(state_store)
-      |> print_result
-      store.stop(state_store)
-    }
-  }
+  let working_dir =
+    workdir_getter(flags)
+    |> result.unwrap(".")
+    |> resolve_path()
+
+  commands.get_agents(working_dir)
+  |> print_result
 }
 
 /// Print a Result(String, String) - Ok prints output, Error prints error message
