@@ -612,7 +612,22 @@ fn repl_command() -> glint.Command(Nil) {
   io.println("Working directory: " <> working_dir)
   io.println("")
 
-  case runner.start_standalone(working_dir) {
+  // Check if we're running inside the scherzo tmux session
+  let session_name = tmux.default_session_name
+  let in_scherzo_session = tmux.is_inside_session(session_name)
+
+  let result = case in_scherzo_session {
+    True -> {
+      // Attach to the existing session for agent pane management
+      runner.start_in_session(session_name, working_dir)
+    }
+    False -> {
+      // Run standalone without session management
+      runner.start_standalone(working_dir)
+    }
+  }
+
+  case result {
     Ok(_) -> io.println("Goodbye!")
     Error(runner.SessionError(msg)) -> io.println("Error: " <> msg)
   }
