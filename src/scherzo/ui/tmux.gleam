@@ -55,6 +55,21 @@ pub fn session_exists(name: String) -> Bool {
   }
 }
 
+/// Check if we're currently running inside a specific tmux session
+pub fn is_inside_session(target_session: String) -> Bool {
+  // If TMUX env var is not set, we're not in any tmux session
+  case get_env("TMUX") {
+    Error(_) -> False
+    Ok(_) -> {
+      // Get current session name
+      case run_tmux(["display-message", "-p", "#{session_name}"]) {
+        Ok(current_session) -> string.trim(current_session) == target_session
+        Error(_) -> False
+      }
+    }
+  }
+}
+
 /// Create a new detached tmux session
 /// Returns error if session already exists
 pub fn create_session(name: String) -> Result(Nil, TmuxError) {
@@ -309,3 +324,16 @@ fn run_tmux_exec(args: List(String)) -> Result(String, TmuxError) {
     Error(#(_, err_output)) -> Error(CommandFailed(err_output))
   }
 }
+
+/// Get an environment variable
+/// Returns Ok(value) if set, Error(Nil) if not set
+fn get_env(name: String) -> Result(String, Nil) {
+  case os_getenv_raw(name) {
+    "" -> Error(Nil)
+    value -> Ok(value)
+  }
+}
+
+/// Raw Erlang os:getenv - returns empty string if not set
+@external(erlang, "scherzo_env_ffi", "getenv")
+fn os_getenv_raw(name: String) -> String
