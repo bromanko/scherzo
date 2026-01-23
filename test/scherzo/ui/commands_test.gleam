@@ -11,7 +11,11 @@ import scherzo/ui/repl
 /// Create a test command context pointing to the scherzo project itself
 /// which has real tickets we can query
 fn test_context() -> commands.CommandContext {
-  commands.CommandContext(working_dir: ".", session_manager: None)
+  commands.CommandContext(
+    working_dir: ".",
+    session_manager: None,
+    scherzo_bin: "scherzo",
+  )
 }
 
 // ---------------------------------------------------------------------------

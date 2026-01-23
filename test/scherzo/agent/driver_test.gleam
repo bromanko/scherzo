@@ -37,6 +37,7 @@ pub fn build_command_uses_driver_function_test() {
       working_dir: "/tmp",
       max_retries: 1,
       timeout_ms: 60_000,
+      interactive: False,
     )
 
   let command = driver.build_command(drv, t, config)

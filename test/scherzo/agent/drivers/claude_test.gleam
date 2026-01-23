@@ -1,4 +1,5 @@
 import gleam/list
+import gleam/string
 import gleeunit/should
 import scherzo/agent/driver.{ContextExhausted, Failure, Interrupted, Success}
 import scherzo/agent/drivers/claude
@@ -14,6 +15,7 @@ pub fn new_creates_claude_driver_test() {
 pub fn build_command_creates_correct_command_test() {
   let driver = claude.new()
   let t = task.new("task-1", "Fix the bug", "Fix the login bug in auth.gleam")
+  // Use interactive: False to test background (--print) mode
   let config =
     AgentConfig(
       id: "agent-1",
@@ -21,6 +23,7 @@ pub fn build_command_creates_correct_command_test() {
       working_dir: "/tmp/project",
       max_retries: 3,
       timeout_ms: 60_000,
+      interactive: False,
     )
 
   let command = driver.build_command(t, config)
@@ -92,4 +95,114 @@ pub fn detect_result_returns_context_exhausted_when_context_in_output_test() {
 
 pub fn executable_returns_claude_test() {
   claude.executable() |> should.equal("claude")
+}
+
+// ---------------------------------------------------------------------------
+// Interactive Mode Tests
+// ---------------------------------------------------------------------------
+
+pub fn build_command_interactive_mode_omits_print_flag_test() {
+  let driver = claude.new()
+  let t = task.new("task-1", "Fix the bug", "Fix the login bug")
+  // Interactive mode should NOT include --print
+  let config =
+    AgentConfig(
+      id: "agent-1",
+      provider: Claude,
+      working_dir: "/tmp/project",
+      max_retries: 3,
+      timeout_ms: 60_000,
+      interactive: True,
+    )
+
+  let command = driver.build_command(t, config)
+
+  command.executable |> should.equal("claude")
+  // Should NOT include --print in interactive mode
+  list.contains(command.args, "--print") |> should.be_false
+  // Should still include --dangerously-skip-permissions
+  list.contains(command.args, "--dangerously-skip-permissions")
+  |> should.be_true
+}
+
+pub fn build_command_interactive_mode_includes_prompt_test() {
+  let driver = claude.new()
+  let t = task.new("task-1", "Fix the bug", "Fix the login bug")
+  let config =
+    AgentConfig(
+      id: "agent-1",
+      provider: Claude,
+      working_dir: "/tmp/project",
+      max_retries: 3,
+      timeout_ms: 60_000,
+      interactive: True,
+    )
+
+  let command = driver.build_command(t, config)
+
+  // The prompt should be in the args (task title and description)
+  let args_str = list.fold(command.args, "", fn(acc, arg) { acc <> " " <> arg })
+  args_str |> string.contains("Fix the bug") |> should.be_true
+}
+
+pub fn build_command_background_mode_includes_print_flag_test() {
+  let driver = claude.new()
+  let t = task.new("task-1", "Fix the bug", "Fix the login bug")
+  // Background mode (interactive: False) should include --print
+  let config =
+    AgentConfig(
+      id: "agent-1",
+      provider: Claude,
+      working_dir: "/tmp/project",
+      max_retries: 3,
+      timeout_ms: 60_000,
+      interactive: False,
+    )
+
+  let command = driver.build_command(t, config)
+
+  // Should include --print in background mode
+  list.contains(command.args, "--print") |> should.be_true
+  // Should include --verbose in background mode
+  list.contains(command.args, "--verbose") |> should.be_true
+}
+
+pub fn build_command_background_mode_includes_output_format_test() {
+  let driver = claude.new()
+  let t = task.new("task-1", "Fix the bug", "Fix the login bug")
+  let config =
+    AgentConfig(
+      id: "agent-1",
+      provider: Claude,
+      working_dir: "/tmp/project",
+      max_retries: 3,
+      timeout_ms: 60_000,
+      interactive: False,
+    )
+
+  let command = driver.build_command(t, config)
+
+  // Background mode should include --output-format text
+  list.contains(command.args, "--output-format") |> should.be_true
+  list.contains(command.args, "text") |> should.be_true
+}
+
+pub fn build_command_sets_task_id_env_var_test() {
+  let driver = claude.new()
+  let t = task.new("my-task-123", "Fix the bug", "Fix the login bug")
+  let config =
+    AgentConfig(
+      id: "agent-1",
+      provider: Claude,
+      working_dir: "/tmp/project",
+      max_retries: 3,
+      timeout_ms: 60_000,
+      interactive: False,
+    )
+
+  let command = driver.build_command(t, config)
+
+  // Should set SCHERZO_TASK_ID environment variable
+  list.contains(command.env, #("SCHERZO_TASK_ID", "my-task-123"))
+  |> should.be_true
 }

@@ -81,6 +81,7 @@ pub fn save_and_get_agent_test() {
       working_dir: "/tmp",
       max_retries: 3,
       timeout_ms: 60_000,
+      interactive: False,
     )
   let agent = AgentState(config: config, status: Idle)
 
@@ -111,6 +112,7 @@ pub fn get_all_agents_returns_all_saved_agents_test() {
       working_dir: "/tmp",
       max_retries: 3,
       timeout_ms: 60_000,
+      interactive: False,
     )
   let config2 =
     AgentConfig(
@@ -119,6 +121,7 @@ pub fn get_all_agents_returns_all_saved_agents_test() {
       working_dir: "/tmp",
       max_retries: 3,
       timeout_ms: 60_000,
+      interactive: False,
     )
   let agent1 = AgentState(config: config1, status: Idle)
   let agent2 = AgentState(config: config2, status: Idle)
@@ -142,6 +145,7 @@ pub fn delete_agent_removes_agent_test() {
       working_dir: "/tmp",
       max_retries: 3,
       timeout_ms: 60_000,
+      interactive: False,
     )
   let agent = AgentState(config: config, status: Idle)
 
@@ -174,6 +178,7 @@ pub fn persist_and_load_roundtrip_test() {
       working_dir: "/tmp",
       max_retries: 3,
       timeout_ms: 60_000,
+      interactive: False,
     )
   let agent = AgentState(config: config, status: Idle)
   store.save_agent(s1, agent)

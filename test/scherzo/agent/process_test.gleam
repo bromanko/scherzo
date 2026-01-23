@@ -14,6 +14,7 @@ fn make_test_config() -> AgentConfig {
     working_dir: ".",
     max_retries: 3,
     timeout_ms: 60_000,
+    interactive: False,
   )
 }
 
