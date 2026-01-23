@@ -25,6 +25,8 @@ Thumbs.db
 .scherzo/workspaces/
 .scherzo/state/
 .scherzo/pipes/
+.scherzo/agents/
+.scherzo/task.json
 
 # Claude Code local settings (user-specific)
 .claude/settings.local.json

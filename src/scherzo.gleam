@@ -302,8 +302,14 @@ fn agents_command() -> glint.Command(Nil) {
   use <- glint.command_help("Show agent status")
   use _, _, _ <- glint.command()
 
-  commands.get_agents()
-  |> print_result
+  case store.start_default() {
+    Error(_) -> io.println("Error: Failed to start state store")
+    Ok(state_store) -> {
+      commands.get_agents(state_store)
+      |> print_result
+      store.stop(state_store)
+    }
+  }
 }
 
 /// Print a Result(String, String) - Ok prints output, Error prints error message

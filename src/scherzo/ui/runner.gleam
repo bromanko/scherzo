@@ -3,6 +3,7 @@
 /// Provides the startup sequence for the scherzo tmux UI,
 /// using the ticket system as the source of truth for tasks.
 import gleam/io
+import gleam/option.{None, Some}
 import scherzo/ui/commands
 import scherzo/ui/repl
 import scherzo/ui/session_manager
@@ -32,8 +33,11 @@ pub type RunnerError {
 /// This function blocks until the REPL exits
 pub fn start(config: RunnerConfig) -> Result(Nil, RunnerError) {
   // Create command context with working directory
-  // Tasks are queried directly from .tickets/ (single source of truth)
-  let command_ctx = commands.CommandContext(working_dir: config.working_dir)
+  let command_ctx =
+    commands.CommandContext(
+      working_dir: config.working_dir,
+      session_manager: None,
+    )
 
   // Create REPL config with all commands
   let repl_config =
@@ -66,9 +70,12 @@ pub fn start_with_session(config: RunnerConfig) -> Result(Nil, RunnerError) {
       Error(SessionError(error_msg))
     }
     Ok(manager) -> {
-      // Create command context with working directory
-      // Tasks are queried directly from .tickets/ (single source of truth)
-      let command_ctx = commands.CommandContext(working_dir: config.working_dir)
+      // Create command context with working directory and session manager
+      let command_ctx =
+        commands.CommandContext(
+          working_dir: config.working_dir,
+          session_manager: Some(manager),
+        )
 
       // Create REPL config with all commands
       let repl_config =
@@ -77,7 +84,6 @@ pub fn start_with_session(config: RunnerConfig) -> Result(Nil, RunnerError) {
 
       // Print startup message
       io.println("Scherzo Control REPL")
-      io.println("Session: " <> config.session_name)
       io.println("Type 'help' for available commands")
       io.println("")
 

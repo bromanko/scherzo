@@ -358,11 +358,13 @@ fn validate_templates(templates: List(String)) -> Result(Nil, InitError) {
 fn configure_gitignore(working_dir: String) -> Result(Bool, InitError) {
   let gitignore_path = working_dir <> "/.gitignore"
 
-  // Patterns to add (runtime directories that shouldn't be tracked)
+  // Patterns to add (runtime files/directories that shouldn't be tracked)
   let patterns_to_add = [
     ".scherzo/workspaces/",
     ".scherzo/state/",
     ".scherzo/pipes/",
+    ".scherzo/agents/",
+    ".scherzo/task.json",
   ]
 
   // Patterns to remove (blanket ignores that would hide config)

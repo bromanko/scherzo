@@ -7,17 +7,20 @@
 /// that can be called by both CLI and REPL.
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/agent/background
 import scherzo/core/task.{
   type Priority, type Task, Assigned, Blocked, Completed, Critical, Epic, Failed,
   High, InProgress, Low, Normal, Pending, Ready,
 }
-import scherzo/orchestrator
-import scherzo/orchestrator/coordinator
+import scherzo/core/types
+import scherzo/state/agents as agents_state
+import scherzo/task/source
 import scherzo/task/sources/ticket
 import scherzo/ui/repl.{type CommandHandler, CommandError, CommandOutput}
+import scherzo/ui/session_manager.{type SessionManager}
 
 /// Context for command execution
 /// Uses the ticket system as the source of truth for tasks
@@ -25,6 +28,8 @@ pub type CommandContext {
   CommandContext(
     /// Directory containing .tickets/ for this project
     working_dir: String,
+    /// Optional session manager for tmux pane creation
+    session_manager: Option(SessionManager),
   )
 }
 
@@ -375,13 +380,56 @@ pub fn get_tasks(working_dir: String) -> Result(String, String) {
 }
 
 /// Get agents output - shared by CLI and REPL
-pub fn get_agents() -> Result(String, String) {
-  Ok(
-    "No agents currently running.\n"
-    <> "\n"
-    <> "Agents are spawned when tasks are executed via 'scherzo run'.\n"
-    <> "Multi-agent support coming in Phase 5.",
-  )
+pub fn get_agents(working_dir: String) -> Result(String, String) {
+  let agents_dir = working_dir <> "/" <> agents_state.default_agents_dir
+  let all_agents = agents_state.load_all_agents(agents_dir)
+
+  case all_agents {
+    [] ->
+      Ok(
+        "No agents currently running.\n"
+        <> "\n"
+        <> "Use 'run --from-tickets' to spawn agents.",
+      )
+    _ -> Ok(format_agents_list(all_agents))
+  }
+}
+
+/// Format a list of agents for display
+fn format_agents_list(all_agents: List(agents_state.AgentState)) -> String {
+  let header =
+    "=== Agents (" <> int.to_string(list.length(all_agents)) <> ") ==="
+  let lines =
+    list.map(all_agents, fn(agent) {
+      let status_str = format_agent_status(agent.status)
+      let id_short = string.slice(agent.config.id, 0, 12)
+      status_str
+      <> " "
+      <> id_short
+      <> " ["
+      <> format_provider(agent.config.provider)
+      <> "]"
+    })
+  header <> "\n" <> string.join(lines, "\n")
+}
+
+/// Format agent status for display
+fn format_agent_status(status: types.AgentStatus) -> String {
+  case status {
+    types.Idle -> "⏸  Idle    "
+    types.Running(task_id, _started_at) ->
+      "▶  Running  " <> string.slice(task_id, 0, 8)
+    types.Failed(reason) -> "✗  Failed   " <> string.slice(reason, 0, 20)
+  }
+}
+
+/// Format provider name
+fn format_provider(provider: types.AgentProvider) -> String {
+  case provider {
+    types.Claude -> "claude"
+    types.Codex -> "codex"
+    types.Gemini -> "gemini"
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -411,9 +459,9 @@ pub fn tasks_command(ctx: CommandContext) -> CommandHandler {
 }
 
 /// Create agents command handler for REPL
-pub fn agents_command(_ctx: CommandContext) -> CommandHandler {
+pub fn agents_command(ctx: CommandContext) -> CommandHandler {
   fn(_args) {
-    case get_agents() {
+    case get_agents(ctx.working_dir) {
       Ok(output) -> CommandOutput(output)
       Error(err) -> CommandError(err)
     }
@@ -675,8 +723,8 @@ pub fn run_command(ctx: CommandContext) -> CommandHandler {
   fn(args) {
     case parse_run_args(args) {
       RunSingleTask(title, description) ->
-        run_single_task(ctx.working_dir, title, description)
-      RunFromTickets(max_tasks) -> run_from_tickets(ctx.working_dir, max_tasks)
+        run_single_task(ctx, title, description)
+      RunFromTickets(max_tasks) -> run_from_tickets(ctx, max_tasks)
       RunShowUsage -> CommandOutput(run_usage())
     }
   }
@@ -716,85 +764,127 @@ fn parse_max_tasks(args: List(String)) -> Int {
   }
 }
 
-/// Run a single task
+/// Run a single task (spawns agent in background)
 fn run_single_task(
-  working_dir: String,
+  ctx: CommandContext,
   title: String,
   description: String,
 ) -> repl.CommandResult {
-  let config = orchestrator.default_config(working_dir)
+  // Generate a task ID
+  let task_id = "task-" <> int.to_string(erlang_system_time())
 
-  case orchestrator.run_task(config, title, description) {
-    coordinator.RunSuccess(output, change_id) -> {
-      let result =
-        string.join(
-          [
-            "Task completed successfully!",
-            "Change ID: " <> change_id,
-            "",
-            "Output:",
-            output,
-          ],
-          "\n",
-        )
-      CommandOutput(result)
-    }
-    coordinator.RunFailed(reason) -> CommandError("Task failed: " <> reason)
-    coordinator.RunExhausted(continuations, last_output, change_id) -> {
-      let result =
-        string.join(
-          [
-            "Task exhausted after "
-              <> int.to_string(continuations)
-              <> " continuations",
-            "Change ID: " <> change_id,
-            "",
-            "Last output:",
-            last_output,
-          ],
-          "\n",
-        )
-      CommandOutput(result)
-    }
-    coordinator.RunGatesFailed(gate_name, feedback_summary) -> {
-      CommandError(
-        "Gates failed: " <> gate_name <> "\nFeedback: " <> feedback_summary,
-      )
+  // Create the task
+  let new_task = task.new(task_id, title, description)
+
+  // Spawn agent in background
+  case background.spawn_agent(ctx.working_dir, new_task, ctx.session_manager) {
+    Error(reason) -> CommandError("Failed to spawn agent: " <> reason)
+    Ok(#(spawn_result, _updated_manager)) -> {
+      case spawn_result {
+        background.SpawnSuccess(agent_id, _pipe_path) ->
+          CommandOutput(
+            "Spawned agent: " <> agent_id <> "\n\nUse 'agents' to check status.",
+          )
+        background.SpawnFailed(reason) ->
+          CommandError("Failed to spawn agent: " <> reason)
+      }
     }
   }
 }
 
-/// Run tasks from tickets directory
-fn run_from_tickets(working_dir: String, max_tasks: Int) -> repl.CommandResult {
-  let config = orchestrator.default_config(working_dir)
-  let tickets_dir = ticket.default_tickets_dir(working_dir)
+@external(erlang, "erlang", "system_time")
+fn erlang_system_time() -> Int
+
+/// Run tasks from tickets directory (spawns agents in background)
+fn run_from_tickets(ctx: CommandContext, max_tasks: Int) -> repl.CommandResult {
+  let tickets_dir = ticket.default_tickets_dir(ctx.working_dir)
   let task_source = ticket.new(tickets_dir)
 
-  case orchestrator.run_from_source(config, task_source, max_tasks) {
-    Error(err) -> CommandError(err)
-    Ok(batch_result) -> {
-      let summary =
-        "Total: "
-        <> int.to_string(batch_result.total)
-        <> " | Completed: "
-        <> int.to_string(list.length(batch_result.completed))
-        <> " | Failed: "
-        <> int.to_string(list.length(batch_result.failed))
+  // Handle explicit 0 request early
+  case max_tasks {
+    0 ->
+      CommandOutput(
+        "No tasks spawned (--max-tasks 0).\nUse --max-tasks N to spawn agents.",
+      )
+    _ -> {
+      // Get ready tasks from source
+      case source.get_ready_tasks(task_source) {
+        Error(err) -> CommandError("Failed to get ready tasks: " <> err)
+        Ok(tasks) -> {
+          // Limit to max_tasks if specified (negative means all)
+          let tasks_to_run = case max_tasks {
+            n if n > 0 -> list.take(tasks, n)
+            _ -> tasks
+          }
 
-      let failed_section = case batch_result.failed {
-        [] -> ""
-        failures -> {
-          let failed_lines =
-            list.map(failures, fn(r) {
-              "  - " <> r.title <> " (" <> r.task_id <> ")"
-            })
-          "\n\nFailed tasks:\n" <> string.join(failed_lines, "\n")
+          case tasks_to_run {
+            [] -> CommandOutput("No ready tasks found in tickets.")
+            _ -> {
+              // Spawn agents in background
+              let spawn_results =
+                spawn_agents_for_tasks(
+                  ctx.working_dir,
+                  tasks_to_run,
+                  ctx.session_manager,
+                )
+
+              let spawned_count =
+                list.filter(spawn_results, fn(r) {
+                  case r {
+                    background.SpawnSuccess(_, _) -> True
+                    background.SpawnFailed(_) -> False
+                  }
+                })
+                |> list.length
+
+              let failed_count = list.length(spawn_results) - spawned_count
+
+              let result =
+                string.join(
+                  [
+                    "Spawned "
+                      <> int.to_string(spawned_count)
+                      <> " agent(s) in background.",
+                    case failed_count > 0 {
+                      True -> int.to_string(failed_count) <> " failed to spawn."
+                      False -> ""
+                    },
+                    "",
+                    "Use 'agents' to check status.",
+                  ],
+                  "\n",
+                )
+              CommandOutput(result)
+            }
+          }
         }
       }
-
-      CommandOutput("=== Results ===\n" <> summary <> failed_section)
     }
   }
+}
+
+/// Spawn agents for a list of tasks
+fn spawn_agents_for_tasks(
+  working_dir: String,
+  tasks: List(Task),
+  session_manager: Option(SessionManager),
+) -> List(background.SpawnResult) {
+  // Spawn agents, threading the session_manager through
+  let #(results, _final_manager) =
+    list.fold(tasks, #([], session_manager), fn(acc, task) {
+      let #(results_so_far, current_manager) = acc
+      case background.spawn_agent(working_dir, task, current_manager) {
+        Error(reason) -> #(
+          [background.SpawnFailed(reason), ..results_so_far],
+          current_manager,
+        )
+        Ok(#(spawn_result, updated_manager)) -> #(
+          [spawn_result, ..results_so_far],
+          updated_manager,
+        )
+      }
+    })
+  list.reverse(results)
 }
 
 /// Usage text for run command
