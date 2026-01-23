@@ -393,7 +393,7 @@ pub fn get_agents(working_dir: String) -> Result(String, String) {
       Ok(
         "No agents currently running.\n"
         <> "\n"
-        <> "Use 'run --from-tickets' to spawn agents.",
+        <> "Use 'run \"task title\"' or 'run --from-tickets' to spawn agents.",
       )
     _ -> Ok(format_agents_list(all_agents))
   }
