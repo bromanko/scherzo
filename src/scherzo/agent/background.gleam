@@ -298,9 +298,10 @@ fn update_agent_workspace(
 /// Write a line to the pipe (non-blocking, ignores errors)
 fn write_to_pipe(pipe_path: String, message: String) -> Nil {
   // Use shell to write to pipe with timeout to prevent blocking
+  // Note: must use absolute path for spawn_executable
   let _ =
     run_shell_command(
-      "sh",
+      "/bin/sh",
       ["-c", "echo '" <> escape_for_shell(message) <> "' >> " <> pipe_path],
       ".",
       pipe_write_timeout_ms,
@@ -330,14 +331,24 @@ fn run_command_with_pipe_output(
   timeout_ms: Int,
 ) -> #(Int, String) {
   // Build command that tees output to the pipe
-  // Using shell to redirect and capture output
+  // Using a login shell to get the user's full PATH (including nvm, etc)
   let args_str =
     args
     |> join_with_spaces
 
-  let cmd = executable <> " " <> args_str <> " 2>&1 | tee -a " <> pipe_path
+  let cmd =
+    "cd "
+    <> quote_arg(working_dir)
+    <> " && "
+    <> executable
+    <> " "
+    <> args_str
+    <> " 2>&1 | tee -a "
+    <> pipe_path
 
-  run_shell_command("sh", ["-c", cmd], working_dir, timeout_ms)
+  // Use bash -l (login shell) to source user's profile and get full PATH
+  // Note: must use absolute path for spawn_executable
+  run_shell_command("/bin/bash", ["-l", "-c", cmd], working_dir, timeout_ms)
 }
 
 /// Join strings with spaces, quoting each argument
