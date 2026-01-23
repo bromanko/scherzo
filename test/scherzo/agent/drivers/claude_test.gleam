@@ -206,3 +206,23 @@ pub fn build_command_sets_task_id_env_var_test() {
   list.contains(command.env, #("SCHERZO_TASK_ID", "my-task-123"))
   |> should.be_true
 }
+
+pub fn build_command_sets_agent_id_env_var_test() {
+  let driver = claude.new()
+  let t = task.new("my-task-123", "Fix the bug", "Fix the login bug")
+  let config =
+    AgentConfig(
+      id: "agent-my-task-123-12345",
+      provider: Claude,
+      working_dir: "/tmp/project",
+      max_retries: 3,
+      timeout_ms: 60_000,
+      interactive: False,
+    )
+
+  let command = driver.build_command(t, config)
+
+  // Should set SCHERZO_AGENT_ID environment variable
+  list.contains(command.env, #("SCHERZO_AGENT_ID", "agent-my-task-123-12345"))
+  |> should.be_true
+}

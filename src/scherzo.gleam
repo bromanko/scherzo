@@ -540,11 +540,11 @@ fn create_checkpoint(
       case checkpoint_type {
         checkpoint.Final -> {
           let agents_dir = task_info.repo_dir <> "/.scherzo/agents"
-          let full_agent_id = "agent-" <> task_info.id
           let completed_at = get_timestamp()
           let status = types.Completed(task_info.id, completed_at)
-          case agents.update_status(agents_dir, full_agent_id, status) {
-            Ok(_) -> io.println("Agent marked as completed")
+          // Use the agent_id from environment (already retrieved above)
+          case agents.update_status(agents_dir, agent_id, status) {
+            Ok(_) -> io.println("Agent marked as completed: " <> agent_id)
             Error(err) ->
               io.println("Warning: Failed to update agent status: " <> err)
           }

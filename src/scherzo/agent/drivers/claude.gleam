@@ -49,8 +49,8 @@ fn build_claude_command(task: Task, config: AgentConfig) -> Command {
     executable: "claude",
     args: base_args,
     working_dir: config.working_dir,
-    // Set task ID for hooks to use
-    env: [#("SCHERZO_TASK_ID", task.id)],
+    // Set task ID and agent ID for hooks to use
+    env: [#("SCHERZO_TASK_ID", task.id), #("SCHERZO_AGENT_ID", config.id)],
   )
 }
 
