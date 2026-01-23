@@ -105,3 +105,48 @@ pub fn start_standalone(working_dir: String) -> Result(Nil, RunnerError) {
   let config = default_config(working_dir)
   start(config)
 }
+
+/// Start the UI attached to an existing tmux session
+/// Used when REPL is running inside a tmux session created by `console`
+pub fn start_in_session(
+  session_name: String,
+  working_dir: String,
+) -> Result(Nil, RunnerError) {
+  // Attach to existing tmux session
+  case session_manager.attach_to_session(session_name, working_dir) {
+    Error(err) -> {
+      let error_msg = case err {
+        session_manager.LayoutError(_) -> "Failed to attach to tmux layout"
+        session_manager.PipeError(_) -> "Failed to initialize pipes"
+        session_manager.NotInitialized -> "Session not initialized"
+        session_manager.AgentNotFound(_) -> "Agent not found"
+      }
+      Error(SessionError(error_msg))
+    }
+    Ok(manager) -> {
+      // Create command context with session manager
+      let command_ctx =
+        commands.CommandContext(
+          working_dir: working_dir,
+          session_manager: Some(manager),
+        )
+
+      // Create REPL config with all commands
+      let repl_config =
+        repl.default_config()
+        |> commands.register_all_commands(command_ctx)
+
+      // Print startup message
+      io.println("Scherzo Control REPL")
+      io.println("Session: " <> session_name)
+      io.println("Type 'help' for available commands")
+      io.println("")
+
+      // Run the REPL (blocks until quit)
+      repl.run(repl_config)
+
+      // Don't destroy the session - we're just attached to it
+      Ok(Nil)
+    }
+  }
+}
