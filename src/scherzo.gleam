@@ -9,8 +9,10 @@ import glint
 import scherzo/agent/checkpoint
 import scherzo/agent/workspace
 import scherzo/cli/init
+import scherzo/core/types
 import scherzo/orchestrator
 import scherzo/orchestrator/coordinator
+import scherzo/state/agents
 import scherzo/task/sources/ticket
 import scherzo/ui/commands
 import scherzo/ui/layout
@@ -533,6 +535,20 @@ fn create_checkpoint(
       io.println(
         "Files modified: " <> int.to_string(list.length(cp.files_modified)),
       )
+
+      // For final checkpoints, mark the agent as completed
+      case checkpoint_type {
+        checkpoint.Final -> {
+          let agents_dir = task_info.repo_dir <> "/.scherzo/agents"
+          let full_agent_id = "agent-" <> task_info.id
+          case agents.update_status(agents_dir, full_agent_id, types.Idle) {
+            Ok(_) -> io.println("Agent marked as completed")
+            Error(err) ->
+              io.println("Warning: Failed to update agent status: " <> err)
+          }
+        }
+        _ -> Nil
+      }
     }
     Error(err) -> {
       io.println("Failed to create checkpoint: " <> err)
