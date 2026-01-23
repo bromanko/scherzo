@@ -78,9 +78,16 @@ pub type Driver {
 }
 ```
 
-### Hook-Based Checkpointing
+### Hook-Based Checkpointing & Completion Signaling
 
-Scherzo leverages CLI agent hook systems (Claude Code hooks, Codex hooks) to enable agents to survive context exhaustion and seamlessly hand off work to fresh agents.
+Scherzo leverages CLI agent hook systems (Claude Code hooks, Codex hooks) for two critical functions:
+1. **Checkpointing**: Enable agents to survive context exhaustion and hand off to fresh agents
+2. **Completion Signaling**: Agents explicitly signal task completion via hooks, not by process exit
+
+**Important Distinction**: An agent's process terminating does NOT mean the task is complete. Agents must explicitly signal completion through the Stop hook. This enables:
+- **Interactive mode**: Human can interact with the agent pane while it runs
+- **Graceful handoff**: Agent can signal "context exhausted, continue work" vs "task complete"
+- **Human-in-the-loop**: Panes stay open for review and interaction after agent finishes
 
 #### Available Hooks by Provider
 
@@ -168,29 +175,34 @@ project/
 - **Undo**: `jj undo` or `jj restore` to revert bad state
 - **Conflicts**: jj handles concurrent writes gracefully
 
-#### Context Exhaustion Flow
+#### Agent Completion & Context Exhaustion Flow
+
+**Key Principle**: Task completion is signaled explicitly via hooks, NOT by process exit.
 
 ```
-1. Agent working on task
+1. Agent working on task (interactive in tmux pane)
    ↓
 2. PostToolUse hook fires after each tool → writes incremental checkpoint
    ↓
-3. Context nears limit:
-   - Notification hook detects warning, OR
-   - PreCompact hook fires, OR
-   - Agent stops with context_exhausted signal
+3. Agent determines outcome:
+   a) Task COMPLETE: Agent runs Stop hook with completion flag
+   b) Context EXHAUSTED: Agent runs Stop hook with continuation flag
+   c) Agent CRASHES: Process terminates abnormally (no hook)
    ↓
-4. Stop hook fires → writes final checkpoint with:
-   - Summary of all work done
-   - Explicit "next steps" for continuation
+4. Stop hook fires → calls `scherzo checkpoint` with:
+   - Completion status: "complete" | "continue" | "blocked"
+   - Summary of work done
+   - Explicit "next steps" (for continuation)
    - List of files modified with descriptions
    ↓
-5. Scherzo's AgentProcess detects agent stopped
+5. Orchestrator receives completion signal via hook command
+   (NOT by detecting process exit)
    ↓
-6. Coordinator checks: crash vs context exhaustion vs completion
-   - If context exhaustion: trigger handoff
-   - If completion: mark task done
-   - If crash: retry or fail based on policy
+6. Coordinator routes based on signal:
+   - If "complete": mark task done, keep pane open for review
+   - If "continue": trigger handoff to fresh agent
+   - If "blocked": notify human, wait for intervention
+   - If crash (no signal): retry or fail based on policy
    ↓
 7. Handoff: Coordinator spawns fresh agent with continuation prompt:
 
@@ -495,6 +507,9 @@ scherzo squash  # Interactive jj squash of completed changes
 # Hook commands (called by .claude/settings.json hooks in agent workspaces)
 scherzo prime [task-id]       # Output task context for SessionStart hook ✓
 scherzo checkpoint [task-id]  # Save state for Stop hook ✓
+  --status complete           # Signal task completed successfully
+  --status continue           # Signal context exhausted, need handoff
+  --status blocked            # Signal human intervention needed
 ```
 
 ### Console vs REPL vs Attach
@@ -528,29 +543,53 @@ scherzo checkpoint [task-id]  # Save state for Stop hook ✓
 └─────────────────────────────────────────────┴───────────────┘
 ```
 
+**Pane Lifecycle:**
+- Agent panes run Claude **interactively** (no `--print` flag)
+- Panes stay open even after agent signals completion
+- Human can scroll up to review work, or interact with the agent
+- Panes are only closed explicitly via `close <id>` command or session shutdown
+
 ### Control Pane Commands
 
 ```
 status              # Show overall status
 tasks               # List all tasks with status
 agents              # Show agent status
+run <prompt>        # Create and run a new task
 pause <id>          # Pause an agent
 resume <id>         # Resume a paused agent
 retry <id>          # Retry a failed task
 kill <id>           # Kill a running agent
+close <id>          # Close a completed agent pane
 focus <id>          # Expand agent pane to full screen
 quit                # Graceful shutdown (finish current, don't start new)
 abort               # Immediate shutdown (kill all agents)
 ```
+
+### Agent Execution Modes
+
+**Interactive Mode** (with tmux UI):
+- Agent runs directly in a tmux pane (no `--print` flag)
+- Pane stays open for human interaction
+- Agent signals completion via Stop hook command back to orchestrator
+- Human can scroll, copy, and interact with the agent session
+- Process exit does NOT automatically close the pane or mark task complete
+
+**Background Mode** (headless):
+- Agent runs with `--print` flag (one-shot response)
+- Output routed through named pipes
+- Used for automated pipelines without human interaction
 
 ### Implementation Notes
 
 - Use `shellout` to call `tmux` commands from Gleam
 - Session lifecycle: `tmux new-session -d -s scherzo`, `tmux kill-session -t scherzo`
 - Pane creation: `tmux split-window`, `tmux select-layout tiled`
-- Output routing: Each agent process writes to a named pipe, tmux pane tails the pipe
+- **Interactive mode**: Agent command runs directly in pane, no pipes needed
+- **Background mode**: Each agent writes to a named pipe, tmux pane tails the pipe
 - Control pane: Gleam process reading stdin, parsing commands, sending messages to coordinator actor
 - Dynamic layout: Recalculate pane layout when agents join/leave
+- **Completion signaling**: Stop hook calls `scherzo checkpoint --complete` to notify orchestrator
 
 ## Key Dependencies
 
@@ -735,6 +774,7 @@ Scale from single agent to parallel execution. Builds on completion gates and me
 | Parallelism | Multiple parallel agents | Different agents work on different tasks concurrently |
 | Version Control | jujutsu (jj) | Each agent creates a jj change, easier parallel work |
 | Agent Continuity | Hook-based checkpointing | Leverage CLI agent hooks (Claude/Codex) for state persistence, enables handoff on context exhaustion |
+| Completion Signaling | Hook command, not process exit | Agents explicitly signal completion/continue/blocked via Stop hook; enables interactive mode and human-in-the-loop |
 | State Storage | Tickets as source of truth | Task state lives in `.tickets/` files, queried via ticket adapter. Runtime agent state in-memory. Checkpoints in `.scherzo/checkpoints/` for handoff. |
 | Handoff Strategy | Continuation prompt | Build context from checkpoint + jj diff, let fresh agent continue naturally |
 | Quality Assurance | Completion gates pipeline | Parallel code review with synthesis, configurable per-repo. See `docs/completion-gates.md`. |

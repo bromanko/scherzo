@@ -136,9 +136,46 @@ When Scherzo spawns an agent, it creates an isolated **jj workspace**:
 1. `workspace.create()` creates jj workspace + writes config files
 2. Agent runs in workspace directory with `SCHERZO_TASK_ID` env var
 3. `SessionStart` hook calls `scherzo prime` → outputs task context
-4. Agent works on task
-5. `Stop` hook calls `scherzo checkpoint` → saves state
-6. `workspace.destroy()` cleans up
+4. Agent works on task (interactive in tmux pane)
+5. `Stop` hook calls `scherzo checkpoint` → **signals completion to orchestrator**
+6. Orchestrator receives signal and updates task state
+7. `workspace.destroy()` cleans up (only after orchestrator confirms)
+
+## Agent Completion Architecture
+
+**Critical Design Principle**: Task completion is signaled via hooks, NOT by process exit.
+
+### Why Hooks, Not Process Exit?
+
+| Approach | Problem |
+|----------|---------|
+| Process exit = task done | Can't distinguish completion vs crash vs context exhaustion |
+| `--print` flag | Forces one-shot mode, no human interaction |
+| Hook-based signaling | Agent explicitly communicates intent to orchestrator |
+
+### Completion States
+
+Agents signal one of these states via the Stop hook:
+
+| Signal | Meaning | Orchestrator Action |
+|--------|---------|---------------------|
+| `complete` | Task finished successfully | Mark task done, keep pane open for review |
+| `continue` | Context exhausted, work remains | Spawn fresh agent with handoff context |
+| `blocked` | Human intervention needed | Notify user, wait for input |
+| (no signal) | Crash or abnormal exit | Retry or fail per policy |
+
+### Interactive Mode
+
+In tmux UI mode, agents run **interactively** (no `--print` flag):
+- Human can scroll, interact, and provide input
+- Pane stays open after agent signals completion
+- Agent explicitly calls `scherzo checkpoint --status complete` when done
+- Orchestrator updates task state based on hook signal, not process state
+
+This enables human-in-the-loop workflows where the user can:
+- Review agent work before it's marked complete
+- Provide additional input mid-task
+- Intervene if the agent gets stuck
 
 ## Task Management
 
