@@ -337,6 +337,7 @@ fn encode_agent_config(c: AgentConfig) -> json.Json {
     #("working_dir", json.string(c.working_dir)),
     #("max_retries", json.int(c.max_retries)),
     #("timeout_ms", json.int(c.timeout_ms)),
+    #("interactive", json.bool(c.interactive)),
   ])
 }
 
@@ -491,12 +492,14 @@ fn decode_agent_config() -> decode.Decoder(AgentConfig) {
   use working_dir <- decode.field("working_dir", decode.string)
   use max_retries <- decode.field("max_retries", decode.int)
   use timeout_ms <- decode.field("timeout_ms", decode.int)
+  use interactive <- decode.optional_field("interactive", False, decode.bool)
   decode.success(AgentConfig(
     id: id,
     provider: provider,
     working_dir: working_dir,
     max_retries: max_retries,
     timeout_ms: timeout_ms,
+    interactive: interactive,
   ))
 }
 

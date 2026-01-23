@@ -35,6 +35,7 @@ pub fn spawn_agent(
   working_dir: String,
   task: Task,
   session_manager: Option(SessionManager),
+  scherzo_bin: String,
 ) -> Result(#(SpawnResult, Option(SessionManager)), String) {
   let agents_dir = working_dir <> "/" <> agents.default_agents_dir
   let agent_id = generate_agent_id(task.id)
@@ -42,9 +43,23 @@ pub fn spawn_agent(
   case session_manager {
     // Interactive mode: run Claude directly in tmux pane
     Some(manager) ->
-      spawn_agent_interactive(working_dir, task, agent_id, manager, agents_dir)
+      spawn_agent_interactive(
+        working_dir,
+        task,
+        agent_id,
+        manager,
+        agents_dir,
+        scherzo_bin,
+      )
     // Background mode: run with pipe-based output
-    None -> spawn_agent_background(working_dir, task, agent_id, agents_dir)
+    None ->
+      spawn_agent_background(
+        working_dir,
+        task,
+        agent_id,
+        agents_dir,
+        scherzo_bin,
+      )
   }
 }
 
@@ -55,9 +70,11 @@ fn spawn_agent_interactive(
   agent_id: String,
   manager: SessionManager,
   agents_dir: String,
+  scherzo_bin: String,
 ) -> Result(#(SpawnResult, Option(SessionManager)), String) {
   let started_at = erlang_system_time_ms()
-  let workspace_config = workspace.default_config(working_dir)
+  let workspace_config =
+    workspace.default_config_with_scherzo_bin(working_dir, scherzo_bin)
 
   // Load custom agent config
   case agent_config.load_task_config(working_dir) {
@@ -67,8 +84,8 @@ fn spawn_agent_interactive(
       case workspace.create(workspace_config, task, Some(custom_config)) {
         Error(err) -> Error("Failed to create workspace: " <> err)
         Ok(ws) -> {
-          // Build the claude command
-          let agent_cfg = make_agent_config(agent_id, ws.path)
+          // Build the claude command (interactive mode)
+          let agent_cfg = make_agent_config(agent_id, ws.path, True)
           let drv = claude.new()
           let command = driver.build_command(drv, task, agent_cfg)
 
@@ -133,6 +150,7 @@ fn spawn_agent_background(
   task: Task,
   agent_id: String,
   agents_dir: String,
+  scherzo_bin: String,
 ) -> Result(#(SpawnResult, Option(SessionManager)), String) {
   let pipe_config = pipes.default_config(working_dir)
 
@@ -150,7 +168,8 @@ fn spawn_agent_background(
 
     Ok(pipe_path) -> {
       let started_at = erlang_system_time_ms()
-      let agent_cfg = make_agent_config(agent_id, working_dir)
+      // Background mode - non-interactive
+      let agent_cfg = make_agent_config(agent_id, working_dir, False)
 
       let agent_state =
         agents.AgentState(
@@ -171,6 +190,7 @@ fn spawn_agent_background(
             agent_id,
             pipe_path,
             agents_dir,
+            scherzo_bin,
           )
         },
         fn(error_msg) {
@@ -192,8 +212,10 @@ fn run_agent_background(
   agent_id: String,
   pipe_path: String,
   agents_dir: String,
+  scherzo_bin: String,
 ) -> Nil {
-  let workspace_config = workspace.default_config(working_dir)
+  let workspace_config =
+    workspace.default_config_with_scherzo_bin(working_dir, scherzo_bin)
 
   // Chain the setup steps, collecting error context
   let setup_result = {
@@ -263,8 +285,8 @@ fn run_agent_in_workspace_with_output(
       // Update jj description
       let _ = jj.describe(ws.path, "WIP: " <> jj.sanitize_title(task.title))
 
-      // Create agent config for this run
-      let agent_config = make_agent_config(agent_id, ws.path)
+      // Create agent config for this run (background mode - non-interactive)
+      let agent_config = make_agent_config(agent_id, ws.path, False)
 
       // Create driver and build command
       let drv = claude.new()
@@ -464,12 +486,17 @@ const pipe_write_timeout_ms = 5000
 const default_max_retries = 3
 
 /// Create an AgentConfig with standard defaults
-fn make_agent_config(agent_id: String, working_dir: String) -> types.AgentConfig {
+fn make_agent_config(
+  agent_id: String,
+  working_dir: String,
+  interactive: Bool,
+) -> types.AgentConfig {
   AgentConfig(
     id: agent_id,
     provider: Claude,
     working_dir: working_dir,
     max_retries: default_max_retries,
     timeout_ms: default_timeout_ms,
+    interactive: interactive,
   )
 }

@@ -30,6 +30,8 @@ pub type AgentConfig {
     max_retries: Int,
     /// Command execution timeout in milliseconds (0 = no timeout, default: 30 minutes)
     timeout_ms: Int,
+    /// Whether to run in interactive mode (no --print flag, user can interact)
+    interactive: Bool,
   )
 }
 

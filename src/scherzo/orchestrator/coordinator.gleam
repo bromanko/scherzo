@@ -334,6 +334,8 @@ fn run_agent_in_workspace(
       working_dir: ws.path,
       max_retries: config.max_retries,
       timeout_ms: default_timeout_ms,
+      // Coordinator runs agents in background mode (non-interactive)
+      interactive: False,
     )
 
   // Create the claude driver

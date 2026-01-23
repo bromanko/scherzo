@@ -22,22 +22,32 @@ pub fn new() -> Driver {
 fn build_claude_command(task: Task, config: AgentConfig) -> Command {
   let prompt = build_prompt(task)
 
-  let args = [
-    // Print mode - non-interactive, runs the prompt and exits
-    "--print",
-    prompt,
-    // Auto-approve all tool use for autonomous operation
-    "--dangerously-skip-permissions",
-    // Output format for easier parsing
-    "--output-format",
-    "text",
-    // Verbose output to see progress
-    "--verbose",
-  ]
+  // In interactive mode, omit --print so user can interact with Claude
+  // In background mode, use --print for run-and-exit behavior
+  let base_args = case config.interactive {
+    True -> [
+      // Interactive mode: just pass prompt as positional arg (no --print)
+      // This starts a fresh interactive session
+      prompt,
+      "--dangerously-skip-permissions",
+    ]
+    False -> [
+      // Print mode - non-interactive, runs the prompt and exits
+      "--print",
+      prompt,
+      // Auto-approve all tool use for autonomous operation
+      "--dangerously-skip-permissions",
+      // Output format for easier parsing
+      "--output-format",
+      "text",
+      // Verbose output to see progress
+      "--verbose",
+    ]
+  }
 
   Command(
     executable: "claude",
-    args: args,
+    args: base_args,
     working_dir: config.working_dir,
     // Set task ID for hooks to use
     env: [#("SCHERZO_TASK_ID", task.id)],
