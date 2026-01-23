@@ -421,12 +421,22 @@ fn checkpoint_type_flag() {
   )
 }
 
+/// Flag for agent ID
+fn agent_id_flag() {
+  glint.string_flag("agent-id")
+  |> glint.flag_default("")
+  |> glint.flag_help(
+    "The agent ID to update status for (optional, falls back to env var)",
+  )
+}
+
 /// Checkpoint command - save agent state (called by Stop hook)
 fn checkpoint_command() -> glint.Command(Nil) {
   use <- glint.command_help(
     "Save checkpoint state for an agent. Called by Stop hook.",
   )
   use type_getter <- glint.flag(checkpoint_type_flag())
+  use agent_id_getter <- glint.flag(agent_id_flag())
   use _, args, flags <- glint.command()
 
   let cwd = get_cwd()
@@ -437,10 +447,16 @@ fn checkpoint_command() -> glint.Command(Nil) {
     |> result.unwrap("final")
     |> parse_checkpoint_type()
 
+  // Get agent ID from flag, or fall back to environment variable
+  let agent_id = case agent_id_getter(flags) |> result.unwrap("") {
+    "" -> get_env("SCHERZO_AGENT_ID") |> result.unwrap("agent-1")
+    id -> id
+  }
+
   // Try to read task info from current directory (workspace)
   case workspace.read_task_info(cwd) {
     Ok(task_info) -> {
-      create_checkpoint(task_info, checkpoint_type)
+      create_checkpoint(task_info, checkpoint_type, agent_id)
     }
     Error(_) -> {
       case args {
@@ -453,11 +469,13 @@ fn checkpoint_command() -> glint.Command(Nil) {
               description: "",
               repo_dir: cwd,
             )
-          create_checkpoint(task_info, checkpoint_type)
+          create_checkpoint(task_info, checkpoint_type, agent_id)
         }
         _ -> {
           io.println("Warning: No task context found for checkpoint")
-          io.println("Usage: scherzo checkpoint [--type=final] [task-id]")
+          io.println(
+            "Usage: scherzo checkpoint [--type=final] [--agent-id=ID] [task-id]",
+          )
         }
       }
     }
@@ -484,10 +502,8 @@ pub fn parse_checkpoint_type(type_str: String) -> checkpoint.CheckpointType {
 fn create_checkpoint(
   task_info: workspace.TaskInfo,
   checkpoint_type: checkpoint.CheckpointType,
+  agent_id: String,
 ) -> Nil {
-  // Get agent ID from environment (optional - default "agent-1" is safe for single-agent use)
-  let agent_id = get_env("SCHERZO_AGENT_ID") |> result.unwrap("agent-1")
-
   // Create checkpoint config using the repo_dir from task info
   let config = checkpoint.default_config(task_info.repo_dir)
 

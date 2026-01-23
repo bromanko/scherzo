@@ -139,8 +139,10 @@ fn session_start_hooks(task_id: Id, scherzo_bin: String) -> json.Json {
 }
 
 /// Stop hooks - checkpoint state when agent stops
-fn stop_hooks(task_id: Id, scherzo_bin: String) -> json.Json {
-  let safe_id = sanitize_task_id(task_id)
+fn stop_hooks(task_id: Id, agent_id: String, scherzo_bin: String) -> json.Json {
+  let safe_task_id = sanitize_task_id(task_id)
+  // Agent ID follows same format as task ID, so use same sanitization
+  let safe_agent_id = sanitize_task_id(agent_id)
   json.array(
     [
       json.object([

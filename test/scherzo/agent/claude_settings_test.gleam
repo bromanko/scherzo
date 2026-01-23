@@ -72,7 +72,9 @@ pub fn generate_autonomous_settings_includes_task_id_in_commands_test() {
   result |> string.contains("scherzo prime my-task-456") |> should.be_true
   // Task ID should appear in scherzo checkpoint command
   result
-  |> string.contains("scherzo checkpoint --type=final my-task-456")
+  |> string.contains(
+    "scherzo checkpoint --type=final --agent-id=agent-456 my-task-456",
+  )
   |> should.be_true
 }
 

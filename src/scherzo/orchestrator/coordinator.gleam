@@ -167,10 +167,13 @@ fn run_task_with_continuation(
         Ok(custom_config) -> {
           // Create isolated workspace for this agent
           let workspace_config = workspace.default_config(config.working_dir)
+          // Generate agent ID for hook commands (not tracked in .scherzo/agents/ for this code path)
+          let agent_id = "agent-" <> effective_task.id <> "-coordinator"
           case
             workspace.create(
               workspace_config,
               effective_task,
+              agent_id,
               Some(custom_config),
             )
           {

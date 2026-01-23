@@ -112,8 +112,12 @@ fn handle_start(
     Ok(custom_config) -> {
       // Create workspace for this task (defaults to .scherzo/workspaces/ in project)
       let workspace_config = workspace.default_config(state.config.working_dir)
+      // Generate agent ID for hook commands (this process-based path doesn't track agents)
+      let agent_id = "agent-" <> task.id <> "-process"
 
-      case workspace.create(workspace_config, task, Some(custom_config)) {
+      case
+        workspace.create(workspace_config, task, agent_id, Some(custom_config))
+      {
         Error(err) -> {
           process.send(
             reply_to,

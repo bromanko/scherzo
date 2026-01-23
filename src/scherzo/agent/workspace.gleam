@@ -79,6 +79,7 @@ pub fn temp_config(repo_dir: String) -> WorkspaceConfig {
 pub fn create(
   config: WorkspaceConfig,
   task: Task,
+  agent_id: String,
   custom_config: Option(AgentCustomConfig),
 ) -> Result(Workspace, String) {
   let workspace_path = config.workspaces_base <> "/" <> sanitize_id(task.id)
@@ -120,6 +121,7 @@ pub fn create(
 fn configure_workspace(
   workspace: Workspace,
   task: Task,
+  agent_id: String,
   custom_config: Option(AgentCustomConfig),
   scherzo_bin: String,
 ) -> Result(Workspace, String) {
@@ -216,6 +218,7 @@ pub fn destroy(workspace: Workspace) -> Result(Nil, String) {
 fn write_claude_settings(
   workspace: Workspace,
   task_id: Id,
+  agent_id: String,
   custom_settings: Option(String),
   scherzo_bin: String,
 ) -> Result(Nil, String) {

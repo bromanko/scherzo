@@ -81,7 +81,9 @@ fn spawn_agent_interactive(
     Error(err) -> Error("Invalid agent config: " <> err)
     Ok(custom_config) -> {
       // Create workspace for the agent
-      case workspace.create(workspace_config, task, Some(custom_config)) {
+      case
+        workspace.create(workspace_config, task, agent_id, Some(custom_config))
+      {
         Error(err) -> Error("Failed to create workspace: " <> err)
         Ok(ws) -> {
           // Build the claude command (interactive mode)
@@ -224,7 +226,7 @@ fn run_agent_background(
       |> result.map_error(fn(e) { "Config error: " <> e }),
     )
     use ws <- result.try(
-      workspace.create(workspace_config, task, Some(custom_config))
+      workspace.create(workspace_config, task, agent_id, Some(custom_config))
       |> result.map_error(fn(e) { "Workspace error: " <> e }),
     )
     Ok(ws)
