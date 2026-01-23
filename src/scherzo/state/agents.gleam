@@ -166,6 +166,12 @@ fn encode_agent_status(s: AgentStatus) -> json.Json {
         #("task_id", json.string(task_id)),
         #("started_at", json.int(started_at)),
       ])
+    types.Completed(task_id, completed_at) ->
+      json.object([
+        #("type", json.string("completed")),
+        #("task_id", json.string(task_id)),
+        #("completed_at", json.int(completed_at)),
+      ])
     types.Failed(reason) ->
       json.object([
         #("type", json.string("failed")),
@@ -226,6 +232,11 @@ fn decode_agent_status() -> decode.Decoder(AgentStatus) {
       use task_id <- decode.field("task_id", decode.string)
       use started_at <- decode.field("started_at", decode.int)
       decode.success(types.Running(task_id, started_at))
+    }
+    "completed" -> {
+      use task_id <- decode.field("task_id", decode.string)
+      use completed_at <- decode.field("completed_at", decode.int)
+      decode.success(types.Completed(task_id, completed_at))
     }
     "failed" -> {
       use reason <- decode.field("reason", decode.string)

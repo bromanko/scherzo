@@ -423,6 +423,8 @@ fn format_agent_status(status: types.AgentStatus) -> String {
     types.Idle -> "⏸  Idle    "
     types.Running(task_id, _started_at) ->
       "▶  Running  " <> string.slice(task_id, 0, 8)
+    types.Completed(task_id, _completed_at) ->
+      "✓  Done     " <> string.slice(task_id, 0, 8)
     types.Failed(reason) -> "✗  Failed   " <> string.slice(reason, 0, 20)
   }
 }

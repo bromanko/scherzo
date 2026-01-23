@@ -18,6 +18,7 @@ pub type AgentProvider {
 pub type AgentStatus {
   Idle
   Running(task_id: Id, started_at: Timestamp)
+  Completed(task_id: Id, completed_at: Timestamp)
   Failed(reason: String)
 }
 

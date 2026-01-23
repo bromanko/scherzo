@@ -541,7 +541,9 @@ fn create_checkpoint(
         checkpoint.Final -> {
           let agents_dir = task_info.repo_dir <> "/.scherzo/agents"
           let full_agent_id = "agent-" <> task_info.id
-          case agents.update_status(agents_dir, full_agent_id, types.Idle) {
+          let completed_at = get_timestamp()
+          let status = types.Completed(task_info.id, completed_at)
+          case agents.update_status(agents_dir, full_agent_id, status) {
             Ok(_) -> io.println("Agent marked as completed")
             Error(err) ->
               io.println("Warning: Failed to update agent status: " <> err)
@@ -566,6 +568,10 @@ fn get_env(name: String) -> Result(String, Nil) {
     value -> Ok(value)
   }
 }
+
+/// Get current timestamp in milliseconds
+@external(erlang, "os", "system_time")
+fn get_timestamp() -> Int
 
 // ---------------------------------------------------------------------------
 // Attach Helpers
