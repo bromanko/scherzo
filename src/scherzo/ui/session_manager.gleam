@@ -138,6 +138,24 @@ pub fn add_agent(
   }
 }
 
+/// Add a new agent pane that runs a command directly (interactive mode)
+/// This creates a pane running the specified command - no pipes, full interactivity
+/// Returns updated manager
+pub fn add_agent_interactive(
+  manager: SessionManager,
+  agent_id: String,
+  command: String,
+) -> Result(SessionManager, SessionError) {
+  // Create pane running the command directly
+  case layout.add_agent_pane_with_command(manager.layout, agent_id, command) {
+    Error(err) -> Error(LayoutError(err))
+    Ok(new_layout) -> {
+      let new_manager = SessionManager(..manager, layout: new_layout)
+      Ok(new_manager)
+    }
+  }
+}
+
 /// Remove an agent pane and clean up its resources
 /// This:
 /// 1. Kills the tmux pane
