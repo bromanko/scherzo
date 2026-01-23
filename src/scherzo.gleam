@@ -441,13 +441,9 @@ fn checkpoint_command() -> glint.Command(Nil) {
 
   let cwd = get_cwd()
 
-  // Get checkpoint type from flag (flag_default ensures this always succeeds)
-  let checkpoint_type =
-    type_getter(flags)
-    |> result.unwrap("final")
-    |> parse_checkpoint_type()
-
-  // Get agent ID from flag, or fall back to environment variable
+  // Get checkpoint type and agent ID
+  let type_str = type_getter(flags) |> result.unwrap("final")
+  let checkpoint_type = parse_checkpoint_type(type_str)
   let agent_id = case agent_id_getter(flags) |> result.unwrap("") {
     "" -> get_env("SCHERZO_AGENT_ID") |> result.unwrap("agent-1")
     id -> id
@@ -455,9 +451,7 @@ fn checkpoint_command() -> glint.Command(Nil) {
 
   // Try to read task info from current directory (workspace)
   case workspace.read_task_info(cwd) {
-    Ok(task_info) -> {
-      create_checkpoint(task_info, checkpoint_type, agent_id)
-    }
+    Ok(task_info) -> create_checkpoint(task_info, checkpoint_type, agent_id)
     Error(_) -> {
       case args {
         [task_id] -> {
@@ -558,7 +552,6 @@ fn create_checkpoint(
           let agents_dir = task_info.repo_dir <> "/.scherzo/agents"
           let completed_at = get_timestamp()
           let status = types.Completed(task_info.id, completed_at)
-          // Use the agent_id from environment (already retrieved above)
           case agents.update_status(agents_dir, agent_id, status) {
             Ok(_) -> io.println("Agent marked as completed: " <> agent_id)
             Error(err) ->

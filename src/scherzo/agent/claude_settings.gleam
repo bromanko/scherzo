@@ -105,7 +105,8 @@ pub fn generate_autonomous_settings(
       "hooks",
       json.object([
         #("SessionStart", session_start_hooks(task_id, scherzo_bin)),
-        #("Stop", stop_hooks(task_id, agent_id, scherzo_bin)),
+        // Note: "Stop" fires after every turn, "SessionEnd" fires when user exits
+        #("SessionEnd", session_end_hooks(task_id, agent_id, scherzo_bin)),
         #("PreCompact", pre_compact_hooks(task_id, scherzo_bin)),
       ]),
     ),
@@ -138,8 +139,13 @@ fn session_start_hooks(task_id: Id, scherzo_bin: String) -> json.Json {
   )
 }
 
-/// Stop hooks - checkpoint state when agent stops
-fn stop_hooks(task_id: Id, agent_id: String, scherzo_bin: String) -> json.Json {
+/// SessionEnd hooks - checkpoint state when user exits the session
+/// Note: "Stop" fires after every turn, "SessionEnd" fires when user actually exits
+fn session_end_hooks(
+  task_id: Id,
+  agent_id: String,
+  scherzo_bin: String,
+) -> json.Json {
   let safe_task_id = sanitize_task_id(task_id)
   // Agent ID follows same format as task ID, so use same sanitization
   let safe_agent_id = sanitize_task_id(agent_id)

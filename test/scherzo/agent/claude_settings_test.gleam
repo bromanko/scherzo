@@ -46,7 +46,7 @@ pub fn generate_autonomous_settings_contains_stop_test() {
       "scherzo",
     )
 
-  result |> string.contains("\"Stop\"") |> should.be_true
+  result |> string.contains("\"SessionEnd\"") |> should.be_true
 }
 
 pub fn generate_autonomous_settings_contains_pre_compact_test() {
@@ -337,7 +337,7 @@ pub fn generate_autonomous_settings_scherzo_bin_in_all_hooks_test() {
     )
 
   // Count occurrences of "my-scherzo" - should appear 3 times
-  // (SessionStart prime, Stop checkpoint, PreCompact prime)
+  // (SessionStart prime, SessionEnd checkpoint, PreCompact prime)
   let count =
     result
     |> string.split("my-scherzo")
@@ -357,10 +357,10 @@ pub fn generate_autonomous_settings_empty_scherzo_bin_still_works_test() {
 }
 
 // ---------------------------------------------------------------------------
-// Agent ID in Stop hook tests
+// Agent ID in SessionEnd hook tests
 // ---------------------------------------------------------------------------
 
-pub fn generate_autonomous_settings_includes_agent_id_in_stop_hook_test() {
+pub fn generate_autonomous_settings_includes_agent_id_in_session_end_hook_test() {
   let result =
     claude_settings.generate_autonomous_settings(
       "task-abc",
