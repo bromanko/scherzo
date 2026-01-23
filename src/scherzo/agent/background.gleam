@@ -27,25 +27,115 @@ pub type SpawnResult {
   SpawnFailed(reason: String)
 }
 
-/// Spawn a background agent to work on a task
+/// Spawn an agent to work on a task
 ///
-/// This function:
-/// 1. Generates a unique agent ID
-/// 2. Creates a named pipe for output
-/// 3. Registers the agent as Running in the agents directory
-/// 4. Spawns an Erlang process to run the agent
-/// 5. Optionally creates a tmux pane to display the output
+/// When a session_manager is provided, runs Claude interactively in a tmux pane.
+/// Otherwise, falls back to background mode with pipe-based output.
 pub fn spawn_agent(
   working_dir: String,
   task: Task,
   session_manager: Option(SessionManager),
 ) -> Result(#(SpawnResult, Option(SessionManager)), String) {
   let agents_dir = working_dir <> "/" <> agents.default_agents_dir
-  // Generate agent ID
   let agent_id = generate_agent_id(task.id)
 
-  // Create pipe config and named pipe
+  case session_manager {
+    // Interactive mode: run Claude directly in tmux pane
+    Some(manager) ->
+      spawn_agent_interactive(working_dir, task, agent_id, manager, agents_dir)
+    // Background mode: run with pipe-based output
+    None -> spawn_agent_background(working_dir, task, agent_id, agents_dir)
+  }
+}
+
+/// Spawn an interactive agent in a tmux pane
+fn spawn_agent_interactive(
+  working_dir: String,
+  task: Task,
+  agent_id: String,
+  manager: SessionManager,
+  agents_dir: String,
+) -> Result(#(SpawnResult, Option(SessionManager)), String) {
+  let started_at = erlang_system_time_ms()
+  let workspace_config = workspace.default_config(working_dir)
+
+  // Load custom agent config
+  case agent_config.load_task_config(working_dir) {
+    Error(err) -> Error("Invalid agent config: " <> err)
+    Ok(custom_config) -> {
+      // Create workspace for the agent
+      case workspace.create(workspace_config, task, Some(custom_config)) {
+        Error(err) -> Error("Failed to create workspace: " <> err)
+        Ok(ws) -> {
+          // Build the claude command
+          let agent_cfg = make_agent_config(agent_id, ws.path)
+          let drv = claude.new()
+          let command = driver.build_command(drv, task, agent_cfg)
+
+          // Build the full shell command with PATH setup
+          let shell_cmd = build_interactive_command(command, ws.path)
+
+          // Register agent state
+          let agent_state =
+            agents.AgentState(
+              config: agent_cfg,
+              status: types.Running(task.id, started_at),
+              task_id: task.id,
+              workspace_path: ws.path,
+              pipe_path: "",
+            )
+          let _ = agents.save_agent(agents_dir, agent_state)
+
+          // Create interactive tmux pane running claude
+          case
+            session_manager.add_agent_interactive(manager, agent_id, shell_cmd)
+          {
+            Error(_) -> {
+              io.println(
+                "Warning: Failed to create interactive pane for agent "
+                <> agent_id,
+              )
+              Ok(#(SpawnSuccess(agent_id, ""), Some(manager)))
+            }
+            Ok(new_manager) -> {
+              Ok(#(SpawnSuccess(agent_id, ""), Some(new_manager)))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Build the shell command for interactive mode
+fn build_interactive_command(
+  command: driver.Command,
+  workspace_path: String,
+) -> String {
+  let extra_paths =
+    "/.sprite/languages/node/nvm/versions/node/v22.20.0/bin:/home/sprite/.local/bin:/home/sprite/.nix-profile/bin"
+
+  let args_str = command.args |> join_with_spaces
+
+  "export PATH=\""
+  <> extra_paths
+  <> ":$PATH\" && cd "
+  <> quote_arg(workspace_path)
+  <> " && "
+  <> command.executable
+  <> " "
+  <> args_str
+}
+
+/// Spawn agent in background mode (no tmux, pipe-based output)
+fn spawn_agent_background(
+  working_dir: String,
+  task: Task,
+  agent_id: String,
+  agents_dir: String,
+) -> Result(#(SpawnResult, Option(SessionManager)), String) {
   let pipe_config = pipes.default_config(working_dir)
+
   case pipes.create_pipe(pipe_config, agent_id) {
     Error(err) -> {
       let msg = case err {
@@ -59,45 +149,20 @@ pub fn spawn_agent(
     }
 
     Ok(pipe_path) -> {
-      // Get current timestamp for started_at
       let started_at = erlang_system_time_ms()
+      let agent_cfg = make_agent_config(agent_id, working_dir)
 
-      // Create agent config
-      let agent_config = make_agent_config(agent_id, working_dir)
-
-      // Register agent as Running in the agents directory
       let agent_state =
         agents.AgentState(
-          config: agent_config,
+          config: agent_cfg,
           status: types.Running(task.id, started_at),
           task_id: task.id,
           workspace_path: "",
           pipe_path: pipe_path,
         )
-      case agents.save_agent(agents_dir, agent_state) {
-        Error(err) ->
-          io.println("Warning: Failed to save initial agent state: " <> err)
-        Ok(_) -> Nil
-      }
+      let _ = agents.save_agent(agents_dir, agent_state)
 
-      // Create tmux pane if session manager available
-      let updated_manager = case session_manager {
-        None -> None
-        Some(manager) -> {
-          case session_manager.add_agent(manager, agent_id) {
-            Error(_) -> {
-              io.println(
-                "Warning: Failed to create tmux pane for agent " <> agent_id,
-              )
-              Some(manager)
-            }
-            Ok(#(new_manager, _)) -> Some(new_manager)
-          }
-        }
-      }
-
-      // Spawn background process to run the agent
-      // Uses safe_spawn to catch crashes and mark agent as failed
+      // Spawn background process
       safe_spawn(
         fn() {
           run_agent_background(
@@ -115,7 +180,7 @@ pub fn spawn_agent(
         },
       )
 
-      Ok(#(SpawnSuccess(agent_id, pipe_path), updated_manager))
+      Ok(#(SpawnSuccess(agent_id, pipe_path), None))
     }
   }
 }
@@ -331,24 +396,34 @@ fn run_command_with_pipe_output(
   timeout_ms: Int,
 ) -> #(Int, String) {
   // Build command that tees output to the pipe
-  // Using a login shell to get the user's full PATH (including nvm, etc)
   let args_str =
     args
     |> join_with_spaces
 
+  // Extend PATH to include common locations where claude might be installed
+  // This avoids using a login shell which can produce noisy output from .bashrc
+  let extra_paths =
+    "/.sprite/languages/node/nvm/versions/node/v22.20.0/bin:/home/sprite/.local/bin:/home/sprite/.nix-profile/bin"
+
+  // Use script to allocate a PTY, which forces unbuffered/streaming output
+  // The -q flag suppresses script's own messages
+  // We use double quotes for the outer command and escape the inner command
+  let inner_cmd = executable <> " " <> args_str
+  let escaped_inner = string.replace(inner_cmd, "\"", "\\\"")
+
   let cmd =
-    "cd "
+    "export PATH=\""
+    <> extra_paths
+    <> ":$PATH\" && cd "
     <> quote_arg(working_dir)
-    <> " && "
-    <> executable
-    <> " "
-    <> args_str
-    <> " 2>&1 | tee -a "
+    <> " && script -q -c \""
+    <> escaped_inner
+    <> "\" /dev/null 2>&1 | tee -a "
     <> pipe_path
 
-  // Use bash -l (login shell) to source user's profile and get full PATH
+  // Use plain bash (not login shell) to avoid .bashrc noise
   // Note: must use absolute path for spawn_executable
-  run_shell_command("/bin/bash", ["-l", "-c", cmd], working_dir, timeout_ms)
+  run_shell_command("/bin/bash", ["-c", cmd], working_dir, timeout_ms)
 }
 
 /// Join strings with spaces, quoting each argument
