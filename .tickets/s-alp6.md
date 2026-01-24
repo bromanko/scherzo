@@ -1,6 +1,6 @@
 ---
 id: s-alp6
-status: open
+status: done
 deps: [s-alp2, s-alp4]
 links: []
 created: 2026-01-23T00:00:00Z

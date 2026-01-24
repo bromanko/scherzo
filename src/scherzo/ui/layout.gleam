@@ -114,16 +114,16 @@ pub fn add_agent_pane(
     Error(err) -> Error(TmuxError(err))
     Ok(pane_id) -> {
       let agent_config = PaneConfig(id: pane_id, role: AgentPane(agent_id))
-
-      // Apply tiled layout to arrange agent panes nicely
-      let _ = tmux.apply_tiled_layout(layout.session)
-
-      Ok(
+      let new_layout =
         Layout(
           ..layout,
           agent_panes: dict.insert(layout.agent_panes, agent_id, agent_config),
-        ),
-      )
+        )
+
+      // Apply tiled layout (preserves agent list pane height)
+      let _ = apply_tiled(new_layout)
+
+      Ok(new_layout)
     }
   }
 }
@@ -139,16 +139,16 @@ pub fn add_agent_pane_with_command(
     Error(err) -> Error(TmuxError(err))
     Ok(pane_id) -> {
       let agent_config = PaneConfig(id: pane_id, role: AgentPane(agent_id))
-
-      // Apply tiled layout
-      let _ = tmux.apply_tiled_layout(layout.session)
-
-      Ok(
+      let new_layout =
         Layout(
           ..layout,
           agent_panes: dict.insert(layout.agent_panes, agent_id, agent_config),
-        ),
-      )
+        )
+
+      // Apply tiled layout (preserves agent list pane height)
+      let _ = apply_tiled(new_layout)
+
+      Ok(new_layout)
     }
   }
 }
@@ -165,15 +165,16 @@ pub fn remove_agent_pane(
       case tmux.kill_pane(pane_config.id) {
         Error(err) -> Error(TmuxError(err))
         Ok(_) -> {
-          // Re-apply layout after removing pane
-          let _ = tmux.apply_tiled_layout(layout.session)
-
-          Ok(
+          let new_layout =
             Layout(
               ..layout,
               agent_panes: dict.delete(layout.agent_panes, agent_id),
-            ),
-          )
+            )
+
+          // Re-apply layout after removing pane (preserves agent list pane height)
+          let _ = apply_tiled(new_layout)
+
+          Ok(new_layout)
         }
       }
     }
@@ -257,10 +258,30 @@ pub fn apply_main_layout(layout: Layout) -> Result(Nil, LayoutError) {
 }
 
 /// Apply tiled layout (all panes roughly equal)
+/// If agent list pane exists, preserves its fixed height after tiling
 pub fn apply_tiled(layout: Layout) -> Result(Nil, LayoutError) {
+  apply_tiled_with_height(layout, agent_list_default_height)
+}
+
+/// Apply tiled layout with custom agent list pane height
+pub fn apply_tiled_with_height(
+  layout: Layout,
+  agent_list_height: Int,
+) -> Result(Nil, LayoutError) {
   case tmux.apply_tiled_layout(layout.session) {
     Error(err) -> Error(TmuxError(err))
-    Ok(_) -> Ok(Nil)
+    Ok(_) -> {
+      // If agent list pane exists, restore its fixed height
+      case layout.agent_list_pane {
+        None -> Ok(Nil)
+        Some(config) -> {
+          case tmux.resize_pane_height(config.id, agent_list_height) {
+            Error(err) -> Error(TmuxError(err))
+            Ok(_) -> Ok(Nil)
+          }
+        }
+      }
+    }
   }
 }
 
@@ -278,6 +299,9 @@ pub fn destroy(layout: Layout) -> Result(Nil, LayoutError) {
 
 /// Minimum height for agent list pane
 const agent_list_min_height = 3
+
+/// Default height for agent list pane (rows)
+pub const agent_list_default_height = 5
 
 /// Default command for agent list pane
 const agent_list_command = "scherzo agent-list"

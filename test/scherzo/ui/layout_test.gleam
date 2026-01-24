@@ -442,3 +442,63 @@ pub fn toggle_agent_list_pane_test() {
     }
   }
 }
+
+pub fn apply_tiled_preserves_agent_list_pane_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      let assert Ok(l) = layout.create_session_with_layout(test_session)
+
+      // Create agent list pane
+      let assert Ok(l) =
+        layout.create_agent_list_pane_with_command(l, 5, test_agent_list_command)
+
+      // Add some agent panes
+      let assert Ok(l) = layout.add_agent_pane(l, "agent-1")
+      let assert Ok(l) = layout.add_agent_pane(l, "agent-2")
+
+      // Apply tiled layout explicitly
+      layout.apply_tiled(l)
+      |> should.be_ok
+
+      // Agent list pane should still exist
+      layout.has_agent_list_pane(l)
+      |> should.be_true
+
+      cleanup()
+    }
+  }
+}
+
+pub fn add_agent_pane_preserves_agent_list_pane_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      let assert Ok(l) = layout.create_session_with_layout(test_session)
+
+      // Create agent list pane first
+      let assert Ok(l) =
+        layout.create_agent_list_pane_with_command(l, 5, test_agent_list_command)
+      layout.has_agent_list_pane(l)
+      |> should.be_true
+
+      // Add agent panes (which triggers tiled layout)
+      let assert Ok(l) = layout.add_agent_pane(l, "agent-1")
+      let assert Ok(l) = layout.add_agent_pane(l, "agent-2")
+
+      // Agent list pane should still exist
+      layout.has_agent_list_pane(l)
+      |> should.be_true
+
+      // Should have 2 agent panes
+      layout.agent_count(l)
+      |> should.equal(2)
+
+      cleanup()
+    }
+  }
+}
