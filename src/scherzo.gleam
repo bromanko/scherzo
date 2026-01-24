@@ -14,6 +14,7 @@ import scherzo/orchestrator
 import scherzo/orchestrator/coordinator
 import scherzo/state/agents
 import scherzo/task/sources/ticket
+import scherzo/ui/agent_list
 import scherzo/ui/commands
 import scherzo/ui/layout
 import scherzo/ui/runner
@@ -780,25 +781,23 @@ fn agent_list_command() -> glint.Command(Nil) {
 /// Main loop for agent list display
 /// Polls for agents and refreshes the display every second
 fn agent_list_loop(working_dir: String) -> Nil {
-  // Clear screen and move cursor to top
-  io.print("\u{001b}[2J\u{001b}[H")
+  agent_list_loop_with_state(working_dir, agent_list.initial_state())
+}
 
-  // Display header
-  io.println("=== Scherzo Agent List ===")
-  io.println("(Press Ctrl+C to exit)")
-  io.println("")
+/// Agent list loop with state
+fn agent_list_loop_with_state(working_dir: String, state: agent_list.State) -> Nil {
+  // Update agents from disk
+  let state = agent_list.update_agents(state, working_dir)
 
-  // Get and display agents
-  case commands.get_agents(working_dir) {
-    Ok(output) -> io.println(output)
-    Error(err) -> io.println("Error: " <> err)
-  }
+  // Render the TUI
+  let output = agent_list.render(state)
+  io.print(output)
 
   // Sleep for 1 second
   timer_sleep(1000)
 
-  // Recurse
-  agent_list_loop(working_dir)
+  // Recurse with updated state
+  agent_list_loop_with_state(working_dir, state)
 }
 
 /// Sleep for given milliseconds
