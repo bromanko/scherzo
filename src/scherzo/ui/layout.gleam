@@ -78,24 +78,34 @@ pub fn create(session: String) -> Result(Layout, LayoutError) {
 
 /// Create a new session with the standard scherzo layout
 /// Returns error if session already exists
+/// Binds F1 to toggle agent list pane visibility
 pub fn create_session_with_layout(
   session: String,
 ) -> Result(Layout, LayoutError) {
   case tmux.create_session(session) {
     Error(err) -> Error(TmuxError(err))
-    Ok(_) -> create(session)
+    Ok(_) -> {
+      // Bind F1 to toggle agent list (ignore errors, binding is optional)
+      let _ = bind_agent_list_toggle()
+      create(session)
+    }
   }
 }
 
 /// Create a new session with a command running in the control pane
 /// This is used for `scherzo console` to run the REPL inside tmux
+/// Binds F1 to toggle agent list pane visibility
 pub fn create_session_with_command(
   session: String,
   command: String,
 ) -> Result(Layout, LayoutError) {
   case tmux.create_session_with_command(session, command) {
     Error(err) -> Error(TmuxError(err))
-    Ok(_) -> create(session)
+    Ok(_) -> {
+      // Bind F1 to toggle agent list (ignore errors, binding is optional)
+      let _ = bind_agent_list_toggle()
+      create(session)
+    }
   }
 }
 
@@ -305,6 +315,29 @@ pub const agent_list_default_height = 5
 
 /// Default command for agent list pane
 const agent_list_command = "scherzo agent-list"
+
+/// Key binding for agent list toggle (F1)
+const agent_list_toggle_key = "F1"
+
+/// Command to toggle agent list pane visibility
+const agent_list_toggle_command = "scherzo toggle-agent-list"
+
+/// Bind F1 key to toggle agent list pane visibility
+/// This is a global tmux binding (no prefix required)
+pub fn bind_agent_list_toggle() -> Result(Nil, LayoutError) {
+  case tmux.bind_key(agent_list_toggle_key, agent_list_toggle_command) {
+    Error(err) -> Error(TmuxError(err))
+    Ok(_) -> Ok(Nil)
+  }
+}
+
+/// Unbind F1 key from agent list toggle
+pub fn unbind_agent_list_toggle() -> Result(Nil, LayoutError) {
+  case tmux.unbind_key(agent_list_toggle_key) {
+    Error(err) -> Error(TmuxError(err))
+    Ok(_) -> Ok(Nil)
+  }
+}
 
 /// Create agent list pane at bottom with fixed height
 /// Runs `scherzo agent-list` command in the new pane

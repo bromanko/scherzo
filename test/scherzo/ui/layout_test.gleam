@@ -502,3 +502,64 @@ pub fn add_agent_pane_preserves_agent_list_pane_test() {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// F1 Key Binding Tests
+// ---------------------------------------------------------------------------
+
+pub fn bind_agent_list_toggle_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      // Create session first (binding requires tmux server)
+      let assert Ok(_) = layout.create_session_with_layout(test_session)
+
+      // Binding should succeed
+      layout.bind_agent_list_toggle()
+      |> should.be_ok
+
+      cleanup()
+    }
+  }
+}
+
+pub fn unbind_agent_list_toggle_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      // Create session first (unbinding requires tmux server)
+      let assert Ok(_) = layout.create_session_with_layout(test_session)
+
+      // First bind, then unbind
+      let assert Ok(_) = layout.bind_agent_list_toggle()
+
+      // Unbinding should succeed
+      layout.unbind_agent_list_toggle()
+      |> should.be_ok
+
+      cleanup()
+    }
+  }
+}
+
+pub fn create_session_with_layout_binds_f1_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      // Creating session should also bind F1
+      let assert Ok(_) = layout.create_session_with_layout(test_session)
+
+      // Unbinding should succeed (proving F1 was bound)
+      layout.unbind_agent_list_toggle()
+      |> should.be_ok
+
+      cleanup()
+    }
+  }
+}
