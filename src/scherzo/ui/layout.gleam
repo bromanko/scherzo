@@ -12,6 +12,8 @@ pub type PaneRole {
   ControlPane
   /// Agent pane showing agent output
   AgentPane(agent_id: String)
+  /// Agent list pane showing all agents
+  AgentListPane
 }
 
 /// Configuration and state for a managed pane
@@ -28,6 +30,8 @@ pub type Layout {
     control_pane: PaneConfig,
     /// Agent panes (may be empty)
     agent_panes: Dict(String, PaneConfig),
+    /// Agent list pane (optional, toggleable with F1)
+    agent_list_pane: Option(PaneConfig),
   )
 }
 
@@ -62,6 +66,7 @@ pub fn create(session: String) -> Result(Layout, LayoutError) {
         session: session,
         control_pane: control,
         agent_panes: dict.new(),
+        agent_list_pane: None,
       ))
     }
   }

@@ -50,6 +50,10 @@ pub fn create_layout_test() {
           // Should have no agents initially
           layout.agent_count(l)
           |> should.equal(0)
+
+          // Agent list pane should be None initially
+          l.agent_list_pane
+          |> should.equal(None)
         }
         Error(_) -> should.fail()
       }
