@@ -249,6 +249,32 @@ pub fn list_panes(session: String) -> Result(List(PaneInfo), TmuxError) {
   })
 }
 
+/// List panes with their running commands
+/// Returns list of (pane_id, command) tuples
+pub fn list_pane_commands(
+  session: String,
+) -> Result(List(#(PaneId, String)), TmuxError) {
+  run_tmux([
+    "list-panes",
+    "-t",
+    session,
+    "-F",
+    "#{pane_id}:#{pane_current_command}",
+  ])
+  |> result.map(fn(output) {
+    output
+    |> string.trim
+    |> string.split("\n")
+    |> list.filter(fn(s) { s != "" })
+    |> list.filter_map(fn(line) {
+      case string.split_once(line, ":") {
+        Ok(#(pane_id, cmd)) -> Ok(#(pane_id, cmd))
+        Error(_) -> Error(Nil)
+      }
+    })
+  })
+}
+
 /// Select (focus) a specific pane
 pub fn select_pane(pane_id: PaneId) -> Result(Nil, TmuxError) {
   run_tmux(["select-pane", "-t", pane_id])

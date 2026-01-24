@@ -2,7 +2,7 @@ import argv
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import glint
@@ -35,6 +35,8 @@ pub fn main() {
   |> glint.add(at: ["attach"], do: attach_command())
   |> glint.add(at: ["repl"], do: repl_command())
   |> glint.add(at: ["console"], do: console_command())
+  |> glint.add(at: ["agent-list"], do: agent_list_command())
+  |> glint.add(at: ["toggle-agent-list"], do: toggle_agent_list_command())
   |> glint.run(argv.load().arguments)
 }
 
@@ -752,4 +754,133 @@ fn console_command() -> glint.Command(Nil) {
   }
 
   Nil
+}
+
+// ---------------------------------------------------------------------------
+// Agent List Commands
+// ---------------------------------------------------------------------------
+
+/// Agent list TUI command - runs in a tmux pane showing agent status
+fn agent_list_command() -> glint.Command(Nil) {
+  use <- glint.command_help(
+    "Run the agent list TUI (used inside tmux agent list pane)",
+  )
+  use workdir_getter <- glint.flag(workdir_flag())
+  use _, _, flags <- glint.command()
+
+  let working_dir =
+    workdir_getter(flags)
+    |> result.unwrap(".")
+    |> resolve_path()
+
+  // Run the agent list display loop
+  agent_list_loop(working_dir)
+}
+
+/// Main loop for agent list display
+/// Polls for agents and refreshes the display every second
+fn agent_list_loop(working_dir: String) -> Nil {
+  // Clear screen and move cursor to top
+  io.print("\u{001b}[2J\u{001b}[H")
+
+  // Display header
+  io.println("=== Scherzo Agent List ===")
+  io.println("(Press Ctrl+C to exit)")
+  io.println("")
+
+  // Get and display agents
+  case commands.get_agents(working_dir) {
+    Ok(output) -> io.println(output)
+    Error(err) -> io.println("Error: " <> err)
+  }
+
+  // Sleep for 1 second
+  timer_sleep(1000)
+
+  // Recurse
+  agent_list_loop(working_dir)
+}
+
+/// Sleep for given milliseconds
+@external(erlang, "timer", "sleep")
+fn timer_sleep(ms: Int) -> Nil
+
+/// Toggle agent list command - invoked by F1 key binding
+fn toggle_agent_list_command() -> glint.Command(Nil) {
+  use <- glint.command_help("Toggle the agent list pane visibility")
+  use workdir_getter <- glint.flag(workdir_flag())
+  use _, _, flags <- glint.command()
+
+  let working_dir =
+    workdir_getter(flags)
+    |> result.unwrap(".")
+    |> resolve_path()
+
+  // Get the session name from TMUX env var
+  let session_name = tmux.default_session_name
+
+  // Check if we're inside a tmux session
+  case tmux.is_inside_session(session_name) {
+    False -> {
+      io.println("Error: Not inside a scherzo tmux session")
+    }
+    True -> {
+      // We need to toggle the agent list pane
+      // Since we don't have the Layout state, we use tmux directly
+      // to check for and manage the agent list pane
+      toggle_agent_list_pane(session_name, working_dir)
+    }
+  }
+}
+
+/// Toggle agent list pane using tmux commands
+fn toggle_agent_list_pane(session_name: String, working_dir: String) -> Nil {
+  // Look for existing agent list pane by checking pane titles/commands
+  // For now, use a simple approach: try to find a pane running agent-list
+  let pane_id = find_agent_list_pane(session_name)
+
+  case pane_id {
+    Some(id) -> {
+      // Pane exists, kill it
+      case tmux.kill_pane(id) {
+        Ok(_) -> io.println("Agent list pane hidden")
+        Error(_) -> io.println("Error hiding agent list pane")
+      }
+    }
+    None -> {
+      // Pane doesn't exist, create it
+      let command = build_agent_list_command(working_dir)
+      case tmux.split_with_command(session_name, command, True) {
+        Ok(new_pane_id) -> {
+          // Resize to fixed height
+          let _ = tmux.resize_pane_height(new_pane_id, 5)
+          io.println("Agent list pane shown")
+        }
+        Error(_) -> io.println("Error showing agent list pane")
+      }
+    }
+  }
+  Nil
+}
+
+/// Build the agent-list command string
+fn build_agent_list_command(working_dir: String) -> String {
+  // During development, use gleam run
+  let scherzo_dir = get_cwd()
+  "cd " <> scherzo_dir <> " && gleam run -- agent-list --workdir=" <> working_dir
+}
+
+/// Find an existing agent list pane by looking for the command
+fn find_agent_list_pane(session_name: String) -> Option(String) {
+  // List all panes and look for one running agent-list
+  case tmux.list_pane_commands(session_name) {
+    Error(_) -> None
+    Ok(panes) -> {
+      list.find(panes, fn(pane) {
+        string.contains(pane.1, "agent-list")
+      })
+      |> result.map(fn(pane) { pane.0 })
+      |> option.from_result
+    }
+  }
 }
