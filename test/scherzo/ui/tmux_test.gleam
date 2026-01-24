@@ -367,3 +367,45 @@ pub fn kill_pane_test() {
     }
   }
 }
+
+pub fn bind_key_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      // Ensure clean state
+      let _ = tmux.kill_session(test_session)
+      tmux.create_session(test_session) |> should.be_ok
+
+      // Bind F12 to a simple echo command (using F12 to avoid conflicts)
+      tmux.bind_key("F12", "echo test")
+      |> should.be_ok
+
+      // Clean up the binding
+      tmux.unbind_key("F12")
+      |> should.be_ok
+
+      // Clean up session
+      let _ = tmux.kill_session(test_session)
+      Nil
+    }
+  }
+}
+
+pub fn unbind_key_nonexistent_succeeds_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      // Ensure clean state (need a running server for unbind to work)
+      let _ = tmux.kill_session(test_session)
+      tmux.create_session(test_session) |> should.be_ok
+
+      // Unbinding a key that isn't bound should still succeed (tmux doesn't error)
+      tmux.unbind_key("F11")
+      |> should.be_ok
+
+      // Clean up
+      let _ = tmux.kill_session(test_session)
+      Nil
+    }
+  }
+}

@@ -290,6 +290,24 @@ pub fn rename_window(session: String, name: String) -> Result(Nil, TmuxError) {
 }
 
 // ---------------------------------------------------------------------------
+// Key Bindings
+// ---------------------------------------------------------------------------
+
+/// Bind a key to run a shell command (no prefix required)
+/// The binding is registered in the root key table, so it works without
+/// the tmux prefix key. Use this for hotkeys like F1.
+pub fn bind_key(key: String, shell_command: String) -> Result(Nil, TmuxError) {
+  run_tmux(["bind-key", "-n", key, "run-shell", shell_command])
+  |> result.map(fn(_) { Nil })
+}
+
+/// Unbind a key from the root table
+pub fn unbind_key(key: String) -> Result(Nil, TmuxError) {
+  run_tmux(["unbind-key", "-n", key])
+  |> result.map(fn(_) { Nil })
+}
+
+// ---------------------------------------------------------------------------
 // Internal Helpers
 // ---------------------------------------------------------------------------
 
