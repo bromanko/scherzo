@@ -302,3 +302,143 @@ pub fn apply_tiled_layout_test() {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Agent List Pane Tests
+// ---------------------------------------------------------------------------
+
+// Use a simple command that doesn't exit immediately for testing
+// (scherzo agent-list doesn't exist yet)
+const test_agent_list_command = "sleep 300"
+
+pub fn create_agent_list_pane_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      let assert Ok(l) = layout.create_session_with_layout(test_session)
+
+      // Initially no agent list pane
+      layout.has_agent_list_pane(l)
+      |> should.be_false
+
+      // Create agent list pane
+      let result =
+        layout.create_agent_list_pane_with_command(l, 5, test_agent_list_command)
+      case result {
+        Ok(l2) -> {
+          // Should have agent list pane now
+          layout.has_agent_list_pane(l2)
+          |> should.be_true
+
+          // Pane ID should exist
+          layout.get_agent_list_pane(l2)
+          |> option.is_some
+          |> should.be_true
+        }
+        Error(_) -> should.fail()
+      }
+
+      cleanup()
+    }
+  }
+}
+
+pub fn create_agent_list_pane_already_exists_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      let assert Ok(l) = layout.create_session_with_layout(test_session)
+      let assert Ok(l) =
+        layout.create_agent_list_pane_with_command(l, 5, test_agent_list_command)
+
+      // Try to create again - should fail
+      let result =
+        layout.create_agent_list_pane_with_command(l, 5, test_agent_list_command)
+      case result {
+        Error(layout.AgentListPaneExists) -> should.be_true(True)
+        _ -> should.fail()
+      }
+
+      cleanup()
+    }
+  }
+}
+
+pub fn destroy_agent_list_pane_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      let assert Ok(l) = layout.create_session_with_layout(test_session)
+      let assert Ok(l) =
+        layout.create_agent_list_pane_with_command(l, 5, test_agent_list_command)
+
+      // Destroy the pane
+      let result = layout.destroy_agent_list_pane(l)
+      case result {
+        Ok(l2) -> {
+          // Should not have agent list pane
+          layout.has_agent_list_pane(l2)
+          |> should.be_false
+        }
+        Error(_) -> should.fail()
+      }
+
+      cleanup()
+    }
+  }
+}
+
+pub fn destroy_agent_list_pane_not_found_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      let assert Ok(l) = layout.create_session_with_layout(test_session)
+
+      // Try to destroy when not exists - should fail
+      let result = layout.destroy_agent_list_pane(l)
+      case result {
+        Error(layout.AgentListPaneNotFound) -> should.be_true(True)
+        _ -> should.fail()
+      }
+
+      cleanup()
+    }
+  }
+}
+
+pub fn toggle_agent_list_pane_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      cleanup()
+
+      let assert Ok(l) = layout.create_session_with_layout(test_session)
+
+      // Initially no pane
+      layout.has_agent_list_pane(l)
+      |> should.be_false
+
+      // Toggle on
+      let assert Ok(l) =
+        layout.toggle_agent_list_pane_with_command(l, 5, test_agent_list_command)
+      layout.has_agent_list_pane(l)
+      |> should.be_true
+
+      // Toggle off
+      let assert Ok(l) =
+        layout.toggle_agent_list_pane_with_command(l, 5, test_agent_list_command)
+      layout.has_agent_list_pane(l)
+      |> should.be_false
+
+      cleanup()
+    }
+  }
+}

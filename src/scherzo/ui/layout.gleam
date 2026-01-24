@@ -45,6 +45,10 @@ pub type LayoutError {
   AgentPaneNotFound(agent_id: String)
   /// Layout already exists
   LayoutExists
+  /// Agent list pane already exists
+  AgentListPaneExists
+  /// Agent list pane not found
+  AgentListPaneNotFound
 }
 
 // ---------------------------------------------------------------------------
@@ -266,4 +270,110 @@ pub fn destroy(layout: Layout) -> Result(Nil, LayoutError) {
     Error(err) -> Error(TmuxError(err))
     Ok(_) -> Ok(Nil)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Agent List Pane
+// ---------------------------------------------------------------------------
+
+/// Minimum height for agent list pane
+const agent_list_min_height = 3
+
+/// Default command for agent list pane
+const agent_list_command = "scherzo agent-list"
+
+/// Create agent list pane at bottom with fixed height
+/// Runs `scherzo agent-list` command in the new pane
+pub fn create_agent_list_pane(
+  layout: Layout,
+  height: Int,
+) -> Result(Layout, LayoutError) {
+  create_agent_list_pane_with_command(layout, height, agent_list_command)
+}
+
+/// Create agent list pane with a custom command
+/// Used internally and for testing
+pub fn create_agent_list_pane_with_command(
+  layout: Layout,
+  height: Int,
+  command: String,
+) -> Result(Layout, LayoutError) {
+  // Check if agent list pane already exists
+  case layout.agent_list_pane {
+    Some(_) -> Error(AgentListPaneExists)
+    None -> {
+      // Ensure height is at least minimum
+      let actual_height = case height < agent_list_min_height {
+        True -> agent_list_min_height
+        False -> height
+      }
+
+      // Split at bottom with the command
+      case tmux.split_with_command(layout.session, command, True) {
+        Error(err) -> Error(TmuxError(err))
+        Ok(pane_id) -> {
+          // Resize to fixed height
+          case tmux.resize_pane_height(pane_id, actual_height) {
+            Error(err) -> {
+              // Clean up the pane if resize fails
+              let _ = tmux.kill_pane(pane_id)
+              Error(TmuxError(err))
+            }
+            Ok(_) -> {
+              let config = PaneConfig(id: pane_id, role: AgentListPane)
+              Ok(Layout(..layout, agent_list_pane: Some(config)))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Destroy agent list pane
+pub fn destroy_agent_list_pane(layout: Layout) -> Result(Layout, LayoutError) {
+  case layout.agent_list_pane {
+    None -> Error(AgentListPaneNotFound)
+    Some(config) -> {
+      case tmux.kill_pane(config.id) {
+        Error(err) -> Error(TmuxError(err))
+        Ok(_) -> Ok(Layout(..layout, agent_list_pane: None))
+      }
+    }
+  }
+}
+
+/// Toggle agent list pane visibility
+/// Creates the pane if hidden, destroys it if visible
+pub fn toggle_agent_list_pane(
+  layout: Layout,
+  height: Int,
+) -> Result(Layout, LayoutError) {
+  toggle_agent_list_pane_with_command(layout, height, agent_list_command)
+}
+
+/// Toggle agent list pane with a custom command
+/// Used internally and for testing
+pub fn toggle_agent_list_pane_with_command(
+  layout: Layout,
+  height: Int,
+  command: String,
+) -> Result(Layout, LayoutError) {
+  case layout.agent_list_pane {
+    None -> create_agent_list_pane_with_command(layout, height, command)
+    Some(_) -> destroy_agent_list_pane(layout)
+  }
+}
+
+/// Get the agent list pane ID if it exists
+pub fn get_agent_list_pane(layout: Layout) -> Option(PaneId) {
+  case layout.agent_list_pane {
+    Some(config) -> Some(config.id)
+    None -> None
+  }
+}
+
+/// Check if agent list pane is visible
+pub fn has_agent_list_pane(layout: Layout) -> Bool {
+  option.is_some(layout.agent_list_pane)
 }
