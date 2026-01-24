@@ -300,9 +300,17 @@ fn tasks_command() -> glint.Command(Nil) {
   |> print_result
 }
 
+/// Flag for JSON output
+fn json_flag() {
+  glint.bool_flag("json")
+  |> glint.flag_default(False)
+  |> glint.flag_help("Output in JSON format")
+}
+
 fn agents_command() -> glint.Command(Nil) {
   use <- glint.command_help("Show agent status")
   use workdir_getter <- glint.flag(workdir_flag())
+  use json_getter <- glint.flag(json_flag())
   use _, _, flags <- glint.command()
 
   let working_dir =
@@ -310,7 +318,12 @@ fn agents_command() -> glint.Command(Nil) {
     |> result.unwrap(".")
     |> resolve_path()
 
-  commands.get_agents(working_dir)
+  let use_json = json_getter(flags) |> result.unwrap(False)
+
+  case use_json {
+    True -> commands.get_agents_json(working_dir)
+    False -> commands.get_agents(working_dir)
+  }
   |> print_result
 }
 

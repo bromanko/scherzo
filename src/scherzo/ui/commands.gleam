@@ -6,6 +6,7 @@
 /// Info commands (status, tasks, agents) expose shared functions
 /// that can be called by both CLI and REPL.
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -397,6 +398,48 @@ pub fn get_agents(working_dir: String) -> Result(String, String) {
         <> "Use 'run \"task title\"' or 'run --from-tickets' to spawn agents.",
       )
     _ -> Ok(format_agents_list(all_agents))
+  }
+}
+
+/// Get agents as JSON string for machine-readable output
+/// Used by `scherzo agents --json` for the agent list pane
+pub fn get_agents_json(working_dir: String) -> Result(String, String) {
+  let agents_dir = working_dir <> "/" <> agents_state.default_agents_dir
+  let all_agents = agents_state.load_all_agents(agents_dir)
+
+  let agents_json =
+    all_agents
+    |> list.map(encode_agent_for_list)
+
+  let output =
+    json.object([#("agents", json.array(agents_json, fn(j) { j }))])
+    |> json.to_string
+
+  Ok(output)
+}
+
+/// Encode an agent for the JSON list output
+fn encode_agent_for_list(agent: agents_state.AgentState) -> json.Json {
+  let status_str = format_agent_status_json(agent.status)
+  let friendly_name = names.from_agent_id(agent.config.id)
+  let provider = format_provider(agent.config.provider)
+
+  json.object([
+    #("id", json.string(agent.config.id)),
+    #("name", json.string(friendly_name)),
+    #("status", json.string(status_str)),
+    #("task_id", json.string(agent.task_id)),
+    #("provider", json.string(provider)),
+  ])
+}
+
+/// Format agent status as simple string for JSON
+fn format_agent_status_json(status: types.AgentStatus) -> String {
+  case status {
+    types.Idle -> "idle"
+    types.Running(_, _) -> "running"
+    types.Completed(_, _) -> "completed"
+    types.Failed(_) -> "failed"
   }
 }
 

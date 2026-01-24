@@ -83,6 +83,36 @@ pub fn agents_command_shows_no_agents_test() {
   }
 }
 
+pub fn get_agents_json_returns_empty_array_test() {
+  // When no agents, JSON should return {"agents":[]}
+  case commands.get_agents_json(".") {
+    Ok(output) -> {
+      string.contains(output, "\"agents\":")
+      |> should.be_true
+
+      // Should be valid JSON with empty array
+      string.contains(output, "[]")
+      |> should.be_true
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn get_agents_json_is_valid_json_test() {
+  // Output should be valid JSON
+  case commands.get_agents_json(".") {
+    Ok(output) -> {
+      // Should start with { and end with }
+      string.starts_with(output, "{")
+      |> should.be_true
+
+      string.ends_with(output, "}")
+      |> should.be_true
+    }
+    Error(_) -> should.fail()
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle Command Tests
 // ---------------------------------------------------------------------------
