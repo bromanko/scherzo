@@ -342,3 +342,114 @@ fn visible_length(s: String) -> Int {
   |> string.replace("\u{001b}[36m", "")
   |> string.length
 }
+
+// ---------------------------------------------------------------------------
+// Keyboard Input Handling
+// ---------------------------------------------------------------------------
+
+/// Key events
+pub type KeyEvent {
+  /// Move selection down (j, arrow down)
+  KeyDown
+  /// Move selection up (k, arrow up)
+  KeyUp
+  /// Focus selected agent (Enter)
+  KeyEnter
+  /// Zoom selected agent (z)
+  KeyZoom
+  /// Return to control pane (Esc)
+  KeyEscape
+  /// Quit (q)
+  KeyQuit
+  /// Force refresh (r)
+  KeyRefresh
+  /// Unknown key
+  KeyUnknown
+}
+
+/// Read a single key event from stdin (blocking)
+/// Returns KeyEvent representing the pressed key
+pub fn read_key() -> KeyEvent {
+  // Read one character
+  case read_char() {
+    // Arrow keys start with escape sequence
+    "\u{001b}" -> read_escape_sequence()
+    // j or J = down
+    "j" | "J" -> KeyDown
+    // k or K = up
+    "k" | "K" -> KeyUp
+    // Enter
+    "\r" | "\n" -> KeyEnter
+    // z = zoom
+    "z" | "Z" -> KeyZoom
+    // q = quit
+    "q" | "Q" -> KeyQuit
+    // r = refresh
+    "r" | "R" -> KeyRefresh
+    // Unknown
+    _ -> KeyUnknown
+  }
+}
+
+/// Read an escape sequence (arrow keys, etc)
+fn read_escape_sequence() -> KeyEvent {
+  // Read the next character (should be '[' for CSI sequences)
+  case read_char() {
+    "[" -> {
+      // Read the sequence type
+      case read_char() {
+        "A" -> KeyUp      // Up arrow
+        "B" -> KeyDown    // Down arrow
+        _ -> KeyUnknown
+      }
+    }
+    _ -> KeyEscape  // Plain Escape key
+  }
+}
+
+/// Read a single character from stdin
+@external(erlang, "scherzo_io", "read_char")
+fn read_char() -> String
+
+/// Read a character with timeout (returns empty string on timeout)
+@external(erlang, "scherzo_io", "read_char_timeout")
+fn read_char_timeout(timeout_ms: Int) -> String
+
+/// Read a key with timeout
+/// Returns Ok(KeyEvent) if a key was pressed, Error(Nil) on timeout
+pub fn read_key_timeout(timeout_ms: Int) -> Result(KeyEvent, Nil) {
+  case read_char_timeout(timeout_ms) {
+    "" -> Error(Nil)
+    char -> Ok(parse_key_char(char))
+  }
+}
+
+/// Parse a character into a key event
+fn parse_key_char(char: String) -> KeyEvent {
+  case char {
+    // Escape starts a sequence
+    "\u{001b}" -> KeyEscape  // Plain escape for now, sequences handled separately
+    // j or J = down
+    "j" | "J" -> KeyDown
+    // k or K = up
+    "k" | "K" -> KeyUp
+    // Enter
+    "\r" | "\n" -> KeyEnter
+    // z = zoom
+    "z" | "Z" -> KeyZoom
+    // q = quit
+    "q" | "Q" -> KeyQuit
+    // r = refresh
+    "r" | "R" -> KeyRefresh
+    // Unknown
+    _ -> KeyUnknown
+  }
+}
+
+/// Enable raw mode for stdin (no line buffering, no echo)
+@external(erlang, "scherzo_io", "enable_raw_mode")
+pub fn enable_raw_mode() -> Nil
+
+/// Disable raw mode (restore normal terminal behavior)
+@external(erlang, "scherzo_io", "disable_raw_mode")
+pub fn disable_raw_mode() -> Nil

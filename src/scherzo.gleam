@@ -779,30 +779,165 @@ fn agent_list_command() -> glint.Command(Nil) {
 }
 
 /// Main loop for agent list display
-/// Polls for agents and refreshes the display every second
+/// Polls for agents and handles keyboard input
 fn agent_list_loop(working_dir: String) -> Nil {
-  agent_list_loop_with_state(working_dir, agent_list.initial_state())
+  // Enable raw mode for keyboard input
+  agent_list.enable_raw_mode()
+
+  // Run the main loop
+  agent_list_loop_with_state(working_dir, agent_list.initial_state(), 0)
+
+  // Restore terminal (this is reached on quit)
+  agent_list.disable_raw_mode()
+  io.print(agent_list.show_cursor())
 }
 
-/// Agent list loop with state
-fn agent_list_loop_with_state(working_dir: String, state: agent_list.State) -> Nil {
-  // Update agents from disk
-  let state = agent_list.update_agents(state, working_dir)
+/// Agent list loop with state and refresh counter
+fn agent_list_loop_with_state(
+  working_dir: String,
+  state: agent_list.State,
+  ticks_since_refresh: Int,
+) -> Nil {
+  // Refresh agent list every 10 ticks (1 second at 100ms per tick)
+  let #(state, ticks) = case ticks_since_refresh >= 10 {
+    True -> #(agent_list.update_agents(state, working_dir), 0)
+    False -> #(state, ticks_since_refresh)
+  }
 
   // Render the TUI
   let output = agent_list.render(state)
   io.print(output)
 
-  // Sleep for 1 second
-  timer_sleep(1000)
-
-  // Recurse with updated state
-  agent_list_loop_with_state(working_dir, state)
+  // Check for keyboard input with 100ms timeout
+  case agent_list.read_key_timeout(100) {
+    Error(Nil) -> {
+      // No input, continue loop
+      agent_list_loop_with_state(working_dir, state, ticks + 1)
+    }
+    Ok(key) -> {
+      // Handle the key
+      case handle_agent_list_key(key, state, working_dir) {
+        None -> Nil  // Quit
+        Some(new_state) -> {
+          // Continue with new state, reset refresh counter on refresh key
+          let new_ticks = case key {
+            agent_list.KeyRefresh -> 0
+            _ -> ticks + 1
+          }
+          agent_list_loop_with_state(working_dir, new_state, new_ticks)
+        }
+      }
+    }
+  }
 }
 
-/// Sleep for given milliseconds
-@external(erlang, "timer", "sleep")
-fn timer_sleep(ms: Int) -> Nil
+/// Handle a key event in the agent list
+/// Returns None to quit, Some(state) to continue
+fn handle_agent_list_key(
+  key: agent_list.KeyEvent,
+  state: agent_list.State,
+  working_dir: String,
+) -> Option(agent_list.State) {
+  case key {
+    agent_list.KeyQuit -> None
+    agent_list.KeyUp -> Some(agent_list.select_prev(state))
+    agent_list.KeyDown -> Some(agent_list.select_next(state))
+    agent_list.KeyRefresh -> Some(agent_list.update_agents(state, working_dir))
+    agent_list.KeyEnter -> {
+      // Focus the selected agent pane (if in tmux session)
+      case agent_list.get_selected_agent(state) {
+        None -> Some(state)
+        Some(agent_id) -> {
+          focus_agent_pane(agent_id)
+          Some(state)
+        }
+      }
+    }
+    agent_list.KeyZoom -> {
+      // Zoom the selected agent pane
+      case agent_list.get_selected_agent(state) {
+        None -> Some(state)
+        Some(agent_id) -> {
+          zoom_agent_pane(agent_id)
+          Some(state)
+        }
+      }
+    }
+    agent_list.KeyEscape -> {
+      // Return focus to control pane
+      let _ = focus_control_pane()
+      Some(state)
+    }
+    agent_list.KeyUnknown -> Some(state)
+  }
+}
+
+/// Focus an agent's tmux pane
+fn focus_agent_pane(agent_id: String) -> Nil {
+  let session_name = tmux.default_session_name
+  case tmux.is_inside_session(session_name) {
+    False -> Nil
+    True -> {
+      // Find the agent's pane and focus it
+      case find_agent_pane(session_name, agent_id) {
+        None -> Nil
+        Some(pane_id) -> {
+          let _ = tmux.select_pane(pane_id)
+          Nil
+        }
+      }
+    }
+  }
+}
+
+/// Zoom an agent's tmux pane
+fn zoom_agent_pane(agent_id: String) -> Nil {
+  let session_name = tmux.default_session_name
+  case tmux.is_inside_session(session_name) {
+    False -> Nil
+    True -> {
+      case find_agent_pane(session_name, agent_id) {
+        None -> Nil
+        Some(pane_id) -> {
+          let _ = tmux.zoom_pane(pane_id)
+          Nil
+        }
+      }
+    }
+  }
+}
+
+/// Find an agent's pane by looking for the agent ID in pane commands
+fn find_agent_pane(session_name: String, agent_id: String) -> Option(String) {
+  case tmux.list_pane_commands(session_name) {
+    Error(_) -> None
+    Ok(panes) -> {
+      list.find(panes, fn(pane) {
+        string.contains(pane.1, agent_id)
+      })
+      |> result.map(fn(pane) { pane.0 })
+      |> option.from_result
+    }
+  }
+}
+
+/// Focus the control pane
+fn focus_control_pane() -> Result(Nil, Nil) {
+  let session_name = tmux.default_session_name
+  case tmux.is_inside_session(session_name) {
+    False -> Error(Nil)
+    True -> {
+      // The control pane is typically the first pane
+      case tmux.get_first_pane(session_name) {
+        Error(_) -> Error(Nil)
+        Ok(pane_id) -> {
+          let _ = tmux.select_pane(pane_id)
+          Ok(Nil)
+        }
+      }
+    }
+  }
+}
 
 /// Toggle agent list command - invoked by F1 key binding
 fn toggle_agent_list_command() -> glint.Command(Nil) {
