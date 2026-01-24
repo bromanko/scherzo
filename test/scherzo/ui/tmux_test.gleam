@@ -309,6 +309,32 @@ pub fn apply_main_horizontal_layout_test() {
   }
 }
 
+pub fn resize_pane_height_test() {
+  case tmux_is_usable() {
+    False -> Nil
+    True -> {
+      // Ensure clean state
+      let _ = tmux.kill_session(test_session)
+      tmux.create_session(test_session) |> should.be_ok
+
+      // Create a second pane so we have something to resize
+      let split_result = tmux.split_horizontal(test_session)
+      case split_result {
+        Ok(pane_id) -> {
+          // Resize the pane to 5 rows
+          tmux.resize_pane_height(pane_id, 5)
+          |> should.be_ok
+        }
+        Error(_) -> should.fail()
+      }
+
+      // Clean up
+      let _ = tmux.kill_session(test_session)
+      Nil
+    }
+  }
+}
+
 pub fn kill_pane_test() {
   case tmux_is_usable() {
     False -> Nil

@@ -261,6 +261,12 @@ pub fn zoom_pane(pane_id: PaneId) -> Result(Nil, TmuxError) {
   |> result.map(fn(_) { Nil })
 }
 
+/// Resize a pane to a specific height (in rows)
+pub fn resize_pane_height(pane_id: PaneId, height: Int) -> Result(Nil, TmuxError) {
+  run_tmux(["resize-pane", "-t", pane_id, "-y", int.to_string(height)])
+  |> result.map(fn(_) { Nil })
+}
+
 /// Get the ID of the first pane in a session
 pub fn get_first_pane(session: String) -> Result(PaneId, TmuxError) {
   run_tmux(["list-panes", "-t", session, "-F", "#{pane_id}"])
