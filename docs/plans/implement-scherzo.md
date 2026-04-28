@@ -72,8 +72,8 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 - [x] (2026-04-28 17:09Z) Created the Gleam project scaffold, `devenv.nix`, a direnv-compatible `.envrc`, README, ignore rules, dependency smoke tests, and `examples/WORKFLOW.md` with an explicit `hooks.after_create` population hook; `direnv exec . gleam test` passed with 6 tests.
 - [x] (2026-04-28 17:12Z) Proved the Erlang port and fake pi RPC subprocess boundary with `src/scherzo/port.gleam`, `src/scherzo_port_ffi.erl`, `test/fixtures/fake_pi_rpc.sh`, and port tests for cwd, stdin/stdout JSONL separation, stderr diagnostics capture, termination, and 10 MB line handling; `direnv exec . gleam test` passed with 10 tests.
 - [x] (2026-04-28 17:14Z) Implemented domain types, typed errors, structured logging helpers, retry/session counters, parked issue state, and deterministic tests in `test/domain_test.gleam` and `test/log_test.gleam`; `direnv exec . gleam test` passed with 18 tests.
-- [ ] Implement `WORKFLOW.md` loading, YAML front matter parsing, config defaults, env/path resolution, validation, dynamic reload state, pause semantics, and limit validation.
-- [ ] Implement strict Liquid-like prompt rendering with `issue` and `attempt` inputs.
+- [x] (2026-04-28 17:18Z) Implemented `WORKFLOW.md` loading, YAML front matter parsing, config defaults, env/path resolution, validation, dynamic reload state, pause semantics, limit validation, and resolved-secret reporting.
+- [x] (2026-04-28 17:18Z) Implemented strict Liquid-like prompt rendering with `issue`, `attempt`, `if`, `else`, and `for` support plus unknown-variable/filter failures; `direnv exec . gleam test` passed with 40 tests.
 - [ ] Implement workspace path safety, directory lifecycle, hook execution, population verification hooks, and cleanup.
 - [ ] Implement the Linear tracker client with GraphQL queries, pagination, normalization, and error mapping.
 - [ ] Implement pure orchestrator scheduling, reconciliation, retry, parking/unparking, token accounting, and snapshot state transitions.
@@ -94,6 +94,9 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 
 - Observation: Erlang ports provide stdout line messages but not a convenient independent live stderr stream for this use case.
   Evidence: The passing port tests use a wrapper that redirects child stderr into a temporary diagnostics file; stdout returned only the JSON line while `read_diagnostics` later contained `diagnostic`.
+
+- Observation: `yay.parse_string` can return an error shape that is not safe to destructure exhaustively in Scherzo's workflow loader.
+  Evidence: The initial invalid-YAML test crashed with `CaseClause(YamlError(UnexpectedParsingError))`; Scherzo now maps any YAML parse failure to a stable `WorkflowParseError("YAML parse error")` without relying on the package's internal error representation.
 
 ## Decision Log
 
