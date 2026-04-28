@@ -74,7 +74,7 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 - [x] (2026-04-28 17:14Z) Implemented domain types, typed errors, structured logging helpers, retry/session counters, parked issue state, and deterministic tests in `test/domain_test.gleam` and `test/log_test.gleam`; `direnv exec . gleam test` passed with 18 tests.
 - [x] (2026-04-28 17:18Z) Implemented `WORKFLOW.md` loading, YAML front matter parsing, config defaults, env/path resolution, validation, dynamic reload state, pause semantics, limit validation, and resolved-secret reporting.
 - [x] (2026-04-28 17:18Z) Implemented strict Liquid-like prompt rendering with `issue`, `attempt`, `if`, `else`, and `for` support plus unknown-variable/filter failures; `direnv exec . gleam test` passed with 40 tests.
-- [ ] Implement workspace path safety, directory lifecycle, hook execution, population verification hooks, and cleanup.
+- [x] (2026-04-28 17:22Z) Implemented workspace path safety, directory lifecycle, hook execution, population and verification hooks, sidecar population marker handling, best-effort after-run/before-remove hooks, and stored-path cleanup tests; `direnv exec . gleam test` passed with 48 tests.
 - [ ] Implement the Linear tracker client with GraphQL queries, pagination, normalization, and error mapping.
 - [ ] Implement pure orchestrator scheduling, reconciliation, retry, parking/unparking, token accounting, and snapshot state transitions.
 - [ ] Implement the pi RPC subprocess client, compatibility probe, and agent runner using fake-pi integration tests first.
