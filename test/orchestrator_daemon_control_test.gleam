@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/runner
+import scherzo/agent/worker_command
 import scherzo/control/client
 import scherzo/control/command
 import scherzo/control/file as control_file
@@ -102,10 +103,12 @@ fn dependencies(
       )
     },
     make_handoff: fn(_, _) { handoff.disabled_client() },
-    agent_runner: fn(_, _, _, _, _, _) {
+    agent_runner: fn(_, _, _, _, _, _, _, _) {
       Error(runner.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError("not used")),
         workspace_path: None,
+        tokens: domain.zero_token_totals(),
+        final_issue: None,
       ))
     },
     cleanup: fn(_, _, _) { Ok(Nil) },

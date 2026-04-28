@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/string
 import scherzo/agent/runner
+import scherzo/agent/worker_command
 import scherzo/config
 import scherzo/control/command
 import scherzo/control/file as control_file
@@ -27,17 +28,6 @@ pub type StartupError {
   StartupError(code: String, message: String)
 }
 
-pub type WorkerCommand {
-  Abort(process.Subject(command.CommandResult))
-  StopAfterCurrentTurn(process.Subject(command.CommandResult))
-  QueuePrompt(String, process.Subject(command.CommandResult))
-  RespondToUi(
-    String,
-    command.UiResponse,
-    process.Subject(command.CommandResult),
-  )
-}
-
 pub type Message {
   PollTick(Int)
   RetryTick(String, Int)
@@ -47,6 +37,12 @@ pub type Message {
     Result(runner.WorkerSuccess, runner.WorkerFailure),
   )
   WorkerUpdate(String, runner.PiUpdate)
+  WorkerCommandReady(String, String, process.Subject(worker_command.Command))
+  AbortWorkerCommandTimedOut(
+    command.OperatorCommand,
+    String,
+    process.Subject(command.CommandResult),
+  )
   WorkerDown(process.Down)
   SideEffectFinished(SideEffectResult)
   Shutdown(process.Subject(Nil))
@@ -67,7 +63,7 @@ pub type WorkerHandle {
     monitor: process.Monitor,
     workspace_path: String,
     session_id: String,
-    command_subject: Option(process.Subject(WorkerCommand)),
+    command_subject: Option(process.Subject(worker_command.Command)),
   )
 }
 
@@ -84,6 +80,8 @@ pub type ControlServerHandle {
 type ControlPlane {
   ControlPlane(handle: ControlServerHandle, control_file_path: Option(String))
 }
+
+const max_worker_command_wait_ms = 500
 
 type PendingClaim {
   PendingClaim(
@@ -154,6 +152,8 @@ pub type RuntimeDependencies {
       domain.EffectiveConfig,
       tracker.Client,
       fn(String, runner.PiUpdate) -> Nil,
+      process.Subject(worker_command.Command),
+      fn() -> Nil,
     ) ->
       Result(runner.WorkerSuccess, runner.WorkerFailure),
     cleanup: fn(String, String, domain.HooksConfig) ->
@@ -214,7 +214,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
         linear.http_transport,
       )
     },
-    agent_runner: runner.run_attempt,
+    agent_runner: runner.run_attempt_with_command_ready,
     cleanup: workspace.cleanup_stored_path,
     logger: fn(level, event, fields, secrets) {
       let _ = level
@@ -469,6 +469,24 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
       actor.continue(handle_worker_finished(state, issue_id, run_id, result))
     WorkerUpdate(issue_id, update) ->
       actor.continue(handle_worker_update(state, issue_id, update))
+    WorkerCommandReady(issue_id, run_id, command_subject) ->
+      actor.continue(handle_worker_command_ready(
+        state,
+        issue_id,
+        run_id,
+        command_subject,
+      ))
+    AbortWorkerCommandTimedOut(operator_command, session_id, reply) -> {
+      let #(state, result) =
+        stop_session_for_operator(
+          state,
+          operator_command,
+          session_id,
+          "operator_abort",
+        )
+      process.send(reply, result)
+      actor.continue(state)
+    }
     WorkerDown(down) -> actor.continue(handle_worker_down(state, down))
     SideEffectFinished(result) ->
       actor.continue(handle_side_effect_finished(state, result))
@@ -1879,6 +1897,7 @@ fn spawn_worker(
   let tracker_client = state.tracker_client
   let pid =
     process.spawn_unlinked(fn() {
+      let command_subject = process.new_subject()
       let result =
         dependencies.agent_runner(
           issue,
@@ -1888,6 +1907,13 @@ fn spawn_worker(
           tracker_client,
           fn(_, update) {
             process.send(subject, WorkerUpdate(issue.id, update))
+          },
+          command_subject,
+          fn() {
+            process.send(
+              subject,
+              WorkerCommandReady(issue.id, run_id, command_subject),
+            )
           },
         )
       process.send(subject, WorkerFinished(issue.id, run_id, result))
@@ -1913,6 +1939,30 @@ fn spawn_worker(
     worker_monitors: dict.insert(state.worker_monitors, monitor, issue.id),
     issue_sessions: dict.insert(state.issue_sessions, issue.id, session_id),
   )
+}
+
+fn handle_worker_command_ready(
+  state: State,
+  issue_id: String,
+  run_id: String,
+  command_subject: process.Subject(worker_command.Command),
+) -> State {
+  case dict.get(state.workers, issue_id) {
+    Error(_) -> state
+    Ok(handle) ->
+      case handle.run_id == run_id {
+        False -> state
+        True ->
+          State(
+            ..state,
+            workers: dict.insert(
+              state.workers,
+              issue_id,
+              WorkerHandle(..handle, command_subject: Some(command_subject)),
+            ),
+          )
+      }
+  }
 }
 
 fn handle_worker_update(
@@ -2034,33 +2084,103 @@ fn finish_worker_failure(
   handle: WorkerHandle,
   failure: runner.WorkerFailure,
 ) -> State {
+  case failure.reason {
+    error.OperatorAbort ->
+      finish_operator_worker_exit(state, handle, failure, "operator_abort")
+    error.OperatorStopAfterCurrentTurn ->
+      finish_operator_worker_exit(
+        state,
+        handle,
+        failure,
+        "operator_stop_after_current_turn",
+      )
+    _ -> {
+      log_state(state, "warn", "worker_exited", [
+        #("issue_id", handle.issue_id),
+        #("run_id", handle.run_id),
+        #("reason", "failed"),
+      ])
+      publish_lifecycle(
+        state,
+        handle.session_id,
+        "worker_exited",
+        Some("failed"),
+      )
+      hub.finish_session(state.event_hub, handle.session_id, "failed")
+      let baseline_issue = case failure.final_issue {
+        Some(issue) ->
+          case issue.id == handle.issue_id {
+            True -> issue
+            False -> handle.issue
+          }
+        None -> handle.issue
+      }
+      let transition =
+        core.apply_worker_failure(
+          state.runtime,
+          state.effective,
+          handle.issue_id,
+          baseline_issue,
+          state.dependencies.now_ms(),
+        )
+      let state = State(..state, runtime: transition.state)
+      let state =
+        enqueue_side_effect(
+          state,
+          ReportFailure(
+            issue_id: handle.issue_id,
+            issue: handle.issue,
+            failure: failure,
+            run_id: handle.run_id,
+            client: state.handoff_client,
+          ),
+        )
+      apply_effects(state, transition.effects)
+    }
+  }
+}
+
+fn finish_operator_worker_exit(
+  state: State,
+  handle: WorkerHandle,
+  failure: runner.WorkerFailure,
+  reason: String,
+) -> State {
   log_state(state, "warn", "worker_exited", [
     #("issue_id", handle.issue_id),
     #("run_id", handle.run_id),
-    #("reason", "failed"),
+    #("reason", reason),
   ])
-  publish_lifecycle(state, handle.session_id, "worker_exited", Some("failed"))
-  hub.finish_session(state.event_hub, handle.session_id, "failed")
-  let transition =
-    core.apply_worker_failure(
-      state.runtime,
-      state.effective,
-      handle.issue_id,
-      state.dependencies.now_ms(),
-    )
-  let state = State(..state, runtime: transition.state)
-  let state =
-    enqueue_side_effect(
-      state,
-      ReportFailure(
-        issue_id: handle.issue_id,
-        issue: handle.issue,
-        failure: failure,
-        run_id: handle.run_id,
-        client: state.handoff_client,
+  case tokens_are_nonzero(failure.tokens) {
+    True ->
+      hub.update_tokens(state.event_hub, handle.session_id, failure.tokens)
+    False -> Nil
+  }
+  publish_lifecycle(state, handle.session_id, "worker_exited", Some(reason))
+  hub.finish_session(state.event_hub, handle.session_id, reason)
+  let final_issue = case failure.final_issue {
+    Some(issue) ->
+      case issue.id == handle.issue_id {
+        True -> issue
+        False -> handle.issue
+      }
+    None -> handle.issue
+  }
+  let runtime =
+    domain.RuntimeState(
+      ..state.runtime,
+      completed: dict.insert(
+        state.runtime.completed,
+        handle.issue_id,
+        final_issue,
+      ),
+      aggregate_pi_totals: add_tokens(
+        state.runtime.aggregate_pi_totals,
+        failure.tokens,
       ),
     )
-  apply_effects(state, transition.effects)
+  State(..state, runtime: runtime)
+  |> park_issue_state(final_issue, reason)
 }
 
 fn handle_worker_down(state: State, down: process.Down) -> State {
@@ -2095,6 +2215,8 @@ fn handle_worker_down(state: State, down: process.Down) -> State {
                 runner.WorkerFailure(
                   reason: error.PiFailed(error.PiProtocolError("worker_down")),
                   workspace_path: Some(handle.workspace_path),
+                  tokens: domain.zero_token_totals(),
+                  final_issue: None,
                 )
               finish_worker_failure(state, handle, failure)
             }
@@ -2537,6 +2659,19 @@ fn tokens_are_nonzero(tokens: domain.TokenTotals) -> Bool {
   || tokens.cache_read > 0
   || tokens.cache_write > 0
   || tokens.total > 0
+}
+
+fn add_tokens(
+  a: domain.TokenTotals,
+  b: domain.TokenTotals,
+) -> domain.TokenTotals {
+  domain.TokenTotals(
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cache_read: a.cache_read + b.cache_read,
+    cache_write: a.cache_write + b.cache_write,
+    total: a.total + b.total,
+  )
 }
 
 fn stop_worker(handle: WorkerHandle) -> Nil {

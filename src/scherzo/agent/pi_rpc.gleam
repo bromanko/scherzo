@@ -2,9 +2,14 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/domain
 import scherzo/error
 import scherzo/port
+
+const max_interleaved_response_records = 100
+
+const max_interleaved_response_bytes = 1_000_000
 
 pub type Session {
   Session(
@@ -24,6 +29,7 @@ pub type RpcRecord {
     success: Option(Bool),
     session_id: Option(String),
     delta: Option(String),
+    message: Option(String),
     method: Option(String),
     tokens: domain.TokenTotals,
     raw_json: String,
@@ -80,6 +86,16 @@ pub fn encode_extension_ui_response(id: String) -> String {
     #("id", json.string(id)),
     #("type", json.string("extension_ui_response")),
     #("cancelled", json.bool(True)),
+  ])
+  |> json.to_string
+}
+
+pub fn encode_extension_ui_value_response(id: String, value: String) -> String {
+  json.object([
+    #("id", json.string(id)),
+    #("type", json.string("extension_ui_response")),
+    #("cancelled", json.bool(False)),
+    #("value", json.string(value)),
   ])
   |> json.to_string
 }
@@ -172,6 +188,119 @@ pub fn prompt_with_ui_policy(
   }
 }
 
+pub fn send_prompt(
+  session: Session,
+  message: String,
+  read_timeout_ms: Int,
+) -> Result(#(Session, List(RpcRecord)), error.PiRpcError) {
+  let id = int_to_string(session.next_id)
+  use _ <- try_pi(
+    port.send_line(session.process, encode_prompt(id, message))
+    |> map_port_error,
+  )
+  use pair <- try_pi(
+    read_until_response_collect(session.process, id, read_timeout_ms, []),
+  )
+  let #(record, skipped) = pair
+  case record.success {
+    Some(True) ->
+      Ok(#(Session(..session, next_id: session.next_id + 1), skipped))
+    _ -> Error(error.PiProtocolError("prompt rejected"))
+  }
+}
+
+pub fn read_turn_record(
+  session: Session,
+  read_timeout_ms: Int,
+  turn_deadline_ms: Int,
+  stall_deadline_ms: Int,
+) -> Result(#(Session, Option(RpcRecord)), error.PiRpcError) {
+  use maybe_line <- try_pi(read_turn_line(
+    session.process,
+    read_timeout_ms,
+    turn_deadline_ms,
+    stall_deadline_ms,
+  ))
+  case maybe_line {
+    None -> Ok(#(session, None))
+    Some(line) -> {
+      use record <- try_pi(decode_record(line))
+      Ok(#(session, Some(record)))
+    }
+  }
+}
+
+pub fn send_abort(
+  session: Session,
+  read_timeout_ms: Int,
+) -> Result(#(Session, List(RpcRecord)), error.PiRpcError) {
+  let id = int_to_string(session.next_id)
+  use _ <- try_pi(
+    port.send_line(session.process, encode_abort(id)) |> map_port_error,
+  )
+  use pair <- try_pi(
+    read_until_response_collect(session.process, id, read_timeout_ms, []),
+  )
+  let #(record, skipped) = pair
+  case record.success {
+    Some(True) ->
+      Ok(#(Session(..session, next_id: session.next_id + 1), skipped))
+    _ -> Error(error.PiProtocolError("abort failed"))
+  }
+}
+
+pub fn send_extension_ui_cancel(
+  session: Session,
+  request_id: String,
+  read_timeout_ms: Int,
+) -> Result(#(Session, List(RpcRecord)), error.PiRpcError) {
+  use _ <- try_pi(
+    port.send_line(session.process, encode_extension_ui_response(request_id))
+    |> map_port_error,
+  )
+  use pair <- try_pi(
+    read_until_response_collect(
+      session.process,
+      request_id,
+      read_timeout_ms,
+      [],
+    ),
+  )
+  let #(record, skipped) = pair
+  case record.success {
+    Some(True) -> Ok(#(session, skipped))
+    _ -> Error(error.PiProtocolError("extension_ui_response failed"))
+  }
+}
+
+pub fn send_extension_ui_value(
+  session: Session,
+  request_id: String,
+  value: String,
+  read_timeout_ms: Int,
+) -> Result(#(Session, List(RpcRecord)), error.PiRpcError) {
+  use _ <- try_pi(
+    port.send_line(
+      session.process,
+      encode_extension_ui_value_response(request_id, value),
+    )
+    |> map_port_error,
+  )
+  use pair <- try_pi(
+    read_until_response_collect(
+      session.process,
+      request_id,
+      read_timeout_ms,
+      [],
+    ),
+  )
+  let #(record, skipped) = pair
+  case record.success {
+    Some(True) -> Ok(#(session, skipped))
+    _ -> Error(error.PiProtocolError("extension_ui_response failed"))
+  }
+}
+
 pub fn get_session_stats(
   session: Session,
   read_timeout_ms: Int,
@@ -249,13 +378,78 @@ fn read_until_response(
   id: String,
   timeout_ms: Int,
 ) -> Result(RpcRecord, error.PiRpcError) {
-  use line <- try_pi(
-    port.read_stdout_line(process, timeout_ms) |> map_port_error,
+  use pair <- try_pi(read_until_response_collect(process, id, timeout_ms, []))
+  let #(record, _skipped) = pair
+  Ok(record)
+}
+
+fn read_until_response_collect(
+  process: port.Process,
+  id: String,
+  timeout_ms: Int,
+  skipped: List(RpcRecord),
+) -> Result(#(RpcRecord, List(RpcRecord)), error.PiRpcError) {
+  read_until_response_collect_until(
+    process,
+    id,
+    timeout_ms,
+    monotonic_ms() + timeout_ms,
+    skipped,
+    list.length(skipped),
+    skipped_record_bytes(skipped),
   )
-  use record <- try_pi(decode_record(line))
-  case record.id == Some(id) && record.type_ == "response" {
-    True -> Ok(record)
-    False -> read_until_response(process, id, timeout_ms)
+}
+
+fn read_until_response_collect_until(
+  process: port.Process,
+  id: String,
+  timeout_ms: Int,
+  deadline_ms: Int,
+  skipped: List(RpcRecord),
+  skipped_count: Int,
+  skipped_bytes: Int,
+) -> Result(#(RpcRecord, List(RpcRecord)), error.PiRpcError) {
+  let remaining_ms = deadline_ms - monotonic_ms()
+  case remaining_ms <= 0 {
+    True -> Error(error.PiReadTimeout)
+    False -> {
+      let read_timeout_ms = min_int(timeout_ms, remaining_ms)
+      use line <- try_pi(
+        port.read_stdout_line(process, read_timeout_ms) |> map_port_error,
+      )
+      use record <- try_pi(decode_record(line))
+      case record.id == Some(id) && record.type_ == "response" {
+        True -> Ok(#(record, list.reverse(skipped)))
+        False -> {
+          let skipped_count = skipped_count + 1
+          let skipped_bytes = skipped_bytes + string.length(record.raw_json)
+          case
+            skipped_count > max_interleaved_response_records
+            || skipped_bytes > max_interleaved_response_bytes
+          {
+            True -> Error(error.PiProtocolError("too many interleaved records"))
+            False ->
+              read_until_response_collect_until(
+                process,
+                id,
+                timeout_ms,
+                deadline_ms,
+                [record, ..skipped],
+                skipped_count,
+                skipped_bytes,
+              )
+          }
+        }
+      }
+    }
+  }
+}
+
+fn skipped_record_bytes(records: List(RpcRecord)) -> Int {
+  case records {
+    [] -> 0
+    [record, ..rest] ->
+      string.length(record.raw_json) + skipped_record_bytes(rest)
   }
 }
 
@@ -475,6 +669,71 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     None,
     decode.optional(decode.string),
   )
+  use message <- decode.optional_field(
+    "message",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use message_object <- decode.optional_field(
+    "message",
+    empty_message_object(),
+    tolerant_message_object_decoder(),
+  )
+  use top_tool_name_camel <- decode.optional_field(
+    "toolName",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_tool_name_snake <- decode.optional_field(
+    "tool_name",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_name <- decode.optional_field(
+    "name",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_command <- decode.optional_field(
+    "command",
+    None,
+    structured_optional_string_decoder(),
+  )
+  use top_input <- decode.optional_field(
+    "input",
+    None,
+    structured_optional_string_decoder(),
+  )
+  use top_args <- decode.optional_field(
+    "args",
+    None,
+    structured_optional_string_decoder(),
+  )
+  use top_output <- decode.optional_field(
+    "output",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_stdout <- decode.optional_field(
+    "stdout",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_stderr <- decode.optional_field(
+    "stderr",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_status <- decode.optional_field(
+    "status",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_result <- decode.optional_field(
+    "result",
+    None,
+    tolerant_optional_string_decoder(),
+  )
   use method <- decode.optional_field(
     "method",
     None,
@@ -487,6 +746,7 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     success: success,
     session_id: data.session_id,
     delta: delta,
+    message: message,
     method: method,
     tokens: data.tokens,
     raw_json: raw_json,

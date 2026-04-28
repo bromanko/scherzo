@@ -1,0 +1,328 @@
+import birl
+import gleam/dict
+import gleam/erlang/process
+import gleam/option.{None, Some}
+import gleam/string
+import scherzo/agent/runner
+import scherzo/agent/worker_command
+import scherzo/control/command
+import scherzo/domain
+import scherzo/error
+import scherzo/path
+import scherzo/tracker
+import simplifile
+import yay
+
+fn reset_dir(dir: String) -> Nil {
+  let _ = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  Nil
+}
+
+fn fake_pi() -> String {
+  let assert Ok(abs) = path.absolute("test/fixtures/fake_pi_rpc.sh")
+  abs
+}
+
+fn issue(state: String) -> domain.Issue {
+  domain.Issue(
+    id: "worker-control-issue",
+    identifier: "ABC-WORKER",
+    title: "Worker controls",
+    description: Some("Exercise command-aware loop"),
+    priority: Some(1),
+    state: state,
+    branch_name: None,
+    url: None,
+    labels: [],
+    blocked_by: [],
+    created_at: Some(birl.from_unix(0)),
+    updated_at: Some(birl.from_unix(0)),
+  )
+}
+
+fn config(
+  root: String,
+  command: String,
+  max_turns: Int,
+  ui_policy: domain.UiRequestPolicy,
+) -> domain.EffectiveConfig {
+  domain.EffectiveConfig(
+    tracker: domain.TrackerConfig(
+      kind: "linear",
+      endpoint: "endpoint",
+      api_key: Some("key"),
+      project_slug: Some("PROJ"),
+      active_states: ["Todo", "In Progress"],
+      terminal_states: ["Done"],
+    ),
+    polling: domain.PollingConfig(interval_ms: 30_000),
+    workspace: domain.WorkspaceConfig(root: root),
+    hooks: domain.HooksConfig(
+      after_create: Some("printf populated > POPULATED"),
+      before_run: Some("test -f POPULATED"),
+      after_run: Some("printf after > AFTER_RUN"),
+      before_remove: None,
+      timeout_ms: 2000,
+    ),
+    agent: domain.AgentConfig(
+      max_concurrent_agents: 1,
+      max_turns: max_turns,
+      max_retry_backoff_ms: 300_000,
+      max_retry_attempts: 5,
+      max_sessions_per_issue: 3,
+      max_concurrent_agents_by_state: dict.new(),
+    ),
+    pi: domain.PiConfig(
+      command: command,
+      turn_timeout_ms: 5000,
+      read_timeout_ms: 100,
+      stall_timeout_ms: 1000,
+      auto_retry: True,
+      ui_request_policy: ui_policy,
+      ui_request_timeout_ms: 1000,
+      compatibility_probe: False,
+      rate_limit_payload: None,
+    ),
+    handoff: domain.HandoffConfig(
+      enabled: False,
+      comment_on_claim: False,
+      comment_on_success: False,
+      comment_on_failure: False,
+      claim_state_id: None,
+      success_state_id: None,
+      failure_state_id: None,
+    ),
+  )
+}
+
+fn workflow(prompt: String) -> domain.WorkflowDefinition {
+  domain.WorkflowDefinition(config: yay.NodeMap([]), prompt_template: prompt)
+}
+
+fn tracker_returning(final_issue: domain.Issue) -> tracker.Client {
+  tracker.Client(
+    fetch_candidate_issues: fn() { Ok([]) },
+    fetch_issues_by_states: fn(_) { Ok([]) },
+    fetch_issue_states_by_ids: fn(_) { Ok([final_issue]) },
+  )
+}
+
+fn receive_update_named(
+  subject: process.Subject(runner.PiUpdate),
+  name: String,
+  attempts: Int,
+) -> Result(runner.PiUpdate, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case process.receive(subject, within: 200) {
+        Ok(update) ->
+          case update.event == name {
+            True -> Ok(update)
+            False -> receive_update_named(subject, name, attempts - 1)
+          }
+        Error(_) -> receive_update_named(subject, name, attempts - 1)
+      }
+  }
+}
+
+pub fn abort_command_stops_fake_pi_worker_test() {
+  let root = "test/tmp/agent-worker-control-abort"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let pi_command =
+    "FAKE_PI_ABORTABLE_STALL_MS=500 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let updates = process.new_subject()
+  let result_subject = process.new_subject()
+  let ready_subject = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let command_subject = process.new_subject()
+      process.send(ready_subject, command_subject)
+      let cfg = config(root, pi_command, 1, domain.Cancel)
+      let cfg =
+        domain.EffectiveConfig(
+          ..cfg,
+          pi: domain.PiConfig(..cfg.pi, read_timeout_ms: 200),
+        )
+      let result =
+        runner.run_attempt_with_commands(
+          issue("Todo"),
+          None,
+          workflow("Do it"),
+          cfg,
+          tracker_returning(issue("Done")),
+          fn(_, update) { process.send(updates, update) },
+          command_subject,
+        )
+      process.send(result_subject, result)
+    })
+  let assert Ok(command_subject) = process.receive(ready_subject, within: 1000)
+
+  let assert Ok(_) = receive_update_named(updates, "message_update", 50)
+  let reply = process.new_subject()
+  process.send(command_subject, worker_command.Abort(reply))
+  let assert Ok(worker_command.Applied(_)) =
+    process.receive(reply, within: 1000)
+  let assert Ok(Error(runner.WorkerFailure(
+    reason: error.OperatorAbort,
+    workspace_path: Some(_),
+    tokens: _,
+    final_issue: None,
+  ))) = process.receive(result_subject, within: 2000)
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert string.contains(contents, "prompt")
+}
+
+pub fn operator_prompt_queued_during_turn_and_sent_next_turn_test() {
+  let root = "test/tmp/agent-worker-control-prompt"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let pi_command =
+    "FAKE_PI_STALL_AFTER_PROMPT=500 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let updates = process.new_subject()
+  let result_subject = process.new_subject()
+  let ready_subject = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let command_subject = process.new_subject()
+      process.send(ready_subject, command_subject)
+      let result =
+        runner.run_attempt_with_commands(
+          issue("Todo"),
+          None,
+          workflow("Original task"),
+          config(root, pi_command, 2, domain.Cancel),
+          tracker_returning(issue("Todo")),
+          fn(_, update) { process.send(updates, update) },
+          command_subject,
+        )
+      process.send(result_subject, result)
+    })
+  let assert Ok(command_subject) = process.receive(ready_subject, within: 1000)
+
+  let assert Ok(_) = receive_update_named(updates, "message_update", 50)
+  let reply = process.new_subject()
+  process.send(
+    command_subject,
+    worker_command.QueuePrompt("operator follow-up", reply),
+  )
+  let assert Ok(worker_command.Queued(_)) = process.receive(reply, within: 1000)
+  let assert Ok(Ok(success)) = process.receive(result_subject, within: 4000)
+  assert success.turns == 2
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert string.contains(contents, "Original task")
+  assert string.contains(contents, "operator follow-up")
+  assert !string.contains(contents, "Continue working on ABC-WORKER")
+}
+
+pub fn operator_ui_request_timeout_cancels_before_read_timeout_test() {
+  let root = "test/tmp/agent-worker-control-ui-timeout"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let pi_command =
+    "FAKE_PI_UI_DIALOG=1 FAKE_PI_UI_DIALOG_WAITS=1 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let updates = process.new_subject()
+  let result_subject = process.new_subject()
+  let ready_subject = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let command_subject = process.new_subject()
+      process.send(ready_subject, command_subject)
+      let cfg = config(root, pi_command, 1, domain.Operator)
+      let cfg =
+        domain.EffectiveConfig(
+          ..cfg,
+          pi: domain.PiConfig(
+            ..cfg.pi,
+            read_timeout_ms: 1000,
+            stall_timeout_ms: 10,
+            ui_request_timeout_ms: 50,
+          ),
+        )
+      let result =
+        runner.run_attempt_with_commands(
+          issue("Todo"),
+          None,
+          workflow("Original task"),
+          cfg,
+          tracker_returning(issue("Done")),
+          fn(_, update) { process.send(updates, update) },
+          command_subject,
+        )
+      process.send(result_subject, result)
+    })
+  let assert Ok(_) = process.receive(ready_subject, within: 1000)
+
+  let assert Ok(_) = receive_update_named(updates, "extension_ui_request", 20)
+  let assert Ok(timeout_update) =
+    receive_update_named(updates, "operator_ui_timeout", 20)
+  assert timeout_update.request_id == Some("ui-1")
+  let assert Ok(Ok(success)) = process.receive(result_subject, within: 3000)
+  assert success.final_classification == runner.FinalTerminal
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert string.contains(contents, "extension_ui_response")
+  assert string.contains(contents, "cancelled")
+}
+
+pub fn operator_ui_request_cancel_response_test() {
+  let root = "test/tmp/agent-worker-control-ui"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let pi_command =
+    "FAKE_PI_UI_DIALOG=1 FAKE_PI_UI_DIALOG_WAITS=1 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let updates = process.new_subject()
+  let result_subject = process.new_subject()
+  let ready_subject = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let command_subject = process.new_subject()
+      process.send(ready_subject, command_subject)
+      let result =
+        runner.run_attempt_with_commands(
+          issue("Todo"),
+          None,
+          workflow("Original task"),
+          config(root, pi_command, 1, domain.Operator),
+          tracker_returning(issue("Done")),
+          fn(_, update) { process.send(updates, update) },
+          command_subject,
+        )
+      process.send(result_subject, result)
+    })
+  let assert Ok(command_subject) = process.receive(ready_subject, within: 1000)
+
+  let assert Ok(ui_update) =
+    receive_update_named(updates, "extension_ui_request", 20)
+  assert ui_update.request_id == Some("ui-1")
+  assert ui_update.message == Some("continue?")
+  let reply = process.new_subject()
+  process.send(
+    command_subject,
+    worker_command.RespondToUi("ui-1", command.UiCancel, reply),
+  )
+  let assert Ok(worker_command.Applied(_)) =
+    process.receive(reply, within: 1000)
+  let assert Ok(Ok(success)) = process.receive(result_subject, within: 3000)
+  assert success.final_classification == runner.FinalTerminal
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert string.contains(contents, "extension_ui_response")
+  assert string.contains(contents, "cancelled")
+}

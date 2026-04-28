@@ -101,6 +101,8 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
     runner.WorkerFailure(
       reason: error.PiFailed(error.PiProtocolError("secret details")),
       workspace_path: None,
+      tokens: domain.zero_token_totals(),
+      final_issue: None,
     )
   assert client.report_failure(issue(), failure, "run-3") == Ok(Nil)
   let assert Ok(failure_comment) = process.receive(subject, within: 100)

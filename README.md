@@ -94,6 +94,7 @@ If startup reports an existing instance lock, first verify that no Scherzo proce
       stall_timeout_ms: 300000
       auto_retry: true
       ui_request_policy: cancel
+      ui_request_timeout_ms: 300000
       compatibility_probe: true
     handoff:
       enabled: false

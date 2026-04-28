@@ -48,6 +48,139 @@ pub fn decode_response_and_event_test() {
   assert string.contains(event.raw_json, "message_update")
 }
 
+pub fn stepwise_prompt_read_and_stats_with_fake_pi_test() {
+  let cwd = "test/tmp/pi-rpc-stepwise"
+  reset_dir(cwd)
+  let assert Ok(Nil) = simplifile.write(cwd <> "/POPULATED", "yes")
+  let assert Ok(session) =
+    pi_rpc.launch(fake_pi(), cwd, "ABC-123: Title", True, 1000)
+  let assert Ok(#(session, skipped)) =
+    pi_rpc.send_prompt(session, "Do work", 1000)
+  assert skipped == []
+  let assert Ok(#(session, Some(agent_start))) =
+    pi_rpc.read_turn_record(session, 1000, 9_999_999_999, 9_999_999_999)
+  let assert Ok(#(session, Some(turn_start))) =
+    pi_rpc.read_turn_record(session, 1000, 9_999_999_999, 9_999_999_999)
+  let assert Ok(#(session, Some(message_update))) =
+    pi_rpc.read_turn_record(session, 1000, 9_999_999_999, 9_999_999_999)
+  let assert Ok(#(session, Some(turn_end))) =
+    pi_rpc.read_turn_record(session, 1000, 9_999_999_999, 9_999_999_999)
+  let assert Ok(#(session, Some(agent_end))) =
+    pi_rpc.read_turn_record(session, 1000, 9_999_999_999, 9_999_999_999)
+  assert [
+      agent_start.type_,
+      turn_start.type_,
+      message_update.type_,
+      turn_end.type_,
+      agent_end.type_,
+    ]
+    == ["agent_start", "turn_start", "message_update", "turn_end", "agent_end"]
+  let assert Ok(#(_, totals)) = pi_rpc.get_session_stats(session, 1000)
+  assert totals.total == 3
+}
+
+pub fn read_turn_record_uses_absolute_deadlines_test() {
+  let cwd = "test/tmp/pi-rpc-absolute-deadlines"
+  reset_dir(cwd)
+  let command = "FAKE_PI_NO_OUTPUT_AFTER_PROMPT=1 " <> fake_pi()
+  let assert Ok(session) = pi_rpc.launch(command, cwd, "name", False, 1000)
+  let assert Ok(#(session, _)) = pi_rpc.send_prompt(session, "prompt", 1000)
+  let assert Error(error.PiTurnTimeout) =
+    pi_rpc.read_turn_record(session, 10, -9_999_999_999_999, 9_999_999_999)
+  let _ = pi_rpc.terminate(session)
+
+  let assert Ok(session) = pi_rpc.launch(command, cwd, "name", False, 1000)
+  let assert Ok(#(session, _)) = pi_rpc.send_prompt(session, "prompt", 1000)
+  let assert Error(error.PiStallTimeout) =
+    pi_rpc.read_turn_record(session, 10, 9_999_999_999, -9_999_999_999_999)
+  let _ = pi_rpc.terminate(session)
+}
+
+pub fn decode_extension_ui_request_message_test() {
+  let assert Ok(record) =
+    pi_rpc.decode_record(
+      "{\"id\":\"ui-1\",\"type\":\"extension_ui_request\",\"method\":\"confirm\",\"message\":\"continue?\"}",
+    )
+  assert record.message == Some("continue?")
+}
+
+pub fn decode_captured_assistant_tool_call_and_tool_result_test() {
+  let assert Ok(contents) =
+    simplifile.read("test/fixtures/pi_tool_events_captured.jsonl")
+  let assert [call_line, result_line] =
+    string.split(string.trim(contents), "\n")
+
+  let assert Ok(call) = pi_rpc.decode_record(call_line)
+  assert call.type_ == "message"
+  assert call.tool_name == Some("bash")
+  assert call.tool_input == Some("gc prime")
+  assert call.tool_output == None
+  assert call.tool_status == None
+
+  let assert Ok(result) = pi_rpc.decode_record(result_line)
+  assert result.type_ == "message"
+  assert result.tool_name == Some("bash")
+  assert result.tool_input == None
+  assert result.tool_output
+    == Some(
+      "/bin/bash: gc: command not found\n\n\nCommand exited with code 127",
+    )
+  assert result.tool_status == Some("failed")
+}
+
+pub fn decode_top_level_and_data_tool_execution_aliases_test() {
+  let assert Ok(start) =
+    pi_rpc.decode_record(
+      "{\"type\":\"tool_execution_start\",\"toolName\":\"bash\",\"command\":\"gleam test\"}",
+    )
+  assert start.tool_name == Some("bash")
+  assert start.tool_input == Some("gleam test")
+
+  let assert Ok(update) =
+    pi_rpc.decode_record(
+      "{\"type\":\"tool_execution_update\",\"data\":{\"tool_name\":\"bash\",\"stdout\":\"ok\"}}",
+    )
+  assert update.tool_name == Some("bash")
+  assert update.tool_output == Some("ok")
+
+  let assert Ok(end) =
+    pi_rpc.decode_record(
+      "{\"type\":\"tool_execution_end\",\"toolName\":\"bash\",\"success\":false}",
+    )
+  assert end.tool_status == Some("failed")
+
+  let assert Ok(structured) =
+    pi_rpc.decode_record(
+      "{\"type\":\"tool_execution_start\",\"toolName\":\"bash\",\"command\":{\"argv\":[\"gleam\",\"test\"]}}",
+    )
+  assert structured.tool_input
+    == Some("[structured tool input; use --json for raw details]")
+}
+
+pub fn send_abort_and_ui_response_helpers_test() {
+  let cwd = "test/tmp/pi-rpc-command-helpers"
+  reset_dir(cwd)
+  let assert Ok(transcript) = path.absolute(cwd <> "/transcript.jsonl")
+  let command =
+    "FAKE_PI_INTERLEAVE_EVENT_BEFORE_COMMAND_RESPONSE=1 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let assert Ok(session) = pi_rpc.launch(command, cwd, "name", False, 1000)
+  let assert Ok(#(session, skipped)) = pi_rpc.send_abort(session, 1000)
+  assert list_types(skipped) == ["message_update"]
+  let assert Ok(#(session, _)) =
+    pi_rpc.send_extension_ui_cancel(session, "ui-1", 1000)
+  let assert Ok(#(session, _)) =
+    pi_rpc.send_extension_ui_value(session, "ui-2", "ok", 1000)
+  let _ = pi_rpc.terminate(session)
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert string.contains(contents, "abort")
+  assert string.contains(contents, "extension_ui_response")
+  assert string.contains(contents, "cancelled")
+  assert string.contains(contents, "ok")
+}
+
 pub fn launch_prompt_and_stats_with_fake_pi_test() {
   let cwd = "test/tmp/pi-rpc-workspace"
   reset_dir(cwd)

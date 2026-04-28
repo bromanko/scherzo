@@ -67,7 +67,7 @@ fn base_dependencies(
   daemon.RuntimeDependencies(
     make_tracker: fn(_) { client },
     make_handoff: fn(_, _) { handoff.disabled_client() },
-    agent_runner: fn(issue, _, _, _, _, emit_update) {
+    agent_runner: fn(issue, _, _, _, _, emit_update, _, _) {
       process.send(log_subject, "agent_run")
       emit_update(
         issue.id,
@@ -160,13 +160,15 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
-      agent_runner: fn(issue: domain.Issue, _, _, _, _, _) {
+      agent_runner: fn(issue: domain.Issue, _, _, _, _, _, _, _) {
         process.send(log_subject, "agent_run")
         case issue.title == "retry succeeds" {
           False ->
             Error(runner.WorkerFailure(
               reason: error.PiFailed(error.PiProtocolError("boom")),
               workspace_path: Some("test/tmp/daemon-retry/workspace"),
+              tokens: domain.zero_token_totals(),
+              final_issue: None,
             ))
           True ->
             Ok(success(

@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/runner
+import scherzo/agent/worker_command
 import scherzo/domain
 import scherzo/error
 import scherzo/handoff
@@ -103,6 +104,8 @@ fn dependencies(
     domain.EffectiveConfig,
     tracker.Client,
     fn(String, runner.PiUpdate) -> Nil,
+    process.Subject(worker_command.Command),
+    fn() -> Nil,
   ) ->
     Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
@@ -135,7 +138,7 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
       client_with(candidate),
       log_subject,
       hub_subject,
-      fn(issue, _, _, _, _, emit_update) {
+      fn(issue, _, _, _, _, emit_update, _, _) {
         emit_update(issue.id, update("message_update", Some("hello")))
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
@@ -176,7 +179,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
       client_with(candidate),
       log_subject,
       hub_subject,
-      fn(issue, _, _, _, _, emit_update) {
+      fn(issue, _, _, _, _, emit_update, _, _) {
         emit_update(issue.id, update("message_update", Some("hello")))
         process.sleep(800)
         let assert Ok(#(_, expected_workspace)) =
@@ -211,19 +214,26 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
       fetch_issue_states_by_ids: fn(_) { Ok([second]) },
     )
   let deps =
-    dependencies(client, log_subject, hub_subject, fn(issue, _, _, _, _, _) {
-      let assert Ok(#(_, expected_workspace)) =
-        workspace.workspace_path(root, issue.identifier)
-      case issue.title == "retry succeeds" {
-        False ->
-          Error(runner.WorkerFailure(
-            reason: error.PiFailed(error.PiProtocolError("boom")),
-            workspace_path: Some(expected_workspace),
-          ))
-        True ->
-          Ok(success(domain.Issue(..issue, state: "Done"), expected_workspace))
-      }
-    })
+    dependencies(
+      client,
+      log_subject,
+      hub_subject,
+      fn(issue, _, _, _, _, _, _, _) {
+        let assert Ok(#(_, expected_workspace)) =
+          workspace.workspace_path(root, issue.identifier)
+        case issue.title == "retry succeeds" {
+          False ->
+            Error(runner.WorkerFailure(
+              reason: error.PiFailed(error.PiProtocolError("boom")),
+              workspace_path: Some(expected_workspace),
+              tokens: domain.zero_token_totals(),
+              final_issue: None,
+            ))
+          True ->
+            Ok(success(domain.Issue(..issue, state: "Done"), expected_workspace))
+        }
+      },
+    )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
@@ -262,7 +272,7 @@ pub fn daemon_success_continuation_does_not_publish_retry_to_exited_session_test
       client_with(candidate),
       log_subject,
       hub_subject,
-      fn(issue, _, _, _, _, _) {
+      fn(issue, _, _, _, _, _, _, _) {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(domain.Issue(..issue, state: "Todo"), expected_workspace))
@@ -294,13 +304,15 @@ pub fn daemon_worker_down_does_not_publish_retry_to_exited_session_test() {
       client_with(candidate),
       log_subject,
       hub_subject,
-      fn(issue, _, _, _, _, _) {
+      fn(issue, _, _, _, _, _, _, _) {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         process.kill(process.self())
         Error(runner.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("worker_down")),
           workspace_path: Some(expected_workspace),
+          tokens: domain.zero_token_totals(),
+          final_issue: None,
         ))
       },
     )
@@ -334,12 +346,17 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
       fetch_issue_states_by_ids: fn(_) { Ok([terminal]) },
     )
   let deps =
-    dependencies(client, log_subject, hub_subject, fn(issue, _, _, _, _, _) {
-      let assert Ok(#(_, _expected_workspace)) =
-        workspace.workspace_path(root, issue.identifier)
-      process.sleep(2000)
-      Ok(success(domain.Issue(..issue, state: "Done"), "unreachable"))
-    })
+    dependencies(
+      client,
+      log_subject,
+      hub_subject,
+      fn(issue, _, _, _, _, _, _, _) {
+        let assert Ok(#(_, _expected_workspace)) =
+          workspace.workspace_path(root, issue.identifier)
+        process.sleep(2000)
+        Ok(success(domain.Issue(..issue, state: "Done"), "unreachable"))
+      },
+    )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
@@ -368,10 +385,12 @@ pub fn daemon_start_fails_when_event_hub_start_fails_test() {
         client_with(candidate),
         log_subject,
         process.new_subject(),
-        fn(_, _, _, _, _, _) {
+        fn(_, _, _, _, _, _, _, _) {
           Error(runner.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("not used")),
             workspace_path: None,
+            tokens: domain.zero_token_totals(),
+            final_issue: None,
           ))
         },
       ),

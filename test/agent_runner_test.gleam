@@ -187,7 +187,12 @@ pub fn prompt_render_failure_aborts_before_pi_launch_test() {
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
-  let assert Error(runner.WorkerFailure(reason: _, workspace_path: Some(_))) =
+  let assert Error(runner.WorkerFailure(
+    reason: _,
+    workspace_path: Some(_),
+    tokens: _,
+    final_issue: _,
+  )) =
     runner.run_attempt(
       issue("Todo"),
       None,
@@ -228,7 +233,12 @@ pub fn before_run_and_probe_failures_abort_before_prompt_test() {
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
     "FAKE_PI_MALFORMED=1 FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
-  let assert Error(runner.WorkerFailure(reason: _, workspace_path: Some(_))) =
+  let assert Error(runner.WorkerFailure(
+    reason: _,
+    workspace_path: Some(_),
+    tokens: _,
+    final_issue: _,
+  )) =
     runner.run_attempt(
       issue("Todo"),
       None,

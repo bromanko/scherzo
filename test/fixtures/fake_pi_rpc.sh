@@ -12,10 +12,53 @@ fi
 
 prompt_seen=0
 
-while IFS= read -r line; do
+record_input() {
+  local input_line="$1"
   if [[ -n "${FAKE_PI_TRANSCRIPT:-}" ]]; then
-    printf '%s\n' "$line" >> "$FAKE_PI_TRANSCRIPT"
+    printf '%s\n' "$input_line" >> "$FAKE_PI_TRANSCRIPT"
   fi
+}
+
+maybe_interleave_event() {
+  if [[ -n "${FAKE_PI_INTERLEAVE_EVENT_BEFORE_COMMAND_RESPONSE:-}" ]]; then
+    jq -cn '{type:"message_update",delta:"interleaved"}'
+  fi
+}
+
+handle_nested_command_line() {
+  local nested_line="$1"
+  record_input "$nested_line"
+  local nested_id nested_type
+  nested_id="$(printf '%s' "$nested_line" | jq -r '.id // ""')"
+  nested_type="$(printf '%s' "$nested_line" | jq -r '.type // ""')"
+  case "$nested_type" in
+    abort)
+      maybe_interleave_event
+      jq -cn --arg id "$nested_id" '{id:$id,type:"response",command:"abort",success:true}'
+      ;;
+    extension_ui_response)
+      maybe_interleave_event
+      jq -cn --arg id "$nested_id" '{id:$id,type:"response",command:"extension_ui_response",success:true}'
+      ;;
+    *)
+      jq -cn --arg id "$nested_id" --arg command "$nested_type" '{id:$id,type:"response",command:$command,success:false,error:"unexpected nested command"}'
+      ;;
+  esac
+}
+
+abortable_stall() {
+  local remaining_ms="${FAKE_PI_ABORTABLE_STALL_MS:-0}"
+  while [[ "$remaining_ms" -gt 0 ]]; do
+    if IFS= read -r -t 0.01 nested_line; then
+      handle_nested_command_line "$nested_line"
+    fi
+    sleep 0.01
+    remaining_ms=$((remaining_ms - 20))
+  done
+}
+
+while IFS= read -r line; do
+  record_input "$line"
 
   if [[ -n "${FAKE_PI_DELAY_MS:-}" ]]; then
     sleep "$(awk "BEGIN { print ${FAKE_PI_DELAY_MS} / 1000 }")"
@@ -47,9 +90,11 @@ while IFS= read -r line; do
       fi
       ;;
     abort)
+      maybe_interleave_event
       jq -cn --arg id "$id" '{id:$id,type:"response",command:"abort",success:true}'
       ;;
     extension_ui_response)
+      maybe_interleave_event
       jq -cn --arg id "$id" '{id:$id,type:"response",command:"extension_ui_response",success:true}'
       ;;
     prompt)
@@ -72,14 +117,25 @@ while IFS= read -r line; do
       fi
       if [[ -n "${FAKE_PI_UI_DIALOG:-}" ]]; then
         jq -cn '{id:"ui-1",type:"extension_ui_request",method:"confirm",message:"continue?"}'
+        if [[ -n "${FAKE_PI_UI_DIALOG_WAITS:-}" ]]; then
+          if IFS= read -r ui_line; then
+            handle_nested_command_line "$ui_line"
+          fi
+        fi
       fi
       if [[ -n "${FAKE_PI_UI_NOTIFY:-}" ]]; then
         jq -cn '{type:"extension_ui_request",method:"notify",message:"hello"}'
+      fi
+      if [[ -n "${FAKE_PI_ABORTABLE_STALL_MS:-}" ]]; then
+        abortable_stall
       fi
       if [[ -n "${FAKE_PI_STALL_AFTER_PROMPT:-}" ]]; then
         sleep "$(awk "BEGIN { print ${FAKE_PI_STALL_AFTER_PROMPT} / 1000 }")"
       fi
       jq -cn '{type:"turn_end"}'
+      if [[ -n "${FAKE_PI_DELAY_BEFORE_AGENT_END_MS:-}" ]]; then
+        sleep "$(awk "BEGIN { print ${FAKE_PI_DELAY_BEFORE_AGENT_END_MS} / 1000 }")"
+      fi
       if [[ -n "${FAKE_PI_NO_AGENT_END:-}" ]]; then
         while true; do sleep 60; done
       fi

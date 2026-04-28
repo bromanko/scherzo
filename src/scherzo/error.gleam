@@ -55,6 +55,8 @@ pub type AgentRunnerError {
   ProbeFailed(PiRpcError)
   PiFailed(PiRpcError)
   StateRefreshFailed(TrackerError)
+  OperatorAbort
+  OperatorStopAfterCurrentTurn
 }
 
 pub type OrchestratorError {
@@ -171,6 +173,8 @@ pub fn agent_code(error: AgentRunnerError) -> String {
     ProbeFailed(_) -> "agent_probe_failed"
     PiFailed(_) -> "agent_pi_failed"
     StateRefreshFailed(_) -> "agent_state_refresh_failed"
+    OperatorAbort -> "agent_operator_abort"
+    OperatorStopAfterCurrentTurn -> "agent_operator_stop_after_current_turn"
   }
 }
 
