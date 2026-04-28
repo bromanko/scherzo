@@ -1,0 +1,371 @@
+import gleam/erlang/process
+import gleam/int
+import gleam/option.{type Option, None, Some}
+import scherzo/control/protocol
+import scherzo/session/event
+import scherzo/session/hub
+
+pub type Settings {
+  Settings(
+    host: String,
+    port: Int,
+    token: String,
+    event_timeout_ms: Int,
+    stream_poll_ms: Int,
+  )
+}
+
+pub type EventStore {
+  EventStore(
+    list_sessions: fn(Int) -> Result(List(event.SessionSummary), hub.HubError),
+    get_session: fn(String, Int) ->
+      Result(Option(event.SessionSummary), hub.HubError),
+    events_after: fn(String, Int, Int, Int) ->
+      Result(event.EventPage, hub.HubError),
+  )
+}
+
+pub opaque type Server {
+  Server(listener: Listener, accept_pid: process.Pid, port: Int)
+}
+
+type Listener
+
+type Socket
+
+pub type ServerError {
+  ServerStartFailed(message: String)
+}
+
+pub fn default_settings(token: String) -> Settings {
+  Settings(
+    host: "127.0.0.1",
+    port: 0,
+    token: token,
+    event_timeout_ms: 500,
+    stream_poll_ms: 100,
+  )
+}
+
+pub fn event_hub_store(subject: process.Subject(hub.Message)) -> EventStore {
+  EventStore(
+    list_sessions: fn(timeout_ms) { hub.list_sessions(subject, timeout_ms) },
+    get_session: fn(session_id, timeout_ms) {
+      hub.get_session(subject, session_id, timeout_ms)
+    },
+    events_after: fn(session_id, cursor, limit, timeout_ms) {
+      hub.events_after(subject, session_id, cursor, limit, timeout_ms)
+    },
+  )
+}
+
+pub fn start(
+  settings: Settings,
+  store: EventStore,
+) -> Result(Server, ServerError) {
+  case ffi_listen(settings.host, settings.port) {
+    Error(message) -> Error(ServerStartFailed(message))
+    Ok(listener) -> {
+      let port = ffi_bound_port(listener)
+      let accept_pid =
+        process.spawn_unlinked(fn() {
+          process.trap_exits(True)
+          accept_loop(listener, settings, store)
+        })
+      Ok(Server(listener: listener, accept_pid: accept_pid, port: port))
+    }
+  }
+}
+
+pub fn bound_port(server: Server) -> Int {
+  server.port
+}
+
+pub fn stop(server: Server) -> Nil {
+  process.kill(server.accept_pid)
+  ffi_close_listener(server.listener)
+}
+
+fn accept_loop(listener: Listener, settings: Settings, store: EventStore) -> Nil {
+  drain_trapped_exits()
+  case ffi_accept(listener) {
+    Ok(socket) -> {
+      let _ = process.spawn(fn() { handle_connection(socket, settings, store) })
+      accept_loop(listener, settings, store)
+    }
+    Error(_) -> Nil
+  }
+}
+
+fn drain_trapped_exits() -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select_trapped_exits(fn(_) { Nil })
+  case process.selector_receive(selector, within: 0) {
+    Ok(Nil) -> drain_trapped_exits()
+    Error(_) -> Nil
+  }
+}
+
+fn handle_connection(
+  socket: Socket,
+  settings: Settings,
+  store: EventStore,
+) -> Nil {
+  case ffi_recv_line(socket, 5000) {
+    Error(_) -> close_socket(socket)
+    Ok(line) ->
+      case protocol.decode_request(line) {
+        Error(err) -> {
+          let _ = send_response(socket, protocol.request_error_response(err))
+          close_socket(socket)
+        }
+        Ok(request) ->
+          case protocol.request_token(request) == settings.token {
+            False -> {
+              let _ =
+                send_response(
+                  socket,
+                  protocol.error_response(
+                    protocol.request_id(request),
+                    "unauthorized",
+                    "invalid control token",
+                  ),
+                )
+              close_socket(socket)
+            }
+            True -> handle_authorized_request(socket, settings, store, request)
+          }
+      }
+  }
+}
+
+fn handle_authorized_request(
+  socket: Socket,
+  settings: Settings,
+  store: EventStore,
+  request: protocol.Request,
+) -> Nil {
+  case request {
+    protocol.Ping(id, _) -> {
+      let _ =
+        send_response(
+          socket,
+          protocol.success_response(id, protocol.ping_data()),
+        )
+      close_socket(socket)
+    }
+    protocol.ListSessions(id, _) -> {
+      let response = case store.list_sessions(settings.event_timeout_ms) {
+        Ok(sessions) ->
+          protocol.success_response(id, protocol.list_sessions_data(sessions))
+        Error(err) -> error_for_hub(id, err)
+      }
+      let _ = send_response(socket, response)
+      close_socket(socket)
+    }
+    protocol.GetSession(id, _, session_id) -> {
+      let response = case
+        store.get_session(session_id, settings.event_timeout_ms)
+      {
+        Ok(summary) ->
+          protocol.success_response(id, protocol.session_data(summary))
+        Error(err) -> error_for_hub(id, err)
+      }
+      let _ = send_response(socket, response)
+      close_socket(socket)
+    }
+    protocol.GetEvents(id, _, session_id, after, limit) -> {
+      let response = case
+        store.events_after(session_id, after, limit, settings.event_timeout_ms)
+      {
+        Ok(page) ->
+          protocol.success_response(id, protocol.event_page_data(page))
+        Error(err) -> error_for_hub(id, err)
+      }
+      let _ = send_response(socket, response)
+      close_socket(socket)
+    }
+    protocol.StreamEvents(id, _, session_id, after) ->
+      start_stream(socket, settings, store, id, session_id, after)
+  }
+}
+
+fn start_stream(
+  socket: Socket,
+  settings: Settings,
+  store: EventStore,
+  id: String,
+  session_id: String,
+  after: Int,
+) -> Nil {
+  case store.get_session(session_id, settings.event_timeout_ms) {
+    Ok(Some(_)) -> {
+      case
+        send_response(
+          socket,
+          protocol.success_response(
+            id,
+            protocol.stream_started_data(session_id, after),
+          ),
+        )
+      {
+        Ok(Nil) -> stream_loop(socket, settings, store, id, session_id, after)
+        Error(_) -> close_socket(socket)
+      }
+    }
+    Ok(None) -> {
+      let _ =
+        send_response(
+          socket,
+          protocol.error_response(
+            id,
+            "missing_session",
+            "session not found: " <> session_id,
+          ),
+        )
+      close_socket(socket)
+    }
+    Error(err) -> {
+      let _ = send_response(socket, error_for_hub(id, err))
+      close_socket(socket)
+    }
+  }
+}
+
+fn stream_loop(
+  socket: Socket,
+  settings: Settings,
+  store: EventStore,
+  id: String,
+  session_id: String,
+  cursor: Int,
+) -> Nil {
+  case store.events_after(session_id, cursor, 50, settings.event_timeout_ms) {
+    Error(err) -> {
+      let _ = send_response(socket, error_for_hub(id, err))
+      close_socket(socket)
+    }
+    Ok(page) ->
+      case send_stream_events(socket, id, page.events, cursor) {
+        Error(_) -> close_socket(socket)
+        Ok(next_cursor) -> {
+          case
+            stream_should_close(
+              store,
+              session_id,
+              settings.event_timeout_ms,
+              page,
+            )
+          {
+            True -> close_socket(socket)
+            False -> {
+              process.sleep(settings.stream_poll_ms)
+              stream_loop(socket, settings, store, id, session_id, next_cursor)
+            }
+          }
+        }
+      }
+  }
+}
+
+fn stream_should_close(
+  store: EventStore,
+  session_id: String,
+  timeout_ms: Int,
+  page: event.EventPage,
+) -> Bool {
+  case page.events {
+    [_, ..] -> False
+    [] ->
+      case store.get_session(session_id, timeout_ms) {
+        Ok(Some(summary)) ->
+          case summary.status {
+            event.Exited(_) -> True
+            _ -> False
+          }
+        _ -> True
+      }
+  }
+}
+
+fn send_stream_events(
+  socket: Socket,
+  id: String,
+  events: List(event.SessionEvent),
+  cursor: Int,
+) -> Result(Int, String) {
+  case events {
+    [] -> Ok(cursor)
+    [stored_event, ..rest] ->
+      case
+        ffi_send_line(
+          socket,
+          protocol.stream_event_to_string(id, stored_event),
+          5000,
+        )
+      {
+        Ok(Nil) -> send_stream_events(socket, id, rest, stored_event.cursor)
+        Error(message) -> Error(message)
+      }
+  }
+}
+
+fn error_for_hub(id: String, err: hub.HubError) -> protocol.Response {
+  case err {
+    hub.SessionNotFound(session_id) ->
+      protocol.error_response(
+        id,
+        "missing_session",
+        "session not found: " <> session_id,
+      )
+    hub.InvalidLimit(limit) ->
+      protocol.error_response(
+        id,
+        "invalid_limit",
+        "invalid event limit: " <> int.to_string(limit),
+      )
+    hub.HubUnavailable | hub.ActorCallTimeout ->
+      protocol.error_response(
+        id,
+        "event_hub_unavailable",
+        "event hub unavailable",
+      )
+  }
+}
+
+fn send_response(
+  socket: Socket,
+  response: protocol.Response,
+) -> Result(Nil, String) {
+  ffi_send_line(socket, protocol.response_to_string(response), 5000)
+}
+
+fn close_socket(socket: Socket) -> Nil {
+  ffi_close_socket(socket)
+}
+
+@external(erlang, "scherzo_control_ffi", "listen")
+fn ffi_listen(host: String, port: Int) -> Result(Listener, String)
+
+@external(erlang, "scherzo_control_ffi", "accept")
+fn ffi_accept(listener: Listener) -> Result(Socket, String)
+
+@external(erlang, "scherzo_control_ffi", "send_line")
+fn ffi_send_line(
+  socket: Socket,
+  line: String,
+  timeout_ms: Int,
+) -> Result(Nil, String)
+
+@external(erlang, "scherzo_control_ffi", "recv_line")
+fn ffi_recv_line(socket: Socket, timeout_ms: Int) -> Result(String, String)
+
+@external(erlang, "scherzo_control_ffi", "close_socket")
+fn ffi_close_socket(socket: Socket) -> Nil
+
+@external(erlang, "scherzo_control_ffi", "close_listener")
+fn ffi_close_listener(listener: Listener) -> Nil
+
+@external(erlang, "scherzo_control_ffi", "bound_port")
+fn ffi_bound_port(listener: Listener) -> Int

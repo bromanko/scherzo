@@ -36,6 +36,8 @@ Use `--pi-probe` before allowing a real prompt. It validates dispatch hooks, acq
 
     LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --pi-probe path/to/WORKFLOW.md
 
+Use `ctl` through `direnv exec . gleam run -- ctl ...` or the development wrapper `scripts/scherzoctl` to inspect a running daemon through the local read-only control API. See the `Read-only control API` section below.
+
 ## Runtime requirements
 
 Runtime operation requires:

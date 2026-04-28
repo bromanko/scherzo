@@ -1,0 +1,6 @@
+#!/bin/sh
+# Development wrapper for the read-only Scherzo control CLI. Packaged releases may
+# replace this with a compiled executable that invokes the same ctl mode.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec direnv exec "$ROOT" gleam run -- ctl "$@"
