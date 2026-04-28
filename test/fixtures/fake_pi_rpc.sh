@@ -76,6 +76,9 @@ while IFS= read -r line; do
       if [[ -n "${FAKE_PI_UI_NOTIFY:-}" ]]; then
         jq -cn '{type:"extension_ui_request",method:"notify",message:"hello"}'
       fi
+      if [[ -n "${FAKE_PI_STALL_AFTER_PROMPT:-}" ]]; then
+        sleep "$(awk "BEGIN { print ${FAKE_PI_STALL_AFTER_PROMPT} / 1000 }")"
+      fi
       jq -cn '{type:"turn_end"}'
       if [[ -n "${FAKE_PI_NO_AGENT_END:-}" ]]; then
         while true; do sleep 60; done
