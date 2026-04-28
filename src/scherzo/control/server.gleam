@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import gleam/int
 import gleam/option.{type Option, None, Some}
+import scherzo/control/command
 import scherzo/control/protocol
 import scherzo/session/event
 import scherzo/session/hub
@@ -12,16 +13,19 @@ pub type Settings {
     token: String,
     event_timeout_ms: Int,
     stream_poll_ms: Int,
+    command_timeout_ms: Int,
   )
 }
 
-pub type EventStore {
-  EventStore(
+pub type Backend {
+  Backend(
     list_sessions: fn(Int) -> Result(List(event.SessionSummary), hub.HubError),
     get_session: fn(String, Int) ->
       Result(Option(event.SessionSummary), hub.HubError),
     events_after: fn(String, Int, Int, Int) ->
       Result(event.EventPage, hub.HubError),
+    apply_command: fn(command.OperatorCommand, Int) ->
+      Result(command.CommandResult, Nil),
   )
 }
 
@@ -44,11 +48,12 @@ pub fn default_settings(token: String) -> Settings {
     token: token,
     event_timeout_ms: 500,
     stream_poll_ms: 100,
+    command_timeout_ms: 500,
   )
 }
 
-pub fn event_hub_store(subject: process.Subject(hub.Message)) -> EventStore {
-  EventStore(
+pub fn event_hub_store(subject: process.Subject(hub.Message)) -> Backend {
+  Backend(
     list_sessions: fn(timeout_ms) { hub.list_sessions(subject, timeout_ms) },
     get_session: fn(session_id, timeout_ms) {
       hub.get_session(subject, session_id, timeout_ms)
@@ -56,13 +61,17 @@ pub fn event_hub_store(subject: process.Subject(hub.Message)) -> EventStore {
     events_after: fn(session_id, cursor, limit, timeout_ms) {
       hub.events_after(subject, session_id, cursor, limit, timeout_ms)
     },
+    apply_command: fn(operator_command, _) {
+      Ok(command.not_allowed(
+        operator_command,
+        "command_backend_unavailable",
+        Some("mutating commands are not available"),
+      ))
+    },
   )
 }
 
-pub fn start(
-  settings: Settings,
-  store: EventStore,
-) -> Result(Server, ServerError) {
+pub fn start(settings: Settings, store: Backend) -> Result(Server, ServerError) {
   case ffi_listen(settings.host, settings.port) {
     Error(message) -> Error(ServerStartFailed(message))
     Ok(listener) -> {
@@ -86,7 +95,7 @@ pub fn stop(server: Server) -> Nil {
   ffi_close_listener(server.listener)
 }
 
-fn accept_loop(listener: Listener, settings: Settings, store: EventStore) -> Nil {
+fn accept_loop(listener: Listener, settings: Settings, store: Backend) -> Nil {
   drain_trapped_exits()
   case ffi_accept(listener) {
     Ok(socket) -> {
@@ -107,11 +116,7 @@ fn drain_trapped_exits() -> Nil {
   }
 }
 
-fn handle_connection(
-  socket: Socket,
-  settings: Settings,
-  store: EventStore,
-) -> Nil {
+fn handle_connection(socket: Socket, settings: Settings, store: Backend) -> Nil {
   case ffi_recv_line(socket, 5000) {
     Error(_) -> close_socket(socket)
     Ok(line) ->
@@ -143,7 +148,7 @@ fn handle_connection(
 fn handle_authorized_request(
   socket: Socket,
   settings: Settings,
-  store: EventStore,
+  store: Backend,
   request: protocol.Request,
 ) -> Nil {
   case request {
@@ -188,13 +193,62 @@ fn handle_authorized_request(
     }
     protocol.StreamEvents(id, _, session_id, after) ->
       start_stream(socket, settings, store, id, session_id, after)
+    _ -> handle_command_request(socket, settings, store, request)
+  }
+}
+
+fn handle_command_request(
+  socket: Socket,
+  settings: Settings,
+  store: Backend,
+  request: protocol.Request,
+) -> Nil {
+  let id = protocol.request_id(request)
+  let response = case protocol.request_operator_command(request) {
+    Some(operator_command) ->
+      case
+        call_command_backend(
+          store,
+          operator_command,
+          settings.command_timeout_ms,
+        )
+      {
+        Ok(result) ->
+          protocol.success_response(id, protocol.command_result_data(result))
+        Error(Nil) ->
+          protocol.error_response(
+            id,
+            "command_timeout",
+            "operator command timed out",
+          )
+      }
+    None ->
+      protocol.error_response(id, "invalid_request", "not a command request")
+  }
+  let _ = send_response(socket, response)
+  close_socket(socket)
+}
+
+fn call_command_backend(
+  store: Backend,
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+) -> Result(command.CommandResult, Nil) {
+  let reply = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(reply, store.apply_command(operator_command, timeout_ms))
+    })
+  case process.receive(reply, within: timeout_ms) {
+    Ok(Ok(result)) -> Ok(result)
+    Ok(Error(Nil)) | Error(Nil) -> Error(Nil)
   }
 }
 
 fn start_stream(
   socket: Socket,
   settings: Settings,
-  store: EventStore,
+  store: Backend,
   id: String,
   session_id: String,
   after: Int,
@@ -236,7 +290,7 @@ fn start_stream(
 fn stream_loop(
   socket: Socket,
   settings: Settings,
-  store: EventStore,
+  store: Backend,
   id: String,
   session_id: String,
   cursor: Int,
@@ -270,7 +324,7 @@ fn stream_loop(
 }
 
 fn stream_should_close(
-  store: EventStore,
+  store: Backend,
   session_id: String,
   timeout_ms: Int,
   page: event.EventPage,

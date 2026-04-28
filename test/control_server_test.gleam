@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/client
+import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/server
@@ -53,6 +54,14 @@ fn start_server_for_hub(
   subject: process.Subject(hub.Message),
   token: String,
 ) -> #(server.Server, file.ControlFile) {
+  start_server_for_backend(server.event_hub_store(subject), token, 500)
+}
+
+fn start_server_for_backend(
+  backend: server.Backend,
+  token: String,
+  command_timeout_ms: Int,
+) -> #(server.Server, file.ControlFile) {
   let assert Ok(server_handle) =
     server.start(
       server.Settings(
@@ -61,8 +70,9 @@ fn start_server_for_hub(
         token: token,
         event_timeout_ms: 500,
         stream_poll_ms: 20,
+        command_timeout_ms: command_timeout_ms,
       ),
-      server.event_hub_store(subject),
+      backend,
     )
   let control_file =
     file.ControlFile(
@@ -75,6 +85,19 @@ fn start_server_for_hub(
   #(server_handle, control_file)
 }
 
+fn backend_with_command(
+  subject: process.Subject(hub.Message),
+  command_subject: process.Subject(command.OperatorCommand),
+) -> server.Backend {
+  server.Backend(
+    ..server.event_hub_store(subject),
+    apply_command: fn(operator_command, _) {
+      process.send(command_subject, operator_command)
+      Ok(command.applied(operator_command, Some("done")))
+    },
+  )
+}
+
 pub fn server_rejects_bad_token_test() {
   let subject = start_hub_with_session("session-bad-token")
   let #(server_handle, control_file) =
@@ -84,6 +107,69 @@ pub fn server_rejects_bad_token_test() {
   let assert Error(client.RequestFailed(code, _)) =
     client.ping(bad_control_file)
   assert code == "unauthorized"
+
+  server.stop(server_handle)
+  hub.stop(subject)
+}
+
+pub fn server_applies_authenticated_mutating_command_test() {
+  let subject = start_hub_with_session("session-command")
+  let command_subject = process.new_subject()
+  let #(server_handle, control_file) =
+    start_server_for_backend(
+      backend_with_command(subject, command_subject),
+      "token",
+      500,
+    )
+
+  let assert Ok(result) =
+    client.apply_command(control_file, command.PauseDispatch)
+  assert result.command == "pause"
+  assert command.status_to_string(result.status) == "applied"
+  let assert Ok(command.PauseDispatch) =
+    process.receive(command_subject, within: 1000)
+
+  server.stop(server_handle)
+  hub.stop(subject)
+}
+
+pub fn server_rejects_bad_token_before_mutating_backend_test() {
+  let subject = start_hub_with_session("session-command-bad-token")
+  let command_subject = process.new_subject()
+  let #(server_handle, control_file) =
+    start_server_for_backend(
+      backend_with_command(subject, command_subject),
+      "good-token",
+      500,
+    )
+  let bad_control_file = file.ControlFile(..control_file, token: "bad-token")
+
+  let assert Error(client.RequestFailed(code, _)) =
+    client.apply_command(bad_control_file, command.PauseDispatch)
+  assert code == "unauthorized"
+  let assert Error(Nil) = process.receive(command_subject, within: 100)
+
+  server.stop(server_handle)
+  hub.stop(subject)
+}
+
+pub fn server_times_out_slow_mutating_backend_test() {
+  let subject = start_hub_with_session("session-command-timeout")
+  let backend =
+    server.Backend(
+      ..server.event_hub_store(subject),
+      apply_command: fn(operator_command, _) {
+        let _ = operator_command
+        process.sleep(200)
+        Ok(command.applied(command.PauseDispatch, None))
+      },
+    )
+  let #(server_handle, control_file) =
+    start_server_for_backend(backend, "token", 20)
+
+  let assert Error(client.RequestFailed(code, _)) =
+    client.apply_command(control_file, command.PauseDispatch)
+  assert code == "command_timeout"
 
   server.stop(server_handle)
   hub.stop(subject)

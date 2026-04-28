@@ -128,6 +128,26 @@ pub fn prompt(
   stall_timeout_ms: Int,
   on_event: fn(RpcRecord) -> Nil,
 ) -> Result(#(Session, List(RpcRecord)), error.PiRpcError) {
+  prompt_with_ui_policy(
+    session,
+    message,
+    read_timeout_ms,
+    turn_timeout_ms,
+    stall_timeout_ms,
+    domain.Cancel,
+    on_event,
+  )
+}
+
+pub fn prompt_with_ui_policy(
+  session: Session,
+  message: String,
+  read_timeout_ms: Int,
+  turn_timeout_ms: Int,
+  stall_timeout_ms: Int,
+  ui_request_policy: domain.UiRequestPolicy,
+  on_event: fn(RpcRecord) -> Nil,
+) -> Result(#(Session, List(RpcRecord)), error.PiRpcError) {
   let id = int_to_string(session.next_id)
   use _ <- try_pi(
     port.send_line(session.process, encode_prompt(id, message))
@@ -144,6 +164,7 @@ pub fn prompt(
         now + turn_timeout_ms,
         now + stall_timeout_ms,
         [],
+        ui_request_policy,
         on_event,
       )
     }
@@ -291,6 +312,7 @@ fn read_events_until_agent_end(
   turn_deadline_ms: Int,
   stall_deadline_ms: Int,
   acc: List(RpcRecord),
+  ui_request_policy: domain.UiRequestPolicy,
   on_event: fn(RpcRecord) -> Nil,
 ) -> Result(#(Session, List(RpcRecord)), error.PiRpcError) {
   use maybe_line <- try_pi(read_turn_line(
@@ -308,6 +330,7 @@ fn read_events_until_agent_end(
         turn_deadline_ms,
         stall_deadline_ms,
         acc,
+        ui_request_policy,
         on_event,
       )
     Some(line) -> {
@@ -320,18 +343,15 @@ fn read_events_until_agent_end(
             Some("select") | Some("confirm") | Some("input") | Some("editor") -> {
               case record.id {
                 Some(id) -> {
-                  let _ =
-                    port.send_line(
-                      session.process,
-                      encode_extension_ui_response(id),
-                    )
-                  read_events_until_agent_end(
+                  handle_blocking_ui_request(
                     session,
+                    id,
                     read_timeout_ms,
                     stall_timeout_ms,
                     turn_deadline_ms,
                     next_stall_deadline_ms,
                     [record, ..acc],
+                    ui_request_policy,
                     on_event,
                   )
                 }
@@ -347,6 +367,7 @@ fn read_events_until_agent_end(
                 turn_deadline_ms,
                 next_stall_deadline_ms,
                 [record, ..acc],
+                ui_request_policy,
                 on_event,
               )
           }
@@ -360,12 +381,80 @@ fn read_events_until_agent_end(
             turn_deadline_ms,
             next_stall_deadline_ms,
             [record, ..acc],
+            ui_request_policy,
             on_event,
           )
       }
     }
   }
 }
+
+fn handle_blocking_ui_request(
+  session: Session,
+  request_id: String,
+  read_timeout_ms: Int,
+  stall_timeout_ms: Int,
+  turn_deadline_ms: Int,
+  stall_deadline_ms: Int,
+  acc: List(RpcRecord),
+  ui_request_policy: domain.UiRequestPolicy,
+  on_event: fn(RpcRecord) -> Nil,
+) -> Result(#(Session, List(RpcRecord)), error.PiRpcError) {
+  case ui_request_policy {
+    domain.Fail ->
+      Error(error.PiProtocolError("extension UI request blocked by policy"))
+    domain.Ignore ->
+      read_events_until_agent_end(
+        session,
+        read_timeout_ms,
+        stall_timeout_ms,
+        turn_deadline_ms,
+        stall_deadline_ms,
+        acc,
+        ui_request_policy,
+        on_event,
+      )
+    domain.Cancel -> {
+      let _ =
+        port.send_line(
+          session.process,
+          encode_extension_ui_response(request_id),
+        )
+      read_events_until_agent_end(
+        session,
+        read_timeout_ms,
+        stall_timeout_ms,
+        turn_deadline_ms,
+        stall_deadline_ms,
+        acc,
+        ui_request_policy,
+        on_event,
+      )
+    }
+    domain.Operator ->
+      Error(error.PiProtocolError("operator UI policy is not implemented"))
+  }
+}
+
+type MessageObject {
+  MessageObject(
+    role: Option(String),
+    tool_name: Option(String),
+    is_error: Option(Bool),
+    content: List(ContentItem),
+  )
+}
+
+type ContentItem {
+  ContentItem(
+    type_: String,
+    text: Option(String),
+    name: Option(String),
+    command: Option(String),
+  )
+}
+
+const structured_tool_input_placeholder = "[structured tool input; use --json for raw details]"
 
 fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
   use type_ <- decode.field("type", decode.string)

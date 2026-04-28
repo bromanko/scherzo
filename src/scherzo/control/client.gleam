@@ -1,6 +1,7 @@
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/session/event
@@ -83,6 +84,17 @@ pub fn get_events(
     protocol.GetEvents("1", "", session_id, after, limit),
   ))
   protocol.decode_get_events_response(line) |> map_error_body
+}
+
+pub fn apply_command(
+  control_file: file.ControlFile,
+  operator_command: command.OperatorCommand,
+) -> Result(command.CommandResult, ControlError) {
+  use line <- try_control(raw_request(
+    control_file,
+    protocol.command_request("1", "", operator_command),
+  ))
+  protocol.decode_command_result_response(line) |> map_error_body
 }
 
 pub fn stream_events(
@@ -172,6 +184,30 @@ fn authenticate(
       protocol.GetEvents(id, control_file.token, session_id, after, limit)
     protocol.StreamEvents(id, _, session_id, after) ->
       protocol.StreamEvents(id, control_file.token, session_id, after)
+    protocol.Pause(id, _) -> protocol.Pause(id, control_file.token)
+    protocol.Resume(id, _) -> protocol.Resume(id, control_file.token)
+    protocol.ReloadWorkflow(id, _) ->
+      protocol.ReloadWorkflow(id, control_file.token)
+    protocol.RetryIssue(id, _, issue_ref) ->
+      protocol.RetryIssue(id, control_file.token, issue_ref)
+    protocol.ParkIssue(id, _, issue_ref, reason) ->
+      protocol.ParkIssue(id, control_file.token, issue_ref, reason)
+    protocol.UnparkIssue(id, _, issue_ref) ->
+      protocol.UnparkIssue(id, control_file.token, issue_ref)
+    protocol.AbortSession(id, _, session_id) ->
+      protocol.AbortSession(id, control_file.token, session_id)
+    protocol.StopAfterCurrentTurn(id, _, session_id) ->
+      protocol.StopAfterCurrentTurn(id, control_file.token, session_id)
+    protocol.PromptSession(id, _, session_id, message) ->
+      protocol.PromptSession(id, control_file.token, session_id, message)
+    protocol.RespondUi(id, _, session_id, request_id, response) ->
+      protocol.RespondUi(
+        id,
+        control_file.token,
+        session_id,
+        request_id,
+        response,
+      )
   }
 }
 

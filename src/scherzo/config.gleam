@@ -74,6 +74,7 @@ pub fn default_pi_config() -> domain.PiConfig {
     stall_timeout_ms: 300_000,
     auto_retry: True,
     ui_request_policy: domain.Cancel,
+    ui_request_timeout_ms: 300_000,
     compatibility_probe: True,
     rate_limit_payload: None,
   )
@@ -339,26 +340,33 @@ fn resolve_pi(root: yay.Node) -> Result(domain.PiConfig, error.ConfigError) {
   let turn_timeout_ms = get_int(pi, "turn_timeout_ms") |> int_default(3_600_000)
   let read_timeout_ms = get_int(pi, "read_timeout_ms") |> int_default(5000)
   let stall_timeout_ms = get_int(pi, "stall_timeout_ms") |> int_default(300_000)
+  let ui_request_timeout_ms =
+    get_int(pi, "ui_request_timeout_ms") |> int_default(300_000)
   case
     string.trim(command) == ""
     || turn_timeout_ms <= 0
     || read_timeout_ms <= 0
     || stall_timeout_ms < 0
+    || ui_request_timeout_ms <= 0
   {
     True -> Error(error.InvalidConfig("invalid pi config"))
-    False ->
+    False -> {
+      use ui_request_policy <- result_try(
+        ui_policy(get_string(pi, "ui_request_policy")),
+      )
       Ok(domain.PiConfig(
         command: command,
         turn_timeout_ms: turn_timeout_ms,
         read_timeout_ms: read_timeout_ms,
         stall_timeout_ms: stall_timeout_ms,
         auto_retry: get_bool(pi, "auto_retry") |> bool_default(True),
-        ui_request_policy: get_string(pi, "ui_request_policy")
-          |> ui_policy_default,
+        ui_request_policy: ui_request_policy,
+        ui_request_timeout_ms: ui_request_timeout_ms,
         compatibility_probe: get_bool(pi, "compatibility_probe")
           |> bool_default(True),
         rate_limit_payload: None,
       ))
+    }
   }
 }
 
@@ -382,15 +390,20 @@ fn resolve_handoff(
   ))
 }
 
-fn ui_policy_default(value: Option(String)) -> domain.UiRequestPolicy {
+fn ui_policy(
+  value: Option(String),
+) -> Result(domain.UiRequestPolicy, error.ConfigError) {
   case value {
     Some(value) ->
-      case string.lowercase(value) {
-        "fail" -> domain.Fail
-        "ignore" -> domain.Ignore
-        _ -> domain.Cancel
+      case string.lowercase(string.trim(value)) {
+        "cancel" -> Ok(domain.Cancel)
+        "fail" -> Ok(domain.Fail)
+        "ignore" -> Ok(domain.Ignore)
+        "operator" -> Ok(domain.Operator)
+        other ->
+          Error(error.InvalidConfig("invalid pi.ui_request_policy: " <> other))
       }
-    None -> domain.Cancel
+    None -> Ok(domain.Cancel)
   }
 }
 

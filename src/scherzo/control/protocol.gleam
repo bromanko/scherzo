@@ -3,6 +3,8 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
+import scherzo/control/command
 import scherzo/domain
 import scherzo/session/event
 import scherzo/session/json as session_json
@@ -21,6 +23,27 @@ pub type Request {
     limit: Int,
   )
   StreamEvents(id: String, token: String, session_id: String, after: Int)
+  Pause(id: String, token: String)
+  Resume(id: String, token: String)
+  ReloadWorkflow(id: String, token: String)
+  RetryIssue(id: String, token: String, issue_ref: command.IssueRef)
+  ParkIssue(
+    id: String,
+    token: String,
+    issue_ref: command.IssueRef,
+    reason: String,
+  )
+  UnparkIssue(id: String, token: String, issue_ref: command.IssueRef)
+  AbortSession(id: String, token: String, session_id: String)
+  StopAfterCurrentTurn(id: String, token: String, session_id: String)
+  PromptSession(id: String, token: String, session_id: String, message: String)
+  RespondUi(
+    id: String,
+    token: String,
+    session_id: String,
+    request_id: String,
+    response: command.UiResponse,
+  )
 }
 
 pub type ErrorBody {
@@ -49,6 +72,13 @@ type RequestFields {
     session_id: Option(String),
     after: Int,
     limit: Int,
+    issue_id: Option(String),
+    issue_identifier: Option(String),
+    reason: Option(String),
+    message: Option(String),
+    request_id: Option(String),
+    cancel: Option(Bool),
+    value: Option(String),
   )
 }
 
@@ -59,6 +89,16 @@ pub fn request_id(request: Request) -> String {
     GetSession(id, _, _) -> id
     GetEvents(id, _, _, _, _) -> id
     StreamEvents(id, _, _, _) -> id
+    Pause(id, _) -> id
+    Resume(id, _) -> id
+    ReloadWorkflow(id, _) -> id
+    RetryIssue(id, _, _) -> id
+    ParkIssue(id, _, _, _) -> id
+    UnparkIssue(id, _, _) -> id
+    AbortSession(id, _, _) -> id
+    StopAfterCurrentTurn(id, _, _) -> id
+    PromptSession(id, _, _, _) -> id
+    RespondUi(id, _, _, _, _) -> id
   }
 }
 
@@ -69,6 +109,16 @@ pub fn request_token(request: Request) -> String {
     GetSession(_, token, _) -> token
     GetEvents(_, token, _, _, _) -> token
     StreamEvents(_, token, _, _) -> token
+    Pause(_, token) -> token
+    Resume(_, token) -> token
+    ReloadWorkflow(_, token) -> token
+    RetryIssue(_, token, _) -> token
+    ParkIssue(_, token, _, _) -> token
+    UnparkIssue(_, token, _) -> token
+    AbortSession(_, token, _) -> token
+    StopAfterCurrentTurn(_, token, _) -> token
+    PromptSession(_, token, _, _) -> token
+    RespondUi(_, token, _, _, _) -> token
   }
 }
 
@@ -102,6 +152,76 @@ pub fn request_to_json(request: Request) -> json.Json {
         ..base_request_entries(id, token, "stream_events")
       ]
       |> json.object
+    Pause(id, token) -> base_request_entries(id, token, "pause") |> json.object
+    Resume(id, token) ->
+      base_request_entries(id, token, "resume") |> json.object
+    ReloadWorkflow(id, token) ->
+      base_request_entries(id, token, "reload") |> json.object
+    RetryIssue(id, token, issue_ref) ->
+      list.append(
+        issue_ref_entries(issue_ref),
+        base_request_entries(id, token, "retry"),
+      )
+      |> json.object
+    ParkIssue(id, token, issue_ref, reason) ->
+      list.append(
+        [#("reason", json.string(reason)), ..issue_ref_entries(issue_ref)],
+        base_request_entries(id, token, "park"),
+      )
+      |> json.object
+    UnparkIssue(id, token, issue_ref) ->
+      list.append(
+        issue_ref_entries(issue_ref),
+        base_request_entries(id, token, "unpark"),
+      )
+      |> json.object
+    AbortSession(id, token, session_id) ->
+      [
+        #("session_id", json.string(session_id)),
+        ..base_request_entries(id, token, "abort")
+      ]
+      |> json.object
+    StopAfterCurrentTurn(id, token, session_id) ->
+      [
+        #("session_id", json.string(session_id)),
+        ..base_request_entries(id, token, "stop_after_current_turn")
+      ]
+      |> json.object
+    PromptSession(id, token, session_id, message) ->
+      [
+        #("session_id", json.string(session_id)),
+        #("message", json.string(message)),
+        ..base_request_entries(id, token, "prompt")
+      ]
+      |> json.object
+    RespondUi(id, token, session_id, request_id, response) ->
+      list.append(
+        [
+          #("session_id", json.string(session_id)),
+          #("request_id", json.string(request_id)),
+          ..ui_response_entries(response)
+        ],
+        base_request_entries(id, token, "respond_ui"),
+      )
+      |> json.object
+  }
+}
+
+fn issue_ref_entries(issue_ref: command.IssueRef) -> List(#(String, json.Json)) {
+  case issue_ref {
+    command.IssueId(id) -> [#("issue_id", json.string(id))]
+    command.IssueIdentifier(identifier) -> [
+      #("issue_identifier", json.string(identifier)),
+    ]
+  }
+}
+
+fn ui_response_entries(
+  response: command.UiResponse,
+) -> List(#(String, json.Json)) {
+  case response {
+    command.UiCancel -> [#("cancel", json.bool(True))]
+    command.UiValue(value) -> [#("value", json.string(value))]
   }
 }
 
@@ -182,6 +302,58 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
               Ok(StreamEvents(fields.id, fields.token, session_id, after))
           }
       }
+    "pause" -> Ok(Pause(fields.id, fields.token))
+    "resume" -> Ok(Resume(fields.id, fields.token))
+    "reload" | "reload_workflow" -> Ok(ReloadWorkflow(fields.id, fields.token))
+    "retry" | "retry_issue" ->
+      case required_issue_ref(fields) {
+        Ok(issue_ref) -> Ok(RetryIssue(fields.id, fields.token, issue_ref))
+        Error(err) -> Error(err)
+      }
+    "park" | "park_issue" ->
+      case required_issue_ref(fields), required_reason(fields) {
+        Ok(issue_ref), Ok(reason) ->
+          Ok(ParkIssue(fields.id, fields.token, issue_ref, reason))
+        Error(err), _ | _, Error(err) -> Error(err)
+      }
+    "unpark" | "unpark_issue" ->
+      case required_issue_ref(fields) {
+        Ok(issue_ref) -> Ok(UnparkIssue(fields.id, fields.token, issue_ref))
+        Error(err) -> Error(err)
+      }
+    "abort" | "abort_session" ->
+      case required_session_id(fields) {
+        Ok(session_id) -> Ok(AbortSession(fields.id, fields.token, session_id))
+        Error(err) -> Error(err)
+      }
+    "stop_after_current_turn" | "stop_after_turn" ->
+      case required_session_id(fields) {
+        Ok(session_id) ->
+          Ok(StopAfterCurrentTurn(fields.id, fields.token, session_id))
+        Error(err) -> Error(err)
+      }
+    "prompt" | "prompt_session" ->
+      case required_session_id(fields), required_message(fields) {
+        Ok(session_id), Ok(message) ->
+          Ok(PromptSession(fields.id, fields.token, session_id, message))
+        Error(err), _ | _, Error(err) -> Error(err)
+      }
+    "respond_ui" | "ui_respond" ->
+      case
+        required_session_id(fields),
+        required_request_id(fields),
+        required_ui_response(fields)
+      {
+        Ok(session_id), Ok(request_id), Ok(response) ->
+          Ok(RespondUi(
+            fields.id,
+            fields.token,
+            session_id,
+            request_id,
+            response,
+          ))
+        Error(err), _, _ | _, Error(err), _ | _, _, Error(err) -> Error(err)
+      }
     other ->
       Error(RequestError(
         fields.id,
@@ -196,6 +368,84 @@ fn required_session_id(fields: RequestFields) -> Result(String, RequestError) {
     Some("") -> invalid(fields.id, "session_id must not be empty")
     Some(session_id) -> Ok(session_id)
     None -> invalid(fields.id, "missing session_id")
+  }
+}
+
+fn required_issue_ref(
+  fields: RequestFields,
+) -> Result(command.IssueRef, RequestError) {
+  case fields.issue_id, fields.issue_identifier {
+    Some(_), Some(_) ->
+      invalid(fields.id, "provide issue_id or issue_identifier, not both")
+    Some(issue_id), None -> {
+      let issue_id = string.trim(issue_id)
+      case issue_id == "" {
+        True -> invalid(fields.id, "issue reference must not be empty")
+        False -> Ok(command.IssueId(issue_id))
+      }
+    }
+    None, Some(identifier) -> {
+      let identifier = string.trim(identifier)
+      case identifier == "" {
+        True -> invalid(fields.id, "issue reference must not be empty")
+        False -> Ok(command.IssueIdentifier(identifier))
+      }
+    }
+    None, None -> invalid(fields.id, "missing issue reference")
+  }
+}
+
+fn required_reason(fields: RequestFields) -> Result(String, RequestError) {
+  case fields.reason {
+    Some(reason) -> {
+      let reason = string.trim(reason)
+      case reason == "" {
+        True -> invalid(fields.id, "reason must not be empty")
+        False -> Ok(reason)
+      }
+    }
+    None -> invalid(fields.id, "missing reason")
+  }
+}
+
+fn required_message(fields: RequestFields) -> Result(String, RequestError) {
+  case fields.message {
+    Some(message) -> {
+      let message = string.trim(message)
+      case message == "" {
+        True -> invalid(fields.id, "message must not be empty")
+        False -> Ok(message)
+      }
+    }
+    None -> invalid(fields.id, "missing message")
+  }
+}
+
+fn required_request_id(fields: RequestFields) -> Result(String, RequestError) {
+  case fields.request_id {
+    Some(request_id) -> {
+      let request_id = string.trim(request_id)
+      case request_id == "" {
+        True -> invalid(fields.id, "request_id must not be empty")
+        False -> Ok(request_id)
+      }
+    }
+    None -> invalid(fields.id, "missing request_id")
+  }
+}
+
+fn required_ui_response(
+  fields: RequestFields,
+) -> Result(command.UiResponse, RequestError) {
+  case fields.cancel, fields.value {
+    Some(True), None -> Ok(command.UiCancel)
+    Some(False), None -> invalid(fields.id, "cancel must be true when provided")
+    None, Some(value) -> Ok(command.UiValue(value))
+    Some(True), Some(_) ->
+      invalid(fields.id, "provide --cancel or value, not both")
+    Some(False), Some(_) ->
+      invalid(fields.id, "cancel must be true when provided")
+    None, None -> invalid(fields.id, "missing UI response")
   }
 }
 
@@ -222,6 +472,41 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
   )
   use after <- decode.optional_field("after", 0, decode.int)
   use limit <- decode.optional_field("limit", 100, decode.int)
+  use issue_id <- decode.optional_field(
+    "issue_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use issue_identifier <- decode.optional_field(
+    "issue_identifier",
+    None,
+    decode.optional(decode.string),
+  )
+  use reason <- decode.optional_field(
+    "reason",
+    None,
+    decode.optional(decode.string),
+  )
+  use message <- decode.optional_field(
+    "message",
+    None,
+    decode.optional(decode.string),
+  )
+  use request_id <- decode.optional_field(
+    "request_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use cancel <- decode.optional_field(
+    "cancel",
+    None,
+    decode.optional(decode.bool),
+  )
+  use value <- decode.optional_field(
+    "value",
+    None,
+    decode.optional(decode.string),
+  )
   decode.success(RequestFields(
     version: version,
     id: id,
@@ -230,6 +515,13 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     session_id: session_id,
     after: after,
     limit: limit,
+    issue_id: issue_id,
+    issue_identifier: issue_identifier,
+    reason: reason,
+    message: message,
+    request_id: request_id,
+    cancel: cancel,
+    value: value,
   ))
 }
 
@@ -313,6 +605,75 @@ pub fn event_page_data(page: event.EventPage) -> json.Json {
   session_json.page_to_json(page)
 }
 
+pub fn command_result_data(result: command.CommandResult) -> json.Json {
+  let base = [
+    #("command", json.string(result.command)),
+    #("status", json.string(command.status_to_string(result.status))),
+  ]
+  let with_target = case result.target {
+    Some(target) -> [#("target", json.string(target)), ..base]
+    None -> base
+  }
+  let with_message = case result.message {
+    Some(message) -> [#("message", json.string(message)), ..with_target]
+    None -> with_target
+  }
+  let entries = case command.status_reason(result.status) {
+    Some(reason) -> [#("reason", json.string(reason)), ..with_message]
+    None -> with_message
+  }
+  entries |> list.reverse |> json.object
+}
+
+pub fn command_request(
+  id: String,
+  token: String,
+  operator_command: command.OperatorCommand,
+) -> Request {
+  case operator_command {
+    command.PauseDispatch -> Pause(id, token)
+    command.ResumeDispatch -> Resume(id, token)
+    command.ReloadWorkflow -> ReloadWorkflow(id, token)
+    command.RetryIssue(issue_ref) -> RetryIssue(id, token, issue_ref)
+    command.ParkIssue(issue_ref, reason) ->
+      ParkIssue(id, token, issue_ref, reason)
+    command.UnparkIssue(issue_ref) -> UnparkIssue(id, token, issue_ref)
+    command.AbortSession(session_id) -> AbortSession(id, token, session_id)
+    command.StopAfterCurrentTurn(session_id) ->
+      StopAfterCurrentTurn(id, token, session_id)
+    command.PromptSession(session_id, message) ->
+      PromptSession(id, token, session_id, message)
+    command.RespondUi(session_id, request_id, response) ->
+      RespondUi(id, token, session_id, request_id, response)
+  }
+}
+
+pub fn request_operator_command(
+  request: Request,
+) -> Option(command.OperatorCommand) {
+  case request {
+    Pause(_, _) -> Some(command.PauseDispatch)
+    Resume(_, _) -> Some(command.ResumeDispatch)
+    ReloadWorkflow(_, _) -> Some(command.ReloadWorkflow)
+    RetryIssue(_, _, issue_ref) -> Some(command.RetryIssue(issue_ref))
+    ParkIssue(_, _, issue_ref, reason) ->
+      Some(command.ParkIssue(issue_ref, reason))
+    UnparkIssue(_, _, issue_ref) -> Some(command.UnparkIssue(issue_ref))
+    AbortSession(_, _, session_id) -> Some(command.AbortSession(session_id))
+    StopAfterCurrentTurn(_, _, session_id) ->
+      Some(command.StopAfterCurrentTurn(session_id))
+    PromptSession(_, _, session_id, message) ->
+      Some(command.PromptSession(session_id, message))
+    RespondUi(_, _, session_id, request_id, response) ->
+      Some(command.RespondUi(session_id, request_id, response))
+    Ping(_, _)
+    | ListSessions(_, _)
+    | GetSession(_, _, _)
+    | GetEvents(_, _, _, _, _)
+    | StreamEvents(_, _, _, _) -> None
+  }
+}
+
 pub fn stream_started_data(session_id: String, after: Int) -> json.Json {
   json.object([
     #("streaming", json.bool(True)),
@@ -369,6 +730,12 @@ pub fn decode_get_events_response(
   line: String,
 ) -> Result(event.EventPage, ErrorBody) {
   decode_response_result(line, event_page_decoder())
+}
+
+pub fn decode_command_result_response(
+  line: String,
+) -> Result(command.CommandResult, ErrorBody) {
+  decode_response_result(line, command_result_decoder())
 }
 
 pub fn decode_stream_event(
@@ -432,6 +799,32 @@ fn error_body_decoder() -> decode.Decoder(ErrorBody) {
   use code <- decode.field("code", decode.string)
   use message <- decode.optional_field("message", code, decode.string)
   decode.success(ErrorBody(code: code, message: message))
+}
+
+fn command_result_decoder() -> decode.Decoder(command.CommandResult) {
+  use command_name <- decode.field("command", decode.string)
+  use status_name <- decode.field("status", decode.string)
+  use target <- decode.optional_field(
+    "target",
+    None,
+    decode.optional(decode.string),
+  )
+  use message <- decode.optional_field(
+    "message",
+    None,
+    decode.optional(decode.string),
+  )
+  use reason <- decode.optional_field(
+    "reason",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(command.CommandResult(
+    command: command_name,
+    status: command.status_from_string(status_name, reason),
+    target: target,
+    message: message,
+  ))
 }
 
 fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {

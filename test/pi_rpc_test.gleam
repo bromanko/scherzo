@@ -2,6 +2,7 @@ import gleam/option.{Some}
 import gleam/string
 import scherzo/agent/pi_rpc
 import scherzo/agent/probe
+import scherzo/domain
 import scherzo/error
 import scherzo/path
 import simplifile
@@ -138,6 +139,68 @@ pub fn turn_timeout_and_failed_stats_are_errors_test() {
     )
   let assert Error(error.PiProtocolError(_)) =
     pi_rpc.get_session_stats(session, 1000)
+}
+
+pub fn extension_ui_fail_policy_rejects_dialog_test() {
+  let cwd = "test/tmp/pi-rpc-ui-fail"
+  reset_dir(cwd)
+  let command = "FAKE_PI_UI_DIALOG=1 " <> fake_pi()
+  let assert Ok(session) = pi_rpc.launch(command, cwd, "name", False, 1000)
+  let assert Error(error.PiProtocolError(_)) =
+    pi_rpc.prompt_with_ui_policy(
+      session,
+      "prompt",
+      1000,
+      5000,
+      300_000,
+      domain.Fail,
+      ignore_event,
+    )
+  let _ = pi_rpc.terminate(session)
+}
+
+pub fn extension_ui_ignore_policy_does_not_send_cancel_test() {
+  let cwd = "test/tmp/pi-rpc-ui-ignore"
+  reset_dir(cwd)
+  let assert Ok(transcript) = path.absolute(cwd <> "/transcript.jsonl")
+  let command =
+    "FAKE_PI_UI_DIALOG=1 FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
+  let assert Ok(session) = pi_rpc.launch(command, cwd, "name", False, 1000)
+  let assert Ok(#(session, _events)) =
+    pi_rpc.prompt_with_ui_policy(
+      session,
+      "prompt",
+      1000,
+      5000,
+      300_000,
+      domain.Ignore,
+      ignore_event,
+    )
+  let assert Ok(#(_, _)) = pi_rpc.get_session_stats(session, 1000)
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert !string.contains(contents, "extension_ui_response")
+}
+
+pub fn extension_ui_operator_policy_rejects_instead_of_cancelling_test() {
+  let cwd = "test/tmp/pi-rpc-ui-operator"
+  reset_dir(cwd)
+  let assert Ok(transcript) = path.absolute(cwd <> "/transcript.jsonl")
+  let command =
+    "FAKE_PI_UI_DIALOG=1 FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
+  let assert Ok(session) = pi_rpc.launch(command, cwd, "name", False, 1000)
+  let assert Error(error.PiProtocolError(_)) =
+    pi_rpc.prompt_with_ui_policy(
+      session,
+      "prompt",
+      1000,
+      5000,
+      300_000,
+      domain.Operator,
+      ignore_event,
+    )
+  let _ = pi_rpc.terminate(session)
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert !string.contains(contents, "extension_ui_response")
 }
 
 pub fn extension_ui_dialog_is_cancelled_test() {

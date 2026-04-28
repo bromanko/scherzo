@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/control/client
+import scherzo/control/command as control_command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/session/event
@@ -15,6 +16,11 @@ pub type Command {
   Session(control_file: Option(String), json: Bool, session_id: String)
   Events(control_file: Option(String), json: Bool, session_id: String)
   AttachRaw(control_file: Option(String), json: Bool, session_id: String)
+  Operator(
+    control_file: Option(String),
+    json: Bool,
+    command: control_command.OperatorCommand,
+  )
 }
 
 pub type Error {
@@ -27,6 +33,14 @@ type Flags {
     control_file: Option(String),
     json: Bool,
     raw: Bool,
+    pretty: Bool,
+    yes: Bool,
+    reason: Option(String),
+    cancel: Bool,
+    value: Option(String),
+    no_follow: Bool,
+    since_cursor: Int,
+    color: style.ColorMode,
     positional: List(String),
   )
 }
@@ -46,7 +60,7 @@ pub fn parse(args: List(String)) -> Result(Command, Error) {
   case args {
     [] | ["--help"] | ["-h"] -> Ok(Help)
     [name, ..rest] ->
-      case parse_flags(rest, Flags(None, False, False, [])) {
+      case parse_flags(rest, default_flags()) {
         Error(err) -> Error(err)
         Ok(flags) -> command_from(name, flags)
       }
@@ -54,7 +68,7 @@ pub fn parse(args: List(String)) -> Result(Command, Error) {
 }
 
 pub fn usage() -> String {
-  "Usage: gleam run -- ctl <command> [options]\n\nRead-only local Scherzo daemon inspection. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions.\n  session <session-id>         Show one session summary.\n  events <session-id>          Replay recent events for a session.\n  attach --raw <session-id>    Replay and follow raw event lines.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --json                       Print protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --help, -h                   Show this help."
+  "Usage: gleam run -- ctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions.\n  session <session-id>         Show one session summary.\n  events <session-id>          Replay recent compact event lines.\n  events --pretty <session-id> Replay retained events with human-readable rendering.\n  attach <session-id>          Replay retained events and follow with human-readable rendering.\n  attach --raw <session-id>    Replay and follow compact event lines.\n  attach --json <session-id>   Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-id>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-id> --yes     Abort a running session.\n  stop-after-turn <session-id> --yes\n                               Stop after the current turn.\n  prompt <session-id> <text>   Queue an operator prompt for a session.\n  ui respond <session-id> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --yes                        Confirm destructive commands.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -65,6 +79,30 @@ fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
     ["--control-file"] -> Error(UsageError("--control-file requires a path"))
     ["--json", ..rest] -> parse_flags(rest, Flags(..flags, json: True))
     ["--raw", ..rest] -> parse_flags(rest, Flags(..flags, raw: True))
+    ["--pretty", ..rest] -> parse_flags(rest, Flags(..flags, pretty: True))
+    ["--yes", ..rest] -> parse_flags(rest, Flags(..flags, yes: True))
+    ["--no-follow", ..rest] ->
+      parse_flags(rest, Flags(..flags, no_follow: True))
+    ["--since-cursor", value, ..rest] ->
+      case parse_cursor(value) {
+        Ok(cursor) -> parse_flags(rest, Flags(..flags, since_cursor: cursor))
+        Error(err) -> Error(err)
+      }
+    ["--since-cursor"] ->
+      Error(UsageError("--since-cursor requires a non-negative integer"))
+    ["--color", value, ..rest] ->
+      case style.parse_color_mode(value) {
+        Ok(mode) -> parse_flags(rest, Flags(..flags, color: mode))
+        Error(_) -> Error(UsageError("--color must be auto, always, or never"))
+      }
+    ["--color"] -> Error(UsageError("--color requires auto, always, or never"))
+    ["--reason", reason, ..rest] ->
+      parse_flags(rest, Flags(..flags, reason: Some(reason)))
+    ["--reason"] -> Error(UsageError("--reason requires text"))
+    ["--cancel", ..rest] -> parse_flags(rest, Flags(..flags, cancel: True))
+    ["--value", value, ..rest] ->
+      parse_flags(rest, Flags(..flags, value: Some(value)))
+    ["--value"] -> Error(UsageError("--value requires text"))
     ["--help", ..] | ["-h", ..] -> Ok(Flags(..flags, positional: ["--help"]))
     [arg, ..rest] ->
       case string.starts_with(arg, "--") {
@@ -94,7 +132,111 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
         False -> Error(UsageError("attach requires --raw in this phase"))
       }
     "attach", _ -> Error(UsageError("attach usage: attach --raw <session-id>"))
+    "pause", [] -> Ok(operator(flags, control_command.PauseDispatch))
+    "resume", [] -> Ok(operator(flags, control_command.ResumeDispatch))
+    "reload", [] -> Ok(operator(flags, control_command.ReloadWorkflow))
+    "retry", [issue] ->
+      Ok(operator(flags, control_command.RetryIssue(issue_ref(issue))))
+    "park", [issue] ->
+      case flags.reason, flags.yes {
+        Some(reason), True ->
+          Ok(operator(
+            flags,
+            control_command.ParkIssue(issue_ref(issue), reason),
+          ))
+        None, _ -> Error(UsageError("park requires --reason <text>"))
+        Some(_), False -> Error(UsageError("park requires --yes"))
+      }
+    "unpark", [issue] ->
+      Ok(operator(flags, control_command.UnparkIssue(issue_ref(issue))))
+    "abort", [session_id] ->
+      case flags.yes {
+        True -> Ok(operator(flags, control_command.AbortSession(session_id)))
+        False -> Error(UsageError("abort requires --yes"))
+      }
+    "stop-after-turn", [session_id] ->
+      case flags.yes {
+        True ->
+          Ok(operator(flags, control_command.StopAfterCurrentTurn(session_id)))
+        False -> Error(UsageError("stop-after-turn requires --yes"))
+      }
+    "prompt", [session_id, message] ->
+      Ok(operator(flags, control_command.PromptSession(session_id, message)))
+    "ui", ["respond", session_id, request_id] ->
+      case flags.cancel, flags.value {
+        True, None ->
+          Ok(operator(
+            flags,
+            control_command.RespondUi(
+              session_id,
+              request_id,
+              control_command.UiCancel,
+            ),
+          ))
+        False, Some(value) ->
+          Ok(operator(
+            flags,
+            control_command.RespondUi(
+              session_id,
+              request_id,
+              control_command.UiValue(value),
+            ),
+          ))
+        True, Some(_) ->
+          Error(UsageError(
+            "ui respond requires exactly one of --cancel or --value",
+          ))
+        False, None ->
+          Error(UsageError("ui respond requires --cancel or --value <text>"))
+      }
     _, _ -> Error(UsageError("unknown or invalid ctl command: " <> name))
+  }
+}
+
+fn attach_mode(flags: Flags) -> Result(OutputMode, Error) {
+  case flags.pretty, flags.raw, flags.json {
+    True, True, _ | True, _, True ->
+      Error(UsageError("choose only one of --pretty, --raw, or --json"))
+    _, True, True -> Ok(Json)
+    True, False, False -> Ok(Pretty)
+    False, True, False -> Ok(Raw)
+    False, False, True -> Ok(Json)
+    False, False, False -> Ok(Pretty)
+  }
+}
+
+fn events_mode(flags: Flags) -> Result(OutputMode, Error) {
+  case flags.pretty, flags.raw, flags.json {
+    True, True, _ | True, _, True | False, True, True ->
+      Error(UsageError("choose only one of --pretty, --raw, or --json"))
+    True, False, False -> Ok(Pretty)
+    False, _, True -> Ok(Json)
+    False, _, False -> Ok(Raw)
+  }
+}
+
+fn attach_color(mode: OutputMode, color: style.ColorMode) -> style.ColorMode {
+  case mode {
+    Pretty -> color
+    Raw | Json -> style.ColorNever
+  }
+}
+
+fn events_color(mode: OutputMode, color: style.ColorMode) -> style.ColorMode {
+  case mode {
+    Pretty -> color
+    Raw | Json -> style.ColorNever
+  }
+}
+
+fn operator(flags: Flags, command: control_command.OperatorCommand) -> Command {
+  Operator(flags.control_file, flags.json, command)
+}
+
+fn issue_ref(value: String) -> control_command.IssueRef {
+  case string.starts_with(value, "id:") {
+    True -> control_command.IssueId(string.drop_start(value, 3))
+    False -> control_command.IssueIdentifier(value)
   }
 }
 
@@ -179,6 +321,26 @@ fn run(command: Command) -> Result(Nil, Error) {
       })
       |> map_client_error
     }
+    Operator(control_path, json, operator_command) -> {
+      use control_file <- try_ctl(load_control_file(control_path))
+      case json {
+        True ->
+          print_raw_request(
+            control_file,
+            protocol.command_request("1", "", operator_command),
+            deps,
+            output,
+          )
+        False ->
+          case client.apply_command(control_file, operator_command) {
+            Ok(result) -> {
+              print_command_result(result, output)
+              Ok(Nil)
+            }
+            Error(err) -> Error(client_error(err))
+          }
+      }
+    }
   }
 }
 
@@ -221,6 +383,73 @@ fn print_session(summary: event.SessionSummary) -> Nil {
   io.println("turn: " <> int.to_string(summary.current_turn))
   io.println("workspace: " <> summary.workspace_path)
   io.println("last_event_at_ms: " <> int.to_string(summary.last_event_at_ms))
+}
+
+fn print_command_result(
+  result: control_command.CommandResult,
+  output: Output,
+) -> Nil {
+  let target = case result.target {
+    Some(target) -> " target=" <> target
+    None -> ""
+  }
+  let reason = case control_command.status_reason(result.status) {
+    Some(reason) -> " reason=" <> reason
+    None -> ""
+  }
+  let message = case result.message {
+    Some(message) -> " " <> message
+    None -> ""
+  }
+  output.line(
+    result.command
+    <> " "
+    <> control_command.status_to_string(result.status)
+    <> target
+    <> reason
+    <> message,
+  )
+}
+
+fn render_state_key(session_id: String) -> String {
+  "scherzoctl-render-state:" <> session_id
+}
+
+fn cursor_state_key(session_id: String, mode: OutputMode) -> String {
+  "scherzoctl-cursor-state:" <> output_mode_name(mode) <> ":" <> session_id
+}
+
+fn output_mode_name(mode: OutputMode) -> String {
+  case mode {
+    Pretty -> "pretty"
+    Raw -> "raw"
+    Json -> "json"
+  }
+}
+
+@external(erlang, "erlang", "put")
+fn put_render_state(key: String, state: render.RenderState) -> dynamic.Dynamic
+
+@external(erlang, "erlang", "get")
+fn get_render_state(key: String) -> render.RenderState
+
+@external(erlang, "erlang", "put")
+fn put_cursor_state(key: String, cursor: Int) -> dynamic.Dynamic
+
+@external(erlang, "erlang", "get")
+fn get_cursor_state(key: String) -> Int
+
+fn real_control_client() -> ControlClient {
+  ControlClient(
+    get_session: client.get_session,
+    get_events: client.get_events,
+    stream_events: client.stream_events,
+    raw_request: client.raw_request,
+  )
+}
+
+fn real_output() -> Output {
+  Output(line: io.println, inline: io.print)
 }
 
 fn load_control_file(

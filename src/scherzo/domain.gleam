@@ -65,6 +65,7 @@ pub type UiRequestPolicy {
   Cancel
   Fail
   Ignore
+  Operator
 }
 
 pub type AgentConfig {
@@ -86,6 +87,7 @@ pub type PiConfig {
     stall_timeout_ms: Int,
     auto_retry: Bool,
     ui_request_policy: UiRequestPolicy,
+    ui_request_timeout_ms: Int,
     compatibility_probe: Bool,
     rate_limit_payload: Option(String),
   )

@@ -38,6 +38,7 @@ fn config() -> domain.EffectiveConfig {
       stall_timeout_ms: 1000,
       auto_retry: True,
       ui_request_policy: domain.Cancel,
+      ui_request_timeout_ms: 300_000,
       compatibility_probe: True,
       rate_limit_payload: None,
     ),

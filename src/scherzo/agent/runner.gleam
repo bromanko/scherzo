@@ -178,12 +178,13 @@ fn loop_turns(
   workspace_path: String,
 ) -> Result(WorkerSuccess, WorkerFailure) {
   case
-    pi_rpc.prompt(
+    pi_rpc.prompt_with_ui_policy(
       session,
       prompt,
       config.pi.read_timeout_ms,
       config.pi.turn_timeout_ms,
       config.pi.stall_timeout_ms,
+      config.pi.ui_request_policy,
       fn(record) {
         emit_update(
           issue.id,

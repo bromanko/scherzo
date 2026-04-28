@@ -2,7 +2,7 @@
 
 Scherzo is a Gleam/Erlang daemon that polls one Linear project, prepares one workspace per issue, and runs a pi coding-agent session in that workspace using pi RPC mode.
 
-The current implementation is ready for cautious use against one real Linear board from one Scherzo instance and one canonical workspace root. It includes reusable real Linear HTTPS reads, bounded smoke checks, a long-lived daemon actor with poll and retry timers, monitored pi workers, workflow reload by file contents, no-prompt pi probing, optional Linear handoff comments/state updates, an authenticated local read-only control API, `scherzoctl`, and a local instance lock. It is not a distributed job system: do not run multiple hosts or multiple independent workspace roots against the same Linear project until a durable claim backend exists.
+The current implementation is ready for cautious use against one real Linear board from one Scherzo instance and one canonical workspace root. It includes reusable real Linear HTTPS reads, bounded smoke checks, a long-lived daemon actor with poll and retry timers, monitored pi workers, workflow reload by file contents, no-prompt pi probing, optional Linear handoff comments/state updates, an authenticated local control API, `scherzoctl`, and a local instance lock. It is not a distributed job system: do not run multiple hosts or multiple independent workspace roots against the same Linear project until a durable claim backend exists.
 
 ## Development
 
@@ -36,7 +36,7 @@ Use `--pi-probe` before allowing a real prompt. It validates dispatch hooks, acq
 
     LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --pi-probe path/to/WORKFLOW.md
 
-Use `ctl` through `direnv exec . gleam run -- ctl ...` or the development wrapper `scripts/scherzoctl` to inspect a running daemon through the local read-only control API. See the `Read-only control API` section below.
+Use `ctl` through `direnv exec . gleam run -- ctl ...` or the development wrapper `scripts/scherzoctl` to inspect or control a running daemon through the local authenticated control API. See the `Local control API and scherzoctl` section below.
 
 ## Runtime requirements
 
@@ -172,9 +172,9 @@ Daemon mode also starts an in-memory EventHub for internal session visibility. T
 
 Event history is not durable across daemon restart. Raw pi JSON payloads are retained only after recursive secret redaction and a 16 KiB per-event cap, so replay is useful for control clients and future renderers without treating the event buffer as an audit log.
 
-## Read-only control API
+## Local control API and scherzoctl
 
-Daemon mode starts a small authenticated control server on `127.0.0.1` after the EventHub is available. The server uses line-delimited JSON over loopback TCP, chooses an OS-assigned port, generates a fresh token for each daemon start, and writes connection details to `workspace.root/.scherzo-state/control.json`. The daemon logs the control file path and port with an event like:
+Daemon mode starts a small authenticated control server on `127.0.0.1` after the daemon actor and EventHub are available. The server uses line-delimited JSON over loopback TCP, chooses an OS-assigned port, generates a fresh token for each daemon start, and writes connection details to `workspace.root/.scherzo-state/control.json`. The daemon logs the control file path and port with an event like:
 
     level=info service=scherzo event=control_server_started control_file=... host=127.0.0.1 port=54321
 
@@ -196,13 +196,37 @@ Every command also accepts `--control-file <path>`. Non-streaming commands accep
     scripts/scherzoctl session <session-id> --json
     scripts/scherzoctl events <session-id> --json
 
-The control API is local-only, token-authenticated, and read-only in this phase. It can list session summaries, fetch one session, replay retained events, and follow events with `attach --raw`; it cannot abort workers, send prompts, answer UI requests, retry, pause, resume, or mutate Linear. The backing data is the in-memory EventHub, so it is bounded and disappears on daemon restart. A stale control file after a crash is recoverable: `scherzoctl ping` fails cleanly, and operators should restart the daemon and use the newly logged control file path.
+The control API is local-only and token-authenticated. Read-only requests can list session summaries, fetch one session, replay retained events, and follow events with `attach`. Mutating requests decode into the shared `control/command.OperatorCommand` model before reaching the daemon, so future transports such as Linear comment commands reuse the same command semantics instead of implementing separate scheduler mutations. Valid command-level rejections are returned as successful protocol responses with `ok: true` and a command `status` such as `rejected`, `not_found`, or `not_allowed`; malformed requests, wrong tokens, connection failures, and command backend timeouts return `ok: false`.
+
+Available local mutating commands include:
+
+    scripts/scherzoctl pause
+    scripts/scherzoctl resume
+    scripts/scherzoctl reload
+    scripts/scherzoctl retry ABC-123
+    scripts/scherzoctl park ABC-123 --reason "manual cleanup" --yes
+    scripts/scherzoctl unpark ABC-123
+    scripts/scherzoctl abort <session-id> --yes
+    scripts/scherzoctl stop-after-turn <session-id> --yes
+    scripts/scherzoctl prompt <session-id> "summarize progress"
+    scripts/scherzoctl ui respond <session-id> ui-1 --cancel
+    scripts/scherzoctl ui respond <session-id> ui-1 --value ok
+
+`pause` is runtime-only and blocks new dispatch while allowing reconciliation, cleanup, and shutdown to continue. `park`, `abort`, and `stop-after-turn` require `--yes` because they are destructive safety controls. `park` also requires `--reason <text>`. `retry` rejects running, claimed, or pending-claim issues to avoid duplicate work; when accepted, it explicitly releases any existing park for that issue before attempting dispatch.
+
+Live workers are command-aware. `prompt <session-id> ...` sends the prompt to the worker that owns the pi RPC process; during an active turn the prompt is acknowledged as `queued` and becomes the next turn's pi `prompt` instead of interrupting the current stream. Each worker keeps at most 10 queued operator prompts and rejects additional prompts with `prompt_queue_full`. If a worker exits before using queued prompts, it emits `operator_prompt_dropped` session events with redacted, truncated prompt text.
+
+`abort <session-id> --yes` first asks the worker to send pi's graceful `abort` RPC command. If the worker command subject is unavailable or does not acknowledge before the local command timeout, the daemon falls back to the older kill-and-park safety path and still parks the issue with reason `operator_abort`. Abort-created parks are explicit safety parks: Scherzo will not work the issue again until an operator runs `unpark` or `retry`. `stop-after-turn <session-id> --yes` is non-destructive: it is routed to the worker and returns `rejected(worker_command_timeout)` or `not_allowed(worker_command_subject_unavailable)` if the worker cannot acknowledge it, because killing the process would be abort semantics rather than stop-after-current-turn semantics.
+
+For extension UI requests, the existing `pi.ui_request_policy` values `cancel`, `fail`, and `ignore` remain available. When `pi.ui_request_policy: operator`, a blocking pi UI request puts the session into `waiting_ui`; `scripts/scherzoctl ui respond <session-id> <request-id> --cancel` or `--value <text>` sends `extension_ui_response` through the worker-owned pi RPC session. If no operator responds before `pi.ui_request_timeout_ms`, the worker sends a cancel response, emits `operator_ui_timeout`, and resumes the turn. The ordinary stall timeout is paused while pi is intentionally waiting for operator UI input.
+
+The backing EventHub data, queued prompts, pending UI requests, and runtime pause/park state are in memory and disappear on daemon restart. A stale control file after a crash is recoverable: `scherzoctl ping` fails cleanly, and operators should restart the daemon and use the newly logged control file path.
 
 ## Safety posture
 
 Scherzo is intended for trusted repositories and trusted workflow files. Hooks are arbitrary shell. pi tool execution follows the operator's `pi.command` and host OS environment. Scherzo enforces workspace cwd and root containment, but it does not provide a VM or container sandbox.
 
-pi compatibility probes and prompted sessions launch only from prepared workspaces. Extension UI dialogs are cancelled automatically; fire-and-forget UI notifications are ignored after logging. Short `pi.read_timeout_ms` values are polling intervals during active turns; a turn fails only when `pi.stall_timeout_ms` expires without a valid pi line or `pi.turn_timeout_ms` expires before `agent_end`.
+pi compatibility probes and prompted sessions launch only from prepared workspaces. Extension UI dialogs default to automatic cancellation; `pi.ui_request_policy` may be set to `cancel`, `fail`, or `ignore`; `operator` is rejected during config loading until operator-managed UI handoff is implemented, and unknown policy strings are rejected too. `pi.ui_request_timeout_ms` defaults to 300000 ms. Short `pi.read_timeout_ms` values are polling intervals during active turns; a turn fails only when `pi.stall_timeout_ms` expires without a valid pi line or `pi.turn_timeout_ms` expires before `agent_end`.
 
 Retry and session caps park issues in memory rather than spending tokens forever. Parking clears on process restart or when Linear reports the issue with a newer `updated_at` value.
 
@@ -215,7 +239,7 @@ Implemented:
 - Safe workspace key sanitization, root containment checks, lifecycle hooks, sidecar population markers, cleanup by stored workspace path, and local instance locking.
 - pi JSON Lines RPC launch, command/response correlation, compatibility probing with stats, prompt execution, turn/stall timeout handling, stats decoding, extension UI cancellation, and fake-pi integration tests.
 - Pure in-memory scheduling decisions for dispatch eligibility, retries, parking, continuation caps, reconciliation, and token accounting.
-- Long-lived daemon actor with poll/retry timers, monitored workers, WorkerUpdate logging, in-memory session event replay, local read-only control API, `scherzoctl`, programmatic shutdown, and optional Linear handoff.
+- Long-lived daemon actor with poll/retry timers, monitored workers, WorkerUpdate logging, in-memory session event replay, local authenticated control API, shared operator command model, `scherzoctl`, programmatic shutdown, and optional Linear handoff.
 - Structured key-value log formatting with secret redaction.
 
 Still intentionally out of scope:
@@ -223,7 +247,7 @@ Still intentionally out of scope:
 - Distributed exactly-once claiming across hosts or workspace roots.
 - Durable scheduler state across BEAM restarts.
 - CLI SIGINT/SIGTERM graceful shutdown hooks.
-- HTTP dashboard, mutating operator controls, SSH workers, and the optional `linear_graphql` pi tool extension.
+- HTTP dashboard, Linear comment command transport, fully command-aware prompt/UI worker loop, SSH workers, and the optional `linear_graphql` pi tool extension.
 - Automatic discovery of Linear workflow state IDs by state name.
 
 ## Operational rollout

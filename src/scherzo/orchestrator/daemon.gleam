@@ -7,6 +7,7 @@ import gleam/otp/actor
 import gleam/string
 import scherzo/agent/runner
 import scherzo/config
+import scherzo/control/command
 import scherzo/control/file as control_file
 import scherzo/control/server as control_server
 import scherzo/domain
@@ -27,10 +28,14 @@ pub type StartupError {
 }
 
 pub type WorkerCommand {
-  Abort
-  StopAfterCurrentTurn
-  QueuePrompt(String)
-  RespondToUi(String, String)
+  Abort(process.Subject(command.CommandResult))
+  StopAfterCurrentTurn(process.Subject(command.CommandResult))
+  QueuePrompt(String, process.Subject(command.CommandResult))
+  RespondToUi(
+    String,
+    command.UiResponse,
+    process.Subject(command.CommandResult),
+  )
 }
 
 pub type Message {
@@ -46,6 +51,11 @@ pub type Message {
   SideEffectFinished(SideEffectResult)
   Shutdown(process.Subject(Nil))
   GetSnapshot(process.Subject(domain.RuntimeState))
+  ApplyOperatorCommand(
+    command.OperatorCommand,
+    Int,
+    process.Subject(command.CommandResult),
+  )
 }
 
 pub type WorkerHandle {
@@ -155,7 +165,7 @@ pub type RuntimeDependencies {
     cancel_timer: fn(TimerHandle) -> Nil,
     start_event_hub: fn() -> Result(process.Subject(hub.Message), hub.HubError),
     make_control_token: fn() -> Result(String, StartupError),
-    start_control_server: fn(control_server.Settings, control_server.EventStore) ->
+    start_control_server: fn(control_server.Settings, control_server.Backend) ->
       Result(ControlServerHandle, StartupError),
     stop_control_server: fn(ControlServerHandle) -> Nil,
   )
@@ -189,6 +199,7 @@ type State {
     event_hub: process.Subject(hub.Message),
     control_server: ControlServerHandle,
     control_file_path: Option(String),
+    operator_paused: Bool,
     dependencies: RuntimeDependencies,
   )
 }
@@ -251,6 +262,7 @@ fn start_control_plane(
   dependencies: RuntimeDependencies,
   effective: domain.EffectiveConfig,
   event_hub: process.Subject(hub.Message),
+  daemon_subject: process.Subject(Message),
   secrets: List(String),
 ) -> Result(ControlPlane, StartupError) {
   use token <- try_startup(dependencies.make_control_token())
@@ -261,10 +273,11 @@ fn start_control_plane(
       token: token,
       event_timeout_ms: 500,
       stream_poll_ms: 100,
+      command_timeout_ms: 500,
     )
   use handle <- try_startup(dependencies.start_control_server(
     settings,
-    control_server.event_hub_store(event_hub),
+    control_backend(event_hub, daemon_subject),
   ))
   case handle {
     NoControlServer -> Ok(ControlPlane(handle: handle, control_file_path: None))
@@ -304,6 +317,32 @@ fn start_control_plane(
   }
 }
 
+fn control_backend(
+  event_hub: process.Subject(hub.Message),
+  daemon_subject: process.Subject(Message),
+) -> control_server.Backend {
+  let read_backend = control_server.event_hub_store(event_hub)
+  control_server.Backend(
+    ..read_backend,
+    apply_command: fn(operator_command, timeout_ms) {
+      apply_operator_command(daemon_subject, operator_command, timeout_ms)
+    },
+  )
+}
+
+pub fn apply_operator_command(
+  daemon_subject: process.Subject(Message),
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+) -> Result(command.CommandResult, Nil) {
+  let reply = process.new_subject()
+  process.send(
+    daemon_subject,
+    ApplyOperatorCommand(operator_command, timeout_ms, reply),
+  )
+  process.receive(reply, within: timeout_ms)
+}
+
 pub fn start(
   workflow_path: Option(String),
   dependencies: RuntimeDependencies,
@@ -326,67 +365,80 @@ pub fn start(
   let runtime = core.new_state(effective)
   let secrets = config.resolved_secrets(effective)
   use event_hub <- try_startup(dependencies.start_event_hub() |> map_hub_error)
-  use control_plane <- try_startup(start_control_plane(
-    dependencies,
-    effective,
-    event_hub,
-    secrets,
-  ))
   let builder =
     actor.new_with_initialiser(1000, fn(subject) {
-      let poll_generation = 1
-      let poll_timer =
-        dependencies.send_after(subject, 0, PollTick(poll_generation))
-      let state =
-        State(
-          subject: subject,
-          workflow_path: workflow_path,
-          chosen_path: chosen_path,
-          last_contents: contents,
-          definition: definition,
-          reload_state: reload_state,
-          effective: effective,
-          tracker_client: tracker_client,
-          handoff_client: handoff_client,
-          runtime: runtime,
-          poll_generation: poll_generation,
-          poll_in_flight: None,
-          poll_timer: Some(poll_timer),
-          retry_timers: dict.new(),
-          retry_refreshes_in_flight: dict.new(),
-          workers: dict.new(),
-          worker_monitors: dict.new(),
-          issue_sessions: dict.new(),
-          next_session_sequence: 1,
-          pending_claims: dict.new(),
-          side_effects_in_flight: 0,
-          side_effect_queue: [],
-          secrets: secrets,
-          event_hub: event_hub,
-          control_server: control_plane.handle,
-          control_file_path: control_plane.control_file_path,
-          dependencies: dependencies,
+      case
+        start_control_plane(
+          dependencies,
+          effective,
+          event_hub,
+          subject,
+          secrets,
         )
-      let selector =
-        process.new_selector()
-        |> process.select(subject)
-        |> process.select_monitors(WorkerDown)
-      actor.initialised(state)
-      |> actor.selecting(selector)
-      |> actor.returning(subject)
-      |> Ok
+      {
+        Error(err) -> Error(encode_startup_error(err))
+        Ok(control_plane) -> {
+          let poll_generation = 1
+          let poll_timer =
+            dependencies.send_after(subject, 0, PollTick(poll_generation))
+          let state =
+            State(
+              subject: subject,
+              workflow_path: workflow_path,
+              chosen_path: chosen_path,
+              last_contents: contents,
+              definition: definition,
+              reload_state: reload_state,
+              effective: effective,
+              tracker_client: tracker_client,
+              handoff_client: handoff_client,
+              runtime: runtime,
+              poll_generation: poll_generation,
+              poll_in_flight: None,
+              poll_timer: Some(poll_timer),
+              retry_timers: dict.new(),
+              retry_refreshes_in_flight: dict.new(),
+              workers: dict.new(),
+              worker_monitors: dict.new(),
+              issue_sessions: dict.new(),
+              next_session_sequence: 1,
+              pending_claims: dict.new(),
+              side_effects_in_flight: 0,
+              side_effect_queue: [],
+              secrets: secrets,
+              event_hub: event_hub,
+              control_server: control_plane.handle,
+              control_file_path: control_plane.control_file_path,
+              operator_paused: False,
+              dependencies: dependencies,
+            )
+          let selector =
+            process.new_selector()
+            |> process.select(subject)
+            |> process.select_monitors(WorkerDown)
+          actor.initialised(state)
+          |> actor.selecting(selector)
+          |> actor.returning(subject)
+          |> Ok
+        }
+      }
     })
     |> actor.on_message(handle_message)
   case actor.start(builder) {
     Ok(started) -> Ok(started)
-    Error(_) -> {
-      dependencies.stop_control_server(control_plane.handle)
-      case control_plane.control_file_path {
-        Some(path) -> control_file.remove(path)
-        None -> Nil
-      }
-      Error(StartupError("daemon_start_failed", "actor start failed"))
-    }
+    Error(actor.InitFailed(reason)) -> Error(decode_startup_error(reason))
+    Error(_) -> Error(StartupError("daemon_start_failed", "actor start failed"))
+  }
+}
+
+fn encode_startup_error(error: StartupError) -> String {
+  error.code <> "\t" <> error.message
+}
+
+fn decode_startup_error(reason: String) -> StartupError {
+  case string.split_once(reason, on: "\t") {
+    Ok(#(code, message)) -> StartupError(code, message)
+    Error(Nil) -> StartupError("daemon_start_failed", reason)
   }
 }
 
@@ -424,6 +476,13 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
       process.send(reply, state.runtime)
       actor.continue(state)
     }
+    ApplyOperatorCommand(operator_command, timeout_ms, reply) ->
+      actor.continue(handle_operator_command(
+        state,
+        operator_command,
+        timeout_ms,
+        reply,
+      ))
     Shutdown(reply) -> {
       let state = shutdown_state(state)
       log_state(state, "info", "daemon_shutdown", [])
@@ -431,6 +490,808 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
       actor.stop()
     }
   }
+}
+
+fn handle_operator_command(
+  state: State,
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+  reply: process.Subject(command.CommandResult),
+) -> State {
+  case operator_command {
+    command.PauseDispatch -> {
+      let pending = dict.size(state.pending_claims)
+      let state = State(..state, operator_paused: True)
+      log_state(state, "info", "operator_command", [
+        #("command", "pause"),
+        #("status", "applied"),
+        #("pending_claims", int.to_string(pending)),
+      ])
+      process.send(
+        reply,
+        command.applied(
+          operator_command,
+          Some("dispatch paused; pending_claims=" <> int.to_string(pending)),
+        ),
+      )
+      state
+    }
+    command.ResumeDispatch -> {
+      let state = State(..state, operator_paused: False)
+      log_state(state, "info", "operator_command", [
+        #("command", "resume"),
+        #("status", "applied"),
+      ])
+      process.send(
+        reply,
+        command.applied(operator_command, Some("dispatch resumed")),
+      )
+      state
+    }
+    command.ReloadWorkflow ->
+      send_operator_result(
+        reload_workflow_for_operator(state, operator_command),
+        reply,
+      )
+    command.RetryIssue(issue_ref) ->
+      send_operator_result(
+        retry_issue_for_operator(state, operator_command, issue_ref),
+        reply,
+      )
+    command.ParkIssue(issue_ref, reason) ->
+      send_operator_result(
+        park_issue_for_operator(state, operator_command, issue_ref, reason),
+        reply,
+      )
+    command.UnparkIssue(issue_ref) ->
+      send_operator_result(
+        unpark_issue_for_operator(state, operator_command, issue_ref),
+        reply,
+      )
+    command.AbortSession(session_id) ->
+      abort_session_for_operator(
+        state,
+        operator_command,
+        session_id,
+        timeout_ms,
+        reply,
+      )
+    command.StopAfterCurrentTurn(session_id) ->
+      route_worker_command(
+        state,
+        operator_command,
+        session_id,
+        timeout_ms,
+        reply,
+        fn(subject, reply) {
+          process.send(subject, worker_command.StopAfterCurrentTurn(reply))
+        },
+      )
+    command.PromptSession(session_id, message) ->
+      case operator_prompt_too_large(message) {
+        True -> {
+          process.send(
+            reply,
+            command.rejected(
+              operator_command,
+              "prompt_too_large",
+              Some("operator prompt is too large"),
+            ),
+          )
+          state
+        }
+        False ->
+          route_worker_command(
+            state,
+            operator_command,
+            session_id,
+            timeout_ms,
+            reply,
+            fn(subject, reply) {
+              process.send(subject, worker_command.QueuePrompt(message, reply))
+            },
+          )
+      }
+    command.RespondUi(session_id, request_id, response) ->
+      case ui_response_too_large(response) {
+        True -> {
+          process.send(
+            reply,
+            command.rejected(
+              operator_command,
+              "ui_response_too_large",
+              Some("operator UI response value is too large"),
+            ),
+          )
+          state
+        }
+        False ->
+          route_worker_command(
+            state,
+            operator_command,
+            session_id,
+            timeout_ms,
+            reply,
+            fn(subject, reply) {
+              process.send(
+                subject,
+                worker_command.RespondToUi(request_id, response, reply),
+              )
+            },
+          )
+      }
+  }
+}
+
+fn send_operator_result(
+  result: #(State, command.CommandResult),
+  reply: process.Subject(command.CommandResult),
+) -> State {
+  let #(state, command_result) = result
+  process.send(reply, command_result)
+  state
+}
+
+fn reload_workflow_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+) -> #(State, command.CommandResult) {
+  case simplifile.read(state.chosen_path) {
+    Error(_) -> {
+      let state = mark_reload_invalid(state, "missing_workflow_file")
+      #(
+        state,
+        command.rejected(
+          operator_command,
+          "missing_workflow_file",
+          Some("workflow file could not be read"),
+        ),
+      )
+    }
+    Ok(contents) -> {
+      let state = case contents == state.last_contents {
+        True -> state
+        False -> apply_new_contents(state, contents)
+      }
+      case state.reload_state.current_status {
+        config.CurrentValid -> #(
+          state,
+          command.applied(operator_command, Some("workflow reloaded")),
+        )
+        config.CurrentInvalid(reason) -> #(
+          state,
+          command.rejected(
+            operator_command,
+            reason,
+            Some("workflow reload failed"),
+          ),
+        )
+      }
+    }
+  }
+}
+
+fn retry_issue_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  issue_ref: command.IssueRef,
+) -> #(State, command.CommandResult) {
+  case issue_for_ref(state, issue_ref) {
+    Error(command.NotFound) -> #(
+      state,
+      command.not_found(operator_command, Some("issue not found")),
+    )
+    Error(command.Rejected(reason)) -> #(
+      state,
+      command.rejected(operator_command, reason, Some(reason)),
+    )
+    Error(command.NotAllowed(reason)) -> #(
+      state,
+      command.not_allowed(operator_command, reason, Some(reason)),
+    )
+    Error(_) -> #(
+      state,
+      command.rejected(operator_command, "issue_resolution_failed", None),
+    )
+    Ok(issue) ->
+      case issue_is_running_claimed_or_pending(state, issue.id) {
+        True -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "issue_already_active",
+            Some("issue is running, claimed, or pending claim"),
+          ),
+        )
+        False ->
+          case state.operator_paused {
+            True -> #(
+              state,
+              command.rejected(
+                operator_command,
+                "dispatch_paused",
+                Some("dispatch is paused"),
+              ),
+            )
+            False -> retry_resolved_issue(state, operator_command, issue)
+          }
+      }
+  }
+}
+
+fn retry_resolved_issue(
+  state: State,
+  operator_command: command.OperatorCommand,
+  issue: domain.Issue,
+) -> #(State, command.CommandResult) {
+  let runtime =
+    domain.RuntimeState(
+      ..state.runtime,
+      parked: dict.delete(state.runtime.parked, issue.id),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
+      issue_counters: dict.delete(state.runtime.issue_counters, issue.id),
+    )
+  let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue.id)
+  case
+    config.can_dispatch(state.reload_state)
+    && core.should_dispatch(state.runtime, state.effective, issue)
+    && can_reserve_dispatch_slot(state, issue)
+  {
+    True -> {
+      let state = dispatch_issue(state, issue)
+      #(state, command.applied(operator_command, Some("retry dispatched")))
+    }
+    False -> #(
+      state,
+      command.rejected(
+        operator_command,
+        "not_dispatchable",
+        Some("issue is not currently dispatchable"),
+      ),
+    )
+  }
+}
+
+fn park_issue_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  issue_ref: command.IssueRef,
+  reason: String,
+) -> #(State, command.CommandResult) {
+  case issue_for_ref(state, issue_ref) {
+    Error(command.NotFound) -> #(
+      state,
+      command.not_found(operator_command, Some("issue not found")),
+    )
+    Error(command.Rejected(reason)) -> #(
+      state,
+      command.rejected(operator_command, reason, Some(reason)),
+    )
+    Error(command.NotAllowed(reason)) -> #(
+      state,
+      command.not_allowed(operator_command, reason, Some(reason)),
+    )
+    Error(_) -> #(
+      state,
+      command.rejected(operator_command, "issue_resolution_failed", None),
+    )
+    Ok(issue) ->
+      case
+        dict.has_key(state.runtime.running, issue.id)
+        || dict.has_key(state.runtime.claimed, issue.id)
+        || dict.has_key(state.pending_claims, issue.id)
+      {
+        True -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "issue_active",
+            Some(
+              "running, claimed, or pending issues must be stopped before parking",
+            ),
+          ),
+        )
+        False -> {
+          let state = park_issue_state(state, issue, reason)
+          #(state, command.applied(operator_command, Some("issue parked")))
+        }
+      }
+  }
+}
+
+fn unpark_issue_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  issue_ref: command.IssueRef,
+) -> #(State, command.CommandResult) {
+  case parked_issue_id_for_ref(state, issue_ref) {
+    Ok(issue_id) -> {
+      let state = unpark_issue_state(state, issue_id)
+      #(state, command.applied(operator_command, Some("issue unparked")))
+    }
+    Error(command.NotFound) -> #(
+      state,
+      command.not_found(operator_command, Some("parked issue not found")),
+    )
+    Error(command.Rejected(reason)) -> #(
+      state,
+      command.rejected(operator_command, reason, Some(reason)),
+    )
+    Error(command.NotAllowed(reason)) -> #(
+      state,
+      command.not_allowed(operator_command, reason, Some(reason)),
+    )
+    Error(_) -> #(
+      state,
+      command.rejected(operator_command, "issue_resolution_failed", None),
+    )
+  }
+}
+
+fn route_worker_command(
+  state: State,
+  operator_command: command.OperatorCommand,
+  session_id: String,
+  timeout_ms: Int,
+  operator_reply: process.Subject(command.CommandResult),
+  send: fn(
+    process.Subject(worker_command.Command),
+    process.Subject(worker_command.Reply),
+  ) ->
+    Nil,
+) -> State {
+  case worker_for_session(state, session_id) {
+    Error(Nil) -> {
+      process.send(
+        operator_reply,
+        command.not_found(operator_command, Some("session not found")),
+      )
+      state
+    }
+    Ok(handle) ->
+      case handle.command_subject {
+        None -> {
+          process.send(
+            operator_reply,
+            command.not_allowed(
+              operator_command,
+              "worker_command_subject_unavailable",
+              Some("session worker does not accept operator commands"),
+            ),
+          )
+          state
+        }
+        Some(subject) -> {
+          spawn_worker_command_reply(
+            operator_command,
+            subject,
+            timeout_ms,
+            operator_reply,
+            send,
+          )
+          state
+        }
+      }
+  }
+}
+
+fn spawn_worker_command_reply(
+  operator_command: command.OperatorCommand,
+  subject: process.Subject(worker_command.Command),
+  timeout_ms: Int,
+  operator_reply: process.Subject(command.CommandResult),
+  send: fn(
+    process.Subject(worker_command.Command),
+    process.Subject(worker_command.Reply),
+  ) ->
+    Nil,
+) -> Nil {
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let worker_reply = process.new_subject()
+      send(subject, worker_reply)
+      case
+        process.receive(
+          worker_reply,
+          within: worker_command_timeout(timeout_ms),
+        )
+      {
+        Ok(reply) ->
+          process.send(
+            operator_reply,
+            worker_reply_to_command_result(operator_command, reply),
+          )
+        Error(_) ->
+          process.send(
+            operator_reply,
+            command.rejected(
+              operator_command,
+              "worker_command_timeout",
+              Some("worker command timed out"),
+            ),
+          )
+      }
+    })
+  Nil
+}
+
+fn worker_command_timeout(timeout_ms: Int) -> Int {
+  let client_timeout = case timeout_ms > 25 {
+    True -> timeout_ms - 25
+    False ->
+      case timeout_ms > 1 {
+        True -> timeout_ms - 1
+        False -> timeout_ms
+      }
+  }
+  min_int(client_timeout, max_worker_command_wait_ms)
+}
+
+fn min_int(a: Int, b: Int) -> Int {
+  case a < b {
+    True -> a
+    False -> b
+  }
+}
+
+fn operator_prompt_too_large(message: String) -> Bool {
+  string.length(message) > worker_command.max_operator_prompt_chars
+}
+
+fn ui_response_too_large(response: command.UiResponse) -> Bool {
+  case response {
+    command.UiCancel -> False
+    command.UiValue(value) ->
+      string.length(value) > worker_command.max_operator_ui_value_chars
+  }
+}
+
+fn worker_reply_to_command_result(
+  operator_command: command.OperatorCommand,
+  reply: worker_command.Reply,
+) -> command.CommandResult {
+  case reply {
+    worker_command.Applied(message) ->
+      command.applied(operator_command, message)
+    worker_command.Queued(message) -> command.queued(operator_command, message)
+    worker_command.Rejected(reason, message) ->
+      command.rejected(operator_command, reason, message)
+    worker_command.NotFound(message) ->
+      command.not_found(operator_command, message)
+    worker_command.NotAllowed(reason, message) ->
+      command.not_allowed(operator_command, reason, message)
+  }
+}
+
+fn abort_session_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  session_id: String,
+  timeout_ms: Int,
+  operator_reply: process.Subject(command.CommandResult),
+) -> State {
+  case worker_for_session(state, session_id) {
+    Error(Nil) -> {
+      process.send(
+        operator_reply,
+        command.not_found(operator_command, Some("session not found")),
+      )
+      state
+    }
+    Ok(handle) ->
+      case handle.command_subject {
+        None ->
+          send_operator_result(
+            stop_session_for_operator(
+              state,
+              operator_command,
+              session_id,
+              "operator_abort",
+            ),
+            operator_reply,
+          )
+        Some(subject) -> {
+          spawn_abort_command_reply(
+            state.subject,
+            operator_command,
+            session_id,
+            subject,
+            timeout_ms,
+            operator_reply,
+          )
+          state
+        }
+      }
+  }
+}
+
+fn spawn_abort_command_reply(
+  daemon_subject: process.Subject(Message),
+  operator_command: command.OperatorCommand,
+  session_id: String,
+  subject: process.Subject(worker_command.Command),
+  timeout_ms: Int,
+  operator_reply: process.Subject(command.CommandResult),
+) -> Nil {
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let worker_reply = process.new_subject()
+      process.send(subject, worker_command.Abort(worker_reply))
+      case
+        process.receive(
+          worker_reply,
+          within: worker_command_timeout(timeout_ms),
+        )
+      {
+        Ok(reply) ->
+          process.send(
+            operator_reply,
+            worker_reply_to_command_result(operator_command, reply),
+          )
+        Error(_) ->
+          process.send(
+            daemon_subject,
+            AbortWorkerCommandTimedOut(
+              operator_command,
+              session_id,
+              operator_reply,
+            ),
+          )
+      }
+    })
+  Nil
+}
+
+fn stop_session_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  session_id: String,
+  reason: String,
+) -> #(State, command.CommandResult) {
+  case worker_for_session(state, session_id) {
+    Error(Nil) -> #(
+      state,
+      command.not_found(operator_command, Some("session not found")),
+    )
+    Ok(handle) -> {
+      process.demonitor_process(handle.monitor)
+      hub.update_status(
+        state.event_hub,
+        handle.session_id,
+        session_event.Stopping,
+      )
+      publish_lifecycle(
+        state,
+        handle.session_id,
+        "operator_command",
+        Some(reason),
+      )
+      publish_lifecycle(state, handle.session_id, "worker_exited", Some(reason))
+      hub.finish_session(state.event_hub, handle.session_id, reason)
+      process.kill(handle.pid)
+      let state =
+        State(
+          ..state,
+          workers: dict.delete(state.workers, handle.issue_id),
+          worker_monitors: dict.delete(state.worker_monitors, handle.monitor),
+          issue_sessions: dict.delete(state.issue_sessions, handle.issue_id),
+        )
+        |> park_issue_state(handle.issue, reason)
+      #(state, command.applied(operator_command, Some(reason)))
+    }
+  }
+}
+
+fn issue_is_running_claimed_or_pending(state: State, issue_id: String) -> Bool {
+  dict.has_key(state.runtime.running, issue_id)
+  || dict.has_key(state.runtime.claimed, issue_id)
+  || dict.has_key(state.pending_claims, issue_id)
+}
+
+fn issue_for_ref(
+  state: State,
+  issue_ref: command.IssueRef,
+) -> Result(domain.Issue, command.CommandStatus) {
+  case issue_ref {
+    command.IssueId(issue_id) -> issue_for_id(state, issue_id)
+    command.IssueIdentifier(identifier) ->
+      issue_for_identifier(state, identifier)
+  }
+}
+
+fn issue_for_id(
+  state: State,
+  issue_id: String,
+) -> Result(domain.Issue, command.CommandStatus) {
+  case dict.get(state.runtime.running, issue_id) {
+    Ok(entry) -> Ok(entry.issue)
+    Error(_) ->
+      case dict.get(state.pending_claims, issue_id) {
+        Ok(pending) -> Ok(pending.issue)
+        Error(_) ->
+          case dict.get(state.runtime.completed, issue_id) {
+            Ok(issue) -> Ok(issue)
+            Error(_) -> fetch_issue_by_id(state, issue_id)
+          }
+      }
+  }
+}
+
+fn issue_for_identifier(
+  state: State,
+  identifier: String,
+) -> Result(domain.Issue, command.CommandStatus) {
+  let local = local_issues_with_identifier(state, identifier)
+  case unique_issue(local) {
+    Ok(issue) -> Ok(issue)
+    Error(command.NotFound) ->
+      case fetch_candidates_with_identifier(state, identifier) {
+        Ok(issue) -> Ok(issue)
+        Error(command.NotFound) ->
+          case parked_issue_id_for_identifier(state, identifier) {
+            Ok(issue_id) -> fetch_issue_by_id(state, issue_id)
+            Error(err) -> Error(err)
+          }
+        Error(err) -> Error(err)
+      }
+    Error(err) -> Error(err)
+  }
+}
+
+fn local_issues_with_identifier(
+  state: State,
+  identifier: String,
+) -> List(domain.Issue) {
+  let running =
+    state.runtime.running
+    |> dict.values
+    |> list.map(fn(entry) { entry.issue })
+  let pending =
+    state.pending_claims
+    |> dict.values
+    |> list.map(fn(entry) { entry.issue })
+  let completed = state.runtime.completed |> dict.values
+  list.append(running, list.append(pending, completed))
+  |> list.filter(fn(issue) { issue.identifier == identifier })
+}
+
+fn fetch_candidates_with_identifier(
+  state: State,
+  identifier: String,
+) -> Result(domain.Issue, command.CommandStatus) {
+  case state.tracker_client.fetch_candidate_issues() {
+    Error(_) -> Error(command.Rejected("candidate_fetch_failed"))
+    Ok(issues) ->
+      issues
+      |> list.filter(fn(issue) { issue.identifier == identifier })
+      |> unique_issue
+  }
+}
+
+fn fetch_issue_by_id(
+  state: State,
+  issue_id: String,
+) -> Result(domain.Issue, command.CommandStatus) {
+  case state.tracker_client.fetch_issue_states_by_ids([issue_id]) {
+    Ok([issue]) -> Ok(issue)
+    Ok([]) -> Error(command.NotFound)
+    Ok(_) -> Error(command.Rejected("ambiguous_issue_id"))
+    Error(_) -> Error(command.Rejected("issue_fetch_failed"))
+  }
+}
+
+fn unique_issue(
+  issues: List(domain.Issue),
+) -> Result(domain.Issue, command.CommandStatus) {
+  case issues {
+    [] -> Error(command.NotFound)
+    [issue] -> Ok(issue)
+    [_, ..] -> Error(command.Rejected("ambiguous_issue_identifier"))
+  }
+}
+
+fn parked_issue_id_for_ref(
+  state: State,
+  issue_ref: command.IssueRef,
+) -> Result(String, command.CommandStatus) {
+  case issue_ref {
+    command.IssueId(issue_id) ->
+      case dict.has_key(state.runtime.parked, issue_id) {
+        True -> Ok(issue_id)
+        False -> Error(command.NotFound)
+      }
+    command.IssueIdentifier(identifier) ->
+      parked_issue_id_for_identifier(state, identifier)
+  }
+}
+
+fn parked_issue_id_for_identifier(
+  state: State,
+  identifier: String,
+) -> Result(String, command.CommandStatus) {
+  let matches =
+    state.runtime.parked
+    |> dict.values
+    |> list.filter(fn(entry) { entry.identifier == identifier })
+  case matches {
+    [] -> Error(command.NotFound)
+    [entry] -> Ok(entry.issue_id)
+    [_, ..] -> Error(command.Rejected("ambiguous_issue_identifier"))
+  }
+}
+
+fn worker_for_session(
+  state: State,
+  session_id: String,
+) -> Result(WorkerHandle, Nil) {
+  state.workers
+  |> dict.values
+  |> list.filter(fn(handle) { handle.session_id == session_id })
+  |> first_worker
+}
+
+fn first_worker(handles: List(WorkerHandle)) -> Result(WorkerHandle, Nil) {
+  case handles {
+    [handle, ..] -> Ok(handle)
+    [] -> Error(Nil)
+  }
+}
+
+fn park_issue_state(state: State, issue: domain.Issue, reason: String) -> State {
+  let parked =
+    domain.ParkedEntry(
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      reason: reason,
+      release_policy: domain.ExplicitUnparkOnly,
+      parked_at_ms: state.dependencies.now_ms(),
+    )
+  let runtime =
+    domain.RuntimeState(
+      ..state.runtime,
+      running: dict.delete(state.runtime.running, issue.id),
+      claimed: dict.delete(state.runtime.claimed, issue.id),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
+      issue_counters: dict.delete(state.runtime.issue_counters, issue.id),
+      parked: dict.insert(state.runtime.parked, issue.id, parked),
+    )
+  let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue.id)
+  log_state(state, "warn", "issue_parked", [
+    #("issue_id", issue.id),
+    #("reason", reason),
+  ])
+  state
+}
+
+fn unpark_issue_state(state: State, issue_id: String) -> State {
+  let runtime =
+    domain.RuntimeState(
+      ..state.runtime,
+      parked: dict.delete(state.runtime.parked, issue_id),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, issue_id),
+      issue_counters: dict.delete(state.runtime.issue_counters, issue_id),
+    )
+  let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue_id)
+  log_state(state, "info", "issue_unparked", [#("issue_id", issue_id)])
+  state
+}
+
+fn unpark_if_issue_changed_state(state: State, issue: domain.Issue) -> State {
+  let had_retry = dict.has_key(state.runtime.retry_attempts, issue.id)
+  let runtime = core.unpark_if_issue_changed(state.runtime, issue)
+  let state = State(..state, runtime: runtime)
+  case had_retry && !dict.has_key(runtime.retry_attempts, issue.id) {
+    True -> cancel_retry_timer(state, issue.id)
+    False -> state
+  }
+}
+
+fn cancel_retry_timer(state: State, issue_id: String) -> State {
+  case dict.get(state.retry_timers, issue_id) {
+    Ok(timer) -> state.dependencies.cancel_timer(timer)
+    Error(_) -> Nil
+  }
+  State(..state, retry_timers: dict.delete(state.retry_timers, issue_id))
 }
 
 fn handle_poll_tick(state: State, generation: Int) -> State {
@@ -576,7 +1437,8 @@ fn begin_running_refresh(state: State, generation: Int) -> State {
 
 fn begin_candidate_fetch_or_finish(state: State, generation: Int) -> State {
   case
-    config.can_dispatch(state.reload_state)
+    !state.operator_paused
+    && config.can_dispatch(state.reload_state)
     && state.effective.agent.max_concurrent_agents != 0
     && slots_remain(state)
   {
@@ -650,7 +1512,11 @@ fn poll_result_is_stale(state: State, generation: Int) -> Bool {
 }
 
 fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
-  case config.can_dispatch(state.reload_state) && slots_remain(state) {
+  case
+    !state.operator_paused
+    && config.can_dispatch(state.reload_state)
+    && slots_remain(state)
+  {
     False -> state
     True ->
       case issues {
@@ -708,10 +1574,12 @@ fn handle_retry_tick(state: State, issue_id: String, generation: Int) -> State {
               ..state,
               retry_timers: dict.delete(state.retry_timers, issue_id),
             )
-          case config.can_dispatch(state.reload_state) {
-            False ->
+          case state.operator_paused, config.can_dispatch(state.reload_state) {
+            True, _ ->
               defer_retry_for_invalid_workflow(state, issue_id, generation)
-            True -> begin_retry_refresh(state, issue_id, generation)
+            _, False ->
+              defer_retry_for_invalid_workflow(state, issue_id, generation)
+            False, True -> begin_retry_refresh(state, issue_id, generation)
           }
         }
       }
@@ -1673,7 +2541,10 @@ fn tokens_are_nonzero(tokens: domain.TokenTotals) -> Bool {
 
 fn stop_worker(handle: WorkerHandle) -> Nil {
   case handle.command_subject {
-    Some(subject) -> process.send(subject, Abort)
+    Some(subject) -> {
+      let reply = process.new_subject()
+      process.send(subject, worker_command.Abort(reply))
+    }
     None -> Nil
   }
   process.kill(handle.pid)

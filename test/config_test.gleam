@@ -46,6 +46,8 @@ pub fn default_values_test() {
   assert pi.read_timeout_ms == 5000
   assert pi.stall_timeout_ms == 300_000
   assert pi.auto_retry == True
+  assert pi.ui_request_policy == domain.Cancel
+  assert pi.ui_request_timeout_ms == 300_000
   assert pi.compatibility_probe == True
 }
 
@@ -182,6 +184,62 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
     config.resolve_with_env(definition(front), "test/tmp/WORKFLOW.md", env)
   assert configured.pi.command == "custom pi --mode rpc"
   assert configured.pi.compatibility_probe == False
+
+  let operator_policy =
+    minimal_front()
+    <> "pi:\n  ui_request_policy: operator\n  ui_request_timeout_ms: 1234\n"
+  let assert Ok(configured_operator_policy) =
+    config.resolve_with_env(
+      definition(operator_policy),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+  assert configured_operator_policy.pi.ui_request_policy == domain.Operator
+  assert configured_operator_policy.pi.ui_request_timeout_ms == 1234
+
+  let explicit_timeout =
+    minimal_front() <> "pi:\n  ui_request_timeout_ms: 1234\n"
+  let assert Ok(configured_timeout) =
+    config.resolve_with_env(
+      definition(explicit_timeout),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+  assert configured_timeout.pi.ui_request_timeout_ms == 1234
+
+  let fail_policy = minimal_front() <> "pi:\n  ui_request_policy: fail\n"
+  let assert Ok(configured_fail_policy) =
+    config.resolve_with_env(
+      definition(fail_policy),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+  assert configured_fail_policy.pi.ui_request_policy == domain.Fail
+
+  let ignore_policy = minimal_front() <> "pi:\n  ui_request_policy: ignore\n"
+  let assert Ok(configured_ignore_policy) =
+    config.resolve_with_env(
+      definition(ignore_policy),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+  assert configured_ignore_policy.pi.ui_request_policy == domain.Ignore
+
+  let invalid_policy = minimal_front() <> "pi:\n  ui_request_policy: surprise\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(invalid_policy),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let invalid_timeout = minimal_front() <> "pi:\n  ui_request_timeout_ms: 0\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(invalid_timeout),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
 
   let invalid = minimal_front() <> "pi:\n  command: \"\"\n"
   let assert Error(_) =
