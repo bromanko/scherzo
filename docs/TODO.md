@@ -35,3 +35,19 @@ This file tracks follow-up improvements that are intentionally outside the initi
   - Ensure Scherzo can still terminate or clean up the underlying pi process and tmux session during cancellation, terminal issue cleanup, and shutdown.
   - Keep the default non-tmux RPC execution path available for simple deployments and tests.
   - Add deterministic tests with a fake tmux wrapper or dependency injection rather than requiring real tmux in the main test suite.
+
+- [ ] Use Jujutsu (`jj`) for workspace isolation.
+
+  Scherzo should be able to create isolated per-issue workspaces using Jujutsu instead of relying only on ad hoc filesystem directories populated by shell hooks. Each Linear issue should map to a dedicated `jj` workspace or worktree-like checkout so agent changes are isolated, inspectable, and easier to merge or abandon.
+
+  Initial design notes to preserve for a future plan:
+
+  - Decide whether Scherzo owns `jj workspace add` / `jj workspace forget` directly or delegates all `jj` setup to workflow hooks.
+  - Add optional workflow/config keys for the repository root, workspace base directory, target revision, branch/bookmark naming policy, and cleanup policy.
+  - Use deterministic, sanitized workspace names based on the Linear issue identifier.
+  - Ensure the pi process still launches with cwd equal to the per-issue `jj` workspace path.
+  - Log the `jj` workspace name, path, base revision, and any bookmark/branch name used for handoff.
+  - Define what happens when an issue already has an existing `jj` workspace: reuse, verify cleanliness, resume, or fail safely.
+  - Define terminal cleanup behavior: whether to keep completed workspaces for review, forget/remove abandoned workspaces, or leave cleanup to the operator.
+  - Consider how this interacts with retries, parked issues, process restart, and the future tmux session feature.
+  - Add deterministic tests with a fake `jj` command or dependency injection rather than requiring real Jujutsu in the main test suite.
