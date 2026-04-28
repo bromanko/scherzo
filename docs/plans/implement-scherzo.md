@@ -79,7 +79,7 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 - [x] (2026-04-28 17:30Z) Implemented pure orchestrator scheduling, eligibility, sorting, reconciliation, continuation and failure retry scheduling, retry replacement effects, parking/unparking, token accounting, and worker-exit transitions in `src/scherzo/orchestrator/core.gleam`; `direnv exec . gleam test` passed with 63 tests.
 - [x] (2026-04-28 17:35Z) Implemented the pi RPC subprocess client, command/event codec helpers, workspace-scoped compatibility probe, extension UI cancellation, stats decoding, and agent runner with fake-pi integration tests for probe ordering, prompt rendering, terminal success, failure paths, and in-worker continuation; `direnv exec . gleam test` passed with 73 tests.
 - [x] (2026-04-28 17:38Z) Implemented a dependency-injected runtime service harness, one-tick poll/dispatch loop, CLI startup and help output, startup negative-path handling, paused-dispatch behavior, and deterministic fake end-to-end service validation; `direnv exec . gleam test` passed with 79 tests and `direnv exec . gleam run -- --help` printed the required usage text. The service harness is intentionally synchronous rather than a full OTP timer actor in this implementation pass.
-- [ ] Run full validation, update README and this plan with final outcomes, and commit the completed implementation.
+- [x] (2026-04-28 17:43Z) Ran full validation, updated `README.md` with schema, workspace contract, safety posture, coverage/deviation notes, and operational examples, updated this plan with final outcomes, and prepared the documentation/validation commit; `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `direnv exec . gleam run -- --help` all succeeded.
 
 ## Surprises & Discoveries
 
@@ -180,9 +180,15 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
   Rationale: pi RPC stdout must remain parseable JSON Lines. The file strategy keeps diagnostics available for logging while preventing stderr text from corrupting JSON framing. Live stderr streaming is deferred because the core tests only require stdout safety and diagnostics availability.
   Date: 2026-04-28
 
+- Decision: Land the runtime as a synchronous dependency-injected service harness instead of a full long-lived OTP actor in this implementation pass.
+  Rationale: The harness validates startup, workflow/config loading, pause behavior, candidate dispatch, real workspace preparation, fake-pi probing/prompting, and worker result handling deterministically. It keeps the high-risk filesystem and subprocess behavior tested while leaving real timers, signal handling, and production Linear HTTP wiring as explicit follow-up work rather than hiding an incomplete actor behind a daemon-shaped API.
+  Date: 2026-04-28
+
 ## Outcomes & Retrospective
 
 - Milestone 9 outcome: The CLI and service harness are operational for deterministic one-tick validation and startup/help behavior, but the runtime is a synchronous harness rather than the full long-lived OTP actor with real timers and graceful signal handling described in the original plan. The implemented harness still proves workflow loading, pause behavior, dispatch through the real workspace and fake-pi runner, worker result handling, and structured logs without real Linear or real pi.
+
+- Completion outcome: The repository now contains a compilable Gleam application with development environment files, workflow example, domain/config/template/workspace/Linear/orchestrator/pi-runner modules, CLI help, and 79 deterministic tests. Core safety claims for workspace containment, population hooks, probe cwd, fake pi prompt execution, retry caps, parking, and secret redaction are covered by tests. Real Linear network execution, a long-lived OTP scheduler actor with timers, graceful signal handling, and real pi compatibility against an installed pi were not run in this environment and remain documented as deferred or skipped validation. Linear API compatibility was validated only against fake responses.
 
 ## Context and Orientation
 
