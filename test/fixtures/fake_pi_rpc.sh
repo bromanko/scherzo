@@ -13,6 +13,10 @@ fi
 prompt_seen=0
 
 while IFS= read -r line; do
+  if [[ -n "${FAKE_PI_TRANSCRIPT:-}" ]]; then
+    printf '%s\n' "$line" >> "$FAKE_PI_TRANSCRIPT"
+  fi
+
   if [[ -n "${FAKE_PI_DELAY_MS:-}" ]]; then
     sleep "$(awk "BEGIN { print ${FAKE_PI_DELAY_MS} / 1000 }")"
   fi
@@ -65,6 +69,12 @@ while IFS= read -r line; do
         jq -cn '{type:"message_update",delta:"POPULATED"}'
       else
         jq -cn '{type:"message_update",delta:"not-populated"}'
+      fi
+      if [[ -n "${FAKE_PI_UI_DIALOG:-}" ]]; then
+        jq -cn '{id:"ui-1",type:"extension_ui_request",method:"confirm",message:"continue?"}'
+      fi
+      if [[ -n "${FAKE_PI_UI_NOTIFY:-}" ]]; then
+        jq -cn '{type:"extension_ui_request",method:"notify",message:"hello"}'
       fi
       jq -cn '{type:"turn_end"}'
       if [[ -n "${FAKE_PI_NO_AGENT_END:-}" ]]; then
