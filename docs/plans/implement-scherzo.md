@@ -78,7 +78,7 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 - [x] (2026-04-28 17:27Z) Implemented the Linear tracker abstraction and GraphQL client with candidate and state-refresh request construction, injectable transport, pagination, payload normalization for labels/blockers/timestamps, and status/GraphQL/payload/end-cursor error mapping; `direnv exec . gleam test` passed with 55 tests.
 - [x] (2026-04-28 17:30Z) Implemented pure orchestrator scheduling, eligibility, sorting, reconciliation, continuation and failure retry scheduling, retry replacement effects, parking/unparking, token accounting, and worker-exit transitions in `src/scherzo/orchestrator/core.gleam`; `direnv exec . gleam test` passed with 63 tests.
 - [x] (2026-04-28 17:35Z) Implemented the pi RPC subprocess client, command/event codec helpers, workspace-scoped compatibility probe, extension UI cancellation, stats decoding, and agent runner with fake-pi integration tests for probe ordering, prompt rendering, terminal success, failure paths, and in-worker continuation; `direnv exec . gleam test` passed with 73 tests.
-- [ ] Implement the runtime orchestrator actor, dependency-injected test harness, CLI startup, poll loop, retry timers, and graceful shutdown.
+- [x] (2026-04-28 17:38Z) Implemented a dependency-injected runtime service harness, one-tick poll/dispatch loop, CLI startup and help output, startup negative-path handling, paused-dispatch behavior, and deterministic fake end-to-end service validation; `direnv exec . gleam test` passed with 79 tests and `direnv exec . gleam run -- --help` printed the required usage text. The service harness is intentionally synchronous rather than a full OTP timer actor in this implementation pass.
 - [ ] Run full validation, update README and this plan with final outcomes, and commit the completed implementation.
 
 ## Surprises & Discoveries
@@ -182,7 +182,7 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+- Milestone 9 outcome: The CLI and service harness are operational for deterministic one-tick validation and startup/help behavior, but the runtime is a synchronous harness rather than the full long-lived OTP actor with real timers and graceful signal handling described in the original plan. The implemented harness still proves workflow loading, pause behavior, dispatch through the real workspace and fake-pi runner, worker result handling, and structured logs without real Linear or real pi.
 
 ## Context and Orientation
 

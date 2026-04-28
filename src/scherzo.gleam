@@ -1,5 +1,5 @@
-import gleam/io
+import scherzo/main
 
 pub fn main() -> Nil {
-  io.println("Hello from scherzo!")
+  main.main()
 }
