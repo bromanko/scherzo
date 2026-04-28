@@ -70,7 +70,7 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 - [x] (2026-04-28 16:05Z) Revised the plan after spec-coverage review to add explicit Symphony coverage mapping, invalid-reload dispatch gating, per-workspace pi probing, retry timer replacement, retry-poll failure handling, worker-observed terminal cleanup, logger-sink resilience, and CLI negative-path validation.
 - [x] (2026-04-28 16:43Z) Tightened execution readiness by filling the milestone 1 step gap, requiring an explicit population or verification hook, documenting the single-instance operating constraint, clarifying continuation loops, requiring secret registration on reload, and specifying failed-population cleanup.
 - [x] (2026-04-28 17:09Z) Created the Gleam project scaffold, `devenv.nix`, a direnv-compatible `.envrc`, README, ignore rules, dependency smoke tests, and `examples/WORKFLOW.md` with an explicit `hooks.after_create` population hook; `direnv exec . gleam test` passed with 6 tests.
-- [ ] Prove the Erlang port and fake pi RPC subprocess boundary before building higher-level scheduler code.
+- [x] (2026-04-28 17:12Z) Proved the Erlang port and fake pi RPC subprocess boundary with `src/scherzo/port.gleam`, `src/scherzo_port_ffi.erl`, `test/fixtures/fake_pi_rpc.sh`, and port tests for cwd, stdin/stdout JSONL separation, stderr diagnostics capture, termination, and 10 MB line handling; `direnv exec . gleam test` passed with 10 tests.
 - [ ] Implement domain types, typed errors, structured logging helpers, retry/session counters, parked issue state, and deterministic test fixtures.
 - [ ] Implement `WORKFLOW.md` loading, YAML front matter parsing, config defaults, env/path resolution, validation, dynamic reload state, pause semantics, and limit validation.
 - [ ] Implement strict Liquid-like prompt rendering with `issue` and `attempt` inputs.
@@ -91,6 +91,9 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 
 - Observation: The host has `devenv` installed but the default direnv stdlib did not define `use devenv` until the devenv-provided direnvrc was sourced.
   Evidence: `direnv exec . gleam new ...` first failed with `use_devenv: command not found`; updating `.envrc` to source `devenv direnvrc` before `use devenv` let `direnv exec . gleam --version` print `gleam 1.15.4`.
+
+- Observation: Erlang ports provide stdout line messages but not a convenient independent live stderr stream for this use case.
+  Evidence: The passing port tests use a wrapper that redirects child stderr into a temporary diagnostics file; stdout returned only the JSON line while `read_diagnostics` later contained `diagnostic`.
 
 ## Decision Log
 
@@ -168,6 +171,10 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 
 - Decision: Keep `.envrc` semantically aligned with `use devenv` while sourcing `devenv direnvrc` when needed.
   Rationale: This host's direnv installation did not know the devenv integration function by default. Sourcing the checked host command's generated direnvrc preserves the documented direnv workflow and avoids adding a separate non-devenv setup path.
+  Date: 2026-04-28
+
+- Decision: Capture subprocess stderr in a temporary diagnostics file rather than merging it into the Erlang port stdout stream.
+  Rationale: pi RPC stdout must remain parseable JSON Lines. The file strategy keeps diagnostics available for logging while preventing stderr text from corrupting JSON framing. Live stderr streaming is deferred because the core tests only require stdout safety and diagnostics availability.
   Date: 2026-04-28
 
 ## Outcomes & Retrospective
