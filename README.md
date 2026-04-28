@@ -1,6 +1,6 @@
 # Scherzo
 
-Scherzo is a Gleam service that polls Linear issues, prepares one workspace per issue, and runs a pi coding-agent session in that workspace using pi RPC mode.
+Scherzo is a Gleam/Erlang daemon that polls one Linear project, prepares one workspace per issue, and runs a pi coding-agent session in that workspace using pi RPC mode.
 
 The current implementation is ready for cautious use against one real Linear board from one Scherzo instance and one canonical workspace root. It includes reusable real Linear HTTPS reads, bounded smoke checks, a long-lived daemon actor with poll and retry timers, monitored pi workers, workflow reload by file contents, no-prompt pi probing, optional Linear handoff comments/state updates, an authenticated local read-only control API, `scherzoctl`, and a local instance lock. It is not a distributed job system: do not run multiple hosts or multiple independent workspace roots against the same Linear project until a durable claim backend exists.
 
@@ -16,12 +16,11 @@ Useful validation commands are:
     direnv exec . gleam format --check src test
     direnv exec . gleam test
     direnv exec . gleam run -- --help
+    direnv exec . gleam run -- ctl --help
 
-Run Scherzo with the default workflow path:
+## CLI modes
 
-    direnv exec . gleam run --
-
-or with an explicit workflow file:
+With no mode flag, Scherzo runs daemon mode and keeps polling until the Erlang VM process is terminated:
 
     direnv exec . gleam run -- path/to/WORKFLOW.md
 
