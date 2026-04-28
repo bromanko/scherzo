@@ -25,6 +25,18 @@ or with an explicit workflow file:
 
     direnv exec . gleam run -- path/to/WORKFLOW.md
 
+Use `--once` to run one deterministic poll/dispatch tick and exit:
+
+    direnv exec . gleam run -- --once path/to/WORKFLOW.md
+
+Use `--linear-smoke` before dispatching on a real board. It resolves Linear credentials and performs bounded read-only Linear API calls. It does not prepare workspaces, require dispatch hooks, acquire the instance lock, run pi, or send a prompt:
+
+    LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-smoke path/to/WORKFLOW.md
+
+Use `--pi-probe` before allowing a real prompt. It validates dispatch hooks, acquires the local instance lock, prepares a scratch workspace named from `SCHERZO-PROBE`, launches pi RPC, runs `set_session_name`, `set_auto_retry`, `get_state`, and `get_session_stats`, then terminates pi without sending `prompt`:
+
+    LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --pi-probe path/to/WORKFLOW.md
+
 ## Runtime requirements
 
 Runtime operation requires:
