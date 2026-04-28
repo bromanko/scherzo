@@ -1,0 +1,9 @@
+build/
+_build/
+.devenv/
+.direnv/
+erl_crash.dump
+.scherzo/
+node_modules/
+*.log
+test/tmp/

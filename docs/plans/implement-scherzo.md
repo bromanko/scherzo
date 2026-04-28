@@ -69,7 +69,7 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 - [x] (2026-04-28 15:45Z) Revised the plan after adversarial review to add early pi subprocess validation, explicit workspace population, retry/session caps, issue parking, a pause control, a pi compatibility probe, and deterministic fake integration validation.
 - [x] (2026-04-28 16:05Z) Revised the plan after spec-coverage review to add explicit Symphony coverage mapping, invalid-reload dispatch gating, per-workspace pi probing, retry timer replacement, retry-poll failure handling, worker-observed terminal cleanup, logger-sink resilience, and CLI negative-path validation.
 - [x] (2026-04-28 16:43Z) Tightened execution readiness by filling the milestone 1 step gap, requiring an explicit population or verification hook, documenting the single-instance operating constraint, clarifying continuation loops, requiring secret registration on reload, and specifying failed-population cleanup.
-- [ ] Create the Gleam project scaffold, `devenv.nix`, `.envrc`, README, ignore rules, dependency smoke tests, and example workflow with an explicit workspace population hook.
+- [x] (2026-04-28 17:09Z) Created the Gleam project scaffold, `devenv.nix`, a direnv-compatible `.envrc`, README, ignore rules, dependency smoke tests, and `examples/WORKFLOW.md` with an explicit `hooks.after_create` population hook; `direnv exec . gleam test` passed with 6 tests.
 - [ ] Prove the Erlang port and fake pi RPC subprocess boundary before building higher-level scheduler code.
 - [ ] Implement domain types, typed errors, structured logging helpers, retry/session counters, parked issue state, and deterministic test fixtures.
 - [ ] Implement `WORKFLOW.md` loading, YAML front matter parsing, config defaults, env/path resolution, validation, dynamic reload state, pause semantics, and limit validation.
@@ -88,6 +88,9 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 
 - Observation: pi has a documented non-Node integration mode that fits a Gleam service: `pi --mode rpc` communicates over LF-delimited JSON Lines on stdin/stdout.
   Evidence: The pi RPC documentation defines commands such as `prompt`, `get_state`, `get_session_stats`, and events such as `agent_start`, `turn_end`, and `agent_end`.
+
+- Observation: The host has `devenv` installed but the default direnv stdlib did not define `use devenv` until the devenv-provided direnvrc was sourced.
+  Evidence: `direnv exec . gleam new ...` first failed with `use_devenv: command not found`; updating `.envrc` to source `devenv direnvrc` before `use devenv` let `direnv exec . gleam --version` print `gleam 1.15.4`.
 
 ## Decision Log
 
@@ -161,6 +164,10 @@ If implementation stops halfway, each milestone leaves either a compile-tested l
 
 - Decision: Register newly resolved secrets immediately after every valid workflow reload.
   Rationale: A reload can change `tracker.api_key` or another secret indirection. The logger must know the new value before any reload-derived diagnostics, summaries, HTTP errors, or hook errors can expose it.
+  Date: 2026-04-28
+
+- Decision: Keep `.envrc` semantically aligned with `use devenv` while sourcing `devenv direnvrc` when needed.
+  Rationale: This host's direnv installation did not know the devenv integration function by default. Sourcing the checked host command's generated direnvrc preserves the documented direnv workflow and avoids adding a separate non-devenv setup path.
   Date: 2026-04-28
 
 ## Outcomes & Retrospective
