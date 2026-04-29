@@ -9,10 +9,12 @@ import scherzo/config
 import scherzo/domain
 import scherzo/error
 import scherzo/instance_lock
+import scherzo/lifecycle
 import scherzo/linear
 import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
+import scherzo/signal
 import scherzo/smoke
 import scherzo/tracker
 import scherzo/workflow
@@ -38,6 +40,16 @@ pub type Dependencies {
       Result(Nil, error.WorkspaceError),
     logger: fn(String) -> Result(Nil, Nil),
     now_ms: fn() -> Int,
+  )
+}
+
+pub type DaemonLifecycleDependencies {
+  DaemonLifecycleDependencies(
+    daemon_dependencies: daemon.RuntimeDependencies,
+    install_stop_source: fn(process.Subject(lifecycle.StopReason)) ->
+      Result(signal.Installation, String),
+    shutdown_timeout_ms: Int,
+    lifecycle_logger: fn(String, String, List(log.Field)) -> Nil,
   )
 }
 
@@ -117,16 +129,66 @@ pub fn start_linear_smoke(
 }
 
 pub fn start_daemon(workflow_path: Option(String)) -> Result(Nil, StartupError) {
+  start_daemon_with_lifecycle(
+    workflow_path,
+    DaemonLifecycleDependencies(
+      daemon_dependencies: daemon_dependencies(),
+      install_stop_source: signal.install,
+      shutdown_timeout_ms: 10_000,
+      lifecycle_logger: fn(level, event, fields) {
+        let _ = log_stderr(level, event, fields, [])
+        Nil
+      },
+    ),
+  )
+}
+
+pub fn start_daemon_with_lifecycle(
+  workflow_path: Option(String),
+  dependencies: DaemonLifecycleDependencies,
+) -> Result(Nil, StartupError) {
   use lock <- try_startup(acquire_lock_for_workflow(workflow_path, True))
-  case daemon.start(workflow_path, daemon_dependencies()) |> map_daemon_error {
-    Error(err) -> {
+  let stop_subject = process.new_subject()
+  case dependencies.install_stop_source(stop_subject) {
+    Error(message) -> {
       instance_lock.release(lock)
-      Error(err)
+      Error(StartupError("signal_handler_failed", message))
     }
-    Ok(_) -> {
-      process.sleep_forever()
-      instance_lock.release(lock)
-      Ok(Nil)
+    Ok(installation) -> {
+      dependencies.lifecycle_logger("info", "signal_handler_installed", [
+        #("signal", "sigterm"),
+        #("os_pid", installation.os_pid),
+      ])
+      case
+        daemon.start(workflow_path, dependencies.daemon_dependencies)
+        |> map_daemon_error
+      {
+        Error(err) -> {
+          installation.cleanup()
+          instance_lock.release(lock)
+          Error(err)
+        }
+        Ok(started) -> {
+          let result =
+            lifecycle.run_until_stop(
+              stop_subject,
+              fn(_) {
+                daemon.shutdown(started.data, dependencies.shutdown_timeout_ms)
+              },
+              installation.cleanup,
+              fn() { instance_lock.release(lock) },
+              dependencies.lifecycle_logger,
+            )
+          case result {
+            lifecycle.ShutdownComplete -> Ok(Nil)
+            lifecycle.ShutdownTimedOut ->
+              Error(StartupError(
+                "daemon_shutdown_timeout",
+                "daemon shutdown timed out",
+              ))
+          }
+        }
+      }
     }
   }
 }
