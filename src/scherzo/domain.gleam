@@ -1,6 +1,6 @@
 import birl.{type Time}
 import gleam/dict.{type Dict}
-import gleam/option.{type Option, None}
+import gleam/option.{type Option}
 import yay
 
 pub type BlockerRef {
@@ -182,19 +182,16 @@ pub type RunningEntry {
 }
 
 pub type IssueCounter {
-  IssueCounter(
-    failure_attempts: Int,
-    worker_sessions: Int,
-    observed_updated_at: Option(Time),
-  )
+  IssueCounter(failure_attempts: Int, worker_sessions: Int)
 }
 
 pub fn new_issue_counter() -> IssueCounter {
-  IssueCounter(
-    failure_attempts: 0,
-    worker_sessions: 0,
-    observed_updated_at: None,
-  )
+  IssueCounter(failure_attempts: 0, worker_sessions: 0)
+}
+
+pub type ParkReleasePolicy {
+  ExplicitUnparkOnly
+  AutoUnparkOnIssueChange(issue_fingerprint: String)
 }
 
 pub type ParkedEntry {
@@ -202,7 +199,7 @@ pub type ParkedEntry {
     issue_id: String,
     identifier: String,
     reason: String,
-    observed_updated_at: Option(Time),
+    release_policy: ParkReleasePolicy,
     parked_at_ms: Int,
   )
 }

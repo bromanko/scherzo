@@ -45,21 +45,19 @@ pub fn default_issue_counter_is_zero_test() {
   let counter = domain.new_issue_counter()
   assert counter.failure_attempts == 0
   assert counter.worker_sessions == 0
-  assert counter.observed_updated_at == None
 }
 
-pub fn parked_issue_records_observed_updated_at_test() {
-  let updated_at = birl.from_unix(42)
+pub fn parked_issue_records_release_policy_test() {
   let parked =
     domain.ParkedEntry(
       issue_id: "issue-id",
       identifier: "ABC-123",
       reason: "max_retry_attempts",
-      observed_updated_at: Some(updated_at),
+      release_policy: domain.AutoUnparkOnIssueChange("fingerprint"),
       parked_at_ms: 1000,
     )
 
-  assert parked.observed_updated_at == Some(updated_at)
+  assert parked.release_policy == domain.AutoUnparkOnIssueChange("fingerprint")
   assert parked.reason == "max_retry_attempts"
 }
 

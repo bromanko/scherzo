@@ -1691,7 +1691,8 @@ fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
     True ->
       case issues {
         [] -> state
-        [issue, ..rest] ->
+        [issue, ..rest] -> {
+          let state = unpark_if_issue_changed_state(state, issue)
           case
             core.should_dispatch(state.runtime, state.effective, issue)
             && can_reserve_dispatch_slot(state, issue)
@@ -1699,6 +1700,7 @@ fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
             True -> dispatch_issue_with_continuation(state, issue, rest)
             False -> dispatch_candidates(rest, state)
           }
+        }
       }
   }
 }

@@ -357,7 +357,8 @@ fn dispatch_candidates(
 ) -> Result(ServiceResult, StartupError) {
   case candidates {
     [] -> Ok(ServiceResult(logs: logs, dispatched: dispatched, state: state))
-    [issue, ..rest] ->
+    [issue, ..rest] -> {
+      let state = core.unpark_if_issue_changed(state, issue)
       case core.should_dispatch(state, effective, issue) {
         False ->
           dispatch_candidates(
@@ -436,14 +437,22 @@ fn dispatch_candidates(
                   #("reason", "failed"),
                 ])
               let _ = dependencies.logger(failed)
+              let baseline_issue = case failure.final_issue {
+                Some(final_issue) ->
+                  case final_issue.id == issue.id {
+                    True -> final_issue
+                    False -> issue
+                  }
+                None -> issue
+              }
               let transition =
                 core.apply_worker_failure(
                   state,
                   effective,
                   issue.id,
+                  baseline_issue,
                   dependencies.now_ms(),
                 )
-              let _ = failure
               let logs =
                 interpret_effects(transition.effects, effective, dependencies, [
                   failed,
@@ -464,6 +473,7 @@ fn dispatch_candidates(
           }
         }
       }
+    }
   }
 }
 

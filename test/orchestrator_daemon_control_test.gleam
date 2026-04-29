@@ -10,6 +10,7 @@ import scherzo/control/file as control_file
 import scherzo/domain
 import scherzo/error
 import scherzo/handoff
+import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/session/event
 import scherzo/session/hub

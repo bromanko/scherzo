@@ -85,6 +85,124 @@ fn issue(
   )
 }
 
+fn rich_issue() -> domain.Issue {
+  domain.Issue(
+    ..issue("a", "ABC-1", "Todo", Some(1)),
+    description: Some("Description"),
+    branch_name: Some("abc-1-title"),
+    url: Some("https://linear.app/example/ABC-1"),
+    labels: ["bug", "backend"],
+    blocked_by: [
+      domain.BlockerRef(
+        id: Some("block-1"),
+        identifier: Some("ABC-0"),
+        state: Some("Todo"),
+      ),
+      domain.BlockerRef(
+        id: Some("block-2"),
+        identifier: Some("ABC-00"),
+        state: Some("In Progress"),
+      ),
+    ],
+    created_at: Some(birl.from_unix(1)),
+    updated_at: Some(birl.from_unix(2)),
+  )
+}
+
+fn auto_parked_entry(issue: domain.Issue, reason: String) -> domain.ParkedEntry {
+  domain.ParkedEntry(
+    issue_id: issue.id,
+    identifier: issue.identifier,
+    reason: reason,
+    release_policy: domain.AutoUnparkOnIssueChange(core.issue_fingerprint(issue)),
+    parked_at_ms: 0,
+  )
+}
+
+fn explicit_parked_entry(
+  issue: domain.Issue,
+  reason: String,
+) -> domain.ParkedEntry {
+  domain.ParkedEntry(
+    issue_id: issue.id,
+    identifier: issue.identifier,
+    reason: reason,
+    release_policy: domain.ExplicitUnparkOnly,
+    parked_at_ms: 0,
+  )
+}
+
+fn state_with_parked(
+  state: domain.RuntimeState,
+  issue: domain.Issue,
+  parked: domain.ParkedEntry,
+) -> domain.RuntimeState {
+  domain.RuntimeState(
+    ..state,
+    parked: dict.insert(state.parked, issue.id, parked),
+  )
+}
+
+pub fn issue_fingerprint_ignores_timestamps_url_and_labels_test() {
+  let base = rich_issue()
+  let metadata_changed =
+    domain.Issue(
+      ..base,
+      url: Some("https://linear.app/example/ABC-1?metadata=changed"),
+      labels: ["frontend", "needs-review"],
+      created_at: Some(birl.from_unix(100)),
+      updated_at: Some(birl.from_unix(101)),
+    )
+
+  assert core.issue_fingerprint(base)
+    == core.issue_fingerprint(metadata_changed)
+}
+
+pub fn issue_fingerprint_changes_for_blockers_test() {
+  let first =
+    domain.BlockerRef(
+      id: Some("block-1"),
+      identifier: Some("ABC-0"),
+      state: Some("Todo"),
+    )
+  let second =
+    domain.BlockerRef(
+      id: Some("block-2"),
+      identifier: Some("ABC-00"),
+      state: Some("In Progress"),
+    )
+  let base = domain.Issue(..rich_issue(), blocked_by: [first, second])
+  let reordered = domain.Issue(..base, blocked_by: [second, first])
+  let blocker_changed =
+    domain.Issue(..base, blocked_by: [
+      domain.BlockerRef(..first, state: Some("Done")),
+      second,
+    ])
+
+  assert core.issue_fingerprint(base) == core.issue_fingerprint(reordered)
+  assert core.issue_fingerprint(base) != core.issue_fingerprint(blocker_changed)
+}
+
+pub fn issue_fingerprint_changes_for_core_fields_test() {
+  let base = rich_issue()
+  let base_fingerprint = core.issue_fingerprint(base)
+
+  assert core.issue_fingerprint(domain.Issue(..base, id: "different-id"))
+    != base_fingerprint
+  assert core.issue_fingerprint(domain.Issue(..base, identifier: "ABC-2"))
+    != base_fingerprint
+  assert core.issue_fingerprint(domain.Issue(..base, title: "Different title"))
+    != base_fingerprint
+  assert core.issue_fingerprint(domain.Issue(..base, description: Some("New")))
+    != base_fingerprint
+  assert core.issue_fingerprint(domain.Issue(..base, priority: Some(2)))
+    != base_fingerprint
+  assert core.issue_fingerprint(domain.Issue(..base, state: "In Progress"))
+    != base_fingerprint
+  assert core.issue_fingerprint(domain.Issue(..base, branch_name: Some("new")))
+    != base_fingerprint
+}
+
 pub fn candidate_sorting_and_eligibility_test() {
   let a = issue("a", "ABC-2", "Todo", None)
   let b = issue("b", "ABC-1", "Todo", Some(1))
@@ -111,20 +229,10 @@ pub fn running_claimed_parked_and_slots_reject_dispatch_test() {
   assert !core.should_dispatch(claimed, config(), issue)
 
   let parked =
-    domain.RuntimeState(
-      ..state,
-      parked: dict.from_list([
-        #(
-          "a",
-          domain.ParkedEntry(
-            issue_id: "a",
-            identifier: "ABC-1",
-            reason: "cap",
-            observed_updated_at: issue.updated_at,
-            parked_at_ms: 0,
-          ),
-        ),
-      ]),
+    state_with_parked(
+      state,
+      issue,
+      explicit_parked_entry(issue, "operator_hold"),
     )
   assert !core.should_dispatch(parked, config(), issue)
 
@@ -211,6 +319,9 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
       200,
     )
   assert dict.has_key(parked.parked, "a")
+  let assert Ok(parked_entry) = dict.get(parked.parked, "a")
+  assert parked_entry.release_policy
+    == domain.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
   assert park_effects
     == [core.ParkIssue("a", "max_sessions_per_issue"), core.ReleaseClaim("a")]
 }
@@ -224,17 +335,57 @@ pub fn worker_failure_backoff_and_retry_cap_test() {
   let state =
     core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
   let core.Transition(state: one, effects: effects1) =
-    core.apply_worker_failure(state, config(), "a", 100)
+    core.apply_worker_failure(state, config(), "a", issue, 100)
   assert effects1
     == [core.CancelRetry("a"), core.ScheduleRetry("a", 10_000, 1, "failure")]
   let state = core.apply_worker_start(one, issue, "/tmp/ws")
   let core.Transition(state: two, effects: _) =
-    core.apply_worker_failure(state, config(), "a", 200)
+    core.apply_worker_failure(state, config(), "a", issue, 200)
+  let latest = domain.Issue(..issue, title: "Latest failure title")
   let state = core.apply_worker_start(two, issue, "/tmp/ws")
   let core.Transition(state: parked, effects: effects3) =
-    core.apply_worker_failure(state, config(), "a", 300)
+    core.apply_worker_failure(state, config(), "a", latest, 300)
   assert dict.has_key(parked.parked, "a")
+  let assert Ok(parked_entry) = dict.get(parked.parked, "a")
+  assert parked_entry.release_policy
+    == domain.AutoUnparkOnIssueChange(core.issue_fingerprint(latest))
+  assert parked_entry.release_policy
+    != domain.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
   assert effects3
+    == [core.ParkIssue("a", "max_retry_attempts"), core.ReleaseClaim("a")]
+}
+
+pub fn worker_failure_uses_dispatched_issue_id_for_lifecycle_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let mismatched_final_issue =
+    domain.Issue(
+      ..issue,
+      id: "different-id",
+      identifier: "ABC-999",
+      title: "Different issue",
+    )
+  let retry_cap_config =
+    domain.EffectiveConfig(
+      ..config(),
+      agent: domain.AgentConfig(..config().agent, max_retry_attempts: 1),
+    )
+  let state =
+    core.apply_worker_start(core.new_state(retry_cap_config), issue, "/tmp/ws")
+
+  let core.Transition(state: parked, effects:) =
+    core.apply_worker_failure(
+      state,
+      retry_cap_config,
+      "a",
+      mismatched_final_issue,
+      100,
+    )
+
+  assert !dict.has_key(parked.running, "a")
+  assert !dict.has_key(parked.running, "different-id")
+  assert dict.has_key(parked.parked, "a")
+  assert !dict.has_key(parked.parked, "different-id")
+  assert effects
     == [core.ParkIssue("a", "max_retry_attempts"), core.ReleaseClaim("a")]
 }
 
@@ -243,7 +394,7 @@ pub fn retry_candidate_can_dispatch_self_claimed_issue_test() {
   let state =
     core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
   let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, config(), "a", 100)
+    core.apply_worker_failure(state, config(), "a", issue, 100)
 
   let updated = domain.Issue(..issue, title: "Updated title")
   let core.Transition(state: next, effects: effects) =
@@ -277,12 +428,12 @@ pub fn continuation_retry_can_dispatch_self_claimed_issue_test() {
   assert dict.has_key(next.claimed, "a")
 }
 
-pub fn retry_timer_handling_and_unparking_test() {
+pub fn retry_timer_handling_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let state =
     core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
   let core.Transition(state: retry_state, effects: _) =
-    core.apply_worker_failure(state, config(), "a", 100)
+    core.apply_worker_failure(state, config(), "a", issue, 100)
   let core.Transition(effects: poll_failed, state: kept) =
     core.handle_retry_candidate(retry_state, config(), "a", Error("tracker"))
   assert dict.has_key(kept.claimed, "a")
@@ -296,29 +447,118 @@ pub fn retry_timer_handling_and_unparking_test() {
     core.handle_retry_candidate(kept, config(), "a", Ok(None))
   assert absent == [core.ReleaseClaim("a")]
   assert !dict.has_key(released.claimed, "a")
+}
 
-  let parked =
+pub fn explicit_park_blocks_even_when_issue_changes_test() {
+  let issue = rich_issue()
+  let state =
+    state_with_parked(
+      core.new_state(config()),
+      issue,
+      explicit_parked_entry(issue, "operator_abort"),
+    )
+  let changed =
+    domain.Issue(
+      ..issue,
+      title: "Changed title",
+      description: Some("Changed description"),
+      updated_at: Some(birl.from_unix(999)),
+    )
+
+  let kept = core.unpark_if_issue_changed(state, changed)
+  assert dict.has_key(kept.parked, issue.id)
+  assert !core.should_dispatch(kept, config(), changed)
+}
+
+pub fn auto_park_ignores_comment_and_non_core_changes_test() {
+  let issue = rich_issue()
+  let state =
+    state_with_parked(
+      core.new_state(config()),
+      issue,
+      auto_parked_entry(issue, "max_retry_attempts"),
+    )
+
+  let timestamp_changed =
+    domain.Issue(..issue, updated_at: Some(birl.from_unix(200)))
+  assert_auto_park_blocks(state, timestamp_changed)
+
+  let url_changed = domain.Issue(..issue, url: Some("https://example.invalid"))
+  assert_auto_park_blocks(state, url_changed)
+
+  let labels_changed = domain.Issue(..issue, labels: ["new", "metadata"])
+  assert_auto_park_blocks(state, labels_changed)
+}
+
+pub fn auto_park_clears_on_blocker_change_test() {
+  let issue = rich_issue()
+  let state =
+    state_with_parked(
+      core.new_state(config()),
+      issue,
+      auto_parked_entry(issue, "max_retry_attempts"),
+    )
+  let blockers_satisfied =
+    domain.Issue(..issue, blocked_by: [
+      domain.BlockerRef(
+        id: Some("block-1"),
+        identifier: Some("ABC-0"),
+        state: Some("Done"),
+      ),
+      domain.BlockerRef(
+        id: Some("block-2"),
+        identifier: Some("ABC-00"),
+        state: Some("Closed"),
+      ),
+    ])
+
+  let unparked = core.unpark_if_issue_changed(state, blockers_satisfied)
+  assert !dict.has_key(unparked.parked, issue.id)
+  assert core.should_dispatch(unparked, config(), blockers_satisfied)
+}
+
+fn assert_auto_park_blocks(
+  state: domain.RuntimeState,
+  changed: domain.Issue,
+) -> Nil {
+  let kept = core.unpark_if_issue_changed(state, changed)
+  assert dict.has_key(kept.parked, changed.id)
+  assert !core.should_dispatch(kept, config(), changed)
+}
+
+pub fn auto_park_clears_on_core_issue_change_test() {
+  let issue = rich_issue()
+  let state =
     domain.RuntimeState(
       ..core.new_state(config()),
-      claimed: dict.from_list([#("a", "ABC-1")]),
-      parked: dict.from_list([
+      claimed: dict.from_list([#(issue.id, issue.identifier)]),
+      retry_attempts: dict.from_list([
+        #(issue.id, domain.RetryEntry(issue.id, 1000, 1)),
+      ]),
+      issue_counters: dict.from_list([
         #(
-          "a",
-          domain.ParkedEntry(
-            issue_id: "a",
-            identifier: "ABC-1",
-            reason: "cap",
-            observed_updated_at: Some(birl.from_unix(0)),
-            parked_at_ms: 0,
-          ),
+          issue.id,
+          domain.IssueCounter(failure_attempts: 1, worker_sessions: 1),
         ),
       ]),
+      parked: dict.from_list([
+        #(issue.id, auto_parked_entry(issue, "max_retry_attempts")),
+      ]),
     )
-  let updated = domain.Issue(..issue, updated_at: Some(birl.from_unix(1)))
-  let unparked = core.unpark_if_updated(parked, updated)
-  assert !dict.has_key(unparked.parked, "a")
-  assert !dict.has_key(unparked.claimed, "a")
-  assert core.should_dispatch(unparked, config(), updated)
+  let changed =
+    domain.Issue(
+      ..issue,
+      title: "New title",
+      blocked_by: [],
+      updated_at: Some(birl.from_unix(2)),
+    )
+
+  let unparked = core.unpark_if_issue_changed(state, changed)
+  assert !dict.has_key(unparked.parked, issue.id)
+  assert !dict.has_key(unparked.claimed, issue.id)
+  assert !dict.has_key(unparked.retry_attempts, issue.id)
+  assert !dict.has_key(unparked.issue_counters, issue.id)
+  assert core.should_dispatch(unparked, config(), changed)
 }
 
 pub fn reconciliation_and_token_accounting_test() {

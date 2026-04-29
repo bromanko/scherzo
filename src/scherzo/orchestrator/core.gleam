@@ -60,6 +60,52 @@ fn compare_priority(a: Option(Int), b: Option(Int)) -> Order {
   }
 }
 
+pub fn issue_fingerprint(issue: domain.Issue) -> String {
+  [
+    encode_string(issue.id),
+    encode_string(issue.identifier),
+    encode_string(issue.title),
+    encode_optional_string(issue.description),
+    encode_optional_int(issue.priority),
+    encode_string(issue.state),
+    encode_optional_string(issue.branch_name),
+    blocker_fingerprint(issue.blocked_by),
+  ]
+  |> string.join(with: "|")
+}
+
+fn encode_string(value: String) -> String {
+  int.to_string(string.length(value)) <> ":" <> value
+}
+
+fn encode_optional_string(value: Option(String)) -> String {
+  case value {
+    None -> "none"
+    Some(value) -> "some:" <> encode_string(value)
+  }
+}
+
+fn encode_optional_int(value: Option(Int)) -> String {
+  case value {
+    None -> "none"
+    Some(value) -> "some:" <> encode_string(int.to_string(value))
+  }
+}
+
+fn blocker_fingerprint(blockers: List(domain.BlockerRef)) -> String {
+  blockers
+  |> list.map(fn(blocker) {
+    [
+      encode_optional_string(blocker.id),
+      encode_optional_string(blocker.identifier),
+      encode_optional_string(blocker.state),
+    ]
+    |> string.join(with: ",")
+  })
+  |> list.sort(by: string.compare)
+  |> string.join(with: ";")
+}
+
 pub fn should_dispatch(
   state: domain.RuntimeState,
   config: domain.EffectiveConfig,
@@ -70,7 +116,7 @@ pub fn should_dispatch(
   && !is_terminal(config, issue.state)
   && !dict.has_key(state.running, issue.id)
   && !dict.has_key(state.claimed, issue.id)
-  && !is_parked_without_update(state, issue)
+  && !is_parked_for_issue(state, issue)
   && slots_available(state, config, issue.state)
   && blockers_satisfied(config, issue)
 }
@@ -95,7 +141,7 @@ fn should_dispatch_retry_candidate(
   && !is_terminal(config, issue.state)
   && !dict.has_key(state.running, issue.id)
   && retry_claim_allowed(state, issue.id)
-  && !is_parked_without_update(state, issue)
+  && !is_parked_for_issue(state, issue)
   && slots_available(state, config, issue.state)
   && blockers_satisfied(config, issue)
 }
@@ -114,13 +160,17 @@ fn issue_has_required_fields(issue: domain.Issue) -> Bool {
   && string.trim(issue.state) != ""
 }
 
-fn is_parked_without_update(
-  state: domain.RuntimeState,
-  issue: domain.Issue,
-) -> Bool {
+fn is_parked_for_issue(state: domain.RuntimeState, issue: domain.Issue) -> Bool {
   case dict.get(state.parked, issue.id) {
-    Ok(parked) -> parked.observed_updated_at == issue.updated_at
+    Ok(parked) -> park_blocks_dispatch(parked, issue)
     Error(_) -> False
+  }
+}
+
+fn park_blocks_dispatch(parked: domain.ParkedEntry, issue: domain.Issue) -> Bool {
+  case parked.release_policy {
+    domain.ExplicitUnparkOnly -> True
+    domain.AutoUnparkOnIssueChange(stored) -> stored == issue_fingerprint(issue)
   }
 }
 
@@ -259,8 +309,10 @@ pub fn apply_worker_failure(
   state: domain.RuntimeState,
   config: domain.EffectiveConfig,
   issue_id: String,
+  baseline_issue: domain.Issue,
   now_ms: Int,
 ) -> Transition {
+  let baseline_issue = issue_with_lifecycle_id(baseline_issue, issue_id)
   let state =
     domain.RuntimeState(..state, running: dict.delete(state.running, issue_id))
   let counter = get_counter(state, issue_id)
@@ -268,7 +320,7 @@ pub fn apply_worker_failure(
   let counter = domain.IssueCounter(..counter, failure_attempts: failures)
   let state = put_counter(state, issue_id, counter)
   case failures >= config.agent.max_retry_attempts {
-    True -> park(state, issue_id, "max_retry_attempts", now_ms)
+    True -> park(state, baseline_issue, "max_retry_attempts", now_ms)
     False ->
       schedule_retry(
         state,
@@ -276,6 +328,16 @@ pub fn apply_worker_failure(
         backoff_delay(failures, config.agent.max_retry_backoff_ms),
         "failure",
       )
+  }
+}
+
+fn issue_with_lifecycle_id(
+  issue: domain.Issue,
+  issue_id: String,
+) -> domain.Issue {
+  case issue.id == issue_id {
+    True -> issue
+    False -> domain.Issue(..issue, id: issue_id)
   }
 }
 
@@ -287,15 +349,10 @@ fn continue_or_park(
 ) -> Transition {
   let counter = get_counter(state, issue.id)
   let sessions = counter.worker_sessions + 1
-  let counter =
-    domain.IssueCounter(
-      ..counter,
-      worker_sessions: sessions,
-      observed_updated_at: issue.updated_at,
-    )
+  let counter = domain.IssueCounter(..counter, worker_sessions: sessions)
   let state = put_counter(state, issue.id, counter)
   case sessions >= config.agent.max_sessions_per_issue {
-    True -> park(state, issue.id, "max_sessions_per_issue", now_ms)
+    True -> park(state, issue, "max_sessions_per_issue", now_ms)
     False -> schedule_retry(state, issue.id, 1000, "continuation")
   }
 }
@@ -363,7 +420,7 @@ pub fn handle_retry_candidate(
         effects: [ReleaseClaim(issue_id)],
       )
     Ok(Some(issue)) -> {
-      let state = unpark_if_updated(state, issue)
+      let state = unpark_if_issue_changed(state, issue)
       case should_dispatch_retry_candidate(state, config, issue_id, issue) {
         True ->
           Transition(state: clear_retry(state, issue_id), effects: [
@@ -434,21 +491,26 @@ pub fn reconcile_issue(
   }
 }
 
-pub fn unpark_if_updated(
+pub fn unpark_if_issue_changed(
   state: domain.RuntimeState,
   issue: domain.Issue,
 ) -> domain.RuntimeState {
   case dict.get(state.parked, issue.id) {
     Ok(parked) ->
-      case parked.observed_updated_at == issue.updated_at {
-        True -> state
-        False ->
-          domain.RuntimeState(
-            ..state,
-            claimed: dict.delete(state.claimed, issue.id),
-            parked: dict.delete(state.parked, issue.id),
-            issue_counters: dict.delete(state.issue_counters, issue.id),
-          )
+      case parked.release_policy {
+        domain.ExplicitUnparkOnly -> state
+        domain.AutoUnparkOnIssueChange(stored) ->
+          case stored == issue_fingerprint(issue) {
+            True -> state
+            False ->
+              domain.RuntimeState(
+                ..state,
+                claimed: dict.delete(state.claimed, issue.id),
+                parked: dict.delete(state.parked, issue.id),
+                retry_attempts: dict.delete(state.retry_attempts, issue.id),
+                issue_counters: dict.delete(state.issue_counters, issue.id),
+              )
+          }
       }
     Error(_) -> state
   }
@@ -484,21 +546,22 @@ pub fn add_tokens(
 
 fn park(
   state: domain.RuntimeState,
-  issue_id: String,
+  baseline_issue: domain.Issue,
   reason: String,
   now_ms: Int,
 ) -> Transition {
-  let identifier = dict.get(state.claimed, issue_id) |> result_unwrap(issue_id)
-  let observed =
-    dict.get(state.completed, issue_id)
-    |> result_map(fn(issue) { issue.updated_at })
-    |> result_unwrap(None)
+  let issue_id = baseline_issue.id
+  let identifier =
+    dict.get(state.claimed, issue_id)
+    |> result_unwrap(baseline_issue.identifier)
   let parked =
     domain.ParkedEntry(
       issue_id: issue_id,
       identifier: identifier,
       reason: reason,
-      observed_updated_at: observed,
+      release_policy: domain.AutoUnparkOnIssueChange(issue_fingerprint(
+        baseline_issue,
+      )),
       parked_at_ms: now_ms,
     )
   Transition(
@@ -564,12 +627,5 @@ fn result_unwrap(result: Result(a, b), default: a) -> a {
   case result {
     Ok(value) -> value
     Error(_) -> default
-  }
-}
-
-fn result_map(result: Result(a, e), mapper: fn(a) -> b) -> Result(b, e) {
-  case result {
-    Ok(value) -> Ok(mapper(value))
-    Error(err) -> Error(err)
   }
 }

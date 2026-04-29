@@ -298,7 +298,7 @@ Scherzo is intended for trusted repositories and trusted workflow files. Hooks a
 
 pi compatibility probes and prompted sessions launch only from prepared workspaces. Extension UI dialogs default to automatic cancellation; `pi.ui_request_policy` may be set to `cancel`, `fail`, `ignore`, or `operator`; unknown policy strings are rejected. `operator` waits for an operator response through the local control API or Linear command comments until `pi.ui_request_timeout_ms` expires. Short `pi.read_timeout_ms` values are polling intervals during active turns; a turn fails only when `pi.stall_timeout_ms` expires without a valid pi line or `pi.turn_timeout_ms` expires before `agent_end`.
 
-Retry and session caps park issues in memory rather than spending tokens forever. Parking clears on process restart or when Linear reports the issue with a newer `updated_at` value.
+Retry and session caps park issues in memory rather than spending tokens forever. Operator parks and abort parks are explicit and clear only on process restart, `unpark`, or `retry`. System cap parks auto-release only when Scherzo sees a core issue field change: issue id, identifier, title, description, priority, state, or branch name. URL-only, label-only, blocker-only, timestamp-only, and comment-only changes do not release auto parks, so Linear comments and Scherzo acknowledgement comments cannot accidentally redispatch an aborted or parked issue.
 
 ## Implemented coverage and current limits
 
