@@ -173,7 +173,7 @@ Daemon mode owns the in-memory runtime state. It polls Linear on `polling.interv
 
 Workers are monitored. If a worker exits without sending a normal result, the daemon handles the monitor message and schedules failure retry or parking through the same pure core path as ordinary worker failure. pi updates are routed through the daemon and logged as `pi_event` with redaction.
 
-Programmatic `daemon.shutdown` cancels poll/retry timers and stops daemon-owned workers. The CLI path does not install SIGINT or SIGTERM handlers in this phase. If the shell or process manager terminates the VM, Erlang port ownership and OS teardown normally clean up children, but Scherzo may leave a stale local instance lock. Remove it manually only after checking no Scherzo process remains active.
+Programmatic `daemon.shutdown` cancels poll/retry timers and stops daemon-owned workers. Daemon CLI mode installs a SIGTERM handler while the daemon is running; process-manager SIGTERM now logs `daemon_stop_requested reason=sigterm`, calls `daemon.shutdown`, stops the local control server, removes `workspace.root/.scherzo-state/control.json`, releases `workspace.root/.scherzo-state/instance.lock`, and exits after `daemon_shutdown_complete`. Ctrl-C/SIGINT is still not a graceful path in this runtime phase, and `kill -9`, host power loss, or a BEAM VM crash can still leave stale local state. Remove a stale `instance.lock` manually only after checking no Scherzo process remains active.
 
 ## Session event model
 
@@ -183,7 +183,7 @@ Event history is not durable across daemon restart. Raw pi JSON payloads are ret
 
 ## Local control API and scherzoctl
 
-Daemon mode starts a small authenticated control server on `127.0.0.1` after the daemon actor and EventHub are available. The server uses line-delimited JSON over loopback TCP, chooses an OS-assigned port, generates a fresh token for each daemon start, and writes connection details to `workspace.root/.scherzo-state/control.json`. The daemon logs the control file path and port with an event like:
+Daemon mode starts a small authenticated control server on `127.0.0.1` after the daemon actor and EventHub are available. The server uses line-delimited JSON over loopback TCP, chooses an OS-assigned port, generates a fresh token for each daemon start, and writes connection details to `workspace.root/.scherzo-state/control.json`. Graceful SIGTERM shutdown removes this control file through the same daemon shutdown path used by programmatic tests, so a normal process-manager restart should not require manual control-file cleanup. The daemon logs the control file path and port with an event like:
 
     level=info service=scherzo event=control_server_started control_file=... host=127.0.0.1 port=54321
 
@@ -309,14 +309,14 @@ Implemented:
 - Safe workspace key sanitization, root containment checks, lifecycle hooks, sidecar population markers, cleanup by stored workspace path, and local instance locking.
 - pi JSON Lines RPC launch, command/response correlation, compatibility probing with stats, prompt execution, turn/stall timeout handling, stats decoding, extension UI cancellation, and fake-pi integration tests.
 - Pure in-memory scheduling decisions for dispatch eligibility, retries, parking, continuation caps, reconciliation, and token accounting.
-- Long-lived daemon actor with poll/retry timers, monitored workers, WorkerUpdate logging, in-memory session event replay, local authenticated control API, shared operator command model, Linear command comments, `scherzoctl`, programmatic shutdown, and optional Linear handoff.
+- Long-lived daemon actor with poll/retry timers, monitored workers, WorkerUpdate logging, in-memory session event replay, local authenticated control API, shared operator command model, Linear command comments, `scherzoctl`, programmatic shutdown, graceful SIGTERM daemon shutdown, and optional Linear handoff.
 - Structured key-value log formatting with secret redaction.
 
 Still intentionally out of scope:
 
 - Distributed exactly-once claiming across hosts or workspace roots.
 - Durable scheduler state across BEAM restarts.
-- CLI SIGINT/SIGTERM graceful shutdown hooks.
+- CLI Ctrl-C/SIGINT graceful shutdown hooks and crash recovery after `kill -9`, host power loss, or BEAM VM termination.
 - HTTP dashboard, Scherzo-to-Linear final result reporting, SSH workers, and the optional `linear_graphql` pi tool extension.
 - Automatic discovery of Linear workflow state IDs by state name.
 

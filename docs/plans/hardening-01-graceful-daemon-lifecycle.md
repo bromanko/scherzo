@@ -57,22 +57,30 @@ The main startup race risk is a SIGTERM arriving after the daemon has started bu
 - [x] (2026-04-29 04:45Z) Resolved owner clarification: ship graceful SIGTERM only in this phase, do not add wrapper/OTP-application SIGINT work, and return nonzero after shutdown timeout while releasing the local lock during CLI exit.
 - [x] (2026-04-29 04:45Z) Ran and recorded the signal capability spike in the implementation environment before writing the signal FFI.
 - [x] (2026-04-29 15:06Z) Reviewed this plan adversarially and tightened the signal-handler replacement, subject-ownership, validation, and commit-point instructions before implementation.
-- [ ] Add lifecycle stop-source abstractions and deterministic lifecycle tests.
-- [ ] Add Erlang SIGTERM FFI and production signal registration.
-- [ ] Change `service.start_daemon` to wait on lifecycle stop instead of `process.sleep_forever()`.
-- [ ] Add integration tests for lock/control-file cleanup on graceful stop.
-- [ ] Update README and help text to describe graceful SIGTERM support and continued abrupt Ctrl-C/SIGINT behavior in this phase.
+- [x] (2026-04-29 15:08Z) Ran implementation baseline: `direnv exec . gleam test` passed with `225 passed, no failures`; reran the signal spike and again observed SIGTERM `ok` and SIGINT `badarg`.
+- [x] (2026-04-29 15:13Z) Added `src/scherzo/lifecycle.gleam` and deterministic lifecycle tests for graceful completion, duplicate stop messages, and shutdown timeout handling.
+- [x] (2026-04-29 15:15Z) Added `src/scherzo/signal.gleam`, `src/scherzo_signal_ffi.erl`, and fake-FFI signal wrapper tests covering metadata, failure mapping, and idempotent cleanup.
+- [x] (2026-04-29 15:18Z) Changed `src/scherzo/orchestrator/service.gleam` so daemon mode installs the stop source before `daemon.start`, waits on `lifecycle.run_until_stop`, calls `daemon.shutdown`, cleans up signal registration, and releases the lock without `process.sleep_forever()`.
+- [x] (2026-04-29 15:20Z) Added `test/orchestrator_service_lifecycle_test.gleam` coverage for signal-install failure cleanup, daemon-start failure cleanup, graceful stop lock/control-file cleanup, and shutdown-timeout error policy.
+- [x] (2026-04-29 15:21Z) Updated `src/scherzo/main.gleam`, `test/main_test.gleam`, and `README.md` to document graceful SIGTERM and continued abrupt Ctrl-C/SIGINT behavior.
+- [x] (2026-04-29 15:22Z) Ran `direnv exec . gleam format --check src test` and `direnv exec . gleam test`; the deterministic suite passed with `234 passed, no failures`.
+- [x] (2026-04-29 15:23Z) Completed production-path SIGTERM validation: started daemon mode, parsed `signal_handler_installed os_pid=3111`, sent SIGTERM to that BEAM pid, observed exit status 0 plus `daemon_stop_requested reason=sigterm`, `daemon_shutdown`, and `daemon_shutdown_complete`, verified `instance.lock` and `control.json` were absent, then started a second daemon on the same workspace and repeated graceful SIGTERM successfully with BEAM pid `9629`.
+- [x] (2026-04-29 15:37Z) Completed extra verification with an active fake worker: a temporary verification module started daemon lifecycle with real SIGTERM handling and fake daemon dependencies, dispatched `ABC-ACTIVE`, logged `verification_worker_active`, received SIGTERM at BEAM pid `82387`, exited status 0, and removed both lock and control file.
+- [x] (2026-04-29 15:38Z) Completed duplicate real SIGTERM verification: sent two SIGTERM signals to BEAM pid `87526`, observed exit status 0, and counted exactly one `daemon_stop_requested`, one `daemon_shutdown`, and one `daemon_shutdown_complete`.
+- [x] (2026-04-29 15:39Z) Completed single-VM signal restore verification: installing the FFI removed the default `erl_signal_handler` while the custom handler was active, cleanup restored exactly one `erl_signal_handler`, and `prim_tty_sighandler` remained present.
+- [x] (2026-04-29 15:40Z) Completed non-daemon smoke verification: `--help`, `ctl --help`, `--once`, `--pi-probe`, expected clean `--linear-smoke` failure with fake API key, and `scripts/scherzoctl --help` all behaved as expected.
+- [x] (2026-04-29 15:41Z) Removed the temporary active-worker verification module and reran `direnv exec . gleam format --check src test` plus `direnv exec . gleam test`; the deterministic suite still passed with `234 passed, no failures`.
 
 ## Surprises & Discoveries
 
 - Observation: The current daemon actor already has a programmatic shutdown path.
   Evidence: `src/scherzo/orchestrator/daemon.gleam` exports `shutdown(subject, timeout_ms)` and handles `Shutdown(reply)` by calling `shutdown_state`, logging `daemon_shutdown`, replying, and stopping the actor.
 
-- Observation: The current CLI daemon path still blocks forever after daemon startup.
-  Evidence: `src/scherzo/orchestrator/service.gleam` calls `process.sleep_forever()` inside `start_daemon` after `daemon.start` succeeds.
+- Observation: Before this implementation, the CLI daemon path blocked forever after daemon startup.
+  Evidence: the pre-change `src/scherzo/orchestrator/service.gleam` called `process.sleep_forever()` inside `start_daemon` after `daemon.start` succeeded. Completion validation now verifies this call has been removed from service code.
 
-- Observation: README explicitly documents stale lock recovery after shell/process-manager termination.
-  Evidence: `README.md` says CLI mode does not install SIGINT/SIGTERM handlers and stale `instance.lock` files may need manual removal.
+- Observation: Before this implementation, README explicitly documented stale lock recovery after shell/process-manager termination.
+  Evidence: the pre-change `README.md` said CLI mode did not install SIGINT/SIGTERM handlers and stale `instance.lock` files might need manual removal. Completion documentation now states SIGTERM is graceful while Ctrl-C/SIGINT and crash paths remain abrupt.
 
 - Observation: Erlang/OTP in the local development environment supports `os:set_signal(sigterm, handle)` but rejects `os:set_signal(sigint, handle)`.
   Evidence: `direnv exec . erl -noshell -eval 'io:format("sigint: ~p~n",[catch os:set_signal(sigint, handle)]), io:format("sigterm: ~p~n",[catch os:set_signal(sigterm, handle)]), halt().'` printed a `badarg` exit for `sigint` and `ok` for `sigterm`.
@@ -88,6 +96,12 @@ The main startup race risk is a SIGTERM arriving after the daemon has started bu
 
 - Observation: `gen_event:add_handler(erl_signal_server, erl_signal_handler, [])` can register duplicate default handlers if called when `erl_signal_handler` is already present.
   Evidence: a local restoration check called `gen_event:add_handler` while `erl_signal_handler` was already registered and `gen_event:which_handlers(erl_signal_server)` then showed two `erl_signal_handler` entries. Cleanup must check `which_handlers` before restoring the default handler.
+
+- Observation: Service lifecycle tests should use absolute `workspace.root` values when directly asserting lock behavior.
+  Evidence: an initial graceful-stop test used a relative root and a direct `instance_lock.acquire(root)` assertion, but workflow config resolution interpreted the root relative to the workflow path, so the test acquired a different lock. The test now writes an absolute root with `path.absolute`, matching the root the service locks and the control file uses.
+
+- Observation: Production SIGTERM reached the Gleam `lifecycle.Sigterm` stop reason through the Erlang atom `sigterm` as planned.
+  Evidence: the production validation parsed `signal_handler_installed signal=sigterm os_pid=3111`, sent SIGTERM to PID 3111, and the daemon logged `daemon_stop_requested reason=sigterm`, followed by `daemon_shutdown` and `daemon_shutdown_complete` with exit status 0.
 
 ## Decision Log
 
@@ -121,7 +135,15 @@ The main startup race risk is a SIGTERM arriving after the daemon has started bu
 
 ## Outcomes & Retrospective
 
-(To be filled at completion. Record the exact signal FFI behavior, shutdown timeout chosen, final test count, and the result of the required real SIGTERM validation.)
+Completed on 2026-04-29. Daemon mode now installs a SIGTERM stop source before `daemon.start`, logs `signal_handler_installed signal=sigterm os_pid=<pid>`, waits in `lifecycle.run_until_stop` instead of `process.sleep_forever()`, calls the existing `daemon.shutdown` path on SIGTERM, runs stop-source cleanup, releases the local instance lock, and returns `Ok(Nil)` for graceful shutdown. The production shutdown timeout is 10 seconds; timeout returns `StartupError("daemon_shutdown_timeout", "daemon shutdown timed out")`, logs `daemon_shutdown_timeout`, cleans up the stop source, releases the lock as part of CLI exit, and lets `src/scherzo/main.gleam` halt nonzero.
+
+The Erlang FFI in `src/scherzo_signal_ffi.erl` calls `os:set_signal(sigterm, handle)`, installs a `{scherzo_signal_ffi, Ref}` gen_event handler on the registered `erl_signal_server`, replaces one default `erl_signal_handler` with `gen_event:swap_handler/3` when present, removes any remaining default `erl_signal_handler` entries, forwards only the first `sigterm` event to the Gleam stop subject, ignores duplicate SIGTERM events, and restores one default `erl_signal_handler` during idempotent cleanup only when this install removed it and no default handler is already registered. The wrapper in `src/scherzo/signal.gleam` exposes idempotent cleanup and reports `[Sigterm]` plus the BEAM OS pid.
+
+Validation passed. `direnv exec . gleam format --check src test` succeeded, and `direnv exec . gleam test` passed with `234 passed, no failures`. Production-path validation started daemon mode with `agent.max_concurrent_agents: 0`, parsed `signal_handler_installed signal=sigterm os_pid=3111`, sent SIGTERM to that BEAM pid, and observed exit status 0 with log events `daemon_stop_requested reason=sigterm`, `daemon_shutdown`, and `daemon_shutdown_complete`. After exit, both `$ROOT/.scherzo-state/instance.lock` and `$ROOT/.scherzo-state/control.json` were absent. A second daemon start using the same workflow and workspace acquired the lock, reported BEAM pid `9629`, and also exited cleanly with status 0 after SIGTERM.
+
+Extra verification also passed. A temporary active-worker verification module used the real SIGTERM stop source with fake daemon dependencies, dispatched `ABC-ACTIVE`, logged `verification_worker_active`, received SIGTERM at BEAM pid `82387`, exited status 0, and removed lock and control files. A duplicate real-SIGTERM run sent two SIGTERM signals to BEAM pid `87526` and produced exactly one stop/shutdown/complete sequence with exit status 0. A single-VM restore probe showed handlers changing from `[erl_signal_handler, prim_tty_sighandler]` before install, to `[{scherzo_signal_ffi, Ref}, prim_tty_sighandler]` during install, and back to `[erl_signal_handler, prim_tty_sighandler]` after cleanup. Non-daemon smoke checks passed for `--help`, `ctl --help`, `--once`, `--pi-probe`, the expected clean `--linear-smoke` failure with a fake API key, and `scripts/scherzoctl --help`.
+
+The main remaining gap is intentional: Ctrl-C/SIGINT, `kill -9`, host power loss, and BEAM VM crash recovery are still out of scope and documented as abrupt or potentially stale-lock scenarios. No durable scheduler state was added in this phase.
 
 ## Context and Orientation
 
@@ -137,9 +159,9 @@ At plan-authoring time, `service.start_daemon` acquires the lock and starts the 
 
 Before implementing this plan:
 
-- `direnv exec . gleam test` passes. On 2026-04-29 the suite reported `200 passed, no failures`.
+- `direnv exec . gleam test` passes. Plan review originally recorded `200 passed, no failures`; the implementation baseline on 2026-04-29 reported `225 passed, no failures`, and completion reported `234 passed, no failures`.
 - `src/scherzo/orchestrator/daemon.gleam` exports `shutdown(subject, timeout_ms)`.
-- `src/scherzo/orchestrator/service.gleam` owns instance-lock acquisition for daemon mode and currently calls `process.sleep_forever()` after successful `daemon.start`.
+- Before this implementation, `src/scherzo/orchestrator/service.gleam` owned instance-lock acquisition for daemon mode and called `process.sleep_forever()` after successful `daemon.start`. After completion, `service.start_daemon` delegates to `start_daemon_with_lifecycle` and no longer calls `process.sleep_forever()`.
 - `src/scherzo/main.gleam` exits with status 1 when `service.start_daemon` returns `Error(StartupError(...))`, so lifecycle timeout and signal install failures can surface as nonzero CLI exits by returning `Error`.
 - The local control API writes a control file and daemon shutdown removes it. `test/orchestrator_daemon_control_test.gleam` already has `daemon_shutdown_closes_control_server_and_removes_control_file_test`, which can guide service-level cleanup assertions.
 - Local OTP evidence shows `os:set_signal(sigterm, handle)` returns `ok` and `os:set_signal(sigint, handle)` raises `badarg`; this phase implements SIGTERM only and must not claim Ctrl-C/SIGINT support.
