@@ -15,6 +15,8 @@
     getenv/1
 ]).
 
+-define(MAX_CONTROL_LINE_BYTES, 8388608).
+
 dynamic_to_json(Value) -> json:encode(Value).
 
 listen(Host, Port) ->
@@ -25,6 +27,7 @@ listen(Host, Port) ->
                     binary,
                     {active, false},
                     {packet, line},
+                    {packet_size, ?MAX_CONTROL_LINE_BYTES},
                     {ip, Ip},
                     {reuseaddr, true},
                     {send_timeout, 5000},
@@ -59,6 +62,7 @@ connect(Host, Port, TimeoutMs) ->
                     binary,
                     {active, false},
                     {packet, line},
+                    {packet_size, ?MAX_CONTROL_LINE_BYTES},
                     {send_timeout, Timeout},
                     {send_timeout_close, true}
                 ], Timeout) of
@@ -84,14 +88,26 @@ send_line(Socket, Line, _TimeoutMs) ->
 recv_line(Socket, TimeoutMs) ->
     try
         Timeout = normalize_timeout(TimeoutMs),
-        case gen_tcp:recv(Socket, 0, Timeout) of
-            {ok, Line} -> {ok, trim_newline(Line)};
-            {error, timeout} -> {error, <<"timeout">>};
-            {error, closed} -> {error, <<"closed">>};
-            {error, Reason} -> {error, atom_to_binary(Reason, utf8)}
-        end
+        recv_line_acc(Socket, Timeout, <<>>)
     catch
         Class:CatchReason -> {error, format_error(Class, CatchReason)}
+    end.
+
+recv_line_acc(Socket, Timeout, Acc) ->
+    case gen_tcp:recv(Socket, 0, Timeout) of
+        {ok, Chunk} ->
+            Next = <<Acc/binary, Chunk/binary>>,
+            case byte_size(Next) > ?MAX_CONTROL_LINE_BYTES of
+                true -> {error, <<"line_too_long">>};
+                false ->
+                    case ends_with_newline(Chunk) of
+                        true -> {ok, trim_newline(Next)};
+                        false -> recv_line_acc(Socket, Timeout, Next)
+                    end
+            end;
+        {error, timeout} -> {error, <<"timeout">>};
+        {error, closed} -> {error, <<"closed">>};
+        {error, Reason} -> {error, atom_to_binary(Reason, utf8)}
     end.
 
 close_socket(Socket) ->
@@ -161,6 +177,10 @@ parse_loopback_host(Host) ->
 
 normalize_timeout(TimeoutMs) when is_integer(TimeoutMs), TimeoutMs >= 0 -> TimeoutMs;
 normalize_timeout(_) -> 0.
+
+ends_with_newline(<<>>) -> false;
+ends_with_newline(Line) when is_binary(Line) ->
+    binary:at(Line, byte_size(Line) - 1) =:= $\n.
 
 trim_newline(Line) when is_binary(Line) ->
     trim_byte(trim_byte(Line, $\n), $\r).

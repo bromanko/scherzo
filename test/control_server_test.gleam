@@ -213,6 +213,34 @@ pub fn server_returns_event_page_test() {
   hub.stop(subject)
 }
 
+pub fn server_returns_large_event_page_test() {
+  let subject = start_hub_with_session("session-large-events")
+  let large_raw = string.repeat("x", times: 20_000)
+  hub.publish(
+    subject,
+    "session-large-events",
+    event.EventPayload(
+      ..payload("large_raw_json"),
+      kind: event.PiRaw,
+      raw_json: Some(event.RedactedRawJson(value: large_raw, truncated: False)),
+    ),
+  )
+  let assert Ok(waited_page) =
+    hub.events_after(subject, "session-large-events", 0, 10, 1000)
+  assert list.length(waited_page.events) == 1
+
+  let #(server_handle, control_file) = start_server_for_hub(subject, "token")
+  let assert Ok(page) =
+    client.get_events(control_file, "session-large-events", 0, 10)
+
+  let assert [stored_event] = page.events
+  let assert Some(raw_json) = stored_event.payload.raw_json
+  assert string.length(raw_json.value) == 20_000
+
+  server.stop(server_handle)
+  hub.stop(subject)
+}
+
 pub fn server_stream_closes_after_exited_session_replay_test() {
   let subject = start_hub_with_session("session-exited-stream")
   hub.publish(subject, "session-exited-stream", payload("only"))

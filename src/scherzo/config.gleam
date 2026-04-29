@@ -245,8 +245,11 @@ fn resolve_tracker(
       let api_key =
         resolve_optional_env(raw_api_key, env)
         |> option_or_else(fn() { env("LINEAR_API_KEY") })
+      let project_slug =
+        get_string(tracker_node, "project_slug")
+        |> resolve_optional_env(env)
       use project_slug <- result_try(required_option(
-        get_string(tracker_node, "project_slug"),
+        project_slug,
         error.MissingTrackerProjectSlug,
       ))
       use api_key <- result_try(required_option(

@@ -47,13 +47,19 @@ Use `ctl` through `direnv exec . gleam run -- ctl ...` or the development wrappe
 Runtime operation requires:
 
 - `LINEAR_API_KEY` or `tracker.api_key` in the workflow.
-- A Linear project slug in `tracker.project_slug`.
+- A Linear project slug in `tracker.project_slug`; a single `$ENV_VAR` reference such as `"$LINEAR_PROJECT_SLUG"` is resolved from the environment.
 - A `pi` executable that supports JSON Lines RPC mode through `pi --mode rpc`.
 - A trusted workspace population or verification hook. The example uses `REPO_URL` with `git clone "$REPO_URL" .` in `hooks.after_create`.
 
 Scherzo acquires a local lock at `workspace.root/.scherzo-state/instance.lock` for `--once`, `--pi-probe`, and daemon mode. The lock prevents another Scherzo process using the same canonical workspace root on the same filesystem from starting normally. It is not a distributed lock and does not protect different hosts or different workspace roots.
 
 If startup reports an existing instance lock, first verify that no Scherzo process is still running with that workspace root. Only then remove the stale `instance.lock` file manually and restart.
+
+## Workflow file convention
+
+Reusable, checked-in workflow definitions should live under `.scherzo/workflows/*.md`. Runtime workspaces and local state should stay under ignored `.scherzo/workspaces/<workflow-name>/` roots. Relative paths are resolved from the workflow file directory, so a checked-in workflow under `.scherzo/workflows/` should use `workspace.root: ../workspaces/<workflow-name>`. Machine-specific variants can use `.scherzo/workflows/*.local.md`, which is ignored by git.
+
+This repository includes `.scherzo/workflows/research.md` as the first dogfood workflow. It uses `LINEAR_API_KEY` and `LINEAR_PROJECT_SLUG`, creates per-issue jj workspaces with `jj workspace add` instead of separate git clones, enforces exactly one `workflow:research` label, enables comments-only handoff, and leaves Linear comment commands disabled so the first runs can be supervised through `scripts/scherzoctl`.
 
 ## Workflow schema
 
@@ -63,7 +69,7 @@ If startup reports an existing instance lock, first verify that no Scherzo proce
       kind: linear
       endpoint: https://api.linear.app/graphql
       api_key: "$LINEAR_API_KEY"
-      project_slug: YOUR_PROJECT_SLUG
+      project_slug: "$LINEAR_PROJECT_SLUG"
       active_states: [Todo, In Progress]
       terminal_states: [Closed, Cancelled, Canceled, Duplicate, Done]
     polling:

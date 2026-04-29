@@ -9,6 +9,7 @@ import scherzo/workflow
 fn env(name: String) -> Option(String) {
   case name {
     "LINEAR_API_KEY" -> Some("linearkey")
+    "LINEAR_PROJECT_SLUG" -> Some("ENV-PROJECT")
     "OTHER_VAR" -> Some("other-secret")
     "WORKSPACE_ROOT" -> Some("test/tmp/env-workspaces")
     "EMPTY" -> None
@@ -93,6 +94,16 @@ pub fn tracker_validation_and_env_resolution_test() {
       env,
     )
   assert configured.tracker.api_key == Some("linearkey")
+
+  let env_project =
+    "tracker:\n  kind: linear\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\nhooks:\n  before_run: test -d .git\n"
+  let assert Ok(configured_env_project) =
+    config.resolve_with_env(
+      definition(env_project),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+  assert configured_env_project.tracker.project_slug == Some("ENV-PROJECT")
 
   let explicit =
     "tracker:\n  kind: linear\n  project_slug: TEST\n  api_key: \"$OTHER_VAR\"\nhooks:\n  before_run: test -d .git\n"
