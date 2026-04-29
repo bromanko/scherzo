@@ -13,6 +13,8 @@ const default_max_body_line_chars = 200
 
 const display_truncation_note = "… [display truncated; use --json for retained raw event]"
 
+const structured_tool_input_placeholder = "[structured tool input; use --json for raw details]"
+
 pub type RenderChunk {
   Line(String)
   Inline(String)
@@ -33,6 +35,7 @@ pub type RenderState {
     assistant_line_open: Bool,
     active_tool_label: Option(String),
     active_tool_section: Option(ToolSection),
+    structured_tool_input_labels: List(String),
   )
 }
 
@@ -55,6 +58,7 @@ pub fn initial_state(since_cursor: Int) -> RenderState {
     assistant_line_open: False,
     active_tool_label: None,
     active_tool_section: None,
+    structured_tool_input_labels: [],
   )
 }
 
@@ -279,39 +283,68 @@ fn render_tool(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  let #(state, close_chunks) = close_assistant(state)
-  let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let label = tool_label(payload)
-  let needs_label = tool_needs_label(state, label, payload)
-  let state = case needs_label {
-    True -> RenderState(..state, active_tool_section: None)
-    False -> state
+  let state = observe_pass(state, payload)
+  let suppress_structured_input =
+    should_suppress_structured_tool_input(state, label, payload)
+  let payload = case suppress_structured_input {
+    True -> event.EventPayload(..payload, tool_input: None)
+    False -> payload
   }
-  let label_chunks = case needs_label {
-    True -> [Line(style.tool_label(options.color_mode, label))]
-    False -> []
+  let detailless_structured_tool_seen =
+    !tool_has_visible_details(payload)
+    && list.contains(state.structured_tool_input_labels, label)
+  case detailless_structured_tool_seen {
+    True -> {
+      let state = case tool_closes(payload) {
+        True -> close_tool(state)
+        False -> state
+      }
+      #(state, [])
+    }
+    False -> {
+      let #(state, close_chunks) = close_assistant(state)
+      let #(state, heading_chunks) =
+        ensure_pass_heading(state, payload, options)
+      let needs_label = tool_needs_label(state, label, payload)
+      let state = case needs_label {
+        True -> RenderState(..state, active_tool_section: None)
+        False -> state
+      }
+      let label_chunks = case needs_label {
+        True -> [Line(style.tool_label(options.color_mode, label))]
+        False -> []
+      }
+      let #(active_section, detail_chunks) =
+        tool_detail_chunks(state.active_tool_section, payload)
+      let state =
+        mark_structured_tool_input_displayed(
+          state,
+          label,
+          payload,
+          suppress_structured_input,
+        )
+      let should_close = tool_closes(payload)
+      let next_label = case should_close {
+        True -> None
+        False -> Some(label)
+      }
+      let next_section = case should_close {
+        True -> None
+        False -> active_section
+      }
+      #(
+        RenderState(
+          ..state,
+          assistant_active: False,
+          assistant_line_open: False,
+          active_tool_label: next_label,
+          active_tool_section: next_section,
+        ),
+        list.flatten([close_chunks, heading_chunks, label_chunks, detail_chunks]),
+      )
+    }
   }
-  let #(active_section, detail_chunks) =
-    tool_detail_chunks(state.active_tool_section, payload)
-  let should_close = tool_closes(payload)
-  let next_label = case should_close {
-    True -> None
-    False -> Some(label)
-  }
-  let next_section = case should_close {
-    True -> None
-    False -> active_section
-  }
-  #(
-    RenderState(
-      ..state,
-      assistant_active: False,
-      assistant_line_open: False,
-      active_tool_label: next_label,
-      active_tool_section: next_section,
-    ),
-    list.flatten([close_chunks, heading_chunks, label_chunks, detail_chunks]),
-  )
 }
 
 fn render_ui_request(
@@ -509,6 +542,7 @@ fn observe_visible_pass(state: RenderState, pass: Int) -> RenderState {
         current_pass: Some(pass),
         active_tool_label: None,
         active_tool_section: None,
+        structured_tool_input_labels: [],
       )
   }
 }
@@ -598,10 +632,62 @@ fn tool_needs_label(
   label: String,
   payload: event.EventPayload,
 ) -> Bool {
-  case state.active_tool_label == Some(label), has_text(payload.tool_input) {
-    True, False -> False
-    _, _ -> True
+  case state.active_tool_label == Some(label) {
+    False -> True
+    True ->
+      case
+        payload.name,
+        has_text(payload.tool_input),
+        state.active_tool_section
+      {
+        "tool_execution_start", _, _ -> True
+        _, True, Some(ToolInput) -> False
+        _, True, _ -> True
+        _, False, _ -> False
+      }
   }
+}
+
+fn should_suppress_structured_tool_input(
+  state: RenderState,
+  label: String,
+  payload: event.EventPayload,
+) -> Bool {
+  case payload.tool_input {
+    Some(value) ->
+      value == structured_tool_input_placeholder
+      && list.contains(state.structured_tool_input_labels, label)
+    None -> False
+  }
+}
+
+fn mark_structured_tool_input_displayed(
+  state: RenderState,
+  label: String,
+  payload: event.EventPayload,
+  suppressed: Bool,
+) -> RenderState {
+  case payload.tool_input, suppressed {
+    Some(value), False ->
+      case
+        value == structured_tool_input_placeholder,
+        list.contains(state.structured_tool_input_labels, label)
+      {
+        True, False ->
+          RenderState(..state, structured_tool_input_labels: [
+            label,
+            ..state.structured_tool_input_labels
+          ])
+        _, _ -> state
+      }
+    _, _ -> state
+  }
+}
+
+fn tool_has_visible_details(payload: event.EventPayload) -> Bool {
+  has_text(payload.tool_input)
+  || has_text(payload.tool_output)
+  || has_text(payload.tool_status)
 }
 
 fn tool_detail_chunks(
