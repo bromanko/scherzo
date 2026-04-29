@@ -10,19 +10,63 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
   assert ctl.parse(["session", "ABC-1", "--control-file", "state/control.json"])
     == Ok(ctl.Session(Some("state/control.json"), False, "ABC-1"))
   assert ctl.parse(["events", "ABC-1"])
-    == Ok(ctl.Events(None, ctl.Raw, style.ColorNever, 0, "ABC-1"))
+    == Ok(ctl.Events(None, ctl.Raw, style.ColorNever, 0, False, "ABC-1"))
   assert ctl.parse(["events", "ABC-1", "--json"])
-    == Ok(ctl.Events(None, ctl.Json, style.ColorNever, 0, "ABC-1"))
+    == Ok(ctl.Events(None, ctl.Json, style.ColorNever, 0, False, "ABC-1"))
   assert ctl.parse(["events", "--pretty", "ABC-1"])
-    == Ok(ctl.Events(None, ctl.Pretty, style.ColorAuto, 0, "ABC-1"))
+    == Ok(ctl.Events(None, ctl.Pretty, style.ColorAuto, 0, False, "ABC-1"))
+  assert ctl.parse(["events", "--pretty", "--verbose", "ABC-1"])
+    == Ok(ctl.Events(None, ctl.Pretty, style.ColorAuto, 0, True, "ABC-1"))
   assert ctl.parse(["attach", "ABC-1"])
-    == Ok(ctl.Attach(None, ctl.Pretty, style.ColorAuto, ctl.Follow, 0, "ABC-1"))
+    == Ok(ctl.Attach(
+      None,
+      ctl.Pretty,
+      style.ColorAuto,
+      ctl.Follow,
+      0,
+      False,
+      "ABC-1",
+    ))
+  assert ctl.parse(["attach", "--verbose", "ABC-1"])
+    == Ok(ctl.Attach(
+      None,
+      ctl.Pretty,
+      style.ColorAuto,
+      ctl.Follow,
+      0,
+      True,
+      "ABC-1",
+    ))
   assert ctl.parse(["attach", "--raw", "ABC-1"])
-    == Ok(ctl.Attach(None, ctl.Raw, style.ColorNever, ctl.Follow, 0, "ABC-1"))
-  assert ctl.parse(["attach", "--json", "ABC-1"])
-    == Ok(ctl.Attach(None, ctl.Json, style.ColorNever, ctl.Follow, 0, "ABC-1"))
+    == Ok(ctl.Attach(
+      None,
+      ctl.Raw,
+      style.ColorNever,
+      ctl.Follow,
+      0,
+      False,
+      "ABC-1",
+    ))
+  assert ctl.parse(["attach", "--json", "--verbose", "ABC-1"])
+    == Ok(ctl.Attach(
+      None,
+      ctl.Json,
+      style.ColorNever,
+      ctl.Follow,
+      0,
+      True,
+      "ABC-1",
+    ))
   assert ctl.parse(["attach", "--raw", "ABC-1", "--json"])
-    == Ok(ctl.Attach(None, ctl.Json, style.ColorNever, ctl.Follow, 0, "ABC-1"))
+    == Ok(ctl.Attach(
+      None,
+      ctl.Json,
+      style.ColorNever,
+      ctl.Follow,
+      0,
+      False,
+      "ABC-1",
+    ))
   assert ctl.parse(["attach", "--no-follow", "ABC-1"])
     == Ok(ctl.Attach(
       None,
@@ -30,12 +74,29 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       style.ColorAuto,
       ctl.NoFollow,
       0,
+      False,
       "ABC-1",
     ))
   assert ctl.parse(["attach", "--since-cursor", "40", "ABC-1"])
-    == Ok(ctl.Attach(None, ctl.Pretty, style.ColorAuto, ctl.Follow, 40, "ABC-1"))
+    == Ok(ctl.Attach(
+      None,
+      ctl.Pretty,
+      style.ColorAuto,
+      ctl.Follow,
+      40,
+      False,
+      "ABC-1",
+    ))
   assert ctl.parse(["attach", "--color=never", "ABC-1"])
-    == Ok(ctl.Attach(None, ctl.Pretty, style.ColorNever, ctl.Follow, 0, "ABC-1"))
+    == Ok(ctl.Attach(
+      None,
+      ctl.Pretty,
+      style.ColorNever,
+      ctl.Follow,
+      0,
+      False,
+      "ABC-1",
+    ))
 }
 
 pub fn parse_operator_commands_test() {
@@ -110,7 +171,9 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "session <session-id>")
   assert string.contains(usage, "events <session-id>")
   assert string.contains(usage, "events --pretty <session-id>")
+  assert string.contains(usage, "events --pretty --verbose <session-id>")
   assert string.contains(usage, "attach <session-id>")
+  assert string.contains(usage, "attach --verbose <session-id>")
   assert string.contains(usage, "attach --raw <session-id>")
   assert string.contains(usage, "attach --raw --json <session-id>")
   assert string.contains(usage, "pause")
@@ -118,5 +181,6 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "ui respond")
   assert string.contains(usage, "--control-file <path>")
   assert string.contains(usage, "--json")
+  assert string.contains(usage, "--verbose")
   assert string.contains(usage, "--since-cursor <n>")
 }

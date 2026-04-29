@@ -33,6 +33,7 @@ pub type Command {
     mode: OutputMode,
     color: style.ColorMode,
     since_cursor: Int,
+    verbose: Bool,
     session_id: String,
   )
   Attach(
@@ -41,6 +42,7 @@ pub type Command {
     color: style.ColorMode,
     follow: FollowMode,
     since_cursor: Int,
+    verbose: Bool,
     session_id: String,
   )
   Operator(
@@ -94,6 +96,7 @@ type Flags {
     no_follow: Bool,
     since_cursor: Int,
     color: style.ColorMode,
+    verbose: Bool,
     positional: List(String),
   )
 }
@@ -133,12 +136,13 @@ fn default_flags() -> Flags {
     no_follow: False,
     since_cursor: 0,
     color: style.ColorAuto,
+    verbose: False,
     positional: [],
   )
 }
 
 pub fn usage() -> String {
-  "Usage: gleam run -- ctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions.\n  session <session-id>         Show one session summary.\n  events <session-id>          Replay recent compact event lines.\n  events --pretty <session-id> Replay retained events with human-readable rendering.\n  attach <session-id>          Replay retained events and follow with human-readable rendering.\n  attach --raw <session-id>    Replay and follow compact event lines.\n  attach --json <session-id>   Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-id>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-id> --yes     Abort a running session.\n  stop-after-turn <session-id> --yes\n                               Stop after the current turn.\n  prompt <session-id> <text>   Queue an operator prompt for a session.\n  ui respond <session-id> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --yes                        Confirm destructive commands.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: gleam run -- ctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions.\n  session <session-id>         Show one session summary.\n  events <session-id>          Replay recent compact event lines.\n  events --pretty <session-id> Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-id>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-id>          Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-id>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-id>    Replay and follow compact event lines.\n  attach --json <session-id>   Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-id>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-id> --yes     Abort a running session.\n  stop-after-turn <session-id> --yes\n                               Stop after the current turn.\n  prompt <session-id> <text>   Queue an operator prompt for a session.\n  ui respond <session-id> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --yes                        Confirm destructive commands.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -150,6 +154,7 @@ fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
     ["--json", ..rest] -> parse_flags(rest, Flags(..flags, json: True))
     ["--raw", ..rest] -> parse_flags(rest, Flags(..flags, raw: True))
     ["--pretty", ..rest] -> parse_flags(rest, Flags(..flags, pretty: True))
+    ["--verbose", ..rest] -> parse_flags(rest, Flags(..flags, verbose: True))
     ["--yes", ..rest] -> parse_flags(rest, Flags(..flags, yes: True))
     ["--no-follow", ..rest] ->
       parse_flags(rest, Flags(..flags, no_follow: True))
@@ -225,6 +230,7 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
         mode,
         events_color(mode, flags.color),
         flags.since_cursor,
+        flags.verbose,
         session_id,
       ))
     }
@@ -239,6 +245,7 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
           False -> Follow
         },
         flags.since_cursor,
+        flags.verbose,
         session_id,
       ))
     }
@@ -343,6 +350,13 @@ fn events_color(mode: OutputMode, color: style.ColorMode) -> style.ColorMode {
   }
 }
 
+fn pretty_options(color: style.ColorMode, verbose: Bool) -> render.RenderOptions {
+  case verbose {
+    True -> render.verbose_options(color)
+    False -> render.default_options(color)
+  }
+}
+
 fn operator(flags: Flags, command: control_command.OperatorCommand) -> Command {
   Operator(flags.control_file, flags.json, command)
 }
@@ -424,7 +438,7 @@ pub fn run_with_deps(
           }
       }
     }
-    Events(control_path, mode, color, since_cursor, session_id) -> {
+    Events(control_path, mode, color, since_cursor, verbose, session_id) -> {
       use control_file <- try_ctl(load_control_file(control_path))
       run_events(
         control_file,
@@ -433,10 +447,11 @@ pub fn run_with_deps(
         mode,
         color,
         since_cursor,
+        verbose,
         session_id,
       )
     }
-    Attach(control_path, mode, color, follow, since_cursor, session_id) -> {
+    Attach(control_path, mode, color, follow, since_cursor, verbose, session_id) -> {
       use control_file <- try_ctl(load_control_file(control_path))
       run_attach(
         control_file,
@@ -446,6 +461,7 @@ pub fn run_with_deps(
         color,
         follow,
         since_cursor,
+        verbose,
         session_id,
       )
     }
@@ -479,6 +495,7 @@ fn run_events(
   mode: OutputMode,
   color: style.ColorMode,
   since_cursor: Int,
+  verbose: Bool,
   session_id: String,
 ) -> Result(Nil, Error) {
   case mode {
@@ -505,7 +522,7 @@ fn run_events(
         fetch_replay_pages(deps, control_file, session_id, since_cursor, 200)
         |> map_client_error,
       )
-      let options = render.default_options(color)
+      let options = pretty_options(color, verbose)
       print_chunks(output, render.render_header(summary, options))
       case replay.truncated {
         True -> print_chunks(output, render.render_truncation_warning(options))
@@ -531,6 +548,7 @@ fn run_attach(
   color: style.ColorMode,
   follow: FollowMode,
   since_cursor: Int,
+  verbose: Bool,
   session_id: String,
 ) -> Result(Nil, Error) {
   use summary <- try_ctl(require_session(control_file, deps, session_id))
@@ -540,7 +558,7 @@ fn run_attach(
   )
   case mode {
     Pretty -> {
-      let options = render.default_options(color)
+      let options = pretty_options(color, verbose)
       print_chunks(output, render.render_header(summary, options))
       case replay.truncated {
         True -> print_chunks(output, render.render_truncation_warning(options))

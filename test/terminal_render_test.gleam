@@ -61,6 +61,15 @@ pub fn sanitize_escapes_terminal_controls_test() {
     == "a␛[31m␊␉␇␡\\u{9B}31m"
 }
 
+pub fn sanitize_block_lines_preserves_newline_layout_and_escapes_controls_test() {
+  assert sanitize.block_lines("a\nb") == ["a", "b"]
+  assert sanitize.block_lines("a\r\nb") == ["a", "b"]
+  assert sanitize.block_lines("a\nb\n") == ["a", "b", ""]
+  let escaped = sanitize.block_lines("safe \u{1b}[31m\r\u{9b}0m")
+  assert escaped == ["safe ␛[31m␍\\u{9B}0m"]
+  assert !string.contains(string.concat(escaped), "\u{1b}[31m")
+}
+
 pub fn render_sanitizes_untrusted_text_and_keeps_own_ansi_test() {
   let escape_probe = "\u{1b}[5n"
   let unsafe_summary =
@@ -115,6 +124,7 @@ pub fn render_sanitizes_untrusted_text_and_keeps_own_ansi_test() {
       color_mode: style.ColorAlways,
       show_lifecycle: False,
       show_raw_unknown: True,
+      show_pi_cycles: False,
     )
 
   let transcript =
@@ -130,54 +140,57 @@ pub fn render_sanitizes_untrusted_text_and_keeps_own_ansi_test() {
   assert !string.contains(transcript, "\u{1b}]0;")
   assert string.contains(transcript, "Render ␛[5n")
   assert string.contains(transcript, "/tmp/␛]0;x␇")
-  assert string.contains(transcript, "hello ␛[5n␍")
+  assert string.contains(transcript, "Scherzo pass 1")
+  assert string.contains(transcript, "  hello ␛[5n␍")
   assert string.contains(transcript, "tool bash␛[5n")
-  assert string.contains(transcript, "input: cmd\\u{9B}31m")
-  assert string.contains(transcript, "UI request: confirm␛[5n #ui␇")
+  assert string.contains(transcript, "input\n    cmd\\u{9B}31m")
+  assert string.contains(transcript, "UI request waiting: confirm␛[5n #ui␇")
   assert string.contains(transcript, "approve␈")
   assert string.contains(transcript, "event mystery␛[5n")
   assert string.contains(transcript, "raw: {\"x\":\"␛[5n\"}")
   assert string.contains(transcript, "error: bad␛[5n")
 }
 
-pub fn render_groups_turns_assistant_tools_ui_and_tokens_test() {
+pub fn render_defaults_to_scherzo_pass_and_hides_pi_cycles_test() {
   let events = [
     evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(2, payload(event.Lifecycle, "turn_end") |> with_turn(1)),
+    evt(3, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
     evt(
-      2,
+      4,
       payload(event.AssistantMessage, "message_update")
         |> with_turn(1)
         |> with_message("Hello "),
     ),
     evt(
-      3,
+      5,
       payload(event.AssistantMessage, "message_update")
         |> with_turn(1)
         |> with_message("world"),
     ),
     evt(
-      4,
+      6,
       payload(event.Tool, "tool_execution_start")
         |> with_turn(1)
         |> with_tool_name("bash")
         |> with_tool_input("gleam test"),
     ),
     evt(
-      5,
+      7,
       payload(event.Tool, "tool_execution_update")
         |> with_turn(1)
         |> with_tool_name("bash")
         |> with_tool_output("ok"),
     ),
     evt(
-      6,
+      8,
       payload(event.Tool, "tool_execution_end")
         |> with_turn(1)
         |> with_tool_name("bash")
         |> with_tool_status("success"),
     ),
     evt(
-      7,
+      9,
       payload(event.UiRequest, "extension_ui_request")
         |> with_turn(1)
         |> with_method("confirm")
@@ -185,7 +198,7 @@ pub fn render_groups_turns_assistant_tools_ui_and_tokens_test() {
         |> with_message("approve?"),
     ),
     evt(
-      8,
+      10,
       event.EventPayload(
         ..payload(event.TokenStats, "turn_finished"),
         tokens: domain.TokenTotals(
@@ -197,17 +210,46 @@ pub fn render_groups_turns_assistant_tools_ui_and_tokens_test() {
         ),
       ),
     ),
-    evt(9, payload(event.Lifecycle, "turn_end") |> with_turn(1)),
+    evt(11, payload(event.Lifecycle, "turn_end") |> with_turn(1)),
   ]
 
   let #(_, chunks) =
     render.render_events(render.initial_state(0), events, options())
+  let transcript = render.chunks_to_string(chunks)
 
-  assert render.chunks_to_string(chunks)
-    == "▶ turn 1 started\nassistant:\n  Hello world\ntool bash\n  input: gleam test\n  output: ok\n  status: success\nUI request: confirm #ui-1\n  approve?\ntokens: input=10 output=20 cache_read=3 cache_write=4 total=37\n✓ turn 1 ended\n"
+  assert transcript
+    == "Scherzo pass 1\nassistant\n  Hello world\ntool bash\n  input\n    gleam test\n  output\n    ok\n  status: success\nUI request waiting: confirm #ui-1\n  approve?\nScherzo pass 1 tokens: input=10 output=20 cache_read=3 cache_write=4 total=37\n"
+  assert !string.contains(transcript, "turn 1 started")
+  assert !string.contains(transcript, "turn 1 ended")
+  assert !string.contains(transcript, "pi cycle")
 }
 
-pub fn render_continued_turn_and_suppresses_duplicate_cursor_test() {
+pub fn render_verbose_shows_pi_cycle_labels_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(2, payload(event.Lifecycle, "turn_end") |> with_turn(1)),
+    evt(3, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      4,
+      payload(event.AssistantMessage, "message_update")
+        |> with_turn(1)
+        |> with_message("hi"),
+    ),
+    evt(5, payload(event.Lifecycle, "turn_end") |> with_turn(1)),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(
+      render.initial_state(0),
+      events,
+      render.verbose_options(style.ColorNever),
+    )
+
+  assert render.chunks_to_string(chunks)
+    == "Scherzo pass 1\npi cycle 1 started\npi cycle 1 ended\npi cycle 2 started\nassistant\n  hi\npi cycle 2 ended\n"
+}
+
+pub fn render_continued_pass_and_suppresses_duplicate_cursor_test() {
   let events = [
     evt(
       5,
@@ -233,7 +275,194 @@ pub fn render_continued_turn_and_suppresses_duplicate_cursor_test() {
     render.render_events(render.initial_state(5), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "▶ turn 2 continued\nassistant:\n  new\ntool read\n"
+    == "Scherzo pass 2\nassistant\n  new\ntool read\n"
+}
+
+pub fn render_assistant_multiline_body_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.AssistantMessage, "message_update")
+        |> with_turn(1)
+        |> with_message("first\nsecond"),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+
+  assert render.chunks_to_string(chunks)
+    == "Scherzo pass 1\nassistant\n  first\n  second"
+}
+
+pub fn render_assistant_newline_split_across_deltas_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.AssistantMessage, "message_update")
+        |> with_turn(1)
+        |> with_message("first\n"),
+    ),
+    evt(
+      3,
+      payload(event.AssistantMessage, "message_update")
+        |> with_turn(1)
+        |> with_message("second"),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+
+  assert render.chunks_to_string(chunks)
+    == "Scherzo pass 1\nassistant\n  first\n  second"
+}
+
+pub fn render_assistant_adjacent_deltas_stay_on_one_line_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.AssistantMessage, "message_update")
+        |> with_turn(1)
+        |> with_message("Hello "),
+    ),
+    evt(
+      3,
+      payload(event.AssistantMessage, "message_update")
+        |> with_turn(1)
+        |> with_message("world"),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+
+  assert render.chunks_to_string(chunks)
+    == "Scherzo pass 1\nassistant\n  Hello world"
+}
+
+pub fn render_tool_multiline_sections_and_repeated_output_updates_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.Tool, "tool_execution_start")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_input("gleam test\n--target erlang"),
+    ),
+    evt(
+      3,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_output("line one\n"),
+    ),
+    evt(
+      4,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_output("line two"),
+    ),
+    evt(
+      5,
+      payload(event.Tool, "tool_execution_end")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_status("success"),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+
+  assert render.chunks_to_string(chunks)
+    == "Scherzo pass 1\ntool bash\n  input\n    gleam test\n    --target erlang\n  output\n    line one\n    line two\n  status: success\n"
+}
+
+pub fn render_tool_output_display_truncation_test() {
+  let long_output = string.repeat("x\n", times: 45)
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_output(long_output),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+  let transcript = render.chunks_to_string(chunks)
+
+  assert string.contains(transcript, "display truncated; use --json")
+}
+
+pub fn render_tool_label_resets_across_hidden_pass_boundary_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_output("first"),
+    ),
+    evt(3, payload(event.Lifecycle, "turn_start") |> with_turn(2)),
+    evt(
+      4,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(2)
+        |> with_tool_name("bash")
+        |> with_tool_output("second"),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+
+  assert render.chunks_to_string(chunks)
+    == "Scherzo pass 1\ntool bash\n  output\n    first\nScherzo pass 2\ntool bash\n  output\n    second\n"
+}
+
+pub fn render_ui_request_body_and_pass_token_summary_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.UiRequest, "extension_ui_request")
+        |> with_turn(1)
+        |> with_method("confirm")
+        |> with_request_id("ui-1")
+        |> with_message("line one\nline two"),
+    ),
+    evt(
+      3,
+      event.EventPayload(
+        ..payload(event.TokenStats, "turn_finished")
+        |> with_turn(1),
+        tokens: domain.TokenTotals(
+          input: 1,
+          output: 2,
+          cache_read: 0,
+          cache_write: 0,
+          total: 3,
+        ),
+      ),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+
+  assert render.chunks_to_string(chunks)
+    == "Scherzo pass 1\nUI request waiting: confirm #ui-1\n  line one\n  line two\nScherzo pass 1 tokens: input=1 output=2 cache_read=0 cache_write=0 total=3\n"
 }
 
 pub fn render_unknown_event_fallback_can_show_raw_excerpt_test() {
@@ -252,6 +481,7 @@ pub fn render_unknown_event_fallback_can_show_raw_excerpt_test() {
       color_mode: style.ColorNever,
       show_lifecycle: False,
       show_raw_unknown: True,
+      show_pi_cycles: False,
     )
 
   let #(_, chunks) =

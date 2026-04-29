@@ -68,12 +68,12 @@ The main implementation risk is creating a broad rendering abstraction before th
 - [x] (2026-04-29 20:58Z) Reviewed this ExecPlan against the current tree and tightened renderer state, precondition, CLI documentation, and streaming/truncation instructions before implementation.
 - [x] (2026-04-29 21:02Z) Confirmed implementation baseline: working copy had only this added plan document, `jj status --ignore-working-copy` matched that doc-only state, and `direnv exec . gleam test` reported `278 passed, no failures`.
 - [x] (2026-04-29 21:06Z) Performed and recorded the renderer reuse spike in `docs/spikes/pi-rendering-evaluation.md`; the spike recommends continuing with the native Gleam renderer.
-- [ ] Fix UTF-8-safe raw JSON truncation and add a regression test.
-- [ ] Rename pretty grouping from turn-oriented output to Scherzo-pass output and hide pi cycle events by default.
-- [ ] Preserve safe newlines in assistant and tool body output.
-- [ ] Improve tool block rendering and display truncation.
-- [ ] Add `--verbose` pretty output and documentation.
-- [ ] Validate the improved attach UI with tests and a short live or fake-control transcript.
+- [x] (2026-04-29 21:09Z) Fixed UTF-8-safe raw JSON truncation in `src/scherzo_redaction_ffi.erl` and added a multibyte JSON encoding regression test in `test/session_redaction_test.gleam`.
+- [x] (2026-04-29 21:13Z) Renamed pretty grouping from turn-oriented output to `Scherzo pass`, hid pi cycle events by default, and added verbose `pi cycle` rendering tests.
+- [x] (2026-04-29 21:13Z) Added block-aware sanitization and assistant rendering that preserves safe newlines while continuing to escape terminal controls.
+- [x] (2026-04-29 21:13Z) Reworked tool rendering into input/output/status subsections and added display truncation tests.
+- [x] (2026-04-29 21:15Z) Added `--verbose` pretty output wiring for `attach` and `events --pretty`, parser/help tests, attach integration tests, and README documentation.
+- [x] (2026-04-29 21:16Z) Validated the improved attach UI with fake-control tests and full validation: `direnv exec . gleam format --check src test`, `direnv exec . gleam test` (`288 passed, no failures`), and `direnv exec . gleam run -- ctl --help`. A live attach smoke was skipped because `SCHERZO_CONTROL_FILE` was not set.
 
 ## Surprises & Discoveries
 
@@ -94,6 +94,9 @@ The main implementation risk is creating a broad rendering abstraction before th
 
 - Observation: Pi interactive assistant rendering can return lines after theme initialization, but those lines include pi-owned terminal controls and fixed-width padding; tool rendering requires a TUI object.
   Evidence: The dynamic import probe recorded `AssistantMessageComponent.render(80)` output containing OSC prompt markers, and `ToolExecutionComponent.markExecutionStarted()` failed without a TUI object because it tried to call `requestRender`.
+
+- Observation: The current implementation environment did not expose a live Scherzo control file for manual attach smoke testing.
+  Evidence: After full automated validation, `SCHERZO_CONTROL_FILE` was unset, so live `scripts/scherzoctl attach --no-follow` validation was skipped. The fake-control attach tests in `test/ctl_attach_render_test.gleam` exercise replay, follow, duplicate cursor suppression, quiet pi-cycle hiding, and verbose pi-cycle rendering without a daemon.
 
 ## Decision Log
 
@@ -133,7 +136,35 @@ The main implementation risk is creating a broad rendering abstraction before th
 
 Spike checkpoint on 2026-04-29: `docs/spikes/pi-rendering-evaluation.md` recommends continuing with the native Gleam renderer. Pi's interactive components remain useful future reference material, but this plan should not add a Node helper or pi-renderer dependency for the current line-oriented attach transcript.
 
-(To be filled after implementation. Include the final validation command output, a before/after attach transcript excerpt, and any recommendation for a future full-screen TUI or pi-renderer integration.)
+Implementation completed on 2026-04-29. The UTF-8 truncation crash path is covered by a multibyte raw JSON regression test. Default pretty attach output now uses `Scherzo pass N`, hides pi cycle lifecycle noise, renders assistant text and tool input/output as blocks, and preserves raw/JSON automation modes. Verbose pretty output is enabled with `--verbose` for `attach` and `events --pretty` and shows diagnostic `pi cycle N started/ended` lines.
+
+The final validation passed:
+
+    direnv exec . gleam format --check src test
+    direnv exec . gleam test
+    288 passed, no failures
+    direnv exec . gleam run -- ctl --help
+
+Before this change, the confusing transcript shape was:
+
+    ▶ turn 1 started
+    assistant:
+      ...
+    ✓ turn 1 ended
+
+After this change, the quiet transcript shape is:
+
+    Scherzo pass 1
+    assistant
+      ...
+    tool bash
+      input
+        gleam test
+      output
+        288 passed, no failures
+      status: success
+
+A future full-screen TUI or pi-renderer integration remains out of scope. If revisited, it should start from a documented, package-importable pi transcript renderer or a deliberate Node/TUI packaging plan rather than importing pi interactive components through a machine-local CLI install.
 
 ## Context and Orientation
 
@@ -141,19 +172,19 @@ Scherzo is a Gleam Erlang-target project. Source code lives under `src/scherzo/`
 
 The local operator CLI is implemented in `src/scherzo/ctl.gleam`. It parses commands such as `ps`, `session`, `events`, `attach`, `abort`, `stop-after-turn`, `prompt`, and `ui respond`. The `attach` command replays retained session events through `ControlClient.get_events` and optionally follows live events through `ControlClient.stream_events`. Pretty mode calls functions in `src/scherzo/terminal/render.gleam`; raw and JSON modes use compact event lines and protocol JSON envelopes.
 
-The pretty renderer is implemented in `src/scherzo/terminal/render.gleam`. It defines `RenderState`, `RenderOptions`, `RenderChunk`, `render_header`, `render_truncation_warning`, `render_event`, `render_events`, and `render_page`. It currently prints pi lifecycle event names `turn_start` and `turn_end` as `▶ turn N started` and `✓ turn N ended`, renders assistant deltas inline under an `assistant:` label, renders tool fields as single `input:`, `output:`, and `status:` lines, and hides most lifecycle events by default.
+The pretty renderer is implemented in `src/scherzo/terminal/render.gleam`. It defines `RenderState`, `RenderOptions`, `RenderChunk`, `render_header`, `render_truncation_warning`, `render_event`, `render_events`, and `render_page`. It now prints visible grouping as `Scherzo pass N`, keeps observed pass state separate from displayed pass headings, hides pi `turn_start` and `turn_end` cycle events by default, renders those cycle events as `pi cycle N started/ended` only in verbose pretty mode, renders assistant deltas under an `assistant` block label, renders tool fields as `input`, `output`, and `status` subsections, and hides most lifecycle events by default.
 
 Terminal styling is in `src/scherzo/terminal/style.gleam`. It has a simple `ColorMode` with `ColorAuto`, `ColorAlways`, and `ColorNever`, and helper functions for headings, dim text, success, warning, error, assistant labels, and tool labels. `ColorAuto` currently behaves like no color in renderer tests.
 
-Terminal sanitization is in `src/scherzo/terminal/sanitize.gleam`. Its current `text` function escapes all C0 controls, DEL, and C1 controls. Because newline is a C0 control, using `sanitize.text` on assistant or tool bodies turns normal line breaks into visible control pictures. That is safe but poor for readable assistant output and multiline tool output.
+Terminal sanitization is in `src/scherzo/terminal/sanitize.gleam`. Its `text` function escapes all C0 controls, DEL, and C1 controls for inline labels. Its `block_lines` function normalizes CRLF to LF, preserves LF as layout, and still escapes terminal controls inside each returned line so assistant, UI, and tool bodies can preserve ordinary newlines safely.
 
 Session event types are in `src/scherzo/session/event.gleam`. `EventPayload` includes `kind`, `name`, `turn`, `pi_type`, `message`, `request_id`, `method`, `tool_name`, `tool_input`, `tool_output`, `tool_status`, `tokens`, and `raw_json`. `EventKind` includes `Lifecycle`, `Pi`, `AssistantMessage`, `Tool`, `UiRequest`, `UiResponse`, `TokenStats`, `Error`, and `PiRaw`.
 
 Session JSON encoding is in `src/scherzo/session/json.gleam`. It encodes summaries, events, pages, payloads, token totals, and raw JSON. Raw pi JSON is represented as `event.RedactedRawJson(value, truncated)` and encoded under the nullable `raw_json` payload field.
 
-Raw pi JSON redaction and truncation are split between `src/scherzo/session/redaction.gleam` and `src/scherzo_redaction_ffi.erl`. `redaction.max_raw_json_bytes` is `16_384`. The Erlang FFI currently truncates a binary by bytes using `binary:part(Value, 0, MaxBytes)`, which can cut a multibyte UTF-8 codepoint.
+Raw pi JSON redaction and truncation are split between `src/scherzo/session/redaction.gleam` and `src/scherzo_redaction_ffi.erl`. `redaction.max_raw_json_bytes` is `16_384`. The Erlang FFI now truncates to a byte prefix and then keeps only a valid UTF-8 prefix before returning the retained raw JSON string to Gleam.
 
-Existing tests relevant to this work are `test/terminal_render_test.gleam`, `test/ctl_attach_render_test.gleam`, `test/ctl_test.gleam`, `test/session_event_test.gleam`, `test/control_protocol_test.gleam`, and redaction/session tests under `test/`. The baseline on 2026-04-29 reports `278 passed, no failures`.
+Existing tests relevant to this work are `test/terminal_render_test.gleam`, `test/ctl_attach_render_test.gleam`, `test/ctl_test.gleam`, `test/session_event_test.gleam`, `test/control_protocol_test.gleam`, and redaction/session tests under `test/`. The baseline on 2026-04-29 reported `278 passed, no failures`; after implementation on 2026-04-29, the suite reports `288 passed, no failures`.
 
 ## Preconditions and Verified Facts
 
@@ -168,13 +199,13 @@ The expected code baseline when this plan was written was `direnv exec . gleam t
 Current repository facts this plan depends on:
 
 - `src/scherzo/ctl.gleam` defines `OutputMode` variants `Pretty`, `Raw`, and `Json`; `FollowMode` variants `Follow` and `NoFollow`; `Command.Events`; `Command.Attach`; `ControlClient`; and `Output` test seams.
-- `src/scherzo/ctl.gleam` defaults `attach <session-id>` to pretty follow mode, accepts `attach --raw <session-id>`, accepts `attach --json <session-id>`, and preserves the legacy `attach --raw --json <session-id>` alias for JSON stream output.
-- `src/scherzo/ctl.gleam` parses `events --pretty <session-id>` and pretty replay uses paginated retained events.
-- `src/scherzo/terminal/render.gleam` currently has `RenderOptions(color_mode, show_lifecycle, show_raw_unknown)` and no CLI path to enable lifecycle/raw unknown output.
-- `src/scherzo/terminal/sanitize.gleam` currently has only `text(String) -> String` and escapes newline as a control picture.
+- `src/scherzo/ctl.gleam` defaults `attach <session-id>` to pretty follow mode, accepts `attach --raw <session-id>`, accepts `attach --json <session-id>`, accepts `attach --verbose <session-id>`, and preserves the legacy `attach --raw --json <session-id>` alias for JSON stream output.
+- `src/scherzo/ctl.gleam` parses `events --pretty <session-id>` and `events --pretty --verbose <session-id>`; pretty replay uses paginated retained events.
+- `src/scherzo/terminal/render.gleam` has `RenderOptions(color_mode, show_lifecycle, show_raw_unknown, show_pi_cycles)`, `default_options(color_mode)` for quiet pretty output, and `verbose_options(color_mode)` for diagnostic pretty output.
+- `src/scherzo/terminal/sanitize.gleam` has `text(String) -> String` for inline escaping and `block_lines(String) -> List(String)` for newline-preserving block body rendering.
 - `src/scherzo/agent/runner.gleam` assigns the Scherzo runner pass number to `PiUpdate.turn` and passes that through to session events.
 - `src/scherzo/orchestrator/daemon.gleam` classifies pi `turn_start`, `turn_end`, `agent_start`, and `agent_end` as `session_event.Pi`, not as `Lifecycle`.
-- `src/scherzo_redaction_ffi.erl` currently truncates redacted raw JSON by byte count without ensuring the returned prefix is valid UTF-8.
+- `src/scherzo_redaction_ffi.erl` truncates redacted raw JSON to a UTF-8-valid prefix when the encoded payload exceeds the configured byte cap.
 
 If any fact is false, do not guess. Re-read the named files, update this plan, and then continue.
 
