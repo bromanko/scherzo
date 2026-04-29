@@ -384,6 +384,99 @@ pub fn render_tool_multiline_sections_and_repeated_output_updates_test() {
     == "Scherzo pass 1\ntool bash\n  input\n    gleam test\n    --target erlang\n  output\n    line one\n    line two\n  status: success\n"
 }
 
+pub fn render_tool_repeated_plain_input_updates_are_not_dropped_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_input("echo"),
+    ),
+    evt(
+      3,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_input("echo hello"),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+
+  assert render.chunks_to_string(chunks)
+    == "Scherzo pass 1\ntool bash\n  input\n    echo\n    echo hello\n"
+}
+
+pub fn render_tool_repeated_input_updates_are_collapsed_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_input(
+          "[structured tool input; use --json for raw details]",
+        ),
+    ),
+    evt(
+      3,
+      payload(event.Tool, "tool_execution_start")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_input(
+          "[structured tool input; use --json for raw details]",
+        ),
+    ),
+    evt(
+      4,
+      payload(event.Tool, "tool_execution_start")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_input(
+          "[structured tool input; use --json for raw details]",
+        ),
+    ),
+    evt(
+      5,
+      payload(event.Tool, "tool_execution_end")
+        |> with_turn(1)
+        |> with_tool_name("bash"),
+    ),
+    evt(
+      6,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_input(
+          "[structured tool input; use --json for raw details]",
+        ),
+    ),
+    evt(
+      7,
+      payload(event.Tool, "tool_execution_start")
+        |> with_turn(1)
+        |> with_tool_name("bash"),
+    ),
+    evt(
+      8,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_output("ok"),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+
+  assert render.chunks_to_string(chunks)
+    == "Scherzo pass 1\ntool bash\n  input\n    [structured tool input; use --json for raw details]\ntool bash\n  output\n    ok\n"
+}
+
 pub fn render_tool_output_display_truncation_test() {
   let long_output = string.repeat("x\n", times: 45)
   let events = [
