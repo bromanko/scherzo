@@ -105,6 +105,20 @@ pub type HandoffConfig {
   )
 }
 
+pub type LinearContractConfig {
+  LinearContractConfig(
+    enabled: Bool,
+    workflow_label_prefix: String,
+    workflow_labels: List(String),
+    support_labels: List(String),
+    required_states: Dict(String, String),
+    handoff_state_bindings: Dict(String, String),
+    enforce_issue_workflow_labels: Bool,
+    invalid_workflow_state_id: Option(String),
+    comment_on_invalid_workflow: Bool,
+  )
+}
+
 pub type LinearCommandConfig {
   LinearCommandConfig(
     enabled: Bool,
@@ -126,6 +140,7 @@ pub type EffectiveConfig {
     agent: AgentConfig,
     pi: PiConfig,
     handoff: HandoffConfig,
+    linear_contract: LinearContractConfig,
     linear_commands: LinearCommandConfig,
   )
 }

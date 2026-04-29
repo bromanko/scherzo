@@ -283,6 +283,187 @@ pub fn handoff_defaults_and_parsing_test() {
   assert parsed.handoff.failure_state_id == Some("state-fail")
 }
 
+pub fn linear_contract_defaults_test() {
+  let defaults = config.default_linear_contract_config()
+  assert defaults.enabled == False
+  assert defaults.workflow_label_prefix == "workflow:"
+  assert defaults.workflow_labels == []
+  assert defaults.support_labels == []
+  assert dict.to_list(defaults.required_states) == []
+  assert dict.to_list(defaults.handoff_state_bindings) == []
+  assert defaults.enforce_issue_workflow_labels == False
+  assert defaults.invalid_workflow_state_id == None
+  assert defaults.comment_on_invalid_workflow == False
+
+  let assert Ok(configured) =
+    config.resolve_with_env(
+      definition(minimal_front()),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+  assert configured.linear_contract == defaults
+}
+
+pub fn linear_contract_parses_and_normalizes_test() {
+  let front =
+    minimal_front()
+    <> "linear_contract:\n  enabled: true\n  workflow_label_prefix: \" Workflow: \"\n  workflow_labels: [Bugfix, \" bugfix \", Research, \"\"]\n  support_labels: [Needs-Workflow, \" needs-workflow \", Needs-Clarification]\n  required_states:\n    Ready: \"Ready for Agent\"\n    in_progress: \" In Progress \"\n    done: Done\n  handoff_state_bindings:\n    claim: IN_PROGRESS\n    success: done\n  enforce_issue_workflow_labels: true\n  invalid_workflow_state_id: \" state-needs-workflow \"\n  comment_on_invalid_workflow: true\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/WORKFLOW.md", env)
+  let contract = configured.linear_contract
+  assert contract.enabled == True
+  assert contract.workflow_label_prefix == "workflow:"
+  assert contract.workflow_labels == ["bugfix", "research"]
+  assert contract.support_labels == ["needs-workflow", "needs-clarification"]
+  assert dict.get(contract.required_states, "ready") == Ok("Ready for Agent")
+  assert dict.get(contract.required_states, "in_progress") == Ok("In Progress")
+  assert dict.get(contract.handoff_state_bindings, "claim") == Ok("in_progress")
+  assert dict.get(contract.handoff_state_bindings, "success") == Ok("done")
+  assert contract.enforce_issue_workflow_labels == True
+  assert contract.invalid_workflow_state_id == Some("state-needs-workflow")
+  assert contract.comment_on_invalid_workflow == True
+}
+
+pub fn linear_contract_optional_dispatch_policy_defaults_test() {
+  let front =
+    minimal_front()
+    <> "linear_contract:\n  workflow_labels: []\n  invalid_workflow_state_id: null\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/WORKFLOW.md", env)
+  assert configured.linear_contract.enforce_issue_workflow_labels == False
+  assert configured.linear_contract.workflow_labels == []
+  assert configured.linear_contract.invalid_workflow_state_id == None
+  assert configured.linear_contract.comment_on_invalid_workflow == False
+
+  let blank_state_id =
+    minimal_front()
+    <> "linear_contract:\n  invalid_workflow_state_id: \"   \"\n"
+  let assert Ok(configured_blank) =
+    config.resolve_with_env(
+      definition(blank_state_id),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+  assert configured_blank.linear_contract.invalid_workflow_state_id == None
+}
+
+pub fn linear_contract_rejects_invalid_values_test() {
+  let empty_prefix =
+    minimal_front()
+    <> "linear_contract:\n  enabled: true\n  workflow_label_prefix: \"  \"\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(empty_prefix),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let enforcement_without_labels =
+    minimal_front()
+    <> "linear_contract:\n  enforce_issue_workflow_labels: true\n  workflow_labels: []\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(enforcement_without_labels),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let enforcement_empty_prefix =
+    minimal_front()
+    <> "linear_contract:\n  enforce_issue_workflow_labels: true\n  workflow_label_prefix: \"  \"\n  workflow_labels: [bugfix]\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(enforcement_empty_prefix),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let invalid_bool =
+    minimal_front()
+    <> "linear_contract:\n  enforce_issue_workflow_labels: yes\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(invalid_bool),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let unknown_binding_key =
+    minimal_front()
+    <> "linear_contract:\n  required_states:\n    done: Done\n  handoff_state_bindings:\n    surprise: done\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(unknown_binding_key),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let missing_binding_target =
+    minimal_front()
+    <> "linear_contract:\n  required_states:\n    done: Done\n  handoff_state_bindings:\n    success: closed\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(missing_binding_target),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let non_string_list_entry =
+    minimal_front() <> "linear_contract:\n  workflow_labels: [bugfix, 123]\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(non_string_list_entry),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let non_string_map_key =
+    minimal_front() <> "linear_contract:\n  required_states:\n    123: Done\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(non_string_map_key),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let non_string_map_value =
+    minimal_front() <> "linear_contract:\n  required_states:\n    ready: 123\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(non_string_map_value),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let blank_map_key =
+    minimal_front()
+    <> "linear_contract:\n  required_states:\n    \"  \": Done\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(blank_map_key),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let blank_map_value =
+    minimal_front()
+    <> "linear_contract:\n  required_states:\n    ready: \"  \"\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(blank_map_value),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+
+  let non_map_section = minimal_front() <> "linear_contract: true\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(
+      definition(non_map_section),
+      "test/tmp/WORKFLOW.md",
+      env,
+    )
+}
+
 pub fn reload_state_preserves_last_good_and_blocks_dispatch_test() {
   let state = config.initial_reload_state()
   let good = definition(minimal_front())

@@ -92,6 +92,20 @@ pub fn default_handoff_config() -> domain.HandoffConfig {
   )
 }
 
+pub fn default_linear_contract_config() -> domain.LinearContractConfig {
+  domain.LinearContractConfig(
+    enabled: False,
+    workflow_label_prefix: "workflow:",
+    workflow_labels: [],
+    support_labels: [],
+    required_states: dict.new(),
+    handoff_state_bindings: dict.new(),
+    enforce_issue_workflow_labels: False,
+    invalid_workflow_state_id: None,
+    comment_on_invalid_workflow: False,
+  )
+}
+
 pub fn default_linear_command_config() -> domain.LinearCommandConfig {
   domain.LinearCommandConfig(
     enabled: False,
@@ -124,6 +138,7 @@ pub fn resolve_with_env(
   use agent <- result_try(resolve_agent(root))
   use pi <- result_try(resolve_pi(root))
   use handoff <- result_try(resolve_handoff(root))
+  use linear_contract <- result_try(resolve_linear_contract(root))
   use linear_commands <- result_try(resolve_linear_commands(root))
   Ok(domain.EffectiveConfig(
     tracker:,
@@ -133,6 +148,7 @@ pub fn resolve_with_env(
     agent:,
     pi:,
     handoff:,
+    linear_contract:,
     linear_commands:,
   ))
 }
@@ -404,6 +420,128 @@ fn resolve_handoff(
   ))
 }
 
+fn resolve_linear_contract(
+  root: yay.Node,
+) -> Result(domain.LinearContractConfig, error.ConfigError) {
+  let defaults = default_linear_contract_config()
+  case get_node(root, "linear_contract") {
+    None -> Ok(defaults)
+    Some(node) -> {
+      case node {
+        yay.NodeMap(_) -> {
+          use enabled_option <- result_try(get_bool_strict(
+            node,
+            "enabled",
+            "linear_contract.enabled",
+          ))
+          use prefix_option <- result_try(get_string_strict(
+            node,
+            "workflow_label_prefix",
+            "linear_contract.workflow_label_prefix",
+          ))
+          use workflow_labels_option <- result_try(get_contract_string_list(
+            node,
+            "workflow_labels",
+            "linear_contract.workflow_labels",
+          ))
+          use support_labels_option <- result_try(get_contract_string_list(
+            node,
+            "support_labels",
+            "linear_contract.support_labels",
+          ))
+          use required_states_option <- result_try(get_contract_string_map(
+            node,
+            "required_states",
+            "linear_contract.required_states",
+            string.trim,
+          ))
+          use handoff_bindings_option <- result_try(
+            get_contract_string_map(
+              node,
+              "handoff_state_bindings",
+              "linear_contract.handoff_state_bindings",
+              fn(value) { value |> string.trim |> string.lowercase },
+            ),
+          )
+          use enforce_option <- result_try(get_bool_strict(
+            node,
+            "enforce_issue_workflow_labels",
+            "linear_contract.enforce_issue_workflow_labels",
+          ))
+          use invalid_state_option <- result_try(get_optional_string_strict(
+            node,
+            "invalid_workflow_state_id",
+            "linear_contract.invalid_workflow_state_id",
+          ))
+          use comment_option <- result_try(get_bool_strict(
+            node,
+            "comment_on_invalid_workflow",
+            "linear_contract.comment_on_invalid_workflow",
+          ))
+
+          let enabled = enabled_option |> bool_default(defaults.enabled)
+          let workflow_label_prefix =
+            prefix_option
+            |> option_unwrap(defaults.workflow_label_prefix)
+            |> normalize_label
+          let workflow_labels =
+            workflow_labels_option
+            |> list_default(defaults.workflow_labels)
+            |> normalize_label_list
+          let support_labels =
+            support_labels_option
+            |> list_default(defaults.support_labels)
+            |> normalize_label_list
+          let required_states =
+            required_states_option
+            |> option_unwrap(defaults.required_states)
+          let handoff_state_bindings =
+            handoff_bindings_option
+            |> option_unwrap(defaults.handoff_state_bindings)
+          let enforce_issue_workflow_labels =
+            enforce_option
+            |> bool_default(defaults.enforce_issue_workflow_labels)
+          let invalid_workflow_state_id =
+            invalid_state_option
+            |> optional_non_empty_string
+            |> option_or_else(fn() { defaults.invalid_workflow_state_id })
+          let comment_on_invalid_workflow =
+            comment_option
+            |> bool_default(defaults.comment_on_invalid_workflow)
+          use handoff_state_bindings <- result_try(validate_handoff_bindings(
+            handoff_state_bindings,
+            required_states,
+          ))
+
+          case
+            validate_linear_contract_dispatch_policy(
+              enabled,
+              enforce_issue_workflow_labels,
+              workflow_label_prefix,
+              workflow_labels,
+            )
+          {
+            Error(err) -> Error(err)
+            Ok(Nil) ->
+              Ok(domain.LinearContractConfig(
+                enabled: enabled,
+                workflow_label_prefix: workflow_label_prefix,
+                workflow_labels: workflow_labels,
+                support_labels: support_labels,
+                required_states: required_states,
+                handoff_state_bindings: handoff_state_bindings,
+                enforce_issue_workflow_labels: enforce_issue_workflow_labels,
+                invalid_workflow_state_id: invalid_workflow_state_id,
+                comment_on_invalid_workflow: comment_on_invalid_workflow,
+              ))
+          }
+        }
+        _ -> Error(error.InvalidConfig("linear_contract must be a map"))
+      }
+    }
+  }
+}
+
 fn resolve_linear_commands(
   root: yay.Node,
 ) -> Result(domain.LinearCommandConfig, error.ConfigError) {
@@ -464,6 +602,93 @@ fn normalize_string_list(values: List(String)) -> List(String) {
   |> list.filter(fn(value) { value != "" })
 }
 
+fn normalize_label(value: String) -> String {
+  value |> string.trim |> string.lowercase
+}
+
+fn normalize_label_list(values: List(String)) -> List(String) {
+  values
+  |> list.map(normalize_label)
+  |> list.filter(fn(value) { value != "" })
+  |> dedupe_preserving_first
+}
+
+fn dedupe_preserving_first(values: List(String)) -> List(String) {
+  dedupe_loop(values, []) |> list.reverse
+}
+
+fn dedupe_loop(values: List(String), acc: List(String)) -> List(String) {
+  case values {
+    [] -> acc
+    [value, ..rest] -> {
+      case list.contains(acc, value) {
+        True -> dedupe_loop(rest, acc)
+        False -> dedupe_loop(rest, [value, ..acc])
+      }
+    }
+  }
+}
+
+fn validate_linear_contract_dispatch_policy(
+  enabled: Bool,
+  enforce_issue_workflow_labels: Bool,
+  workflow_label_prefix: String,
+  workflow_labels: List(String),
+) -> Result(Nil, error.ConfigError) {
+  case
+    { enabled || enforce_issue_workflow_labels } && workflow_label_prefix == ""
+  {
+    True ->
+      Error(error.InvalidConfig(
+        "linear_contract.workflow_label_prefix must be non-empty when enabled or enforcing issue workflow labels",
+      ))
+    False ->
+      case enforce_issue_workflow_labels && list.is_empty(workflow_labels) {
+        True ->
+          Error(error.InvalidConfig(
+            "linear_contract.workflow_labels must be non-empty when enforce_issue_workflow_labels is true",
+          ))
+        False -> Ok(Nil)
+      }
+  }
+}
+
+fn validate_handoff_bindings(
+  bindings: dict.Dict(String, String),
+  required_states: dict.Dict(String, String),
+) -> Result(dict.Dict(String, String), error.ConfigError) {
+  validate_handoff_binding_entries(dict.to_list(bindings), required_states)
+  |> result_map(fn(_) { bindings })
+}
+
+fn validate_handoff_binding_entries(
+  entries: List(#(String, String)),
+  required_states: dict.Dict(String, String),
+) -> Result(Nil, error.ConfigError) {
+  case entries {
+    [] -> Ok(Nil)
+    [#(key, value), ..rest] -> {
+      case list.contains(["claim", "success", "failure"], key) {
+        False ->
+          Error(error.InvalidConfig(
+            "linear_contract.handoff_state_bindings has invalid key: " <> key,
+          ))
+        True ->
+          case dict.has_key(required_states, value) {
+            False ->
+              Error(error.InvalidConfig(
+                "linear_contract.handoff_state_bindings."
+                <> key
+                <> " references unknown required state: "
+                <> value,
+              ))
+            True -> validate_handoff_binding_entries(rest, required_states)
+          }
+      }
+    }
+  }
+}
+
 fn ui_policy(
   value: Option(String),
 ) -> Result(domain.UiRequestPolicy, error.ConfigError) {
@@ -482,13 +707,20 @@ fn ui_policy(
 }
 
 fn get_map(node: yay.Node, key: String) -> yay.Node {
+  case get_node(node, key) {
+    Some(value) -> value
+    None -> yay.NodeMap([])
+  }
+}
+
+fn get_node(node: yay.Node, key: String) -> Option(yay.Node) {
   case node {
     yay.NodeMap(pairs) ->
       case list.key_find(pairs, yay.NodeStr(key)) {
-        Ok(value) -> value
-        Error(_) -> yay.NodeMap([])
+        Ok(value) -> Some(value)
+        Error(_) -> None
       }
-    _ -> yay.NodeMap([])
+    _ -> None
   }
 }
 
@@ -549,6 +781,43 @@ fn get_bool(node: yay.Node, key: String) -> Option(Bool) {
   }
 }
 
+fn get_bool_strict(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(Option(Bool), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok(None)
+    Some(yay.NodeBool(value)) -> Ok(Some(value))
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a boolean"))
+  }
+}
+
+fn get_string_strict(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(Option(String), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok(None)
+    Some(yay.NodeStr(value)) -> Ok(Some(value))
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a string"))
+  }
+}
+
+fn get_optional_string_strict(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(Option(String), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok(None)
+    Some(yay.NodeNil) -> Ok(None)
+    Some(yay.NodeStr(value)) -> Ok(Some(value))
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a string or null"))
+  }
+}
+
 fn get_string_list(node: yay.Node, key: String) -> Option(List(String)) {
   case node {
     yay.NodeMap(pairs) ->
@@ -566,6 +835,81 @@ fn get_string_list(node: yay.Node, key: String) -> Option(List(String)) {
         _ -> None
       }
     _ -> None
+  }
+}
+
+fn get_contract_string_list(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(Option(List(String)), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok(None)
+    Some(yay.NodeSeq(values)) -> {
+      use strings <- result_try(read_contract_string_list(values, path, []))
+      Ok(Some(list.reverse(strings)))
+    }
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a string list"))
+  }
+}
+
+fn read_contract_string_list(
+  values: List(yay.Node),
+  path: String,
+  acc: List(String),
+) -> Result(List(String), error.ConfigError) {
+  case values {
+    [] -> Ok(acc)
+    [yay.NodeStr(value), ..rest] ->
+      read_contract_string_list(rest, path, [value, ..acc])
+    [_, ..] -> Error(error.InvalidConfig(path <> " entries must be strings"))
+  }
+}
+
+fn get_contract_string_map(
+  node: yay.Node,
+  key: String,
+  path: String,
+  normalize_value: fn(String) -> String,
+) -> Result(Option(dict.Dict(String, String)), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok(None)
+    Some(yay.NodeMap(entries)) -> {
+      use pairs <- result_try(
+        read_contract_string_map(entries, path, normalize_value, []),
+      )
+      Ok(Some(dict.from_list(list.reverse(pairs))))
+    }
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a string map"))
+  }
+}
+
+fn read_contract_string_map(
+  entries: List(#(yay.Node, yay.Node)),
+  path: String,
+  normalize_value: fn(String) -> String,
+  acc: List(#(String, String)),
+) -> Result(List(#(String, String)), error.ConfigError) {
+  case entries {
+    [] -> Ok(acc)
+    [#(yay.NodeStr(key), yay.NodeStr(value)), ..rest] -> {
+      let key = key |> string.trim |> string.lowercase
+      let value = normalize_value(value)
+      case key == "" || value == "" {
+        True ->
+          Error(error.InvalidConfig(
+            path <> " keys and values must be non-empty strings",
+          ))
+        False ->
+          read_contract_string_map(rest, path, normalize_value, [
+            #(key, value),
+            ..acc
+          ])
+      }
+    }
+    [#(yay.NodeStr(_), _), ..] ->
+      Error(error.InvalidConfig(path <> " values must be strings"))
+    [#(_, _), ..] -> Error(error.InvalidConfig(path <> " keys must be strings"))
   }
 }
 
@@ -688,6 +1032,13 @@ fn result_unwrap(result: Result(a, b), default: a) -> a {
   case result {
     Ok(value) -> value
     Error(_) -> default
+  }
+}
+
+fn result_map(result: Result(a, e), mapper: fn(a) -> b) -> Result(b, e) {
+  case result {
+    Ok(value) -> Ok(mapper(value))
+    Error(err) -> Error(err)
   }
 }
 

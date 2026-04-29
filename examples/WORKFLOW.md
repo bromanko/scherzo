@@ -48,6 +48,34 @@ handoff:
   # claim_state_id: "linear-state-id-for-in-progress"
   # success_state_id: "linear-state-id-for-done"
   # failure_state_id: "linear-state-id-for-needs-attention"
+# Optional board contract and workflow-label dispatch policy. Run:
+#   direnv exec . gleam run -- --linear-contract-check examples/WORKFLOW.md
+# before enabling workflow-label enforcement, invalid-workflow state moves, or
+# handoff state updates. The check queries Linear metadata only; it does not
+# create labels, states, comments, or issue updates.
+linear_contract:
+  enabled: false
+  workflow_label_prefix: "workflow:"
+  workflow_labels: [bugfix, feature, research, review, docs, chore]
+  support_labels: [needs-workflow, needs-clarification]
+  required_states:
+    todo: Todo
+    in_progress: In Progress
+    done: Done
+    needs_workflow: Needs Workflow
+  handoff_state_bindings:
+    claim: in_progress
+    success: done
+    failure: needs_workflow
+  # When true, Scherzo skips issues unless they have exactly one allowed
+  # workflow label such as workflow:bugfix. Enforcement alone is log-only.
+  enforce_issue_workflow_labels: false
+  # Uncomment to post a concise triage comment for invalid workflow labels.
+  comment_on_invalid_workflow: false
+  # Uncomment to move invalid workflow issues to Needs Workflow. This must be a
+  # Linear workflow state ID, not the state name, and should be verified with
+  # --linear-contract-check before use.
+  # invalid_workflow_state_id: "linear-state-id-for-needs-workflow"
 # Optional Linear comment command transport. Keep disabled until you have a
 # private test issue and the Linear user id for each authorized operator.
 linear_commands:

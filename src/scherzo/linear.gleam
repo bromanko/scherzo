@@ -10,6 +10,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/domain
 import scherzo/error
+import scherzo/linear_contract
 import scherzo/tracker
 
 pub type Request {
@@ -45,6 +46,13 @@ pub type CommandClient {
     fetch_comments: fn(List(String), Int) ->
       Result(List(LinearComment), error.TrackerError),
     post_ack: fn(String, String) -> Result(Nil, error.TrackerError),
+  )
+}
+
+pub type ContractClient {
+  ContractClient(
+    fetch_remote_contract: fn() ->
+      Result(linear_contract.RemoteBoard, error.TrackerError),
   )
 }
 
@@ -84,6 +92,19 @@ pub fn command_client(
 
 pub fn real_command_client(config: domain.TrackerConfig) -> CommandClient {
   command_client(config, http_transport)
+}
+
+pub fn contract_client(
+  config: domain.TrackerConfig,
+  transport: Transport,
+) -> ContractClient {
+  ContractClient(fetch_remote_contract: fn() {
+    fetch_remote_contract(config, transport)
+  })
+}
+
+pub fn real_contract_client(config: domain.TrackerConfig) -> ContractClient {
+  contract_client(config, http_transport)
 }
 
 pub fn http_transport(request: Request) -> Result(Response, error.TrackerError) {
@@ -164,6 +185,15 @@ pub fn fetch_issue_states_by_ids(
       parse_response(response)
     }
   }
+}
+
+pub fn fetch_remote_contract(
+  config: domain.TrackerConfig,
+  transport: Transport,
+) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
+  use request <- try_tracker(build_contract_request(config))
+  use response <- try_tracker(transport(request))
+  parse_contract_response(response)
 }
 
 pub fn fetch_issue_comments(
@@ -262,6 +292,21 @@ pub fn build_state_refresh_request(
     json.object([
       #("query", json.string(state_refresh_query())),
       #("variables", json.object([#("ids", json.array(ids, of: json.string))])),
+    ])
+    |> json.to_string
+  Ok(graphql_request(endpoint, api_key, body))
+}
+
+pub fn build_contract_request(
+  config: domain.TrackerConfig,
+) -> Result(Request, error.TrackerError) {
+  use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
+  use api_key <- try_tracker(require_api_key(config))
+  use project_slug <- try_tracker(require_project_slug(config))
+  let body =
+    json.object([
+      #("query", json.string(contract_query())),
+      #("variables", json.object([#("projectSlug", json.string(project_slug))])),
     ])
     |> json.to_string
   Ok(graphql_request(endpoint, api_key, body))
@@ -371,6 +416,10 @@ pub fn issue_update_state_mutation() -> String {
   "mutation ScherzoIssueUpdateState($issueId: String!, $stateId: String!) { issueUpdate(id: $issueId, input: { stateId: $stateId }) { success } }"
 }
 
+pub fn contract_query() -> String {
+  "query ScherzoLinearContract($projectSlug: String!) { projects(first: 2, filter: { slugId: { eq: $projectSlug } }) { nodes { id name slugId teams(first: 10) { nodes { id key name states(first: 50) { nodes { id name type } pageInfo { hasNextPage endCursor } } labels(first: 100) { nodes { id name } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } pageInfo { hasNextPage endCursor } } }"
+}
+
 pub fn parse_response(
   response: Response,
 ) -> Result(List(domain.Issue), error.TrackerError) {
@@ -400,6 +449,20 @@ pub fn parse_comments_response(
     True ->
       case json.parse(response.body, comments_graphql_decoder()) {
         Ok(Ok(raw_issues)) -> raw_issue_comments_to_comments(raw_issues)
+        Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
+        Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
+      }
+  }
+}
+
+pub fn parse_contract_response(
+  response: Response,
+) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
+  case response.status == 200 {
+    False -> Error(error.LinearApiStatus(response.status))
+    True ->
+      case json.parse(response.body, contract_graphql_decoder()) {
+        Ok(Ok(raw_data)) -> raw_contract_to_board(raw_data)
         Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
         Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
       }
@@ -468,6 +531,234 @@ type RawLinearComment {
     updated_at: String,
     author: LinearCommentAuthor,
   )
+}
+
+type RawContractData {
+  RawContractData(
+    projects: List(RawProject),
+    workspace_labels: RawConnection(RawLabel),
+  )
+}
+
+type RawProject {
+  RawProject(
+    id: String,
+    name: String,
+    slug_id: String,
+    teams: RawConnection(RawTeam),
+  )
+}
+
+type RawTeam {
+  RawTeam(
+    id: String,
+    key: String,
+    name: String,
+    states: RawConnection(RawState),
+    labels: RawConnection(RawLabel),
+  )
+}
+
+type RawState {
+  RawState(id: String, name: String, type_: String)
+}
+
+type RawLabel {
+  RawLabel(id: String, name: String)
+}
+
+type RawConnection(a) {
+  RawConnection(nodes: List(a), page_info: PageInfo)
+}
+
+fn contract_graphql_decoder() -> decode.Decoder(Result(RawContractData, String)) {
+  use errors <- decode.optional_field(
+    "errors",
+    [],
+    decode.list(error_message_decoder()),
+  )
+  case errors {
+    [] -> {
+      use data <- decode.field("data", contract_data_decoder())
+      decode.success(Ok(data))
+    }
+    errors -> decode.success(Error(string.join(errors, with: "; ")))
+  }
+}
+
+fn contract_data_decoder() -> decode.Decoder(RawContractData) {
+  use projects <- decode.field("projects", raw_project_nodes_decoder())
+  use workspace_labels <- decode.field(
+    "issueLabels",
+    raw_label_connection_decoder(),
+  )
+  decode.success(RawContractData(
+    projects: projects,
+    workspace_labels: workspace_labels,
+  ))
+}
+
+fn raw_project_nodes_decoder() -> decode.Decoder(List(RawProject)) {
+  use nodes <- decode.field("nodes", decode.list(raw_project_decoder()))
+  decode.success(nodes)
+}
+
+fn raw_project_decoder() -> decode.Decoder(RawProject) {
+  use id <- decode.field("id", decode.string)
+  use name <- decode.field("name", decode.string)
+  use slug_id <- decode.field("slugId", decode.string)
+  use teams <- decode.field("teams", raw_team_connection_decoder())
+  decode.success(RawProject(id: id, name: name, slug_id: slug_id, teams: teams))
+}
+
+fn raw_team_connection_decoder() -> decode.Decoder(RawConnection(RawTeam)) {
+  use nodes <- decode.field("nodes", decode.list(raw_team_decoder()))
+  use page_info <- decode.field("pageInfo", page_info_decoder())
+  decode.success(RawConnection(nodes: nodes, page_info: page_info))
+}
+
+fn raw_team_decoder() -> decode.Decoder(RawTeam) {
+  use id <- decode.field("id", decode.string)
+  use key <- decode.field("key", decode.string)
+  use name <- decode.field("name", decode.string)
+  use states <- decode.field("states", raw_state_connection_decoder())
+  use labels <- decode.field("labels", raw_label_connection_decoder())
+  decode.success(RawTeam(
+    id: id,
+    key: key,
+    name: name,
+    states: states,
+    labels: labels,
+  ))
+}
+
+fn raw_state_connection_decoder() -> decode.Decoder(RawConnection(RawState)) {
+  use nodes <- decode.field("nodes", decode.list(raw_state_decoder()))
+  use page_info <- decode.field("pageInfo", page_info_decoder())
+  decode.success(RawConnection(nodes: nodes, page_info: page_info))
+}
+
+fn raw_state_decoder() -> decode.Decoder(RawState) {
+  use id <- decode.field("id", decode.string)
+  use name <- decode.field("name", decode.string)
+  use type_ <- decode.field("type", decode.string)
+  decode.success(RawState(id: id, name: name, type_: type_))
+}
+
+fn raw_label_connection_decoder() -> decode.Decoder(RawConnection(RawLabel)) {
+  use nodes <- decode.field("nodes", decode.list(raw_label_decoder()))
+  use page_info <- decode.field("pageInfo", page_info_decoder())
+  decode.success(RawConnection(nodes: nodes, page_info: page_info))
+}
+
+fn raw_label_decoder() -> decode.Decoder(RawLabel) {
+  use id <- decode.field("id", decode.string)
+  use name <- decode.field("name", decode.string)
+  decode.success(RawLabel(id: id, name: name))
+}
+
+fn raw_contract_to_board(
+  data: RawContractData,
+) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
+  case data.projects {
+    [] -> Error(error.LinearUnknownPayload("project slug not found"))
+    [project] -> raw_project_to_board(project, data.workspace_labels)
+    [_, ..] -> Error(error.LinearUnknownPayload("project slug is not unique"))
+  }
+}
+
+fn raw_project_to_board(
+  project: RawProject,
+  workspace_labels: RawConnection(RawLabel),
+) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
+  case project.teams.page_info.has_next_page {
+    True ->
+      Error(error.LinearUnknownPayload("project teams metadata truncated"))
+    False ->
+      case list.is_empty(project.teams.nodes) {
+        True -> Error(error.LinearUnknownPayload("project has no teams"))
+        False ->
+          case workspace_labels.page_info.has_next_page {
+            True ->
+              Error(error.LinearUnknownPayload(
+                "workspace issue labels metadata truncated",
+              ))
+            False -> {
+              use teams <- try_tracker(
+                raw_teams_to_remote(project.teams.nodes, []),
+              )
+              Ok(linear_contract.RemoteBoard(
+                project_id: project.id,
+                project_slug: project.slug_id,
+                project_name: project.name,
+                teams: teams,
+                workspace_labels: raw_labels_to_remote(workspace_labels.nodes),
+              ))
+            }
+          }
+      }
+  }
+}
+
+fn raw_teams_to_remote(
+  teams: List(RawTeam),
+  acc: List(linear_contract.RemoteTeam),
+) -> Result(List(linear_contract.RemoteTeam), error.TrackerError) {
+  case teams {
+    [] -> Ok(list.reverse(acc))
+    [team, ..rest] -> {
+      use remote <- try_tracker(raw_team_to_remote(team))
+      raw_teams_to_remote(rest, [remote, ..acc])
+    }
+  }
+}
+
+fn raw_team_to_remote(
+  team: RawTeam,
+) -> Result(linear_contract.RemoteTeam, error.TrackerError) {
+  case team.states.page_info.has_next_page {
+    True ->
+      Error(error.LinearUnknownPayload(
+        "team " <> team.key <> " states metadata truncated",
+      ))
+    False ->
+      case team.labels.page_info.has_next_page {
+        True ->
+          Error(error.LinearUnknownPayload(
+            "team " <> team.key <> " labels metadata truncated",
+          ))
+        False ->
+          Ok(linear_contract.RemoteTeam(
+            id: team.id,
+            key: team.key,
+            name: team.name,
+            states: raw_states_to_remote(team.states.nodes),
+            labels: raw_labels_to_remote(team.labels.nodes),
+          ))
+      }
+  }
+}
+
+fn raw_states_to_remote(
+  states: List(RawState),
+) -> List(linear_contract.RemoteState) {
+  states
+  |> list.map(fn(state) {
+    linear_contract.RemoteState(
+      id: state.id,
+      name: state.name,
+      type_: state.type_,
+    )
+  })
+}
+
+fn raw_labels_to_remote(
+  labels: List(RawLabel),
+) -> List(linear_contract.RemoteLabel) {
+  labels
+  |> list.map(fn(label) {
+    linear_contract.RemoteLabel(id: label.id, name: label.name)
+  })
 }
 
 fn comments_graphql_decoder() -> decode.Decoder(

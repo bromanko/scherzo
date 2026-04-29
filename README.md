@@ -32,6 +32,10 @@ Use `--linear-smoke` before dispatching on a real board. It resolves Linear cred
 
     LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-smoke path/to/WORKFLOW.md
 
+Use `--linear-contract-check` to compare the local workflow state and label contract to the configured Linear project board. It is read-only: it queries project teams, workflow states, team labels, and workspace labels, but does not create labels, create states, update issues, add comments, prepare workspaces, acquire the instance lock, run hooks, or launch pi:
+
+    LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-contract-check path/to/WORKFLOW.md
+
 Use `--pi-probe` before allowing a real prompt. It validates dispatch hooks, acquires the local instance lock, prepares a scratch workspace named from `SCHERZO-PROBE`, launches pi RPC, runs `set_session_name`, `set_auto_retry`, `get_state`, and `get_session_stats`, then terminates pi without sending `prompt`:
 
     LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --pi-probe path/to/WORKFLOW.md
@@ -104,6 +108,16 @@ If startup reports an existing instance lock, first verify that no Scherzo proce
       claim_state_id: null
       success_state_id: null
       failure_state_id: null
+    linear_contract:
+      enabled: false
+      workflow_label_prefix: "workflow:"
+      workflow_labels: []
+      support_labels: []
+      required_states: {}
+      handoff_state_bindings: {}
+      enforce_issue_workflow_labels: false
+      invalid_workflow_state_id: null
+      comment_on_invalid_workflow: false
     linear_commands:
       enabled: false
       prefix: "/scherzo"
@@ -114,6 +128,44 @@ If startup reports an existing instance lock, first verify that no Scherzo proce
       acknowledge_rejection: true
 
 See `examples/WORKFLOW.md` for a runnable template.
+
+## Linear board contract check
+
+The board contract check proves that the configured Linear project contains the state names and issue labels the local workflow expects before agents start work. Run it before enabling stricter workflow labels or handoff state updates:
+
+    LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-contract-check path/to/WORKFLOW.md
+
+The check always validates `tracker.active_states` and `tracker.terminal_states` for every Linear team associated with `tracker.project_slug`, because those states control candidate reads and terminal reconciliation. If `linear_contract.enabled: true`, it also validates explicit `linear_contract.required_states`, workflow labels formed from `workflow_label_prefix` plus each `workflow_labels` suffix, and full `support_labels`. If `linear_contract.enforce_issue_workflow_labels: true`, the checker validates the workflow labels even when the broader board contract is disabled; support labels still belong to the broader board contract and are checked only when `enabled: true`. A required label passes when it is assignable to issues in every project team, either as a team label or as a workspace-level issue label.
+
+A typical contract section looks like this:
+
+    linear_contract:
+      enabled: true
+      workflow_label_prefix: "workflow:"
+      workflow_labels: [bugfix, feature, research, review, docs, chore]
+      support_labels: [needs-workflow, needs-clarification]
+      required_states:
+        ready: "Ready for Agent"
+        in_progress: "In Progress"
+        done: "Done"
+        needs_workflow: "Needs Workflow"
+      handoff_state_bindings:
+        claim: in_progress
+        success: done
+        failure: needs_workflow
+      enforce_issue_workflow_labels: true
+      invalid_workflow_state_id: "linear-state-id-for-needs-workflow"
+      comment_on_invalid_workflow: true
+
+`handoff_state_bindings` optionally ties configured handoff state IDs to named required states. For example, `success: done` means `handoff.success_state_id` must exist on the single checked team and point to a Linear state named `Done`. Linear workflow state IDs are team-scoped, so a multi-team project with enabled global handoff state IDs currently fails closed with `multi_team_handoff_state_unsupported` until the workflow disables handoff mutations or a future per-team handoff configuration exists. When `invalid_workflow_state_id` is configured, the checker also verifies that the ID exists on a single-team project; if `required_states.needs_workflow` is configured, the ID must point to a state with that name.
+
+This is detection-only. Scherzo does not create, rename, delete, or migrate Linear labels or workflow states.
+
+## Linear workflow-label dispatch policy
+
+By default, existing deployments dispatch exactly as before. To require every dispatched issue to carry exactly one explicit workflow label, set `linear_contract.enforce_issue_workflow_labels: true` and configure at least one allowed suffix in `workflow_labels`. For a prefix of `workflow:`, an issue with `workflow:bugfix` dispatches as the `bugfix` workflow. An issue with no `workflow:*` label, more than one `workflow:*` label, or an unconfigured `workflow:*` label is skipped before workspace preparation, handoff claim, or pi launch.
+
+Invalid workflow issues are per-issue scheduler input errors, not agent failures. Enforcement alone is log-only and does not mutate Linear. Set `comment_on_invalid_workflow: true` to post a concise Linear comment explaining the expected labels. Set `invalid_workflow_state_id` to additionally move invalid issues to a triage state such as `Needs Workflow`. Comments and state movement are separate opt-ins so operators can roll out safely: first create the labels and state in Linear, run `--linear-contract-check`, enable enforcement without mutations, then enable comments and state moves once the diagnostics are clean.
 
 ## Linear handoff
 

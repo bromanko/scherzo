@@ -61,11 +61,12 @@ The main implementation-churn risk is that adding a field to `domain.EffectiveCo
 - [x] (2026-04-28 00:00Z) Ran the authoring baseline from the repository root with `direnv exec . gleam test`; it passed with `200 passed, no failures`.
 - [x] (2026-04-28 00:00Z) Reviewed the Linear public GraphQL schema while revising this plan and corrected the metadata model from a singular project `team` to the project `teams` connection.
 - [x] (2026-04-29 00:00Z) Re-reviewed this plan against the current tree and reran `direnv exec . gleam test`; the current baseline passed with `235 passed, no failures`.
-- [ ] Add contract config types and parser tests.
-- [ ] Add pure contract comparison and report formatting tests.
-- [ ] Add Linear project metadata query builders, decoders, and fake response tests.
-- [ ] Add the `--linear-contract-check` CLI and service mode.
-- [ ] Update README, example workflow, and this plan's retrospective after validation.
+- [x] (2026-04-29 16:00Z) Add contract config types and parser tests; `direnv exec . gleam test` passed with `238 passed, no failures`.
+- [x] (2026-04-29 16:00Z) Add pure contract comparison and report formatting tests; `direnv exec . gleam test` passed with `246 passed, no failures`.
+- [x] (2026-04-29 16:00Z) Add Linear project metadata query builders, decoders, and fake response tests; `direnv exec . gleam test` passed with `252 passed, no failures`.
+- [x] (2026-04-29 16:00Z) Add the `--linear-contract-check` CLI and service mode with injected service tests; `direnv exec . gleam test` passed with `255 passed, no failures`.
+- [x] (2026-04-29 16:00Z) Update README, example workflow, and this plan's retrospective after validation; `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `direnv exec . gleam run -- --help` all succeeded, with tests ending at `255 passed, no failures`.
+- [x] (2026-04-29 16:30Z) Ran real Linear validation against the configured `test/tmp/real-linear-validation/WORKFLOW.md`; the original metadata query was rejected by Linear as too complex, so the bounded query was reduced to 10 project teams, 50 states per team, 100 labels per team, and 100 workspace labels while preserving fail-closed pagination handling.
 
 ## Surprises & Discoveries
 
@@ -86,6 +87,9 @@ The main implementation-churn risk is that adding a field to `domain.EffectiveCo
 
 - Observation: Linear project metadata is team-scoped through a `teams` connection rather than a singular `team` field.
   Evidence: The public Linear GraphQL schema exposes `Project.teams`, `Team.states`, `Team.labels`, and top-level `issueLabels`; it does not expose `Project.team`.
+
+- Observation: The initially planned single metadata query was valid GraphQL but exceeded Linear's real query-complexity limit.
+  Evidence: A live request with `teams(first: 25)`, `states(first: 100)`, `labels(first: 250)`, and `issueLabels(first: 250)` returned HTTP 400 with `Query too complex. Complexity: 43227.6. Maximum allowed complexity: 10000.` Reducing bounds to `teams(first: 10)`, `states(first: 50)`, `labels(first: 100)`, and `issueLabels(first: 100)` returned HTTP 200 for the validation board.
 
 ## Decision Log
 
@@ -141,9 +145,17 @@ The main implementation-churn risk is that adding a field to `domain.EffectiveCo
   Rationale: A single Linear state ID is team-scoped, so missing-ID or name-mismatch diagnostics would be secondary and could distract from the real unsafe configuration.
   Date: 2026-04-29
 
+- Decision: Lower the single-query metadata bounds to stay under Linear's live query-complexity limit.
+  Rationale: The read-only check should work against the real Linear API without splitting into a larger multi-query reader in this phase. The query still fails closed if a project has more than 10 teams, a team has more than 50 states, a team has more than 100 labels, or the workspace-level label query has more than 100 labels.
+  Date: 2026-04-29
+
 ## Outcomes & Retrospective
 
-(To be filled after implementation. Include the final test count, whether `--linear-contract-check` succeeded against a fake response and any real-board validation, and any Linear GraphQL schema mismatch discovered during implementation.)
+Implemented the read-only Linear board contract check end to end. `domain.EffectiveConfig` now carries a strict `linear_contract` configuration, `config.gleam` rejects malformed contract lists and maps instead of silently dropping bad values, `linear_contract.gleam` performs pure per-team state/label/handoff checks, `linear.gleam` reads project/team/state/label metadata through a query-only GraphQL path, and `main.gleam` exposes `--linear-contract-check`. The service path has deterministic injected tests that prove success logs `linear_contract_ok`, mismatches return `StartupError("linear_contract_mismatch", ...)` with one structured diagnostic log per mismatch, and fetch failures map to startup failure without real Linear credentials.
+
+Final deterministic validation on 2026-04-29: `direnv exec . gleam format --check src test` succeeded, `direnv exec . gleam test` ended with `255 passed, no failures`, and `direnv exec . gleam run -- --help` showed `--linear-contract-check`. Fake response tests cover a successful multi-team Linear metadata response, zero and duplicate projects, no project teams, paginated teams/states/labels/workspace labels, GraphQL errors, and non-200 API responses.
+
+Real Linear validation on 2026-04-29 found one implementation issue and one real board/config mismatch. The initial metadata query exceeded Linear's live complexity limit and returned HTTP 400, so the query bounds were reduced while preserving fail-closed pagination checks. After that change, the command reached the real board for `test/tmp/real-linear-validation/WORKFLOW.md` and correctly reported missing configured terminal states `Closed` and `Cancelled`; a temporary matching workflow that used the board's observed terminal states `Canceled`, `Duplicate`, and `Done` logged `linear_contract_ok` and exited 0.
 
 ## Context and Orientation
 

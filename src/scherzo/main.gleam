@@ -9,6 +9,7 @@ pub type RunMode {
   Daemon
   Once
   LinearSmoke
+  LinearContractCheck
   PiProbe
 }
 
@@ -31,6 +32,9 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
     ["--once", path] -> Ok(Run(Once, Some(path)))
     ["--linear-smoke"] -> Ok(Run(LinearSmoke, None))
     ["--linear-smoke", path] -> Ok(Run(LinearSmoke, Some(path)))
+    ["--linear-contract-check"] -> Ok(Run(LinearContractCheck, None))
+    ["--linear-contract-check", path] ->
+      Ok(Run(LinearContractCheck, Some(path)))
     ["--pi-probe"] -> Ok(Run(PiProbe, None))
     ["--pi-probe", path] -> Ok(Run(PiProbe, Some(path)))
     [path] ->
@@ -43,7 +47,7 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
 }
 
 pub fn usage() -> String {
-  "Usage: gleam run -- [mode] [path-to-WORKFLOW.md]\n       gleam run -- ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  --once           Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke   Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --pi-probe       Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl              Inspect a running daemon through the local read-only control API.\n  --help, -h       Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, and either REPO_URL for the example hooks.after_create clone or an explicit workspace verification hook such as hooks.before_run: test -d .git.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT may still terminate abruptly in this runtime phase, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
+  "Usage: gleam run -- [mode] [path-to-WORKFLOW.md]\n       gleam run -- ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  --once                   Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke           Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --linear-contract-check  Compare workflow state/label policy to the Linear project board; read-only.\n  --pi-probe               Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                      Inspect a running daemon through the local read-only control API.\n  --help, -h               Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, and either REPO_URL for the example hooks.after_create clone or an explicit workspace verification hook such as hooks.before_run: test -d .git.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT may still terminate abruptly in this runtime phase, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
 }
 
 pub fn main() -> Nil {
@@ -93,6 +97,7 @@ fn start_mode(
     Daemon -> service.start_daemon(path)
     Once -> service.start_once(path)
     LinearSmoke -> service.start_linear_smoke(path)
+    LinearContractCheck -> service.start_linear_contract_check(path)
     PiProbe -> service.start_pi_probe(path)
   }
 }

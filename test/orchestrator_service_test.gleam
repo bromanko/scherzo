@@ -1,12 +1,25 @@
 import birl
-import gleam/option.{None, Some}
+import gleam/erlang/process
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/runner
 import scherzo/domain
+import scherzo/error
+import scherzo/linear
+import scherzo/linear_contract
 import scherzo/orchestrator/service
 import scherzo/path
 import scherzo/tracker
 import simplifile
+
+pub type CapturedLog {
+  CapturedLog(
+    level: String,
+    event: String,
+    fields: List(#(String, String)),
+    secrets: List(String),
+  )
+}
 
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
@@ -61,6 +74,68 @@ fn deps(client: tracker.Client) -> service.Dependencies {
   )
 }
 
+fn contract_workflow_text(root: String, active_state: String) -> String {
+  "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: ["
+  <> active_state
+  <> "]\n  terminal_states: [Done]\nworkspace:\n  root: "
+  <> root
+  <> "\n---\nPrompt\n"
+}
+
+fn contract_team(
+  states: List(linear_contract.RemoteState),
+) -> linear_contract.RemoteTeam {
+  linear_contract.RemoteTeam(
+    id: "team-eng",
+    key: "ENG",
+    name: "Engineering",
+    states: states,
+    labels: [],
+  )
+}
+
+fn contract_state(id: String, name: String) -> linear_contract.RemoteState {
+  linear_contract.RemoteState(id: id, name: name, type_: "started")
+}
+
+fn contract_board(
+  states: List(linear_contract.RemoteState),
+) -> linear_contract.RemoteBoard {
+  linear_contract.RemoteBoard(
+    project_id: "project-id",
+    project_slug: "TEST",
+    project_name: "Test Project",
+    teams: [contract_team(states)],
+    workspace_labels: [],
+  )
+}
+
+fn contract_deps(
+  result: Result(linear_contract.RemoteBoard, error.TrackerError),
+  subject: process.Subject(CapturedLog),
+) -> service.ContractCheckDependencies {
+  service.ContractCheckDependencies(
+    make_contract_client: fn(_) {
+      linear.ContractClient(fetch_remote_contract: fn() { result })
+    },
+    logger: fn(level, event, fields, secrets) {
+      process.send(subject, CapturedLog(level, event, fields, secrets))
+      Ok(Nil)
+    },
+  )
+}
+
+fn field_value(fields: List(#(String, String)), key: String) -> Option(String) {
+  case fields {
+    [] -> None
+    [#(field_key, value), ..rest] ->
+      case field_key == key {
+        True -> Some(value)
+        False -> field_value(rest, key)
+      }
+  }
+}
+
 pub fn startup_fails_on_missing_workflow_test() {
   let assert Error(err) =
     service.run_once_with_dependencies(
@@ -99,6 +174,100 @@ pub fn pi_probe_mode_launches_without_prompt_test() {
   assert string.contains(contents, "set_session_name")
   assert string.contains(contents, "get_session_stats")
   assert !string.contains(contents, "prompt")
+}
+
+pub fn linear_contract_check_success_logs_structured_summary_test() {
+  let root = "test/tmp/service-contract-ok/workspaces"
+  reset_dir("test/tmp/service-contract-ok")
+  let workflow_path = "test/tmp/service-contract-ok/WORKFLOW.md"
+  let assert Ok(Nil) =
+    simplifile.write(workflow_path, contract_workflow_text(root, "Todo"))
+  let log_subject = process.new_subject()
+  let result =
+    service.start_linear_contract_check_with_dependencies(
+      Some(workflow_path),
+      contract_deps(
+        Ok(
+          contract_board([
+            contract_state("state-todo", "Todo"),
+            contract_state("state-done", "Done"),
+          ]),
+        ),
+        log_subject,
+      ),
+    )
+  assert result == Ok(Nil)
+  let assert Ok(CapturedLog(
+    level: "info",
+    event: "linear_contract_ok",
+    fields: fields,
+    secrets: secrets,
+  )) = process.receive(log_subject, within: 1000)
+  assert secrets == ["test-key"]
+  assert field_value(fields, "project_slug") == Some("TEST")
+  assert field_value(fields, "project_id") == Some("project-id")
+  assert field_value(fields, "team_count") == Some("1")
+  assert field_value(fields, "state_count") == Some("2")
+}
+
+pub fn linear_contract_check_mismatch_logs_diagnostics_and_fails_test() {
+  let root = "test/tmp/service-contract-mismatch/workspaces"
+  reset_dir("test/tmp/service-contract-mismatch")
+  let workflow_path = "test/tmp/service-contract-mismatch/WORKFLOW.md"
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_path,
+      contract_workflow_text(root, "Ready for Agent"),
+    )
+  let log_subject = process.new_subject()
+  let assert Error(err) =
+    service.start_linear_contract_check_with_dependencies(
+      Some(workflow_path),
+      contract_deps(
+        Ok(
+          contract_board([
+            contract_state("state-todo", "Todo"),
+            contract_state("state-done", "Done"),
+          ]),
+        ),
+        log_subject,
+      ),
+    )
+  assert err.code == "linear_contract_mismatch"
+  let assert Ok(CapturedLog(
+    level: "error",
+    event: "linear_contract_mismatch",
+    fields: mismatch_fields,
+    secrets: _,
+  )) = process.receive(log_subject, within: 1000)
+  assert field_value(mismatch_fields, "diagnostic_count") == Some("1")
+  let assert Ok(CapturedLog(
+    level: "error",
+    event: "linear_contract_diagnostic",
+    fields: diagnostic_fields,
+    secrets: _,
+  )) = process.receive(log_subject, within: 1000)
+  assert field_value(diagnostic_fields, "code") == Some("missing_state")
+  assert field_value(diagnostic_fields, "team") == Some("ENG")
+  assert field_value(diagnostic_fields, "source")
+    == Some("tracker.active_states")
+  assert field_value(diagnostic_fields, "name") == Some("Ready for Agent")
+}
+
+pub fn linear_contract_check_fetch_error_maps_to_startup_failure_test() {
+  let root = "test/tmp/service-contract-fetch-error/workspaces"
+  reset_dir("test/tmp/service-contract-fetch-error")
+  let workflow_path = "test/tmp/service-contract-fetch-error/WORKFLOW.md"
+  let assert Ok(Nil) =
+    simplifile.write(workflow_path, contract_workflow_text(root, "Todo"))
+  let log_subject = process.new_subject()
+  let assert Error(err) =
+    service.start_linear_contract_check_with_dependencies(
+      Some(workflow_path),
+      contract_deps(Error(error.LinearApiStatus(500)), log_subject),
+    )
+  assert err.code == "linear_api_status"
+  assert process.receive(log_subject, within: 50) == Error(Nil)
 }
 
 pub fn fake_end_to_end_service_dispatch_test() {

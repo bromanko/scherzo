@@ -11,6 +11,7 @@ import scherzo/error
 import scherzo/instance_lock
 import scherzo/lifecycle
 import scherzo/linear
+import scherzo/linear_contract
 import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
@@ -50,6 +51,14 @@ pub type DaemonLifecycleDependencies {
       Result(signal.Installation, String),
     shutdown_timeout_ms: Int,
     lifecycle_logger: fn(String, String, List(log.Field)) -> Nil,
+  )
+}
+
+pub type ContractCheckDependencies {
+  ContractCheckDependencies(
+    make_contract_client: fn(domain.TrackerConfig) -> linear.ContractClient,
+    logger: fn(String, String, List(log.Field), List(String)) ->
+      Result(Nil, Nil),
   )
 }
 
@@ -128,6 +137,72 @@ pub fn start_linear_smoke(
   Ok(Nil)
 }
 
+pub fn start_linear_contract_check(
+  workflow_path: Option(String),
+) -> Result(Nil, StartupError) {
+  start_linear_contract_check_with_dependencies(
+    workflow_path,
+    ContractCheckDependencies(
+      make_contract_client: linear.real_contract_client,
+      logger: log_stderr,
+    ),
+  )
+}
+
+pub fn start_linear_contract_check_with_dependencies(
+  workflow_path: Option(String),
+  dependencies: ContractCheckDependencies,
+) -> Result(Nil, StartupError) {
+  let path = workflow.choose_path(workflow_path)
+  use definition <- try_startup(
+    workflow.load(workflow_path)
+    |> map_workflow_error,
+  )
+  use effective <- try_startup(
+    config.resolve(definition, path)
+    |> map_config_error,
+  )
+  let secrets = config.resolved_secrets(effective)
+  let client = dependencies.make_contract_client(effective.tracker)
+  use remote <- try_startup(
+    client.fetch_remote_contract()
+    |> map_tracker_error,
+  )
+  let diagnostics = linear_contract.check(effective, remote)
+  case linear_contract.is_ok(diagnostics) {
+    True -> {
+      let _ =
+        dependencies.logger(
+          "info",
+          "linear_contract_ok",
+          [
+            #("project_slug", remote.project_slug),
+            #("project_id", remote.project_id),
+            #("team_count", int_to_string(list.length(remote.teams))),
+            #("state_count", int_to_string(total_state_count(remote.teams))),
+            #("label_count", int_to_string(total_label_count(remote))),
+          ],
+          secrets,
+        )
+      Ok(Nil)
+    }
+    False -> {
+      let _ =
+        dependencies.logger(
+          "error",
+          "linear_contract_mismatch",
+          [#("diagnostic_count", int_to_string(list.length(diagnostics)))],
+          secrets,
+        )
+      log_contract_diagnostics(diagnostics, dependencies, secrets)
+      Error(StartupError(
+        "linear_contract_mismatch",
+        "Linear board contract mismatch",
+      ))
+    }
+  }
+}
+
 pub fn start_daemon(workflow_path: Option(String)) -> Result(Nil, StartupError) {
   start_daemon_with_lifecycle(
     workflow_path,
@@ -190,6 +265,102 @@ pub fn start_daemon_with_lifecycle(
         }
       }
     }
+  }
+}
+
+fn total_state_count(teams: List(linear_contract.RemoteTeam)) -> Int {
+  list.fold(teams, 0, fn(acc, team) { acc + list.length(team.states) })
+}
+
+fn total_label_count(remote: linear_contract.RemoteBoard) -> Int {
+  list.fold(remote.teams, list.length(remote.workspace_labels), fn(acc, team) {
+    acc + list.length(team.labels)
+  })
+}
+
+fn log_contract_diagnostics(
+  diagnostics: List(linear_contract.ContractDiagnostic),
+  dependencies: ContractCheckDependencies,
+  secrets: List(String),
+) -> Nil {
+  case diagnostics {
+    [] -> Nil
+    [diagnostic, ..rest] -> {
+      let _ =
+        dependencies.logger(
+          "error",
+          "linear_contract_diagnostic",
+          diagnostic_log_fields(diagnostic),
+          secrets,
+        )
+      log_contract_diagnostics(rest, dependencies, secrets)
+    }
+  }
+}
+
+fn diagnostic_log_fields(
+  diagnostic: linear_contract.ContractDiagnostic,
+) -> List(log.Field) {
+  let code = linear_contract.diagnostic_code(diagnostic)
+  case diagnostic {
+    linear_contract.MissingState(team_key, name, source) -> [
+      #("code", code),
+      #("team", team_key),
+      #("source", source),
+      #("name", name),
+    ]
+    linear_contract.MissingLabel(team_key, name, source) -> [
+      #("code", code),
+      #("team", team_key),
+      #("source", source),
+      #("name", name),
+    ]
+    linear_contract.MissingHandoffStateId(field, id) -> [
+      #("code", code),
+      #("field", field),
+      #("id", id),
+    ]
+    linear_contract.MultiTeamHandoffStateUnsupported(field, id, team_keys) -> [
+      #("code", code),
+      #("field", field),
+      #("id", id),
+      #("teams", string.join(team_keys, with: ",")),
+    ]
+    linear_contract.HandoffStateNameMismatch(
+      field,
+      id,
+      expected,
+      actual,
+      actual_team_key,
+    ) -> [
+      #("code", code),
+      #("field", field),
+      #("id", id),
+      #("expected", expected),
+      #("actual", actual),
+      #("actual_team", actual_team_key),
+    ]
+    linear_contract.MissingInvalidWorkflowStateId(id) -> [
+      #("code", code),
+      #("id", id),
+    ]
+    linear_contract.MultiTeamInvalidWorkflowStateUnsupported(id, team_keys) -> [
+      #("code", code),
+      #("id", id),
+      #("teams", string.join(team_keys, with: ",")),
+    ]
+    linear_contract.InvalidWorkflowStateNameMismatch(
+      id,
+      expected,
+      actual,
+      actual_team_key,
+    ) -> [
+      #("code", code),
+      #("id", id),
+      #("expected", expected),
+      #("actual", actual),
+      #("actual_team", actual_team_key),
+    ]
   }
 }
 

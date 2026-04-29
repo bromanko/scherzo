@@ -93,6 +93,17 @@ fn config(
       success_state_id: None,
       failure_state_id: None,
     ),
+    linear_contract: domain.LinearContractConfig(
+      enabled: False,
+      workflow_label_prefix: "workflow:",
+      workflow_labels: [],
+      support_labels: [],
+      required_states: dict.new(),
+      handoff_state_bindings: dict.new(),
+      enforce_issue_workflow_labels: False,
+      invalid_workflow_state_id: None,
+      comment_on_invalid_workflow: False,
+    ),
     linear_commands: domain.LinearCommandConfig(
       enabled: False,
       prefix: "/scherzo",

@@ -181,6 +181,222 @@ pub fn missing_end_cursor_is_error_test() {
     linear.fetch_candidate_issues(tracker_config(), transport)
 }
 
+pub fn contract_request_uses_project_slug_and_read_only_query_test() {
+  let assert Ok(request) = linear.build_contract_request(tracker_config())
+  assert string.contains(request.body, "ScherzoLinearContract")
+  assert string.contains(request.body, "projects(first: 2")
+  assert string.contains(request.body, "teams(first: 10")
+  assert string.contains(request.body, "states(first: 50")
+  assert string.contains(request.body, "labels(first: 100")
+  assert string.contains(request.body, "issueLabels(first: 100")
+  assert string.contains(request.body, "projectSlug")
+  assert string.contains(request.body, "PROJ")
+  assert !string.contains(request.body, "mutation")
+  assert request.headers
+    == [
+      #("Authorization", "secret-key"),
+      #("Content-Type", "application/json"),
+    ]
+}
+
+pub fn contract_response_decodes_project_teams_and_workspace_labels_test() {
+  let response =
+    linear.Response(
+      status: 200,
+      body: contract_response(
+        "["
+          <> contract_project(
+          "["
+            <> contract_team("ENG", "false", "false")
+            <> ","
+            <> contract_team("OPS", "false", "false")
+            <> "]",
+          "false",
+        )
+          <> "]",
+        "false",
+      ),
+    )
+  let assert Ok(board) = linear.parse_contract_response(response)
+  assert board.project_id == "project-id"
+  assert board.project_slug == "PROJ"
+  let assert [eng, ops] = board.teams
+  assert eng.key == "ENG"
+  assert ops.key == "OPS"
+  let assert [ready, _, _] = eng.states
+  assert ready.id == "state-ready-ENG"
+  let assert [workflow_label] = eng.labels
+  assert workflow_label.name == "workflow:bugfix"
+  let assert [workspace_label] = board.workspace_labels
+  assert workspace_label.name == "workflow:research"
+}
+
+pub fn contract_client_fetches_remote_contract_through_transport_test() {
+  let client =
+    linear.contract_client(tracker_config(), fn(request) {
+      assert string.contains(request.body, "ScherzoLinearContract")
+      Ok(linear.Response(
+        status: 200,
+        body: contract_response(
+          "["
+            <> contract_project(
+            "[" <> contract_team("ENG", "false", "false") <> "]",
+            "false",
+          )
+            <> "]",
+          "false",
+        ),
+      ))
+    })
+  let assert Ok(board) = client.fetch_remote_contract()
+  assert board.project_slug == "PROJ"
+}
+
+pub fn contract_response_rejects_unknown_or_ambiguous_projects_test() {
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_contract_response(linear.Response(
+      status: 200,
+      body: contract_response("[]", "false"),
+    ))
+
+  let project =
+    contract_project(
+      "[" <> contract_team("ENG", "false", "false") <> "]",
+      "false",
+    )
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_contract_response(linear.Response(
+      status: 200,
+      body: contract_response("[" <> project <> "," <> project <> "]", "false"),
+    ))
+}
+
+pub fn contract_response_rejects_no_teams_and_paginated_metadata_test() {
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_contract_response(linear.Response(
+      status: 200,
+      body: contract_response(
+        "[" <> contract_project("[]", "false") <> "]",
+        "false",
+      ),
+    ))
+
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_contract_response(linear.Response(
+      status: 200,
+      body: contract_response(
+        "["
+          <> contract_project(
+          "[" <> contract_team("ENG", "false", "false") <> "]",
+          "true",
+        )
+          <> "]",
+        "false",
+      ),
+    ))
+
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_contract_response(linear.Response(
+      status: 200,
+      body: contract_response(
+        "["
+          <> contract_project(
+          "[" <> contract_team("ENG", "true", "false") <> "]",
+          "false",
+        )
+          <> "]",
+        "false",
+      ),
+    ))
+
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_contract_response(linear.Response(
+      status: 200,
+      body: contract_response(
+        "["
+          <> contract_project(
+          "[" <> contract_team("ENG", "false", "true") <> "]",
+          "false",
+        )
+          <> "]",
+        "false",
+      ),
+    ))
+
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_contract_response(linear.Response(
+      status: 200,
+      body: contract_response(
+        "["
+          <> contract_project(
+          "[" <> contract_team("ENG", "false", "false") <> "]",
+          "false",
+        )
+          <> "]",
+        "true",
+      ),
+    ))
+}
+
+pub fn contract_response_maps_graphql_and_http_errors_test() {
+  let assert Error(error.LinearApiStatus(500)) =
+    linear.parse_contract_response(linear.Response(status: 500, body: "{}"))
+  let body = "{\"errors\":[{\"message\":\"bad contract query\"}],\"data\":null}"
+  let assert Error(error.LinearGraphqlErrors(_)) =
+    linear.parse_contract_response(linear.Response(status: 200, body: body))
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_contract_response(linear.Response(
+      status: 200,
+      body: "{\"data\":{}}",
+    ))
+}
+
+fn contract_response(projects: String, workspace_has_next: String) -> String {
+  "{\"data\":{\"projects\":{\"nodes\":"
+  <> projects
+  <> "},\"issueLabels\":{\"nodes\":[{\"id\":\"workspace-research\",\"name\":\"workflow:research\"}],\"pageInfo\":"
+  <> page_info(workspace_has_next)
+  <> "}}}"
+}
+
+fn contract_project(teams: String, teams_has_next: String) -> String {
+  "{\"id\":\"project-id\",\"name\":\"Project\",\"slugId\":\"PROJ\",\"teams\":{\"nodes\":"
+  <> teams
+  <> ",\"pageInfo\":"
+  <> page_info(teams_has_next)
+  <> "}}"
+}
+
+fn contract_team(
+  key: String,
+  states_has_next: String,
+  labels_has_next: String,
+) -> String {
+  "{\"id\":\"team-"
+  <> key
+  <> "\",\"key\":\""
+  <> key
+  <> "\",\"name\":\""
+  <> key
+  <> " Team\",\"states\":{\"nodes\":[{\"id\":\"state-ready-"
+  <> key
+  <> "\",\"name\":\"Ready for Agent\",\"type\":\"unstarted\"},{\"id\":\"state-progress-"
+  <> key
+  <> "\",\"name\":\"In Progress\",\"type\":\"started\"},{\"id\":\"state-done-"
+  <> key
+  <> "\",\"name\":\"Done\",\"type\":\"completed\"}],\"pageInfo\":"
+  <> page_info(states_has_next)
+  <> "},\"labels\":{\"nodes\":[{\"id\":\"label-bugfix-"
+  <> key
+  <> "\",\"name\":\"workflow:bugfix\"}],\"pageInfo\":"
+  <> page_info(labels_has_next)
+  <> "}}"
+}
+
+fn page_info(has_next: String) -> String {
+  "{\"hasNextPage\":" <> has_next <> ",\"endCursor\":null}"
+}
+
 fn list_identifiers(issues: List(domain.Issue)) -> List(String) {
   case issues {
     [] -> []
