@@ -1,4 +1,4 @@
-import gleam/option.{Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/pi_rpc
 import scherzo/agent/probe
@@ -196,6 +196,34 @@ pub fn launch_prompt_and_stats_with_fake_pi_test() {
   assert totals.total == 3
 }
 
+pub fn prompt_with_fake_tool_events_surfaces_tool_records_test() {
+  let cwd = "test/tmp/pi-rpc-tool-events"
+  reset_dir(cwd)
+  let assert Ok(Nil) = simplifile.write(cwd <> "/POPULATED", "yes")
+  let command = "FAKE_PI_TOOL=1 " <> fake_pi()
+  let assert Ok(session) = pi_rpc.launch(command, cwd, "name", False, 1000)
+  let assert Ok(#(_, events)) =
+    pi_rpc.prompt(session, "Do work", 1000, 5000, 300_000, ignore_event)
+
+  assert list_types(events)
+    == [
+      "agent_start",
+      "turn_start",
+      "message_update",
+      "message",
+      "message",
+      "turn_end",
+      "agent_end",
+    ]
+  let assert Some(call) = find_record_with_tool_input(events)
+  assert call.tool_name == Some("bash")
+  assert call.tool_input == Some("gleam test")
+  let assert Some(result) = find_record_with_tool_output(events)
+  assert result.tool_name == Some("bash")
+  assert result.tool_output == Some("2 failures")
+  assert result.tool_status == Some("failed")
+}
+
 pub fn probe_launches_without_prompt_test() {
   let cwd = "test/tmp/pi-probe-workspace"
   reset_dir(cwd)
@@ -362,6 +390,32 @@ pub fn extension_ui_dialog_is_cancelled_test() {
 
 fn ignore_event(_event: pi_rpc.RpcRecord) -> Nil {
   Nil
+}
+
+fn find_record_with_tool_input(
+  events: List(pi_rpc.RpcRecord),
+) -> Option(pi_rpc.RpcRecord) {
+  case events {
+    [] -> None
+    [event, ..rest] ->
+      case event.tool_input {
+        Some(_) -> Some(event)
+        None -> find_record_with_tool_input(rest)
+      }
+  }
+}
+
+fn find_record_with_tool_output(
+  events: List(pi_rpc.RpcRecord),
+) -> Option(pi_rpc.RpcRecord) {
+  case events {
+    [] -> None
+    [event, ..rest] ->
+      case event.tool_output {
+        Some(_) -> Some(event)
+        None -> find_record_with_tool_output(rest)
+      }
+  }
 }
 
 fn list_types(events: List(pi_rpc.RpcRecord)) -> List(String) {

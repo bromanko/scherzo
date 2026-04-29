@@ -143,6 +143,32 @@ fn find_update(
   }
 }
 
+fn find_update_with_tool_input(
+  updates: List(runner.PiUpdate),
+) -> Option(runner.PiUpdate) {
+  case updates {
+    [] -> None
+    [update, ..rest] ->
+      case update.tool_input {
+        Some(_) -> Some(update)
+        None -> find_update_with_tool_input(rest)
+      }
+  }
+}
+
+fn find_update_with_tool_output(
+  updates: List(runner.PiUpdate),
+) -> Option(runner.PiUpdate) {
+  case updates {
+    [] -> None
+    [update, ..rest] ->
+      case update.tool_output {
+        Some(_) -> Some(update)
+        None -> find_update_with_tool_output(rest)
+      }
+  }
+}
+
 fn receive_update_named(
   subject: process.Subject(runner.PiUpdate),
   name: String,
@@ -283,6 +309,32 @@ pub fn runner_update_preserves_redacted_raw_pi_event_test() {
   assert string.contains(raw_json.value, "message_update")
   assert !string.contains(raw_json.value, "key")
   assert raw_json.truncated == False
+}
+
+pub fn runner_redacts_normalized_tool_fields_test() {
+  let root = "test/tmp/runner-tool-redaction"
+  reset_dir(root)
+  let command = "FAKE_PI_TOOL=1 FAKE_PI_TOOL_SECRET=key " <> fake_pi()
+  let update_subject = process.new_subject()
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+  assert success.final_classification == runner.FinalTerminal
+
+  let updates = drain_updates(update_subject, [])
+  let assert Some(start) = find_update_with_tool_input(updates)
+  assert start.event == "message"
+  assert start.tool_input == Some("gleam test [REDACTED]")
+  let assert Some(result) = find_update_with_tool_output(updates)
+  assert result.event == "message"
+  assert result.tool_output == Some("2 failures [REDACTED]")
+  assert result.tool_status == Some("failed")
 }
 
 pub fn runner_streams_update_before_agent_end_test() {

@@ -66,18 +66,22 @@ The main redaction risk is leaking secrets through newly normalized tool fields.
 - [x] (2026-04-28 19:20Z) Revised the plan after adversarial review to keep `events` compact by default, normalize tool fields before rendering, define output chunk semantics, preserve exact raw/JSON contracts, and add replay/follow duplicate tests.
 - [x] (2026-04-29 02:45Z) Revised the plan after follow-up review to preserve the legacy `attach --raw --json` alias, add a real pi payload-discovery milestone, define paginated replay and mid-turn retained-history behavior, cap normalized tool text, and make the `ctl.gleam` test seam explicit.
 - [x] (2026-04-29 02:53Z) Updated the payload-discovery path to prefer existing pi agent logs under `$HOME/.pi/agent` before requiring a new real-pi run or user-supplied transcript.
-- [ ] Run `direnv exec . gleam test` and record the current pass count before implementation.
-- [ ] Capture or add a redacted real pi tool-event JSONL fixture before normalizing tool fields.
-- [ ] Normalize assistant and tool event fields through pi RPC, runner, EventHub, session JSON, and control protocol tests.
-- [ ] Add pure ANSI/style helpers and renderer output chunk/state types.
-- [ ] Add renderer tests for turn grouping, continued mid-turn replay, assistant deltas, tool events, UI requests, unknown events, truncation warnings, duplicate cursors, paginated replay, and token summaries.
-- [ ] Refactor `scherzoctl` command options and test seams while preserving the legacy `attach --raw --json` alias.
-- [ ] Update `scherzoctl attach` to use pretty rendering by default and add paginated `events --pretty`.
-- [ ] Update documentation with terminal attach examples.
+- [x] (2026-04-29 03:05Z) Ran `direnv exec . gleam test` before implementation work; the existing suite was green, and the compatibility baseline observed during the first successful post-normalization run was 200 passed tests.
+- [x] (2026-04-29 03:15Z) Added `test/fixtures/pi_tool_events_captured.jsonl` from redacted existing pi agent logs containing assistant `toolCall` and `toolResult` message shapes.
+- [x] (2026-04-29 03:45Z) Normalized assistant and tool fields through pi RPC, runner updates, daemon EventHub payloads, session JSON, and control protocol decoders.
+- [x] (2026-04-29 04:05Z) Added pure ANSI/style helpers and renderer output chunk/state types under `src/scherzo/terminal/`.
+- [x] (2026-04-29 04:35Z) Added renderer and CLI tests covering turn grouping, continued mid-turn replay, assistant deltas, tool events, UI requests, unknown events, truncation warnings, duplicate cursors, paginated replay, and token summaries.
+- [x] (2026-04-29 05:00Z) Refactored `scherzoctl` command options and test seams while preserving the legacy `attach --raw --json` alias.
+- [x] (2026-04-29 05:20Z) Updated `scherzoctl attach` to use pretty rendering by default and added paginated `events --pretty`.
+- [x] (2026-04-29 05:30Z) Updated README documentation with terminal attach examples.
 
 ## Surprises & Discoveries
 
-(To be filled during implementation. In particular, record any real pi event payload fields that differ from the fake fixture, any missing tool/compaction/retry fields, and any compromises made for renderer output.)
+- Existing pi agent logs contained tool activity as `type: "message"` records rather than only `tool_execution_*` records. Assistant tool calls appeared as `message.role: "assistant"` with `content[].type: "toolCall"`, `content[].name`, and nested `content[].arguments.command`. Tool results appeared as `message.role: "toolResult"` with `toolName`, `content[].text`, and `isError`.
+- The fake pi fixture now emits deterministic captured-style `type: "message"` tool-call and tool-result records when `FAKE_PI_TOOL=1`, while decoder tests also cover explicit `tool_execution_start`, `tool_execution_update`, and `tool_execution_end` top-level/data alias shapes for compatibility with the original expected taxonomy.
+- Structured top-level tool inputs can appear in principle; they are normalized to `[structured tool input; use --json for raw details]` instead of being stringified into terminal output.
+- `ColorAuto` intentionally behaves like `ColorNever` in this phase. That keeps tests and log captures stable until terminal detection is implemented deliberately.
+- The `ctl.gleam` test seam now injects control-client and output functions. Live follow rendering keeps cursor/render state across synchronous stream callbacks so replay-to-follow duplicate suppression works for pretty, raw, and JSON modes.
 
 ## Decision Log
 
@@ -131,7 +135,24 @@ The main redaction risk is leaking secrets through newly normalized tool fields.
 
 ## Outcomes & Retrospective
 
-(To be filled at completion. Include representative before/after output, the final test pass count, and any known renderer gaps.)
+Implemented the line-oriented attach renderer and wired it into `scherzoctl attach` as the default. `attach --raw`, `attach --json`, and the legacy `attach --raw --json` alias remain available; `events` remains compact by default, and `events --pretty` provides paginated human-readable replay.
+
+Representative pretty output now looks like:
+
+    ABC-123 Fix flaky tests
+    workspace: /workspaces/ABC-123
+    session: ABC-123-42-1
+    status: running
+
+    ▶ turn 1 started
+    assistant:
+      I will run the tests and inspect the failure.
+    tool bash
+      input: gleam test
+      output: 2 failures
+    tokens: input=1200 output=340 cache_read=0 cache_write=0 total=1540
+
+The final verification command was `direnv exec . gleam test`, with 213 passed tests and no failures. Known gaps for future phases: retry/compaction pi events are still rendered through generic fallback unless pi exposes stable event names, `ColorAuto` does not yet inspect the terminal, and this remains a streaming line renderer rather than an interactive TUI.
 
 ## Context and Orientation
 

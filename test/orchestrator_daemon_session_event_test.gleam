@@ -81,6 +81,9 @@ fn update(name: String, message: Option(String)) -> runner.PiUpdate {
     pi_session_id: None,
     tokens: domain.zero_token_totals(),
     tool_name: None,
+    tool_input: None,
+    tool_output: None,
+    tool_status: None,
   )
 }
 
@@ -171,6 +174,57 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
   assert event_names(page.events)
     == ["dispatch_started", "worker_started", "message_update", "worker_exited"]
   assert event_cursors(page.events) == [1, 2, 3, 4]
+  let assert Some(message_event) = find_event(page.events, "message_update")
+  assert message_event.payload.kind == event.AssistantMessage
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn daemon_classifies_tool_fields_as_tool_events_test() {
+  let #(workflow_path, root) = write_workflow("test/tmp/daemon-tool-events")
+  let candidate = issue("tool-id", "ABC-TOOL", "Todo")
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(20, fn() { 100 })
+  let deps =
+    dependencies(
+      client_with(candidate),
+      log_subject,
+      hub_subject,
+      fn(issue, _, _, _, _, emit_update, _, _) {
+        emit_update(
+          issue.id,
+          runner.PiUpdate(
+            event: "message",
+            message: None,
+            raw_json: None,
+            turn: Some(1),
+            request_id: None,
+            method: None,
+            pi_session_id: None,
+            tokens: domain.zero_token_totals(),
+            tool_name: Some("bash"),
+            tool_input: Some("gleam test"),
+            tool_output: None,
+            tool_status: None,
+          ),
+        )
+        let assert Ok(#(_, expected_workspace)) =
+          workspace.workspace_path(root, issue.identifier)
+        Ok(success(domain.Issue(..issue, state: "Done"), expected_workspace))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "worker_exited", 20)
+  let assert Ok(page) =
+    hub.events_after(hub_subject, "ABC-TOOL-42-1", 0, 20, 1000)
+  let assert Some(tool_event) = find_event(page.events, "message")
+  assert tool_event.payload.kind == event.Tool
+  assert tool_event.payload.tool_name == Some("bash")
+  assert tool_event.payload.tool_input == Some("gleam test")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -479,6 +533,20 @@ fn wait_for_event_name(
           process.sleep(50)
           wait_for_event_name(subject, session_id, name, attempts - 1)
         }
+      }
+  }
+}
+
+fn find_event(
+  events: List(event.SessionEvent),
+  name: String,
+) -> Option(event.SessionEvent) {
+  case events {
+    [] -> None
+    [stored_event, ..rest] ->
+      case stored_event.payload.name == name {
+        True -> Some(stored_event)
+        False -> find_event(rest, name)
       }
   }
 }

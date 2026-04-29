@@ -115,6 +115,15 @@ while IFS= read -r line; do
       else
         jq -cn '{type:"message_update",delta:"not-populated"}'
       fi
+      if [[ -n "${FAKE_PI_TOOL:-}" ]]; then
+        if [[ -n "${FAKE_PI_TOOL_SECRET:-}" ]]; then
+          jq -cn --arg secret "$FAKE_PI_TOOL_SECRET" '{type:"message",message:{role:"assistant",content:[{type:"toolCall",id:"call_fake",name:"bash",arguments:{command:("gleam test " + $secret)}}]}}'
+          jq -cn --arg secret "$FAKE_PI_TOOL_SECRET" '{type:"message",message:{role:"toolResult",toolCallId:"call_fake",toolName:"bash",content:[{type:"text",text:("2 failures " + $secret)}],isError:true}}'
+        else
+          jq -cn '{type:"message",message:{role:"assistant",content:[{type:"toolCall",id:"call_fake",name:"bash",arguments:{command:"gleam test"}}]}}'
+          jq -cn '{type:"message",message:{role:"toolResult",toolCallId:"call_fake",toolName:"bash",content:[{type:"text",text:"2 failures"}],isError:true}}'
+        fi
+      fi
       if [[ -n "${FAKE_PI_UI_DIALOG:-}" ]]; then
         jq -cn '{id:"ui-1",type:"extension_ui_request",method:"confirm",message:"continue?"}'
         if [[ -n "${FAKE_PI_UI_DIALOG_WAITS:-}" ]]; then

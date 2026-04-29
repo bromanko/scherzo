@@ -923,6 +923,21 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
     None,
     decode.optional(decode.string),
   )
+  use tool_input <- decode.optional_field(
+    "tool_input",
+    None,
+    decode.optional(decode.string),
+  )
+  use tool_output <- decode.optional_field(
+    "tool_output",
+    None,
+    decode.optional(decode.string),
+  )
+  use tool_status <- decode.optional_field(
+    "tool_status",
+    None,
+    decode.optional(decode.string),
+  )
   use tokens <- decode.optional_field(
     "tokens",
     domain.zero_token_totals(),
@@ -942,6 +957,9 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
     request_id: request_id,
     method: method,
     tool_name: tool_name,
+    tool_input: tool_input,
+    tool_output: tool_output,
+    tool_status: tool_status,
     tokens: tokens,
     raw_json: raw_json,
   ))

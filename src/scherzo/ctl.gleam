@@ -1,3 +1,4 @@
+import gleam/dynamic
 import gleam/int
 import gleam/io
 import gleam/list
@@ -8,14 +9,40 @@ import scherzo/control/command as control_command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/session/event
+import scherzo/terminal/render
+import scherzo/terminal/style
+
+pub type OutputMode {
+  Pretty
+  Raw
+  Json
+}
+
+pub type FollowMode {
+  Follow
+  NoFollow
+}
 
 pub type Command {
   Help
   Ping(control_file: Option(String), json: Bool)
   Ps(control_file: Option(String), json: Bool)
   Session(control_file: Option(String), json: Bool, session_id: String)
-  Events(control_file: Option(String), json: Bool, session_id: String)
-  AttachRaw(control_file: Option(String), json: Bool, session_id: String)
+  Events(
+    control_file: Option(String),
+    mode: OutputMode,
+    color: style.ColorMode,
+    since_cursor: Int,
+    session_id: String,
+  )
+  Attach(
+    control_file: Option(String),
+    mode: OutputMode,
+    color: style.ColorMode,
+    follow: FollowMode,
+    since_cursor: Int,
+    session_id: String,
+  )
   Operator(
     control_file: Option(String),
     json: Bool,
@@ -26,6 +53,32 @@ pub type Command {
 pub type Error {
   UsageError(message: String)
   Failed(code: String, message: String)
+}
+
+pub type ControlClient {
+  ControlClient(
+    get_session: fn(file.ControlFile, String) ->
+      Result(Option(event.SessionSummary), client.ControlError),
+    get_events: fn(file.ControlFile, String, Int, Int) ->
+      Result(event.EventPage, client.ControlError),
+    stream_events: fn(
+      file.ControlFile,
+      String,
+      Int,
+      fn(event.SessionEvent) -> client.StreamAction,
+    ) ->
+      Result(Nil, client.ControlError),
+    raw_request: fn(file.ControlFile, protocol.Request) ->
+      Result(String, client.ControlError),
+  )
+}
+
+pub type Output {
+  Output(line: fn(String) -> Nil, inline: fn(String) -> Nil)
+}
+
+pub type Replay {
+  Replay(events: List(event.SessionEvent), last_cursor: Int, truncated: Bool)
 }
 
 type Flags {
@@ -67,6 +120,23 @@ pub fn parse(args: List(String)) -> Result(Command, Error) {
   }
 }
 
+fn default_flags() -> Flags {
+  Flags(
+    control_file: None,
+    json: False,
+    raw: False,
+    pretty: False,
+    yes: False,
+    reason: None,
+    cancel: False,
+    value: None,
+    no_follow: False,
+    since_cursor: 0,
+    color: style.ColorAuto,
+    positional: [],
+  )
+}
+
 pub fn usage() -> String {
   "Usage: gleam run -- ctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions.\n  session <session-id>         Show one session summary.\n  events <session-id>          Replay recent compact event lines.\n  events --pretty <session-id> Replay retained events with human-readable rendering.\n  attach <session-id>          Replay retained events and follow with human-readable rendering.\n  attach --raw <session-id>    Replay and follow compact event lines.\n  attach --json <session-id>   Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-id>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-id> --yes     Abort a running session.\n  stop-after-turn <session-id> --yes\n                               Stop after the current turn.\n  prompt <session-id> <text>   Queue an operator prompt for a session.\n  ui respond <session-id> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --yes                        Confirm destructive commands.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
@@ -105,14 +175,38 @@ fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
     ["--value"] -> Error(UsageError("--value requires text"))
     ["--help", ..] | ["-h", ..] -> Ok(Flags(..flags, positional: ["--help"]))
     [arg, ..rest] ->
-      case string.starts_with(arg, "--") {
-        True -> Error(UsageError("unknown option: " <> arg))
+      case string.starts_with(arg, "--color=") {
+        True -> {
+          let value = string.drop_start(arg, 8)
+          case style.parse_color_mode(value) {
+            Ok(mode) -> parse_flags(rest, Flags(..flags, color: mode))
+            Error(_) ->
+              Error(UsageError("--color must be auto, always, or never"))
+          }
+        }
         False ->
-          parse_flags(
-            rest,
-            Flags(..flags, positional: [arg, ..flags.positional]),
-          )
+          case string.starts_with(arg, "--") {
+            True -> Error(UsageError("unknown option: " <> arg))
+            False ->
+              parse_flags(
+                rest,
+                Flags(..flags, positional: [arg, ..flags.positional]),
+              )
+          }
       }
+  }
+}
+
+fn parse_cursor(value: String) -> Result(Int, Error) {
+  case int.parse(value) {
+    Ok(cursor) ->
+      case cursor < 0 {
+        True ->
+          Error(UsageError("--since-cursor requires a non-negative integer"))
+        False -> Ok(cursor)
+      }
+    Error(_) ->
+      Error(UsageError("--since-cursor requires a non-negative integer"))
   }
 }
 
@@ -124,14 +218,34 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
     "ps", [] -> Ok(Ps(flags.control_file, flags.json))
     "session", [session_id] ->
       Ok(Session(flags.control_file, flags.json, session_id))
-    "events", [session_id] ->
-      Ok(Events(flags.control_file, flags.json, session_id))
-    "attach", [session_id] ->
-      case flags.raw {
-        True -> Ok(AttachRaw(flags.control_file, flags.json, session_id))
-        False -> Error(UsageError("attach requires --raw in this phase"))
-      }
-    "attach", _ -> Error(UsageError("attach usage: attach --raw <session-id>"))
+    "events", [session_id] -> {
+      use mode <- try_ctl(events_mode(flags))
+      Ok(Events(
+        flags.control_file,
+        mode,
+        events_color(mode, flags.color),
+        flags.since_cursor,
+        session_id,
+      ))
+    }
+    "attach", [session_id] -> {
+      use mode <- try_ctl(attach_mode(flags))
+      Ok(Attach(
+        flags.control_file,
+        mode,
+        attach_color(mode, flags.color),
+        case flags.no_follow {
+          True -> NoFollow
+          False -> Follow
+        },
+        flags.since_cursor,
+        session_id,
+      ))
+    }
+    "attach", _ ->
+      Error(UsageError(
+        "attach usage: attach [--raw|--json|--pretty] <session-id>",
+      ))
     "pause", [] -> Ok(operator(flags, control_command.PauseDispatch))
     "resume", [] -> Ok(operator(flags, control_command.ResumeDispatch))
     "reload", [] -> Ok(operator(flags, control_command.ReloadWorkflow))
@@ -241,19 +355,28 @@ fn issue_ref(value: String) -> control_command.IssueRef {
 }
 
 fn run(command: Command) -> Result(Nil, Error) {
+  run_with_deps(command, real_control_client(), real_output())
+}
+
+pub fn run_with_deps(
+  command: Command,
+  deps: ControlClient,
+  output: Output,
+) -> Result(Nil, Error) {
   case command {
     Help -> {
-      io.println(usage())
+      output.line(usage())
       Ok(Nil)
     }
     Ping(control_path, json) -> {
       use control_file <- try_ctl(load_control_file(control_path))
       case json {
-        True -> print_raw(control_file, protocol.Ping("1", ""))
+        True ->
+          print_raw_request(control_file, protocol.Ping("1", ""), deps, output)
         False ->
           case client.ping(control_file) {
             Ok(Nil) -> {
-              io.println("ok")
+              output.line("ok")
               Ok(Nil)
             }
             Error(err) -> Error(client_error(err))
@@ -263,11 +386,17 @@ fn run(command: Command) -> Result(Nil, Error) {
     Ps(control_path, json) -> {
       use control_file <- try_ctl(load_control_file(control_path))
       case json {
-        True -> print_raw(control_file, protocol.ListSessions("1", ""))
+        True ->
+          print_raw_request(
+            control_file,
+            protocol.ListSessions("1", ""),
+            deps,
+            output,
+          )
         False ->
           case client.list_sessions(control_file) {
             Ok(sessions) -> {
-              print_sessions_table(sessions)
+              print_sessions_table(sessions, output)
               Ok(Nil)
             }
             Error(err) -> Error(client_error(err))
@@ -278,11 +407,16 @@ fn run(command: Command) -> Result(Nil, Error) {
       use control_file <- try_ctl(load_control_file(control_path))
       case json {
         True ->
-          print_raw(control_file, protocol.GetSession("1", "", session_id))
+          print_raw_request(
+            control_file,
+            protocol.GetSession("1", "", session_id),
+            deps,
+            output,
+          )
         False ->
-          case client.get_session(control_file, session_id) {
+          case deps.get_session(control_file, session_id) {
             Ok(Some(summary)) -> {
-              print_session(summary)
+              print_session(summary, output)
               Ok(Nil)
             }
             Ok(None) -> Error(Failed("missing_session", "session not found"))
@@ -290,36 +424,30 @@ fn run(command: Command) -> Result(Nil, Error) {
           }
       }
     }
-    Events(control_path, json, session_id) -> {
+    Events(control_path, mode, color, since_cursor, session_id) -> {
       use control_file <- try_ctl(load_control_file(control_path))
-      case json {
-        True ->
-          print_raw(
-            control_file,
-            protocol.GetEvents("1", "", session_id, 0, 200),
-          )
-        False ->
-          case client.get_events(control_file, session_id, 0, 200) {
-            Ok(page) -> {
-              list.each(page.events, fn(stored_event) {
-                io.println(client.compact_event_line(stored_event))
-              })
-              Ok(Nil)
-            }
-            Error(err) -> Error(client_error(err))
-          }
-      }
+      run_events(
+        control_file,
+        deps,
+        output,
+        mode,
+        color,
+        since_cursor,
+        session_id,
+      )
     }
-    AttachRaw(control_path, json, session_id) -> {
+    Attach(control_path, mode, color, follow, since_cursor, session_id) -> {
       use control_file <- try_ctl(load_control_file(control_path))
-      client.stream_events(control_file, session_id, 0, fn(stored_event) {
-        case json {
-          True -> io.println(protocol.stream_event_to_string("1", stored_event))
-          False -> io.println(client.compact_event_line(stored_event))
-        }
-        client.Continue
-      })
-      |> map_client_error
+      run_attach(
+        control_file,
+        deps,
+        output,
+        mode,
+        color,
+        follow,
+        since_cursor,
+        session_id,
+      )
     }
     Operator(control_path, json, operator_command) -> {
       use control_file <- try_ctl(load_control_file(control_path))
@@ -344,23 +472,294 @@ fn run(command: Command) -> Result(Nil, Error) {
   }
 }
 
-fn print_raw(
+fn run_events(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  output: Output,
+  mode: OutputMode,
+  color: style.ColorMode,
+  since_cursor: Int,
+  session_id: String,
+) -> Result(Nil, Error) {
+  case mode {
+    Json ->
+      print_raw_request(
+        control_file,
+        protocol.GetEvents("1", "", session_id, since_cursor, 200),
+        deps,
+        output,
+      )
+    Raw ->
+      case deps.get_events(control_file, session_id, since_cursor, 200) {
+        Ok(page) -> {
+          list.each(page.events, fn(stored_event) {
+            output.line(client.compact_event_line(stored_event))
+          })
+          Ok(Nil)
+        }
+        Error(err) -> Error(client_error(err))
+      }
+    Pretty -> {
+      use summary <- try_ctl(require_session(control_file, deps, session_id))
+      use replay <- try_ctl(
+        fetch_replay_pages(deps, control_file, session_id, since_cursor, 200)
+        |> map_client_error,
+      )
+      let options = render.default_options(color)
+      print_chunks(output, render.render_header(summary, options))
+      case replay.truncated {
+        True -> print_chunks(output, render.render_truncation_warning(options))
+        False -> Nil
+      }
+      let #(_, chunks) =
+        render.render_events(
+          render.initial_state(since_cursor),
+          replay.events,
+          options,
+        )
+      print_chunks(output, chunks)
+      Ok(Nil)
+    }
+  }
+}
+
+fn run_attach(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  output: Output,
+  mode: OutputMode,
+  color: style.ColorMode,
+  follow: FollowMode,
+  since_cursor: Int,
+  session_id: String,
+) -> Result(Nil, Error) {
+  use summary <- try_ctl(require_session(control_file, deps, session_id))
+  use replay <- try_ctl(
+    fetch_replay_pages(deps, control_file, session_id, since_cursor, 200)
+    |> map_client_error,
+  )
+  case mode {
+    Pretty -> {
+      let options = render.default_options(color)
+      print_chunks(output, render.render_header(summary, options))
+      case replay.truncated {
+        True -> print_chunks(output, render.render_truncation_warning(options))
+        False -> Nil
+      }
+      let #(state, chunks) =
+        render.render_events(
+          render.initial_state(since_cursor),
+          replay.events,
+          options,
+        )
+      print_chunks(output, chunks)
+      case follow {
+        NoFollow -> Ok(Nil)
+        Follow -> {
+          let state_key = render_state_key(session_id)
+          put_render_state(state_key, state)
+          deps.stream_events(
+            control_file,
+            session_id,
+            state.last_cursor,
+            fn(stored_event) {
+              let current_state = get_render_state(state_key)
+              let #(next_state, chunks) =
+                render.render_event(current_state, stored_event, options)
+              print_chunks(output, chunks)
+              put_render_state(state_key, next_state)
+              client.Continue
+            },
+          )
+          |> map_client_error
+        }
+      }
+    }
+    Raw -> {
+      print_replay_raw(output, replay.events)
+      follow_raw_or_json(
+        control_file,
+        deps,
+        output,
+        follow,
+        session_id,
+        replay.last_cursor,
+        Raw,
+      )
+    }
+    Json -> {
+      print_replay_json(output, replay.events)
+      follow_raw_or_json(
+        control_file,
+        deps,
+        output,
+        follow,
+        session_id,
+        replay.last_cursor,
+        Json,
+      )
+    }
+  }
+}
+
+fn follow_raw_or_json(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  output: Output,
+  follow: FollowMode,
+  session_id: String,
+  last_replay_cursor: Int,
+  mode: OutputMode,
+) -> Result(Nil, Error) {
+  case follow {
+    NoFollow -> Ok(Nil)
+    Follow -> {
+      let state_key = cursor_state_key(session_id, mode)
+      put_cursor_state(state_key, last_replay_cursor)
+      deps.stream_events(
+        control_file,
+        session_id,
+        last_replay_cursor,
+        fn(stored_event) {
+          let last_printed_cursor = get_cursor_state(state_key)
+          case stored_event.cursor <= last_printed_cursor {
+            True -> Nil
+            False -> {
+              print_raw_or_json_event(output, stored_event, mode)
+              put_cursor_state(state_key, stored_event.cursor)
+              Nil
+            }
+          }
+          client.Continue
+        },
+      )
+      |> map_client_error
+    }
+  }
+}
+
+fn print_replay_raw(output: Output, events: List(event.SessionEvent)) -> Nil {
+  list.each(events, fn(stored_event) {
+    output.line(client.compact_event_line(stored_event))
+  })
+}
+
+fn print_replay_json(output: Output, events: List(event.SessionEvent)) -> Nil {
+  list.each(events, fn(stored_event) {
+    output.line(protocol.stream_event_to_string("1", stored_event))
+  })
+}
+
+fn print_raw_or_json_event(
+  output: Output,
+  stored_event: event.SessionEvent,
+  mode: OutputMode,
+) -> Nil {
+  case mode {
+    Json -> output.line(protocol.stream_event_to_string("1", stored_event))
+    Raw | Pretty -> output.line(client.compact_event_line(stored_event))
+  }
+}
+
+fn require_session(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  session_id: String,
+) -> Result(event.SessionSummary, Error) {
+  case deps.get_session(control_file, session_id) {
+    Ok(Some(summary)) -> Ok(summary)
+    Ok(None) -> Error(Failed("missing_session", "session not found"))
+    Error(err) -> Error(client_error(err))
+  }
+}
+
+pub fn fetch_replay_pages(
+  deps: ControlClient,
+  control_file: file.ControlFile,
+  session_id: String,
+  since_cursor: Int,
+  page_size: Int,
+) -> Result(Replay, client.ControlError) {
+  fetch_replay_pages_loop(
+    deps,
+    control_file,
+    session_id,
+    since_cursor,
+    page_size,
+    [],
+    False,
+  )
+}
+
+fn fetch_replay_pages_loop(
+  deps: ControlClient,
+  control_file: file.ControlFile,
+  session_id: String,
+  cursor: Int,
+  page_size: Int,
+  acc: List(event.SessionEvent),
+  truncated: Bool,
+) -> Result(Replay, client.ControlError) {
+  use page <- try_client(deps.get_events(
+    control_file,
+    session_id,
+    cursor,
+    page_size,
+  ))
+  let events = list.append(acc, page.events)
+  let truncated = truncated || page.truncated
+  let count = list.length(page.events)
+  case count == 0 || count < page_size || page.next_cursor <= cursor {
+    True ->
+      Ok(Replay(
+        events: events,
+        last_cursor: page.next_cursor,
+        truncated: truncated,
+      ))
+    False ->
+      fetch_replay_pages_loop(
+        deps,
+        control_file,
+        session_id,
+        page.next_cursor,
+        page_size,
+        events,
+        truncated,
+      )
+  }
+}
+
+fn print_chunks(output: Output, chunks: List(render.RenderChunk)) -> Nil {
+  list.each(chunks, fn(chunk) {
+    case chunk {
+      render.Line(text) -> output.line(text)
+      render.Inline(text) -> output.inline(text)
+    }
+  })
+}
+
+fn print_raw_request(
   control_file: file.ControlFile,
   request: protocol.Request,
+  deps: ControlClient,
+  output: Output,
 ) -> Result(Nil, Error) {
-  case client.raw_request(control_file, request) {
+  case deps.raw_request(control_file, request) {
     Ok(line) -> {
-      io.println(line)
+      output.line(line)
       Ok(Nil)
     }
     Error(err) -> Error(client_error(err))
   }
 }
 
-fn print_sessions_table(sessions: List(event.SessionSummary)) -> Nil {
-  io.println("SESSION\tISSUE\tSTATUS\tTURN\tLAST_EVENT")
+fn print_sessions_table(
+  sessions: List(event.SessionSummary),
+  output: Output,
+) -> Nil {
+  output.line("SESSION\tISSUE\tSTATUS\tTURN\tLAST_EVENT")
   list.each(sessions, fn(summary) {
-    io.println(
+    output.line(
       summary.session_id
       <> "\t"
       <> summary.issue_identifier
@@ -374,15 +773,15 @@ fn print_sessions_table(sessions: List(event.SessionSummary)) -> Nil {
   })
 }
 
-fn print_session(summary: event.SessionSummary) -> Nil {
-  io.println("session_id: " <> summary.session_id)
-  io.println(
+fn print_session(summary: event.SessionSummary, output: Output) -> Nil {
+  output.line("session_id: " <> summary.session_id)
+  output.line(
     "issue: " <> summary.issue_identifier <> " " <> summary.issue_title,
   )
-  io.println("status: " <> event.status_to_string(summary.status))
-  io.println("turn: " <> int.to_string(summary.current_turn))
-  io.println("workspace: " <> summary.workspace_path)
-  io.println("last_event_at_ms: " <> int.to_string(summary.last_event_at_ms))
+  output.line("status: " <> event.status_to_string(summary.status))
+  output.line("turn: " <> int.to_string(summary.current_turn))
+  output.line("workspace: " <> summary.workspace_path)
+  output.line("last_event_at_ms: " <> int.to_string(summary.last_event_at_ms))
 }
 
 fn print_command_result(
@@ -511,6 +910,16 @@ fn try_ctl(
   result: Result(a, Error),
   next: fn(a) -> Result(b, Error),
 ) -> Result(b, Error) {
+  case result {
+    Ok(value) -> next(value)
+    Error(err) -> Error(err)
+  }
+}
+
+fn try_client(
+  result: Result(a, client.ControlError),
+  next: fn(a) -> Result(b, client.ControlError),
+) -> Result(b, client.ControlError) {
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)

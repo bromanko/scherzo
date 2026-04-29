@@ -68,6 +68,9 @@ fn payload_entries(payload: event.EventPayload) -> List(#(String, json.Json)) {
     #("request_id", optional_string(payload.request_id)),
     #("method", optional_string(payload.method)),
     #("tool_name", optional_string(payload.tool_name)),
+    #("tool_input", optional_string(payload.tool_input)),
+    #("tool_output", optional_string(payload.tool_output)),
+    #("tool_status", optional_string(payload.tool_status)),
     #("tokens", tokens_to_json(payload.tokens)),
     #("raw_json", optional_raw_json(payload.raw_json)),
   ]

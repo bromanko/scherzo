@@ -16,6 +16,10 @@ import scherzo/template
 import scherzo/tracker
 import scherzo/workspace
 
+const max_tool_text_chars = 4096
+
+const tool_text_truncated_suffix = "… [truncated]"
+
 pub type FinalClassification {
   FinalActive
   FinalTerminal
@@ -52,6 +56,9 @@ pub type PiUpdate {
     pi_session_id: Option(String),
     tokens: domain.TokenTotals,
     tool_name: Option(String),
+    tool_input: Option(String),
+    tool_output: Option(String),
+    tool_status: Option(String),
   )
 }
 
@@ -1757,6 +1764,9 @@ fn lifecycle_update_with_message(
     pi_session_id: None,
     tokens: domain.zero_token_totals(),
     tool_name: None,
+    tool_input: None,
+    tool_output: None,
+    tool_status: None,
   )
 }
 
@@ -1794,6 +1804,9 @@ fn pi_session_started_update(pi_session_id: Option(String)) -> PiUpdate {
     pi_session_id: pi_session_id,
     tokens: domain.zero_token_totals(),
     tool_name: None,
+    tool_input: None,
+    tool_output: None,
+    tool_status: None,
   )
 }
 
@@ -1808,6 +1821,9 @@ fn token_update(name: String, turn: Int, tokens: domain.TokenTotals) -> PiUpdate
     pi_session_id: None,
     tokens: tokens,
     tool_name: None,
+    tool_input: None,
+    tool_output: None,
+    tool_status: None,
   )
 }
 
@@ -1829,7 +1845,10 @@ fn update_from_record(
     method: record.method,
     pi_session_id: record.session_id,
     tokens: record.tokens,
-    tool_name: None,
+    tool_name: record.tool_name,
+    tool_input: normalize_tool_text(record.tool_input, secrets),
+    tool_output: normalize_tool_text(record.tool_output, secrets),
+    tool_status: normalize_tool_text(record.tool_status, secrets),
   )
 }
 
@@ -1840,6 +1859,26 @@ fn redact_message(
   case message {
     Some(value) -> Some(log.redact("message", value, secrets))
     None -> None
+  }
+}
+
+fn normalize_tool_text(
+  value: Option(String),
+  secrets: List(String),
+) -> Option(String) {
+  case value {
+    None -> None
+    Some(text) -> {
+      let redacted = log.redact("tool", text, secrets)
+      case string.length(redacted) > max_tool_text_chars {
+        True ->
+          Some(
+            string.slice(redacted, at_index: 0, length: max_tool_text_chars)
+            <> tool_text_truncated_suffix,
+          )
+        False -> Some(redacted)
+      }
+    }
   }
 }
 

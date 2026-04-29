@@ -83,6 +83,9 @@ fn base_dependencies(
           pi_session_id: None,
           tokens: domain.zero_token_totals(),
           tool_name: None,
+          tool_input: None,
+          tool_output: None,
+          tool_status: None,
         ),
       )
       Ok(success(

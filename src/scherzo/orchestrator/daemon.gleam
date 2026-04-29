@@ -2778,6 +2778,9 @@ fn publish_lifecycle(
       request_id: None,
       method: None,
       tool_name: None,
+      tool_input: None,
+      tool_output: None,
+      tool_status: None,
       tokens: domain.zero_token_totals(),
       raw_json: None,
     ),
@@ -2794,6 +2797,9 @@ fn update_payload(update: runner.PiUpdate) -> session_event.EventPayload {
     request_id: update.request_id,
     method: update.method,
     tool_name: update.tool_name,
+    tool_input: update.tool_input,
+    tool_output: update.tool_output,
+    tool_status: update.tool_status,
     tokens: update.tokens,
     raw_json: update.raw_json,
   )
@@ -2804,14 +2810,31 @@ fn kind_for_update(update: runner.PiUpdate) -> session_event.EventKind {
     "probe_started" | "probe_finished" | "pi_session_started" ->
       session_event.Lifecycle
     "turn_finished" -> session_event.TokenStats
+    "message_start" | "message_update" | "message_end" ->
+      session_event.AssistantMessage
+    "tool_execution_start" | "tool_execution_update" | "tool_execution_end" ->
+      session_event.Tool
+    "message" ->
+      case
+        update.tool_name,
+        update.tool_input,
+        update.tool_output,
+        update.tool_status
+      {
+        Some(_), _, _, _
+        | _, Some(_), _, _
+        | _, _, Some(_), _
+        | _, _, _, Some(_)
+        -> session_event.Tool
+        _, _, _, _ -> session_event.Pi
+      }
     "extension_ui_request" ->
       case is_blocking_ui_method(update.method) {
         True -> session_event.UiRequest
         False -> session_event.Pi
       }
     "extension_ui_response" -> session_event.UiResponse
-    "message_update" | "agent_start" | "turn_start" | "turn_end" | "agent_end" ->
-      session_event.Pi
+    "agent_start" | "turn_start" | "turn_end" | "agent_end" -> session_event.Pi
     _ ->
       case update.raw_json {
         Some(_) -> session_event.PiRaw

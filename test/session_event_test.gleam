@@ -83,6 +83,9 @@ pub fn event_payload_has_no_cursor_or_timestamp_test() {
       request_id: None,
       method: None,
       tool_name: None,
+      tool_input: None,
+      tool_output: None,
+      tool_status: None,
       tokens: domain.zero_token_totals(),
       raw_json: None,
     )

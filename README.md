@@ -197,7 +197,33 @@ Use the logged path explicitly, or export it for repeated commands:
     scripts/scherzoctl ping
     scripts/scherzoctl ps
     scripts/scherzoctl events <session-id>
+    scripts/scherzoctl attach <session-id>
+
+`attach` replays retained events and then follows new events with a human-readable terminal renderer. It groups output by turn, streams assistant deltas as continuous text, shows tool activity and blocking UI requests distinctly, and prints token summaries when they are available. Use `--no-follow` for replay only, `--since-cursor <n>` to resume after a known cursor, and `--color=auto|always|never` to control ANSI styling:
+
+    scripts/scherzoctl attach --no-follow <session-id>
+    scripts/scherzoctl attach --since-cursor 40 <session-id>
+
+Example pretty output:
+
+    ABC-123 Fix flaky tests
+    workspace: /workspaces/ABC-123
+    session: ABC-123-42-1
+    status: running
+
+    ▶ turn 1 started
+    assistant:
+      I will run the tests and inspect the failure.
+    tool bash
+      input: gleam test
+      output: 2 failures
+    tokens: input=1200 output=340 cache_read=0 cache_write=0 total=1540
+
+For compatibility and automation, raw and JSON modes remain available. `events` stays compact by default, while `events --pretty` provides paginated human-readable replay without following:
+
     scripts/scherzoctl attach --raw <session-id>
+    scripts/scherzoctl attach --json <session-id>
+    scripts/scherzoctl events --pretty <session-id>
 
 Every command also accepts `--control-file <path>`. Non-streaming commands accept `--json` for automation:
 

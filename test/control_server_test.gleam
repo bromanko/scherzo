@@ -38,6 +38,9 @@ fn payload(name: String) -> event.EventPayload {
     request_id: None,
     method: None,
     tool_name: None,
+    tool_input: None,
+    tool_output: None,
+    tool_status: None,
     tokens: domain.zero_token_totals(),
     raw_json: None,
   )

@@ -36,6 +36,9 @@ pub type EventPayload {
     request_id: Option(String),
     method: Option(String),
     tool_name: Option(String),
+    tool_input: Option(String),
+    tool_output: Option(String),
+    tool_status: Option(String),
     tokens: domain.TokenTotals,
     raw_json: Option(RedactedRawJson),
   )
@@ -81,6 +84,9 @@ pub fn empty_payload(kind: EventKind, name: String) -> EventPayload {
     request_id: None,
     method: None,
     tool_name: None,
+    tool_input: None,
+    tool_output: None,
+    tool_status: None,
     tokens: domain.zero_token_totals(),
     raw_json: None,
   )
