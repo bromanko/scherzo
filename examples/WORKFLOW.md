@@ -37,6 +37,9 @@ pi:
   compatibility_probe: true
 # Optional Linear-visible handoff. Disabled is safest for smoke/probe and first
 # fake-pi daemon tests. When enabled, comments include a Scherzo run ID.
+# Successful runs post one structured success/result comment by default. The
+# result contains assistant-visible text only, not tool output, raw JSON, hidden
+# thinking, lifecycle events, command responses, or issue description edits.
 # State IDs are Linear workflow state IDs, not state names. If claim_state_id
 # moves an issue to In Progress, include In Progress in tracker.active_states or
 # omit claim_state_id and use comments-only claims plus success_state_id.
@@ -45,6 +48,8 @@ handoff:
   comment_on_claim: true
   comment_on_success: true
   comment_on_failure: true
+  include_result_on_success: true
+  result_max_chars: 8000
   # claim_state_id: "linear-state-id-for-in-progress"
   # success_state_id: "linear-state-id-for-done"
   # failure_state_id: "linear-state-id-for-needs-attention"
@@ -107,4 +112,4 @@ Follow the issue's workflow label when choosing how to work:
 - workflow:docs means update documentation or examples.
 - workflow:chore means perform maintenance without widening product behavior.
 
-If Scherzo handoff is enabled, the daemon may add Linear comments or move the issue to configured Linear state IDs after this run. If handoff is disabled, use repository or workflow-provided tooling to add comments, update status, or link pull requests when the task requires handoff.
+If Scherzo handoff is enabled, the daemon may add Linear comments or move the issue to configured Linear state IDs after this run. On success, Scherzo posts one structured result comment with assistant-visible text unless `include_result_on_success` is false; it does not post tool output, raw JSON, hidden thinking, or issue description edits. If handoff is disabled, use repository or workflow-provided tooling to add comments, update status, or link pull requests when the task requires handoff.

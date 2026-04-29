@@ -36,6 +36,7 @@ pub type RpcRecord {
     tool_input: Option(String),
     tool_output: Option(String),
     tool_status: Option(String),
+    assistant_messages: List(String),
     raw_json: String,
   )
 }
@@ -643,6 +644,10 @@ type MessageObject {
   )
 }
 
+type AgentEndMessage {
+  AgentEndMessage(role: Option(String), content: Option(String))
+}
+
 type ContentItem {
   ContentItem(
     type_: String,
@@ -682,6 +687,11 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     "message",
     empty_message_object(),
     tolerant_message_object_decoder(),
+  )
+  use assistant_messages <- decode.optional_field(
+    "messages",
+    [],
+    tolerant_agent_end_messages_decoder(),
   )
   use top_tool_name_camel <- decode.optional_field(
     "toolName",
@@ -785,6 +795,7 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
       success,
       data.tool_status,
     ),
+    assistant_messages: assistant_messages,
     raw_json: raw_json,
   ))
 }
@@ -806,6 +817,47 @@ fn tolerant_message_object_decoder() -> decode.Decoder(MessageObject) {
   decode.one_of(message_object_decoder(), or: [
     decode.dynamic |> decode.map(fn(_) { empty_message_object() }),
   ])
+}
+
+fn tolerant_agent_end_messages_decoder() -> decode.Decoder(List(String)) {
+  decode.one_of(agent_end_messages_decoder(), or: [
+    decode.dynamic |> decode.map(fn(_) { [] }),
+  ])
+}
+
+fn agent_end_messages_decoder() -> decode.Decoder(List(String)) {
+  decode.list(of: agent_end_message_decoder())
+  |> decode.map(assistant_message_texts)
+}
+
+fn agent_end_message_decoder() -> decode.Decoder(AgentEndMessage) {
+  use role <- decode.optional_field(
+    "role",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use content <- decode.optional_field(
+    "content",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  decode.success(AgentEndMessage(role: role, content: content))
+}
+
+fn assistant_message_texts(messages: List(AgentEndMessage)) -> List(String) {
+  list.filter_map(messages, fn(message) {
+    case message.role, message.content {
+      Some("assistant"), Some(content) -> non_empty(content) |> option_to_result
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+fn option_to_result(value: Option(a)) -> Result(a, Nil) {
+  case value {
+    Some(value) -> Ok(value)
+    None -> Error(Nil)
+  }
 }
 
 fn message_object_decoder() -> decode.Decoder(MessageObject) {

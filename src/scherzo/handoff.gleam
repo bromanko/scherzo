@@ -1,8 +1,8 @@
-import gleam/int
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/runner
 import scherzo/domain
 import scherzo/error
+import scherzo/handoff_format
 import scherzo/linear
 
 pub type Client {
@@ -94,15 +94,13 @@ fn report_success(
     tracker_config,
     transport,
     issue.id,
-    "Scherzo completed run "
-      <> run_id
-      <> " for "
-      <> issue.identifier
-      <> " with classification "
-      <> classification_to_string(success.final_classification)
-      <> " and "
-      <> int.to_string(success.tokens.total)
-      <> " total pi tokens.",
+    handoff_format.success_comment(
+      issue,
+      success,
+      run_id,
+      handoff_config.include_result_on_success,
+      tracker_secrets(tracker_config),
+    ),
   ))
   run_state_update(
     tracker_config,
@@ -182,13 +180,10 @@ fn run_state_update(
   }
 }
 
-fn classification_to_string(
-  classification: runner.FinalClassification,
-) -> String {
-  case classification {
-    runner.FinalActive -> "active"
-    runner.FinalTerminal -> "terminal"
-    runner.FinalNonActive -> "non_active"
+fn tracker_secrets(tracker_config: domain.TrackerConfig) -> List(String) {
+  case tracker_config.api_key {
+    Some(value) -> [value]
+    None -> []
   }
 }
 

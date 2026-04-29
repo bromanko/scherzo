@@ -102,6 +102,16 @@ pub type HandoffConfig {
     claim_state_id: Option(String),
     success_state_id: Option(String),
     failure_state_id: Option(String),
+    include_result_on_success: Bool,
+    result_max_chars: Int,
+  )
+}
+
+pub type ResultArtifact {
+  ResultArtifact(
+    final_response: Option(String),
+    truncated: Bool,
+    source: String,
   )
 }
 

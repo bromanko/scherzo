@@ -114,6 +114,8 @@ This repository includes `.scherzo/workflows/research.md` as the first dogfood w
       claim_state_id: null
       success_state_id: null
       failure_state_id: null
+      include_result_on_success: true
+      result_max_chars: 8000
     linear_contract:
       enabled: false
       workflow_label_prefix: "workflow:"
@@ -177,6 +179,8 @@ Invalid workflow issues are per-issue scheduler input errors, not agent failures
 
 Handoff is disabled by default. When `handoff.enabled: true`, Scherzo can add Linear comments and optionally update issue state by configured Linear state IDs. Comments include the daemon run ID so repeated comments after a crash or retry can be correlated with logs.
 
+Successful handoff comments are now structured result comments. When `comment_on_success: true`, `include_result_on_success` defaults to `true`, so the success comment includes one `Result:` section with assistant-visible text captured from the pi turn. Scherzo excludes tool output, raw JSON, hidden thinking, lifecycle events, and command responses; it redacts configured secrets and truncates the result at `result_max_chars` characters, which defaults to `8000` and must be positive. Set `include_result_on_success: false` to keep metadata-only success comments. Scherzo does not edit Linear issue descriptions in this phase.
+
 Start with comments only:
 
     handoff:
@@ -184,6 +188,8 @@ Start with comments only:
       comment_on_claim: true
       comment_on_success: true
       comment_on_failure: true
+      include_result_on_success: true
+      result_max_chars: 8000
 
 State transitions are optional and must use Linear state IDs, not state names:
 

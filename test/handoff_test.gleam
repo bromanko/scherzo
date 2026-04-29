@@ -28,6 +28,8 @@ fn handoff_config() -> domain.HandoffConfig {
     claim_state_id: Some("claim-state"),
     success_state_id: None,
     failure_state_id: None,
+    include_result_on_success: True,
+    result_max_chars: 8000,
   )
 }
 
@@ -61,6 +63,11 @@ fn success() -> runner.WorkerSuccess {
       total: 3,
     ),
     turns: 1,
+    result: domain.ResultArtifact(
+      final_response: Some("Implemented secret-key"),
+      truncated: False,
+      source: "agent_end_messages",
+    ),
   )
 }
 
@@ -94,8 +101,14 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   assert client.report_success(issue(), success(), "run-2") == Ok(Nil)
   let assert Ok(success_comment) = process.receive(subject, within: 100)
   assert string.contains(success_comment, "run-2")
-  assert string.contains(success_comment, "terminal")
-  assert string.contains(success_comment, "3 total pi tokens")
+  assert string.contains(success_comment, "Result:")
+  assert string.contains(success_comment, "Implemented [REDACTED]")
+  assert string.contains(success_comment, "classification: terminal")
+  assert string.contains(
+    success_comment,
+    "tokens: input=1 output=2 cache_read=0 cache_write=0 total=3",
+  )
+  assert !string.contains(success_comment, "secret-key")
 
   let failure =
     runner.WorkerFailure(
@@ -109,6 +122,33 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   assert string.contains(failure_comment, "run-3")
   assert string.contains(failure_comment, "agent_pi_failed")
   assert !string.contains(failure_comment, "secret details")
+}
+
+pub fn success_handoff_posts_single_structured_result_comment_test() {
+  let subject = process.new_subject()
+  let transport = fn(request: linear.Request) {
+    process.send(subject, request.body)
+    Ok(linear.Response(
+      status: 200,
+      body: "{\"data\":{\"commentCreate\":{\"success\":true}}}",
+    ))
+  }
+  let no_state =
+    domain.HandoffConfig(
+      ..handoff_config(),
+      claim_state_id: None,
+      success_state_id: None,
+      failure_state_id: None,
+    )
+  let client = handoff.linear_client(tracker_config(), no_state, transport)
+
+  assert client.report_success(issue(), success(), "run-structured") == Ok(Nil)
+  let assert Ok(success_comment) = process.receive(subject, within: 100)
+  assert process.receive(subject, within: 20) == Error(Nil)
+  assert string.contains(success_comment, "commentCreate")
+  assert string.contains(success_comment, "run-structured")
+  assert string.contains(success_comment, "Result:")
+  assert string.contains(success_comment, "Implemented [REDACTED]")
 }
 
 pub fn disabled_handoff_performs_no_transport_calls_test() {

@@ -55,6 +55,8 @@ fn handoff_config(
     claim_state_id: claim,
     success_state_id: success,
     failure_state_id: failure,
+    include_result_on_success: enabled,
+    result_max_chars: 8000,
   )
 }
 

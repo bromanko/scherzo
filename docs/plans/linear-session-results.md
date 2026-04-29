@@ -68,11 +68,11 @@ The main scope risk is drifting into Linear-to-Scherzo command parsing. Counterm
 - [x] (2026-04-29) Re-ran `direnv exec . gleam test` during adversarial plan review; the current baseline reports `291 passed, no failures`.
 - [x] (2026-04-29 22:55Z) Re-ran `direnv exec . gleam test` before implementation; the baseline still reports `291 passed, no failures`.
 - [x] (2026-04-29) Reviewed the current runner integration and revised this plan away from the stale `pi_rpc.prompt` event-list assumption toward `send_prompt` plus `active_turn_loop` record accumulation.
-- [ ] Add result artifact domain/config fields and pure collector/formatter tests.
-- [ ] Decode final assistant messages from pi `agent_end.messages` and use message deltas as fallback.
-- [ ] Carry result artifacts through `runner.WorkerSuccess`.
-- [ ] Render structured success/result Linear comments in handoff.
-- [ ] Update README, examples, and this plan’s retrospective after validation.
+- [x] (2026-04-29 23:08Z) Added result artifact domain/config fields, pure collector tests in `test/result_artifact_test.gleam`, and pure formatter tests in `test/handoff_format_test.gleam`.
+- [x] (2026-04-29 23:08Z) Decoded final assistant messages from pi `agent_end.messages` into `RpcRecord.assistant_messages` and kept message deltas as fallback.
+- [x] (2026-04-29 23:08Z) Carried redacted/truncated result artifacts through `runner.WorkerSuccess`, including active-loop records, prompt-response skipped records, and multi-turn accumulation.
+- [x] (2026-04-29 23:08Z) Rendered structured success/result Linear comments through `handoff_format.success_comment` and `handoff.report_success`.
+- [x] (2026-04-29 23:08Z) Updated `README.md`, `examples/WORKFLOW.md`, and this plan’s retrospective after validation.
 
 ## Surprises & Discoveries
 
@@ -123,7 +123,9 @@ The main scope risk is drifting into Linear-to-Scherzo command parsing. Counterm
 
 ## Outcomes & Retrospective
 
-(To be filled after implementation. Include the final test count, whether real/fake Linear validation posted the expected single structured success comment, any pi event-shape mismatch discovered while decoding final assistant messages, and any follow-up needed for changed-file artifacts.)
+Implementation completed on 2026-04-29. Scherzo now builds a `ResultArtifact` from assistant-visible pi records, stores it on `runner.WorkerSuccess`, and formats the existing Linear success handoff comment as one structured result comment with run metadata, token totals, turns, redaction, and truncation. Deterministic fake-pi and fake-Linear tests cover final `agent_end.messages` preference, delta fallback, ignored tool/lifecycle events, secret redaction, truncation, skipped prompt-response records, multi-turn accumulation, formatter output, and single-comment handoff behavior.
+
+Final validation from the repository root passed: `direnv exec . gleam format --check src test` exited zero, `direnv exec . gleam test` reported `309 passed, no failures`, and `direnv exec . gleam run -- --help` printed the CLI help successfully. Credential-gated real Linear validation was not run in this implementation session. Follow-up opportunities remain unchanged: changed-file summaries, validation-command summaries, Linear issue description edits, and durable Linear comment de-duplication should each get separate plans before implementation.
 
 ## Context and Orientation
 
@@ -149,17 +151,17 @@ The current baseline commands from the repository root are:
 
 On 2026-04-29 during adversarial review, `direnv exec . gleam test` ended with `291 passed, no failures`. The earlier `116 passed, no failures` note in this plan was from an older tree and is no longer the current baseline. After implementation on 2026-04-29, final validation ended with `309 passed, no failures`.
 
-Current repository facts this plan depends on:
+Current repository facts after implementation:
 
-- `src/scherzo/agent/runner.gleam` defines `WorkerSuccess(final_issue, final_classification, workspace_path, tokens, turns)`.
-- `src/scherzo/agent/runner.gleam` uses `pi_rpc.send_prompt`, emits `skipped` records from command responses, reads turn records with `pi_rpc.read_turn_record` inside `active_turn_loop`, and currently does not retain those consumed records for the success path.
-- `src/scherzo/agent/runner.gleam` defines `ActiveTurn(session, prompt_queue, stop_after_turn)` and `ActiveCommandState(session, prompt_queue, stop_after_turn, pending_ui, stall_deadline_ms)`; neither type currently carries accumulated turn records.
-- `src/scherzo/agent/pi_rpc.gleam` defines `RpcRecord` with `delta: Option(String)`, tool metadata, and `raw_json: String`, but no decoded assistant message list.
-- `src/scherzo/agent/pi_rpc.gleam` still exposes the older `prompt` and `prompt_with_ui_policy` helpers, but this plan must not depend on those helpers for worker result capture unless the runner is intentionally refactored.
-- `test/fixtures/fake_pi_rpc.sh` emits `message_update` with a `delta` and emits `agent_end` with `messages:[{role:"assistant",content:"done"}]`.
-- `test/fixtures/fake_pi_rpc.sh` can emit interleaved `message_update` records before abort and extension UI response command responses via `FAKE_PI_INTERLEAVE_EVENT_BEFORE_COMMAND_RESPONSE`; this plan adds a prompt-response variant so a successful one-turn runner test can prove skipped prompt-response records are captured.
-- `src/scherzo/handoff.gleam` formats claim, success, and failure comment bodies inline.
-- `src/scherzo/config.gleam` resolves `handoff.enabled`, `comment_on_claim`, `comment_on_success`, `comment_on_failure`, `claim_state_id`, `success_state_id`, and `failure_state_id`.
+- `src/scherzo/agent/runner.gleam` defines `WorkerSuccess(final_issue, final_classification, workspace_path, tokens, turns, result)`.
+- `src/scherzo/agent/runner.gleam` uses `pi_rpc.send_prompt`, emits `skipped` records from command responses, reads turn records with `pi_rpc.read_turn_record` inside `active_turn_loop`, and retains consumed active-turn records for result collection on successful turns.
+- `src/scherzo/agent/runner.gleam` defines `ActiveTurn(session, prompt_queue, stop_after_turn, records)` and `ActiveCommandState(session, prompt_queue, stop_after_turn, pending_ui, stall_deadline_ms, records)` so skipped UI-command records and ordinary turn records stay with the active turn.
+- `src/scherzo/agent/pi_rpc.gleam` defines `RpcRecord` with `delta: Option(String)`, tool metadata, decoded `assistant_messages: List(String)`, and `raw_json: String`.
+- `src/scherzo/agent/pi_rpc.gleam` still exposes the older `prompt` and `prompt_with_ui_policy` helpers, but worker result capture uses the current `send_prompt`/`active_turn_loop` path.
+- `test/fixtures/fake_pi_rpc.sh` emits `message_update` with a `delta` and emits `agent_end` with `messages:[{role:"assistant",content:"done"}]` unless `FAKE_PI_NO_AGENT_END_MESSAGES=1` is set.
+- `test/fixtures/fake_pi_rpc.sh` can emit interleaved `message_update` records before abort and extension UI response command responses via `FAKE_PI_INTERLEAVE_EVENT_BEFORE_COMMAND_RESPONSE`, and before a prompt response via `FAKE_PI_INTERLEAVE_EVENT_BEFORE_PROMPT_RESPONSE`.
+- `src/scherzo/handoff.gleam` leaves claim and failure comments operational, and delegates success comment body creation to `src/scherzo/handoff_format.gleam`.
+- `src/scherzo/config.gleam` resolves `handoff.enabled`, `comment_on_claim`, `comment_on_success`, `comment_on_failure`, `claim_state_id`, `success_state_id`, `failure_state_id`, `include_result_on_success`, and `result_max_chars`.
 - `src/scherzo/log.gleam` exposes `redact(key, value, secrets)` and `truncate(value, max)`; `truncate` returns the first `max` characters plus `...` when truncation happens, so tests should assert the chosen exact truncation contract rather than assuming the returned string length is exactly `max`.
 - `src/scherzo/linear.gleam` already exposes `build_comment_create_request` and `parse_mutation_response` for Linear comments.
 

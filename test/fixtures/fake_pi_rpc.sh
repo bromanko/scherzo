@@ -99,6 +99,9 @@ while IFS= read -r line; do
       ;;
     prompt)
       prompt_seen=$((prompt_seen + 1))
+      if [[ -n "${FAKE_PI_INTERLEAVE_EVENT_BEFORE_PROMPT_RESPONSE:-}" ]]; then
+        jq -cn '{type:"message_update",delta:"interleaved"}'
+      fi
       jq -cn --arg id "$id" '{id:$id,type:"response",command:"prompt",success:true}'
       if [[ -n "${FAKE_PI_NO_OUTPUT_AFTER_PROMPT:-}" ]]; then
         while true; do sleep 60; done
@@ -148,7 +151,11 @@ while IFS= read -r line; do
       if [[ -n "${FAKE_PI_NO_AGENT_END:-}" ]]; then
         while true; do sleep 60; done
       fi
-      jq -cn --arg turns "$prompt_seen" '{type:"agent_end",messages:[{role:"assistant",content:"done"}],turns:($turns|tonumber)}'
+      if [[ -n "${FAKE_PI_NO_AGENT_END_MESSAGES:-}" ]]; then
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",turns:($turns|tonumber)}'
+      else
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",messages:[{role:"assistant",content:"done"}],turns:($turns|tonumber)}'
+      fi
       if [[ -n "${FAKE_PI_EXIT_NONZERO:-}" ]]; then
         exit 7
       fi

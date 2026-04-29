@@ -104,6 +104,14 @@ pub fn decode_extension_ui_request_message_test() {
   assert record.message == Some("continue?")
 }
 
+pub fn decode_agent_end_assistant_messages_test() {
+  let assert Ok(record) =
+    pi_rpc.decode_record(
+      "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":\"final answer\"},{\"role\":\"user\",\"content\":\"ignored\"},{\"role\":\"assistant\",\"content\":123}]}",
+    )
+  assert record.assistant_messages == ["final answer"]
+}
+
 pub fn decode_captured_assistant_tool_call_and_tool_result_test() {
   let assert Ok(contents) =
     simplifile.read("test/fixtures/pi_tool_events_captured.jsonl")

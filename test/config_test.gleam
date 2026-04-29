@@ -294,6 +294,32 @@ pub fn handoff_defaults_and_parsing_test() {
   assert parsed.handoff.failure_state_id == Some("state-fail")
 }
 
+pub fn handoff_result_defaults_follow_success_comments_test() {
+  let front = minimal_front() <> "handoff:\n  enabled: true\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/WORKFLOW.md", env)
+  assert configured.handoff.comment_on_success == True
+  assert configured.handoff.include_result_on_success == True
+  assert configured.handoff.result_max_chars == 8000
+}
+
+pub fn handoff_can_disable_result_in_success_comment_test() {
+  let front =
+    minimal_front()
+    <> "handoff:\n  enabled: true\n  include_result_on_success: false\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/WORKFLOW.md", env)
+  assert configured.handoff.comment_on_success == True
+  assert configured.handoff.include_result_on_success == False
+}
+
+pub fn handoff_result_max_chars_must_be_positive_test() {
+  let front =
+    minimal_front() <> "handoff:\n  enabled: true\n  result_max_chars: 0\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(definition(front), "test/tmp/WORKFLOW.md", env)
+}
+
 pub fn linear_contract_defaults_test() {
   let defaults = config.default_linear_contract_config()
   assert defaults.enabled == False

@@ -90,6 +90,8 @@ fn config(
       claim_state_id: None,
       success_state_id: None,
       failure_state_id: None,
+      include_result_on_success: False,
+      result_max_chars: 8000,
     ),
     linear_contract: domain.LinearContractConfig(
       enabled: False,
@@ -217,6 +219,8 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
     )
   assert success.final_classification == runner.FinalTerminal
   assert success.tokens.total == 3
+  assert success.result.final_response == Some("done")
+  assert success.result.source == "agent_end_messages"
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "set_session_name")
   assert string.contains(contents, "get_state")
@@ -225,6 +229,46 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
     simplifile.is_file(success.workspace_path <> "/POPULATED")
   let assert Ok(True) =
     simplifile.is_file(success.workspace_path <> "/AFTER_RUN")
+}
+
+pub fn worker_success_result_redacts_secret_output_test() {
+  let root = "test/tmp/runner-result-redacts"
+  reset_dir(root)
+  let command =
+    "FAKE_PI_MESSAGE_SECRET=key FAKE_PI_NO_AGENT_END_MESSAGES=1 " <> fake_pi()
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      emit,
+    )
+  let assert Some(text) = success.result.final_response
+  assert string.contains(text, "[REDACTED]")
+  assert !string.contains(text, "key")
+  assert success.result.source == "message_update_delta"
+}
+
+pub fn worker_success_result_includes_interleaved_skipped_records_test() {
+  let root = "test/tmp/runner-result-skipped"
+  reset_dir(root)
+  let command =
+    "FAKE_PI_INTERLEAVE_EVENT_BEFORE_PROMPT_RESPONSE=1 FAKE_PI_NO_AGENT_END_MESSAGES=1 "
+    <> fake_pi()
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      emit,
+    )
+  let assert Some(text) = success.result.final_response
+  assert string.contains(text, "interleaved")
+  assert string.contains(text, "POPULATED")
 }
 
 pub fn prompt_render_failure_aborts_before_pi_launch_test() {
@@ -392,6 +436,8 @@ pub fn active_issue_continues_in_same_worker_until_max_turns_test() {
     )
   assert success.final_classification == runner.FinalActive
   assert success.turns == 2
+  assert success.result.final_response == Some("done\n\ndone")
+  assert success.result.source == "combined_turns"
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "Original task ABC-123")
   assert string.contains(contents, "Continue working on ABC-123")

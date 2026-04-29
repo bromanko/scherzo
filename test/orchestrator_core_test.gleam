@@ -51,6 +51,8 @@ fn config() -> domain.EffectiveConfig {
       claim_state_id: None,
       success_state_id: None,
       failure_state_id: None,
+      include_result_on_success: False,
+      result_max_chars: 8000,
     ),
     linear_contract: domain.LinearContractConfig(
       enabled: False,

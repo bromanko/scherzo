@@ -10,6 +10,7 @@ import scherzo/control/command
 import scherzo/domain
 import scherzo/error
 import scherzo/log
+import scherzo/result_artifact
 import scherzo/session/event as session_event
 import scherzo/session/redaction
 import scherzo/template
@@ -33,6 +34,7 @@ pub type WorkerSuccess {
     workspace_path: String,
     tokens: domain.TokenTotals,
     turns: Int,
+    result: domain.ResultArtifact,
   )
 }
 
@@ -79,6 +81,7 @@ type ActiveCommandState {
     stop_after_turn: Bool,
     pending_ui: Option(PendingUi),
     stall_deadline_ms: Int,
+    records: List(pi_rpc.RpcRecord),
   )
 }
 
@@ -87,6 +90,7 @@ type ActiveTurn {
     session: pi_rpc.Session,
     prompt_queue: List(String),
     stop_after_turn: Bool,
+    records: List(pi_rpc.RpcRecord),
   )
 }
 
@@ -259,6 +263,7 @@ fn run_pi_loop(
         first_prompt,
         1,
         domain.zero_token_totals(),
+        result_artifact.empty(),
         config,
         tracker_client,
         emit_update,
@@ -277,6 +282,7 @@ fn loop_turns(
   prompt: String,
   turn: Int,
   totals: domain.TokenTotals,
+  result: domain.ResultArtifact,
   config: domain.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, PiUpdate) -> Nil,
@@ -363,18 +369,32 @@ fn loop_turns(
                   prompt_queue,
                   False,
                   None,
+                  skipped,
                   turn_deadline_ms,
                   stall_deadline_ms,
                   workspace_path,
                 )
               {
                 Error(failure) -> Error(failure)
-                Ok(ActiveTurn(session, prompt_queue, stop_after_turn)) ->
+                Ok(ActiveTurn(session, prompt_queue, stop_after_turn, records)) -> {
+                  let turn_result =
+                    result_artifact.from_records(
+                      records,
+                      config_module.resolved_secrets(config),
+                      config.handoff.result_max_chars,
+                    )
+                  let result =
+                    result_artifact.append(
+                      result,
+                      turn_result,
+                      config.handoff.result_max_chars,
+                    )
                   finish_after_turn(
                     session,
                     issue,
                     turn,
                     totals,
+                    result,
                     config,
                     tracker_client,
                     emit_update,
@@ -383,6 +403,7 @@ fn loop_turns(
                     stop_after_turn,
                     workspace_path,
                   )
+                }
               }
             }
           }
@@ -396,6 +417,7 @@ fn finish_after_turn(
   issue: domain.Issue,
   turn: Int,
   prior_totals: domain.TokenTotals,
+  result: domain.ResultArtifact,
   config: domain.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, PiUpdate) -> Nil,
@@ -442,6 +464,7 @@ fn finish_after_turn(
             final_issue,
             turn,
             totals,
+            result,
             config,
             tracker_client,
             emit_update,
@@ -456,6 +479,7 @@ fn finish_after_turn(
             issue,
             turn,
             totals,
+            result,
             config,
             tracker_client,
             emit_update,
@@ -474,6 +498,7 @@ fn decide_after_refresh(
   issue: domain.Issue,
   turn: Int,
   totals: domain.TokenTotals,
+  result: domain.ResultArtifact,
   config: domain.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, PiUpdate) -> Nil,
@@ -505,6 +530,7 @@ fn decide_after_refresh(
             workspace_path,
             totals,
             turn,
+            result,
             config,
             emit_update,
             prompt_queue,
@@ -519,6 +545,7 @@ fn decide_after_refresh(
                 workspace_path,
                 totals,
                 turn,
+                result,
                 config,
                 emit_update,
                 prompt_queue,
@@ -532,6 +559,7 @@ fn decide_after_refresh(
                   <> ". Do not repeat the original task prompt; report progress or complete the remaining work.",
                 turn + 1,
                 totals,
+                result,
                 config,
                 tracker_client,
                 emit_update,
@@ -553,6 +581,7 @@ fn finish_success(
   workspace_path: String,
   totals: domain.TokenTotals,
   turns: Int,
+  result: domain.ResultArtifact,
   config: domain.EffectiveConfig,
   emit_update: fn(String, PiUpdate) -> Nil,
   prompt_queue: List(String),
@@ -571,6 +600,7 @@ fn finish_success(
     workspace_path: workspace_path,
     tokens: totals,
     turns: turns,
+    result: result,
   ))
 }
 
@@ -733,6 +763,7 @@ fn active_turn_loop(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(PendingUi),
+  turn_records: List(pi_rpc.RpcRecord),
   turn_deadline_ms: Int,
   stall_deadline_ms: Int,
   workspace_path: String,
@@ -750,6 +781,7 @@ fn active_turn_loop(
         prompt_queue,
         stop_after_turn,
         pending_ui,
+        turn_records,
         stall_deadline_ms,
         workspace_path,
       ))
@@ -764,6 +796,7 @@ fn active_turn_loop(
         state.prompt_queue,
         state.stop_after_turn,
         state.pending_ui,
+        state.records,
         turn_deadline_ms,
         state.stall_deadline_ms,
         workspace_path,
@@ -796,6 +829,7 @@ fn active_turn_loop(
                 prompt_queue,
                 stop_after_turn,
                 ui,
+                turn_records,
                 turn_deadline_ms,
                 workspace_path,
               )
@@ -836,6 +870,7 @@ fn active_turn_loop(
             prompt_queue,
             stop_after_turn,
             pending_ui,
+            turn_records,
             turn_deadline_ms,
             stall_deadline_ms,
             workspace_path,
@@ -853,6 +888,7 @@ fn active_turn_loop(
             prompt_queue,
             stop_after_turn,
             pending_ui,
+            turn_records,
             turn_deadline_ms,
             stall_deadline_ms,
             workspace_path,
@@ -873,6 +909,7 @@ fn handle_active_command(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(PendingUi),
+  turn_records: List(pi_rpc.RpcRecord),
   stall_deadline_ms: Int,
   workspace_path: String,
 ) -> Result(ActiveCommandState, WorkerFailure) {
@@ -899,6 +936,7 @@ fn handle_active_command(
         stop_after_turn: True,
         pending_ui: pending_ui,
         stall_deadline_ms: stall_deadline_ms,
+        records: turn_records,
       ))
     }
     worker_command.QueuePrompt(message, reply) -> {
@@ -917,6 +955,7 @@ fn handle_active_command(
             stop_after_turn: stop_after_turn,
             pending_ui: pending_ui,
             stall_deadline_ms: stall_deadline_ms,
+            records: turn_records,
           ))
         }
         False ->
@@ -935,6 +974,7 @@ fn handle_active_command(
                 stop_after_turn: stop_after_turn,
                 pending_ui: pending_ui,
                 stall_deadline_ms: stall_deadline_ms,
+                records: turn_records,
               ))
             }
             False -> {
@@ -955,6 +995,7 @@ fn handle_active_command(
                 stop_after_turn: stop_after_turn,
                 pending_ui: pending_ui,
                 stall_deadline_ms: stall_deadline_ms,
+                records: turn_records,
               ))
             }
           }
@@ -970,6 +1011,7 @@ fn handle_active_command(
         prompt_queue,
         stop_after_turn,
         pending_ui,
+        turn_records,
         stall_deadline_ms,
         request_id,
         response,
@@ -990,16 +1032,19 @@ fn handle_turn_record(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(PendingUi),
+  turn_records: List(pi_rpc.RpcRecord),
   turn_deadline_ms: Int,
   stall_deadline_ms: Int,
   workspace_path: String,
 ) -> Result(ActiveTurn, WorkerFailure) {
   let secrets = config_module.resolved_secrets(config)
   emit_update(issue_id, update_from_record(record, turn, secrets))
+  let turn_records = list.append(turn_records, [record])
   case record.type_ {
     "agent_end" ->
       case pending_ui {
-        None -> Ok(ActiveTurn(session, prompt_queue, stop_after_turn))
+        None ->
+          Ok(ActiveTurn(session, prompt_queue, stop_after_turn, turn_records))
         Some(_) ->
           Error(cleanup_failure(
             session,
@@ -1028,6 +1073,7 @@ fn handle_turn_record(
         prompt_queue,
         stop_after_turn,
         pending_ui,
+        turn_records,
         turn_deadline_ms,
         stall_deadline_ms,
         workspace_path,
@@ -1044,6 +1090,7 @@ fn handle_turn_record(
         prompt_queue,
         stop_after_turn,
         pending_ui,
+        turn_records,
         turn_deadline_ms,
         monotonic_ms() + config.pi.stall_timeout_ms,
         workspace_path,
@@ -1063,6 +1110,7 @@ fn handle_extension_ui_record(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(PendingUi),
+  turn_records: List(pi_rpc.RpcRecord),
   turn_deadline_ms: Int,
   stall_deadline_ms: Int,
   workspace_path: String,
@@ -1080,6 +1128,7 @@ fn handle_extension_ui_record(
         prompt_queue,
         stop_after_turn,
         pending_ui,
+        turn_records,
         turn_deadline_ms,
         monotonic_ms() + config.pi.stall_timeout_ms,
         workspace_path,
@@ -1114,6 +1163,7 @@ fn handle_extension_ui_record(
                 command_subject,
                 prompt_queue,
                 stop_after_turn,
+                turn_records,
                 turn_deadline_ms,
                 stall_deadline_ms,
                 workspace_path,
@@ -1150,6 +1200,7 @@ fn handle_blocking_ui_policy(
   command_subject: process.Subject(worker_command.Command),
   prompt_queue: List(String),
   stop_after_turn: Bool,
+  turn_records: List(pi_rpc.RpcRecord),
   turn_deadline_ms: Int,
   stall_deadline_ms: Int,
   workspace_path: String,
@@ -1181,6 +1232,7 @@ fn handle_blocking_ui_policy(
         prompt_queue,
         stop_after_turn,
         None,
+        turn_records,
         turn_deadline_ms,
         monotonic_ms() + config.pi.stall_timeout_ms,
         workspace_path,
@@ -1211,6 +1263,7 @@ fn handle_blocking_ui_policy(
               turn,
             ),
           )
+          let turn_records = list.append(turn_records, skipped)
           active_turn_loop(
             session,
             issue_id,
@@ -1222,6 +1275,7 @@ fn handle_blocking_ui_policy(
             prompt_queue,
             stop_after_turn,
             None,
+            turn_records,
             turn_deadline_ms,
             monotonic_ms() + config.pi.stall_timeout_ms,
             workspace_path,
@@ -1264,6 +1318,7 @@ fn handle_blocking_ui_policy(
         prompt_queue,
         stop_after_turn,
         Some(pending_ui),
+        turn_records,
         turn_deadline_ms,
         stall_deadline_ms,
         workspace_path,
@@ -1281,6 +1336,7 @@ fn handle_ui_response_command(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(PendingUi),
+  turn_records: List(pi_rpc.RpcRecord),
   stall_deadline_ms: Int,
   request_id: String,
   response: command.UiResponse,
@@ -1301,6 +1357,7 @@ fn handle_ui_response_command(
         stop_after_turn: stop_after_turn,
         pending_ui: pending_ui,
         stall_deadline_ms: stall_deadline_ms,
+        records: turn_records,
       ))
     }
     False ->
@@ -1319,6 +1376,7 @@ fn handle_ui_response_command(
             stop_after_turn: stop_after_turn,
             pending_ui: pending_ui,
             stall_deadline_ms: stall_deadline_ms,
+            records: turn_records,
           ))
         }
         Some(ui) ->
@@ -1337,6 +1395,7 @@ fn handle_ui_response_command(
                 stop_after_turn: stop_after_turn,
                 pending_ui: Some(ui),
                 stall_deadline_ms: stall_deadline_ms,
+                records: turn_records,
               ))
             }
             True -> {
@@ -1370,6 +1429,7 @@ fn handle_ui_response_command(
                     stop_after_turn: stop_after_turn,
                     pending_ui: Some(ui),
                     stall_deadline_ms: stall_deadline_ms,
+                    records: turn_records,
                   ))
                 }
                 Ok(#(session, skipped)) -> {
@@ -1394,6 +1454,7 @@ fn handle_ui_response_command(
                       turn,
                     ),
                   )
+                  let turn_records = list.append(turn_records, skipped)
                   Ok(ActiveCommandState(
                     session: session,
                     prompt_queue: prompt_queue,
@@ -1401,6 +1462,7 @@ fn handle_ui_response_command(
                     pending_ui: None,
                     stall_deadline_ms: monotonic_ms()
                       + config.pi.stall_timeout_ms,
+                    records: turn_records,
                   ))
                 }
               }
@@ -1421,6 +1483,7 @@ fn handle_operator_ui_timeout(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   ui: PendingUi,
+  turn_records: List(pi_rpc.RpcRecord),
   turn_deadline_ms: Int,
   workspace_path: String,
 ) -> Result(ActiveTurn, WorkerFailure) {
@@ -1471,6 +1534,7 @@ fn handle_operator_ui_timeout(
           turn,
         ),
       )
+      let turn_records = list.append(turn_records, skipped)
       active_turn_loop(
         session,
         issue_id,
@@ -1482,6 +1546,7 @@ fn handle_operator_ui_timeout(
         prompt_queue,
         stop_after_turn,
         None,
+        turn_records,
         turn_deadline_ms,
         monotonic_ms() + config.pi.stall_timeout_ms,
         workspace_path,

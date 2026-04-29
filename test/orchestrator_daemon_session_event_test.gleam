@@ -68,6 +68,11 @@ fn success(final: domain.Issue, workspace_path: String) -> runner.WorkerSuccess 
       total: 3,
     ),
     turns: 1,
+    result: domain.ResultArtifact(
+      final_response: None,
+      truncated: False,
+      source: "none",
+    ),
   )
 }
 
