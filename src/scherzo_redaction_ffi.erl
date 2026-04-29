@@ -57,9 +57,17 @@ replace_secrets(Value, [Secret | Rest]) ->
     replace_secrets(Redacted, Rest).
 
 truncate(Value, MaxBytes) when byte_size(Value) > MaxBytes ->
-    {binary:part(Value, 0, MaxBytes), true};
+    Prefix = binary:part(Value, 0, MaxBytes),
+    {valid_utf8_prefix(Prefix), true};
 truncate(Value, _MaxBytes) ->
     {Value, false}.
+
+valid_utf8_prefix(Value) ->
+    case unicode:characters_to_binary(Value, utf8, utf8) of
+        Binary when is_binary(Binary) -> Binary;
+        {incomplete, ValidPrefix, _Rest} -> iolist_to_binary(ValidPrefix);
+        {error, ValidPrefix, _Rest} -> iolist_to_binary(ValidPrefix)
+    end.
 
 to_binary(Value) when is_binary(Value) -> Value;
 to_binary(Value) when is_list(Value) -> unicode:characters_to_binary(Value).

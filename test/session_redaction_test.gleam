@@ -1,4 +1,7 @@
+import gleam/option.{Some}
 import gleam/string
+import scherzo/session/event
+import scherzo/session/json as session_json
 import scherzo/session/redaction
 
 pub fn raw_json_redaction_removes_sensitive_keys_and_configured_secrets_test() {
@@ -25,6 +28,23 @@ pub fn raw_json_redaction_truncates_large_payload_test() {
 
   assert redacted.truncated == True
   assert string.length(redacted.value) <= redaction.max_raw_json_bytes
+}
+
+pub fn raw_json_redaction_keeps_multibyte_truncation_json_encodable_test() {
+  let multibyte = string.repeat("☃", times: redaction.max_raw_json_bytes)
+  let raw = "{\"message\":\"" <> multibyte <> "\"}"
+
+  let redacted = redaction.redact_raw_json(raw, [])
+
+  assert redacted.truncated == True
+  let payload =
+    event.EventPayload(
+      ..event.empty_payload(event.PiRaw, "unknown_raw"),
+      raw_json: Some(redacted),
+    )
+  let encoded = session_json.payload_to_string(payload)
+  assert string.contains(encoded, "\"truncated\":true")
+  assert string.contains(encoded, "\"raw_json\"")
 }
 
 pub fn raw_json_redaction_fails_closed_for_malformed_payload_test() {
