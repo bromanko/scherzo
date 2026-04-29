@@ -3,6 +3,7 @@ import gleam/dynamic/decode
 import gleam/http
 import gleam/http/request as http_request
 import gleam/httpc
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -22,6 +23,29 @@ pub type Request {
 
 pub type Response {
   Response(status: Int, body: String)
+}
+
+pub type LinearCommentAuthor {
+  LinearCommentAuthor(id: String, email: Option(String), name: Option(String))
+}
+
+pub type LinearComment {
+  LinearComment(
+    id: String,
+    issue_id: String,
+    body: String,
+    created_at_ms: Int,
+    updated_at_ms: Int,
+    author: LinearCommentAuthor,
+  )
+}
+
+pub type CommandClient {
+  CommandClient(
+    fetch_comments: fn(List(String), Int) ->
+      Result(List(LinearComment), error.TrackerError),
+    post_ack: fn(String, String) -> Result(Nil, error.TrackerError),
+  )
 }
 
 pub type Transport =
@@ -44,6 +68,22 @@ pub fn client(
 
 pub fn real_client(config: domain.TrackerConfig) -> tracker.Client {
   client(config, http_transport)
+}
+
+pub fn command_client(
+  config: domain.TrackerConfig,
+  transport: Transport,
+) -> CommandClient {
+  CommandClient(
+    fetch_comments: fn(issue_ids, limit_per_issue) {
+      fetch_issue_comments(config, issue_ids, limit_per_issue, transport)
+    },
+    post_ack: fn(issue_id, body) { post_ack(config, issue_id, body, transport) },
+  )
+}
+
+pub fn real_command_client(config: domain.TrackerConfig) -> CommandClient {
+  command_client(config, http_transport)
 }
 
 pub fn http_transport(request: Request) -> Result(Response, error.TrackerError) {
@@ -126,6 +166,46 @@ pub fn fetch_issue_states_by_ids(
   }
 }
 
+pub fn fetch_issue_comments(
+  config: domain.TrackerConfig,
+  issue_ids: List(String),
+  limit_per_issue: Int,
+  transport: Transport,
+) -> Result(List(LinearComment), error.TrackerError) {
+  case issue_ids {
+    [] -> Ok([])
+    _ -> {
+      use request <- try_tracker(build_issue_comments_request(
+        config,
+        issue_ids,
+        limit_per_issue,
+      ))
+      use response <- try_tracker(transport(request))
+      use comments <- try_tracker(parse_comments_response(response))
+      Ok(list.sort(comments, by: compare_comments))
+    }
+  }
+}
+
+pub fn post_ack(
+  config: domain.TrackerConfig,
+  issue_id: String,
+  body: String,
+  transport: Transport,
+) -> Result(Nil, error.TrackerError) {
+  use request <- try_tracker(build_comment_create_request(
+    config,
+    issue_id,
+    body,
+  ))
+  use response <- try_tracker(transport(request))
+  parse_mutation_response(response, "commentCreate")
+}
+
+fn compare_comments(a: LinearComment, b: LinearComment) {
+  int.compare(a.created_at_ms, b.created_at_ms)
+}
+
 fn fetch_pages(
   config: domain.TrackerConfig,
   states: List(String),
@@ -185,6 +265,34 @@ pub fn build_state_refresh_request(
     ])
     |> json.to_string
   Ok(graphql_request(endpoint, api_key, body))
+}
+
+pub fn build_issue_comments_request(
+  config: domain.TrackerConfig,
+  issue_ids: List(String),
+  limit_per_issue: Int,
+) -> Result(Request, error.TrackerError) {
+  use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
+  use api_key <- try_tracker(require_api_key(config))
+  case limit_per_issue <= 0 {
+    True ->
+      Error(error.LinearApiRequest("comment query limit must be positive"))
+    False -> {
+      let body =
+        json.object([
+          #("query", json.string(issue_comments_query())),
+          #(
+            "variables",
+            json.object([
+              #("issueIds", json.array(issue_ids, of: json.string)),
+              #("first", json.int(limit_per_issue)),
+            ]),
+          ),
+        ])
+        |> json.to_string
+      Ok(graphql_request(endpoint, api_key, body))
+    }
+  }
 }
 
 pub fn build_comment_create_request(
@@ -251,6 +359,10 @@ pub fn state_refresh_query() -> String {
   "query IssueStates($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } } pageInfo { hasNextPage endCursor } } }"
 }
 
+pub fn issue_comments_query() -> String {
+  "query IssueComments($issueIds: [ID!]!, $first: Int!) { issues(filter: { id: { in: $issueIds } }) { nodes { id comments(first: $first) { nodes { id body createdAt updatedAt user { id email name } } } } } }"
+}
+
 pub fn comment_create_mutation() -> String {
   "mutation ScherzoCommentCreate($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success } }"
 }
@@ -274,6 +386,20 @@ pub fn parse_page_response(
     True ->
       case json.parse(response.body, graphql_decoder()) {
         Ok(Ok(page)) -> Ok(page)
+        Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
+        Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
+      }
+  }
+}
+
+pub fn parse_comments_response(
+  response: Response,
+) -> Result(List(LinearComment), error.TrackerError) {
+  case response.status == 200 {
+    False -> Error(error.LinearApiStatus(response.status))
+    True ->
+      case json.parse(response.body, comments_graphql_decoder()) {
+        Ok(Ok(raw_issues)) -> raw_issue_comments_to_comments(raw_issues)
         Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
         Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
       }
@@ -327,6 +453,144 @@ fn mutation_decoder(root_field: String) -> decode.Decoder(Result(Bool, String)) 
     [] ->
       decode.at(["data", root_field, "success"], decode.bool) |> decode.map(Ok)
     errors -> decode.success(Error(string.join(errors, with: "; ")))
+  }
+}
+
+type RawIssueComments {
+  RawIssueComments(issue_id: String, comments: List(RawLinearComment))
+}
+
+type RawLinearComment {
+  RawLinearComment(
+    id: String,
+    body: String,
+    created_at: String,
+    updated_at: String,
+    author: LinearCommentAuthor,
+  )
+}
+
+fn comments_graphql_decoder() -> decode.Decoder(
+  Result(List(RawIssueComments), String),
+) {
+  use errors <- decode.optional_field(
+    "errors",
+    [],
+    decode.list(error_message_decoder()),
+  )
+  case errors {
+    [] -> {
+      use issues <- decode.field("data", comments_data_decoder())
+      decode.success(Ok(issues))
+    }
+    errors -> decode.success(Error(string.join(errors, with: "; ")))
+  }
+}
+
+fn comments_data_decoder() -> decode.Decoder(List(RawIssueComments)) {
+  decode.at(["issues", "nodes"], decode.list(raw_issue_comments_decoder()))
+}
+
+fn raw_issue_comments_decoder() -> decode.Decoder(RawIssueComments) {
+  use issue_id <- decode.field("id", decode.string)
+  use comments <- decode.field("comments", raw_comment_page_decoder())
+  decode.success(RawIssueComments(issue_id: issue_id, comments: comments))
+}
+
+fn raw_comment_page_decoder() -> decode.Decoder(List(RawLinearComment)) {
+  use nodes <- decode.field("nodes", decode.list(raw_comment_decoder()))
+  decode.success(nodes)
+}
+
+fn raw_comment_decoder() -> decode.Decoder(RawLinearComment) {
+  use id <- decode.field("id", decode.string)
+  use body <- decode.field("body", decode.string)
+  use created_at <- decode.field("createdAt", decode.string)
+  use updated_at <- decode.field("updatedAt", decode.string)
+  use author <- decode.field("user", comment_author_decoder())
+  decode.success(RawLinearComment(
+    id: id,
+    body: body,
+    created_at: created_at,
+    updated_at: updated_at,
+    author: author,
+  ))
+}
+
+fn comment_author_decoder() -> decode.Decoder(LinearCommentAuthor) {
+  use id <- decode.field("id", decode.string)
+  use email <- decode.optional_field(
+    "email",
+    None,
+    decode.optional(decode.string),
+  )
+  use name <- decode.optional_field(
+    "name",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(LinearCommentAuthor(id: id, email: email, name: name))
+}
+
+fn raw_issue_comments_to_comments(
+  raw_issues: List(RawIssueComments),
+) -> Result(List(LinearComment), error.TrackerError) {
+  raw_issues_to_comments(raw_issues, [])
+}
+
+fn raw_issues_to_comments(
+  raw_issues: List(RawIssueComments),
+  acc: List(LinearComment),
+) -> Result(List(LinearComment), error.TrackerError) {
+  case raw_issues {
+    [] -> Ok(list.reverse(acc))
+    [RawIssueComments(issue_id, comments), ..rest] ->
+      case raw_comments_to_comments(issue_id, comments, acc) {
+        Ok(acc) -> raw_issues_to_comments(rest, acc)
+        Error(err) -> Error(err)
+      }
+  }
+}
+
+fn raw_comments_to_comments(
+  issue_id: String,
+  comments: List(RawLinearComment),
+  acc: List(LinearComment),
+) -> Result(List(LinearComment), error.TrackerError) {
+  case comments {
+    [] -> Ok(acc)
+    [comment, ..rest] ->
+      case raw_comment_to_comment(issue_id, comment) {
+        Ok(comment) ->
+          raw_comments_to_comments(issue_id, rest, [comment, ..acc])
+        Error(err) -> Error(err)
+      }
+  }
+}
+
+fn raw_comment_to_comment(
+  issue_id: String,
+  raw: RawLinearComment,
+) -> Result(LinearComment, error.TrackerError) {
+  use created_at_ms <- try_tracker(parse_time_ms(raw.created_at, "createdAt"))
+  use updated_at_ms <- try_tracker(parse_time_ms(raw.updated_at, "updatedAt"))
+  Ok(LinearComment(
+    id: raw.id,
+    issue_id: issue_id,
+    body: raw.body,
+    created_at_ms: created_at_ms,
+    updated_at_ms: updated_at_ms,
+    author: raw.author,
+  ))
+}
+
+fn parse_time_ms(
+  value: String,
+  field: String,
+) -> Result(Int, error.TrackerError) {
+  case birl.parse(value) {
+    Ok(time) -> Ok(birl.to_unix_milli(time))
+    Error(_) -> Error(error.LinearUnknownPayload("invalid comment " <> field))
   }
 }
 

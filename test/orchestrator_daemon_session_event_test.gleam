@@ -7,6 +7,7 @@ import scherzo/agent/worker_command
 import scherzo/domain
 import scherzo/error
 import scherzo/handoff
+import scherzo/linear
 import scherzo/orchestrator/daemon
 import scherzo/path
 import scherzo/session/event
@@ -112,6 +113,7 @@ fn dependencies(
   daemon.RuntimeDependencies(
     make_tracker: fn(_) { client },
     make_handoff: fn(_, _) { handoff.disabled_client() },
+    make_linear_commands: fn(_) { disabled_linear_commands() },
     agent_runner: agent_runner,
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, logged_event, _, _) {
@@ -126,6 +128,12 @@ fn dependencies(
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
+}
+
+fn disabled_linear_commands() -> linear.CommandClient {
+  linear.CommandClient(fetch_comments: fn(_, _) { Ok([]) }, post_ack: fn(_, _) {
+    Ok(Nil)
+  })
 }
 
 pub fn daemon_records_session_summary_and_replay_events_test() {

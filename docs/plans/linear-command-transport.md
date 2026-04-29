@@ -65,13 +65,13 @@ The main coverage risk is commands on issues Scherzo is not observing. Counterme
 - [x] (2026-04-28 23:05Z) Created this plan to split Linear-to-Scherzo commands from Scherzo-to-Linear result reporting.
 - [x] (2026-04-29 01:24Z) Reviewed the plan against the current command model and daemon poll architecture; narrowed first-version grammar, added command-aware-worker-loop as a prerequisite, specified no self-dispatch inside the actor, and tightened daemon polling, dedupe, authorization, and parser edge cases.
 - [x] (2026-04-29 01:30Z) Incorporated owner decisions: no read-only Linear pseudo-commands in v1, authorize by Linear user id only, keep syntax consistent with `scherzoctl`, and track durable command receipts/webhook wake-up in `docs/TODO.md`.
-- [ ] Normalize the tree after `docs/plans/mutating-operator-controls.md` and `docs/plans/command-aware-worker-loop.md` are complete and the shared command model can deliver prompt/UI commands to live workers.
-- [ ] Add Linear command configuration and pure parser.
-- [ ] Add bounded Linear comment query/read APIs and fake tests.
-- [ ] Wire command polling into the daemon poll tick before candidate dispatch.
-- [ ] Submit parsed commands through the shared daemon command handler.
-- [ ] Add acknowledgement comments, idempotency, authorization, and edited-comment tests.
-- [ ] Document Linear command syntax and limitations.
+- [x] (2026-04-29 02:38Z) Normalized the tree after `docs/plans/mutating-operator-controls.md` and `docs/plans/command-aware-worker-loop.md`; baseline `direnv exec . gleam test` passed with 175 tests.
+- [x] (2026-04-29 02:50Z) Added `domain.LinearCommandConfig`, workflow config parsing, config tests, and the pure `/scherzo` parser with positive and negative grammar tests.
+- [x] (2026-04-29 03:05Z) Added bounded Linear issue-comment query helpers, comment normalization, timestamp parsing, command client wrapper, and fake response tests.
+- [x] (2026-04-29 03:25Z) Added pure Linear transport state for authorization, runtime-start filtering, processed-comment idempotency, edited-comment ignore behavior, parse rejection acks, max-comments-per-tick deferral, and ack formatting tests.
+- [x] (2026-04-29 03:45Z) Refactored daemon operator command handling into a shared state/result helper and wired Linear command polling into the daemon poll phase before candidate dispatch.
+- [x] (2026-04-29 03:55Z) Added daemon integration tests proving candidate `/scherzo park` runs before same-tick dispatch and runtime `/scherzo prompt` is still polled while candidate dispatch is skipped due to no slots.
+- [x] (2026-04-29 04:05Z) Documented Linear command syntax and limitations in `README.md`; ran `direnv exec . gleam format --check src test` and `direnv exec . gleam test`, which passed with 200 tests.
 
 ## Surprises & Discoveries
 
@@ -83,6 +83,12 @@ The main coverage risk is commands on issues Scherzo is not observing. Counterme
 
 - Observation: The current outbound handoff comments are operational and do not imply a command transport.
   Evidence: `src/scherzo/handoff.gleam` posts claim, success, and failure comments, but it never reads Linear comments or interprets human text.
+
+- Observation: Gleam process subjects can only be received by their owning process, which affected the daemon Linear-command integration tests.
+  Evidence: an early fake Linear client attempted to `process.receive` on a test-owned subject from a side-effect process and crashed with `Cannot receive with a subject owned by another process`; the tests now use a small Linear fake server process that owns its request subject and replies to per-call reply subjects.
+
+- Observation: Valid command acknowledgements need the daemon's `CommandResult`, while malformed, unauthorized, and missing-session rejections can be acknowledged by the pure transport before daemon submission.
+  Evidence: `src/scherzo/control/linear_transport.gleam` emits `SubmitCommand` for valid commands and `PostAck` only for rejection paths; `src/scherzo/orchestrator/daemon.gleam` calls `linear_transport.result_ack_body` after `apply_operator_command_to_state` returns.
 
 ## Decision Log
 
@@ -126,9 +132,21 @@ The main coverage risk is commands on issues Scherzo is not observing. Counterme
   Rationale: The Linear path runs inside the daemon actor after comment-poll side effects complete. Sending `ApplyOperatorCommand` to the same actor and waiting for a reply from inside that actor would deadlock; both local control and Linear must call the same synchronous state-transition helper instead.
   Date: 2026-04-29
 
+- Decision: Post result acknowledgements for valid Linear commands from the daemon, not from the pure transport.
+  Rationale: The pure transport can determine authorization and parse failures, but only the daemon knows whether a valid command was applied, queued, rejected, not found, or not allowed. This keeps acknowledgement status accurate and still lets malformed and unauthorized comments be acknowledged once without daemon mutation.
+  Date: 2026-04-29
+
+- Decision: Keep the shared daemon command helper bounded and synchronous for worker commands.
+  Rationale: Linear processing is already inside the actor after the comment-fetch side effect returns. A bounded wait using the existing worker command timeout avoids actor self-dispatch and gives both local control and Linear the same `CommandResult`; abort still falls back to stop-and-park on timeout.
+  Date: 2026-04-29
+
 ## Outcomes & Retrospective
 
-(To be filled at completion. Include final command grammar, real Linear query shape, whether polling latency was acceptable, and any commands intentionally left unsupported from Linear.)
+Implemented the first runtime-only Linear command transport. The final grammar is `/scherzo retry`, `/scherzo park --reason <text>`, `/scherzo unpark`, `/scherzo abort`, `/scherzo stop-after-turn`, `/scherzo prompt <text>`, `/scherzo ui respond <request-id> --cancel`, and `/scherzo ui respond <request-id> --value <text>`. Unsupported aliases and read-only pseudo-commands remain out of scope.
+
+The real Linear query shape is a bounded `IssueComments` GraphQL query over already-observed issue ids, asking for each issue's recent `comments(first: $first)` nodes with comment id, body, `createdAt`, `updatedAt`, and `user { id email name }`. The daemon sorts flattened comments by creation time before processing. Polling latency is therefore the existing daemon poll interval plus one bounded Linear query on observed issues; no webhook behavior was added.
+
+The deterministic implementation passed `direnv exec . gleam format --check src test` and `direnv exec . gleam test` with 200 tests. Manual credential-gated Linear validation remains optional and was not run in this implementation session.
 
 ## Context and Orientation
 

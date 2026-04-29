@@ -105,6 +105,18 @@ pub type HandoffConfig {
   )
 }
 
+pub type LinearCommandConfig {
+  LinearCommandConfig(
+    enabled: Bool,
+    prefix: String,
+    authorized_user_ids: List(String),
+    poll_limit_per_issue: Int,
+    max_comments_per_tick: Int,
+    acknowledge_success: Bool,
+    acknowledge_rejection: Bool,
+  )
+}
+
 pub type EffectiveConfig {
   EffectiveConfig(
     tracker: TrackerConfig,
@@ -114,6 +126,7 @@ pub type EffectiveConfig {
     agent: AgentConfig,
     pi: PiConfig,
     handoff: HandoffConfig,
+    linear_commands: LinearCommandConfig,
   )
 }
 

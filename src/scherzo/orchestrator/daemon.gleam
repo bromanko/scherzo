@@ -10,6 +10,7 @@ import scherzo/agent/worker_command
 import scherzo/config
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/linear_transport
 import scherzo/control/server as control_server
 import scherzo/domain
 import scherzo/error
@@ -95,6 +96,14 @@ type PendingClaim {
 
 type SideEffect {
   FetchCandidates(generation: Int, client: tracker.Client)
+  FetchLinearCommands(
+    generation: Int,
+    issue_ids: List(String),
+    candidates: List(domain.Issue),
+    dispatch_after: Bool,
+    client: linear.CommandClient,
+    limit_per_issue: Int,
+  )
   RefreshRunning(generation: Int, ids: List(String), client: tracker.Client)
   RefreshRetry(issue_id: String, generation: Int, client: tracker.Client)
   ClaimIssue(
@@ -117,6 +126,12 @@ type SideEffect {
     run_id: String,
     client: handoff.Client,
   )
+  PostLinearCommandAck(
+    issue_id: String,
+    source_comment_id: String,
+    body: String,
+    client: linear.CommandClient,
+  )
   CleanupWorkspace(
     root: String,
     workspace_path: String,
@@ -128,6 +143,12 @@ type SideEffect {
 
 pub type SideEffectResult {
   CandidateFetchFinished(Int, Result(List(domain.Issue), error.TrackerError))
+  LinearCommandFetchFinished(
+    Int,
+    List(domain.Issue),
+    Bool,
+    Result(List(linear.LinearComment), error.TrackerError),
+  )
   RunningRefreshFinished(Int, Result(List(domain.Issue), error.TrackerError))
   RetryRefreshFinished(
     String,
@@ -137,6 +158,7 @@ pub type SideEffectResult {
   HandoffClaimFinished(String, String, Result(Nil, error.TrackerError))
   HandoffSuccessFinished(String, String, Result(Nil, error.TrackerError))
   HandoffFailureFinished(String, String, Result(Nil, error.TrackerError))
+  LinearCommandAckFinished(String, String, Result(Nil, error.TrackerError))
   CleanupFinished(String, Result(Nil, error.WorkspaceError))
 }
 
@@ -145,6 +167,7 @@ pub type RuntimeDependencies {
     make_tracker: fn(domain.TrackerConfig) -> tracker.Client,
     make_handoff: fn(domain.TrackerConfig, domain.HandoffConfig) ->
       handoff.Client,
+    make_linear_commands: fn(domain.TrackerConfig) -> linear.CommandClient,
     agent_runner: fn(
       domain.Issue,
       Option(Int),
@@ -182,6 +205,8 @@ type State {
     effective: domain.EffectiveConfig,
     tracker_client: tracker.Client,
     handoff_client: handoff.Client,
+    linear_command_client: linear.CommandClient,
+    linear_command_state: linear_transport.TransportState,
     runtime: domain.RuntimeState,
     poll_generation: Int,
     poll_in_flight: Option(Int),
@@ -214,6 +239,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
         linear.http_transport,
       )
     },
+    make_linear_commands: linear.real_command_client,
     agent_runner: runner.run_attempt_with_command_ready,
     cleanup: workspace.cleanup_stored_path,
     logger: fn(level, event, fields, secrets) {
@@ -357,6 +383,9 @@ pub fn start(
   let tracker_client = dependencies.make_tracker(effective.tracker)
   let handoff_client =
     dependencies.make_handoff(effective.tracker, effective.handoff)
+  let linear_command_client =
+    dependencies.make_linear_commands(effective.tracker)
+  let linear_command_state = linear_transport.new_state(dependencies.now_ms())
   let reload_state =
     config.ReloadState(
       last_known_good: Some(effective),
@@ -392,6 +421,8 @@ pub fn start(
               effective: effective,
               tracker_client: tracker_client,
               handoff_client: handoff_client,
+              linear_command_client: linear_command_client,
+              linear_command_state: linear_command_state,
               runtime: runtime,
               poll_generation: poll_generation,
               poll_in_flight: None,
@@ -516,95 +547,94 @@ fn handle_operator_command(
   timeout_ms: Int,
   reply: process.Subject(command.CommandResult),
 ) -> State {
+  let #(state, result) =
+    apply_operator_command_to_state(state, operator_command, timeout_ms)
+  process.send(reply, result)
+  state
+}
+
+fn apply_operator_command_to_state(
+  state: State,
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+) -> #(State, command.CommandResult) {
   case operator_command {
     command.PauseDispatch -> {
       let pending = dict.size(state.pending_claims)
       let state = State(..state, operator_paused: True)
-      log_state(state, "info", "operator_command", [
-        #("command", "pause"),
-        #("status", "applied"),
-        #("pending_claims", int.to_string(pending)),
-      ])
-      process.send(
-        reply,
+      let result =
         command.applied(
           operator_command,
           Some("dispatch paused; pending_claims=" <> int.to_string(pending)),
-        ),
-      )
-      state
+        )
+      log_operator_result(state, result, [
+        #("pending_claims", int.to_string(pending)),
+      ])
+      #(state, result)
     }
     command.ResumeDispatch -> {
       let state = State(..state, operator_paused: False)
-      log_state(state, "info", "operator_command", [
-        #("command", "resume"),
-        #("status", "applied"),
-      ])
-      process.send(
-        reply,
-        command.applied(operator_command, Some("dispatch resumed")),
-      )
-      state
+      let result = command.applied(operator_command, Some("dispatch resumed"))
+      log_operator_result(state, result, [])
+      #(state, result)
     }
     command.ReloadWorkflow ->
-      send_operator_result(
-        reload_workflow_for_operator(state, operator_command),
-        reply,
-      )
+      log_operator_transition(reload_workflow_for_operator(
+        state,
+        operator_command,
+      ))
     command.RetryIssue(issue_ref) ->
-      send_operator_result(
-        retry_issue_for_operator(state, operator_command, issue_ref),
-        reply,
-      )
+      log_operator_transition(retry_issue_for_operator(
+        state,
+        operator_command,
+        issue_ref,
+      ))
     command.ParkIssue(issue_ref, reason) ->
-      send_operator_result(
-        park_issue_for_operator(state, operator_command, issue_ref, reason),
-        reply,
-      )
+      log_operator_transition(park_issue_for_operator(
+        state,
+        operator_command,
+        issue_ref,
+        reason,
+      ))
     command.UnparkIssue(issue_ref) ->
-      send_operator_result(
-        unpark_issue_for_operator(state, operator_command, issue_ref),
-        reply,
-      )
+      log_operator_transition(unpark_issue_for_operator(
+        state,
+        operator_command,
+        issue_ref,
+      ))
     command.AbortSession(session_id) ->
-      abort_session_for_operator(
+      abort_session_for_operator_sync(
         state,
         operator_command,
         session_id,
         timeout_ms,
-        reply,
       )
     command.StopAfterCurrentTurn(session_id) ->
-      route_worker_command(
+      route_worker_command_sync(
         state,
         operator_command,
         session_id,
         timeout_ms,
-        reply,
         fn(subject, reply) {
           process.send(subject, worker_command.StopAfterCurrentTurn(reply))
         },
       )
     command.PromptSession(session_id, message) ->
       case operator_prompt_too_large(message) {
-        True -> {
-          process.send(
-            reply,
-            command.rejected(
-              operator_command,
-              "prompt_too_large",
-              Some("operator prompt is too large"),
-            ),
-          )
-          state
-        }
+        True -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "prompt_too_large",
+            Some("operator prompt is too large"),
+          ),
+        )
         False ->
-          route_worker_command(
+          route_worker_command_sync(
             state,
             operator_command,
             session_id,
             timeout_ms,
-            reply,
             fn(subject, reply) {
               process.send(subject, worker_command.QueuePrompt(message, reply))
             },
@@ -612,24 +642,20 @@ fn handle_operator_command(
       }
     command.RespondUi(session_id, request_id, response) ->
       case ui_response_too_large(response) {
-        True -> {
-          process.send(
-            reply,
-            command.rejected(
-              operator_command,
-              "ui_response_too_large",
-              Some("operator UI response value is too large"),
-            ),
-          )
-          state
-        }
+        True -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "ui_response_too_large",
+            Some("operator UI response value is too large"),
+          ),
+        )
         False ->
-          route_worker_command(
+          route_worker_command_sync(
             state,
             operator_command,
             session_id,
             timeout_ms,
-            reply,
             fn(subject, reply) {
               process.send(
                 subject,
@@ -641,13 +667,24 @@ fn handle_operator_command(
   }
 }
 
-fn send_operator_result(
-  result: #(State, command.CommandResult),
-  reply: process.Subject(command.CommandResult),
-) -> State {
-  let #(state, command_result) = result
-  process.send(reply, command_result)
-  state
+fn log_operator_transition(
+  transition: #(State, command.CommandResult),
+) -> #(State, command.CommandResult) {
+  let #(state, result) = transition
+  log_operator_result(state, result, [])
+  #(state, result)
+}
+
+fn log_operator_result(
+  state: State,
+  result: command.CommandResult,
+  extra_fields: List(log.Field),
+) -> Nil {
+  log_state(state, "info", "operator_command", [
+    #("command", result.command),
+    #("status", command.status_to_string(result.status)),
+    ..extra_fields
+  ])
 }
 
 fn reload_workflow_for_operator(
@@ -846,91 +883,57 @@ fn unpark_issue_for_operator(
   }
 }
 
-fn route_worker_command(
+fn route_worker_command_sync(
   state: State,
   operator_command: command.OperatorCommand,
   session_id: String,
   timeout_ms: Int,
-  operator_reply: process.Subject(command.CommandResult),
   send: fn(
     process.Subject(worker_command.Command),
     process.Subject(worker_command.Reply),
   ) ->
     Nil,
-) -> State {
+) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
-    Error(Nil) -> {
-      process.send(
-        operator_reply,
-        command.not_found(operator_command, Some("session not found")),
-      )
-      state
-    }
+    Error(Nil) -> #(
+      state,
+      command.not_found(operator_command, Some("session not found")),
+    )
     Ok(handle) ->
       case handle.command_subject {
-        None -> {
-          process.send(
-            operator_reply,
-            command.not_allowed(
-              operator_command,
-              "worker_command_subject_unavailable",
-              Some("session worker does not accept operator commands"),
-            ),
-          )
-          state
-        }
-        Some(subject) -> {
-          spawn_worker_command_reply(
+        None -> #(
+          state,
+          command.not_allowed(
             operator_command,
-            subject,
-            timeout_ms,
-            operator_reply,
-            send,
-          )
-          state
+            "worker_command_subject_unavailable",
+            Some("session worker does not accept operator commands"),
+          ),
+        )
+        Some(subject) -> {
+          let worker_reply = process.new_subject()
+          send(subject, worker_reply)
+          case
+            process.receive(
+              worker_reply,
+              within: worker_command_timeout(timeout_ms),
+            )
+          {
+            Ok(reply) -> #(
+              state,
+              worker_reply_to_command_result(operator_command, reply),
+            )
+            Error(_) -> #(
+              state,
+              command.rejected(
+                operator_command,
+                "worker_command_timeout",
+                Some("worker command timed out"),
+              ),
+            )
+          }
         }
       }
   }
-}
-
-fn spawn_worker_command_reply(
-  operator_command: command.OperatorCommand,
-  subject: process.Subject(worker_command.Command),
-  timeout_ms: Int,
-  operator_reply: process.Subject(command.CommandResult),
-  send: fn(
-    process.Subject(worker_command.Command),
-    process.Subject(worker_command.Reply),
-  ) ->
-    Nil,
-) -> Nil {
-  let _pid =
-    process.spawn_unlinked(fn() {
-      let worker_reply = process.new_subject()
-      send(subject, worker_reply)
-      case
-        process.receive(
-          worker_reply,
-          within: worker_command_timeout(timeout_ms),
-        )
-      {
-        Ok(reply) ->
-          process.send(
-            operator_reply,
-            worker_reply_to_command_result(operator_command, reply),
-          )
-        Error(_) ->
-          process.send(
-            operator_reply,
-            command.rejected(
-              operator_command,
-              "worker_command_timeout",
-              Some("worker command timed out"),
-            ),
-          )
-      }
-    })
-  Nil
 }
 
 fn worker_command_timeout(timeout_ms: Int) -> Int {
@@ -981,83 +984,50 @@ fn worker_reply_to_command_result(
   }
 }
 
-fn abort_session_for_operator(
+fn abort_session_for_operator_sync(
   state: State,
   operator_command: command.OperatorCommand,
   session_id: String,
   timeout_ms: Int,
-  operator_reply: process.Subject(command.CommandResult),
-) -> State {
+) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
-    Error(Nil) -> {
-      process.send(
-        operator_reply,
-        command.not_found(operator_command, Some("session not found")),
-      )
-      state
-    }
+    Error(Nil) -> #(
+      state,
+      command.not_found(operator_command, Some("session not found")),
+    )
     Ok(handle) ->
       case handle.command_subject {
         None ->
-          send_operator_result(
-            stop_session_for_operator(
-              state,
-              operator_command,
-              session_id,
-              "operator_abort",
-            ),
-            operator_reply,
-          )
-        Some(subject) -> {
-          spawn_abort_command_reply(
-            state.subject,
+          stop_session_for_operator(
+            state,
             operator_command,
             session_id,
-            subject,
-            timeout_ms,
-            operator_reply,
+            "operator_abort",
           )
-          state
+        Some(subject) -> {
+          let worker_reply = process.new_subject()
+          process.send(subject, worker_command.Abort(worker_reply))
+          case
+            process.receive(
+              worker_reply,
+              within: worker_command_timeout(timeout_ms),
+            )
+          {
+            Ok(reply) -> #(
+              state,
+              worker_reply_to_command_result(operator_command, reply),
+            )
+            Error(_) ->
+              stop_session_for_operator(
+                state,
+                operator_command,
+                session_id,
+                "operator_abort",
+              )
+          }
         }
       }
   }
-}
-
-fn spawn_abort_command_reply(
-  daemon_subject: process.Subject(Message),
-  operator_command: command.OperatorCommand,
-  session_id: String,
-  subject: process.Subject(worker_command.Command),
-  timeout_ms: Int,
-  operator_reply: process.Subject(command.CommandResult),
-) -> Nil {
-  let _pid =
-    process.spawn_unlinked(fn() {
-      let worker_reply = process.new_subject()
-      process.send(subject, worker_command.Abort(worker_reply))
-      case
-        process.receive(
-          worker_reply,
-          within: worker_command_timeout(timeout_ms),
-        )
-      {
-        Ok(reply) ->
-          process.send(
-            operator_reply,
-            worker_reply_to_command_result(operator_command, reply),
-          )
-        Error(_) ->
-          process.send(
-            daemon_subject,
-            AbortWorkerCommandTimedOut(
-              operator_command,
-              session_id,
-              operator_reply,
-            ),
-          )
-      }
-    })
-  Nil
 }
 
 fn stop_session_for_operator(
@@ -1409,6 +1379,9 @@ fn apply_new_contents(state: State, contents: String) -> State {
                     effective.tracker,
                     effective.handoff,
                   ),
+                  linear_command_client: state.dependencies.make_linear_commands(
+                    effective.tracker,
+                  ),
                   runtime: runtime,
                   reload_state: config.ReloadState(
                     last_known_good: Some(effective),
@@ -1460,7 +1433,7 @@ fn begin_candidate_fetch_or_finish(state: State, generation: Int) -> State {
     && state.effective.agent.max_concurrent_agents != 0
     && slots_remain(state)
   {
-    False -> schedule_next_poll(state)
+    False -> begin_linear_command_fetch_or_finish(state, generation, [], False)
     True ->
       enqueue_side_effect(
         state,
@@ -1504,23 +1477,202 @@ fn handle_candidate_fetch_finished(
 ) -> State {
   case poll_result_is_stale(state, generation) {
     True -> state
-    False -> {
-      let state = case result {
+    False ->
+      case result {
         Error(err) -> {
           log_state(state, "warn", "candidate_fetch_failed", [
             #("error", error.tracker_code(err)),
           ])
-          state
+          begin_linear_command_fetch_or_finish(state, generation, [], False)
         }
         Ok(candidates) -> {
           log_state(state, "info", "candidates_fetched", [
             #("count", int.to_string(list.length(candidates))),
           ])
-          dispatch_candidates(core.sort_candidates(candidates), state)
+          begin_linear_command_fetch_or_finish(
+            state,
+            generation,
+            core.sort_candidates(candidates),
+            True,
+          )
         }
       }
-      schedule_next_poll(state)
+  }
+}
+
+fn begin_linear_command_fetch_or_finish(
+  state: State,
+  generation: Int,
+  candidates: List(domain.Issue),
+  dispatch_after: Bool,
+) -> State {
+  case state.effective.linear_commands.enabled {
+    False -> finish_linear_command_phase(state, candidates, dispatch_after)
+    True -> {
+      let issue_ids = observed_issue_ids(state, candidates)
+      case issue_ids {
+        [] -> finish_linear_command_phase(state, candidates, dispatch_after)
+        _ ->
+          enqueue_side_effect(
+            state,
+            FetchLinearCommands(
+              generation: generation,
+              issue_ids: issue_ids,
+              candidates: candidates,
+              dispatch_after: dispatch_after,
+              client: state.linear_command_client,
+              limit_per_issue: state.effective.linear_commands.poll_limit_per_issue,
+            ),
+          )
+      }
     }
+  }
+}
+
+fn handle_linear_command_fetch_finished(
+  state: State,
+  generation: Int,
+  candidates: List(domain.Issue),
+  dispatch_after: Bool,
+  result: Result(List(linear.LinearComment), error.TrackerError),
+) -> State {
+  case poll_result_is_stale(state, generation) {
+    True -> state
+    False -> {
+      let state = case result {
+        Error(err) -> {
+          log_state(state, "warn", "linear_command_fetch_failed", [
+            #("error", error.tracker_code(err)),
+          ])
+          state
+        }
+        Ok(comments) -> process_linear_command_comments(state, comments)
+      }
+      finish_linear_command_phase(state, candidates, dispatch_after)
+    }
+  }
+}
+
+fn finish_linear_command_phase(
+  state: State,
+  candidates: List(domain.Issue),
+  dispatch_after: Bool,
+) -> State {
+  let state = case dispatch_after {
+    True -> dispatch_candidates(candidates, state)
+    False -> state
+  }
+  schedule_next_poll(state)
+}
+
+fn process_linear_command_comments(
+  state: State,
+  comments: List(linear.LinearComment),
+) -> State {
+  let #(transport_state, actions) =
+    linear_transport.process_comments(
+      state.linear_command_state,
+      state.effective.linear_commands,
+      comments,
+      state.issue_sessions,
+    )
+  let state = State(..state, linear_command_state: transport_state)
+  apply_linear_transport_actions(state, actions)
+}
+
+fn apply_linear_transport_actions(
+  state: State,
+  actions: List(linear_transport.TransportAction),
+) -> State {
+  case actions {
+    [] -> state
+    [action, ..rest] ->
+      apply_linear_transport_actions(
+        apply_linear_transport_action(state, action),
+        rest,
+      )
+  }
+}
+
+fn apply_linear_transport_action(
+  state: State,
+  action: linear_transport.TransportAction,
+) -> State {
+  case action {
+    linear_transport.SubmitCommand(comment, parsed) -> {
+      let #(state, result) =
+        apply_operator_command_to_state(state, parsed.command, 1000)
+      log_state(state, "info", "linear_operator_command", [
+        #("comment_id", comment.id),
+        #("command", result.command),
+        #("status", command.status_to_string(result.status)),
+      ])
+      case
+        linear_transport.should_ack_result(
+          state.effective.linear_commands,
+          result,
+        )
+      {
+        True ->
+          enqueue_side_effect(
+            state,
+            PostLinearCommandAck(
+              issue_id: comment.issue_id,
+              source_comment_id: comment.id,
+              body: linear_transport.result_ack_body(
+                comment.id,
+                parsed,
+                result,
+                state.secrets,
+              ),
+              client: state.linear_command_client,
+            ),
+          )
+        False -> state
+      }
+    }
+    linear_transport.PostAck(issue_id, body) ->
+      enqueue_side_effect(
+        state,
+        PostLinearCommandAck(
+          issue_id: issue_id,
+          source_comment_id: "",
+          body: body,
+          client: state.linear_command_client,
+        ),
+      )
+    linear_transport.LogIgnored(reason, comment_id) -> {
+      log_state(state, "info", "linear_command_ignored", [
+        #("comment_id", comment_id),
+        #("reason", reason),
+      ])
+      state
+    }
+  }
+}
+
+fn observed_issue_ids(
+  state: State,
+  candidates: List(domain.Issue),
+) -> List(String) {
+  []
+  |> append_unique_list(dict.keys(state.runtime.running))
+  |> append_unique_list(dict.keys(state.runtime.retry_attempts))
+  |> append_unique_list(dict.keys(state.runtime.parked))
+  |> append_unique_list(list.map(candidates, fn(issue) { issue.id }))
+}
+
+fn append_unique_list(
+  existing: List(String),
+  values: List(String),
+) -> List(String) {
+  list.fold(values, existing, fn(acc, value) { append_unique(acc, value) })
+}
+
+fn append_unique(values: List(String), value: String) -> List(String) {
+  case list.contains(values, value) {
+    True -> values
+    False -> list.append(values, [value])
   }
 }
 
@@ -2235,6 +2387,14 @@ fn handle_side_effect_finished(state: State, result: SideEffectResult) -> State 
   let state = case result {
     CandidateFetchFinished(generation, result) ->
       handle_candidate_fetch_finished(state, generation, result)
+    LinearCommandFetchFinished(generation, candidates, dispatch_after, result) ->
+      handle_linear_command_fetch_finished(
+        state,
+        generation,
+        candidates,
+        dispatch_after,
+        result,
+      )
     RunningRefreshFinished(generation, result) ->
       handle_running_refresh_finished(state, generation, result)
     RetryRefreshFinished(issue_id, generation, result) ->
@@ -2245,6 +2405,8 @@ fn handle_side_effect_finished(state: State, result: SideEffectResult) -> State 
       handle_handoff_success_finished(state, issue_id, result)
     HandoffFailureFinished(issue_id, _run_id, result) ->
       handle_handoff_failure_finished(state, issue_id, result)
+    LinearCommandAckFinished(issue_id, comment_id, result) ->
+      handle_linear_command_ack_finished(state, issue_id, comment_id, result)
     CleanupFinished(workspace_path, result) ->
       handle_cleanup_finished(state, workspace_path, result)
   }
@@ -2336,6 +2498,25 @@ fn handle_handoff_failure_finished(
   }
 }
 
+fn handle_linear_command_ack_finished(
+  state: State,
+  issue_id: String,
+  comment_id: String,
+  result: Result(Nil, error.TrackerError),
+) -> State {
+  case result {
+    Ok(Nil) -> state
+    Error(err) -> {
+      log_state(state, "warn", "linear_command_ack_failed", [
+        #("issue_id", issue_id),
+        #("comment_id", comment_id),
+        #("error", error.tracker_code(err)),
+      ])
+      state
+    }
+  }
+}
+
 fn handle_cleanup_finished(
   state: State,
   workspace_path: String,
@@ -2406,6 +2587,20 @@ fn run_side_effect(effect: SideEffect) -> SideEffectResult {
   case effect {
     FetchCandidates(generation, client) ->
       CandidateFetchFinished(generation, client.fetch_candidate_issues())
+    FetchLinearCommands(
+      generation,
+      issue_ids,
+      candidates,
+      dispatch_after,
+      client,
+      limit_per_issue,
+    ) ->
+      LinearCommandFetchFinished(
+        generation,
+        candidates,
+        dispatch_after,
+        client.fetch_comments(issue_ids, limit_per_issue),
+      )
     RefreshRunning(generation, ids, client) ->
       RunningRefreshFinished(generation, client.fetch_issue_states_by_ids(ids))
     RefreshRetry(issue_id, generation, client) ->
@@ -2427,6 +2622,12 @@ fn run_side_effect(effect: SideEffect) -> SideEffectResult {
         issue_id,
         run_id,
         client.report_failure(issue, failure, run_id),
+      )
+    PostLinearCommandAck(issue_id, source_comment_id, body, client) ->
+      LinearCommandAckFinished(
+        issue_id,
+        source_comment_id,
+        client.post_ack(issue_id, body),
       )
     CleanupWorkspace(root, workspace_path, hooks, cleanup) ->
       CleanupFinished(workspace_path, cleanup(root, workspace_path, hooks))

@@ -93,6 +93,15 @@ fn config(
       success_state_id: None,
       failure_state_id: None,
     ),
+    linear_commands: domain.LinearCommandConfig(
+      enabled: False,
+      prefix: "/scherzo",
+      authorized_user_ids: [],
+      poll_limit_per_issue: 25,
+      max_comments_per_tick: 50,
+      acknowledge_success: True,
+      acknowledge_rejection: True,
+    ),
   )
 }
 

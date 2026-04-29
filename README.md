@@ -2,7 +2,7 @@
 
 Scherzo is a Gleam/Erlang daemon that polls one Linear project, prepares one workspace per issue, and runs a pi coding-agent session in that workspace using pi RPC mode.
 
-The current implementation is ready for cautious use against one real Linear board from one Scherzo instance and one canonical workspace root. It includes reusable real Linear HTTPS reads, bounded smoke checks, a long-lived daemon actor with poll and retry timers, monitored pi workers, workflow reload by file contents, no-prompt pi probing, optional Linear handoff comments/state updates, an authenticated local control API, `scherzoctl`, and a local instance lock. It is not a distributed job system: do not run multiple hosts or multiple independent workspace roots against the same Linear project until a durable claim backend exists.
+The current implementation is ready for cautious use against one real Linear board from one Scherzo instance and one canonical workspace root. It includes reusable real Linear HTTPS reads, bounded smoke checks, a long-lived daemon actor with poll and retry timers, monitored pi workers, workflow reload by file contents, no-prompt pi probing, optional Linear handoff comments/state updates, Linear command comments, an authenticated local control API, `scherzoctl`, and a local instance lock. It is not a distributed job system: do not run multiple hosts or multiple independent workspace roots against the same Linear project until a durable claim backend exists.
 
 ## Development
 
@@ -104,6 +104,14 @@ If startup reports an existing instance lock, first verify that no Scherzo proce
       claim_state_id: null
       success_state_id: null
       failure_state_id: null
+    linear_commands:
+      enabled: false
+      prefix: "/scherzo"
+      authorized_user_ids: []
+      poll_limit_per_issue: 25
+      max_comments_per_tick: 50
+      acknowledge_success: true
+      acknowledge_rejection: true
 
 See `examples/WORKFLOW.md` for a runnable template.
 
@@ -223,11 +231,46 @@ For extension UI requests, the existing `pi.ui_request_policy` values `cancel`, 
 
 The backing EventHub data, queued prompts, pending UI requests, and runtime pause/park state are in memory and disappear on daemon restart. A stale control file after a crash is recoverable: `scherzoctl ping` fails cleanly, and operators should restart the daemon and use the newly logged control file path.
 
+## Linear command comments
+
+Linear command comments are disabled by default. When `linear_commands.enabled: true`, Scherzo polls comments only on issues it is already observing in the current daemon tick: running issues, retrying issues, parked issues, and candidate issues fetched from the configured active states. It does not scan the whole Linear project, historical terminal issues, or unrelated issues.
+
+Enable the transport with an explicit Linear user-id allowlist:
+
+    linear_commands:
+      enabled: true
+      prefix: "/scherzo"
+      authorized_user_ids:
+        - lin_user_123
+      poll_limit_per_issue: 25
+      max_comments_per_tick: 50
+      acknowledge_success: true
+      acknowledge_rejection: true
+
+Authorization is by Linear user id only. Matching email addresses or display names do not authorize commands. Scherzo records command-like comment ids in memory after their first terminal outcome, including malformed and unauthorized commands, so the same comment is not executed or acknowledged repeatedly during one daemon run. Edits to an already-processed comment are ignored; post a new comment for a new command.
+
+Supported comment commands are one per comment:
+
+    /scherzo retry
+    /scherzo park --reason waiting-for-review
+    /scherzo unpark
+    /scherzo abort
+    /scherzo stop-after-turn
+    /scherzo prompt Please continue with the smaller fix.
+    /scherzo ui respond ui-17 --cancel
+    /scherzo ui respond ui-17 --value approved
+
+The command prefix must start a comment line after leading whitespace and must be followed by whitespace or the end of the line, so `/scherzoed retry` is ignored. Commands inside triple-backtick Markdown code fences are ignored. `/scherzo help`, `/scherzo status`, `/scherzo stop`, `/scherzo continue`, and multiple `/scherzo` lines in one comment are not supported in this version.
+
+Issue-targeted commands (`retry`, `park`, and `unpark`) target the Linear issue containing the comment. Session-targeted commands (`abort`, `stop-after-turn`, `prompt`, and `ui respond`) target the current Scherzo session for that issue and are acknowledged as `not_found` if no live session exists. `/scherzo abort` parks the issue explicitly after the session stops, so later Linear comments and acknowledgement comments do not release it; use `/scherzo unpark` or `/scherzo retry` when the issue should be eligible again. Acknowledgement comments are concise receipts that include the source comment id, command name, status, and target when known; prompt text is redacted/truncated and not quoted in full.
+
+This transport is runtime-only. Commands posted while Scherzo is down are missed because old comments are ignored at daemon startup, and processed receipts are not durable across restart. Local `scherzoctl` remains the fallback control path.
+
 ## Safety posture
 
 Scherzo is intended for trusted repositories and trusted workflow files. Hooks are arbitrary shell. pi tool execution follows the operator's `pi.command` and host OS environment. Scherzo enforces workspace cwd and root containment, but it does not provide a VM or container sandbox.
 
-pi compatibility probes and prompted sessions launch only from prepared workspaces. Extension UI dialogs default to automatic cancellation; `pi.ui_request_policy` may be set to `cancel`, `fail`, or `ignore`; `operator` is rejected during config loading until operator-managed UI handoff is implemented, and unknown policy strings are rejected too. `pi.ui_request_timeout_ms` defaults to 300000 ms. Short `pi.read_timeout_ms` values are polling intervals during active turns; a turn fails only when `pi.stall_timeout_ms` expires without a valid pi line or `pi.turn_timeout_ms` expires before `agent_end`.
+pi compatibility probes and prompted sessions launch only from prepared workspaces. Extension UI dialogs default to automatic cancellation; `pi.ui_request_policy` may be set to `cancel`, `fail`, `ignore`, or `operator`; unknown policy strings are rejected. `operator` waits for an operator response through the local control API or Linear command comments until `pi.ui_request_timeout_ms` expires. Short `pi.read_timeout_ms` values are polling intervals during active turns; a turn fails only when `pi.stall_timeout_ms` expires without a valid pi line or `pi.turn_timeout_ms` expires before `agent_end`.
 
 Retry and session caps park issues in memory rather than spending tokens forever. Parking clears on process restart or when Linear reports the issue with a newer `updated_at` value.
 
@@ -240,7 +283,7 @@ Implemented:
 - Safe workspace key sanitization, root containment checks, lifecycle hooks, sidecar population markers, cleanup by stored workspace path, and local instance locking.
 - pi JSON Lines RPC launch, command/response correlation, compatibility probing with stats, prompt execution, turn/stall timeout handling, stats decoding, extension UI cancellation, and fake-pi integration tests.
 - Pure in-memory scheduling decisions for dispatch eligibility, retries, parking, continuation caps, reconciliation, and token accounting.
-- Long-lived daemon actor with poll/retry timers, monitored workers, WorkerUpdate logging, in-memory session event replay, local authenticated control API, shared operator command model, `scherzoctl`, programmatic shutdown, and optional Linear handoff.
+- Long-lived daemon actor with poll/retry timers, monitored workers, WorkerUpdate logging, in-memory session event replay, local authenticated control API, shared operator command model, Linear command comments, `scherzoctl`, programmatic shutdown, and optional Linear handoff.
 - Structured key-value log formatting with secret redaction.
 
 Still intentionally out of scope:
@@ -248,7 +291,7 @@ Still intentionally out of scope:
 - Distributed exactly-once claiming across hosts or workspace roots.
 - Durable scheduler state across BEAM restarts.
 - CLI SIGINT/SIGTERM graceful shutdown hooks.
-- HTTP dashboard, Linear comment command transport, fully command-aware prompt/UI worker loop, SSH workers, and the optional `linear_graphql` pi tool extension.
+- HTTP dashboard, Scherzo-to-Linear final result reporting, SSH workers, and the optional `linear_graphql` pi tool extension.
 - Automatic discovery of Linear workflow state IDs by state name.
 
 ## Operational rollout

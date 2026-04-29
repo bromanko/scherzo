@@ -48,6 +48,16 @@ handoff:
   # claim_state_id: "linear-state-id-for-in-progress"
   # success_state_id: "linear-state-id-for-done"
   # failure_state_id: "linear-state-id-for-needs-attention"
+# Optional Linear comment command transport. Keep disabled until you have a
+# private test issue and the Linear user id for each authorized operator.
+linear_commands:
+  enabled: false
+  prefix: "/scherzo"
+  authorized_user_ids: []
+  poll_limit_per_issue: 25
+  max_comments_per_tick: 50
+  acknowledge_success: true
+  acknowledge_rejection: true
 ---
 You are working on Linear issue {{ issue.identifier }}: {{ issue.title }}.
 

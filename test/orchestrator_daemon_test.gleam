@@ -5,6 +5,7 @@ import scherzo/agent/runner
 import scherzo/domain
 import scherzo/error
 import scherzo/handoff
+import scherzo/linear
 import scherzo/orchestrator/daemon
 import scherzo/session/hub
 import scherzo/tracker
@@ -67,6 +68,7 @@ fn base_dependencies(
   daemon.RuntimeDependencies(
     make_tracker: fn(_) { client },
     make_handoff: fn(_, _) { handoff.disabled_client() },
+    make_linear_commands: fn(_) { disabled_linear_commands() },
     agent_runner: fn(issue, _, _, _, _, emit_update, _, _) {
       process.send(log_subject, "agent_run")
       emit_update(
@@ -101,6 +103,12 @@ fn base_dependencies(
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
+}
+
+fn disabled_linear_commands() -> linear.CommandClient {
+  linear.CommandClient(fetch_comments: fn(_, _) { Ok([]) }, post_ack: fn(_, _) {
+    Ok(Nil)
+  })
 }
 
 fn wait_for_event(

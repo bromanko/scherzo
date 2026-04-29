@@ -8,7 +8,7 @@ This file tracks follow-up improvements that are intentionally outside the initi
 
   Scherzo currently posts operational handoff comments such as claim, success, and failure, but it does not post the actual task result from pi. A future plan should define the higher-level protocol for what Scherzo writes back to Linear and how humans communicate back to Scherzo.
 
-  The Scherzo-to-Linear result-comment half is now planned in `docs/plans/linear-session-results.md`. The Linear-to-Scherzo command/comment transport half is planned in `docs/plans/linear-command-transport.md`.
+  The Scherzo-to-Linear result-comment half is now planned in `docs/plans/linear-session-results.md`. The first runtime-only Linear-to-Scherzo command/comment transport was implemented from `docs/plans/linear-command-transport.md`; durable receipts and webhook wake-up remain separate follow-up work below.
 
   Initial design notes to preserve for future plans:
 
