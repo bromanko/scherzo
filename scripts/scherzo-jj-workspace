@@ -1,0 +1,107 @@
+#!/bin/sh
+# Shared jj workspace hook helpers for checked-in Scherzo workflows.
+#
+# Scherzo runs hooks with cwd set to the per-issue workspace path. This script
+# is intentionally invoked from the coordinating repository root, for example:
+#
+#   sh "$repo_root/scripts/scherzo-jj-workspace" after-create research
+#
+# The target workspace path is always the hook cwd.
+
+set -eu
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: scherzo-jj-workspace <after-create|before-run|before-remove> <workflow-name>
+
+Run from a Scherzo hook cwd. SCHERZO_REPO_ROOT may point at the coordinating
+jj repository; otherwise the script infers it from .scherzo/workspaces layout.
+EOF
+}
+
+fail() {
+  echo "scherzo-jj-workspace: $*" >&2
+  exit 1
+}
+
+if [ "$#" -ne 2 ]; then
+  usage
+  exit 2
+fi
+
+command=$1
+workflow_name=$2
+workspace_path=$(pwd -P)
+workspace_key=$(basename "$workspace_path")
+workspace_name="scherzo-${workflow_name}-${workspace_key}"
+
+infer_repo_root() {
+  if [ -n "${SCHERZO_REPO_ROOT:-}" ]; then
+    (cd "$SCHERZO_REPO_ROOT" && pwd -P)
+    return
+  fi
+
+  # Expected checked-in convention:
+  #   <repo>/.scherzo/workspaces/<workflow-name>/<issue-key>
+  (cd "$workspace_path/../../../.." && pwd -P)
+}
+
+repo_root=$(infer_repo_root)
+
+require_jj_repo_root() {
+  test -d "$repo_root/.jj" || fail "repo root is not a jj repository: $repo_root"
+}
+
+current_change_id() {
+  jj log -r @ --no-graph -T 'change_id'
+}
+
+workspace_row_for_change() {
+  change=$1
+  jj workspace list --color=never -T 'name ++ ":" ++ self.target().change_id() ++ "\n"' \
+    | awk -F: -v change="$change" '$2 == change { print $0; exit }'
+}
+
+verify_current_workspace() {
+  test -e .jj || fail "workspace is missing .jj: $workspace_path"
+  test "$(jj root)" = "$workspace_path" || fail "jj root does not match workspace path"
+
+  change=$(current_change_id)
+  row=$(workspace_row_for_change "$change")
+  test "$row" = "${workspace_name}:${change}" || \
+    fail "expected workspace ${workspace_name} for change ${change}, got: ${row:-<none>}"
+
+  jj status --color=never
+}
+
+case "$command" in
+  after-create)
+    require_jj_repo_root
+    jj --repository "$repo_root" workspace add \
+      --name "$workspace_name" \
+      --message "Scherzo ${workflow_name} workspace for ${workspace_key}" \
+      --sparse-patterns full \
+      "$workspace_path"
+    verify_current_workspace
+    ;;
+
+  before-run)
+    verify_current_workspace
+    ;;
+
+  before-remove)
+    if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then
+      change=$(current_change_id)
+      row=$(workspace_row_for_change "$change")
+      name=${row%%:*}
+      if [ -n "$name" ]; then
+        jj workspace forget "$name"
+      fi
+    fi
+    ;;
+
+  *)
+    usage
+    exit 2
+    ;;
+esac
