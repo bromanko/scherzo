@@ -4,7 +4,7 @@ This ExecPlan is a living document. The sections Progress, Surprises & Discoveri
 
 ## Purpose / Big Picture
 
-After this change, an operator can prove that the local Scherzo workflow configuration and the remote Linear project agree before allowing agents to work. The observable behavior is a new read-only check, run from the repository root as `direnv exec . gleam run -- --linear-contract-check path/to/WORKFLOW.md`, that queries Linear project and team metadata for every team associated with the configured project, compares it to the configured Scherzo contract, prints structured diagnostics, and exits non-zero when required Linear states are missing from any project team, when required issue labels are not assignable to issues in any project team, when configured handoff state IDs do not exist, or when a multi-team project cannot be safely checked with the current single-ID handoff configuration. No Linear labels, states, issues, or comments are created or modified in this plan.
+After this change, an operator can prove that the local Scherzo workflow configuration and the remote Linear project agree before allowing agents to work. The observable behavior is a new read-only check, run from the repository root as `direnv exec . gleam run -- --linear-contract-check path/to/WORKFLOW.md`, that queries Linear project and team metadata for every team associated with the configured project, compares it to the configured Scherzo contract, prints structured diagnostics, and exits non-zero when required Linear states are missing from any project team associated with the project, when required issue labels are not assignable to issues in any project team associated with the project, when configured handoff state IDs do not exist, or when a multi-team project cannot be safely checked with the current single-ID handoff configuration. No Linear labels, states, issues, or comments are created or modified in this plan.
 
 This plan addresses board-level drift only. It does not decide whether a particular issue has the right workflow label before dispatch; that is covered by the separate dispatch-policy plan. It also deliberately defers auto-reconciliation. Future work may auto-create low-risk Linear labels or suggest state changes, but this phase is detection-only.
 
@@ -44,18 +44,23 @@ The main operational risk is failing a check because local config is stricter th
 
 The main ambiguity risk is checking handoff state IDs without knowing the intended state name. Countermeasure: the contract can define optional handoff bindings that map handoff fields to required-state roles. For example, `claim: in_progress` says `handoff.claim_state_id` must refer to the state named by `linear_contract.required_states.in_progress`. If no binding is configured, the check only verifies that the ID exists. Handoff state ID checks run only when `handoff.enabled` is true and the corresponding handoff ID is present, because disabled handoff configuration does not affect runtime behavior.
 
+The main config-parser risk is reusing existing permissive helpers for the new contract. `src/scherzo/config.gleam` currently has list/map helpers that are appropriate for older optional settings because they ignore unknown or malformed entries, but a contract check must fail closed. Countermeasure: add strict `linear_contract`-specific readers that reject malformed list entries, malformed map keys or values, and blank map keys or values with `InvalidConfig` instead of silently dropping them.
+
 The main safety risk is accidentally mutating Linear during a check. Countermeasure: add no mutation helpers to the contract reader, use only GraphQL query operations, and test that the check path calls only `fetch_remote_contract`. Auto-reconciliation remains out of scope and should be tracked separately.
 
-The main multi-team risk is that a Linear project can be associated with multiple teams while Scherzo currently has one global set of handoff state IDs. Linear workflow state IDs are team-scoped, so one `handoff.success_state_id` cannot be assumed safe for issues from every team on a multi-team project. Countermeasure: model all project teams in the remote snapshot, require state and label contracts to pass for every project team, and emit a `multi_team_handoff_state_unsupported` diagnostic if `handoff.enabled` is true, the project has more than one team, and any handoff state ID is configured. A future plan can add a `tracker.team_key` filter or per-team handoff IDs if multi-team dispatch with state mutations is required.
+The main multi-team risk is that a Linear project can be associated with multiple teams while Scherzo currently has one global set of handoff state IDs. Linear workflow state IDs are team-scoped, so one `handoff.success_state_id` cannot be assumed safe for issues from every team on a multi-team project. Countermeasure: model all project teams in the remote snapshot, require state and label contracts to pass for every project team, and emit one `multi_team_handoff_state_unsupported` diagnostic per configured handoff state ID if `handoff.enabled` is true, the project has more than one team, and any handoff state ID is configured. In that multi-team case, do not also emit `missing_handoff_state_id` or `handoff_state_name_mismatch` for the same field; the actionable failure is that the current global-ID handoff model is unsafe for the project shape. A future plan can add a `tracker.team_key` filter or per-team handoff IDs if multi-team dispatch with state mutations is required.
 
 The main compatibility risk is breaking existing workflows that do not define `linear_contract`. Countermeasure: default config disables contract checking and leaves existing `--linear-smoke`, daemon, and once behavior unchanged until operators opt in or run the new check explicitly.
+
+The main implementation-churn risk is that adding a field to `domain.EffectiveConfig` breaks existing test fixtures that construct the record directly. Countermeasure: update every direct `domain.EffectiveConfig(...)` test constructor in the same milestone as the domain type change, preferably by adding a local helper or by inserting `linear_contract: config.default_linear_contract_config()` so old behavior stays explicit.
 
 ## Progress
 
 - [x] (2026-04-28 00:00Z) Discussed the desired policy: workflow labels should be explicit, Linear state should gate dispatch, and board/config drift should be detected before auto-reconciliation exists.
 - [x] (2026-04-28 00:00Z) Reviewed current files relevant to the plan: `src/scherzo/domain.gleam`, `src/scherzo/config.gleam`, `src/scherzo/linear.gleam`, `src/scherzo/smoke.gleam`, `src/scherzo/main.gleam`, `src/scherzo/orchestrator/service.gleam`, and existing Linear/config tests under `test/`.
-- [x] (2026-04-28 00:00Z) Ran the current baseline from the repository root with `direnv exec . gleam test`; it passed with `200 passed, no failures`.
+- [x] (2026-04-28 00:00Z) Ran the authoring baseline from the repository root with `direnv exec . gleam test`; it passed with `200 passed, no failures`.
 - [x] (2026-04-28 00:00Z) Reviewed the Linear public GraphQL schema while revising this plan and corrected the metadata model from a singular project `team` to the project `teams` connection.
+- [x] (2026-04-29 00:00Z) Re-reviewed this plan against the current tree and reran `direnv exec . gleam test`; the current baseline passed with `235 passed, no failures`.
 - [ ] Add contract config types and parser tests.
 - [ ] Add pure contract comparison and report formatting tests.
 - [ ] Add Linear project metadata query builders, decoders, and fake response tests.
@@ -72,6 +77,12 @@ The main compatibility risk is breaking existing workflows that do not define `l
 
 - Observation: The current `--linear-smoke` mode does not require dispatch hooks or acquire the instance lock.
   Evidence: `start_linear_smoke` in `src/scherzo/orchestrator/service.gleam` loads and resolves config, then calls `smoke.linear_read_smoke`; it does not call `config.validate_dispatch` or `acquire_lock`.
+
+- Observation: Existing config list helpers are permissive and would be unsafe for contract parsing if reused directly.
+  Evidence: `get_string_list` in `src/scherzo/config.gleam` uses `list.filter_map`, so a non-string YAML list entry is currently dropped instead of reported as invalid.
+
+- Observation: Adding `linear_contract` to `domain.EffectiveConfig` has test-fixture blast radius.
+  Evidence: direct `domain.EffectiveConfig(...)` constructors currently appear in `test/agent_worker_control_test.gleam`, `test/orchestrator_core_test.gleam`, and `test/agent_runner_test.gleam`.
 
 - Observation: Linear project metadata is team-scoped through a `teams` connection rather than a singular `team` field.
   Evidence: The public Linear GraphQL schema exposes `Project.teams`, `Team.states`, `Team.labels`, and top-level `issueLabels`; it does not expose `Project.team`.
@@ -118,6 +129,18 @@ The main compatibility risk is breaking existing workflows that do not define `l
   Rationale: Operators only need the label to be assignable to issues in the configured project. A workspace-level label or a team-scoped label for each project team satisfies that need.
   Date: 2026-04-28
 
+- Decision: Use strict, contract-specific YAML readers for `linear_contract` instead of reusing permissive helper functions.
+  Rationale: A malformed contract should not appear to pass because a non-string list entry or map value was silently discarded.
+  Date: 2026-04-29
+
+- Decision: Use a structured logger dependency for service-level contract-check tests.
+  Rationale: The public service path should keep using `service.log_stderr`, but tests need to assert event names, fields, severity, and redaction without parsing formatted log lines.
+  Date: 2026-04-29
+
+- Decision: In multi-team projects with enabled handoff state IDs, report the multi-team unsupported diagnostic as the handoff failure for each configured field and skip lower-level ID/name checks for those fields.
+  Rationale: A single Linear state ID is team-scoped, so missing-ID or name-mismatch diagnostics would be secondary and could distract from the real unsafe configuration.
+  Date: 2026-04-29
+
 ## Outcomes & Retrospective
 
 (To be filled after implementation. Include the final test count, whether `--linear-contract-check` succeeded against a fake response and any real-board validation, and any Linear GraphQL schema mismatch discovered during implementation.)
@@ -142,14 +165,16 @@ The current baseline commands from the repository root are:
     direnv exec . gleam test
     direnv exec . gleam run -- --help
 
-On 2026-04-28 while writing this plan, `direnv exec . gleam test` ended with `200 passed, no failures`.
+On 2026-04-29 while reviewing this plan, `direnv exec . gleam test` ended with `235 passed, no failures`.
 
 Current repository facts this plan depends on:
 
 - `src/scherzo/domain.gleam` defines `EffectiveConfig` with `tracker`, `polling`, `workspace`, `hooks`, `agent`, `pi`, `handoff`, and `linear_commands` fields. It does not define a board contract config.
-- `src/scherzo/config.gleam` has helper functions for reading strings, string lists, integers, booleans, and maps from YAML nodes.
+- Direct `domain.EffectiveConfig(...)` test constructors currently appear in `test/agent_worker_control_test.gleam`, `test/orchestrator_core_test.gleam`, and `test/agent_runner_test.gleam`; these must be updated when the new field is added.
+- `src/scherzo/config.gleam` has helper functions for reading strings, string lists, integers, booleans, and maps from YAML nodes. Existing list/map helpers are permissive, so the `linear_contract` resolver needs strict helpers rather than reusing them blindly.
 - `src/scherzo/main.gleam` defines `RunMode` variants `Daemon`, `Once`, `LinearSmoke`, and `PiProbe`; it does not define `LinearContractCheck`.
 - `src/scherzo/orchestrator/service.gleam` exposes `start_linear_smoke` and `start_pi_probe` as startup service modes.
+- `src/scherzo/log.gleam` defines structured log fields as `log.Field`, and `src/scherzo/orchestrator/service.gleam` already exposes `log_stderr(level, event, fields, secrets)`, which is the correct shape for the contract-check service logger dependency.
 - `src/scherzo/linear.gleam` builds GraphQL requests with `graphql_request`, validates HTTPS endpoints and API keys, and decodes GraphQL errors through existing helper patterns.
 - Linear's public GraphQL schema exposes `Project.teams`, `Team.states`, `Team.labels`, and top-level `issueLabels`; it does not expose a singular `Project.team` field.
 - `test/main_test.gleam` asserts recognized CLI flags and usage text.
@@ -159,15 +184,15 @@ If these facts differ when implementation begins, update this plan first so the 
 
 ## Scope Boundaries
 
-In scope: local contract config parsing; pure contract comparison; read-only Linear project/team state and issue-label metadata query for every project team; workspace-level issue-label handling; fail-closed handling for paginated metadata; handoff state ID existence and optional role-name validation when handoff is enabled; a multi-team handoff unsupported diagnostic for the current single-ID handoff configuration; a dedicated CLI mode for contract checking; structured logs and clear failure messages; README and example workflow documentation; deterministic tests with fake Linear responses.
+In scope: local contract config parsing; updating existing `EffectiveConfig` test fixtures for the new field; pure contract comparison; read-only Linear project/team state and issue-label metadata query for every project team; workspace-level issue-label handling; fail-closed handling for paginated metadata; handoff state ID existence and optional role-name validation when handoff is enabled; a multi-team handoff unsupported diagnostic for the current single-ID handoff configuration; a dedicated CLI mode for contract checking; structured logs and clear failure messages; README and example workflow documentation; deterministic tests with fake Linear responses.
 
 Out of scope: automatic creation, renaming, deletion, or migration of Linear labels or workflow states; mutating issues during contract check; per-issue workflow label dispatch gating; moving invalid issues to `Needs Workflow`; changing `tracker.Client`; adding a `tracker.team_key` issue filter; per-team handoff state IDs; webhooks; durable receipts; a web UI; validating every historical issue on the board.
 
 ## Milestones
 
-Milestone 1 adds local contract configuration. At the end, tests can parse a `linear_contract` section from `WORKFLOW.md`, defaults preserve old behavior, invalid values are rejected, and `domain.EffectiveConfig` carries the contract to later phases.
+Milestone 1 adds local contract configuration. At the end, tests can parse a `linear_contract` section from `WORKFLOW.md`, defaults preserve old behavior, invalid values are rejected, every existing direct `domain.EffectiveConfig(...)` test fixture has an explicit default contract value, and `domain.EffectiveConfig` carries the contract to later phases.
 
-Milestone 2 adds pure board comparison. At the end, tests can construct a local contract and a remote board snapshot without network access and receive stable diagnostics for missing states on a specific project team, labels not assignable to a specific project team, unknown handoff state IDs, multi-team handoff state unsupported, and handoff ID/name mismatches.
+Milestone 2 adds pure board comparison. At the end, tests can construct a local contract and a remote board snapshot without network access and receive stable diagnostics for missing states on a specific project team, labels not assignable to a specific project team, unknown handoff state IDs, multi-team handoff state unsupported, and handoff ID/name mismatches. In multi-team handoff cases, tests should prove the checker emits the unsupported diagnostic and does not also emit secondary missing-ID or name-mismatch diagnostics for the same handoff field.
 
 Milestone 3 adds Linear metadata reads. At the end, fake transport tests can build the project metadata GraphQL request, parse a successful response with one project and one or more project teams into a remote board snapshot, reject zero or multiple projects for the configured slug, reject projects with no teams, reject paginated teams/states/labels/workspace labels, parse GraphQL and HTTP errors, and prove no API key appears in diagnostic strings.
 
@@ -207,11 +232,11 @@ Extend `src/scherzo/config.gleam` with `default_linear_contract_config` and `res
         success: done
         failure: needs_workflow
 
-Normalize configured label names by trimming whitespace and lowercasing. Drop empty string list entries after trimming, but do not silently ignore malformed non-string entries in `linear_contract` lists or maps; reject them with `InvalidConfig` so a misspelled or malformed contract cannot appear to pass. Reject `enabled: true` when `workflow_label_prefix` is empty. Reject handoff binding keys other than `claim`, `success`, and `failure`. Reject handoff binding values that do not exist in `required_states`. Add config tests for defaults, valid parsing, normalization, malformed value rejection, and invalid bindings.
+Normalize contract values deliberately. Trim and lowercase `workflow_label_prefix`, `workflow_labels`, and `support_labels`; drop empty list entries after trimming; and de-duplicate normalized labels while preserving their first occurrence. Trim and lowercase `required_states` keys and `handoff_state_bindings` keys and values, but preserve the case of `required_states` values because Linear state names are operator-facing names. Do not use the existing permissive `get_string_list` helper for contract lists. Add strict contract-specific readers for string lists and string maps that reject non-string list entries, non-string map keys, non-string map values, blank map keys, and blank map values with `InvalidConfig` so a misspelled or malformed contract cannot appear to pass. Reject `enabled: true` when `workflow_label_prefix` is empty. Reject handoff binding keys other than `claim`, `success`, and `failure`. Reject handoff binding values that do not exist in `required_states`. Add config tests for defaults, valid parsing, normalization, malformed value rejection, blank map values, duplicate normalization, and invalid bindings.
 
 Create `src/scherzo/linear_contract.gleam`. Define remote snapshot types equivalent to `RemoteBoard(project_id, project_slug, project_name, teams, workspace_labels)`, `RemoteTeam(id, key, name, states, labels)`, `RemoteState(id, name, type_)`, and `RemoteLabel(id, name)`. Define diagnostic variants equivalent to `MissingState(team_key, name, source)`, `MissingLabel(team_key, name, source)`, `MissingHandoffStateId(field, id)`, `MultiTeamHandoffStateUnsupported(field, id, team_keys)`, and `HandoffStateNameMismatch(field, id, expected, actual, actual_team_key)`. Use strings for `source` so diagnostics can say `tracker.active_states`, `tracker.terminal_states`, `linear_contract.required_states.ready`, or `linear_contract.workflow_labels`.
 
-In `linear_contract.gleam`, expose `check(effective: domain.EffectiveConfig, remote: RemoteBoard) -> List(ContractDiagnostic)`. When `effective.linear_contract.enabled` is false, the check should still validate configured `tracker.active_states` and `tracker.terminal_states` because those fields always affect candidate and terminal reads. Validate handoff state IDs only when `effective.handoff.enabled` is true and the specific ID field is present. When `linear_contract.enabled` is true, also check every configured required state and label. A state requirement passes only if every `RemoteTeam` associated with the project has a trimmed state with the exact configured name. A label requirement passes only if the label is assignable to issues in every project team, meaning each project team either has a matching team-scoped or inherited label in `RemoteTeam.labels`, or the label exists in `workspace_labels`. State name comparison should be case-sensitive after trimming because Linear state names are operator-facing names; label comparison should be case-insensitive because issue labels are already normalized to lowercase.
+In `linear_contract.gleam`, expose `check(effective: domain.EffectiveConfig, remote: RemoteBoard) -> List(ContractDiagnostic)`. When `effective.linear_contract.enabled` is false, the check should still validate configured `tracker.active_states` and `tracker.terminal_states` because those fields always affect candidate and terminal reads. Validate handoff state IDs only when `effective.handoff.enabled` is true and the specific ID field is present. If `effective.handoff.enabled` is true, more than one remote team is present, and a handoff state ID is configured, emit `MultiTeamHandoffStateUnsupported` for that field and skip the lower-level ID existence and name-binding checks for that same field. For single-team boards, or for future configs that have no multi-team conflict, check that each configured handoff ID exists in the remote team's states and then, when a binding is configured, check that the state name matches the bound required state. When `linear_contract.enabled` is true, also check every configured required state and label. A state requirement passes only if every `RemoteTeam` associated with the project has a trimmed state with the exact configured name. A label requirement passes only if the label is assignable to issues in every project team, meaning each project team either has a matching team-scoped or inherited label in `RemoteTeam.labels`, or the label exists in `workspace_labels`. State name comparison should be case-sensitive after trimming because Linear state names are operator-facing names; label comparison should be case-insensitive after trimming because issue labels are already normalized to lowercase.
 
 Also expose `is_ok(diagnostics)`, `diagnostic_code`, `diagnostic_message`, and `format_report`. The report should be stable and compact. Example failure lines:
 
@@ -263,7 +288,7 @@ If Linear's real schema uses a different team label connection name, workspace-l
 
 Add tests in `test/linear_contract_test.gleam` for pure comparison. Add tests in `test/linear_test.gleam` or a new `test/linear_contract_http_test.gleam` for request construction and response decoding. Use fake responses, not real credentials.
 
-Extend `src/scherzo/orchestrator/service.gleam` with `start_linear_contract_check(workflow_path)`. Factor the implementation through a testable helper, for example `start_linear_contract_check_with_dependencies(workflow_path, make_contract_client, logger)`, so service tests can inject fake board snapshots, fake fetch errors, and a log capture without real Linear credentials. The public function should choose and load the workflow path, resolve config, create `linear.real_contract_client(effective.tracker)`, fetch the remote contract, run `linear_contract.check`, and log success or failure. On success, log an info event like `linear_contract_ok` with `project_slug`, `project_id`, team count, state count, and label count. On mismatch, log a warn or error event `linear_contract_mismatch` with a diagnostic count, then log one event per diagnostic using stable codes. Return `Error(StartupError("linear_contract_mismatch", "Linear board contract mismatch"))` when diagnostics are non-empty. Redact the API key using `config.resolved_secrets(effective)`.
+Extend `src/scherzo/orchestrator/service.gleam` with `start_linear_contract_check(workflow_path)`. Factor the implementation through a testable helper, for example a `ContractCheckDependencies` record with `make_contract_client: fn(domain.TrackerConfig) -> linear.ContractClient` and `logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil)`, so service tests can inject fake board snapshots, fake fetch errors, and a structured log capture without real Linear credentials. The public function should choose and load the workflow path, resolve config, create `linear.real_contract_client(effective.tracker)`, fetch the remote contract, run `linear_contract.check`, and log success or failure through `service.log_stderr`. On success, log an info event like `linear_contract_ok` with `project_slug`, `project_id`, team count, state count, and label count. On mismatch, log a warn or error event `linear_contract_mismatch` with a diagnostic count, then log one event per diagnostic using stable codes. Return `Error(StartupError("linear_contract_mismatch", "Linear board contract mismatch"))` when diagnostics are non-empty. Redact the API key using `config.resolved_secrets(effective)`.
 
 Extend `src/scherzo/main.gleam` with a `LinearContractCheck` run mode. Accept `--linear-contract-check` with or without a path, update usage text, and add assertions to `test/main_test.gleam`.
 
@@ -277,11 +302,13 @@ From the repository root, run the baseline tests:
 
 Expect the final line to be similar to:
 
-    200 passed, no failures
+    235 passed, no failures
 
 Edit `src/scherzo/domain.gleam` to add `LinearContractConfig` and add a `linear_contract` field to `EffectiveConfig`.
 
-Edit `src/scherzo/config.gleam` to add the default and resolver for `linear_contract`, call it from `resolve_with_env`, and add helper functions for string maps if the existing helpers are insufficient.
+Edit `src/scherzo/config.gleam` to add the default and resolver for `linear_contract`, call it from `resolve_with_env`, add the new `linear_contract` field when constructing `domain.EffectiveConfig`, and add strict helper functions for contract string lists and string maps instead of reusing permissive helpers.
+
+Update every direct `domain.EffectiveConfig(...)` constructor in `test/agent_worker_control_test.gleam`, `test/orchestrator_core_test.gleam`, and `test/agent_runner_test.gleam` so each fixture passes the default contract config explicitly. Do this before running the suite because the new record field is a compile-time change.
 
 Edit `test/config_test.gleam` to add tests for contract defaults, parsing, normalization, invalid binding references, and malformed non-string `linear_contract` values. Run:
 
@@ -291,7 +318,7 @@ Expect the new config tests to pass after the implementation is complete.
 
 Create `src/scherzo/linear_contract.gleam` with pure remote snapshot types, diagnostics, check logic, and formatting helpers.
 
-Create `test/linear_contract_test.gleam` with cases for all diagnostic types, per-team state and label failures, multi-team handoff state unsupported, and an all-clear single-team contract. Run:
+Create `test/linear_contract_test.gleam` with cases for all diagnostic types, per-team state and label failures, multi-team handoff state unsupported, the absence of secondary handoff ID/name diagnostics when multi-team handoff is already unsupported, and an all-clear single-team contract. Run:
 
     direnv exec . gleam test
 
@@ -301,7 +328,7 @@ Add fake response tests for contract request and response parsing, including mul
 
     direnv exec . gleam test
 
-Extend `src/scherzo/orchestrator/service.gleam` with `start_linear_contract_check` and a dependency-injected helper for tests, and extend `src/scherzo/main.gleam` with the CLI mode and usage text.
+Extend `src/scherzo/orchestrator/service.gleam` with `start_linear_contract_check` and the structured dependency-injected helper for tests, and extend `src/scherzo/main.gleam` with the CLI mode and usage text.
 
 Update `test/main_test.gleam` for argument parsing and usage. Add service-level tests in `test/orchestrator_service_test.gleam` or a new focused service test file that inject fake contract clients and assert success logs, mismatch startup failure, and fetch-error startup failure without network access.
 
@@ -318,13 +345,13 @@ Update `README.md`, `examples/WORKFLOW.md`, and this plan's Progress and Outcome
 
 ## Testing and Falsifiability
 
-Add config tests that parse a workflow with no `linear_contract` and assert `enabled == False`, `workflow_label_prefix == "workflow:"`, and empty required lists/maps. Add a test that parses the full example contract and asserts normalized workflow labels such as `bugfix`, support labels such as `needs-workflow`, and required states such as `ready -> Ready for Agent`. Add invalid tests for an empty prefix with `enabled: true`, an unknown handoff binding key, a binding value that does not exist in `required_states`, a non-string label list entry, and a non-string `required_states` map value.
+Add config tests that parse a workflow with no `linear_contract` and assert `enabled == False`, `workflow_label_prefix == "workflow:"`, and empty required lists/maps. Add a test that parses the full example contract and asserts normalized workflow labels such as `bugfix`, support labels such as `needs-workflow`, deduplicated labels after case/whitespace normalization, and required states such as `ready -> Ready for Agent`. Add invalid tests for an empty prefix with `enabled: true`, an unknown handoff binding key, a binding value that does not exist in `required_states`, a non-string label list entry, a non-string `required_states` map key or value, and a blank `required_states` map key or value.
 
-Add pure comparison tests in `test/linear_contract_test.gleam`. One test should build a single-team remote board with states `Ready for Agent`, `In Progress`, `Done`, labels `workflow:bugfix`, `workflow:feature`, and `needs-workflow`, then assert no diagnostics. One test should build a two-team remote board where the second team lacks `Ready for Agent` and assert a `missing_state` diagnostic with that team's key and source `tracker.active_states` or `linear_contract.required_states.ready`. One test should omit `workflow:research` from one team while it is absent from workspace labels and assert a `missing_label` diagnostic with that team's key because the label is not assignable to issues in that team. One test should put `workflow:research` only in `workspace_labels` and assert no per-team missing label. One test should set `handoff.enabled == False` and stale handoff IDs and assert no handoff diagnostics. One test should set `handoff.enabled == True` and configure `handoff.claim_state_id: state-claim` but omit a remote state with that ID and assert `missing_handoff_state_id`. One test should configure `handoff.success_state_id` bound to `done` while the remote state with that ID is named `Closed`, and assert a mismatch with expected `Done`, actual `Closed`, and the actual team key. One test should build a two-team remote board with `handoff.enabled == True` and a configured state ID, and assert `multi_team_handoff_state_unsupported`.
+Add pure comparison tests in `test/linear_contract_test.gleam`. One test should build a single-team remote board with states `Ready for Agent`, `In Progress`, `Done`, labels `workflow:bugfix`, `workflow:feature`, and `needs-workflow`, then assert no diagnostics. One test should build a two-team remote board where the second team lacks `Ready for Agent` and assert a `missing_state` diagnostic with that team's key and source `tracker.active_states` or `linear_contract.required_states.ready`. One test should omit `workflow:research` from one team while it is absent from workspace labels and assert a `missing_label` diagnostic with that team's key because the label is not assignable to issues in that team. One test should put `workflow:research` only in `workspace_labels` and assert no per-team missing label. One test should set `handoff.enabled == False` and stale handoff IDs and assert no handoff diagnostics. One test should set `handoff.enabled == True` and configure `handoff.claim_state_id: state-claim` but omit a remote state with that ID and assert `missing_handoff_state_id`. One test should configure `handoff.success_state_id` bound to `done` while the remote state with that ID is named `Closed`, and assert a mismatch with expected `Done`, actual `Closed`, and the actual team key. One test should build a two-team remote board with `handoff.enabled == True` and a configured state ID, and assert `multi_team_handoff_state_unsupported`. That same test should assert there is no `missing_handoff_state_id` or `handoff_state_name_mismatch` diagnostic for the same field, because the multi-team unsupported diagnostic is the actionable failure in this phase.
 
 Add Linear fake-response tests. A successful response should include one project, at least two teams, each team's states and labels, and at least one workspace-level label. The decoder should return a `RemoteBoard` with project ID, all team IDs and keys, per-team labels, per-team states, and workspace labels. A zero-project response should return `Error(error.LinearUnknownPayload(_))`. A two-project response should return `Error(error.LinearUnknownPayload(_))`. A project with zero teams should return `Error(error.LinearUnknownPayload(_))`. Responses where project teams, team states, team labels, or workspace labels have `pageInfo.hasNextPage == True` should return `Error(error.LinearUnknownPayload(_))` rather than a partial board. A GraphQL error response should return `Error(error.LinearGraphqlErrors(_))`. A non-200 response should return `Error(error.LinearApiStatus(status))`.
 
-Add CLI tests in `test/main_test.gleam` asserting `main.parse_args(["--linear-contract-check", "WORKFLOW.md"]) == Ok(main.Run(main.LinearContractCheck, Some("WORKFLOW.md")))` and usage mentions `--linear-contract-check`. Add service tests that inject a successful fake contract client and assert a `linear_contract_ok` log, inject a mismatching board and assert `StartupError("linear_contract_mismatch", ...)` plus diagnostic logs, and inject `Error(error.LinearApiStatus(500))` and assert the tracker error is mapped to startup failure without leaking secrets.
+Add CLI tests in `test/main_test.gleam` asserting `main.parse_args(["--linear-contract-check", "WORKFLOW.md"]) == Ok(main.Run(main.LinearContractCheck, Some("WORKFLOW.md")))` and usage mentions `--linear-contract-check`. Add service tests that inject a successful fake contract client and assert a `linear_contract_ok` structured log, inject a mismatching board and assert `StartupError("linear_contract_mismatch", ...)` plus diagnostic logs, and inject `Error(error.LinearApiStatus(500))` and assert the tracker error is mapped to startup failure without leaking secrets. The service tests should use the structured logger dependency rather than parsing formatted strings.
 
 The plan is falsified if the contract check reports success when a configured active state, terminal state, required state, required label, or handoff state ID is missing from the fake remote board for any project team that can dispatch issues. A required label counts as missing for a project team only when it is neither present in that team's labels nor present as a workspace-level issue label. The plan is also falsified if a workspace-level label is reported missing for every team, if a multi-team project with enabled handoff state IDs passes without a diagnostic, if paginated metadata is accepted as complete, if any test requires a real Linear API key, or if the check path can create, update, or delete any Linear object.
 
@@ -335,7 +362,7 @@ From the repository root, run:
     direnv exec . gleam format --check src test
     direnv exec . gleam test
 
-Expect all tests to pass. The baseline before implementation was `200 passed, no failures`; the final count should be higher after new tests are added.
+Expect all tests to pass. The current baseline before implementation is `235 passed, no failures`; the final count should be higher after new tests are added.
 
 Run help and verify the new mode is shown:
 
@@ -375,6 +402,8 @@ Do not include the Linear API key in any diagnostic, formatted report, or test a
 
 Plan revision note, 2026-04-28: this plan was revised after review to replace the invalid singular `Project.team` assumption with Linear's `Project.teams` connection, make multi-team behavior explicit, fail closed on paginated metadata, require deterministic service tests, avoid validating disabled handoff state IDs, always validate tracker active and terminal states in the explicit check command, and treat label requirements as issue-label assignability requirements rather than storage-location requirements. These changes prevent a future implementer from building a check that either fails against the real Linear schema or reports a false green result for multi-team projects.
 
+Plan revision note, 2026-04-29: this plan was revised after a current-tree review to update the baseline to `235 passed, no failures`, make strict `linear_contract` YAML parsing explicit, require updates to existing direct `EffectiveConfig` test fixtures, define structured service logging dependencies, and clarify that multi-team handoff unsupported diagnostics suppress secondary handoff ID/name diagnostics for the same field.
+
 ## Interfaces and Dependencies
 
 In `src/scherzo/domain.gleam`, add a public type equivalent to:
@@ -413,13 +442,19 @@ In `src/scherzo/linear.gleam`, expose a client equivalent to:
     pub fn build_contract_request(domain.TrackerConfig) -> Result(Request, error.TrackerError)
     pub fn parse_contract_response(Response) -> Result(linear_contract.RemoteBoard, error.TrackerError)
 
-In `src/scherzo/orchestrator/service.gleam`, expose the public mode and a testable helper equivalent to:
+In `src/scherzo/orchestrator/service.gleam`, expose the public mode and a structured test dependency equivalent to:
+
+    pub type ContractCheckDependencies {
+      ContractCheckDependencies(
+        make_contract_client: fn(domain.TrackerConfig) -> linear.ContractClient,
+        logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
+      )
+    }
 
     pub fn start_linear_contract_check(Option(String)) -> Result(Nil, StartupError)
     pub fn start_linear_contract_check_with_dependencies(
       Option(String),
-      fn(domain.TrackerConfig) -> linear.ContractClient,
-      fn(String) -> Result(Nil, Nil),
+      ContractCheckDependencies,
     ) -> Result(Nil, StartupError)
 
 In `src/scherzo/main.gleam`, add `LinearContractCheck` to `RunMode` and route it to the new service function.
