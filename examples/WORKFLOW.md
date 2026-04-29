@@ -99,4 +99,12 @@ Labels:
 
 Attempt: {{ attempt }}
 
+Follow the issue's workflow label when choosing how to work:
+- workflow:bugfix means make a minimal corrective change and include a regression test when practical.
+- workflow:feature means implement the requested behavior with focused tests.
+- workflow:research means investigate and report findings before broad code changes.
+- workflow:review means inspect the requested code or plan and provide review findings.
+- workflow:docs means update documentation or examples.
+- workflow:chore means perform maintenance without widening product behavior.
+
 If Scherzo handoff is enabled, the daemon may add Linear comments or move the issue to configured Linear state IDs after this run. If handoff is disabled, use repository or workflow-provided tooling to add comments, update status, or link pull requests when the task requires handoff.

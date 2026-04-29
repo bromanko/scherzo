@@ -8,6 +8,7 @@ import scherzo/domain
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
+import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/path
 import scherzo/session/event
@@ -117,6 +118,7 @@ fn dependencies(
     make_tracker: fn(_) { client },
     make_handoff: fn(_, _) { handoff.disabled_client() },
     make_linear_commands: fn(_) { disabled_linear_commands() },
+    make_triage: fn(_, _) { linear_triage.disabled_client() },
     agent_runner: agent_runner,
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, logged_event, _, _) {

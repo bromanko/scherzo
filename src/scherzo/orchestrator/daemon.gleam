@@ -16,12 +16,14 @@ import scherzo/domain
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
+import scherzo/linear_triage
 import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/tracker
 import scherzo/workflow
+import scherzo/workflow_policy
 import scherzo/workspace
 import simplifile
 
@@ -132,6 +134,13 @@ type SideEffect {
     body: String,
     client: linear.CommandClient,
   )
+  ReportInvalidWorkflow(
+    issue: domain.Issue,
+    violation: workflow_policy.IssueWorkflowViolation,
+    violation_fingerprint: String,
+    reporting_policy_fingerprint: String,
+    client: linear_triage.TriageClient,
+  )
   CleanupWorkspace(
     root: String,
     workspace_path: String,
@@ -159,6 +168,15 @@ pub type SideEffectResult {
   HandoffSuccessFinished(String, String, Result(Nil, error.TrackerError))
   HandoffFailureFinished(String, String, Result(Nil, error.TrackerError))
   LinearCommandAckFinished(String, String, Result(Nil, error.TrackerError))
+  InvalidWorkflowReportFinished(
+    issue_id: String,
+    violation_fingerprint: String,
+    reporting_policy_fingerprint: String,
+    result: Result(
+      linear_triage.InvalidWorkflowReportOutcome,
+      error.TrackerError,
+    ),
+  )
   CleanupFinished(String, Result(Nil, error.WorkspaceError))
 }
 
@@ -168,6 +186,8 @@ pub type RuntimeDependencies {
     make_handoff: fn(domain.TrackerConfig, domain.HandoffConfig) ->
       handoff.Client,
     make_linear_commands: fn(domain.TrackerConfig) -> linear.CommandClient,
+    make_triage: fn(domain.TrackerConfig, domain.LinearContractConfig) ->
+      linear_triage.TriageClient,
     agent_runner: fn(
       domain.Issue,
       Option(Int),
@@ -206,6 +226,7 @@ type State {
     tracker_client: tracker.Client,
     handoff_client: handoff.Client,
     linear_command_client: linear.CommandClient,
+    triage_client: linear_triage.TriageClient,
     linear_command_state: linear_transport.TransportState,
     runtime: domain.RuntimeState,
     poll_generation: Int,
@@ -240,6 +261,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
       )
     },
     make_linear_commands: linear.real_command_client,
+    make_triage: linear_triage.real_triage_client,
     agent_runner: runner.run_attempt_with_command_ready,
     cleanup: workspace.cleanup_stored_path,
     logger: fn(level, event, fields, secrets) {
@@ -385,6 +407,8 @@ pub fn start(
     dependencies.make_handoff(effective.tracker, effective.handoff)
   let linear_command_client =
     dependencies.make_linear_commands(effective.tracker)
+  let triage_client =
+    dependencies.make_triage(effective.tracker, effective.linear_contract)
   let linear_command_state = linear_transport.new_state(dependencies.now_ms())
   let reload_state =
     config.ReloadState(
@@ -422,6 +446,7 @@ pub fn start(
               tracker_client: tracker_client,
               handoff_client: handoff_client,
               linear_command_client: linear_command_client,
+              triage_client: triage_client,
               linear_command_state: linear_command_state,
               runtime: runtime,
               poll_generation: poll_generation,
@@ -1382,6 +1407,10 @@ fn apply_new_contents(state: State, contents: String) -> State {
                   linear_command_client: state.dependencies.make_linear_commands(
                     effective.tracker,
                   ),
+                  triage_client: state.dependencies.make_triage(
+                    effective.tracker,
+                    effective.linear_contract,
+                  ),
                   runtime: runtime,
                   reload_state: config.ReloadState(
                     last_known_good: Some(effective),
@@ -1682,11 +1711,7 @@ fn poll_result_is_stale(state: State, generation: Int) -> Bool {
 }
 
 fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
-  case
-    !state.operator_paused
-    && config.can_dispatch(state.reload_state)
-    && slots_remain(state)
-  {
+  case !state.operator_paused && config.can_dispatch(state.reload_state) {
     False -> state
     True ->
       case issues {
@@ -1694,14 +1719,100 @@ fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
         [issue, ..rest] -> {
           let state = unpark_if_issue_changed_state(state, issue)
           case
-            core.should_dispatch(state.runtime, state.effective, issue)
-            && can_reserve_dispatch_slot(state, issue)
+            core.dispatch_preconditions_satisfied_without_slot_capacity(
+              state.runtime,
+              state.effective,
+              issue,
+            )
+            && !dict.has_key(state.pending_claims, issue.id)
           {
-            True -> dispatch_issue_with_continuation(state, issue, rest)
             False -> dispatch_candidates(rest, state)
+            True ->
+              case
+                workflow_policy.classify_issue(
+                  state.effective.linear_contract,
+                  issue,
+                )
+              {
+                workflow_policy.WorkflowInvalid(violation) ->
+                  handle_invalid_workflow_candidate(
+                    state,
+                    issue,
+                    violation,
+                    rest,
+                  )
+                workflow_policy.WorkflowPolicyDisabled
+                | workflow_policy.WorkflowSelected(_, _) ->
+                  handle_valid_workflow_candidate(state, issue, rest)
+              }
           }
         }
       }
+  }
+}
+
+fn handle_valid_workflow_candidate(
+  state: State,
+  issue: domain.Issue,
+  remaining_candidates: List(domain.Issue),
+) -> State {
+  let runtime = core.clear_invalid_workflow_report(state.runtime, issue.id)
+  let state = State(..state, runtime: runtime)
+  case can_reserve_dispatch_slot(state, issue) {
+    False -> dispatch_candidates(remaining_candidates, state)
+    True -> dispatch_issue_with_continuation(state, issue, remaining_candidates)
+  }
+}
+
+fn handle_invalid_workflow_candidate(
+  state: State,
+  issue: domain.Issue,
+  violation: workflow_policy.IssueWorkflowViolation,
+  remaining_candidates: List(domain.Issue),
+) -> State {
+  case
+    core.already_attempted_invalid_workflow(
+      state.runtime,
+      issue,
+      violation,
+      state.effective.linear_contract,
+    )
+  {
+    True -> dispatch_candidates(remaining_candidates, state)
+    False -> {
+      let fingerprint = workflow_policy.violation_fingerprint(violation)
+      let reporting_policy_fingerprint =
+        workflow_policy.reporting_policy_fingerprint(
+          state.effective.linear_contract,
+        )
+      let runtime =
+        core.mark_invalid_workflow_report_pending(
+          state.runtime,
+          issue,
+          violation,
+          state.effective.linear_contract,
+          state.dependencies.now_ms(),
+        )
+      let state = State(..state, runtime: runtime)
+      log_state(state, "warn", "invalid_workflow_candidate", [
+        #("issue_id", issue.id),
+        #("issue_identifier", issue.identifier),
+        #("violation", workflow_policy.violation_code(violation)),
+        #("violation_fingerprint", fingerprint),
+      ])
+      let state =
+        enqueue_side_effect(
+          state,
+          ReportInvalidWorkflow(
+            issue: issue,
+            violation: violation,
+            violation_fingerprint: fingerprint,
+            reporting_policy_fingerprint: reporting_policy_fingerprint,
+            client: state.triage_client,
+          ),
+        )
+      dispatch_candidates(remaining_candidates, state)
+    }
   }
 }
 
@@ -1748,9 +1859,9 @@ fn handle_retry_tick(state: State, issue_id: String, generation: Int) -> State {
             )
           case state.operator_paused, config.can_dispatch(state.reload_state) {
             True, _ ->
-              defer_retry_for_invalid_workflow(state, issue_id, generation)
+              defer_retry_until_dispatch_available(state, issue_id, generation)
             _, False ->
-              defer_retry_for_invalid_workflow(state, issue_id, generation)
+              defer_retry_until_dispatch_available(state, issue_id, generation)
             False, True -> begin_retry_refresh(state, issue_id, generation)
           }
         }
@@ -1758,12 +1869,12 @@ fn handle_retry_tick(state: State, issue_id: String, generation: Int) -> State {
   }
 }
 
-fn defer_retry_for_invalid_workflow(
+fn defer_retry_until_dispatch_available(
   state: State,
   issue_id: String,
   generation: Int,
 ) -> State {
-  log_state(state, "warn", "retry_deferred_invalid_workflow", [
+  log_state(state, "warn", "retry_deferred_dispatch_unavailable", [
     #("issue_id", issue_id),
   ])
   let timer =
@@ -1834,40 +1945,91 @@ fn handle_retry_refresh_finished(
         False ->
           case config.can_dispatch(state.reload_state) {
             False ->
-              defer_retry_for_invalid_workflow(state, issue_id, generation)
+              defer_retry_until_dispatch_available(state, issue_id, generation)
             True -> {
               let candidate = case result {
                 Error(err) -> Error(error.tracker_code(err))
                 Ok([issue]) -> Ok(Some(issue))
                 Ok(_) -> Ok(None)
               }
-              case retry_candidate_needs_slot_retry(state, candidate) {
-                True -> {
-                  let transition =
-                    core.schedule_retry(
-                      state.runtime,
-                      issue_id,
-                      1000,
-                      "no available orchestrator slots",
-                    )
-                  let state = State(..state, runtime: transition.state)
-                  apply_effects(state, transition.effects)
-                }
-                False -> {
-                  let transition =
-                    core.handle_retry_candidate(
-                      state.runtime,
-                      state.effective,
-                      issue_id,
-                      candidate,
-                    )
-                  let state = State(..state, runtime: transition.state)
-                  apply_effects(state, transition.effects)
-                }
-              }
+              handle_retry_candidate_after_refresh(state, issue_id, candidate)
             }
           }
       }
+  }
+}
+
+fn handle_retry_candidate_after_refresh(
+  state: State,
+  issue_id: String,
+  candidate: Result(Option(domain.Issue), String),
+) -> State {
+  let state = case candidate {
+    Ok(Some(issue)) -> unpark_if_issue_changed_state(state, issue)
+    _ -> state
+  }
+  case candidate {
+    Ok(Some(issue)) ->
+      case
+        core.retry_candidate_preconditions_satisfied_without_slot_capacity(
+          state.runtime,
+          state.effective,
+          issue_id,
+          issue,
+        )
+      {
+        False -> handle_retry_candidate_with_slots(state, issue_id, candidate)
+        True ->
+          case
+            workflow_policy.classify_issue(
+              state.effective.linear_contract,
+              issue,
+            )
+          {
+            workflow_policy.WorkflowInvalid(violation) -> {
+              let transition =
+                core.stop_retry_for_policy_invalid(state.runtime, issue_id)
+              let state = State(..state, runtime: transition.state)
+              let state = apply_effects(state, transition.effects)
+              handle_invalid_workflow_candidate(state, issue, violation, [])
+            }
+            workflow_policy.WorkflowPolicyDisabled
+            | workflow_policy.WorkflowSelected(_, _) ->
+              handle_retry_candidate_with_slots(state, issue_id, candidate)
+          }
+      }
+    _ -> handle_retry_candidate_with_slots(state, issue_id, candidate)
+  }
+}
+
+fn handle_retry_candidate_with_slots(
+  state: State,
+  issue_id: String,
+  candidate: Result(Option(domain.Issue), String),
+) -> State {
+  case retry_candidate_needs_slot_retry(state, candidate) {
+    True -> {
+      let transition =
+        core.schedule_retry(
+          state.runtime,
+          issue_id,
+          1000,
+          "no available orchestrator slots",
+        )
+      let state = State(..state, runtime: transition.state)
+      apply_effects(state, transition.effects)
+    }
+    False -> {
+      let transition =
+        core.handle_retry_candidate(
+          state.runtime,
+          state.effective,
+          issue_id,
+          candidate,
+        )
+      let state = State(..state, runtime: transition.state)
+      apply_effects(state, transition.effects)
+    }
   }
 }
 
@@ -2409,6 +2571,19 @@ fn handle_side_effect_finished(state: State, result: SideEffectResult) -> State 
       handle_handoff_failure_finished(state, issue_id, result)
     LinearCommandAckFinished(issue_id, comment_id, result) ->
       handle_linear_command_ack_finished(state, issue_id, comment_id, result)
+    InvalidWorkflowReportFinished(
+      issue_id,
+      violation_fingerprint,
+      reporting_policy_fingerprint,
+      result,
+    ) ->
+      handle_invalid_workflow_report_finished(
+        state,
+        issue_id,
+        violation_fingerprint,
+        reporting_policy_fingerprint,
+        result,
+      )
     CleanupFinished(workspace_path, result) ->
       handle_cleanup_finished(state, workspace_path, result)
   }
@@ -2516,6 +2691,75 @@ fn handle_linear_command_ack_finished(
       ])
       state
     }
+  }
+}
+
+fn handle_invalid_workflow_report_finished(
+  state: State,
+  issue_id: String,
+  violation_fingerprint: String,
+  reporting_policy_fingerprint: String,
+  result: Result(linear_triage.InvalidWorkflowReportOutcome, error.TrackerError),
+) -> State {
+  case result {
+    Ok(linear_triage.InvalidWorkflowReportNoop) -> {
+      log_state(state, "info", "invalid_workflow_report_noop", [
+        #("issue_id", issue_id),
+        #("violation_fingerprint", violation_fingerprint),
+      ])
+      let runtime =
+        core.mark_invalid_workflow_report_result(
+          state.runtime,
+          issue_id,
+          violation_fingerprint,
+          reporting_policy_fingerprint,
+          "noop",
+        )
+      State(..state, runtime: runtime)
+    }
+    Ok(outcome) -> {
+      log_state(state, "info", "invalid_workflow_reported", [
+        #("issue_id", issue_id),
+        #("violation_fingerprint", violation_fingerprint),
+        #("outcome", invalid_workflow_outcome_to_string(outcome)),
+      ])
+      let runtime =
+        core.mark_invalid_workflow_report_result(
+          state.runtime,
+          issue_id,
+          violation_fingerprint,
+          reporting_policy_fingerprint,
+          "reported",
+        )
+      State(..state, runtime: runtime)
+    }
+    Error(err) -> {
+      log_state(state, "warn", "invalid_workflow_report_failed", [
+        #("issue_id", issue_id),
+        #("violation_fingerprint", violation_fingerprint),
+        #("error", error.tracker_code(err)),
+      ])
+      let runtime =
+        core.mark_invalid_workflow_report_result(
+          state.runtime,
+          issue_id,
+          violation_fingerprint,
+          reporting_policy_fingerprint,
+          "failed",
+        )
+      State(..state, runtime: runtime)
+    }
+  }
+}
+
+fn invalid_workflow_outcome_to_string(
+  outcome: linear_triage.InvalidWorkflowReportOutcome,
+) -> String {
+  case outcome {
+    linear_triage.InvalidWorkflowReportNoop -> "noop"
+    linear_triage.InvalidWorkflowReportComment -> "comment"
+    linear_triage.InvalidWorkflowReportState -> "state"
+    linear_triage.InvalidWorkflowReportCommentAndState -> "comment_and_state"
   }
 }
 
@@ -2630,6 +2874,19 @@ fn run_side_effect(effect: SideEffect) -> SideEffectResult {
         issue_id,
         source_comment_id,
         client.post_ack(issue_id, body),
+      )
+    ReportInvalidWorkflow(
+      issue,
+      violation,
+      violation_fingerprint,
+      reporting_policy_fingerprint,
+      client,
+    ) ->
+      InvalidWorkflowReportFinished(
+        issue.id,
+        violation_fingerprint,
+        reporting_policy_fingerprint,
+        client.report_invalid_workflow(issue, violation),
       )
     CleanupWorkspace(root, workspace_path, hooks, cleanup) ->
       CleanupFinished(workspace_path, cleanup(root, workspace_path, hooks))

@@ -3,6 +3,7 @@ import gleam/dict
 import gleam/option.{type Option, None, Some}
 import scherzo/domain
 import scherzo/orchestrator/core
+import scherzo/workflow_policy
 
 fn config() -> domain.EffectiveConfig {
   domain.EffectiveConfig(
@@ -70,6 +71,17 @@ fn config() -> domain.EffectiveConfig {
       max_comments_per_tick: 50,
       acknowledge_success: True,
       acknowledge_rejection: True,
+    ),
+  )
+}
+
+fn enforcing_config() -> domain.EffectiveConfig {
+  domain.EffectiveConfig(
+    ..config(),
+    linear_contract: domain.LinearContractConfig(
+      ..config().linear_contract,
+      workflow_labels: ["bugfix", "research"],
+      enforce_issue_workflow_labels: True,
     ),
   )
 }
@@ -227,6 +239,157 @@ pub fn candidate_sorting_and_eligibility_test() {
     config(),
     domain.Issue(..b, state: "Done"),
   )
+}
+
+pub fn workflow_policy_rejects_invalid_dispatch_test() {
+  let base = issue("a", "ABC-1", "Todo", Some(1))
+  let state = core.new_state(enforcing_config())
+  assert core.should_dispatch(
+    state,
+    enforcing_config(),
+    domain.Issue(..base, labels: ["workflow:bugfix"]),
+  )
+  assert !core.should_dispatch(state, enforcing_config(), base)
+  assert !core.should_dispatch(
+    state,
+    enforcing_config(),
+    domain.Issue(..base, labels: ["workflow:bugfix", "workflow:research"]),
+  )
+  assert !core.should_dispatch(
+    state,
+    enforcing_config(),
+    domain.Issue(..base, labels: ["workflow:unknown"]),
+  )
+  assert core.should_dispatch(state, config(), base)
+}
+
+pub fn dispatch_preconditions_skip_parked_before_workflow_reporting_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let parked =
+    state_with_parked(
+      core.new_state(enforcing_config()),
+      issue,
+      explicit_parked_entry(issue, "operator_hold"),
+    )
+  assert !core.dispatch_preconditions_satisfied(
+    parked,
+    enforcing_config(),
+    issue,
+  )
+  assert !core.should_dispatch(parked, enforcing_config(), issue)
+}
+
+pub fn retry_policy_invalid_can_stop_retry_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let running =
+    core.apply_worker_start(
+      core.new_state(enforcing_config()),
+      issue,
+      "/tmp/ws",
+    )
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(running, enforcing_config(), "a", issue, 100)
+  assert core.retry_candidate_preconditions_satisfied(
+    retry_state,
+    enforcing_config(),
+    "a",
+    issue,
+  )
+  let core.Transition(state: stopped, effects:) =
+    core.stop_retry_for_policy_invalid(retry_state, "a")
+  assert !dict.has_key(stopped.retry_attempts, "a")
+  assert !dict.has_key(stopped.claimed, "a")
+  assert effects == [core.CancelRetry("a"), core.ReleaseClaim("a")]
+}
+
+pub fn invalid_workflow_report_fingerprint_helpers_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let violation = workflow_policy.MissingWorkflowLabel
+  let pending =
+    core.mark_invalid_workflow_report_pending(
+      core.new_state(enforcing_config()),
+      issue,
+      violation,
+      enforcing_config().linear_contract,
+      123,
+    )
+  assert core.already_attempted_invalid_workflow(
+    pending,
+    issue,
+    violation,
+    enforcing_config().linear_contract,
+  )
+  let changed =
+    domain.Issue(..issue, labels: ["workflow:unknown"], updated_at: None)
+  assert !core.already_attempted_invalid_workflow(
+    pending,
+    changed,
+    workflow_policy.UnknownWorkflowLabel("workflow:unknown"),
+    enforcing_config().linear_contract,
+  )
+  let unknown_issue =
+    domain.Issue(..issue, labels: ["workflow:surprise"], updated_at: None)
+  let unknown_violation =
+    workflow_policy.UnknownWorkflowLabel("workflow:surprise")
+  let unknown_pending =
+    core.mark_invalid_workflow_report_pending(
+      core.new_state(enforcing_config()),
+      unknown_issue,
+      unknown_violation,
+      enforcing_config().linear_contract,
+      124,
+    )
+  assert !core.already_attempted_invalid_workflow(
+    unknown_pending,
+    domain.Issue(..unknown_issue, labels: ["workflow:other"]),
+    workflow_policy.UnknownWorkflowLabel("workflow:other"),
+    enforcing_config().linear_contract,
+  )
+
+  let changed_policy =
+    domain.LinearContractConfig(
+      ..enforcing_config().linear_contract,
+      comment_on_invalid_workflow: True,
+    )
+  assert !core.already_attempted_invalid_workflow(
+    pending,
+    issue,
+    violation,
+    changed_policy,
+  )
+
+  let updated =
+    core.mark_invalid_workflow_report_result(
+      pending,
+      issue.id,
+      workflow_policy.violation_fingerprint(violation),
+      workflow_policy.reporting_policy_fingerprint(
+        enforcing_config().linear_contract,
+      ),
+      "noop",
+    )
+  let assert Ok(report) = dict.get(updated.invalid_workflow_reports, issue.id)
+  assert report.last_result == "noop"
+
+  let failed =
+    core.mark_invalid_workflow_report_result(
+      pending,
+      issue.id,
+      workflow_policy.violation_fingerprint(violation),
+      workflow_policy.reporting_policy_fingerprint(
+        enforcing_config().linear_contract,
+      ),
+      "failed",
+    )
+  assert !core.already_attempted_invalid_workflow(
+    failed,
+    issue,
+    violation,
+    enforcing_config().linear_contract,
+  )
+
+  let cleared = core.clear_invalid_workflow_report(updated, issue.id)
+  assert !dict.has_key(cleared.invalid_workflow_reports, issue.id)
 }
 
 pub fn running_claimed_parked_and_slots_reject_dispatch_test() {

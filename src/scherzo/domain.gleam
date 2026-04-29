@@ -219,6 +219,20 @@ pub type ParkedEntry {
   )
 }
 
+pub type InvalidWorkflowReport {
+  InvalidWorkflowReport(
+    issue_id: String,
+    identifier: String,
+    violation_code: String,
+    violation_fingerprint: String,
+    reporting_policy_fingerprint: String,
+    observed_updated_at: Option(Time),
+    observed_labels_fingerprint: String,
+    attempted_at_ms: Int,
+    last_result: String,
+  )
+}
+
 pub type RuntimeState {
   RuntimeState(
     poll_interval_ms: Int,
@@ -228,6 +242,7 @@ pub type RuntimeState {
     retry_attempts: Dict(String, RetryEntry),
     issue_counters: Dict(String, IssueCounter),
     parked: Dict(String, ParkedEntry),
+    invalid_workflow_reports: Dict(String, InvalidWorkflowReport),
     completed: Dict(String, Issue),
     aggregate_pi_totals: TokenTotals,
     latest_rate_limit_payload: Option(String),

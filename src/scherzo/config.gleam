@@ -933,6 +933,19 @@ fn get_positive_int_map(node: yay.Node, key: String) -> dict.Dict(String, Int) {
   }
 }
 
+fn optional_non_empty_string(value: Option(String)) -> Option(String) {
+  case value {
+    None -> None
+    Some(value) -> {
+      let value = string.trim(value)
+      case value == "" {
+        True -> None
+        False -> Some(value)
+      }
+    }
+  }
+}
+
 fn resolve_optional_env(value: Option(String), env: Env) -> Option(String) {
   case value {
     Some(value) ->

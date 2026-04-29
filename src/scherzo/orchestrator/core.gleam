@@ -5,6 +5,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
 import gleam/string
 import scherzo/domain
+import scherzo/workflow_policy
+
+const invalid_workflow_report_cache_limit = 1024
 
 pub type Effect {
   Dispatch(domain.Issue)
@@ -34,6 +37,7 @@ pub fn new_state(config: domain.EffectiveConfig) -> domain.RuntimeState {
     retry_attempts: dict.new(),
     issue_counters: dict.new(),
     parked: dict.new(),
+    invalid_workflow_reports: dict.new(),
     completed: dict.new(),
     aggregate_pi_totals: domain.zero_token_totals(),
     latest_rate_limit_payload: None,
@@ -111,14 +115,39 @@ pub fn should_dispatch(
   config: domain.EffectiveConfig,
   issue: domain.Issue,
 ) -> Bool {
+  dispatch_preconditions_satisfied(state, config, issue)
+  && workflow_policy_satisfied(config, issue)
+}
+
+pub fn dispatch_preconditions_satisfied(
+  state: domain.RuntimeState,
+  config: domain.EffectiveConfig,
+  issue: domain.Issue,
+) -> Bool {
+  dispatch_preconditions_satisfied_without_slot_capacity(state, config, issue)
+  && slots_available(state, config, issue.state)
+}
+
+pub fn dispatch_preconditions_satisfied_without_slot_capacity(
+  state: domain.RuntimeState,
+  config: domain.EffectiveConfig,
+  issue: domain.Issue,
+) -> Bool {
   issue_has_required_fields(issue)
   && is_active(config, issue.state)
   && !is_terminal(config, issue.state)
   && !dict.has_key(state.running, issue.id)
   && !dict.has_key(state.claimed, issue.id)
   && !is_parked_for_issue(state, issue)
-  && slots_available(state, config, issue.state)
   && blockers_satisfied(config, issue)
+}
+
+pub fn workflow_policy_satisfied(
+  config: domain.EffectiveConfig,
+  issue: domain.Issue,
+) -> Bool {
+  workflow_policy.classify_issue(config.linear_contract, issue)
+  |> workflow_policy.workflow_satisfied
 }
 
 pub fn is_active(config: domain.EffectiveConfig, state: String) -> Bool {
@@ -129,7 +158,22 @@ pub fn is_terminal(config: domain.EffectiveConfig, state: String) -> Bool {
   contains_normalized(config.tracker.terminal_states, state)
 }
 
-fn should_dispatch_retry_candidate(
+pub fn retry_candidate_preconditions_satisfied(
+  state: domain.RuntimeState,
+  config: domain.EffectiveConfig,
+  issue_id: String,
+  issue: domain.Issue,
+) -> Bool {
+  retry_candidate_preconditions_satisfied_without_slot_capacity(
+    state,
+    config,
+    issue_id,
+    issue,
+  )
+  && slots_available(state, config, issue.state)
+}
+
+pub fn retry_candidate_preconditions_satisfied_without_slot_capacity(
   state: domain.RuntimeState,
   config: domain.EffectiveConfig,
   issue_id: String,
@@ -142,7 +186,6 @@ fn should_dispatch_retry_candidate(
   && !dict.has_key(state.running, issue.id)
   && retry_claim_allowed(state, issue.id)
   && !is_parked_for_issue(state, issue)
-  && slots_available(state, config, issue.state)
   && blockers_satisfied(config, issue)
 }
 
@@ -421,7 +464,10 @@ pub fn handle_retry_candidate(
       )
     Ok(Some(issue)) -> {
       let state = unpark_if_issue_changed(state, issue)
-      case should_dispatch_retry_candidate(state, config, issue_id, issue) {
+      case
+        retry_candidate_preconditions_satisfied(state, config, issue_id, issue)
+        && workflow_policy_satisfied(config, issue)
+      {
         True ->
           Transition(state: clear_retry(state, issue_id), effects: [
             Dispatch(issue),
@@ -583,6 +629,137 @@ fn clear_retry(
     ..state,
     retry_attempts: dict.delete(state.retry_attempts, issue_id),
   )
+}
+
+pub fn stop_retry_for_policy_invalid(
+  state: domain.RuntimeState,
+  issue_id: String,
+) -> Transition {
+  Transition(
+    state: release_claim(clear_retry(state, issue_id), issue_id),
+    effects: [CancelRetry(issue_id), ReleaseClaim(issue_id)],
+  )
+}
+
+pub fn already_attempted_invalid_workflow(
+  state: domain.RuntimeState,
+  issue: domain.Issue,
+  violation: workflow_policy.IssueWorkflowViolation,
+  config: domain.LinearContractConfig,
+) -> Bool {
+  case dict.get(state.invalid_workflow_reports, issue.id) {
+    Error(_) -> False
+    Ok(report) ->
+      report.last_result != "failed"
+      && report.observed_updated_at == issue.updated_at
+      && report.observed_labels_fingerprint
+      == workflow_policy.observed_labels_fingerprint(issue)
+      && report.violation_fingerprint
+      == workflow_policy.violation_fingerprint(violation)
+      && report.reporting_policy_fingerprint
+      == workflow_policy.reporting_policy_fingerprint(config)
+  }
+}
+
+pub fn mark_invalid_workflow_report_pending(
+  state: domain.RuntimeState,
+  issue: domain.Issue,
+  violation: workflow_policy.IssueWorkflowViolation,
+  config: domain.LinearContractConfig,
+  now_ms: Int,
+) -> domain.RuntimeState {
+  let report =
+    domain.InvalidWorkflowReport(
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      violation_code: workflow_policy.violation_code(violation),
+      violation_fingerprint: workflow_policy.violation_fingerprint(violation),
+      reporting_policy_fingerprint: workflow_policy.reporting_policy_fingerprint(
+        config,
+      ),
+      observed_updated_at: issue.updated_at,
+      observed_labels_fingerprint: workflow_policy.observed_labels_fingerprint(
+        issue,
+      ),
+      attempted_at_ms: now_ms,
+      last_result: "pending",
+    )
+  domain.RuntimeState(
+    ..state,
+    invalid_workflow_reports: dict.insert(
+        state.invalid_workflow_reports,
+        issue.id,
+        report,
+      )
+      |> trim_invalid_workflow_reports,
+  )
+}
+
+pub fn mark_invalid_workflow_report_result(
+  state: domain.RuntimeState,
+  issue_id: String,
+  violation_fingerprint: String,
+  reporting_policy_fingerprint: String,
+  last_result: String,
+) -> domain.RuntimeState {
+  case dict.get(state.invalid_workflow_reports, issue_id) {
+    Error(_) -> state
+    Ok(report) ->
+      case
+        report.violation_fingerprint == violation_fingerprint
+        && report.reporting_policy_fingerprint == reporting_policy_fingerprint
+      {
+        False -> state
+        True ->
+          domain.RuntimeState(
+            ..state,
+            invalid_workflow_reports: dict.insert(
+              state.invalid_workflow_reports,
+              issue_id,
+              domain.InvalidWorkflowReport(..report, last_result: last_result),
+            ),
+          )
+      }
+  }
+}
+
+pub fn clear_invalid_workflow_report(
+  state: domain.RuntimeState,
+  issue_id: String,
+) -> domain.RuntimeState {
+  domain.RuntimeState(
+    ..state,
+    invalid_workflow_reports: dict.delete(
+      state.invalid_workflow_reports,
+      issue_id,
+    ),
+  )
+}
+
+fn trim_invalid_workflow_reports(
+  reports: dict.Dict(String, domain.InvalidWorkflowReport),
+) -> dict.Dict(String, domain.InvalidWorkflowReport) {
+  case dict.size(reports) <= invalid_workflow_report_cache_limit {
+    True -> reports
+    False ->
+      reports
+      |> dict.to_list
+      |> list.sort(by: compare_invalid_workflow_report_entries)
+      |> list.take(invalid_workflow_report_cache_limit)
+      |> dict.from_list
+  }
+}
+
+fn compare_invalid_workflow_report_entries(
+  a: #(String, domain.InvalidWorkflowReport),
+  b: #(String, domain.InvalidWorkflowReport),
+) -> Order {
+  let #(a_id, a_report) = a
+  let #(b_id, b_report) = b
+  case int.compare(b_report.attempted_at_ms, a_report.attempted_at_ms) {
+    Eq -> string.compare(a_id, b_id)
+    order -> order
+  }
 }
 
 fn release_claim(

@@ -10,9 +10,11 @@ import scherzo/domain
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
+import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/session/hub
 import scherzo/tracker
+import scherzo/workflow_policy
 import simplifile
 
 fn reset_dir(dir: String) -> Nil {
@@ -52,6 +54,20 @@ fn write_workflow(dir: String, max_concurrent: Int) -> String {
   let root = dir <> "/workspaces"
   let assert Ok(Nil) =
     simplifile.write(workflow_path, workflow_text(root, max_concurrent))
+  workflow_path
+}
+
+fn write_enforcing_workflow(dir: String, max_concurrent: Int) -> String {
+  reset_dir(dir)
+  let workflow_path = dir <> "/WORKFLOW.md"
+  let root = dir <> "/workspaces"
+  let contents =
+    workflow_text(root, max_concurrent)
+    |> string.replace(
+      each: "linear_commands:",
+      with: "linear_contract:\n  workflow_label_prefix: \"workflow:\"\n  workflow_labels: [bugfix, research]\n  enforce_issue_workflow_labels: true\nlinear_commands:",
+    )
+  let assert Ok(Nil) = simplifile.write(workflow_path, contents)
   workflow_path
 }
 
@@ -220,6 +236,16 @@ fn pop_batch(
   }
 }
 
+fn fake_triage(subject: process.Subject(String)) -> linear_triage.TriageClient {
+  linear_triage.TriageClient(report_invalid_workflow: fn(issue, violation) {
+    process.send(
+      subject,
+      "triage:" <> issue.id <> ":" <> workflow_policy.violation_code(violation),
+    )
+    Ok(linear_triage.InvalidWorkflowReportNoop)
+  })
+}
+
 fn linear_client(
   server: process.Subject(LinearServerMessage),
 ) -> linear.CommandClient {
@@ -263,6 +289,7 @@ fn dependencies(
     make_tracker: fn(_) { tracker_client },
     make_handoff: fn(_, _) { handoff.disabled_client() },
     make_linear_commands: fn(_) { linear_command_client },
+    make_triage: fn(_, _) { linear_triage.disabled_client() },
     agent_runner: agent_runner,
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, fields, _) {
@@ -393,6 +420,43 @@ pub fn linear_commands_run_before_candidate_dispatch_test() {
   assert dict.size(snapshot.running) == 0
   let assert Ok(ack) = process.receive(ack_subject, within: 1000)
   assert string.contains(ack, "Status: applied")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn park_command_suppresses_invalid_workflow_triage_test() {
+  let candidate = issue("issue-1", "ABC-1", "Todo")
+  let workflow_path =
+    write_enforcing_workflow("test/tmp/daemon-linear-park-invalid", 1)
+  let log_subject = process.new_subject()
+  let fetch_subject = process.new_subject()
+  let ack_subject = process.new_subject()
+  let triage_subject = process.new_subject()
+  let linear_server = start_linear_server(fetch_subject, ack_subject)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(
+        tracker_with(candidate),
+        linear_client(linear_server),
+        log_subject,
+        unused_agent,
+      ),
+      make_triage: fn(_, _) { fake_triage(triage_subject) },
+    )
+  process.send(
+    linear_server,
+    SetNext([
+      linear_comment("c1", "issue-1", "/scherzo park --reason hold"),
+    ]),
+  )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  let assert Ok(fetched_ids) = process.receive(fetch_subject, within: 1000)
+  assert fetched_ids == ["issue-1"]
+  let assert Ok(snapshot) = wait_for_parked(started.data, "issue-1", 20)
+  assert dict.has_key(snapshot.parked, "issue-1")
+  assert process.receive(triage_subject, within: 100) == Error(Nil)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }

@@ -71,6 +71,7 @@ pub fn runtime_state_holds_scheduler_collections_test() {
       retry_attempts: dict.new(),
       issue_counters: dict.new(),
       parked: dict.new(),
+      invalid_workflow_reports: dict.new(),
       completed: dict.new(),
       aggregate_pi_totals: domain.zero_token_totals(),
       latest_rate_limit_payload: None,
