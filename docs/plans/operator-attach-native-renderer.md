@@ -63,14 +63,21 @@ The main UX risk is hiding pi lifecycle details that are useful while debugging.
 - [x] (2026-04-29 21:33Z) Re-reviewed the plan against the current working tree. `git status --short` and `jj status --ignore-working-copy` showed in-flight native-renderer and plan changes rather than a clean post-commit tree.
 - [x] (2026-04-29 21:33Z) Ran `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `direnv exec . gleam run -- ctl --help`; validation passed and the test suite reported `289 passed, no failures`.
 - [x] (2026-04-29 21:34Z) Amended this plan to cover hidden pass-boundary state resets, `sanitize.bounded_body_lines`, current validation evidence, and portable sample paths.
+- [x] (2026-04-29 21:40Z) Started a local fake control server and confirmed quiet `scripts/scherzoctl attach SMOKE-ATTACH-1` rendered `Scherzo pass 1`, assistant, tool, UI request, and token summary blocks without ambiguous turn lifecycle lines.
+- [x] (2026-04-29 21:41Z) Ran verbose attach against the fake control server and confirmed `pi cycle 1 started`, `pi cycle 1 ended`, `pi cycle 2 started`, and `pi cycle 2 ended` diagnostics appear only with `--verbose`.
+- [x] (2026-04-29 22:00Z) Started the real Scherzo daemon with `.scherzo/workflows/research.md`, attached to live session `LIV-11--576460751317-1`, and observed the renderer with real pi event traffic.
+- [x] (2026-04-29 22:05Z) Discovered real pi can emit many structured tool input snapshots with the placeholder `[structured tool input; use --json for raw details]`; added renderer state and tests to collapse repeated structured placeholder input per tool label per Scherzo pass.
+- [x] (2026-04-29 22:09Z) Re-ran `direnv exec . gleam test`; the suite reported `290 passed, no failures`.
+- [x] (2026-04-29 22:10Z) Re-attached to the real daemon with the updated renderer and confirmed retained output had no ambiguous lifecycle lines and only one structured tool input placeholder for the retained Scherzo pass.
+- [x] (2026-04-29 22:11Z) Stopped the real daemon with SIGTERM to the BEAM process; the control file and instance lock were removed.
 
 ## Surprises & Discoveries
 
 - Observation: The current renderer can remain pure and line-oriented even with streaming assistant deltas.
   Evidence: `render.render_event` and `render.render_events` still return `#(RenderState, List(RenderChunk))`, and tests assert exact strings through `render.chunks_to_string` without starting a daemon.
 
-- Observation: The active assistant line and active tool subsection are separate state problems.
-  Evidence: `RenderState` carries both `assistant_active` and `assistant_line_open` for assistant streaming, and `active_tool_label` plus `active_tool_section` for repeated tool output updates.
+- Observation: The active assistant line, active tool subsection, and repeated structured tool placeholders are separate state problems.
+  Evidence: `RenderState` carries both `assistant_active` and `assistant_line_open` for assistant streaming, `active_tool_label` plus `active_tool_section` for repeated tool output updates, and `structured_tool_input_labels` so real pi snapshots do not print the same structured input placeholder repeatedly within one Scherzo pass.
 
 - Observation: The CLI can expose verbose pretty output without affecting raw or JSON output.
   Evidence: `src/scherzo/ctl.gleam` carries `verbose: Bool` in `Command.Events` and `Command.Attach`, but raw and JSON modes still print compact lines or JSON stream envelopes; only pretty mode calls `pretty_options(color, verbose)`.
@@ -83,6 +90,12 @@ The main UX risk is hiding pi lifecycle details that are useful while debugging.
 
 - Observation: The current review checkout contains in-flight implementation and plan edits rather than a clean post-implementation commit.
   Evidence: `git status --short` and `jj status --ignore-working-copy` showed `docs/plans/operator-attach-native-renderer.md`, `src/scherzo/terminal/render.gleam`, `src/scherzo/terminal/sanitize.gleam`, and `test/terminal_render_test.gleam` as changed. The final commit point must include those files unless the implementation is committed separately first.
+
+- Observation: The first fake-control live smoke passed, but a real daemon attach exposed a separate noise source from real pi event shapes.
+  Evidence: `scripts/scherzoctl attach --no-follow LIV-11--576460751317-1` against `.scherzo/workflows/research.md` initially printed many repeated `tool bash` blocks containing only `[structured tool input; use --json for raw details]`. A JSON page showed repeated `tool_execution_update` records whose only visible detail was the structured input placeholder.
+
+- Observation: Collapsing structured tool input placeholders in the renderer is enough to improve retained real-daemon output without changing raw or JSON data.
+  Evidence: After updating `src/scherzo/terminal/render.gleam`, the same retained real-daemon session rendered one placeholder block for `tool bash` in Scherzo pass 9, no label-only duplicate tool block, and no `turn N started`/`turn N ended` lines. The full suite reported `290 passed, no failures`.
 
 ## Decision Log
 
@@ -118,6 +131,10 @@ The main UX risk is hiding pi lifecycle details that are useful while debugging.
   Rationale: The spike and the native renderer have different purposes. Splitting the native plan makes the chosen path reviewable without re-reading the rejected pi/Node alternatives.
   Date: 2026-04-29
 
+- Decision: Collapse repeated structured tool input placeholders per tool label per Scherzo pass in the pretty renderer.
+  Rationale: Real pi event streams can include many repeated snapshots whose only retained input is `[structured tool input; use --json for raw details]`. Reprinting the placeholder dozens of times adds noise but no information. Raw and JSON modes still retain every event for debugging.
+  Date: 2026-04-29
+
 ## Outcomes & Retrospective
 
 The native renderer is implemented in the current tree. Quiet pretty output no longer shows repeated `turn 1 started` and `turn 1 ended` lines. It emits `Scherzo pass 1`, an `assistant` block, tool subsections, UI request lines, and pass-scoped token summaries. Verbose pretty output adds `pi cycle N started` and `pi cycle N ended` diagnostic lines.
@@ -127,9 +144,11 @@ The current validation evidence is:
     direnv exec . gleam format --check src test
     # exits 0
     direnv exec . gleam test
-    289 passed, no failures
+    290 passed, no failures
     direnv exec . gleam run -- ctl --help
     # output includes attach --verbose, events --pretty --verbose, and --verbose
+
+A fake-control live attach smoke produced the target quiet transcript with `Scherzo pass 1`, assistant text, tool input/output, UI request text, and a token summary. A verbose fake-control attach added `pi cycle` diagnostics. A real daemon attach against `.scherzo/workflows/research.md` exposed repeated structured tool input placeholders; after the renderer fix, the retained real-daemon transcript collapsed those duplicates while still showing one placeholder and pass token summaries.
 
 A representative quiet transcript shape is:
 
@@ -168,7 +187,7 @@ Before changing code under this plan, run these commands from the repository roo
     jj status --ignore-working-copy
     direnv exec . gleam test
 
-As of the 2026-04-29 21:33Z review, `git status --short` and `jj status --ignore-working-copy` showed in-flight native-renderer and plan changes rather than a clean post-implementation commit. The changed files were `docs/plans/operator-attach-native-renderer.md`, `src/scherzo/terminal/render.gleam`, `src/scherzo/terminal/sanitize.gleam`, and `test/terminal_render_test.gleam`. `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `direnv exec . gleam run -- ctl --help` passed; the test run reported `289 passed, no failures`. Treat those files as the current implementation set unless they are committed before this plan is reused.
+As of the 2026-04-29 22:11Z review, `git status --short` and `jj status --ignore-working-copy` showed in-flight native-renderer and plan changes rather than a clean post-implementation commit. The changed files were `docs/plans/operator-attach-native-renderer.md`, `src/scherzo/terminal/render.gleam`, and `test/terminal_render_test.gleam`. `direnv exec . gleam test` passed and reported `290 passed, no failures`. Treat those files as the current implementation set unless they are committed before this plan is reused.
 
 Verified current facts:
 
@@ -208,7 +227,7 @@ Milestone 6 validates the implementation. At the end, format checks pass, the fu
 
 ## Plan of Work
 
-In `src/scherzo/terminal/render.gleam`, define `ToolSection` with variants `ToolInput` and `ToolOutput`. Expand `RenderState` so it carries `last_cursor`, `current_pass`, `displayed_pass`, `pi_cycle`, `assistant_active`, `assistant_line_open`, `active_tool_label`, and `active_tool_section`. Keep `last_cursor` as the replay/follow duplicate-suppression cursor. Do not reuse a single field for both observed pass and displayed heading. When an observed pass changes, clear `active_tool_label` and `active_tool_section`; when a visible assistant event belongs to a different pass than the displayed pass, close the previous assistant line before rendering the new heading and label.
+In `src/scherzo/terminal/render.gleam`, define `ToolSection` with variants `ToolInput` and `ToolOutput`. Expand `RenderState` so it carries `last_cursor`, `current_pass`, `displayed_pass`, `pi_cycle`, `assistant_active`, `assistant_line_open`, `active_tool_label`, `active_tool_section`, and `structured_tool_input_labels`. Keep `last_cursor` as the replay/follow duplicate-suppression cursor. Do not reuse a single field for both observed pass and displayed heading. When an observed pass changes, clear `active_tool_label`, `active_tool_section`, and `structured_tool_input_labels`; when a visible assistant event belongs to a different pass than the displayed pass, close the previous assistant line before rendering the new heading and label.
 
 In the same file, extend `RenderOptions` to include `show_pi_cycles` alongside `color_mode`, `show_lifecycle`, and `show_raw_unknown`. Keep `default_options(color_mode)` as quiet operator output with diagnostics disabled. Add `verbose_options(color_mode)` with lifecycle, raw unknown, and pi-cycle diagnostics enabled.
 
@@ -247,7 +266,7 @@ Update `README.md` in the `Local control API and scherzoctl` section. Replace tu
        jj status --ignore-working-copy
        direnv exec . gleam test
 
-   Expect a clean or consciously documented working copy and a passing baseline. In the current implementation tree, the suite reports `289 passed, no failures`.
+   Expect a clean or consciously documented working copy and a passing baseline. In the current implementation tree, the suite reports `290 passed, no failures`.
 
 2. In `src/scherzo/terminal/render.gleam`, update `RenderState` and `RenderOptions` to the native renderer shape described above. Keep the public entry points `initial_state`, `default_options`, `verbose_options`, `chunks_to_string`, `render_header`, `render_truncation_warning`, `render_event`, `render_events`, and `render_page`.
 
@@ -259,7 +278,7 @@ Update `README.md` in the `Local control API and scherzoctl` section. Replace tu
 
 6. Update assistant rendering in `src/scherzo/terminal/render.gleam`. Add exact transcript tests for a multiline single delta, a newline split across two deltas, adjacent deltas with no newline, terminal-control escaping inside assistant content, and an assistant event for a new Scherzo pass that follows an open assistant line from the prior pass.
 
-7. Update tool rendering in `src/scherzo/terminal/render.gleam`. Add exact transcript tests for single-line input/output, multiline output, repeated output-only updates within one pass, status/end closure, display truncation by line count and by line width, and same-named tool output after a hidden pass boundary. The hidden-boundary test should include pass 1 `tool bash` output, a quiet `turn_start` for pass 2, and pass 2 `tool bash` output; the expected transcript must repeat both `Scherzo pass 2` and `tool bash`.
+7. Update tool rendering in `src/scherzo/terminal/render.gleam`. Add exact transcript tests for single-line input/output, multiline output, repeated output-only updates within one pass, repeated structured input placeholder updates within one pass, status/end closure, display truncation by line count and by line width, and same-named tool output after a hidden pass boundary. The hidden-boundary test should include pass 1 `tool bash` output, a quiet `turn_start` for pass 2, and pass 2 `tool bash` output; the expected transcript must repeat both `Scherzo pass 2` and `tool bash`.
 
 8. Update UI request and token rendering in `src/scherzo/terminal/render.gleam`. Add tests for `UI request waiting: confirm #ui-1` with a multiline body and `Scherzo pass 1 tokens: ...`.
 
@@ -295,7 +314,7 @@ Block sanitization is falsifiable with direct function tests. `sanitize.block_li
 
 Assistant rendering is falsifiable with exact transcripts. A single delta `"first\nsecond"` must render as two indented body lines. Deltas `"first\n"` followed by `"second"` must also render as two indented body lines. Deltas `"Hello "` followed by `"world"` must render as `Hello world` on one line under the `assistant` label. If a later assistant event belongs to a different Scherzo pass, the prior open assistant line must close before the new pass heading and the new `assistant` label appear.
 
-Tool rendering is falsifiable with exact transcripts. A tool with input, output, and status must render separate subsections. Repeated output updates for the same tool within one pass must not repeat the tool label or `output` heading. The same tool name in a later pass after a hidden lifecycle boundary must repeat the `tool <name>` label under the new pass heading. Long output must include the visible display truncation note for both line-count truncation and line-width truncation. Terminal controls inside tool input/output must be escaped.
+Tool rendering is falsifiable with exact transcripts. A tool with input, output, and status must render separate subsections. Repeated output updates for the same tool within one pass must not repeat the tool label or `output` heading. Repeated structured input placeholder snapshots for the same tool label within one Scherzo pass must render the placeholder once and suppress duplicate placeholder-only updates. The same tool name in a later pass after a hidden lifecycle boundary must repeat the `tool <name>` label under the new pass heading. Long output must include the visible display truncation note for both line-count truncation and line-width truncation. Terminal controls inside tool input/output must be escaped.
 
 CLI behavior is falsifiable with parser and injected-client tests. `ctl.parse(["attach", "--verbose", "ABC-1"])` must return an `Attach` command with pretty mode and `verbose: True`. `ctl.parse(["events", "--pretty", "--verbose", "ABC-1"])` must return an `Events` command with pretty mode and `verbose: True`. `attach --json --verbose` must still use JSON output, not pretty output.
 
@@ -357,7 +376,7 @@ Validation from the repository root must pass:
     direnv exec . gleam test
     direnv exec . gleam run -- ctl --help
 
-In the current tree, `direnv exec . gleam test` reports `289 passed, no failures`.
+In the current tree, `direnv exec . gleam test` reports `290 passed, no failures`.
 
 ## Rollout, Recovery, and Idempotence
 
@@ -401,7 +420,7 @@ The current final validation evidence is:
     direnv exec . gleam format --check src test
     # exits 0
     direnv exec . gleam test
-    289 passed, no failures
+    290 passed, no failures
     direnv exec . gleam run -- ctl --help
     # output includes attach --verbose, events --pretty --verbose, and --verbose
 
@@ -437,6 +456,7 @@ In `src/scherzo/terminal/render.gleam`, keep:
         assistant_line_open: Bool,
         active_tool_label: Option(String),
         active_tool_section: Option(ToolSection),
+        structured_tool_input_labels: List(String),
       )
     }
 
