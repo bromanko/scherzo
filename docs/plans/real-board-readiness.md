@@ -79,7 +79,7 @@ The main operational risk is assuming the local instance lock is a distributed l
 - [x] (2026-04-28 22:31Z) Ran state-transition handoff with fake pi against real Linear issue `LIV-7`; smoke saw one Todo candidate, claim moved the issue to `In Progress`, success moved it to `Done`, and Linear comment count increased from 2 to 4.
 - [x] (2026-04-28 22:45Z) Ran one safe real-pi daemon dispatch against real Linear issue `LIV-8`; daemon logged real pi events and normal worker exit, Linear ended in `Done`, and comments include claim plus success with `7769` total pi tokens.
 - [x] (2026-04-28 22:49Z) Ran a clean real-pi daemon dispatch against new real Linear issue `LIV-9`; after moving it from `Backlog` to `Todo` for setup, smoke found one active candidate, daemon completed normally, Linear ended in `Done`, and comments include exactly one claim plus one success with `7767` total pi tokens.
-- [ ] Add a future extensible `doctor` command that runs named readiness checks such as workflow/config validation, read-only Linear smoke, no-prompt pi probe, workspace hook validation, instance-lock status, and later control/EventHub health checks, so one command can replace or aggregate one-off smoke/probe flags without losing per-check output.
+- [x] (2026-04-30 16:24Z) Added the extensible `doctor` command covered by `docs/plans/doctor-command.md`; it runs named readiness checks for workflow/config validation, read-only Linear contract and smoke checks, instance-lock status, workspace hook validation, and no-prompt pi probing while preserving the one-off smoke/probe flags.
 
 ## Surprises & Discoveries
 

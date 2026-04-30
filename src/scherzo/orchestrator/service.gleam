@@ -1,10 +1,11 @@
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/probe
+import scherzo/doctor
 import scherzo/domain
 import scherzo/error
 import scherzo/instance_lock
@@ -56,6 +57,37 @@ pub type ContractCheckDependencies {
   )
 }
 
+pub type DoctorLock {
+  DoctorLock(release: fn() -> Nil)
+}
+
+pub type DoctorDependencies {
+  DoctorDependencies(
+    load_bundle: fn(Option(String)) ->
+      Result(runtime_bundle.RuntimeBundle, runtime_bundle.BundleError),
+    make_linear_smoke_reader: fn(domain.TrackerConfig) ->
+      smoke.LinearSmokeReader,
+    make_contract_client: fn(domain.TrackerConfig) -> linear.ContractClient,
+    acquire_lock: fn(String) -> Result(DoctorLock, instance_lock.LockError),
+    prepare_step: fn(
+      domain.Issue,
+      String,
+      String,
+      String,
+      workflow_dag.WorkspaceRef,
+      domain.OrchestratorConfig,
+      Dict(String, workspace_run.PreparedStepWorkspace),
+    ) ->
+      Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
+    cleanup_run: fn(String, domain.OrchestratorConfig) ->
+      Result(Nil, error.WorkspaceError),
+    pi_probe: fn(String, String, Int) -> Result(Nil, error.PiRpcError),
+    logger: fn(String, String, List(log.Field), List(String)) ->
+      Result(Nil, Nil),
+    list_writer: fn(String) -> Result(Nil, Nil),
+  )
+}
+
 pub type ServiceResult {
   ServiceResult(logs: List(String), dispatched: Int, state: domain.RuntimeState)
 }
@@ -71,6 +103,32 @@ pub fn default_dependencies() -> Dependencies {
     },
     now_ms: monotonic_ms,
   )
+}
+
+pub fn default_doctor_dependencies() -> DoctorDependencies {
+  DoctorDependencies(
+    load_bundle: runtime_bundle.load,
+    make_linear_smoke_reader: smoke.real_linear_reader,
+    make_contract_client: linear.real_contract_client,
+    acquire_lock: acquire_doctor_lock,
+    prepare_step: workspace_run.prepare_step,
+    cleanup_run: workspace_run.cleanup_run,
+    pi_probe: probe.probe,
+    logger: log_stderr,
+    list_writer: fn(line) {
+      io.println(line)
+      Ok(Nil)
+    },
+  )
+}
+
+fn acquire_doctor_lock(
+  workspace_root: String,
+) -> Result(DoctorLock, instance_lock.LockError) {
+  case instance_lock.acquire(workspace_root) {
+    Error(err) -> Error(err)
+    Ok(lock) -> Ok(DoctorLock(release: fn() { instance_lock.release(lock) }))
+  }
 }
 
 fn daemon_dependencies() -> daemon.RuntimeDependencies {
@@ -186,6 +244,681 @@ pub fn start_linear_contract_check_with_dependencies(
         "Linear board contract mismatch",
       ))
     }
+  }
+}
+
+pub fn start_doctor(options: doctor.Options) -> Result(Nil, StartupError) {
+  start_doctor_with_dependencies(options, default_doctor_dependencies())
+}
+
+pub fn start_doctor_with_dependencies(
+  options: doctor.Options,
+  dependencies: DoctorDependencies,
+) -> Result(Nil, StartupError) {
+  case options.list_checks {
+    True -> {
+      list.each(doctor.list_check_names(), fn(name) {
+        let _ = dependencies.list_writer(name)
+        Nil
+      })
+      Ok(Nil)
+    }
+    False -> {
+      use report_and_secrets <- try_startup(build_doctor_report_and_secrets(
+        options,
+        dependencies,
+      ))
+      let #(report, secrets) = report_and_secrets
+      log_doctor_report(report, dependencies, secrets)
+      case doctor.has_failures(report) {
+        True ->
+          Error(StartupError(
+            "doctor_failed",
+            "one or more doctor checks failed",
+          ))
+        False -> Ok(Nil)
+      }
+    }
+  }
+}
+
+pub fn build_doctor_report_with_dependencies(
+  options: doctor.Options,
+  dependencies: DoctorDependencies,
+) -> Result(doctor.Report, StartupError) {
+  use report_and_secrets <- try_startup(build_doctor_report_and_secrets(
+    options,
+    dependencies,
+  ))
+  let #(report, _secrets) = report_and_secrets
+  Ok(report)
+}
+
+fn build_doctor_report_and_secrets(
+  options: doctor.Options,
+  dependencies: DoctorDependencies,
+) -> Result(#(doctor.Report, List(String)), StartupError) {
+  use selected <- try_startup(resolve_doctor_checks(options.checks))
+  case dependencies.load_bundle(options.path) {
+    Error(err) -> Ok(#(doctor_bundle_failure_report(selected, err), []))
+    Ok(bundle) ->
+      Ok(#(
+        run_loaded_doctor_checks(selected, bundle, dependencies),
+        bundle.secrets,
+      ))
+  }
+}
+
+fn resolve_doctor_checks(
+  raw_checks: List(String),
+) -> Result(List(doctor.CheckName), StartupError) {
+  case doctor.selected_checks(raw_checks) {
+    Ok(checks) -> Ok(checks)
+    Error(name) ->
+      Error(StartupError(
+        "unknown_doctor_check",
+        "unknown doctor check: " <> name,
+      ))
+  }
+}
+
+fn doctor_bundle_failure_report(
+  selected: List(doctor.CheckName),
+  error: runtime_bundle.BundleError,
+) -> doctor.Report {
+  let runtime_bundle.BundleError(code, message) = error
+  let results = [
+    doctor.CheckResult(
+      check: doctor.WorkflowConfig,
+      status: doctor.Fail,
+      code: code,
+      message: message,
+      fields: [],
+    ),
+  ]
+  doctor.Report(skip_after_workflow_failure(
+    doctor.canonical_checks(selected),
+    results,
+  ))
+}
+
+fn skip_after_workflow_failure(
+  checks: List(doctor.CheckName),
+  results: List(doctor.CheckResult),
+) -> List(doctor.CheckResult) {
+  case checks {
+    [] -> results
+    [doctor.WorkflowConfig, ..rest] ->
+      skip_after_workflow_failure(rest, results)
+    [check, ..rest] ->
+      skip_after_workflow_failure(
+        rest,
+        list.append(results, [
+          doctor.CheckResult(
+            check: check,
+            status: doctor.Skip,
+            code: "workflow_config_failed",
+            message: "workflow config did not load",
+            fields: [],
+          ),
+        ]),
+      )
+  }
+}
+
+fn run_loaded_doctor_checks(
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+) -> doctor.Report {
+  []
+  |> maybe_workflow_config_result(selected, bundle)
+  |> maybe_linear_contract_result(selected, bundle, dependencies)
+  |> maybe_linear_smoke_result(selected, bundle, dependencies)
+  |> maybe_local_probe_results(selected, bundle, dependencies)
+  |> doctor.Report
+}
+
+fn maybe_workflow_config_result(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+) -> List(doctor.CheckResult) {
+  case doctor.contains_check(selected, doctor.WorkflowConfig) {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.WorkflowConfig,
+          status: doctor.Pass,
+          code: "ok",
+          message: "YAML orchestrator config and workflow DAGs are valid",
+          fields: [
+            #("config_path", bundle.config_path),
+            #(
+              "workflow_count",
+              int_to_string(list.length(dict.to_list(bundle.workflows))),
+            ),
+          ],
+        ),
+      ])
+  }
+}
+
+fn maybe_linear_contract_result(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+) -> List(doctor.CheckResult) {
+  case doctor.contains_check(selected, doctor.LinearContract) {
+    False -> results
+    True ->
+      list.append(results, [
+        run_linear_contract_doctor_check(bundle, dependencies),
+      ])
+  }
+}
+
+fn run_linear_contract_doctor_check(
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+) -> doctor.CheckResult {
+  let client = dependencies.make_contract_client(bundle.effective.tracker)
+  case client.fetch_remote_contract() {
+    Error(err) ->
+      doctor.CheckResult(
+        check: doctor.LinearContract,
+        status: doctor.Fail,
+        code: error.tracker_code(err),
+        message: "Linear contract fetch failed",
+        fields: [],
+      )
+    Ok(remote) -> {
+      let diagnostics = linear_contract.check(bundle.effective, remote)
+      case linear_contract.is_ok(diagnostics) {
+        True ->
+          doctor.CheckResult(
+            check: doctor.LinearContract,
+            status: doctor.Pass,
+            code: "ok",
+            message: "Linear board contract matches configured states and labels",
+            fields: [
+              #("project_slug", remote.project_slug),
+              #("project_id", remote.project_id),
+              #("team_count", int_to_string(list.length(remote.teams))),
+              #("state_count", int_to_string(total_state_count(remote.teams))),
+              #("label_count", int_to_string(total_label_count(remote))),
+            ],
+          )
+        False ->
+          doctor.CheckResult(
+            check: doctor.LinearContract,
+            status: doctor.Fail,
+            code: "linear_contract_mismatch",
+            message: "Linear board contract mismatch",
+            fields: contract_mismatch_fields(diagnostics),
+          )
+      }
+    }
+  }
+}
+
+fn contract_mismatch_fields(
+  diagnostics: List(linear_contract.ContractDiagnostic),
+) -> List(log.Field) {
+  let base = [#("diagnostic_count", int_to_string(list.length(diagnostics)))]
+  case diagnostics {
+    [] -> base
+    [first, ..] ->
+      list.append(base, [
+        #("first_diagnostic_code", linear_contract.diagnostic_code(first)),
+        #("first_diagnostic_message", linear_contract.diagnostic_message(first)),
+      ])
+  }
+}
+
+fn maybe_linear_smoke_result(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+) -> List(doctor.CheckResult) {
+  case doctor.contains_check(selected, doctor.LinearSmoke) {
+    False -> results
+    True ->
+      list.append(results, [run_linear_smoke_doctor_check(bundle, dependencies)])
+  }
+}
+
+fn run_linear_smoke_doctor_check(
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+) -> doctor.CheckResult {
+  let reader = dependencies.make_linear_smoke_reader(bundle.effective.tracker)
+  case
+    smoke.linear_read_smoke(reader, bundle.effective.tracker.terminal_states)
+  {
+    Error(err) ->
+      doctor.CheckResult(
+        check: doctor.LinearSmoke,
+        status: doctor.Fail,
+        code: error.tracker_code(err),
+        message: "Linear read smoke failed",
+        fields: [],
+      )
+    Ok(result) ->
+      doctor.CheckResult(
+        check: doctor.LinearSmoke,
+        status: doctor.Pass,
+        code: "ok",
+        message: "Linear read smoke succeeded",
+        fields: [
+          #("candidate_count", int_to_string(result.candidate_count)),
+          #("terminal_count", int_to_string(result.terminal_count)),
+          #("refreshed_count", int_to_string(result.refreshed_count)),
+        ],
+      )
+  }
+}
+
+fn maybe_local_probe_results(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+) -> List(doctor.CheckResult) {
+  case needs_doctor_lock(selected) {
+    False -> results
+    True ->
+      case dependencies.acquire_lock(bundle.effective.workspace.root) {
+        Error(err) -> local_probe_lock_failure_results(results, selected, err)
+        Ok(lock) -> {
+          let results =
+            results
+            |> append_instance_lock_pass(selected, bundle)
+            |> run_workspace_and_pi_checks(selected, bundle, dependencies)
+          lock.release()
+          results
+        }
+      }
+  }
+}
+
+fn needs_doctor_lock(selected: List(doctor.CheckName)) -> Bool {
+  doctor.contains_check(selected, doctor.InstanceLock)
+  || doctor.contains_check(selected, doctor.WorkspaceHooks)
+  || doctor.contains_check(selected, doctor.PiProbe)
+}
+
+fn local_probe_lock_failure_results(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  err: instance_lock.LockError,
+) -> List(doctor.CheckResult) {
+  let startup = map_lock_error(Error(err))
+  let #(code, message) = case startup {
+    Error(err) -> #(err.code, err.message)
+    Ok(_) -> #("", "")
+  }
+  let instance_lock_selected =
+    doctor.contains_check(selected, doctor.InstanceLock)
+  let workspace_hooks_selected =
+    doctor.contains_check(selected, doctor.WorkspaceHooks)
+  let results = case instance_lock_selected {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.InstanceLock,
+          status: doctor.Fail,
+          code: code,
+          message: message,
+          fields: [],
+        ),
+      ])
+  }
+  let results = case workspace_hooks_selected {
+    False -> results
+    True -> {
+      let status = case instance_lock_selected {
+        True -> doctor.Skip
+        False -> doctor.Fail
+      }
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.WorkspaceHooks,
+          status: status,
+          code: "instance_lock_failed",
+          message: "instance lock was unavailable",
+          fields: [],
+        ),
+      ])
+    }
+  }
+  case doctor.contains_check(selected, doctor.PiProbe) {
+    False -> results
+    True -> {
+      let status = case instance_lock_selected || workspace_hooks_selected {
+        True -> doctor.Skip
+        False -> doctor.Fail
+      }
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.PiProbe,
+          status: status,
+          code: "instance_lock_failed",
+          message: "instance lock was unavailable",
+          fields: [],
+        ),
+      ])
+    }
+  }
+}
+
+fn append_instance_lock_pass(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+) -> List(doctor.CheckResult) {
+  case doctor.contains_check(selected, doctor.InstanceLock) {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.InstanceLock,
+          status: doctor.Pass,
+          code: "ok",
+          message: "instance lock acquired",
+          fields: [#("workspace_root", bundle.effective.workspace.root)],
+        ),
+      ])
+  }
+}
+
+fn run_workspace_and_pi_checks(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+) -> List(doctor.CheckResult) {
+  case
+    doctor.contains_check(selected, doctor.WorkspaceHooks)
+    || doctor.contains_check(selected, doctor.PiProbe)
+  {
+    False -> results
+    True ->
+      case prepare_doctor_workspace(bundle, dependencies) {
+        Error(err) -> workspace_prepare_failure_results(results, selected, err)
+        Ok(prepared) -> {
+          let results =
+            maybe_workspace_hooks_pass(results, selected, bundle, prepared)
+          let results =
+            maybe_pi_probe_result(
+              results,
+              selected,
+              bundle,
+              dependencies,
+              prepared,
+            )
+          append_cleanup_warning_if_needed(
+            results,
+            selected,
+            bundle,
+            dependencies,
+            prepared,
+          )
+        }
+      }
+  }
+}
+
+fn prepare_doctor_workspace(
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError) {
+  dependencies.prepare_step(
+    doctor_issue(),
+    "doctor",
+    "doctor",
+    "doctor",
+    workflow_dag.WorkspaceRef(name: "main", from: None),
+    bundle.orchestrator,
+    dict.new(),
+  )
+}
+
+fn doctor_issue() -> domain.Issue {
+  domain.Issue(
+    id: "SCHERZO-DOCTOR",
+    identifier: "SCHERZO-DOCTOR",
+    title: "Scherzo doctor",
+    description: None,
+    priority: None,
+    state: "",
+    branch_name: None,
+    url: None,
+    labels: [],
+    blocked_by: [],
+    created_at: None,
+    updated_at: None,
+  )
+}
+
+fn workspace_prepare_failure_results(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  err: workspace_run.PrepareError,
+) -> List(doctor.CheckResult) {
+  let #(code, message) = prepare_error_details(err)
+  let workspace_hooks_selected =
+    doctor.contains_check(selected, doctor.WorkspaceHooks)
+  let results = case workspace_hooks_selected {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.WorkspaceHooks,
+          status: doctor.Fail,
+          code: code,
+          message: message,
+          fields: [],
+        ),
+      ])
+  }
+  case doctor.contains_check(selected, doctor.PiProbe) {
+    False -> results
+    True -> {
+      let status = case workspace_hooks_selected {
+        True -> doctor.Skip
+        False -> doctor.Fail
+      }
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.PiProbe,
+          status: status,
+          code: "workspace_prepare_failed",
+          message: "doctor workspace was not prepared",
+          fields: [],
+        ),
+      ])
+    }
+  }
+}
+
+fn prepare_error_details(err: workspace_run.PrepareError) -> #(String, String) {
+  case err {
+    workspace_run.WorkspaceFailure(err) -> #(
+      error.workspace_code(err),
+      "workspace error",
+    )
+    workspace_run.HookFailure(err) -> #(error.hook_code(err), "hook error")
+  }
+}
+
+fn maybe_workspace_hooks_pass(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+  prepared: workspace_run.PreparedStepWorkspace,
+) -> List(doctor.CheckResult) {
+  case doctor.contains_check(selected, doctor.WorkspaceHooks) {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.WorkspaceHooks,
+          status: doctor.Pass,
+          code: "ok",
+          message: "workspace hooks prepared a scratch step workspace",
+          fields: [
+            #("workspace_path", prepared.path),
+            #("run_root", prepared.run_root),
+            #(
+              "hooks",
+              configured_workspace_hooks(bundle.orchestrator.dag_hooks),
+            ),
+          ],
+        ),
+      ])
+  }
+}
+
+fn configured_workspace_hooks(hooks: domain.DagHooksConfig) -> String {
+  []
+  |> append_hook_name(hooks.create, "create")
+  |> append_hook_name(hooks.before_step, "before_step")
+  |> append_hook_name(hooks.remove, "remove")
+  |> list.reverse
+  |> hook_names_to_string
+}
+
+fn append_hook_name(
+  names: List(String),
+  script: Option(String),
+  name: String,
+) -> List(String) {
+  case script {
+    None -> names
+    Some(_) -> [name, ..names]
+  }
+}
+
+fn hook_names_to_string(names: List(String)) -> String {
+  case names {
+    [] -> "none"
+    _ -> string.join(names, with: ",")
+  }
+}
+
+fn maybe_pi_probe_result(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+  prepared: workspace_run.PreparedStepWorkspace,
+) -> List(doctor.CheckResult) {
+  case doctor.contains_check(selected, doctor.PiProbe) {
+    False -> results
+    True ->
+      list.append(results, [
+        run_pi_probe_doctor_check(bundle, dependencies, prepared),
+      ])
+  }
+}
+
+fn run_pi_probe_doctor_check(
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+  prepared: workspace_run.PreparedStepWorkspace,
+) -> doctor.CheckResult {
+  case
+    dependencies.pi_probe(
+      bundle.effective.pi.command,
+      prepared.path,
+      bundle.effective.pi.read_timeout_ms,
+    )
+  {
+    Ok(Nil) ->
+      doctor.CheckResult(
+        check: doctor.PiProbe,
+        status: doctor.Pass,
+        code: "ok",
+        message: "pi RPC probe succeeded without sending a prompt",
+        fields: [#("workspace_path", prepared.path)],
+      )
+    Error(err) ->
+      doctor.CheckResult(
+        check: doctor.PiProbe,
+        status: doctor.Fail,
+        code: error.pi_rpc_code(err),
+        message: "pi probe error",
+        fields: [#("workspace_path", prepared.path)],
+      )
+  }
+}
+
+fn append_cleanup_warning_if_needed(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: DoctorDependencies,
+  prepared: workspace_run.PreparedStepWorkspace,
+) -> List(doctor.CheckResult) {
+  case dependencies.cleanup_run(prepared.run_root, bundle.orchestrator) {
+    Ok(Nil) -> results
+    Error(err) ->
+      case doctor.contains_check(selected, doctor.WorkspaceHooks) {
+        False -> results
+        True ->
+          list.append(results, [
+            doctor.CheckResult(
+              check: doctor.WorkspaceHooks,
+              status: doctor.Warn,
+              code: "workspace_cleanup_failed",
+              message: "doctor workspace cleanup failed",
+              fields: [
+                #("run_root", prepared.run_root),
+                #("workspace_path", prepared.path),
+                #("error", error.workspace_code(err)),
+              ],
+            ),
+          ])
+      }
+  }
+}
+
+fn log_doctor_report(
+  report: doctor.Report,
+  dependencies: DoctorDependencies,
+  secrets: List(String),
+) -> Nil {
+  list.each(report.results, fn(result) {
+    let _ =
+      dependencies.logger(
+        doctor_result_level(result),
+        doctor.result_event(result),
+        doctor.result_log_fields(result),
+        secrets,
+      )
+    Nil
+  })
+  let _ =
+    dependencies.logger(
+      "info",
+      "doctor_summary",
+      doctor.summary_log_fields(doctor.summary(report)),
+      secrets,
+    )
+  Nil
+}
+
+fn doctor_result_level(result: doctor.CheckResult) -> String {
+  case result.status {
+    doctor.Pass -> "info"
+    doctor.Warn -> "warn"
+    doctor.Fail -> "error"
+    doctor.Skip -> "warn"
   }
 }
 
