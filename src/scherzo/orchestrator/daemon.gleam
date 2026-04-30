@@ -43,6 +43,9 @@ pub type Message {
   )
   WorkerUpdate(String, runner.PiUpdate)
   WorkerCommandReady(String, String, process.Subject(worker_command.Command))
+  YamlStepUpdate(String, runner.PiUpdate)
+  YamlStepCommandReady(String, process.Subject(worker_command.Command))
+  YamlStepFinished(String)
   AbortWorkerCommandTimedOut(
     command.OperatorCommand,
     String,
@@ -241,6 +244,9 @@ type State {
     workers: Dict(String, WorkerHandle),
     worker_monitors: Dict(process.Monitor, String),
     issue_sessions: Dict(String, String),
+    step_command_subjects: Dict(String, process.Subject(worker_command.Command)),
+    step_command_monitors: Dict(process.Monitor, String),
+    step_command_subject_monitors: Dict(String, process.Monitor),
     next_session_sequence: Int,
     pending_claims: Dict(String, PendingClaim),
     side_effects_in_flight: Int,
@@ -479,6 +485,9 @@ pub fn start(
               workers: dict.new(),
               worker_monitors: dict.new(),
               issue_sessions: dict.new(),
+              step_command_subjects: dict.new(),
+              step_command_monitors: dict.new(),
+              step_command_subject_monitors: dict.new(),
               next_session_sequence: 1,
               pending_claims: dict.new(),
               side_effects_in_flight: 0,
@@ -554,6 +563,18 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
         run_id,
         command_subject,
       ))
+    YamlStepUpdate(session_id, update) -> {
+      publish_worker_update(state, session_id, update)
+      actor.continue(state)
+    }
+    YamlStepCommandReady(session_id, command_subject) ->
+      actor.continue(handle_yaml_step_command_ready(
+        state,
+        session_id,
+        command_subject,
+      ))
+    YamlStepFinished(session_id) ->
+      actor.continue(clear_yaml_step_command_route(state, session_id))
     AbortWorkerCommandTimedOut(operator_command, session_id, reply) -> {
       let #(state, result) =
         stop_session_for_operator(
@@ -584,6 +605,107 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
       log_state(state, "info", "daemon_shutdown", [])
       process.send(reply, Nil)
       actor.stop()
+    }
+  }
+}
+
+fn handle_yaml_step_command_ready(
+  state: State,
+  session_id: String,
+  command_subject: process.Subject(worker_command.Command),
+) -> State {
+  let state = clear_yaml_step_command_route(state, session_id)
+  case process.subject_owner(command_subject) {
+    Error(_) ->
+      State(
+        ..state,
+        step_command_subjects: dict.insert(
+          state.step_command_subjects,
+          session_id,
+          command_subject,
+        ),
+      )
+    Ok(pid) -> {
+      let monitor = process.monitor(pid)
+      case process.is_alive(pid) {
+        False -> {
+          process.demonitor_process(monitor)
+          state
+        }
+        True ->
+          State(
+            ..state,
+            step_command_subjects: dict.insert(
+              state.step_command_subjects,
+              session_id,
+              command_subject,
+            ),
+            step_command_monitors: dict.insert(
+              state.step_command_monitors,
+              monitor,
+              session_id,
+            ),
+            step_command_subject_monitors: dict.insert(
+              state.step_command_subject_monitors,
+              session_id,
+              monitor,
+            ),
+          )
+      }
+    }
+  }
+}
+
+fn clear_yaml_step_command_route(state: State, session_id: String) -> State {
+  case dict.get(state.step_command_subject_monitors, session_id) {
+    Error(_) ->
+      State(
+        ..state,
+        step_command_subjects: dict.delete(
+          state.step_command_subjects,
+          session_id,
+        ),
+      )
+    Ok(monitor) -> {
+      process.demonitor_process(monitor)
+      State(
+        ..state,
+        step_command_subjects: dict.delete(
+          state.step_command_subjects,
+          session_id,
+        ),
+        step_command_monitors: dict.delete(state.step_command_monitors, monitor),
+        step_command_subject_monitors: dict.delete(
+          state.step_command_subject_monitors,
+          session_id,
+        ),
+      )
+    }
+  }
+}
+
+fn handle_step_command_down(state: State, monitor: process.Monitor) -> State {
+  case dict.get(state.step_command_monitors, monitor) {
+    Error(_) -> {
+      log_state(state, "warn", "worker_down_stale", [])
+      state
+    }
+    Ok(session_id) -> {
+      log_state(state, "warn", "yaml_step_command_down", [
+        #("session_id", session_id),
+      ])
+      State(
+        ..state,
+        step_command_subjects: dict.delete(
+          state.step_command_subjects,
+          session_id,
+        ),
+        step_command_monitors: dict.delete(state.step_command_monitors, monitor),
+        step_command_subject_monitors: dict.delete(
+          state.step_command_subject_monitors,
+          session_id,
+        ),
+      )
     }
   }
 }
@@ -942,10 +1064,25 @@ fn route_worker_command_sync(
     Nil,
 ) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
-    Error(Nil) -> #(
-      state,
-      command.not_found(operator_command, Some("session not found")),
-    )
+    Error(Nil) ->
+      case yaml_run_for_session(state, session_id) {
+        Ok(_) -> #(
+          state,
+          command.not_allowed(
+            operator_command,
+            "worker_command_subject_unavailable",
+            Some("session worker does not accept operator commands"),
+          ),
+        )
+        Error(Nil) ->
+          route_step_command_sync(
+            state,
+            operator_command,
+            session_id,
+            timeout_ms,
+            send,
+          )
+      }
     Ok(handle) ->
       case handle.command_subject {
         None -> #(
@@ -956,30 +1093,73 @@ fn route_worker_command_sync(
             Some("session worker does not accept operator commands"),
           ),
         )
-        Some(subject) -> {
-          let worker_reply = process.new_subject()
-          send(subject, worker_reply)
-          case
-            process.receive(
-              worker_reply,
-              within: worker_command_timeout(timeout_ms),
-            )
-          {
-            Ok(reply) -> #(
-              state,
-              worker_reply_to_command_result(operator_command, reply),
-            )
-            Error(_) -> #(
-              state,
-              command.rejected(
-                operator_command,
-                "worker_command_timeout",
-                Some("worker command timed out"),
-              ),
-            )
-          }
-        }
+        Some(subject) ->
+          send_worker_command_sync(
+            state,
+            operator_command,
+            timeout_ms,
+            send,
+            subject,
+          )
       }
+  }
+}
+
+fn route_step_command_sync(
+  state: State,
+  operator_command: command.OperatorCommand,
+  session_id: String,
+  timeout_ms: Int,
+  send: fn(
+    process.Subject(worker_command.Command),
+    process.Subject(worker_command.Reply),
+  ) ->
+    Nil,
+) -> #(State, command.CommandResult) {
+  case dict.get(state.step_command_subjects, session_id) {
+    Error(_) -> #(
+      state,
+      command.not_found(operator_command, Some("session not found")),
+    )
+    Ok(subject) ->
+      send_worker_command_sync(
+        state,
+        operator_command,
+        timeout_ms,
+        send,
+        subject,
+      )
+  }
+}
+
+fn send_worker_command_sync(
+  state: State,
+  operator_command: command.OperatorCommand,
+  timeout_ms: Int,
+  send: fn(
+    process.Subject(worker_command.Command),
+    process.Subject(worker_command.Reply),
+  ) ->
+    Nil,
+  subject: process.Subject(worker_command.Command),
+) -> #(State, command.CommandResult) {
+  let worker_reply = process.new_subject()
+  send(subject, worker_reply)
+  case
+    process.receive(worker_reply, within: worker_command_timeout(timeout_ms))
+  {
+    Ok(reply) -> #(
+      state,
+      worker_reply_to_command_result(operator_command, reply),
+    )
+    Error(_) -> #(
+      state,
+      command.rejected(
+        operator_command,
+        "worker_command_timeout",
+        Some("worker command timed out"),
+      ),
+    )
   }
 }
 
@@ -1038,10 +1218,23 @@ fn abort_session_for_operator_sync(
   timeout_ms: Int,
 ) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
-    Error(Nil) -> #(
-      state,
-      command.not_found(operator_command, Some("session not found")),
-    )
+    Error(Nil) ->
+      case yaml_run_for_session(state, session_id) {
+        Ok(handle) ->
+          stop_yaml_session_for_operator(
+            state,
+            operator_command,
+            handle,
+            "operator_abort",
+          )
+        Error(Nil) ->
+          abort_step_session_for_operator_sync(
+            state,
+            operator_command,
+            session_id,
+            timeout_ms,
+          )
+      }
     Ok(handle) ->
       case handle.command_subject {
         None ->
@@ -1074,6 +1267,43 @@ fn abort_session_for_operator_sync(
           }
         }
       }
+  }
+}
+
+fn abort_step_session_for_operator_sync(
+  state: State,
+  operator_command: command.OperatorCommand,
+  session_id: String,
+  timeout_ms: Int,
+) -> #(State, command.CommandResult) {
+  case dict.get(state.step_command_subjects, session_id) {
+    Error(_) -> #(
+      state,
+      command.not_found(operator_command, Some("session not found")),
+    )
+    Ok(subject) -> {
+      let worker_reply = process.new_subject()
+      process.send(subject, worker_command.Abort(worker_reply))
+      case
+        process.receive(
+          worker_reply,
+          within: worker_command_timeout(timeout_ms),
+        )
+      {
+        Ok(reply) -> #(
+          state,
+          worker_reply_to_command_result(operator_command, reply),
+        )
+        Error(_) -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "worker_command_timeout",
+            Some("worker command timed out"),
+          ),
+        )
+      }
+    }
   }
 }
 
@@ -2892,10 +3122,7 @@ fn handle_worker_down(state: State, down: process.Down) -> State {
   case down {
     process.ProcessDown(monitor, _, _) ->
       case dict.get(state.worker_monitors, monitor) {
-        Error(_) -> {
-          log_state(state, "warn", "worker_down_stale", [])
-          state
-        }
+        Error(_) -> handle_yaml_workflow_down(state, monitor)
         Ok(issue_id) ->
           case dict.get(state.workers, issue_id) {
             Error(_) -> {
@@ -3570,6 +3797,15 @@ fn shutdown_state(state: State) -> State {
   dict.each(state.retry_timers, fn(_, timer) {
     state.dependencies.cancel_timer(timer)
   })
+  dict.each(state.worker_monitors, fn(monitor, _) {
+    process.demonitor_process(monitor)
+  })
+  dict.each(state.yaml_run_monitors, fn(monitor, _) {
+    process.demonitor_process(monitor)
+  })
+  dict.each(state.step_command_subject_monitors, fn(_, monitor) {
+    process.demonitor_process(monitor)
+  })
   dict.each(state.workers, fn(_, handle) { stop_worker(handle) })
   State(
     ..state,
@@ -3580,6 +3816,9 @@ fn shutdown_state(state: State) -> State {
     workers: dict.new(),
     worker_monitors: dict.new(),
     issue_sessions: dict.new(),
+    step_command_subjects: dict.new(),
+    step_command_monitors: dict.new(),
+    step_command_subject_monitors: dict.new(),
     pending_claims: dict.new(),
     side_effects_in_flight: 0,
     side_effect_queue: [],

@@ -1,8 +1,11 @@
 import birl
 import gleam/dict
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import scherzo/agent/runner
+import scherzo/agent/worker_command
+import scherzo/control/command
 import scherzo/domain
 import scherzo/error
 import scherzo/handoff
@@ -382,6 +385,28 @@ fn fake_triage(subject: process.Subject(String)) -> linear_triage.TriageClient {
     )
     Ok(linear_triage.InvalidWorkflowReportNoop)
   })
+}
+
+fn prompt_until_queued(
+  subject: process.Subject(daemon.Message),
+  session_id: String,
+  attempts: Int,
+) -> command.CommandResult {
+  let assert True = attempts > 0
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      subject,
+      command.PromptSession(session_id, "hello from operator"),
+      1000,
+    )
+  case result.status {
+    command.Queued -> result
+    command.NotFound -> {
+      process.sleep(50)
+      prompt_until_queued(subject, session_id, attempts - 1)
+    }
+    _ -> result
+  }
 }
 
 fn wait_for_event(
