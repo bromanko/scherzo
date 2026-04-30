@@ -269,7 +269,7 @@ pub fn start_doctor_with_dependencies(
         dependencies,
       ))
       let #(report, secrets) = report_and_secrets
-      log_doctor_report(report, dependencies, secrets)
+      write_doctor_report(report, options, dependencies, secrets)
       case doctor.has_failures(report) {
         True ->
           Error(StartupError(
@@ -885,6 +885,22 @@ fn append_cleanup_warning_if_needed(
             ),
           ])
       }
+  }
+}
+
+fn write_doctor_report(
+  report: doctor.Report,
+  options: doctor.Options,
+  dependencies: DoctorDependencies,
+  secrets: List(String),
+) -> Nil {
+  case options.output {
+    doctor.Human -> {
+      let _ =
+        dependencies.list_writer(doctor.human_report(report, options.path))
+      Nil
+    }
+    doctor.Logfmt -> log_doctor_report(report, dependencies, secrets)
   }
 }
 

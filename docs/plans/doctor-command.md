@@ -6,7 +6,7 @@ This ExecPlan is a living document. The sections Progress, Surprises & Discoveri
 
 After this change, an operator can run one command, `direnv exec . gleam run -- doctor path/to/scherzo.yaml`, to check whether a Scherzo YAML orchestrator config and its routed workflow DAGs are ready for cautious real-board operation. The command prints one stable result per named readiness check, exits nonzero when any selected check fails, and keeps the existing one-off checks available for focused debugging. The initial checks cover orchestrator config/DAG validation, local instance-lock availability, read-only Linear board contract validation, read-only Linear smoke, current workspace hook validation, and no-prompt pi RPC probing.
 
-The visible behavior is a per-check transcript such as `doctor_check_pass check=workflow-config`, `doctor_check_fail check=linear-smoke code=linear_api_status`, and a final `doctor_summary passed=5 failed=1 skipped=1 warned=0`. Operators can also run a subset, for example `direnv exec . gleam run -- doctor --check linear-smoke --check pi-probe examples/scherzo.yaml`, without losing the detailed output those checks currently provide through `--linear-smoke`, `--linear-contract-check`, and `--pi-probe`.
+The default visible behavior is a human-readable report inspired by `flutter doctor`: each check is marked with `✓`, `!`, `✗`, or `-`, details are grouped under the check, failures include impact and remediation hints, and the command ends with a readable summary such as `Summary: 6 passed, 0 warnings, 0 failed, 0 skipped`. Operators can add `--logfmt` to preserve the machine-readable per-check transcript with events such as `doctor_check_pass check=workflow-config`, `doctor_check_fail check=linear-smoke code=linear_api_status`, and `doctor_summary passed=5 failed=1 skipped=1 warned=0`. Operators can also run a subset, for example `direnv exec . gleam run -- doctor --check linear-smoke --check pi-probe examples/scherzo.yaml`, without losing the detailed output those checks currently provide through `--linear-smoke`, `--linear-contract-check`, and `--pi-probe`.
 
 This plan also cleans up the existing documentation trail. At plan-authoring time, `docs/TODO.md` does not contain a doctor-command item; the outstanding doctor item is in `docs/plans/real-board-readiness.md`. During implementation, search `docs/TODO.md` again and remove any stale doctor-command TODO if one has been added, and mark the `real-board-readiness` doctor progress item complete after the command is implemented and validated.
 
@@ -65,6 +65,7 @@ The main documentation risk is leaving the old TODO trail in place after impleme
 - [x] (2026-04-30 16:31Z) After `.envrc` was approved, reran deterministic validation through `direnv exec .`: `gleam format --check src test`, `gleam test`, `gleam run -- --help`, and `gleam run -- doctor --list-checks` all succeeded; the test run still reported `426 passed, no failures`.
 - [x] (2026-04-30 16:32Z) Ran manual doctor CLI checks through `direnv exec .`. With the approved environment, `LINEAR_API_KEY` and `LINEAR_PROJECT_SLUG` were not set, so real Linear smoke/contract validation was initially not possible. Config-only checks passed for `.scherzo/scherzo.yaml` and `examples/scherzo.yaml` when supplied dummy local environment values. The unknown-check path returned `unknown_doctor_check`, workflow load failure skipped dependent checks, workspace-hook validation passed and cleaned the run root, and `--check pi-probe` launched the real `pi --mode rpc --no-session` probe successfully without sending a prompt.
 - [x] (2026-04-30 16:36Z) Sourced real local credentials from `~/Code/scherzo/.env.local` without printing secrets and reran credential-gated validation through `direnv exec .`. The read-only doctor subset passed with `workflow-config`, `linear-contract`, and `linear-smoke`; the full default doctor run passed all six checks with `doctor_summary passed=6 warned=0 failed=0 skipped=0`; and the legacy `--linear-smoke`, `--linear-contract-check`, and `--pi-probe` modes all still passed. Local cleanup left no instance lock, and empty synthetic probe directories were removed manually after validation.
+- [x] (2026-04-30 17:02Z) Reworked doctor output to be human-readable by default, added `doctor --logfmt` for the existing machine-readable events, updated tests and README, and reran validation through `direnv exec .`. The final test run reported `430 passed, no failures`, and credential-gated full doctor output now shows a readable `Scherzo doctor` report with all six checks passing.
 
 ## Surprises & Discoveries
 
@@ -125,9 +126,9 @@ The main documentation risk is leaving the old TODO trail in place after impleme
 
 ## Outcomes & Retrospective
 
-2026-04-30 implementation outcome: The doctor command is implemented as `gleam run -- doctor [options] [path-to-scherzo.yaml]`. The final public check names are `workflow-config`, `linear-contract`, `linear-smoke`, `instance-lock`, `workspace-hooks`, and `pi-probe`; `gleam run -- doctor --list-checks` prints those names one per line without loading a runtime bundle. The default doctor run reports structured events named `doctor_check_pass`, `doctor_check_warn`, `doctor_check_fail`, or `doctor_check_skip` for individual checks, followed by `doctor_summary passed=N warned=N failed=N skipped=N`. Existing `--linear-smoke`, `--linear-contract-check`, and `--pi-probe` modes remain in place.
+2026-04-30 implementation outcome: The doctor command is implemented as `gleam run -- doctor [options] [path-to-scherzo.yaml]`. The final public check names are `workflow-config`, `linear-contract`, `linear-smoke`, `instance-lock`, `workspace-hooks`, and `pi-probe`; `gleam run -- doctor --list-checks` prints those names one per line without loading a runtime bundle. The default doctor run now prints a human-readable report headed `Scherzo doctor`, with `✓`, `!`, `✗`, or `-` check markers, grouped detail text, remediation hints for failures, a readable `Summary: ...` line, and a final readiness sentence. Passing `--logfmt` reports structured events named `doctor_check_pass`, `doctor_check_warn`, `doctor_check_fail`, or `doctor_check_skip` for individual checks, followed by `doctor_summary passed=N warned=N failed=N skipped=N`. Existing `--linear-smoke`, `--linear-contract-check`, and `--pi-probe` modes remain in place.
 
-The implementation added deterministic coverage in `test/doctor_test.gleam`, `test/orchestrator_service_doctor_test.gleam`, and `test/main_test.gleam`. The first final deterministic gate used plain Gleam commands because `.envrc` was blocked, then `.envrc` was approved and the deterministic gate was rerun through `direnv exec .`. Both runs reported `426 passed, no failures`, and `direnv exec . gleam run -- doctor --list-checks` printed the six stable names in order.
+The implementation added deterministic coverage in `test/doctor_test.gleam`, `test/orchestrator_service_doctor_test.gleam`, and `test/main_test.gleam`. The first final deterministic gate used plain Gleam commands because `.envrc` was blocked, then `.envrc` was approved and the deterministic gate was rerun through `direnv exec .`. After the human-readable output revision, `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `direnv exec . gleam run -- doctor --list-checks` passed; the final test run reported `430 passed, no failures`.
 
 Additional manual doctor validation covered the config-only path, unknown-check usage error, workflow-load failure skip behavior, workspace-hook local validation, instance-lock acquire/release, and the real `pi --mode rpc --no-session` no-prompt probe path. Real Linear credentials were then sourced from the sibling checkout's ignored `~/Code/scherzo/.env.local`; the read-only doctor subset, full default doctor run, and legacy `--linear-smoke`/`--linear-contract-check` modes all passed against the configured board. The deterministic fake-pi transcript test and the real local pi probe both support the safety claim that doctor pi probing does not send a task prompt.
 
@@ -230,14 +231,15 @@ In the same module, define result and summary types equivalent to:
       Summary(passed: Int, warned: Int, failed: Int, skipped: Int)
     }
 
-Add helpers `summary(report)`, `has_failures(report)`, `result_event(result)`, and `result_log_fields(result)`. Stable event names should be `doctor_check_pass`, `doctor_check_warn`, `doctor_check_fail`, `doctor_check_skip`, and `doctor_summary`. The summary fields should include `passed`, `warned`, `failed`, and `skipped`.
+Add helpers `summary(report)`, `has_failures(report)`, `result_event(result)`, `result_log_fields(result)`, and `human_report(report, requested_path)`. Stable logfmt event names are `doctor_check_pass`, `doctor_check_warn`, `doctor_check_fail`, `doctor_check_skip`, and `doctor_summary`. The summary fields include `passed`, `warned`, `failed`, and `skipped`. The default human report uses readable status markers and remediation text.
 
-Add `Options` or `DoctorOptions` in `src/scherzo/doctor.gleam` unless a separate small CLI helper module is clearly cleaner. It should contain `path: Option(String)`, `checks: List(String)`, and `list_checks: Bool`. Keep raw check names in the CLI layer and let the service map unknown names to a usage error or startup error with a clear message. The main parser should support:
+Add `Options` or `DoctorOptions` in `src/scherzo/doctor.gleam` unless a separate small CLI helper module is clearly cleaner. It contains `path: Option(String)`, `checks: List(String)`, `list_checks: Bool`, and `output: OutputFormat`, where `OutputFormat` is `Human` by default or `Logfmt` for `--logfmt`. Keep raw check names in the CLI layer and let the service map unknown names to a usage error or startup error with a clear message. The main parser should support:
 
     gleam run -- doctor
     gleam run -- doctor examples/scherzo.yaml
     gleam run -- doctor --check linear-smoke --check pi-probe examples/scherzo.yaml
     gleam run -- doctor --list-checks
+    gleam run -- doctor --logfmt examples/scherzo.yaml
 
 Reject unknown doctor options, missing check names after `--check`, duplicate positional YAML config paths, and unknown top-level modes. Duplicated `--check` names should be de-duplicated in first-seen order by the doctor layer so a repeated flag does not run a check twice.
 
@@ -277,7 +279,7 @@ Update documentation cleanup. Search `docs/TODO.md` for `doctor`, `readiness`, a
 
 6. Extend `src/scherzo/orchestrator/service.gleam` with a `DoctorDependencies` type and production dependency constructor. Keep existing `Dependencies`, `DaemonLifecycleDependencies`, and `ContractCheckDependencies` unchanged. Include injectable functions for `workspace_run.prepare_step` and `workspace_run.cleanup_run`, not `workspace.prepare`.
 
-7. Add `test/orchestrator_service_doctor_test.gleam`. Start with `doctor_workflow_config_success_test`: write a temporary `scherzo.yaml`, a routed workflow DAG file under `workflows/`, and any referenced prompt template; configure a fake workspace root with `workspace.hooks.create` and `workspace.hooks.before_step`; run the report-building doctor helper using fake dependencies; assert a `doctor_check_pass` result for `workflow-config` and a final `doctor_summary` when the public start helper logs the report. In the same file, add `doctor_workflow_config_accepts_current_yaml_workspace_hooks_test` with no top-level `hooks.after_create` or `hooks.before_run`, so the test fails if doctor accidentally calls `config.validate_dispatch`.
+7. Add `test/orchestrator_service_doctor_test.gleam`. Start with `doctor_workflow_config_success_test`: write a temporary `scherzo.yaml`, a routed workflow DAG file under `workflows/`, and any referenced prompt template; configure a fake workspace root with `workspace.hooks.create` and `workspace.hooks.before_step`; run the report-building doctor helper using fake dependencies; assert a passed result for `workflow-config` and assert the public start helper writes a readable human report by default. Also cover `--logfmt` behavior so structured `doctor_check_pass` and `doctor_summary` events remain available. In the same file, add `doctor_workflow_config_accepts_current_yaml_workspace_hooks_test` with no top-level `hooks.after_create` or `hooks.before_run`, so the test fails if doctor accidentally calls `config.validate_dispatch`.
 
 8. Add `doctor_unknown_check_name_fails_before_loading_workflow_test`: pass a doctor option containing `--check no-such-check` and a nonexistent config path; assert `StartupError("unknown_doctor_check", _)` or the chosen usage error rather than `missing_config_file`. This proves check-name validation happens before `runtime_bundle.load`.
 
@@ -350,7 +352,7 @@ Before implementation, tests referencing `scherzo/doctor` and `main.parse_args([
 Accept the implementation when all of the following are true:
 
 - `direnv exec . gleam run -- doctor --list-checks` prints or logs the stable check names.
-- `direnv exec . gleam run -- doctor path/to/scherzo.yaml` runs the default checks in stable order and emits one result per check plus `doctor_summary`.
+- `direnv exec . gleam run -- doctor path/to/scherzo.yaml` runs the default checks in stable order and emits a readable report with one section per check plus a summary.
 - `direnv exec . gleam run -- doctor --check linear-smoke --check linear-contract path/to/scherzo.yaml` runs only the selected read-only checks and does not acquire the instance lock.
 - A current YAML config that uses `workspace.hooks.create` and `workspace.hooks.before_step` but no top-level `hooks.after_create` or `hooks.before_run` passes `workflow-config`.
 - `pi-probe` doctor validation uses a scratch workflow-run workspace and sends no `prompt` command to pi.
@@ -360,6 +362,7 @@ Accept the implementation when all of the following are true:
 - README documents doctor as the primary readiness command.
 - Any stale doctor TODO in `docs/TODO.md` is removed, or the retrospective records that none existed.
 - The real-board-readiness doctor progress item is marked complete.
+- `direnv exec . gleam run -- doctor --logfmt path/to/scherzo.yaml` preserves machine-readable `doctor_check_*` events and `doctor_summary` fields.
 - The full deterministic test suite passes.
 
 ## Rollout, Recovery, and Idempotence
@@ -376,7 +379,37 @@ Expected default command shape:
 
     direnv exec . gleam run -- doctor examples/scherzo.yaml
 
-Expected structured log shape on all-pass fake dependencies:
+Expected human-readable output shape on an all-pass run:
+
+    Scherzo doctor
+    Config: .scherzo/scherzo.yaml
+
+    ✓ Workflow config
+      Loaded YAML orchestrator config and 1 workflow DAG.
+
+    ✓ Linear contract
+      Project board matches configured states and labels.
+      Team count: 1, states: 7, labels: 7.
+
+    ✓ Linear smoke
+      Read-only Linear API check succeeded.
+      Candidates: 2, terminal sample: 3, refreshed: 1.
+
+    ✓ Instance lock
+      Local instance lock can be acquired and released.
+
+    ✓ Workspace hooks
+      Scratch workspace was prepared and cleaned up.
+      Hooks: create,before_step,remove.
+
+    ✓ Pi probe
+      pi RPC launched successfully and no prompt was sent.
+
+    Summary: 6 passed, 0 warnings, 0 failed, 0 skipped
+
+    Ready for cautious real-board operation.
+
+Expected `--logfmt` output shape on all-pass fake dependencies:
 
     level=info service=scherzo event=doctor_check_pass check=workflow-config code=ok message="YAML orchestrator config and workflow DAGs are valid"
     level=info service=scherzo event=doctor_check_pass check=linear-contract code=ok project_slug=TEST team_count=1
@@ -439,14 +472,18 @@ In `src/scherzo/doctor.gleam`, define public helpers equivalent to:
     pub fn has_failures(Report) -> Bool
     pub fn result_event(CheckResult) -> String
     pub fn result_log_fields(CheckResult) -> List(log.Field)
+    pub fn human_report(Report, Option(String)) -> String
 
 In `src/scherzo/doctor.gleam`, add the options type used by both `main` and `service`:
+
+    pub type OutputFormat { Human Logfmt }
 
     pub type Options {
       Options(
         path: Option(String),
         checks: List(String),
         list_checks: Bool,
+        output: OutputFormat,
       )
     }
 
@@ -484,4 +521,4 @@ Production doctor dependencies should use existing modules:
 - `instance_lock.acquire` and `instance_lock.release` for local lock status.
 - `workspace_run.prepare_step` and `workspace_run.cleanup_run` for scratch YAML DAG workspace hook validation.
 - `probe.probe` for no-prompt pi RPC probing.
-- `log_stderr` for structured logs with `bundle.secrets` redaction.
+- `io.println` through the doctor dependency writer for default human-readable reports, and `log_stderr` for `--logfmt` structured logs with `bundle.secrets` redaction.

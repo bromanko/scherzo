@@ -22,9 +22,11 @@ pub fn parse_args_default_explicit_and_help_test() {
   assert main.parse_args(["ctl", "attach", "--raw", "ABC-123"])
     == Ok(main.Control(["attach", "--raw", "ABC-123"]))
   assert main.parse_args(["doctor"])
-    == Ok(main.Doctor(doctor.Options(None, [], False)))
+    == Ok(main.Doctor(doctor.Options(None, [], False, doctor.Human)))
   assert main.parse_args(["doctor", "scherzo.yaml"])
-    == Ok(main.Doctor(doctor.Options(Some("scherzo.yaml"), [], False)))
+    == Ok(
+      main.Doctor(doctor.Options(Some("scherzo.yaml"), [], False, doctor.Human)),
+    )
   assert main.parse_args([
       "doctor",
       "--check",
@@ -38,10 +40,13 @@ pub fn parse_args_default_explicit_and_help_test() {
         Some("scherzo.yaml"),
         ["linear-smoke", "pi-probe"],
         False,
+        doctor.Human,
       )),
     )
   assert main.parse_args(["doctor", "--list-checks"])
-    == Ok(main.Doctor(doctor.Options(None, [], True)))
+    == Ok(main.Doctor(doctor.Options(None, [], True, doctor.Human)))
+  assert main.parse_args(["doctor", "--logfmt"])
+    == Ok(main.Doctor(doctor.Options(None, [], False, doctor.Logfmt)))
 }
 
 pub fn parse_args_rejects_usage_errors_test() {
@@ -64,6 +69,7 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "doctor [options]")
   assert string.contains(usage, "doctor --check <name>")
   assert string.contains(usage, "doctor --list-checks")
+  assert string.contains(usage, "doctor --logfmt")
   assert string.contains(
     usage,
     "workflow-config, linear-contract, linear-smoke",

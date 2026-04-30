@@ -229,11 +229,44 @@ When YAML DAG agent steps run, Scherzo creates concrete step sessions such as `A
 
 ## Doctor readiness checks
 
-Run `doctor` before cautious real-board operation. The command loads the YAML orchestrator config, routed workflow DAGs, and prompt templates, then reports one stable result per selected readiness check and a final `doctor_summary`. The default check set runs in this order: `workflow-config`, `linear-contract`, `linear-smoke`, `instance-lock`, `workspace-hooks`, and `pi-probe`.
+Run `doctor` before cautious real-board operation. The command loads the YAML orchestrator config, routed workflow DAGs, and prompt templates, then prints a human-readable readiness report inspired by tools such as `flutter doctor`: each selected check is marked with `✓`, `!`, `✗`, or `-`, followed by a readable summary and remediation hints for failures. The default check set runs in this order: `workflow-config`, `linear-contract`, `linear-smoke`, `instance-lock`, `workspace-hooks`, and `pi-probe`. Use `--logfmt` when you need the previous machine-readable `doctor_check_*` events and `doctor_summary` fields.
 
 ```sh
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml
 direnv exec . gleam run -- doctor --list-checks
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --logfmt .scherzo/scherzo.yaml
+```
+
+A successful default run looks like:
+
+```text
+Scherzo doctor
+Config: .scherzo/scherzo.yaml
+
+✓ Workflow config
+  Loaded YAML orchestrator config and 1 workflow DAG.
+
+✓ Linear contract
+  Project board matches configured states and labels.
+  Team count: 1, states: 7, labels: 7.
+
+✓ Linear smoke
+  Read-only Linear API check succeeded.
+  Candidates: 2, terminal sample: 3, refreshed: 1.
+
+✓ Instance lock
+  Local instance lock can be acquired and released.
+
+✓ Workspace hooks
+  Scratch workspace was prepared and cleaned up.
+  Hooks: create,before_step,remove.
+
+✓ Pi probe
+  pi RPC launched successfully and no prompt was sent.
+
+Summary: 6 passed, 0 warnings, 0 failed, 0 skipped
+
+Ready for cautious real-board operation.
 ```
 
 Use repeated `--check` flags to run a subset. This read-only subset loads config and queries Linear metadata/issues, but it does not acquire the local instance lock, run workspace hooks, prepare a scratch workspace, or launch pi:

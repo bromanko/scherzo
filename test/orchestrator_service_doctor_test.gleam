@@ -238,7 +238,7 @@ fn field_value(fields: List(#(String, String)), key: String) -> Option(String) {
   }
 }
 
-pub fn doctor_workflow_config_success_logs_summary_test() {
+pub fn doctor_workflow_config_success_prints_human_summary_test() {
   let config_path = write_config("test/tmp/doctor-workflow-config", "")
   let subject = process.new_subject()
   let deps = successful_deps(subject)
@@ -247,6 +247,7 @@ pub fn doctor_workflow_config_success_logs_summary_test() {
       path: Some(config_path),
       checks: ["workflow-config"],
       list_checks: False,
+      output: doctor.Human,
     )
   let assert Ok(report) =
     service.build_doctor_report_with_dependencies(options, deps)
@@ -256,13 +257,15 @@ pub fn doctor_workflow_config_success_logs_summary_test() {
   assert field_value(result.fields, "workflow_count") == Some("1")
 
   assert service.start_doctor_with_dependencies(options, deps) == Ok(Nil)
-  let assert Ok(LogCaptured(event: "doctor_check_pass", fields: pass_fields, ..)) =
-    process.receive(subject, within: 1000)
-  assert field_value(pass_fields, "check") == Some("workflow-config")
-  let assert Ok(LogCaptured(event: "doctor_summary", fields: summary_fields, ..)) =
-    process.receive(subject, within: 1000)
-  assert field_value(summary_fields, "passed") == Some("1")
-  assert field_value(summary_fields, "failed") == Some("0")
+  let assert Ok(ListWritten(output)) = process.receive(subject, within: 1000)
+  assert string.contains(output, "Scherzo doctor")
+  assert string.contains(output, "Config: " <> config_path)
+  assert string.contains(output, "✓ Workflow config")
+  assert string.contains(
+    output,
+    "Summary: 1 passed, 0 warnings, 0 failed, 0 skipped",
+  )
+  assert string.contains(output, "Selected checks passed.")
 }
 
 pub fn doctor_unknown_check_name_fails_before_loading_workflow_test() {
@@ -277,6 +280,7 @@ pub fn doctor_unknown_check_name_fails_before_loading_workflow_test() {
         path: Some("test/tmp/no-such-scherzo.yaml"),
         checks: ["no-such-check"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -299,6 +303,7 @@ pub fn doctor_linear_smoke_success_reports_counts_test() {
         path: Some(config_path),
         checks: ["linear-smoke"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -324,6 +329,7 @@ pub fn doctor_linear_smoke_failure_does_not_skip_workspace_probe_test() {
       path: Some(config_path),
       checks: ["linear-smoke", "workspace-hooks", "pi-probe"],
       list_checks: False,
+      output: doctor.Logfmt,
     )
   let assert Ok(report) =
     service.build_doctor_report_with_dependencies(options, deps)
@@ -357,6 +363,7 @@ pub fn doctor_contract_mismatch_reports_failure_test() {
         path: Some(config_path),
         checks: ["linear-contract"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -387,6 +394,7 @@ pub fn doctor_lock_failure_reports_only_selected_checks_test() {
         path: Some(config_path),
         checks: ["workspace-hooks", "pi-probe"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -419,6 +427,7 @@ pub fn doctor_pi_probe_lock_failure_reports_only_pi_probe_test() {
         path: Some(config_path),
         checks: ["pi-probe"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -441,6 +450,7 @@ pub fn doctor_workspace_and_pi_share_one_prepared_workspace_test() {
         path: Some(config_path),
         checks: ["workspace-hooks", "pi-probe"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -478,6 +488,7 @@ pub fn doctor_cleanup_failure_warns_test() {
         path: Some(config_path),
         checks: ["workspace-hooks", "pi-probe"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -511,6 +522,7 @@ pub fn doctor_pi_probe_prepare_failure_reports_only_pi_probe_test() {
         path: Some(config_path),
         checks: ["pi-probe"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -539,6 +551,7 @@ pub fn doctor_pi_probe_cleanup_failure_does_not_report_workspace_hooks_test() {
         path: Some(config_path),
         checks: ["pi-probe"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -575,6 +588,7 @@ pub fn doctor_pi_probe_does_not_prompt_test() {
         path: Some(config_path),
         checks: ["pi-probe"],
         list_checks: False,
+        output: doctor.Human,
       ),
       deps,
     )
@@ -595,7 +609,12 @@ pub fn doctor_list_checks_writes_names_without_loading_config_test() {
       panic as "load_bundle should not run for --list-checks"
     })
   assert service.start_doctor_with_dependencies(
-      doctor.Options(path: None, checks: [], list_checks: True),
+      doctor.Options(
+        path: None,
+        checks: [],
+        list_checks: True,
+        output: doctor.Human,
+      ),
       deps,
     )
     == Ok(Nil)

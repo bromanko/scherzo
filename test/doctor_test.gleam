@@ -1,3 +1,5 @@
+import gleam/option.{None}
+import gleam/string
 import scherzo/doctor
 
 pub fn default_checks_are_stable_test() {
@@ -89,6 +91,48 @@ pub fn summary_counts_result_statuses_test() {
     ])
   assert doctor.summary(report) == doctor.Summary(1, 1, 1, 1)
   assert doctor.has_failures(report) == True
+}
+
+pub fn human_report_is_readable_test() {
+  let report =
+    doctor.Report([
+      doctor.CheckResult(
+        check: doctor.WorkflowConfig,
+        status: doctor.Pass,
+        code: "ok",
+        message: "loaded",
+        fields: [
+          #("config_path", ".scherzo/scherzo.yaml"),
+          #("workflow_count", "1"),
+        ],
+      ),
+      doctor.CheckResult(
+        check: doctor.LinearSmoke,
+        status: doctor.Fail,
+        code: "linear_api_status",
+        message: "Linear returned an error",
+        fields: [],
+      ),
+      doctor.CheckResult(
+        check: doctor.PiProbe,
+        status: doctor.Skip,
+        code: "workflow_config_failed",
+        message: "workflow config did not load",
+        fields: [],
+      ),
+    ])
+  let output = doctor.human_report(report, None)
+  assert string.contains(output, "Scherzo doctor")
+  assert string.contains(output, "Config: .scherzo/scherzo.yaml")
+  assert string.contains(output, "✓ Workflow config")
+  assert string.contains(output, "✗ Linear smoke")
+  assert string.contains(output, "Code: linear_api_status")
+  assert string.contains(output, "- Pi probe")
+  assert string.contains(
+    output,
+    "Summary: 1 passed, 0 warnings, 1 failed, 1 skipped",
+  )
+  assert string.contains(output, "Not ready.")
 }
 
 pub fn result_events_and_log_fields_are_stable_test() {
