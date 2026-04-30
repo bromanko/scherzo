@@ -9,7 +9,11 @@ erl_crash.dump
 !.scherzo/README.md
 !.scherzo/workflows/
 !.scherzo/workflows/**
+.scherzo/scherzo.local.yaml
+.scherzo/scherzo.local.yml
 .scherzo/workflows/*.local.md
+.scherzo/workflows/**/*.local.yaml
+.scherzo/workflows/**/*.local.yml
 .scherzo/workflows/**/.scherzo/
 node_modules/
 *.log

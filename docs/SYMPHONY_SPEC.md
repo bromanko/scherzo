@@ -71,9 +71,9 @@ Important boundary:
 ### 3.1 Main Components
 
 1. `Workflow Loader`
-   - Reads `WORKFLOW.md`.
-   - Parses YAML front matter and prompt body.
-   - Returns `{config, prompt_template}`.
+   - Reads legacy `WORKFLOW.md` files or an implementation-defined orchestrator config such as `.scherzo/scherzo.yaml`.
+   - For legacy Markdown, parses YAML front matter and prompt body and returns `{config, prompt_template}`.
+   - For YAML orchestrator config, loads tracker/runtime config separately from one or more workflow DAG files and their Markdown prompt templates.
 
 2. `Config Layer`
    - Exposes typed getters for workflow config values.
@@ -116,7 +116,7 @@ Important boundary:
 Symphony is easiest to port when kept in these layers:
 
 1. `Policy Layer` (repo-defined)
-   - `WORKFLOW.md` prompt body.
+   - Legacy `WORKFLOW.md` prompt body or YAML workflow DAG files plus Markdown prompt templates.
    - Team-specific rules for ticket handling, validation, and handoff.
 
 2. `Configuration Layer` (typed getters)

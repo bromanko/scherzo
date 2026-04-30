@@ -14,10 +14,20 @@ pub fn run_hook(
   cwd: String,
   timeout_ms: Int,
 ) -> Result(Nil, error.HookError) {
+  run_hook_with_env(name, script, cwd, timeout_ms, [])
+}
+
+pub fn run_hook_with_env(
+  name: String,
+  script: String,
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+) -> Result(Nil, error.HookError) {
   case string.trim(script) {
     "" -> Ok(Nil)
     script -> {
-      case port.start(script, cwd) {
+      case port.start_with_env(script, cwd, env) {
         Error(err) -> Error(error.HookIo(port_error_to_string(err)))
         Ok(process) -> wait_for_hook(name, process, timeout_ms)
       }
@@ -31,7 +41,17 @@ pub fn run_best_effort(
   cwd: String,
   timeout_ms: Int,
 ) -> String {
-  case run_hook(name, script, cwd, timeout_ms) {
+  run_best_effort_with_env(name, script, cwd, timeout_ms, [])
+}
+
+pub fn run_best_effort_with_env(
+  name: String,
+  script: String,
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+) -> String {
+  case run_hook_with_env(name, script, cwd, timeout_ms, env) {
     Ok(Nil) -> log.info("hook_succeeded", [#("hook", name), #("cwd", cwd)])
     Error(err) ->
       log.warn("hook_failed", [

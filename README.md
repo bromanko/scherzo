@@ -137,6 +137,38 @@ This repository includes `.scherzo/workflows/research.md` as the first dogfood w
 
 See `examples/WORKFLOW.md` for a runnable template.
 
+## Experimental YAML orchestrator config and DAG workflows
+
+Scherzo also has an experimental split between orchestrator config and workflow prompts. In this mode, runtime settings live in a YAML file such as `.scherzo/scherzo.yaml`, while individual workflows live in `.scherzo/workflows/*.yaml` and refer to Markdown prompt files. See `examples/scherzo.yaml`, `examples/workflows/research.yaml`, and `examples/workflows/implementation.yaml`.
+
+The YAML workflow format supports a static directed acyclic graph: steps have stable ids, `kind: agent` or `kind: command`, `depends_on`, `workspace`, and `on_failure`. A workspace may be a string such as `main` or a derived workspace map such as `{ name: code-review, from: main }`. Scherzo validates duplicate step ids, missing dependencies, cycles, invalid identifiers, invalid derived workspace references, and prompt paths that are absolute or escape the workflow directory.
+
+The new config owns routing and DAG workspace hooks:
+
+    routing:
+      workflow_label_prefix: "workflow:"
+      require_exactly_one_workflow_label: true
+      workflows:
+        research: workflows/research.yaml
+        implementation: workflows/implementation.yaml
+    workspace:
+      root: .scherzo/workspaces
+      hooks:
+        create: |
+          mkdir -p "$SCHERZO_WORKSPACE_PATH"
+        before_step: |
+          test -d "$SCHERZO_WORKSPACE_PATH"
+        after_step: |
+          true
+        remove: |
+          rm -rf "$SCHERZO_WORKSPACE_PATH"
+
+DAG hooks run with cwd set to the directory containing `scherzo.yaml`. They receive `SCHERZO_CONFIG_DIR`, `SCHERZO_WORKFLOW_ID`, `SCHERZO_RUN_ID`, `SCHERZO_ISSUE_ID`, `SCHERZO_ISSUE_IDENTIFIER`, `SCHERZO_STEP_ID`, `SCHERZO_WORKSPACE_ROOT`, `SCHERZO_WORKSPACE_NAME`, `SCHERZO_WORKSPACE_PATH`, `SCHERZO_SOURCE_WORKSPACE_NAME`, and `SCHERZO_SOURCE_WORKSPACE_PATH`. Source variables are empty strings when a step does not derive from another workspace.
+
+Command and agent step outputs are normalized as artifacts. Downstream prompts can reference locals such as `{{ steps.code_review.final_response }}`, `{{ steps.test_after_implement.exit_code }}`, `{{ steps.test_after_implement.stdout }}`, and `{{ steps.test_after_implement.stderr }}`. Artifacts are bounded by `artifact_limits` and known resolved secrets are redacted before they are exposed to prompts or workflow summaries.
+
+Legacy `WORKFLOW.md` remains the default and is still the production-compatible path while the YAML DAG runner is being integrated into every CLI and daemon mode.
+
 ## Linear board contract check
 
 The board contract check proves that the configured Linear project contains the state names and issue labels the local workflow expects before agents start work. Run it before enabling stricter workflow labels or handoff state updates:

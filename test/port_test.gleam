@@ -36,6 +36,19 @@ pub fn port_keeps_stderr_out_of_stdout_test() {
   assert !string.contains(stdout, "diagnostic")
 }
 
+pub fn port_start_with_env_applies_environment_test() {
+  let cwd = "test/tmp/port-env"
+  reset_dir(cwd)
+
+  let assert Ok(process) =
+    port.start_with_env("printf '%s\n' \"$SCHERZO_TEST_ENV\"", cwd, [
+      #("SCHERZO_TEST_ENV", "hello from env"),
+    ])
+  let assert Ok(stdout) = port.read_stdout_line(process, 1000)
+  assert stdout == "hello from env"
+  let assert Error(port.ProcessExited(0)) = port.read_stdout_line(process, 1000)
+}
+
 pub fn port_terminate_exits_child_test() {
   let cwd = "test/tmp/port-terminate"
   reset_dir(cwd)

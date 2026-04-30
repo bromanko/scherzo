@@ -1,10 +1,13 @@
 -module(scherzo_port_ffi).
 
--export([start/2, send_line/2, read_stdout_line/2, read_diagnostics/1, terminate/1, await_exit/2]).
+-export([start/2, start_with_env/3, send_line/2, read_stdout_line/2, read_diagnostics/1, terminate/1, await_exit/2]).
 
 -define(MAX_LINE, 10000000).
 
 start(Command, Cwd) ->
+    start_with_env(Command, Cwd, []).
+
+start_with_env(Command, Cwd, Env) ->
     try
         Cmd = to_list(Command),
         Dir = to_list(Cwd),
@@ -18,7 +21,8 @@ start(Command, Cwd) ->
                     use_stdio,
                     {line, ?MAX_LINE},
                     {args, ["-lc", Wrapper]},
-                    {cd, Dir}
+                    {cd, Dir},
+                    {env, normalize_env(Env)}
                 ]),
                 {ok, {scherzo_process, Port, ErrPath}};
             false ->
@@ -88,6 +92,9 @@ stderr_path() ->
 shell_quote(Value) when is_binary(Value) -> shell_quote(binary_to_list(Value));
 shell_quote(Value) ->
     [$', lists:flatmap(fun($') -> "'\\''"; (C) -> [C] end, Value), $'].
+
+normalize_env(Env) ->
+    [{to_list(Key), to_list(Value)} || {Key, Value} <- Env].
 
 to_list(Value) when is_binary(Value) -> binary_to_list(Value);
 to_list(Value) when is_list(Value) -> Value.

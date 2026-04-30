@@ -1,0 +1,56 @@
+version: 1
+id: implementation
+description: Implement an issue, run tests, review in parallel workspaces, apply feedback, and validate.
+max_parallel_steps: 4
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/implement.md
+    workspace: main
+
+  - id: test_after_implement
+    kind: command
+    depends_on: [implement]
+    run: gleam test
+    workspace: main
+    on_failure: continue
+
+  - id: code_review
+    kind: agent
+    depends_on: [implement]
+    prompt: prompts/code-review.md
+    workspace:
+      name: code-review
+      from: main
+
+  - id: security_review
+    kind: agent
+    depends_on: [implement]
+    prompt: prompts/security-review.md
+    workspace:
+      name: security-review
+      from: main
+
+  - id: performance_review
+    kind: agent
+    depends_on: [implement]
+    prompt: prompts/performance-review.md
+    workspace:
+      name: performance-review
+      from: main
+
+  - id: apply_feedback
+    kind: agent
+    depends_on:
+      - test_after_implement
+      - code_review
+      - security_review
+      - performance_review
+    prompt: prompts/apply-feedback.md
+    workspace: main
+
+  - id: final_test
+    kind: command
+    depends_on: [apply_feedback]
+    run: gleam test
+    workspace: main

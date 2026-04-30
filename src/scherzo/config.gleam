@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order.{Gt, Lt}
 import gleam/string
 import scherzo/domain
 import scherzo/error
@@ -132,10 +133,17 @@ pub fn resolve_with_env(
   workflow_path: String,
   env: Env,
 ) -> Result(domain.EffectiveConfig, error.ConfigError) {
-  let root = workflow.config
+  resolve_root(workflow.config, workflow_path, env)
+}
+
+pub fn resolve_root(
+  root: yay.Node,
+  config_path: String,
+  env: Env,
+) -> Result(domain.EffectiveConfig, error.ConfigError) {
   use tracker <- result_try(resolve_tracker(root, env))
   use polling <- result_try(resolve_polling(root))
-  use workspace <- result_try(resolve_workspace(root, workflow_path, env))
+  use workspace <- result_try(resolve_workspace(root, config_path, env))
   use hooks <- result_try(resolve_hooks(root))
   use agent <- result_try(resolve_agent(root))
   use pi <- result_try(resolve_pi(root))
@@ -152,6 +160,33 @@ pub fn resolve_with_env(
     handoff:,
     linear_contract:,
     linear_commands:,
+  ))
+}
+
+pub fn resolve_orchestrator_root(
+  root: yay.Node,
+  config_path: String,
+  env: Env,
+) -> Result(domain.OrchestratorConfig, error.ConfigError) {
+  use effective <- result_try(resolve_root(root, config_path, env))
+  use routing <- result_try(resolve_routing(root, config_path))
+  use dag_hooks <- result_try(resolve_dag_hooks(root))
+  use artifact_limits <- result_try(resolve_artifact_limits(root))
+  use linear_contract <- result_try(resolve_orchestrator_linear_contract(
+    root,
+    effective.linear_contract,
+    routing,
+  ))
+  let effective = domain.EffectiveConfig(..effective, linear_contract:)
+  Ok(domain.OrchestratorConfig(
+    effective: effective,
+    config_dir: dirname(config_path)
+      |> result_unwrap(".")
+      |> absname
+      |> result_unwrap(dirname(config_path) |> result_unwrap(".")),
+    routing: routing,
+    dag_hooks: dag_hooks,
+    artifact_limits: artifact_limits,
   ))
 }
 
@@ -615,6 +650,271 @@ fn resolve_linear_commands(
   }
 }
 
+fn resolve_routing(
+  root: yay.Node,
+  config_path: String,
+) -> Result(domain.RoutingConfig, error.ConfigError) {
+  let routing = get_map(root, "routing")
+  let prefix =
+    get_string(routing, "workflow_label_prefix")
+    |> option_unwrap("workflow:")
+    |> normalize_label
+  let require_exactly_one =
+    get_bool(routing, "require_exactly_one_workflow_label")
+    |> bool_default(False)
+  let default_workflow =
+    get_non_empty_string(routing, "default_workflow")
+    |> option_map(normalize_label)
+  use workflows <- result_try(read_routing_workflows(routing, config_path))
+  use _ <- result_try(validate_default_workflow(default_workflow, workflows))
+  Ok(domain.RoutingConfig(
+    workflow_label_prefix: prefix,
+    require_exactly_one_workflow_label: require_exactly_one,
+    default_workflow: default_workflow,
+    workflows: workflows,
+  ))
+}
+
+fn validate_default_workflow(
+  default_workflow: Option(String),
+  workflows: dict.Dict(String, String),
+) -> Result(Nil, error.ConfigError) {
+  case default_workflow {
+    None -> Ok(Nil)
+    Some(workflow_id) ->
+      case valid_workflow_name(workflow_id) {
+        False ->
+          Error(error.InvalidConfig(
+            "routing.default_workflow has invalid workflow id: " <> workflow_id,
+          ))
+        True ->
+          case dict.has_key(workflows, workflow_id) {
+            True -> Ok(Nil)
+            False ->
+              Error(error.InvalidConfig(
+                "routing.default_workflow references unknown workflow: "
+                <> workflow_id,
+              ))
+          }
+      }
+  }
+}
+
+fn read_routing_workflows(
+  routing: yay.Node,
+  config_path: String,
+) -> Result(dict.Dict(String, String), error.ConfigError) {
+  case get_node(routing, "workflows") {
+    None -> Ok(dict.new())
+    Some(yay.NodeMap(entries)) ->
+      read_routing_workflow_entries(entries, config_path, [])
+    Some(_) -> Error(error.InvalidConfig("routing.workflows must be a map"))
+  }
+}
+
+fn read_routing_workflow_entries(
+  entries: List(#(yay.Node, yay.Node)),
+  config_path: String,
+  acc: List(#(String, String)),
+) -> Result(dict.Dict(String, String), error.ConfigError) {
+  case entries {
+    [] -> Ok(dict.from_list(list.reverse(acc)))
+    [#(yay.NodeStr(key), yay.NodeStr(value)), ..rest] -> {
+      let workflow_id = normalize_label(key)
+      case valid_workflow_name(workflow_id) {
+        False ->
+          Error(error.InvalidConfig(
+            "routing.workflows has invalid workflow id: " <> key,
+          ))
+        True -> {
+          use path <- result_try(resolve_relative_config_path(
+            value,
+            config_path,
+            "routing.workflows." <> key,
+          ))
+          read_routing_workflow_entries(rest, config_path, [
+            #(workflow_id, path),
+            ..acc
+          ])
+        }
+      }
+    }
+    [#(yay.NodeStr(_), _), ..] ->
+      Error(error.InvalidConfig("routing.workflows values must be strings"))
+    [#(_, _), ..] ->
+      Error(error.InvalidConfig("routing.workflows keys must be strings"))
+  }
+}
+
+fn resolve_dag_hooks(
+  root: yay.Node,
+) -> Result(domain.DagHooksConfig, error.ConfigError) {
+  let workspace = get_map(root, "workspace")
+  let hooks = get_map(workspace, "hooks")
+  let timeout = get_int(hooks, "timeout_ms") |> int_default(60_000)
+  case timeout > 0 {
+    False ->
+      Error(error.InvalidConfig("workspace.hooks.timeout_ms must be positive"))
+    True ->
+      Ok(domain.DagHooksConfig(
+        create: get_non_empty_string(hooks, "create"),
+        before_step: get_non_empty_string(hooks, "before_step"),
+        after_step: get_non_empty_string(hooks, "after_step"),
+        remove: get_non_empty_string(hooks, "remove"),
+        timeout_ms: timeout,
+      ))
+  }
+}
+
+fn resolve_artifact_limits(
+  root: yay.Node,
+) -> Result(domain.ArtifactLimits, error.ConfigError) {
+  let limits = get_map(root, "artifact_limits")
+  let command_stream_max_chars =
+    get_int(limits, "command_stream_max_chars") |> int_default(20_000)
+  let template_field_max_chars =
+    get_int(limits, "template_field_max_chars") |> int_default(8000)
+  let workflow_summary_max_chars =
+    get_int(limits, "workflow_summary_max_chars") |> int_default(20_000)
+  case
+    command_stream_max_chars <= 0
+    || template_field_max_chars <= 0
+    || workflow_summary_max_chars <= 0
+  {
+    True ->
+      Error(error.InvalidConfig("artifact_limits values must be positive"))
+    False ->
+      Ok(domain.ArtifactLimits(
+        command_stream_max_chars: command_stream_max_chars,
+        template_field_max_chars: template_field_max_chars,
+        workflow_summary_max_chars: workflow_summary_max_chars,
+      ))
+  }
+}
+
+fn resolve_orchestrator_linear_contract(
+  root: yay.Node,
+  contract: domain.LinearContractConfig,
+  routing: domain.RoutingConfig,
+) -> Result(domain.LinearContractConfig, error.ConfigError) {
+  let workflow_names =
+    dict.keys(routing.workflows)
+    |> normalize_label_list
+    |> list.sort(by: string.compare)
+  let has_labels = linear_contract_field_present(root, "workflow_labels")
+  let has_prefix = linear_contract_field_present(root, "workflow_label_prefix")
+  let contract_prefix = case has_prefix {
+    True -> contract.workflow_label_prefix
+    False -> routing.workflow_label_prefix
+  }
+  case
+    has_prefix
+    && contract.workflow_label_prefix != routing.workflow_label_prefix
+  {
+    True ->
+      Error(error.InvalidConfig(
+        "linear_contract.workflow_label_prefix must match routing.workflow_label_prefix",
+      ))
+    False -> {
+      let contract_names =
+        contract.workflow_labels
+        |> normalize_label_list
+        |> list.sort(by: string.compare)
+      case routing.require_exactly_one_workflow_label, has_labels {
+        True, False ->
+          Ok(
+            domain.LinearContractConfig(
+              ..contract,
+              workflow_label_prefix: contract_prefix,
+              workflow_labels: workflow_names,
+            ),
+          )
+        True, True ->
+          case contract_names == workflow_names {
+            True ->
+              Ok(
+                domain.LinearContractConfig(
+                  ..contract,
+                  workflow_label_prefix: contract_prefix,
+                  workflow_labels: workflow_names,
+                ),
+              )
+            False ->
+              Error(error.InvalidConfig(
+                "linear_contract.workflow_labels must match routing.workflows when routing requires exactly one workflow label",
+              ))
+          }
+        _, _ ->
+          Ok(
+            domain.LinearContractConfig(
+              ..contract,
+              workflow_label_prefix: contract_prefix,
+            ),
+          )
+      }
+    }
+  }
+}
+
+fn linear_contract_field_present(root: yay.Node, key: String) -> Bool {
+  case get_node(get_map(root, "linear_contract"), key) {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+fn resolve_relative_config_path(
+  value: String,
+  config_path: String,
+  field: String,
+) -> Result(String, error.ConfigError) {
+  let trimmed = string.trim(value)
+  case trimmed == "" {
+    True -> Error(error.InvalidConfig(field <> " must be non-empty"))
+    False ->
+      case string.starts_with(trimmed, "/") || has_parent_segment(trimmed) {
+        True ->
+          Error(error.InvalidConfig(
+            field <> " must be a relative path without ..",
+          ))
+        False -> Ok(resolve_path(trimmed, config_path))
+      }
+  }
+}
+
+fn has_parent_segment(value: String) -> Bool {
+  value == ".."
+  || string.starts_with(value, "../")
+  || string.ends_with(value, "/..")
+  || string.contains(value, "/../")
+}
+
+fn valid_workflow_name(value: String) -> Bool {
+  case string.to_graphemes(value) {
+    [] -> False
+    [first, ..rest] -> is_lower_or_digit(first) && all(rest, is_workflow_char)
+  }
+}
+
+fn is_workflow_char(ch: String) -> Bool {
+  is_lower_or_digit(ch) || ch == "_" || ch == "-"
+}
+
+fn is_lower_or_digit(ch: String) -> Bool {
+  is_between(ch, "a", "z") || is_between(ch, "0", "9")
+}
+
+fn is_between(value: String, low: String, high: String) -> Bool {
+  string.compare(value, low) != Lt && string.compare(value, high) != Gt
+}
+
+fn all(values: List(a), predicate: fn(a) -> Bool) -> Bool {
+  case values {
+    [] -> True
+    [value, ..rest] -> predicate(value) && all(rest, predicate)
+  }
+}
+
 fn normalize_string_list(values: List(String)) -> List(String) {
   values
   |> list.map(string.trim)
@@ -1028,6 +1328,13 @@ fn option_or_else(value: Option(a), fallback: fn() -> Option(a)) -> Option(a) {
   case value {
     Some(_) -> value
     None -> fallback()
+  }
+}
+
+fn option_map(value: Option(a), mapper: fn(a) -> b) -> Option(b) {
+  case value {
+    Some(value) -> Some(mapper(value))
+    None -> None
   }
 }
 

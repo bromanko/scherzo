@@ -76,6 +76,27 @@ pub fn unknown_variable_fails_test() {
     template.render("Hello {{ issue.unknown }}", issue(), None)
 }
 
+pub fn render_with_locals_renders_step_artifact_variables_test() {
+  let assert Ok(rendered) =
+    template.render_with_locals(
+      "Review: {{ steps.code_review.final_response }}",
+      issue(),
+      None,
+      [#("steps.code_review.final_response", template.VString("Looks good"))],
+    )
+  assert rendered == "Review: Looks good"
+}
+
+pub fn render_with_locals_unknown_artifact_variable_still_fails_test() {
+  let assert Error(_) =
+    template.render_with_locals(
+      "Review: {{ steps.security_review.final_response }}",
+      issue(),
+      None,
+      [#("steps.code_review.final_response", template.VString("Looks good"))],
+    )
+}
+
 pub fn unknown_filter_fails_test() {
   let assert Error(_) =
     template.render("{{ issue.title | upcase }}", issue(), None)

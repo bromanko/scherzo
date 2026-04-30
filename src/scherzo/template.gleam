@@ -25,11 +25,23 @@ pub fn render(
   issue: domain.Issue,
   attempt: Option(Int),
 ) -> Result(String, error.TemplateError) {
+  render_with_locals(template, issue, attempt, [])
+}
+
+pub fn render_with_locals(
+  template: String,
+  issue: domain.Issue,
+  attempt: Option(Int),
+  locals: List(#(String, Value)),
+) -> Result(String, error.TemplateError) {
   let template = case string.trim(template) {
     "" -> "You are working on an issue from Linear."
     _ -> template
   }
-  render_section(template, Context(issue: issue, attempt: attempt, locals: []))
+  render_section(
+    template,
+    Context(issue: issue, attempt: attempt, locals: locals),
+  )
 }
 
 fn render_section(

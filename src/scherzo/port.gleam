@@ -31,6 +31,15 @@ pub fn start(command: String, cwd: String) -> Result(Process, PortError) {
   |> result.map_error(StartFailed)
 }
 
+pub fn start_with_env(
+  command: String,
+  cwd: String,
+  env: List(#(String, String)),
+) -> Result(Process, PortError) {
+  ffi_start_with_env(command, cwd, env)
+  |> result.map_error(StartFailed)
+}
+
 pub fn send_line(process: Process, line: String) -> Result(Nil, PortError) {
   ffi_send_line(process, line)
   |> result.map_error(fn(error) { SendFailed(error) })
@@ -98,6 +107,13 @@ fn parse_int_or_zero(value: String) -> Int {
 
 @external(erlang, "scherzo_port_ffi", "start")
 fn ffi_start(command: String, cwd: String) -> Result(Process, String)
+
+@external(erlang, "scherzo_port_ffi", "start_with_env")
+fn ffi_start_with_env(
+  command: String,
+  cwd: String,
+  env: List(#(String, String)),
+) -> Result(Process, String)
 
 @external(erlang, "scherzo_port_ffi", "send_line")
 fn ffi_send_line(process: Process, line: String) -> Result(Nil, String)

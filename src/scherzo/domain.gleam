@@ -141,6 +141,43 @@ pub type LinearCommandConfig {
   )
 }
 
+pub type RoutingConfig {
+  RoutingConfig(
+    workflow_label_prefix: String,
+    require_exactly_one_workflow_label: Bool,
+    default_workflow: Option(String),
+    workflows: Dict(String, String),
+  )
+}
+
+pub type DagHooksConfig {
+  DagHooksConfig(
+    create: Option(String),
+    before_step: Option(String),
+    after_step: Option(String),
+    remove: Option(String),
+    timeout_ms: Int,
+  )
+}
+
+pub type ArtifactLimits {
+  ArtifactLimits(
+    command_stream_max_chars: Int,
+    template_field_max_chars: Int,
+    workflow_summary_max_chars: Int,
+  )
+}
+
+pub type OrchestratorConfig {
+  OrchestratorConfig(
+    effective: EffectiveConfig,
+    config_dir: String,
+    routing: RoutingConfig,
+    dag_hooks: DagHooksConfig,
+    artifact_limits: ArtifactLimits,
+  )
+}
+
 pub type EffectiveConfig {
   EffectiveConfig(
     tracker: TrackerConfig,

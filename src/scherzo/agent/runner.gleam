@@ -170,6 +170,59 @@ pub fn run_attempt_with_command_ready(
   }
 }
 
+pub fn run_prompt_in_workspace(
+  issue: domain.Issue,
+  prompt: String,
+  config: domain.EffectiveConfig,
+  tracker_client: tracker.Client,
+  emit_update: fn(String, PiUpdate) -> Nil,
+  command_subject: process.Subject(worker_command.Command),
+  on_command_ready: fn() -> Nil,
+  workspace_path: String,
+) -> Result(WorkerSuccess, WorkerFailure) {
+  case config.pi.compatibility_probe {
+    True -> {
+      emit_update(issue.id, lifecycle_update("probe_started"))
+      case
+        probe.probe(
+          config.pi.command,
+          workspace_path,
+          config.pi.read_timeout_ms,
+        )
+      {
+        Error(err) -> {
+          let _ = workspace.after_run(workspace_path, config.hooks)
+          Error(worker_failure(error.ProbeFailed(err), Some(workspace_path)))
+        }
+        Ok(Nil) -> {
+          emit_update(issue.id, lifecycle_update("probe_finished"))
+          run_pi_loop(
+            issue,
+            prompt,
+            config,
+            tracker_client,
+            emit_update,
+            command_subject,
+            on_command_ready,
+            workspace_path,
+          )
+        }
+      }
+    }
+    False ->
+      run_pi_loop(
+        issue,
+        prompt,
+        config,
+        tracker_client,
+        emit_update,
+        command_subject,
+        on_command_ready,
+        workspace_path,
+      )
+  }
+}
+
 fn run_prepared(
   issue: domain.Issue,
   attempt: Option(Int),
