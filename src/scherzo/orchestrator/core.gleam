@@ -28,6 +28,11 @@ pub type Transition {
   Transition(state: domain.RuntimeState, effects: List(Effect))
 }
 
+pub type WorkflowCleanupPolicy {
+  AlreadyCleaned
+  CleanupWorkflowWorkspace(String)
+}
+
 pub fn new_state(config: domain.EffectiveConfig) -> domain.RuntimeState {
   domain.RuntimeState(
     poll_interval_ms: config.polling.interval_ms,
@@ -289,6 +294,26 @@ pub fn apply_worker_start(
       ),
     ),
     claimed: dict.insert(state.claimed, issue.id, issue.identifier),
+  )
+}
+
+pub fn apply_workflow_success(
+  state: domain.RuntimeState,
+  _config: domain.EffectiveConfig,
+  issue_id: String,
+  final_issue: domain.Issue,
+  tokens: domain.TokenTotals,
+  _now_ms: Int,
+  cleanup: WorkflowCleanupPolicy,
+) -> Transition {
+  let base = state_after_worker_exit(state, issue_id, final_issue, tokens)
+  let cleanup_effect_list = case cleanup {
+    AlreadyCleaned -> []
+    CleanupWorkflowWorkspace(path) -> cleanup_effects(path)
+  }
+  Transition(
+    state: release_claim(base, issue_id),
+    effects: list.append(cleanup_effect_list, [ReleaseClaim(issue_id)]),
   )
 }
 

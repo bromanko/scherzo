@@ -11,7 +11,6 @@ import scherzo/error
 import scherzo/path
 import scherzo/tracker
 import simplifile
-import yay
 
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
@@ -118,8 +117,8 @@ fn config(
   )
 }
 
-fn workflow(prompt: String) -> domain.WorkflowDefinition {
-  domain.WorkflowDefinition(config: yay.NodeMap([]), prompt_template: prompt)
+fn workflow(prompt: String) -> String {
+  prompt
 }
 
 fn tracker_returning(final_issue: domain.Issue) -> tracker.Client {

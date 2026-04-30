@@ -54,9 +54,19 @@ fn issue(state: String) -> domain.Issue {
 }
 
 fn yaml_config(root: String, extra: String) -> String {
+  yaml_config_with_max(root, 1, extra)
+}
+
+fn yaml_config_with_max(
+  root: String,
+  max_concurrent: Int,
+  extra: String,
+) -> String {
   "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
   <> root
-  <> "\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n"
+  <> "\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: |\n      test -d \"$SCHERZO_WORKSPACE_PATH\"\n    after_step: |\n      true\n    remove: |\n      rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: "
+  <> int_to_string(max_concurrent)
+  <> "\n  max_turns: 1\n"
   <> extra
 }
 
@@ -66,20 +76,9 @@ fn command_workflow_yaml(command: String) -> String {
   <> "\n    workspace: main\n"
 }
 
-fn workflow_text(root: String, command: String, max_concurrent: Int) -> String {
-  "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\nworkspace:\n  root: "
-  <> root
-  <> "\nhooks:\n  after_create: |\n    printf populated > POPULATED\n  before_run: |\n    test -f POPULATED\nagent:\n  max_concurrent_agents: "
-  <> int_to_string(max_concurrent)
-  <> "\n  max_turns: 1\npi:\n  command: \""
-  <> command
-  <> "\"\n  compatibility_probe: true\n---\nWork on {{ issue.identifier }}\n"
-}
-
 fn deps(client: tracker.Client) -> service.Dependencies {
   service.Dependencies(
     tracker: fn(_) { client },
-    agent_runner: runner.run_attempt,
     workflow_run_dependencies: workflow_deps(),
     cleanup: fn(root, path, hooks) {
       let _ = root
@@ -160,12 +159,12 @@ fn workflow_deps() -> workflow_run.Dependencies {
   )
 }
 
-fn contract_workflow_text(root: String, active_state: String) -> String {
-  "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: ["
+fn contract_config_text(root: String, active_state: String) -> String {
+  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: ["
   <> active_state
   <> "]\n  terminal_states: [Done]\nworkspace:\n  root: "
   <> root
-  <> "\n---\nPrompt\n"
+  <> "\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n"
 }
 
 fn contract_team(
@@ -222,21 +221,28 @@ fn field_value(fields: List(#(String, String)), key: String) -> Option(String) {
   }
 }
 
-pub fn startup_fails_on_missing_workflow_test() {
+pub fn startup_fails_on_missing_config_test() {
   let assert Error(err) =
     service.run_once_with_dependencies(
-      Some("test/tmp/no-such-workflow.md"),
+      Some("test/tmp/no-such-scherzo.yaml"),
       deps(empty_tracker()),
     )
-  assert err.code == "missing_workflow_file"
+  assert err.code == "missing_config_file"
 }
 
 pub fn paused_config_skips_dispatch_but_loads_workflow_test() {
   let root = "test/tmp/service-paused/workspaces"
   reset_dir("test/tmp/service-paused")
-  let workflow_path = "test/tmp/service-paused/WORKFLOW.md"
   let assert Ok(Nil) =
-    simplifile.write(workflow_path, workflow_text(root, fake_pi(), 0))
+    simplifile.create_directory_all("test/tmp/service-paused/workflows")
+  let workflow_path = "test/tmp/service-paused/scherzo.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(workflow_path, yaml_config_with_max(root, 0, ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-paused/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
   let assert Ok(result) =
     service.run_once_with_dependencies(
       Some(workflow_path),
@@ -249,12 +255,25 @@ pub fn paused_config_skips_dispatch_but_loads_workflow_test() {
 pub fn pi_probe_mode_launches_without_prompt_test() {
   let root = "test/tmp/service-pi-probe/workspaces"
   reset_dir("test/tmp/service-pi-probe")
-  let workflow_path = "test/tmp/service-pi-probe/WORKFLOW.md"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all("test/tmp/service-pi-probe/workflows")
+  let workflow_path = "test/tmp/service-pi-probe/scherzo.yaml"
   let transcript_path = "test/tmp/service-pi-probe/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
   let assert Ok(Nil) =
-    simplifile.write(workflow_path, workflow_text(root, command, 1))
+    simplifile.write(
+      workflow_path,
+      yaml_config(
+        root,
+        "pi:\n  command: \"" <> command <> "\"\n  compatibility_probe: true\n",
+      ),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-pi-probe/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
   assert service.start_pi_probe(Some(workflow_path)) == Ok(Nil)
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "set_session_name")
@@ -265,9 +284,16 @@ pub fn pi_probe_mode_launches_without_prompt_test() {
 pub fn linear_contract_check_success_logs_structured_summary_test() {
   let root = "test/tmp/service-contract-ok/workspaces"
   reset_dir("test/tmp/service-contract-ok")
-  let workflow_path = "test/tmp/service-contract-ok/WORKFLOW.md"
   let assert Ok(Nil) =
-    simplifile.write(workflow_path, contract_workflow_text(root, "Todo"))
+    simplifile.create_directory_all("test/tmp/service-contract-ok/workflows")
+  let workflow_path = "test/tmp/service-contract-ok/scherzo.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(workflow_path, contract_config_text(root, "Todo"))
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-contract-ok/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
   let log_subject = process.new_subject()
   let result =
     service.start_linear_contract_check_with_dependencies(
@@ -299,11 +325,20 @@ pub fn linear_contract_check_success_logs_structured_summary_test() {
 pub fn linear_contract_check_mismatch_logs_diagnostics_and_fails_test() {
   let root = "test/tmp/service-contract-mismatch/workspaces"
   reset_dir("test/tmp/service-contract-mismatch")
-  let workflow_path = "test/tmp/service-contract-mismatch/WORKFLOW.md"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      "test/tmp/service-contract-mismatch/workflows",
+    )
+  let workflow_path = "test/tmp/service-contract-mismatch/scherzo.yaml"
   let assert Ok(Nil) =
     simplifile.write(
       workflow_path,
-      contract_workflow_text(root, "Ready for Agent"),
+      contract_config_text(root, "Ready for Agent"),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-contract-mismatch/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
     )
   let log_subject = process.new_subject()
   let assert Error(err) =
@@ -343,9 +378,18 @@ pub fn linear_contract_check_mismatch_logs_diagnostics_and_fails_test() {
 pub fn linear_contract_check_fetch_error_maps_to_startup_failure_test() {
   let root = "test/tmp/service-contract-fetch-error/workspaces"
   reset_dir("test/tmp/service-contract-fetch-error")
-  let workflow_path = "test/tmp/service-contract-fetch-error/WORKFLOW.md"
   let assert Ok(Nil) =
-    simplifile.write(workflow_path, contract_workflow_text(root, "Todo"))
+    simplifile.create_directory_all(
+      "test/tmp/service-contract-fetch-error/workflows",
+    )
+  let workflow_path = "test/tmp/service-contract-fetch-error/scherzo.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(workflow_path, contract_config_text(root, "Todo"))
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-contract-fetch-error/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
   let log_subject = process.new_subject()
   let assert Error(err) =
     service.start_linear_contract_check_with_dependencies(
@@ -441,25 +485,27 @@ pub fn yaml_linear_contract_check_uses_orchestrator_config_test() {
 pub fn fake_end_to_end_service_dispatch_test() {
   let root = "test/tmp/service-integration/workspaces"
   reset_dir("test/tmp/service-integration")
-  let workflow_path = "test/tmp/service-integration/WORKFLOW.md"
-  let transcript_path = "test/tmp/service-integration/transcript.jsonl"
-  let assert Ok(transcript) = path.absolute(transcript_path)
-  let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
   let assert Ok(Nil) =
-    simplifile.write(workflow_path, workflow_text(root, command, 1))
+    simplifile.create_directory_all("test/tmp/service-integration/workflows")
+  let workflow_path = "test/tmp/service-integration/scherzo.yaml"
+  let assert Ok(Nil) = simplifile.write(workflow_path, yaml_config(root, ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-integration/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
+  let candidate =
+    domain.Issue(..issue("Todo"), labels: ["workflow:implementation"])
   let assert Ok(result) =
     service.run_once_with_dependencies(
       Some(workflow_path),
-      deps(tracker_with_candidate(issue("Todo"), issue("Done"))),
+      deps(tracker_with_candidate(candidate, issue("Done"))),
     )
   assert result.dispatched == 1
   assert contains_log(result.logs, "dispatch_started")
   assert contains_log(result.logs, "worker_exited")
   assert contains_log(result.logs, "workspace_cleaned")
   assert !contains_log(result.logs, "empty_path")
-  let assert Ok(contents) = simplifile.read(transcript)
-  assert string.contains(contents, "get_state")
-  assert string.contains(contents, "prompt")
 }
 
 fn empty_tracker() -> tracker.Client {

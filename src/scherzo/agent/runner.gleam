@@ -102,7 +102,7 @@ type BeforeTurn {
 pub fn run_attempt(
   issue: domain.Issue,
   attempt: Option(Int),
-  workflow: domain.WorkflowDefinition,
+  prompt_template: String,
   config: domain.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, PiUpdate) -> Nil,
@@ -111,7 +111,7 @@ pub fn run_attempt(
   run_attempt_with_commands(
     issue,
     attempt,
-    workflow,
+    prompt_template,
     config,
     tracker_client,
     emit_update,
@@ -122,7 +122,7 @@ pub fn run_attempt(
 pub fn run_attempt_with_commands(
   issue: domain.Issue,
   attempt: Option(Int),
-  workflow: domain.WorkflowDefinition,
+  prompt_template: String,
   config: domain.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, PiUpdate) -> Nil,
@@ -131,7 +131,7 @@ pub fn run_attempt_with_commands(
   run_attempt_with_command_ready(
     issue,
     attempt,
-    workflow,
+    prompt_template,
     config,
     tracker_client,
     emit_update,
@@ -143,7 +143,7 @@ pub fn run_attempt_with_commands(
 pub fn run_attempt_with_command_ready(
   issue: domain.Issue,
   attempt: Option(Int),
-  workflow: domain.WorkflowDefinition,
+  prompt_template: String,
   config: domain.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, PiUpdate) -> Nil,
@@ -159,7 +159,7 @@ pub fn run_attempt_with_command_ready(
       run_prepared(
         issue,
         attempt,
-        workflow,
+        prompt_template,
         config,
         tracker_client,
         emit_update,
@@ -226,7 +226,7 @@ pub fn run_prompt_in_workspace(
 fn run_prepared(
   issue: domain.Issue,
   attempt: Option(Int),
-  workflow: domain.WorkflowDefinition,
+  prompt_template: String,
   config: domain.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, PiUpdate) -> Nil,
@@ -234,7 +234,7 @@ fn run_prepared(
   on_command_ready: fn() -> Nil,
   prepared: workspace.PreparedWorkspace,
 ) -> Result(WorkerSuccess, WorkerFailure) {
-  case template.render(workflow.prompt_template, issue, attempt) {
+  case template.render(prompt_template, issue, attempt) {
     Error(err) -> {
       let _ = workspace.after_run(prepared.path, config.hooks)
       Error(worker_failure(error.PromptFailed(err), Some(prepared.path)))

@@ -42,18 +42,65 @@ fn issue(id: String, identifier: String, state: String) -> domain.Issue {
 }
 
 fn workflow_text(root: String) -> String {
-  "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\nworkspace:\n  root: "
-  <> root
-  <> "\nhooks:\n  before_run: \"true\"\npolling:\n  interval_ms: 1000\nagent:\n  max_concurrent_agents: 1\n  max_retry_attempts: 3\n  max_sessions_per_issue: 2\npi:\n  command: fake\n---\nPrompt\n"
+  "version: 1
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: TEST
+  active_states: [Todo]
+  terminal_states: [Done]
+workspace:
+  root: " <> root <> "
+  hooks:
+    create: |
+      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"
+    before_step: |
+      test -d \"$SCHERZO_WORKSPACE_PATH\"
+    after_step: |
+      true
+    remove: |
+      rm -rf \"$SCHERZO_WORKSPACE_PATH\"
+    timeout_ms: 60000
+polling:
+  interval_ms: 1000
+agent:
+  max_concurrent_agents: 1
+  max_retry_attempts: 3
+  max_sessions_per_issue: 2
+pi:
+  command: fake
+routing:
+  workflow_label_prefix: \"workflow:\"
+  require_exactly_one_workflow_label: false
+  default_workflow: implementation
+  workflows:
+    implementation: workflows/implementation.yaml
+"
 }
 
 fn write_workflow(dir: String) -> #(String, String) {
   reset_dir(dir)
-  let workflow_path = dir <> "/WORKFLOW.md"
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let prompt_dir = workflow_dir <> "/prompts"
   let root = dir <> "/workspaces"
   let assert Ok(root) = path.absolute(root)
-  let assert Ok(Nil) = simplifile.write(workflow_path, workflow_text(root))
-  #(workflow_path, root)
+  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
+  let assert Ok(Nil) = simplifile.write(config_path, workflow_text(root))
+  let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/task.md
+    workspace: main
+",
+    )
+  #(config_path, root)
 }
 
 fn success(final: domain.Issue, workspace_path: String) -> runner.WorkerSuccess {
@@ -104,6 +151,46 @@ fn client_with(candidate: domain.Issue) -> tracker.Client {
   )
 }
 
+fn workflow_deps_from_agent(
+  agent_runner: fn(
+    domain.Issue,
+    Option(Int),
+    String,
+    domain.EffectiveConfig,
+    tracker.Client,
+    fn(String, runner.PiUpdate) -> Nil,
+    process.Subject(worker_command.Command),
+    fn() -> Nil,
+  ) ->
+    Result(runner.WorkerSuccess, runner.WorkerFailure),
+) -> workflow_run.Dependencies {
+  workflow_run.Dependencies(
+    ..workflow_run.default_dependencies(),
+    agent_step: fn(
+      issue,
+      _step_id,
+      prompt,
+      effective,
+      tracker_client,
+      _workspace_path,
+      emit_update,
+      command_ready,
+    ) {
+      let command_subject = process.new_subject()
+      agent_runner(
+        issue,
+        None,
+        prompt,
+        effective,
+        tracker_client,
+        fn(_, update) { emit_update(update) },
+        command_subject,
+        fn() { command_ready(command_subject) },
+      )
+    },
+  )
+}
+
 fn dependencies(
   client: tracker.Client,
   log_subject: process.Subject(String),
@@ -111,7 +198,7 @@ fn dependencies(
   agent_runner: fn(
     domain.Issue,
     Option(Int),
-    domain.WorkflowDefinition,
+    String,
     domain.EffectiveConfig,
     tracker.Client,
     fn(String, runner.PiUpdate) -> Nil,
@@ -125,8 +212,7 @@ fn dependencies(
     make_handoff: fn(_, _) { handoff.disabled_client() },
     make_linear_commands: fn(_) { disabled_linear_commands() },
     make_triage: fn(_, _) { linear_triage.disabled_client() },
-    agent_runner: agent_runner,
-    workflow_run_dependencies: workflow_run.default_dependencies(),
+    workflow_run_dependencies: workflow_deps_from_agent(agent_runner),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, logged_event, _, _) {
       process.send(log_subject, logged_event)
@@ -181,9 +267,14 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
   let assert Ok(page) =
     hub.events_after(hub_subject, "ABC-123-42-1", 0, 20, 1000)
   assert event_names(page.events)
-    == ["dispatch_started", "worker_started", "message_update", "worker_exited"]
-  assert event_cursors(page.events) == [1, 2, 3, 4]
-  let assert Some(message_event) = find_event(page.events, "message_update")
+    == ["dispatch_started", "worker_started", "worker_exited"]
+  assert event_cursors(page.events) == [1, 2, 5]
+
+  let assert Ok(step_page) =
+    hub.events_after(hub_subject, "ABC-123-42-1-implement", 0, 20, 1000)
+  assert event_names(step_page.events) == ["step_started", "message_update"]
+  let assert Some(message_event) =
+    find_event(step_page.events, "message_update")
   assert message_event.payload.kind == event.AssistantMessage
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -229,7 +320,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
 
   assert wait_for_log(log_subject, "worker_exited", 20)
   let assert Ok(page) =
-    hub.events_after(hub_subject, "ABC-TOOL-42-1", 0, 20, 1000)
+    hub.events_after(hub_subject, "ABC-TOOL-42-1-implement", 0, 20, 1000)
   let assert Some(tool_event) = find_event(page.events, "message")
   assert tool_event.payload.kind == event.Tool
   assert tool_event.payload.tool_name == Some("bash")
@@ -263,9 +354,24 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
   process.send(started.data, daemon.PollTick(1))
 
   let assert Ok(page_before_exit) =
-    wait_for_event_name(hub_subject, "ABC-123-42-1", "message_update", 20)
+    wait_for_event_name(
+      hub_subject,
+      "ABC-123-42-1-implement",
+      "message_update",
+      20,
+    )
   assert list.contains(event_names(page_before_exit.events), "message_update")
-  assert !list.contains(event_names(page_before_exit.events), "worker_exited")
+
+  let assert Ok(parent_page_before_exit) =
+    hub.events_after(hub_subject, "ABC-123-42-1", 0, 20, 1000)
+  assert !list.contains(
+    event_names(parent_page_before_exit.events),
+    "message_update",
+  )
+  assert !list.contains(
+    event_names(parent_page_before_exit.events),
+    "worker_exited",
+  )
 
   assert wait_for_log(log_subject, "worker_exited", 30)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -352,7 +458,7 @@ pub fn daemon_success_continuation_does_not_publish_retry_to_exited_session_test
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "retry_scheduled", 20)
+  assert wait_for_log(log_subject, "worker_exited", 20)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-ACTIVE-42-1", 20)
   assert summary.status == event.Exited("normal")
@@ -396,7 +502,7 @@ pub fn daemon_worker_down_does_not_publish_retry_to_exited_session_test() {
   assert summary.status == event.Exited("failed")
   let assert Ok(page) =
     hub.events_after(hub_subject, "ABC-DOWN-42-1", 0, 20, 1000)
-  assert list.contains(event_names(page.events), "worker_down")
+  assert list.contains(event_names(page.events), "worker_exited")
   assert !list.contains(event_names(page.events), "retry_scheduled")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)

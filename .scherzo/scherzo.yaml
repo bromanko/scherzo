@@ -1,0 +1,100 @@
+version: 1
+tracker:
+  kind: linear
+  endpoint: https://api.linear.app/graphql
+  api_key: "$LINEAR_API_KEY"
+  project_slug: "$LINEAR_PROJECT_SLUG"
+  active_states: [Todo, In Progress]
+  terminal_states: [Canceled, Duplicate, Done]
+polling:
+  interval_ms: 30000
+workspace:
+  # Paths are resolved relative to .scherzo/scherzo.yaml. This lands at
+  # repo-root/.scherzo/workspaces/research.
+  root: workspaces/research
+  hooks:
+    create: |
+      set -eu
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      mkdir -p "$SCHERZO_WORKSPACE_PATH"
+      cd "$SCHERZO_WORKSPACE_PATH"
+      SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" after-create research
+    before_step: |
+      set -eu
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      cd "$SCHERZO_WORKSPACE_PATH"
+      SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" before-run research
+    after_step: |
+      true
+    remove: |
+      set -eu
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      if [ -d "$SCHERZO_WORKSPACE_PATH" ]; then
+        for workspace_dir in "$SCHERZO_WORKSPACE_PATH"/*; do
+          [ -e "$workspace_dir" ] || continue
+          if [ -d "$workspace_dir/.jj" ]; then
+            (cd "$workspace_dir" && SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" before-remove research)
+          fi
+        done
+      fi
+    timeout_ms: 60000
+agent:
+  # First dogfood runs should be supervised and serial. Set to 0 to pause new
+  # dispatch while preserving workflow reload and running-worker reconciliation.
+  max_concurrent_agents: 1
+  max_turns: 12
+  max_retry_backoff_ms: 300000
+  max_retry_attempts: 2
+  max_sessions_per_issue: 2
+pi:
+  command: "pi --mode rpc --no-session"
+  turn_timeout_ms: 3600000
+  read_timeout_ms: 5000
+  stall_timeout_ms: 300000
+  auto_retry: true
+  # Route extension UI requests to the operator through scherzoctl attach/ui.
+  ui_request_policy: operator
+  ui_request_timeout_ms: 600000
+  compatibility_probe: true
+handoff:
+  # Comments-only handoff is safe enough for dogfood and keeps state movement in
+  # human hands until result comments and state IDs feel proven.
+  enabled: true
+  comment_on_claim: true
+  comment_on_success: true
+  comment_on_failure: true
+routing:
+  workflow_label_prefix: "workflow:"
+  require_exactly_one_workflow_label: true
+  workflows:
+    research: workflows/research.yaml
+artifact_limits:
+  command_stream_max_chars: 20000
+  template_field_max_chars: 8000
+  workflow_summary_max_chars: 20000
+linear_contract:
+  enabled: false
+  workflow_label_prefix: "workflow:"
+  workflow_labels: [research]
+  support_labels: [needs-workflow, needs-clarification]
+  required_states:
+    todo: Todo
+    in_progress: In Progress
+    done: Done
+    needs_workflow: Needs Workflow
+  handoff_state_bindings:
+    claim: in_progress
+    success: done
+    failure: needs_workflow
+  enforce_issue_workflow_labels: true
+  comment_on_invalid_workflow: false
+linear_commands:
+  # Keep Linear comment commands off for the first dogfood loop. Use the local
+  # control API (`scripts/scherzoctl`) for supervision and follow-up prompts.
+  enabled: false
+  prefix: "/scherzo"
+  authorized_user_ids: []
+  poll_limit_per_issue: 25
+  max_comments_per_tick: 50
+  acknowledge_success: true
+  acknowledge_rejection: true

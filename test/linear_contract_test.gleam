@@ -97,7 +97,7 @@ fn effective(
       terminal_states: terminal_states,
     ),
     polling: config.default_polling_config(),
-    workspace: config.default_workspace_config("WORKFLOW.md"),
+    workspace: config.default_workspace_config("scherzo.yaml"),
     hooks: config.default_hooks_config(),
     agent: config.default_agent_config(),
     pi: config.default_pi_config(),

@@ -5,9 +5,13 @@ import scherzo/runtime_bundle
 import scherzo/workflow_dag
 import simplifile
 
+@external(erlang, "scherzo_test_ffi", "set_cwd")
+fn set_cwd(path: String) -> Result(Nil, simplifile.FileError)
+
 fn env(name: String) -> Option(String) {
   case name {
     "LINEAR_API_KEY" -> Some("linearkey")
+    "LINEAR_PROJECT_SLUG" -> Some("TEST")
     _ -> None
   }
 }
@@ -35,24 +39,63 @@ fn reset_dir(path: String) -> Nil {
   Nil
 }
 
-pub fn loads_legacy_markdown_as_one_step_dag_test() {
+fn load_default_from_dir(
+  dir: String,
+) -> Result(runtime_bundle.RuntimeBundle, runtime_bundle.BundleError) {
+  let assert Ok(original) = simplifile.current_directory()
+  let assert Ok(Nil) = set_cwd(dir)
+  let result = runtime_bundle.load_with_env(None, env)
+  let assert Ok(Nil) = set_cwd(original)
+  result
+}
+
+fn write_default_yaml_project(dir: String) -> Nil {
+  reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/.scherzo/workflows/prompts")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/.scherzo/workflows/prompts/implement.md",
+      "Implement",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/.scherzo/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/.scherzo/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\nworkspace:\n  root: workspaces\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+  Nil
+}
+
+pub fn rejects_markdown_paths_as_unsupported_config_path_test() {
   let dir = "test/tmp/runtime-bundle-legacy"
   reset_dir(dir)
   let workflow_path = dir <> "/WORKFLOW.md"
-  let assert Ok(Nil) =
-    simplifile.write(
-      workflow_path,
-      "---\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n---\nLegacy prompt\n",
-    )
-  let assert Ok(bundle) = runtime_bundle.load_with_env(Some(workflow_path), env)
-  assert bundle.mode == runtime_bundle.LegacyMarkdown
-  assert bundle.config_path == workflow_path
-  let assert Ok(dag) = dict.get(bundle.workflows, "legacy")
-  assert dag.max_parallel_steps == 1
-  let assert [step] = dag.steps
-  assert step.id == "main"
-  let assert workflow_dag.AgentStep(workflow_dag.PromptInline("Legacy prompt")) =
-    step.kind
+  let assert Ok(Nil) = simplifile.write(workflow_path, "Legacy prompt\n")
+  let assert Error(runtime_bundle.BundleError(code, _)) =
+    runtime_bundle.load_with_env(Some(workflow_path), env)
+  assert code == "unsupported_config_path"
+}
+
+pub fn default_path_prefers_scherzo_yaml_test() {
+  let dir = "test/tmp/runtime-bundle-default-yaml"
+  write_default_yaml_project(dir)
+  let assert Ok(bundle) = load_default_from_dir(dir)
+  assert bundle.config_path == ".scherzo/scherzo.yaml"
+  assert dict.has_key(bundle.workflows, "implementation")
+}
+
+pub fn default_path_ignores_workflow_md_and_reports_missing_yaml_test() {
+  let dir = "test/tmp/runtime-bundle-default-legacy"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.write(dir <> "/WORKFLOW.md", "Legacy\n")
+  let assert Error(runtime_bundle.BundleError(code, _)) =
+    load_default_from_dir(dir)
+  assert code == "missing_config_file"
 }
 
 pub fn loads_yaml_orchestrator_and_prompt_files_test() {
@@ -77,7 +120,6 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
     )
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
-  assert bundle.mode == runtime_bundle.OrchestratorYaml
   assert bundle.config_path == dir <> "/scherzo.yaml"
   let assert Ok(dag) = dict.get(bundle.workflows, "implementation")
   let assert [step] = dag.steps

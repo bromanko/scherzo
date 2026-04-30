@@ -1,9 +1,3 @@
-pub type WorkflowError {
-  MissingWorkflowFile(String)
-  WorkflowParseError(String)
-  WorkflowFrontMatterNotMap
-}
-
 pub type ConfigError {
   UnsupportedTrackerKind(String)
   MissingTrackerApiKey
@@ -74,7 +68,6 @@ pub type SubprocessError {
 }
 
 pub type ScherzoError {
-  Workflow(WorkflowError)
   Config(ConfigError)
   Template(TemplateError)
   Workspace(WorkspaceError)
@@ -88,7 +81,6 @@ pub type ScherzoError {
 
 pub fn code(error: ScherzoError) -> String {
   case error {
-    Workflow(error) -> workflow_code(error)
     Config(error) -> config_code(error)
     Template(error) -> template_code(error)
     Workspace(error) -> workspace_code(error)
@@ -98,14 +90,6 @@ pub fn code(error: ScherzoError) -> String {
     Agent(error) -> agent_code(error)
     Orchestrator(error) -> orchestrator_code(error)
     Subprocess(error) -> subprocess_code(error)
-  }
-}
-
-pub fn workflow_code(error: WorkflowError) -> String {
-  case error {
-    MissingWorkflowFile(_) -> "missing_workflow_file"
-    WorkflowParseError(_) -> "workflow_parse_error"
-    WorkflowFrontMatterNotMap -> "workflow_front_matter_not_map"
   }
 }
 

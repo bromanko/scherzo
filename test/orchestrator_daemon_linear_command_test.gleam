@@ -42,34 +42,90 @@ fn issue(id: String, identifier: String, state: String) -> domain.Issue {
 }
 
 fn workflow_text(root: String, max_concurrent: Int) -> String {
-  "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\nworkspace:\n  root: "
-  <> root
-  <> "\nhooks:\n  before_run: \"true\"\npolling:\n  interval_ms: 1000\nagent:\n  max_concurrent_agents: "
-  <> int_to_string(max_concurrent)
-  <> "\n  max_retry_attempts: 3\n  max_sessions_per_issue: 3\npi:\n  command: fake\nlinear_commands:\n  enabled: true\n  authorized_user_ids:\n    - user-1\n  poll_limit_per_issue: 10\n  max_comments_per_tick: 10\n  acknowledge_success: true\n  acknowledge_rejection: true\n---\nPrompt\n"
+  "version: 1
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: TEST
+  active_states: [Todo]
+  terminal_states: [Done]
+workspace:
+  root: " <> root <> "
+  hooks:
+    create: |
+      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"
+    before_step: |
+      test -d \"$SCHERZO_WORKSPACE_PATH\"
+    after_step: |
+      true
+    remove: |
+      rm -rf \"$SCHERZO_WORKSPACE_PATH\"
+    timeout_ms: 60000
+polling:
+  interval_ms: 1000
+agent:
+  max_concurrent_agents: " <> int_to_string(max_concurrent) <> "
+  max_retry_attempts: 3
+  max_sessions_per_issue: 3
+pi:
+  command: fake
+routing:
+  workflow_label_prefix: \"workflow:\"
+  require_exactly_one_workflow_label: false
+  default_workflow: implementation
+  workflows:
+    implementation: workflows/implementation.yaml
+linear_commands:
+  enabled: true
+  authorized_user_ids:
+    - user-1
+  poll_limit_per_issue: 10
+  max_comments_per_tick: 10
+  acknowledge_success: true
+  acknowledge_rejection: true
+"
 }
 
 fn write_workflow(dir: String, max_concurrent: Int) -> String {
   reset_dir(dir)
-  let workflow_path = dir <> "/WORKFLOW.md"
-  let root = dir <> "/workspaces"
-  let assert Ok(Nil) =
-    simplifile.write(workflow_path, workflow_text(root, max_concurrent))
-  workflow_path
+  write_workflow_files(dir, workflow_text(dir <> "/workspaces", max_concurrent))
 }
 
 fn write_enforcing_workflow(dir: String, max_concurrent: Int) -> String {
   reset_dir(dir)
-  let workflow_path = dir <> "/WORKFLOW.md"
-  let root = dir <> "/workspaces"
   let contents =
-    workflow_text(root, max_concurrent)
+    workflow_text(dir <> "/workspaces", max_concurrent)
     |> string.replace(
       each: "linear_commands:",
-      with: "linear_contract:\n  workflow_label_prefix: \"workflow:\"\n  workflow_labels: [bugfix, research]\n  enforce_issue_workflow_labels: true\nlinear_commands:",
+      with: "linear_contract:
+  workflow_label_prefix: \"workflow:\"
+  workflow_labels: [bugfix, research]
+  enforce_issue_workflow_labels: true
+linear_commands:",
     )
-  let assert Ok(Nil) = simplifile.write(workflow_path, contents)
-  workflow_path
+  write_workflow_files(dir, contents)
+}
+
+fn write_workflow_files(dir: String, config_text: String) -> String {
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let prompt_dir = workflow_dir <> "/prompts"
+  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
+  let assert Ok(Nil) = simplifile.write(config_path, config_text)
+  let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/task.md
+    workspace: main
+",
+    )
+  config_path
 }
 
 fn linear_comment(
@@ -277,7 +333,7 @@ fn dependencies(
   agent_runner: fn(
     domain.Issue,
     Option(Int),
-    domain.WorkflowDefinition,
+    String,
     domain.EffectiveConfig,
     tracker.Client,
     fn(String, runner.PiUpdate) -> Nil,
@@ -291,8 +347,7 @@ fn dependencies(
     make_handoff: fn(_, _) { handoff.disabled_client() },
     make_linear_commands: fn(_) { linear_command_client },
     make_triage: fn(_, _) { linear_triage.disabled_client() },
-    agent_runner: agent_runner,
-    workflow_run_dependencies: workflow_run.default_dependencies(),
+    workflow_run_dependencies: workflow_deps_from_agent(agent_runner),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, fields, _) {
       process.send(log_subject, log_value(event, fields))
@@ -327,10 +382,50 @@ fn field(fields: List(#(String, String)), key: String) -> String {
   }
 }
 
+fn workflow_deps_from_agent(
+  agent_runner: fn(
+    domain.Issue,
+    Option(Int),
+    String,
+    domain.EffectiveConfig,
+    tracker.Client,
+    fn(String, runner.PiUpdate) -> Nil,
+    process.Subject(worker_command.Command),
+    fn() -> Nil,
+  ) ->
+    Result(runner.WorkerSuccess, runner.WorkerFailure),
+) -> workflow_run.Dependencies {
+  workflow_run.Dependencies(
+    ..workflow_run.default_dependencies(),
+    agent_step: fn(
+      issue,
+      _step_id,
+      prompt,
+      effective,
+      tracker_client,
+      _workspace_path,
+      emit_update,
+      command_ready,
+    ) {
+      let command_subject = process.new_subject()
+      agent_runner(
+        issue,
+        None,
+        prompt,
+        effective,
+        tracker_client,
+        fn(_, update) { emit_update(update) },
+        command_subject,
+        fn() { command_ready(command_subject) },
+      )
+    },
+  )
+}
+
 fn unused_agent(
   _issue: domain.Issue,
   _attempt: Option(Int),
-  _definition: domain.WorkflowDefinition,
+  _definition: String,
   _effective: domain.EffectiveConfig,
   _tracker_client: tracker.Client,
   _emit_update: fn(String, runner.PiUpdate) -> Nil,
@@ -349,7 +444,7 @@ fn prompt_agent(log_subject: process.Subject(String)) {
   fn(
     issue: domain.Issue,
     _attempt: Option(Int),
-    _definition: domain.WorkflowDefinition,
+    _definition: String,
     _effective: domain.EffectiveConfig,
     _tracker_client: tracker.Client,
     _emit_update: fn(String, runner.PiUpdate) -> Nil,

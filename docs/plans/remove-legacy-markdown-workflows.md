@@ -5,7 +5,7 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 
 ## Purpose / Big Picture
 
-After this change, Scherzo has one execution architecture: a YAML orchestrator config loads one or more YAML workflow DAGs, and every CLI mode and daemon path runs through that architecture. Operators no longer have to remember whether a feature works only for legacy `WORKFLOW.md` or only for YAML DAG workflows. The visible result is that `direnv exec . gleam run -- --once examples/scherzo.yaml` and `direnv exec . gleam run -- examples/scherzo.yaml` remain valid, while passing a `.md` workflow path fails immediately with a clear `legacy_workflow_removed` startup error instead of taking a separate Markdown execution path.
+After this change, Scherzo has one execution architecture: a YAML orchestrator config loads one or more YAML workflow DAGs, and every CLI mode and daemon path runs through that architecture. Operators no longer have to remember whether a feature works only for legacy `WORKFLOW.md` or only for YAML DAG workflows. The visible result is that `direnv exec . gleam run -- --once examples/scherzo.yaml` and `direnv exec . gleam run -- examples/scherzo.yaml` remain valid, while passing a `.md` workflow path is treated like any other unsupported runtime config extension and never takes a Markdown execution path.
 
 The codebase should also become easier to reason about. `RuntimeBundle` should no longer carry both an optional legacy workflow and an optional orchestrator config. The daemon should no longer fabricate an empty `WorkflowDefinition` for YAML mode. Once-mode should no longer have duplicate candidate-dispatch loops. YAML workflow success should no longer bypass the core runtime transition path with a hand-written completed-state update.
 
@@ -43,7 +43,7 @@ The main risk is breaking useful dogfood operation by removing `.scherzo/workflo
 
 The main dogfood hook risk is assuming DAG workspace hooks have the same cwd and path shape as legacy hooks. Legacy hooks ran from a single per-issue workspace, while YAML DAG hooks run from the config directory and receive `SCHERZO_WORKSPACE_PATH`; the `create`, `before_step`, and `after_step` hooks receive a concrete step workspace path, but the `remove` hook receives the workflow run root. The countermeasure is to make the dogfood hook wrappers create and `cd` into the step workspace before invoking `scripts/scherzo-jj-workspace`, pass `SCHERZO_REPO_ROOT` explicitly so the script does not infer the repo root from the deeper DAG path, and make the `remove` hook iterate any jj workspaces under the run root before Scherzo deletes it.
 
-The main CLI risk is a confusing error when a user passes `WORKFLOW.md`. The countermeasure is to make `.md` paths fail in the loader with a stable code `legacy_workflow_removed` and a message that points to `.scherzo/scherzo.yaml` and YAML workflow files. Tests must assert that explicit `.md` paths fail with that code. Documentation and usage text must stop using `path-to-WORKFLOW.md` as the generic argument.
+The main CLI risk is accidentally preserving special handling for `WORKFLOW.md`. The countermeasure is to make the loader recognize only `.yaml` and `.yml` runtime config paths. Explicit `.md` paths must fail with the generic `unsupported_config_path` error, and default path discovery must ignore `WORKFLOW.md` entirely. Documentation and usage text must stop using `path-to-WORKFLOW.md` as the generic argument.
 
 The main code risk is removing `domain.WorkflowDefinition` too early while `runner.run_attempt`, config reload tests, and old fixtures still depend on it. The countermeasure is to remove it in two steps: first remove all production call sites by making runtime bundle YAML-only and daemon/service YAML-only; then update or delete tests and remove the type, parser, and obsolete agent-runner functions.
 
@@ -61,12 +61,15 @@ The main rollback risk is that this is a breaking removal. The rollback is strai
 - [x] (2026-04-30 11:34Z) Read `docs/plans/simple-dag-workflows.md`, `README.md`, `.scherzo/README.md`, `src/scherzo/runtime_bundle.gleam`, `src/scherzo/orchestrator/service.gleam`, `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/main.gleam`, `src/scherzo/workflow.gleam`, `test/runtime_bundle_test.gleam`, `test/main_test.gleam`, and `test/workflow_test.gleam` to verify the current split.
 - [x] (2026-04-30 11:34Z) Ran `direnv exec . gleam test`; it reported `377 passed, no failures` with expected Erlang crash reports from tests that intentionally crash workers.
 - [x] (2026-04-30 12:05Z) Reviewed the plan for implementability gaps and corrected dogfood YAML path resolution, `.gitignore`, jj hook lifecycle, YAML failure semantics, unrelated-plan-file handling, and test migration instructions before implementation.
-- [ ] Migrate checked-in dogfood and example guidance to YAML-only usage.
-- [ ] Make runtime bundle loading YAML-only and reject `.md` paths with `legacy_workflow_removed`.
-- [ ] Remove legacy once-mode dispatch and use one YAML dispatch path.
-- [ ] Remove legacy daemon worker state, fake workflow definition, and YAML success bypass.
-- [ ] Remove `WorkflowDefinition`, `src/scherzo/workflow.gleam`, legacy agent-runner entry points, and obsolete tests.
-- [ ] Update docs and run final structural grep checks plus full validation.
+- [x] (2026-04-30 12:25Z) Migrated dogfood config to `.scherzo/scherzo.yaml`, `.scherzo/workflows/research.yaml`, and `.scherzo/workflows/prompts/research.md`; removed `.scherzo/workflows/research.md`; unignored the checked-in YAML config; and rewrote `.scherzo/README.md` around YAML DAG conventions.
+- [x] (2026-04-30 12:32Z) Made `runtime_bundle` YAML-only, removed `BundleMode`/optional orchestrator/legacy workflow fields, changed default path discovery to `.scherzo/scherzo.yaml`, `.scherzo/scherzo.yml`, `scherzo.yaml`, `scherzo.yml`, and initially added explicit `.md` rejection with the stable removed-legacy code.
+- [x] (2026-04-30 12:38Z) Consolidated once-mode around `workflow_run.execute`, removed the legacy `agent_runner` service dependency, and routed YAML once success through the new core workflow-success transition.
+- [x] (2026-04-30 12:46Z) Consolidated daemon execution around YAML workflow runs, removed `YamlRunHandle`, `workflow_definition_from_bundle`, `State.definition`, `yaml_runs`, and `yaml_run_monitors`, and preserved concrete agent-step sessions plus top-level operator-command routing.
+- [x] (2026-04-30 12:53Z) Removed `domain.WorkflowDefinition`, `src/scherzo/workflow.gleam`, `test/workflow_test.gleam`, `RuntimeDependencies.agent_runner`, and stale WorkflowDefinition runner/test adapters; removed `examples/WORKFLOW.md`.
+- [x] (2026-04-30 12:55Z) Rewrote `README.md` for YAML-only runtime operation, ran final structural greps for removed symbols, ran `direnv exec . gleam format src test`, and ran `direnv exec . gleam test` successfully with `372 passed, no failures`.
+- [x] (2026-04-30 21:53Z) Removed the remaining Markdown-specific migration UX from `runtime_bundle`: `.md` paths now return `unsupported_config_path`, and default config discovery ignores `WORKFLOW.md` completely.
+- [x] (2026-04-30 22:05Z) Ran real read-only/manual validations using Linear credentials sourced from the owner's main clone `.env.local`: Linear smoke, Linear contract check, pi probe, and a paused once-mode load all succeeded.
+- [x] (2026-04-30 22:17Z) Ran one unpaused dogfood once-mode dispatch against `.scherzo/scherzo.yaml`; Scherzo dispatched `workflow_id=research` for `LIV-11`, the worker exited normally, workspace cleanup ran, and the Linear claim was released.
 
 ## Surprises & Discoveries
 
@@ -79,8 +82,11 @@ The main rollback risk is that this is a breaking removal. The rollback is strai
 - Observation: The fake empty workflow definition is real and localized.
   Evidence: `src/scherzo/orchestrator/daemon.gleam` defines `workflow_definition_from_bundle` and returns `domain.WorkflowDefinition(config: yay.NodeMap([]), prompt_template: "")` when `bundle.legacy_workflow` is absent.
 
-- Observation: The repository dogfood workflow is still Markdown and has settings that must be preserved during migration.
-  Evidence: `.scherzo/workflows/research.md` contains `project_slug: "$LINEAR_PROJECT_SLUG"`, jj workspace hooks through `scripts/scherzo-jj-workspace`, `ui_request_policy: operator`, comments-only handoff, strict `workflow:research` label enforcement, and Linear commands disabled.
+- Observation: The repository dogfood workflow was still Markdown and had settings that needed to be preserved during migration.
+  Evidence: The removed `.scherzo/workflows/research.md` contained `project_slug: "$LINEAR_PROJECT_SLUG"`, jj workspace hooks through `scripts/scherzo-jj-workspace`, `ui_request_policy: operator`, comments-only handoff, strict `workflow:research` label enforcement, and Linear commands disabled; those settings now live in `.scherzo/scherzo.yaml` plus `.scherzo/workflows/research.yaml`.
+
+- Observation: YAML agent-step command routing needed a top-level compatibility bridge after removing legacy worker command subjects.
+  Evidence: Daemon control and Linear command tests send prompts to the top-level issue session, while YAML agent steps own concrete step sessions such as `<run-id>-implement`; the daemon now routes top-level operator commands to the active step command subject when one is registered.
 
 ## Decision Log
 
@@ -88,8 +94,8 @@ The main rollback risk is that this is a breaking removal. The rollback is strai
   Rationale: The product direction is YAML orchestrator/DAG workflows. Keeping Markdown behind a nicer interface would preserve the dual architecture and keep behavior divergence possible.
   Date: 2026-04-30
 
-- Decision: Explicit `.md` paths should fail with `legacy_workflow_removed` rather than falling through to `unsupported_config_path`.
-  Rationale: A user with an old workflow needs a clear migration signal, not a generic extension error. This is still a hard removal because no `.md` execution path remains.
+- Decision: Explicit `.md` paths should fail with the same `unsupported_config_path` error as every other non-YAML runtime config path.
+  Rationale: There is no migration-compatibility mode and no Markdown runtime surface left to preserve. Treating `.md` as a special extension would keep unnecessary migration UX and a stale concept in the loader.
   Date: 2026-04-30
 
 - Decision: The default config path should prefer `.scherzo/scherzo.yaml`, then `.scherzo/scherzo.yml`, then `scherzo.yaml`, then `scherzo.yml`, and should no longer look for `WORKFLOW.md`.
@@ -116,9 +122,38 @@ The main rollback risk is that this is a breaking removal. The rollback is strai
   Rationale: The legacy being removed is `WORKFLOW.md` as runtime config plus single prompt body. YAML workflows intentionally continue to reference Markdown prompt templates such as `workflows/prompts/research.md`.
   Date: 2026-04-30
 
+- Decision: Route top-level session operator commands to the active YAML agent-step command subject when available.
+  Rationale: Existing operator and Linear command surfaces address the issue run session, while YAML execution exposes concrete step sessions. Bridging the top-level session to the active step preserves operator behavior without restoring legacy workers.
+  Date: 2026-04-30
+
+- Decision: Remove `RuntimeDependencies.agent_runner` instead of leaving a deprecated no-op field.
+  Rationale: Production daemon execution now always goes through `workflow_run.Dependencies.agent_step`; keeping an unused legacy dependency would falsely suggest Markdown-style workers still exist.
+  Date: 2026-04-30
+
+- Decision: Retain prompt-string `runner.run_attempt*` helpers for runner-level tests while removing all `WorkflowDefinition` signatures and production call sites.
+  Rationale: These helpers now accept an already-separated prompt template string and exercise workspace/probe/pi-loop behavior without loading Markdown workflow files. Removing them entirely would force tests to duplicate runner setup without shrinking the runtime workflow surface.
+  Date: 2026-04-30
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Scherzo now has a single runtime workflow architecture: YAML orchestrator config plus YAML workflow DAG files plus Markdown prompt templates. Explicit `.md` runtime paths are rejected by `runtime_bundle` as `unsupported_config_path`, default config discovery no longer checks `WORKFLOW.md`, and the CLI/docs point operators at `.scherzo/scherzo.yaml` or another `scherzo.yaml` file.
+
+The repository dogfood workflow was migrated to checked-in YAML files, and `examples/WORKFLOW.md` was removed. `README.md` and `.scherzo/README.md` now describe YAML-only operation. The remaining Markdown files under workflow directories are prompt templates only.
+
+Runtime code was simplified: `RuntimeBundle` carries a non-optional orchestrator, once-mode always dispatches through `workflow_run.execute`, and daemon mode uses one YAML workflow-run path instead of parallel legacy/YAML registries. The fake empty `WorkflowDefinition`, `RuntimeDependencies.agent_runner`, `YamlRunHandle`, `yaml_runs`, and `workflow_definition_from_bundle` are gone. The remaining runner-level `run_attempt*` helpers no longer take `WorkflowDefinition` and are not used by runtime dispatch. YAML workflow success uses a core transition that preserves workflow-terminal semantics and avoids double cleanup.
+
+Final validation passed:
+
+    direnv exec . gleam format --check src test
+    direnv exec . gleam test
+    direnv exec . gleam run -- --help
+    direnv exec . gleam run -- --once test/tmp/manual/WORKFLOW.md
+    direnv exec . gleam run -- --once examples/scherzo.yaml
+    direnv exec . gleam run -- --once
+
+The final test run ended with `375 passed, no failures`. The explicit Markdown path check failed with `code=unsupported_config_path`, proving `.md` is not a recognized runtime config extension. Structural greps over `src` and `test` found no remaining `LegacyMarkdown`, `OrchestratorYaml`, `legacy_workflow`, `workflow_definition_from_bundle`, `dispatch_candidates_yaml`, `finish_yaml_worker_success`, `YamlRunHandle`, `WorkflowDefinition`, `scherzo/workflow`, `workflow.load`, `workflow.parse`, or `choose_path` references.
+
+With real Linear credentials sourced from the owner's main clone `.env.local`, `direnv exec . gleam run -- --linear-smoke .scherzo/scherzo.yaml` succeeded with `linear_smoke_ok`, `direnv exec . gleam run -- --linear-contract-check .scherzo/scherzo.yaml` succeeded with `linear_contract_ok`, and `direnv exec . gleam run -- --pi-probe .scherzo/scherzo.yaml` succeeded with `pi_probe_ok`. A paused once-mode run against a temporary ignored copy of `.scherzo/scherzo.yaml` with `agent.max_concurrent_agents: 0` loaded successfully and logged `workflow_loaded`. An unpaused once-mode dogfood run also succeeded: it loaded `.scherzo/scherzo.yaml`, fetched two candidates, dispatched `workflow_id=research` for `LIV-11`, logged `worker_exited reason=normal`, logged `workspace_cleaned`, and logged `claim_released`.
 
 ## Context and Orientation
 
@@ -183,7 +218,7 @@ The plan deliberately does not remove Markdown files from the repository entirel
 
 Milestone 1 migrates repository-owned workflows and documentation examples to YAML-only usage while code still supports both formats. At the end of this milestone, `.scherzo/scherzo.yaml` exists for dogfood and is not ignored by `.gitignore`, its `workspace.root: workspaces/research` resolves to repo-root `.scherzo/workspaces/research`, its jj hook wrappers work with YAML DAG hook cwd and run-root cleanup semantics, `.scherzo/workflows/research.yaml` and `.scherzo/workflows/prompts/research.md` preserve the current research workflow behavior, docs tell operators to use YAML config paths, and the test suite still passes. This comes first because deleting Markdown support before migrating dogfood would strand the repository's own workflow.
 
-Milestone 2 changes runtime bundle loading to YAML-only and adds explicit `.md` rejection tests. At the end, `runtime_bundle.load_with_env(Some("old/WORKFLOW.md"), env)` returns `Error(BundleError("legacy_workflow_removed", ...))`, default path selection no longer checks `WORKFLOW.md`, and `RuntimeBundle` no longer has legacy optional fields. Service and daemon code may still have temporary compile failures until the next milestones if this milestone is implemented in one working branch, but the commit point must be green.
+Milestone 2 changes runtime bundle loading to YAML-only and adds explicit non-YAML rejection tests. At the end, `runtime_bundle.load_with_env(Some("old/WORKFLOW.md"), env)` returns `Error(BundleError("unsupported_config_path", ...))`, default path selection no longer checks `WORKFLOW.md`, and `RuntimeBundle` no longer has legacy optional fields. Service and daemon code may still have temporary compile failures until the next milestones if this milestone is implemented in one working branch, but the commit point must be green.
 
 Milestone 3 consolidates once-mode around YAML workflow execution. At the end, `src/scherzo/orchestrator/service.gleam` has one candidate fetch loop and one dispatch loop for YAML bundles. Legacy `run_tick`, legacy `dispatch_candidates`, and legacy use of `dependencies.agent_runner` are gone from service once-mode. YAML success and failure state changes use shared core transitions instead of service-local `apply_dag_success_state` and `apply_dag_failure_state`.
 
@@ -199,7 +234,7 @@ Start by migrating the dogfood workflow. Create `.scherzo/scherzo.yaml` based on
 
 Then update docs and CLI text to describe YAML config paths. `README.md` should say the supported path is `.scherzo/scherzo.yaml` or another YAML orchestrator config. `.scherzo/README.md` should stop saying not to add `.scherzo/scherzo.yaml` and should show dogfood commands using `.scherzo/scherzo.yaml`. `src/scherzo/main.gleam` usage text should say `path-to-scherzo.yaml`. `test/main_test.gleam` should assert the new usage text and examples.
 
-Next, change `src/scherzo/runtime_bundle.gleam` so it has no `BundleMode`. The `RuntimeBundle` record should contain `config_path`, `config_contents`, `effective`, `orchestrator`, `workflows`, and `secrets`, where `orchestrator` is no longer an `Option`. `select_workflow` should always route through `bundle.orchestrator.routing`. `load_with_env` should reject `.md` paths with `BundleError("legacy_workflow_removed", "legacy Markdown WORKFLOW.md files have been removed; use a YAML orchestrator config such as .scherzo/scherzo.yaml")`. `path_kind` should become a helper that only accepts `.yaml` and `.yml`, or it should be removed in favor of `is_yaml_config_path`. `default_config_path` should no longer call `workflow.choose_path(None)` and should no longer prefer `WORKFLOW.md`.
+Next, change `src/scherzo/runtime_bundle.gleam` so it has no `BundleMode`. The `RuntimeBundle` record should contain `config_path`, `config_contents`, `effective`, `orchestrator`, `workflows`, and `secrets`, where `orchestrator` is no longer an `Option`. `select_workflow` should always route through `bundle.orchestrator.routing`. `load_with_env` should accept only `.yaml` and `.yml` runtime config paths; `.md` paths should return `BundleError("unsupported_config_path", ...)` like any other unsupported extension. `path_kind` should become a helper that only accepts `.yaml` and `.yml`, or it should be removed in favor of `is_yaml_config_path`. `default_config_path` should no longer call `workflow.choose_path(None)` and should no longer prefer or inspect `WORKFLOW.md`.
 
 After `RuntimeBundle` is YAML-only, simplify service once-mode. `start_pi_probe`, `acquire_lock_for_workflow`, and `run_once_with_dependencies` should no longer branch on bundle mode. `start_pi_probe` should use `bundle.orchestrator` directly. `run_once_loaded` should always call one YAML dispatch loop. Rename `run_tick_yaml` to `run_tick` and `dispatch_candidates_yaml` to `dispatch_candidates`, or keep names only if they remain descriptive after legacy deletion. Delete the old legacy `run_tick` and `dispatch_candidates`. Replace service-local DAG success and failure mutation helpers with core transition calls.
 
@@ -273,7 +308,7 @@ Finally, update all tests and docs. Replace legacy runtime bundle tests with YAM
 
 13. Run `direnv exec . gleam format --check src test` and `direnv exec . gleam test`. Commit milestone 1 with a message like `Migrate repository workflows to YAML config` only after both commands pass.
 
-14. In `test/runtime_bundle_test.gleam`, delete `loads_legacy_markdown_as_one_step_dag_test`. Add `rejects_legacy_markdown_paths_test` that writes a `WORKFLOW.md`, calls `runtime_bundle.load_with_env(Some(workflow_path), env)`, and asserts `Error(runtime_bundle.BundleError("legacy_workflow_removed", _))`.
+14. In `test/runtime_bundle_test.gleam`, delete `loads_legacy_markdown_as_one_step_dag_test`. Add `rejects_markdown_paths_as_unsupported_config_path_test` that writes a `WORKFLOW.md`, calls `runtime_bundle.load_with_env(Some(workflow_path), env)`, and asserts `Error(runtime_bundle.BundleError("unsupported_config_path", _))`.
 
 15. In `test/runtime_bundle_test.gleam`, add `default_path_prefers_scherzo_yaml_test`. In a temporary directory shape that can be referenced explicitly, create `.scherzo/scherzo.yaml` and a routed workflow file, then assert `runtime_bundle.load_with_env(None, env)` chooses `.scherzo/scherzo.yaml` when run from a test cwd if the test harness can safely set cwd. If changing cwd is not available in Gleam tests, add a smaller test around a new public or private helper only if that helper is already testable without exposing unnecessary API. Do not add broad public API only for this test.
 
@@ -281,7 +316,7 @@ Finally, update all tests and docs. Replace legacy runtime bundle tests with YAM
 
 17. In `src/scherzo/runtime_bundle.gleam`, remove `load_legacy`, `map_workflow_error`, and the import of `scherzo/workflow`.
 
-18. In `src/scherzo/runtime_bundle.gleam`, change `load_with_env` so `.yaml` and `.yml` call `load_orchestrator`, `.md` returns `BundleError("legacy_workflow_removed", ...)`, and other extensions return `unsupported_config_path` with wording that says runtime config paths must end in `.yaml` or `.yml`; the unsupported-path message must not list `.md` as accepted.
+18. In `src/scherzo/runtime_bundle.gleam`, change `load_with_env` so `.yaml` and `.yml` call `load_orchestrator`, and every other extension, including `.md`, returns `unsupported_config_path` with wording that says runtime config paths must end in `.yaml` or `.yml`; the unsupported-path message must not list `.md` as accepted.
 
 19. In `src/scherzo/runtime_bundle.gleam`, change `select_workflow` so it always calls `select_routed_workflow(bundle.workflows, bundle.orchestrator.routing, issue)`.
 
@@ -391,7 +426,7 @@ Finally, update all tests and docs. Replace legacy runtime bundle tests with YAM
 
 ## Testing and Falsifiability
 
-This plan is falsified if, after implementation, any production code path still accepts and runs a legacy `WORKFLOW.md` file. Add or update tests so `runtime_bundle.load_with_env(Some("test/tmp/old/WORKFLOW.md"), env)` returns `Error(BundleError("legacy_workflow_removed", _))`. Also add or update CLI/service tests so daemon, once, smoke, contract check, and probe modes all load YAML configs and do not special-case `.md`.
+This plan is falsified if, after implementation, any production code path still accepts and runs a legacy `WORKFLOW.md` file. Add or update tests so `runtime_bundle.load_with_env(Some("test/tmp/old/WORKFLOW.md"), env)` returns `Error(BundleError("unsupported_config_path", _))`. Also add or update CLI/service tests so daemon, once, smoke, contract check, and probe modes all load YAML configs and do not special-case `.md`.
 
 This plan is falsified if YAML once-mode behavior regresses. Keep or update `test/orchestrator_service_test.gleam` so `yaml_once_runs_command_workflow_test` still creates a YAML config, routes an issue with `workflow:implementation`, dispatches exactly one workflow, logs `dispatch_started`, logs `worker_exited`, logs `workspace_cleaned`, records the issue in `runtime.completed`, and leaves no run-root directory behind. Also update the paused-once, pi-probe, Linear contract check, and integration-style service tests that currently write `WORKFLOW.md` fixtures so they write YAML configs and DAGs instead.
 
@@ -430,7 +465,7 @@ The legacy rejection validation is:
 
     direnv exec . gleam run -- --once examples/WORKFLOW.md
 
-If `examples/WORKFLOW.md` has been deleted, the same check can use a temporary `test/tmp/manual/WORKFLOW.md`. The command must fail with startup code `legacy_workflow_removed` when the file exists and the path ends in `.md`. If the file is missing, create a tiny temporary `.md` file and rerun to prove the extension rejection, not file absence.
+If `examples/WORKFLOW.md` has been deleted, the same check can use a temporary `test/tmp/manual/WORKFLOW.md`. The command must fail with startup code `unsupported_config_path` when the file exists and the path ends in `.md`. If the file is missing, create a tiny temporary `.md` file and rerun to prove the extension rejection, not file absence.
 
 The structural acceptance checks are:
 
@@ -456,9 +491,9 @@ The current baseline test transcript ends with:
 
     377 passed, no failures
 
-The expected explicit legacy rejection error should be shaped like existing startup failures. A formatted command failure may look like:
+The expected explicit non-YAML rejection error should be shaped like existing startup failures. A formatted command failure may look like:
 
-    level=error service=scherzo event=startup_failed code=legacy_workflow_removed message="legacy Markdown WORKFLOW.md files have been removed; use a YAML orchestrator config such as .scherzo/scherzo.yaml"
+    level=error service=scherzo event=startup_failed code=unsupported_config_path message="runtime config path must end in .yaml or .yml"
 
 A minimal one-step YAML workflow equivalent to an old single prompt is:
 
