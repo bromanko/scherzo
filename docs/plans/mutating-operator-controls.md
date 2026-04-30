@@ -84,26 +84,26 @@ Transport-level idempotency is not solved by the command model itself. `scherzoc
 - [x] (2026-04-29 00:24Z) Moved control-server startup into the daemon actor initialiser so authenticated command requests route to `ApplyOperatorCommand` after the daemon subject exists.
 - [x] (2026-04-29 00:39Z) Added daemon-level scheduler controls for pause, resume, reload, retry-now, park, and unpark. Pause is runtime-only and blocks new dispatch; retry rejects active issues and clears parked state before dispatch; park/unpark mutate daemon-owned runtime state and cancel retry timers.
 - [x] (2026-04-29 00:46Z) Implemented daemon-level abort and stop-after-current-turn safety handling by marking the session exited with an operator reason, killing the worker process, releasing daemon state, cancelling retry timers, and parking the issue. Graceful pi `abort` through a command-aware worker subject remains unfinished.
-- [ ] Implement queued operator prompts between turns. Current protocol/CLI/command model exists, but daemon returns command-level `not_allowed` until command-aware workers are introduced.
-- [ ] Implement operator-managed UI request responses behind an explicit workflow policy. Config parsing now accepts `operator` and `pi.ui_request_timeout_ms`, and cancel/fail/ignore are honored in `pi_rpc`; pending operator UI response routing remains unfinished without command-aware workers.
+- [x] (2026-04-29 17:05Z) Implemented queued operator prompts between turns in `docs/plans/command-aware-worker-loop.md`; daemon-spawned workers now expose command subjects, prompts can be queued or applied through the worker loop, queue overflow is rejected, and dropped prompts are audited.
+- [x] (2026-04-29 17:05Z) Implemented operator-managed UI request responses in `docs/plans/command-aware-worker-loop.md`; `pi.ui_request_policy: operator` routes `scherzoctl ui respond`, enforces timeout cancellation, and preserves the existing cancel/fail/ignore policies.
 - [x] (2026-04-29 00:58Z) Updated README and wrapper comments, then ran `direnv exec . gleam format --check src test` and `direnv exec . gleam test`, which passed with 154 tests.
 
 ## Surprises & Discoveries
 
-- Observation: The current daemon already has placeholder `WorkerCommand` variants and `WorkerHandle.command_subject`, but spawned workers still store `command_subject: None`.
-  Evidence: `src/scherzo/orchestrator/daemon.gleam` defines `Abort`, `StopAfterCurrentTurn`, `QueuePrompt`, and `RespondToUi`; worker handle creation currently sets the command subject to `None`.
+- Observation: The initial mutating-control slice exposed worker-command placeholders before daemon-spawned workers could use them.
+  Evidence: At the first slice, `src/scherzo/orchestrator/daemon.gleam` defined worker command routing concepts but spawned workers did not yet have command subjects. The later command-aware worker loop filled that gap.
 
-- Observation: The control server currently cannot call back into the daemon because it is started before the actor subject exists and receives only an EventHub read store.
-  Evidence: `src/scherzo/orchestrator/daemon.gleam` calls `start_control_plane` before `actor.new_with_initialiser`, while `src/scherzo/control/server.gleam` accepts only `EventStore` read functions.
+- Observation: The control server bootstrap had to move inside daemon actor initialization before mutating commands could be safe.
+  Evidence: The read-only control server originally received only EventHub read functions. Mutating commands now route through the daemon-owned `ApplyOperatorCommand` path after token authentication.
 
-- Observation: `pi.ui_request_policy` exists but is not honored by the current pi read loop; blocking UI requests are auto-cancelled whenever `pi_rpc.read_events_until_agent_end` sees select/confirm/input/editor.
-  Evidence: `src/scherzo/domain.gleam` has `Cancel`, `Fail`, and `Ignore`, `src/scherzo/config.gleam` parses `fail` and `ignore`, and `src/scherzo/agent/pi_rpc.gleam` sends `encode_extension_ui_response` unconditionally for blocking UI request methods.
+- Observation: Operator UI handling was not just a config parser change; it needed pending UI state owned by the worker that owns the pi RPC session.
+  Evidence: The completed command-aware worker loop routes `RespondUi` through worker command subjects, enforces UI timeouts, and keeps `cancel`, `fail`, and `ignore` behavior covered separately from the opt-in `operator` policy.
 
 - Observation: EventHub events are session-scoped, so global commands cannot be represented as session events without adding a new global audit stream or inventing a fake session.
   Evidence: `src/scherzo/session/event.gleam` requires `SessionEvent(session_id, issue_id, payload)` and `src/scherzo/session/hub.gleam` stores events under registered sessions.
 
-- Observation: The first implementation slice can safely support daemon-owned scheduler commands and destructive process fallback for abort/stop, but prompt queueing and operator UI response need the larger command-aware worker loop described in this plan.
-  Evidence: `src/scherzo/orchestrator/daemon.gleam` now handles pause/resume/reload/retry/park/unpark/abort/stop through `ApplyOperatorCommand`, while `PromptSession` and `RespondUi` return `not_allowed` with `worker_command_subject_unavailable`.
+- Observation: The follow-up command-aware worker loop completed the prompt and operator-UI controls deferred from the first mutating-control slice.
+  Evidence: `docs/plans/command-aware-worker-loop.md` records worker-owned command subjects, FIFO prompt queueing, queue-cap enforcement, operator-managed UI waits, response routing, timeout cancellation, README updates, and validation with 175 tests.
 
 ## Decision Log
 
@@ -147,9 +147,15 @@ Transport-level idempotency is not solved by the command model itself. `scherzoc
   Rationale: The command model, authentication boundary, daemon routing, pause/reload/retry/park/unpark, and safe abort/stop fallback are independently useful and covered by deterministic tests. Prompt queueing and operator UI responses require a larger pi read-loop refactor and remain tracked as incomplete progress items instead of being hidden behind stub success.
   Date: 2026-04-29
 
+- Decision: Treat `docs/plans/command-aware-worker-loop.md` as the completion vehicle for the deferred prompt and operator-UI milestones in this plan.
+  Rationale: That follow-up plan implemented the worker-owned command loop this plan identified as necessary, without changing the shared command model or daemon serialization rules. Marking the stale progress items complete keeps this living plan aligned with the current tree and prevents duplicate implementation work.
+  Date: 2026-04-30
+
 ## Outcomes & Retrospective
 
-First implementation slice outcome, 2026-04-29: Scherzo now has a shared command model, mutating protocol shapes, authenticated server dispatch with timeout handling, `scherzoctl` parsing/execution for all planned local commands, and daemon-owned handlers for pause, resume, reload, retry-now, park, unpark, abort, and stop-after-current-turn. `PromptSession` and `RespondUi` are intentionally returned as command-level `not_allowed` results until workers expose command subjects and own a command-aware pi loop. The main lesson is that routing through the daemon and preserving command-result semantics was a separable milestone; worker prompt/UI controls should remain a follow-up milestone rather than pretending to work without single-owner pi command ordering.
+First implementation slice outcome, 2026-04-29: Scherzo now has a shared command model, mutating protocol shapes, authenticated server dispatch with timeout handling, `scherzoctl` parsing/execution for all planned local commands, and daemon-owned handlers for pause, resume, reload, retry-now, park, unpark, abort, and stop-after-current-turn. `PromptSession` and `RespondUi` were intentionally returned as command-level `not_allowed` results until workers exposed command subjects and owned a command-aware pi loop. The main lesson is that routing through the daemon and preserving command-result semantics was a separable milestone; worker prompt/UI controls belonged in a follow-up milestone rather than pretending to work without single-owner pi command ordering.
+
+Follow-up completion outcome, 2026-04-30: The previously deferred prompt and UI controls are complete in the current tree through `docs/plans/command-aware-worker-loop.md`. Daemon-spawned workers register command subjects, prompt commands can be queued, applied, or rejected by the worker loop, operator UI waits can be answered or cancelled on timeout, and that follow-up plan recorded final validation with 175 tests. This mutating-controls plan has no remaining unchecked implementation items; durable Linear command receipts and other transport-specific reliability work remain tracked in separate plans.
 
 ## Context and Orientation
 

@@ -370,7 +370,7 @@ Use the logged path explicitly, or export it for repeated commands:
     scripts/scherzoctl events <session-id>
     scripts/scherzoctl attach <session-id>
 
-`attach` replays retained events and then follows new events with a human-readable terminal renderer. It groups visible output by Scherzo pass, streams assistant deltas as continuous text, shows tool input and output as readable blocks, highlights blocking UI requests, and prints token summaries when they are available. Pi internal cycle events are hidden by default so the transcript does not repeat misleading `turn 1 started` lines. Use `--verbose` when debugging pi lifecycle boundaries or unknown raw events, `--no-follow` for replay only, `--since-cursor <n>` to resume after a known cursor, and `--color=auto|always|never` to control ANSI styling:
+`attach` replays retained events and then follows new events with a human-readable terminal renderer. It groups visible output by Scherzo pass, streams assistant deltas as continuous thinking text, shows tool input and output as readable blocks, highlights blocking UI requests, and prints token summaries when they are available. On color-capable terminals, pretty output uses distinct colors for pass headings, thinking text, tools, tool input, tool output, statuses, warnings, and raw diagnostics. Pi internal cycle events are hidden by default so the transcript does not repeat misleading `turn 1 started` lines. Use `--verbose` when debugging pi lifecycle boundaries or unknown raw events, `--no-follow` for replay only, `--since-cursor <n>` to resume after a known cursor, and `--color=auto|always|never` to control ANSI styling. `--color=auto` enables ANSI only when stdout appears to be a color-capable terminal; `NO_COLOR` and `CLICOLOR=0` disable it, while `FORCE_COLOR` or `CLICOLOR_FORCE` force it:
 
     scripts/scherzoctl attach --no-follow <session-id>
     scripts/scherzoctl attach --no-follow --verbose <session-id>
@@ -384,17 +384,20 @@ Example quiet pretty output:
     status: running
 
     Scherzo pass 1
-    assistant
+
+    thinking
       I will run the tests and inspect the failure.
+
     tool bash
       input
         gleam test
       output
         2 failures
       status: failed
+
     Scherzo pass 1 tokens: input=1200 output=340 cache_read=0 cache_write=0 total=1540
 
-Verbose pretty output keeps the same assistant and tool blocks, but also includes diagnostic lines such as `pi cycle 1 started` and unknown raw pi event names.
+Verbose pretty output keeps the same thinking and tool blocks, but also includes diagnostic lines such as `pi cycle 1 started` and unknown raw pi event names.
 
 For compatibility and automation, raw and JSON modes remain available and are not affected by `--verbose`. `events` stays compact by default, while `events --pretty` provides paginated human-readable replay without following; `events --pretty --verbose` shows the same diagnostic pi cycle and raw-event lines as verbose attach:
 
