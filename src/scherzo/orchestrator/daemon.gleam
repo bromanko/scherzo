@@ -76,6 +76,18 @@ pub type WorkerHandle {
   )
 }
 
+type YamlRunHandle {
+  YamlRunHandle(
+    issue_id: String,
+    issue: domain.Issue,
+    run_id: String,
+    pid: process.Pid,
+    monitor: process.Monitor,
+    workspace_path: String,
+    session_id: String,
+  )
+}
+
 pub type TimerHandle {
   RealTimer(process.Timer)
   TestTimer(Int)
@@ -244,6 +256,8 @@ type State {
     retry_refreshes_in_flight: Dict(String, Int),
     workers: Dict(String, WorkerHandle),
     worker_monitors: Dict(process.Monitor, String),
+    yaml_runs: Dict(String, YamlRunHandle),
+    yaml_run_monitors: Dict(process.Monitor, String),
     issue_sessions: Dict(String, String),
     step_command_subjects: Dict(String, process.Subject(worker_command.Command)),
     step_command_monitors: Dict(process.Monitor, String),
@@ -485,6 +499,8 @@ pub fn start(
               retry_refreshes_in_flight: dict.new(),
               workers: dict.new(),
               worker_monitors: dict.new(),
+              yaml_runs: dict.new(),
+              yaml_run_monitors: dict.new(),
               issue_sessions: dict.new(),
               step_command_subjects: dict.new(),
               step_command_monitors: dict.new(),
@@ -1001,11 +1017,7 @@ fn park_issue_for_operator(
       command.rejected(operator_command, "issue_resolution_failed", None),
     )
     Ok(issue) ->
-      case
-        dict.has_key(state.runtime.running, issue.id)
-        || dict.has_key(state.runtime.claimed, issue.id)
-        || dict.has_key(state.pending_claims, issue.id)
-      {
+      case issue_is_running_claimed_or_pending(state, issue.id) {
         True -> #(
           state,
           command.rejected(
@@ -1315,10 +1327,20 @@ fn stop_session_for_operator(
   reason: String,
 ) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
-    Error(Nil) -> #(
-      state,
-      command.not_found(operator_command, Some("session not found")),
-    )
+    Error(Nil) ->
+      case yaml_run_for_session(state, session_id) {
+        Error(Nil) -> #(
+          state,
+          command.not_found(operator_command, Some("session not found")),
+        )
+        Ok(handle) ->
+          stop_yaml_session_for_operator(
+            state,
+            operator_command,
+            handle,
+            reason,
+          )
+      }
     Ok(handle) -> {
       process.demonitor_process(handle.monitor)
       hub.update_status(
@@ -1348,8 +1370,75 @@ fn stop_session_for_operator(
   }
 }
 
+fn has_active_run(state: State, issue_id: String) -> Bool {
+  dict.has_key(state.workers, issue_id)
+  || dict.has_key(state.yaml_runs, issue_id)
+}
+
+fn active_run_count(state: State) -> Int {
+  active_run_issue_ids(state) |> list.length
+}
+
+fn active_run_issue_ids(state: State) -> List(String) {
+  []
+  |> append_unique_list(dict.keys(state.runtime.running))
+  |> append_unique_list(dict.keys(state.workers))
+  |> append_unique_list(dict.keys(state.yaml_runs))
+}
+
+fn active_run_issues(state: State) -> List(domain.Issue) {
+  let runtime =
+    state.runtime.running
+    |> dict.values
+    |> list.map(fn(entry) { entry.issue })
+  let legacy =
+    state.workers |> dict.values |> list.map(fn(handle) { handle.issue })
+  let yaml =
+    state.yaml_runs |> dict.values |> list.map(fn(handle) { handle.issue })
+  []
+  |> append_unique_issues(runtime)
+  |> append_unique_issues(legacy)
+  |> append_unique_issues(yaml)
+}
+
+fn append_unique_issues(
+  existing: List(domain.Issue),
+  values: List(domain.Issue),
+) -> List(domain.Issue) {
+  list.fold(values, existing, fn(acc, issue) {
+    case list.contains(list.map(acc, fn(item) { item.id }), issue.id) {
+      True -> acc
+      False -> list.append(acc, [issue])
+    }
+  })
+}
+
+fn stop_yaml_session_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  handle: YamlRunHandle,
+  reason: String,
+) -> #(State, command.CommandResult) {
+  process.demonitor_process(handle.monitor)
+  hub.update_status(state.event_hub, handle.session_id, session_event.Stopping)
+  publish_lifecycle(state, handle.session_id, "operator_command", Some(reason))
+  publish_lifecycle(state, handle.session_id, "worker_exited", Some(reason))
+  hub.finish_session(state.event_hub, handle.session_id, reason)
+  process.kill(handle.pid)
+  let state =
+    State(
+      ..state,
+      yaml_runs: dict.delete(state.yaml_runs, handle.issue_id),
+      yaml_run_monitors: dict.delete(state.yaml_run_monitors, handle.monitor),
+      issue_sessions: dict.delete(state.issue_sessions, handle.issue_id),
+    )
+    |> park_issue_state(handle.issue, reason)
+  #(state, command.applied(operator_command, Some(reason)))
+}
+
 fn issue_is_running_claimed_or_pending(state: State, issue_id: String) -> Bool {
-  dict.has_key(state.runtime.running, issue_id)
+  has_active_run(state, issue_id)
+  || dict.has_key(state.runtime.running, issue_id)
   || dict.has_key(state.runtime.claimed, issue_id)
   || dict.has_key(state.pending_claims, issue_id)
 }
@@ -1497,6 +1586,23 @@ fn worker_for_session(
 }
 
 fn first_worker(handles: List(WorkerHandle)) -> Result(WorkerHandle, Nil) {
+  case handles {
+    [handle, ..] -> Ok(handle)
+    [] -> Error(Nil)
+  }
+}
+
+fn yaml_run_for_session(
+  state: State,
+  session_id: String,
+) -> Result(YamlRunHandle, Nil) {
+  state.yaml_runs
+  |> dict.values
+  |> list.filter(fn(handle) { handle.session_id == session_id })
+  |> first_yaml_run
+}
+
+fn first_yaml_run(handles: List(YamlRunHandle)) -> Result(YamlRunHandle, Nil) {
   case handles {
     [handle, ..] -> Ok(handle)
     [] -> Error(Nil)
@@ -1691,7 +1797,7 @@ fn mark_reload_invalid(state: State, reason: String) -> State {
 }
 
 fn begin_running_refresh(state: State, generation: Int) -> State {
-  let ids = dict.keys(state.runtime.running)
+  let ids = active_run_issue_ids(state)
   case ids {
     [] -> begin_candidate_fetch_or_finish(state, generation)
     _ ->
@@ -1935,8 +2041,7 @@ fn observed_issue_ids(
   state: State,
   candidates: List(domain.Issue),
 ) -> List(String) {
-  []
-  |> append_unique_list(dict.keys(state.runtime.running))
+  active_run_issue_ids(state)
   |> append_unique_list(dict.keys(state.runtime.retry_attempts))
   |> append_unique_list(dict.keys(state.runtime.parked))
   |> append_unique_list(list.map(candidates, fn(issue) { issue.id }))
@@ -2300,13 +2405,14 @@ fn slots_remain(state: State) -> Bool {
 }
 
 fn can_reserve_dispatch_slot(state: State, issue: domain.Issue) -> Bool {
-  !dict.has_key(state.pending_claims, issue.id)
+  !has_active_run(state, issue.id)
+  && !dict.has_key(state.pending_claims, issue.id)
   && slots_remain(state)
   && per_state_dispatch_slot_available(state, issue.state)
 }
 
 fn dispatch_slots_used(state: State) -> Int {
-  dict.size(state.runtime.running) + dict.size(state.pending_claims)
+  active_run_count(state) + dict.size(state.pending_claims)
 }
 
 fn per_state_dispatch_slot_available(state: State, issue_state: String) -> Bool {
@@ -2323,12 +2429,9 @@ fn dispatch_count_for_state(state: State, normalized_state: String) -> Int {
 }
 
 fn running_count_for_state(state: State, normalized_state: String) -> Int {
-  state.runtime.running
-  |> dict.to_list
-  |> list.filter(fn(entry) {
-    let #(_, running) = entry
-    normalize_state(running.issue.state) == normalized_state
-  })
+  state
+  |> active_run_issues
+  |> list.filter(fn(issue) { normalize_state(issue.state) == normalized_state })
   |> list.length
 }
 
@@ -2531,24 +2634,51 @@ fn spawn_worker(
   let monitor = process.monitor(pid)
   publish_lifecycle(state, session_id, "worker_started", None)
   hub.update_status(state.event_hub, session_id, session_event.Running)
-  let handle =
-    WorkerHandle(
-      issue_id: issue.id,
-      issue: issue,
-      run_id: run_id,
-      pid: pid,
-      monitor: monitor,
-      workspace_path: workspace_path,
-      session_id: session_id,
-      command_subject: None,
-    )
-  State(
-    ..state,
-    runtime: runtime,
-    workers: dict.insert(state.workers, issue.id, handle),
-    worker_monitors: dict.insert(state.worker_monitors, monitor, issue.id),
-    issue_sessions: dict.insert(state.issue_sessions, issue.id, session_id),
-  )
+  case bundle.mode {
+    runtime_bundle.LegacyMarkdown -> {
+      let handle =
+        WorkerHandle(
+          issue_id: issue.id,
+          issue: issue,
+          run_id: run_id,
+          pid: pid,
+          monitor: monitor,
+          workspace_path: workspace_path,
+          session_id: session_id,
+          command_subject: None,
+        )
+      State(
+        ..state,
+        runtime: runtime,
+        workers: dict.insert(state.workers, issue.id, handle),
+        worker_monitors: dict.insert(state.worker_monitors, monitor, issue.id),
+        issue_sessions: dict.insert(state.issue_sessions, issue.id, session_id),
+      )
+    }
+    runtime_bundle.OrchestratorYaml -> {
+      let handle =
+        YamlRunHandle(
+          issue_id: issue.id,
+          issue: issue,
+          run_id: run_id,
+          pid: pid,
+          monitor: monitor,
+          workspace_path: workspace_path,
+          session_id: session_id,
+        )
+      State(
+        ..state,
+        runtime: runtime,
+        yaml_runs: dict.insert(state.yaml_runs, issue.id, handle),
+        yaml_run_monitors: dict.insert(
+          state.yaml_run_monitors,
+          monitor,
+          issue.id,
+        ),
+        issue_sessions: dict.insert(state.issue_sessions, issue.id, session_id),
+      )
+    }
+  }
 }
 
 fn run_yaml_worker(
@@ -2897,15 +3027,7 @@ fn handle_worker_finished(
   result: Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> State {
   case dict.get(state.workers, issue_id) {
-    Error(_) -> {
-      log_state(state, "warn", "worker_finished_stale", [
-        #("issue_id", issue_id),
-      ])
-      State(
-        ..state,
-        issue_sessions: dict.delete(state.issue_sessions, issue_id),
-      )
-    }
+    Error(_) -> handle_yaml_workflow_finished(state, issue_id, run_id, result)
     Ok(handle) ->
       case handle.run_id == run_id {
         False -> {
@@ -2934,6 +3056,67 @@ fn handle_worker_finished(
         }
       }
   }
+}
+
+fn handle_yaml_workflow_finished(
+  state: State,
+  issue_id: String,
+  run_id: String,
+  result: Result(runner.WorkerSuccess, runner.WorkerFailure),
+) -> State {
+  case dict.get(state.yaml_runs, issue_id) {
+    Error(_) -> {
+      log_state(state, "warn", "worker_finished_stale", [
+        #("issue_id", issue_id),
+      ])
+      State(
+        ..state,
+        issue_sessions: dict.delete(state.issue_sessions, issue_id),
+      )
+    }
+    Ok(handle) ->
+      case handle.run_id == run_id {
+        False -> {
+          log_state(state, "warn", "worker_finished_stale", [
+            #("issue_id", issue_id),
+            #("run_id", run_id),
+          ])
+          state
+        }
+        True -> {
+          process.demonitor_process(handle.monitor)
+          let state =
+            State(
+              ..state,
+              yaml_runs: dict.delete(state.yaml_runs, issue_id),
+              yaml_run_monitors: dict.delete(
+                state.yaml_run_monitors,
+                handle.monitor,
+              ),
+              issue_sessions: dict.delete(state.issue_sessions, issue_id),
+            )
+          let worker_handle = yaml_run_to_worker_handle(handle)
+          case result {
+            Ok(success) -> finish_worker_success(state, worker_handle, success)
+            Error(failure) ->
+              finish_worker_failure(state, worker_handle, failure)
+          }
+        }
+      }
+  }
+}
+
+fn yaml_run_to_worker_handle(handle: YamlRunHandle) -> WorkerHandle {
+  WorkerHandle(
+    issue_id: handle.issue_id,
+    issue: handle.issue,
+    run_id: handle.run_id,
+    pid: handle.pid,
+    monitor: handle.monitor,
+    workspace_path: handle.workspace_path,
+    session_id: handle.session_id,
+    command_subject: None,
+  )
 }
 
 fn finish_worker_success(
@@ -3117,6 +3300,46 @@ fn finish_operator_worker_exit(
     )
   State(..state, runtime: runtime)
   |> park_issue_state(final_issue, reason)
+}
+
+fn handle_yaml_workflow_down(state: State, monitor: process.Monitor) -> State {
+  case dict.get(state.yaml_run_monitors, monitor) {
+    Error(_) -> handle_step_command_down(state, monitor)
+    Ok(issue_id) ->
+      case dict.get(state.yaml_runs, issue_id) {
+        Error(_) -> {
+          log_state(state, "warn", "worker_down_stale", [])
+          State(
+            ..state,
+            yaml_run_monitors: dict.delete(state.yaml_run_monitors, monitor),
+            issue_sessions: dict.delete(state.issue_sessions, issue_id),
+          )
+        }
+        Ok(handle) -> {
+          let state =
+            State(
+              ..state,
+              yaml_runs: dict.delete(state.yaml_runs, issue_id),
+              yaml_run_monitors: dict.delete(state.yaml_run_monitors, monitor),
+              issue_sessions: dict.delete(state.issue_sessions, issue_id),
+            )
+          log_state(state, "warn", "worker_down", [#("issue_id", issue_id)])
+          publish_lifecycle(state, handle.session_id, "worker_down", None)
+          let failure =
+            runner.WorkerFailure(
+              reason: error.PiFailed(error.PiProtocolError("worker_down")),
+              workspace_path: Some(handle.workspace_path),
+              tokens: domain.zero_token_totals(),
+              final_issue: None,
+            )
+          finish_worker_failure(
+            state,
+            yaml_run_to_worker_handle(handle),
+            failure,
+          )
+        }
+      }
+  }
 }
 
 fn handle_worker_down(state: State, down: process.Down) -> State {
@@ -3517,6 +3740,48 @@ fn apply_effects(state: State, effects: List(core.Effect)) -> State {
   }
 }
 
+fn stop_yaml_run_for_effect(
+  state: State,
+  issue_id: String,
+  reason: String,
+) -> State {
+  case dict.get(state.yaml_runs, issue_id) {
+    Error(_) -> state
+    Ok(handle) -> {
+      hub.update_status(
+        state.event_hub,
+        handle.session_id,
+        session_event.Stopping,
+      )
+      publish_lifecycle(
+        state,
+        handle.session_id,
+        "stop_requested",
+        Some(reason),
+      )
+      process.demonitor_process(handle.monitor)
+      process.kill(handle.pid)
+      publish_lifecycle(
+        state,
+        handle.session_id,
+        "worker_exited",
+        Some("stopped"),
+      )
+      hub.finish_session(state.event_hub, handle.session_id, "stopped")
+      log_state(state, "warn", "worker_stop_requested", [
+        #("issue_id", issue_id),
+        #("reason", reason),
+      ])
+      State(
+        ..state,
+        yaml_runs: dict.delete(state.yaml_runs, issue_id),
+        yaml_run_monitors: dict.delete(state.yaml_run_monitors, handle.monitor),
+        issue_sessions: dict.delete(state.issue_sessions, issue_id),
+      )
+    }
+  }
+}
+
 fn apply_effect(state: State, effect: core.Effect) -> State {
   case effect {
     core.Dispatch(issue) -> dispatch_issue(state, issue)
@@ -3567,7 +3832,7 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
     }
     core.StopWorker(issue_id, reason) -> {
       case dict.get(state.workers, issue_id) {
-        Error(_) -> state
+        Error(_) -> stop_yaml_run_for_effect(state, issue_id, reason)
         Ok(handle) -> {
           hub.update_status(
             state.event_hub,
@@ -3580,6 +3845,7 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
             "stop_requested",
             Some(reason),
           )
+          process.demonitor_process(handle.monitor)
           stop_worker(handle)
           publish_lifecycle(
             state,
@@ -3808,6 +4074,7 @@ fn shutdown_state(state: State) -> State {
     process.demonitor_process(monitor)
   })
   dict.each(state.workers, fn(_, handle) { stop_worker(handle) })
+  dict.each(state.yaml_runs, fn(_, handle) { process.kill(handle.pid) })
   State(
     ..state,
     poll_in_flight: None,
@@ -3816,6 +4083,8 @@ fn shutdown_state(state: State) -> State {
     retry_refreshes_in_flight: dict.new(),
     workers: dict.new(),
     worker_monitors: dict.new(),
+    yaml_runs: dict.new(),
+    yaml_run_monitors: dict.new(),
     issue_sessions: dict.new(),
     step_command_subjects: dict.new(),
     step_command_monitors: dict.new(),
