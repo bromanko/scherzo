@@ -255,11 +255,27 @@ Supported comments include:
 
 Authorization is by explicit Linear user id allowlist only. The transport is runtime-only; commands posted while Scherzo is down are not replayed on startup. Local `scherzoctl` remains the fallback control path.
 
+## Local durable ledger
+
+Scherzo includes a local durable state ledger under `workspace.root/.scherzo-state/ledger/` as a storage foundation for later crash recovery work. The ledger currently exposes Gleam APIs and tests only; daemon startup does not yet restore retry timers, parked issues, command receipts, outbox work, or interrupted runs from it.
+
+The ledger layout is:
+
+```text
+.scherzo-state/ledger/current.jsonl
+.scherzo-state/ledger/snapshot.json
+.scherzo-state/ledger/archive/segment-<n>.jsonl
+```
+
+`current.jsonl` is append-only JSON Lines. Each line is one schema-versioned record with `schema_version`, `record_id`, `kind`, and `at_ms`, plus fields for run, retry, park, Linear command, or outbox facts. Replay rejects unsupported schema versions and malformed middle records, while tolerating one truncated trailing JSON record from a crash during append. Compaction writes a projection snapshot through a temporary file and then archives the old current segment before starting a fresh `current.jsonl`.
+
+Ledger records are operational state, not transcripts. They should contain identifiers, statuses, bounded excerpts, result codes, and redacted strings only. Do not store API keys, raw pi JSON, full prompts, or full Linear comment bodies in the ledger.
+
 ## Safety posture
 
 Scherzo is intended for trusted repositories and trusted workflow files. Hooks are arbitrary shell. pi tool execution follows the operator's `pi.command` and host OS environment. Scherzo enforces workspace cwd and root containment, but it does not provide a VM or container sandbox.
 
-Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT, `kill -9`, host power loss, or BEAM VM crashes may leave stale local state that operators must remove only after checking no Scherzo process remains active.
+Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. The local durable ledger is not yet a startup recovery backend, so retry timers, parked issues, command receipts, outbox work, and interrupted runs are not restored from it after a daemon restart. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT, `kill -9`, host power loss, or BEAM VM crashes may leave stale local state that operators must remove only after checking no Scherzo process remains active.
 
 ## Legacy Markdown removal
 

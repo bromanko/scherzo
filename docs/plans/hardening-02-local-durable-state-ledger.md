@@ -55,15 +55,20 @@ The main file-growth risk is unbounded JSONL files. Countermeasure: include comp
 ## Progress
 
 - [x] (2026-04-29 04:20Z) Drafted this plan as the storage prerequisite for single-instance crash recovery and durable Linear command inbox work.
-- [ ] Add ledger record types, encoders, decoders, and replay projection.
-- [ ] Add append and fsync-safe file helpers.
-- [ ] Add corrupt trailing record and unsupported-version tests.
-- [ ] Add compaction/snapshot tests.
-- [ ] Document the ledger format and its non-goals.
+- [x] (2026-04-30 12:55Z) Verified workspace preflight in jj workspace `hardening-02`, ran `direnv allow`, and established baseline with `direnv exec . gleam test`: 378 passed, no failures.
+- [x] (2026-04-30 13:02Z) Added `src/scherzo/state/record.gleam` with schema-versioned record variants, deterministic JSON encoders/decoders, unsupported-version rejection, and excerpt redaction helper tests.
+- [x] (2026-04-30 13:03Z) Added `src/scherzo/state/projection.gleam` with replay folding for runs, retries, parked issues, command receipts, and outbox statuses, including snapshot JSON roundtrip coverage.
+- [x] (2026-04-30 13:05Z) Added `src/scherzo/state/ledger.gleam` and `src/scherzo_state_ffi.erl` for workspace-root pathing, append, optional fsync, current-segment replay, snapshot loading, and compaction.
+- [x] (2026-04-30 13:11Z) Added corrupt trailing record, invalid trailing shape, malformed middle record, unsupported-version, append/replay, projection, redaction-persistence, and compaction tests under `test/state_*_test.gleam`; `direnv exec . gleam format --check src test` passed and `direnv exec . gleam test` reported 393 passed, no failures.
+- [x] (2026-04-30 13:09Z) Documented the local durable ledger layout, non-goals, redaction expectation, and recovery deferral in `README.md`.
 
 ## Surprises & Discoveries
 
-(To be filled during implementation. Record whether `simplifile` append support was sufficient or an Erlang FFI was required.)
+- Observation: `simplifile` provides append support but does not expose a per-append fsync control, so append durability needed a tiny Erlang FFI.
+  Evidence: `src/scherzo_state_ffi.erl` implements `append_line/3` with `file:write`, optional `file:sync`, and close; `direnv exec . gleam test` passed with 393 tests.
+
+- Observation: Compaction atomicity is observable with the real filesystem but not dependency-injected in this phase.
+  Evidence: `test/state_compaction_test.gleam` verifies that compaction writes `snapshot.json`, archives one current segment, clears `current.jsonl`, and preserves the loaded projection. It does not simulate a rename crash.
 
 ## Decision Log
 
@@ -79,9 +84,17 @@ The main file-growth risk is unbounded JSONL files. Countermeasure: include comp
   Rationale: Separating storage correctness from recovery semantics keeps each plan reviewable and gives later plans a tested primitive.
   Date: 2026-04-29
 
+- Decision: Add `src/scherzo_state_ffi.erl` for append plus optional fsync rather than relying only on `simplifile.append`.
+  Rationale: The public ledger API accepts an `fsync` flag so later recovery plans can force selected records to stable storage before external side effects. `simplifile.append` was adequate for append but not for explicit sync.
+  Date: 2026-04-30
+
+- Decision: Encode compaction snapshots as projection JSON, then archive the old current segment as `archive/segment-<n>.jsonl` and create an empty `current.jsonl`.
+  Rationale: Snapshot JSON makes `load_projection` fast and keeps archived JSONL available for manual inspection. Deterministic generation names make tests stable without adding a clock dependency.
+  Date: 2026-04-30
+
 ## Outcomes & Retrospective
 
-(To be filled at completion. Include final file layout, whether fsync is used, final test count, and any schema changes made during implementation.)
+Implementation completed the storage foundation without wiring daemon startup recovery. The final layout is `workspace.root/.scherzo-state/ledger/current.jsonl`, `workspace.root/.scherzo-state/ledger/snapshot.json`, and `workspace.root/.scherzo-state/ledger/archive/segment-<n>.jsonl`. Appends use `src/scherzo_state_ffi.erl` and honor the API's optional fsync flag; the append/replay test exercises the fsync path. Schema version 1 includes run, retry, park/unpark, Linear command, and outbox records; no schema changes beyond the planned outbox payload field name `outbox_kind` were needed. As of 2026-04-30 13:11Z, `direnv exec . gleam format --check src test` passed and `direnv exec . gleam test` reported 393 passed, no failures. The remaining work is intentionally deferred to later hardening plans: emitting these records from daemon transitions and using them for startup recovery.
 
 ## Context and Orientation
 
