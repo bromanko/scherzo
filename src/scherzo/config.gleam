@@ -121,19 +121,12 @@ pub fn default_linear_command_config() -> domain.LinearCommandConfig {
   )
 }
 
-pub fn resolve(
-  workflow: domain.WorkflowDefinition,
-  workflow_path: String,
-) -> Result(domain.EffectiveConfig, error.ConfigError) {
-  resolve_with_env(workflow, workflow_path, real_env)
-}
-
 pub fn resolve_with_env(
-  workflow: domain.WorkflowDefinition,
-  workflow_path: String,
+  root: yay.Node,
+  config_path: String,
   env: Env,
 ) -> Result(domain.EffectiveConfig, error.ConfigError) {
-  resolve_root(workflow.config, workflow_path, env)
+  resolve_root(root, config_path, env)
 }
 
 pub fn resolve_root(
@@ -221,11 +214,11 @@ pub fn initial_reload_state() -> ReloadState {
 
 pub fn apply_reload(
   state: ReloadState,
-  workflow: domain.WorkflowDefinition,
-  workflow_path: String,
+  root: yay.Node,
+  config_path: String,
   env: Env,
 ) -> ReloadResult {
-  case resolve_with_env(workflow, workflow_path, env) {
+  case resolve_with_env(root, config_path, env) {
     Ok(config) -> {
       let secrets = resolved_secrets(config)
       ReloadResult(
@@ -1310,13 +1303,6 @@ fn default_workspace_root(workflow_path: String) -> String {
   |> result_unwrap(tmp <> "/scherzo_workspaces")
 }
 
-fn real_env(name: String) -> Option(String) {
-  case getenv(name) {
-    Ok(value) -> Some(value)
-    Error(_) -> None
-  }
-}
-
 fn option_unwrap(value: Option(a), default: a) -> a {
   case value {
     Some(value) -> value
@@ -1391,9 +1377,6 @@ fn result_try(result: Result(a, e), next: fn(a) -> Result(b, e)) -> Result(b, e)
     Error(err) -> Error(err)
   }
 }
-
-@external(erlang, "scherzo_config_ffi", "getenv")
-fn getenv(name: String) -> Result(String, Nil)
 
 @external(erlang, "scherzo_config_ffi", "home")
 fn home() -> Result(String, Nil)

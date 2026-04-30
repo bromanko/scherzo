@@ -99,6 +99,7 @@ type SpawnedStepWorker {
 type StepBatchMessage {
   StepBatchResult(StepExecutionResult)
   StepBatchDown(process.Down)
+  StepBatchLinkedExit
 }
 
 type StepBatchOutcome {
@@ -109,6 +110,7 @@ type StepBatchOutcome {
 type AfterStepMessage {
   AfterStepCompleted
   AfterStepDown(process.Down)
+  AfterStepLinkedExit
 }
 
 type PrepareReadyFailure {
@@ -469,6 +471,7 @@ fn run_prepared_batch(
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
 ) -> Result(StepBatchOutcome, String) {
+  let was_trapping_exits = process_ext.trap_exits(True)
   let subject = process.new_subject()
   let workers =
     spawn_prepared_steps(
@@ -485,15 +488,19 @@ fn run_prepared_batch(
     process.new_selector()
     |> process.select_map(subject, StepBatchResult)
     |> process.select_monitors(StepBatchDown)
-  collect_step_results(
-    count_prepared(starts),
-    selector,
-    monitor_to_step(workers, dict.new()),
-    step_to_monitor(workers, dict.new()),
-    monitor_to_pid(workers, dict.new()),
-    failure_policy_by_step(starts, dict.new()),
-    [],
-  )
+    |> process.select_trapped_exits(fn(_) { StepBatchLinkedExit })
+  let result =
+    collect_step_results(
+      count_prepared(starts),
+      selector,
+      monitor_to_step(workers, dict.new()),
+      step_to_monitor(workers, dict.new()),
+      monitor_to_pid(workers, dict.new()),
+      failure_policy_by_step(starts, dict.new()),
+      [],
+    )
+  let _ = process_ext.trap_exits(was_trapping_exits)
+  result
 }
 
 fn spawn_prepared_steps(
@@ -533,8 +540,8 @@ fn spawn_prepared_steps_loop(
   case starts {
     [] -> list.reverse(acc)
     [PreparedStart(step, workspace), ..rest] -> {
-      let #(pid, monitor) =
-        process_ext.spawn_monitor(fn() {
+      let pid =
+        process.spawn(fn() {
           let #(artifact, tokens, final_issue, turns) =
             run_step(
               step,
@@ -557,6 +564,7 @@ fn spawn_prepared_steps_loop(
             ),
           )
         })
+      let monitor = process.monitor(pid)
       spawn_prepared_steps_loop(
         rest,
         subject,
@@ -696,6 +704,16 @@ fn collect_step_results(
             failure_policies,
             acc,
           )
+        StepBatchLinkedExit ->
+          collect_step_results(
+            remaining,
+            selector,
+            monitor_to_step,
+            step_to_monitor,
+            monitor_to_pid,
+            failure_policies,
+            acc,
+          )
       }
   }
 }
@@ -752,6 +770,7 @@ fn kill_pids(pids: List(process.Pid)) -> Nil {
   case pids {
     [] -> Nil
     [pid, ..rest] -> {
+      process.unlink(pid)
       process.kill(pid)
       kill_pids(rest)
     }
@@ -914,22 +933,36 @@ fn run_after_step(
   workspace: workspace_run.PreparedStepWorkspace,
   orchestrator: domain.OrchestratorConfig,
 ) -> Result(Nil, String) {
+  let was_trapping_exits = process_ext.trap_exits(True)
   let subject = process.new_subject()
-  let #(_, monitor) =
-    process_ext.spawn_monitor(fn() {
+  let pid =
+    process.spawn(fn() {
       dependencies.after_step(issue, step_id, workspace, orchestrator)
       process.send(subject, Nil)
     })
+  let monitor = process.monitor(pid)
   let selector =
     process.new_selector()
     |> process.select_map(subject, fn(_) { AfterStepCompleted })
     |> process.select_specific_monitor(monitor, AfterStepDown)
+    |> process.select_trapped_exits(fn(_) { AfterStepLinkedExit })
+  let result = receive_after_step_result(selector, monitor, step_id)
+  let _ = process_ext.trap_exits(was_trapping_exits)
+  result
+}
+
+fn receive_after_step_result(
+  selector: process.Selector(AfterStepMessage),
+  monitor: process.Monitor,
+  step_id: String,
+) -> Result(Nil, String) {
   case process.selector_receive_forever(selector) {
     AfterStepCompleted -> {
       process.demonitor_process(monitor)
       Ok(Nil)
     }
     AfterStepDown(down) -> after_step_down_result(step_id, down)
+    AfterStepLinkedExit -> receive_after_step_result(selector, monitor, step_id)
   }
 }
 

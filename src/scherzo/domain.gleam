@@ -1,7 +1,6 @@
 import birl.{type Time}
 import gleam/dict.{type Dict}
 import gleam/option.{type Option}
-import yay
 
 pub type BlockerRef {
   BlockerRef(
@@ -26,10 +25,6 @@ pub type Issue {
     created_at: Option(Time),
     updated_at: Option(Time),
   )
-}
-
-pub type WorkflowDefinition {
-  WorkflowDefinition(config: yay.Node, prompt_template: String)
 }
 
 pub type TrackerConfig {

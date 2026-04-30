@@ -6,25 +6,17 @@ import scherzo/config
 import scherzo/domain
 import scherzo/error
 import scherzo/path
-import scherzo/workflow
 import scherzo/workflow_dag
 import simplifile
 import yay
 
-pub type BundleMode {
-  LegacyMarkdown
-  OrchestratorYaml
-}
-
 pub type RuntimeBundle {
   RuntimeBundle(
-    mode: BundleMode,
     config_path: String,
     config_contents: String,
     effective: domain.EffectiveConfig,
-    orchestrator: Option(domain.OrchestratorConfig),
+    orchestrator: domain.OrchestratorConfig,
     workflows: Dict(String, workflow_dag.WorkflowDag),
-    legacy_workflow: Option(domain.WorkflowDefinition),
     secrets: List(String),
   )
 }
@@ -37,21 +29,7 @@ pub fn select_workflow(
   bundle: RuntimeBundle,
   issue: domain.Issue,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
-  case bundle.mode, bundle.orchestrator {
-    LegacyMarkdown, _ ->
-      case dict.get(bundle.workflows, "legacy") {
-        Ok(dag) -> Ok(#("legacy", dag))
-        Error(_) ->
-          Error(BundleError("missing_workflow", "legacy workflow is missing"))
-      }
-    OrchestratorYaml, Some(orchestrator) ->
-      select_routed_workflow(bundle.workflows, orchestrator.routing, issue)
-    OrchestratorYaml, None ->
-      Error(BundleError(
-        "missing_orchestrator_config",
-        "orchestrator config is missing",
-      ))
-  }
+  select_routed_workflow(bundle.workflows, bundle.orchestrator.routing, issue)
 }
 
 pub fn load(explicit: Option(String)) -> Result(RuntimeBundle, BundleError) {
@@ -63,13 +41,12 @@ pub fn load_with_env(
   env: config.Env,
 ) -> Result(RuntimeBundle, BundleError) {
   let selected = select_config_path(explicit)
-  case path_kind(selected) {
-    Some(LegacyMarkdown) -> load_legacy(selected, env)
-    Some(OrchestratorYaml) -> load_orchestrator(selected, env)
-    None ->
+  case is_yaml_config_path(selected) {
+    True -> load_orchestrator(selected, env)
+    False ->
       Error(BundleError(
         "unsupported_config_path",
-        "workflow path must end in .md, .yaml, or .yml",
+        "runtime config path must end in .yaml or .yml",
       ))
   }
 }
@@ -142,29 +119,6 @@ fn workflow_labels(
   }
 }
 
-fn load_legacy(
-  selected: String,
-  env: config.Env,
-) -> Result(RuntimeBundle, BundleError) {
-  use content <- result_try(read_file(selected, "missing_workflow_file"))
-  use definition <- result_try(workflow.parse(content) |> map_workflow_error)
-  use effective <- result_try(
-    config.resolve_with_env(definition, selected, env)
-    |> map_config_error,
-  )
-  let dag = workflow_dag.legacy_inline("legacy", definition.prompt_template)
-  Ok(RuntimeBundle(
-    mode: LegacyMarkdown,
-    config_path: selected,
-    config_contents: content,
-    effective: effective,
-    orchestrator: None,
-    workflows: dict.from_list([#("legacy", dag)]),
-    legacy_workflow: Some(definition),
-    secrets: config.resolved_secrets(effective),
-  ))
-}
-
 fn load_orchestrator(
   selected: String,
   env: config.Env,
@@ -180,13 +134,11 @@ fn load_orchestrator(
     dict.new(),
   ))
   Ok(RuntimeBundle(
-    mode: OrchestratorYaml,
     config_path: selected,
     config_contents: content,
     effective: orchestrator.effective,
-    orchestrator: Some(orchestrator),
+    orchestrator: orchestrator,
     workflows: workflows,
-    legacy_workflow: None,
     secrets: config.resolved_secrets(orchestrator.effective),
   ))
 }
@@ -330,22 +282,18 @@ fn select_config_path(explicit: Option(String)) -> String {
 }
 
 fn default_config_path() -> String {
-  case file_exists("WORKFLOW.md") {
-    True -> "WORKFLOW.md"
+  case file_exists(".scherzo/scherzo.yaml") {
+    True -> ".scherzo/scherzo.yaml"
     False ->
-      case file_exists(".scherzo/scherzo.yaml") {
-        True -> ".scherzo/scherzo.yaml"
+      case file_exists(".scherzo/scherzo.yml") {
+        True -> ".scherzo/scherzo.yml"
         False ->
-          case file_exists(".scherzo/scherzo.yml") {
-            True -> ".scherzo/scherzo.yml"
+          case file_exists("scherzo.yaml") {
+            True -> "scherzo.yaml"
             False ->
-              case file_exists("scherzo.yaml") {
-                True -> "scherzo.yaml"
-                False ->
-                  case file_exists("scherzo.yml") {
-                    True -> "scherzo.yml"
-                    False -> workflow.choose_path(None)
-                  }
+              case file_exists("scherzo.yml") {
+                True -> "scherzo.yml"
+                False -> ".scherzo/scherzo.yaml"
               }
           }
       }
@@ -359,25 +307,9 @@ fn file_exists(path: String) -> Bool {
   }
 }
 
-fn path_kind(path: String) -> Option(BundleMode) {
+fn is_yaml_config_path(path: String) -> Bool {
   let lower = string.lowercase(path)
-  case string.ends_with(lower, ".md") {
-    True -> Some(LegacyMarkdown)
-    False ->
-      case string.ends_with(lower, ".yaml") || string.ends_with(lower, ".yml") {
-        True -> Some(OrchestratorYaml)
-        False -> None
-      }
-  }
-}
-
-fn map_workflow_error(
-  result: Result(a, error.WorkflowError),
-) -> Result(a, BundleError) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(BundleError(error.workflow_code(err), "workflow error"))
-  }
+  string.ends_with(lower, ".yaml") || string.ends_with(lower, ".yml")
 }
 
 fn map_config_error(

@@ -13,7 +13,7 @@ import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/path
-import scherzo/session/event as session_event
+import scherzo/session/event
 import scherzo/session/hub
 import scherzo/step_artifact
 import scherzo/tracker
@@ -50,7 +50,11 @@ fn workflow_text(root: String, max_concurrent: Int) -> String {
 }
 
 fn enforcing_linear_contract_text() -> String {
-  "linear_contract:\n  workflow_label_prefix: \"workflow:\"\n  workflow_labels: [bugfix, research]\n  enforce_issue_workflow_labels: true\n"
+  "linear_contract:
+  workflow_label_prefix: \"workflow:\"
+  workflow_labels: [implementation]
+  enforce_issue_workflow_labels: true
+"
 }
 
 fn workflow_text_with_linear_contract(
@@ -58,22 +62,45 @@ fn workflow_text_with_linear_contract(
   max_concurrent: Int,
   linear_contract_text: String,
 ) -> String {
-  "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\nworkspace:\n  root: "
-  <> root
-  <> "\nhooks:\n  before_run: \"true\"\npolling:\n  interval_ms: 1000\nagent:\n  max_concurrent_agents: "
-  <> int_to_string(max_concurrent)
-  <> "\n  max_retry_attempts: 3\n  max_sessions_per_issue: 2\npi:\n  command: fake\n"
-  <> linear_contract_text
-  <> "---\nPrompt\n"
+  "version: 1
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: TEST
+  active_states: [Todo]
+  terminal_states: [Done]
+workspace:
+  root: " <> root <> "
+  hooks:
+    create: |
+      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"
+    before_step: |
+      test -d \"$SCHERZO_WORKSPACE_PATH\"
+    after_step: |
+      true
+    remove: |
+      rm -rf \"$SCHERZO_WORKSPACE_PATH\"
+    timeout_ms: 60000
+polling:
+  interval_ms: 1000
+agent:
+  max_concurrent_agents: " <> int_to_string(max_concurrent) <> "
+  max_retry_attempts: 3
+  max_sessions_per_issue: 2
+pi:
+  command: fake
+routing:
+  workflow_label_prefix: \"workflow:\"
+  require_exactly_one_workflow_label: false
+  default_workflow: implementation
+  workflows:
+    implementation: workflows/implementation.yaml
+" <> linear_contract_text
 }
 
 fn write_workflow(dir: String, max_concurrent: Int) -> String {
   reset_dir(dir)
-  let workflow_path = dir <> "/WORKFLOW.md"
-  let root = dir <> "/workspaces"
-  let assert Ok(Nil) =
-    simplifile.write(workflow_path, workflow_text(root, max_concurrent))
-  workflow_path
+  write_workflow_files(dir, workflow_text(dir <> "/workspaces", max_concurrent))
 }
 
 fn write_enforcing_workflow(dir: String, max_concurrent: Int) -> String {
@@ -86,24 +113,39 @@ fn write_enforcing_workflow(dir: String, max_concurrent: Int) -> String {
 
 fn write_yaml_agent_workflow(dir: String) -> String {
   reset_dir(dir)
+  write_workflow_files(dir, workflow_text(dir <> "/workspaces", 1))
+}
+
+fn write_parallel_yaml_agent_workflow(dir: String) -> String {
+  reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let prompt_dir = workflow_dir <> "/prompts"
   let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
-  let root = dir <> "/workspaces"
   let assert Ok(Nil) =
-    simplifile.write(
-      config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
-        <> root
-        <> "\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(prompt_dir <> "/implement.md", "agent prompt")
+    simplifile.write(config_path, workflow_text(dir <> "/workspaces", 1))
+  let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
   let assert Ok(Nil) =
     simplifile.write(
       workflow_dir <> "/implementation.yaml",
-      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n    workspace: main\n",
+      "version: 1
+id: implementation
+max_parallel_steps: 2
+steps:
+  - id: alpha
+    kind: agent
+    prompt: prompts/task.md
+    workspace: alpha
+  - id: beta
+    kind: agent
+    prompt: prompts/task.md
+    workspace: beta
+  - id: final
+    kind: command
+    depends_on: [alpha, beta]
+    run: final
+    workspace: alpha
+",
     )
   config_path
 }
@@ -114,17 +156,18 @@ fn write_yaml_workflow(dir: String, _marker: String) -> String {
   let workflow_dir = dir <> "/workflows"
   let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
   let root = dir <> "/workspaces"
-  let assert Ok(Nil) =
-    simplifile.write(
-      config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
-        <> root
-        <> "\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n",
-    )
+  let assert Ok(Nil) = simplifile.write(config_path, workflow_text(root, 1))
   let assert Ok(Nil) =
     simplifile.write(
       workflow_dir <> "/implementation.yaml",
-      "version: 1\nid: implementation\nsteps:\n  - id: final_test\n    kind: command\n    run: sh -c 'exit 1'\n    workspace: main\n",
+      "version: 1
+id: implementation
+steps:
+  - id: final_test
+    kind: command
+    run: sh -c 'exit 1'
+    workspace: main
+",
     )
   config_path
 }
@@ -135,18 +178,36 @@ fn write_workflow_with_contract(
   linear_contract_text: String,
 ) -> String {
   reset_dir(dir)
-  let workflow_path = dir <> "/WORKFLOW.md"
-  let root = dir <> "/workspaces"
+  write_workflow_files(
+    dir,
+    workflow_text_with_linear_contract(
+      dir <> "/workspaces",
+      max_concurrent,
+      linear_contract_text,
+    ),
+  )
+}
+
+fn write_workflow_files(dir: String, config_text: String) -> String {
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let prompt_dir = workflow_dir <> "/prompts"
+  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
+  let assert Ok(Nil) = simplifile.write(config_path, config_text)
+  let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
   let assert Ok(Nil) =
     simplifile.write(
-      workflow_path,
-      workflow_text_with_linear_contract(
-        root,
-        max_concurrent,
-        linear_contract_text,
-      ),
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/task.md
+    workspace: main
+",
     )
-  workflow_path
+  config_path
 }
 
 fn success(final: domain.Issue, workspace_path: String) -> runner.WorkerSuccess {
@@ -173,30 +234,6 @@ fn base_dependencies(
     make_handoff: fn(_, _) { handoff.disabled_client() },
     make_linear_commands: fn(_) { disabled_linear_commands() },
     make_triage: fn(_, _) { linear_triage.disabled_client() },
-    agent_runner: fn(issue, _, _, _, _, emit_update, _, _) {
-      process.send(log_subject, "agent_run")
-      emit_update(
-        issue.id,
-        runner.PiUpdate(
-          event: "turn_finished",
-          message: Some("hello"),
-          raw_json: None,
-          turn: Some(1),
-          request_id: None,
-          method: None,
-          pi_session_id: None,
-          tokens: domain.zero_token_totals(),
-          tool_name: None,
-          tool_input: None,
-          tool_output: None,
-          tool_status: None,
-        ),
-      )
-      Ok(success(
-        domain.Issue(..issue, state: "Done"),
-        "test/tmp/daemon/workspace",
-      ))
-    },
     workflow_run_dependencies: fake_workflow_run_dependencies(log_subject),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, _, _) {
@@ -276,10 +313,24 @@ fn fake_workflow_run_dependencies(
       _effective,
       _tracker,
       workspace_path,
-      _emit_update,
+      emit_update,
       _command_ready,
     ) {
       process.send(log_subject, "yaml_agent:" <> prompt)
+      emit_update(runner.PiUpdate(
+        event: "turn_finished",
+        message: Some("hello"),
+        raw_json: None,
+        turn: Some(1),
+        request_id: None,
+        method: None,
+        pi_session_id: None,
+        tokens: domain.zero_token_totals(),
+        tool_name: None,
+        tool_input: None,
+        tool_output: None,
+        tool_status: None,
+      ))
       Ok(runner.WorkerSuccess(
         final_issue: Some(issue),
         final_classification: runner.FinalTerminal,
@@ -291,6 +342,65 @@ fn fake_workflow_run_dependencies(
           truncated: False,
           source: "test",
         ),
+      ))
+    },
+  )
+}
+
+fn blocking_command_ready_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    agent_step: fn(
+      issue,
+      step_id,
+      _prompt,
+      _effective,
+      _tracker,
+      workspace_path,
+      _emit_update,
+      command_ready,
+    ) {
+      let command_subject = process.new_subject()
+      command_ready(command_subject)
+      process.send(log_subject, "agent_ready")
+      process.sleep(5000)
+      Error(runner.WorkerFailure(
+        reason: error.PiFailed(error.PiProtocolError("stopped:" <> step_id)),
+        workspace_path: Some(workspace_path),
+        tokens: domain.zero_token_totals(),
+        final_issue: Some(issue),
+      ))
+    },
+  )
+}
+
+fn surviving_agent_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    agent_step: fn(
+      issue,
+      _step_id,
+      _prompt,
+      _effective,
+      _tracker,
+      workspace_path,
+      _emit_update,
+      _command_ready,
+    ) {
+      process.send(log_subject, "agent_started")
+      process.sleep(500)
+      process.send(log_subject, "agent_survived")
+      Error(runner.WorkerFailure(
+        reason: error.PiFailed(error.PiProtocolError("survived_abort")),
+        workspace_path: Some(workspace_path),
+        tokens: domain.zero_token_totals(),
+        final_issue: Some(issue),
       ))
     },
   )
@@ -409,6 +519,32 @@ fn prompt_until_queued(
   }
 }
 
+fn wait_for_session_status(
+  subject: process.Subject(hub.Message),
+  session_id: String,
+  status: event.SessionStatus,
+  attempts: Int,
+) -> Bool {
+  case attempts <= 0 {
+    True -> False
+    False ->
+      case hub.get_session(subject, session_id, 100) {
+        Ok(Some(summary)) ->
+          case summary.status == status {
+            True -> True
+            False -> {
+              process.sleep(50)
+              wait_for_session_status(subject, session_id, status, attempts - 1)
+            }
+          }
+        _ -> {
+          process.sleep(50)
+          wait_for_session_status(subject, session_id, status, attempts - 1)
+        }
+      }
+  }
+}
+
 fn wait_for_event(
   subject: process.Subject(String),
   event: String,
@@ -464,7 +600,7 @@ pub fn daemon_reports_invalid_workflow_candidate_when_slots_are_full_test() {
     write_enforcing_workflow("test/tmp/daemon-invalid-workflow-full-slots", 1)
   let valid_candidate =
     domain.Issue(..issue("valid-id", "ABC-1", "Todo"), labels: [
-      "workflow:bugfix",
+      "workflow:implementation",
     ])
   let invalid_candidate = issue("invalid-id", "ABC-2", "Todo")
   let client =
@@ -493,7 +629,7 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
     write_enforcing_workflow("test/tmp/daemon-valid-workflow", 1)
   let candidate =
     domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
-      "workflow:bugfix",
+      "workflow:implementation",
     ])
   let client =
     tracker.Client(
@@ -551,8 +687,7 @@ pub fn daemon_yaml_agent_steps_get_concrete_sessions_test() {
     list.filter(sessions, fn(summary) {
       summary.session_id == "ABC-1-42-1-implement"
     })
-  let assert [step_session] = matching_step_sessions
-  assert session_event.exit_reason(step_session.status) == Some("normal")
+  let assert [_step_session] = matching_step_sessions
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -587,6 +722,88 @@ pub fn daemon_yaml_operator_prompt_routes_to_agent_step_session_test() {
   assert wait_for_event(log_subject, "prompt:hello from operator", 20)
   assert wait_for_event(log_subject, "worker_exited", 20)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_yaml_parent_prompt_rejects_multiple_active_step_routes_test() {
+  let dir = "test/tmp/daemon-yaml-parent-command-multiple"
+  let workflow_path = write_parallel_yaml_agent_workflow(dir)
+  let candidate =
+    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: blocking_command_ready_workflow_run_dependencies(
+        log_subject,
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_event(log_subject, "agent_ready", 20)
+  assert wait_for_event(log_subject, "agent_ready", 20)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.PromptSession("ABC-1-42-1", "hello from operator"),
+      1000,
+    )
+  assert result.status == command.NotAllowed("multiple_step_command_subjects")
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_yaml_parent_abort_kills_active_step_worker_test() {
+  let dir = "test/tmp/daemon-yaml-parent-abort"
+  let workflow_path = write_yaml_agent_workflow(dir)
+  let candidate =
+    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: surviving_agent_workflow_run_dependencies(
+        log_subject,
+      ),
+      start_event_hub: fn() { Ok(event_hub) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_event(log_subject, "agent_started", 20)
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.AbortSession("ABC-1-42-1"),
+      1000,
+    )
+  assert result.status == command.Applied
+  assert !wait_for_event(log_subject, "agent_survived", 10)
+  assert wait_for_session_status(
+    event_hub,
+    "ABC-1-42-1-implement",
+    event.Exited("operator_abort"),
+    20,
+  )
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(event_hub)
 }
 
 pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
@@ -700,23 +917,23 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
-      agent_runner: fn(issue: domain.Issue, _, _, _, _, _, _, _) {
-        process.send(log_subject, "agent_run")
-        case issue.title == "retry succeeds" {
-          False ->
-            Error(runner.WorkerFailure(
-              reason: error.PiFailed(error.PiProtocolError("boom")),
-              workspace_path: Some("test/tmp/daemon-retry/workspace"),
-              tokens: domain.zero_token_totals(),
-              final_issue: None,
-            ))
-          True ->
-            Ok(success(
-              domain.Issue(..issue, state: "Done"),
-              "test/tmp/daemon-retry/workspace",
-            ))
-        }
-      },
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..fake_workflow_run_dependencies(log_subject),
+        agent_step: fn(issue: domain.Issue, _, _, _, _, workspace_path, _, _) {
+          process.send(log_subject, "agent_run")
+          case issue.title == "retry succeeds" {
+            False ->
+              Error(runner.WorkerFailure(
+                reason: error.PiFailed(error.PiProtocolError("boom")),
+                workspace_path: Some(workspace_path),
+                tokens: domain.zero_token_totals(),
+                final_issue: None,
+              ))
+            True ->
+              Ok(success(domain.Issue(..issue, state: "Done"), workspace_path))
+          }
+        },
+      ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 

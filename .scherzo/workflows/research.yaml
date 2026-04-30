@@ -1,0 +1,9 @@
+version: 1
+id: research
+description: Investigate an issue and report findings without broad code changes.
+max_parallel_steps: 1
+steps:
+  - id: research
+    kind: agent
+    prompt: prompts/research.md
+    workspace: main

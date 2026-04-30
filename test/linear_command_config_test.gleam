@@ -1,7 +1,7 @@
 import gleam/option.{type Option, None, Some}
 import scherzo/config
 import scherzo/error
-import scherzo/workflow
+import yay
 
 fn env(name: String) -> Option(String) {
   case name {
@@ -11,9 +11,8 @@ fn env(name: String) -> Option(String) {
 }
 
 fn definition(front: String) {
-  let assert Ok(definition) =
-    workflow.parse("---\n" <> front <> "\n---\nPrompt")
-  definition
+  let assert Ok([document]) = yay.parse_string(front)
+  yay.document_root(document)
 }
 
 fn minimal_front() -> String {
@@ -24,7 +23,7 @@ pub fn default_config_disables_linear_commands_test() {
   let assert Ok(configured) =
     config.resolve_with_env(
       definition(minimal_front()),
-      "test/tmp/WORKFLOW.md",
+      "test/tmp/scherzo.yaml",
       env,
     )
   assert configured.linear_commands.enabled == False
@@ -41,7 +40,7 @@ pub fn enabled_config_requires_authorized_linear_user_ids_test() {
     minimal_front()
     <> "linear_commands:\n  enabled: true\n  authorized_user_ids: []\n"
   let assert Error(error.InvalidConfig(_)) =
-    config.resolve_with_env(definition(front), "test/tmp/WORKFLOW.md", env)
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 }
 
 pub fn parses_custom_prefix_and_trims_authorized_user_ids_test() {
@@ -49,7 +48,7 @@ pub fn parses_custom_prefix_and_trims_authorized_user_ids_test() {
     minimal_front()
     <> "linear_commands:\n  enabled: true\n  prefix: \"!s\"\n  authorized_user_ids:\n    - \" lin_user_1 \"\n    - \"\"\n    - lin_user_2\n  poll_limit_per_issue: 7\n  max_comments_per_tick: 8\n  acknowledge_success: false\n  acknowledge_rejection: true\n"
   let assert Ok(configured) =
-    config.resolve_with_env(definition(front), "test/tmp/WORKFLOW.md", env)
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   assert configured.linear_commands.enabled == True
   assert configured.linear_commands.prefix == "!s"
   assert configured.linear_commands.authorized_user_ids
@@ -66,7 +65,7 @@ pub fn rejects_invalid_linear_command_limits_and_prefix_test() {
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(
       definition(invalid_prefix),
-      "test/tmp/WORKFLOW.md",
+      "test/tmp/scherzo.yaml",
       env,
     )
 
@@ -75,7 +74,7 @@ pub fn rejects_invalid_linear_command_limits_and_prefix_test() {
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(
       definition(invalid_poll_limit),
-      "test/tmp/WORKFLOW.md",
+      "test/tmp/scherzo.yaml",
       env,
     )
 
@@ -84,7 +83,7 @@ pub fn rejects_invalid_linear_command_limits_and_prefix_test() {
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(
       definition(invalid_tick_limit),
-      "test/tmp/WORKFLOW.md",
+      "test/tmp/scherzo.yaml",
       env,
     )
 }

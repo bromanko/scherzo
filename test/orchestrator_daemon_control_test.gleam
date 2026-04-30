@@ -15,6 +15,7 @@ import scherzo/orchestrator/daemon
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/tracker
+import scherzo/workflow_run
 import simplifile
 
 fn reset_dir(dir: String) -> Nil {
@@ -33,23 +34,46 @@ fn workflow_text_with_limits(
   max_retry_attempts: Int,
   max_sessions_per_issue: Int,
 ) -> String {
-  "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\nworkspace:\n  root: "
-  <> root
-  <> "\nhooks:\n  before_run: \"true\"\npolling:\n  interval_ms: 1000\nagent:\n  max_concurrent_agents: "
-  <> int_to_string(max_concurrent_agents)
-  <> "\n  max_retry_attempts: "
-  <> int_to_string(max_retry_attempts)
-  <> "\n  max_sessions_per_issue: "
-  <> int_to_string(max_sessions_per_issue)
-  <> "\npi:\n  command: fake\n---\nPrompt\n"
+  "version: 1
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: TEST
+  active_states: [Todo]
+  terminal_states: [Done]
+workspace:
+  root: " <> root <> "
+  hooks:
+    create: |
+      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"
+    before_step: |
+      test -d \"$SCHERZO_WORKSPACE_PATH\"
+    after_step: |
+      true
+    remove: |
+      rm -rf \"$SCHERZO_WORKSPACE_PATH\"
+    timeout_ms: 60000
+polling:
+  interval_ms: 1000
+agent:
+  max_concurrent_agents: " <> int_to_string(max_concurrent_agents) <> "
+  max_retry_attempts: " <> int_to_string(max_retry_attempts) <> "
+  max_sessions_per_issue: " <> int_to_string(max_sessions_per_issue) <> "
+pi:
+  command: fake
+routing:
+  workflow_label_prefix: \"workflow:\"
+  require_exactly_one_workflow_label: false
+  default_workflow: implementation
+  workflows:
+    implementation: workflows/implementation.yaml
+"
 }
 
 fn write_workflow(dir: String) -> #(String, String) {
   reset_dir(dir)
-  let workflow_path = dir <> "/WORKFLOW.md"
   let root = dir <> "/workspaces"
-  let assert Ok(Nil) = simplifile.write(workflow_path, workflow_text(root))
-  #(workflow_path, root)
+  #(write_workflow_files(dir, workflow_text(root)), root)
 }
 
 fn write_workflow_with_limits(
@@ -59,19 +83,41 @@ fn write_workflow_with_limits(
   max_sessions_per_issue: Int,
 ) -> #(String, String) {
   reset_dir(dir)
-  let workflow_path = dir <> "/WORKFLOW.md"
   let root = dir <> "/workspaces"
-  let assert Ok(Nil) =
-    simplifile.write(
-      workflow_path,
+  #(
+    write_workflow_files(
+      dir,
       workflow_text_with_limits(
         root,
         max_concurrent_agents,
         max_retry_attempts,
         max_sessions_per_issue,
       ),
+    ),
+    root,
+  )
+}
+
+fn write_workflow_files(dir: String, config_text: String) -> String {
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let prompt_dir = workflow_dir <> "/prompts"
+  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
+  let assert Ok(Nil) = simplifile.write(config_path, config_text)
+  let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/task.md
+    workspace: main
+",
     )
-  #(workflow_path, root)
+  config_path
 }
 
 fn issue(id: String, identifier: String, state: String) -> domain.Issue {
@@ -104,14 +150,6 @@ fn dependencies(
       )
     },
     make_handoff: fn(_, _) { handoff.disabled_client() },
-    agent_runner: fn(_, _, _, _, _, _, _, _) {
-      Error(runner.WorkerFailure(
-        reason: error.PiFailed(error.PiProtocolError("not used")),
-        workspace_path: None,
-        tokens: domain.zero_token_totals(),
-        final_issue: None,
-      ))
-    },
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, fields, _) {
       process.send(log_subject, control_log_value(event, fields))
@@ -140,7 +178,7 @@ fn in_process_dependencies(
   agent_runner: fn(
     domain.Issue,
     Option(Int),
-    domain.WorkflowDefinition,
+    String,
     domain.EffectiveConfig,
     tracker.Client,
     fn(String, runner.PiUpdate) -> Nil,
@@ -152,11 +190,51 @@ fn in_process_dependencies(
   daemon.RuntimeDependencies(
     ..dependencies_with_tracker(log_subject, tracker_client),
     make_handoff: fn(_, _) { handoff_client },
-    agent_runner: agent_runner,
+    workflow_run_dependencies: workflow_deps_from_agent(agent_runner),
     start_event_hub: fn() { Ok(hub_subject) },
     make_control_token: fn() { Ok("test-token") },
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
+  )
+}
+
+fn workflow_deps_from_agent(
+  agent_runner: fn(
+    domain.Issue,
+    Option(Int),
+    String,
+    domain.EffectiveConfig,
+    tracker.Client,
+    fn(String, runner.PiUpdate) -> Nil,
+    process.Subject(worker_command.Command),
+    fn() -> Nil,
+  ) ->
+    Result(runner.WorkerSuccess, runner.WorkerFailure),
+) -> workflow_run.Dependencies {
+  workflow_run.Dependencies(
+    ..workflow_run.default_dependencies(),
+    agent_step: fn(
+      issue,
+      _step_id,
+      prompt,
+      effective,
+      tracker_client,
+      _workspace_path,
+      emit_update,
+      command_ready,
+    ) {
+      let command_subject = process.new_subject()
+      agent_runner(
+        issue,
+        None,
+        prompt,
+        effective,
+        tracker_client,
+        fn(_, update) { emit_update(update) },
+        command_subject,
+        fn() { command_ready(command_subject) },
+      )
+    },
   )
 }
 
@@ -181,7 +259,7 @@ fn long_running_agent(
 ) -> fn(
   domain.Issue,
   Option(Int),
-  domain.WorkflowDefinition,
+  String,
   domain.EffectiveConfig,
   tracker.Client,
   fn(String, runner.PiUpdate) -> Nil,
@@ -206,7 +284,7 @@ fn failing_agent(
 ) -> fn(
   domain.Issue,
   Option(Int),
-  domain.WorkflowDefinition,
+  String,
   domain.EffectiveConfig,
   tracker.Client,
   fn(String, runner.PiUpdate) -> Nil,
@@ -230,7 +308,7 @@ fn fail_original_then_block_agent(
 ) -> fn(
   domain.Issue,
   Option(Int),
-  domain.WorkflowDefinition,
+  String,
   domain.EffectiveConfig,
   tracker.Client,
   fn(String, runner.PiUpdate) -> Nil,

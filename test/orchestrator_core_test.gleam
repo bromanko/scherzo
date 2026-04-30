@@ -466,6 +466,38 @@ pub fn worker_success_terminal_cleans_and_releases_test() {
   assert effects == [core.CleanupWorkspace("/tmp/ws"), core.ReleaseClaim("a")]
 }
 
+pub fn workflow_success_active_state_completes_without_retry_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let tokens =
+    domain.TokenTotals(
+      input: 1,
+      output: 2,
+      cache_read: 3,
+      cache_write: 4,
+      total: 10,
+    )
+  let state =
+    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
+  let core.Transition(state: next, effects:) =
+    core.apply_workflow_success(
+      state,
+      config(),
+      "a",
+      issue,
+      tokens,
+      100,
+      core.AlreadyCleaned,
+    )
+
+  assert !dict.has_key(next.running, "a")
+  assert !dict.has_key(next.claimed, "a")
+  assert dict.has_key(next.completed, "a")
+  assert next.aggregate_pi_totals.total == 10
+  assert next.aggregate_pi_totals.input == 1
+  assert !dict.has_key(next.retry_attempts, "a")
+  assert effects == [core.ReleaseClaim("a")]
+}
+
 pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let state =

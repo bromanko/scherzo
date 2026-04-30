@@ -28,7 +28,6 @@ import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace
 import simplifile
-import yay
 
 pub type StartupError {
   StartupError(code: String, message: String)
@@ -44,6 +43,7 @@ pub type Message {
   )
   WorkerUpdate(String, runner.PiUpdate)
   WorkerCommandReady(String, String, process.Subject(worker_command.Command))
+  YamlStepStarted(String, String)
   YamlStepUpdate(String, runner.PiUpdate)
   YamlStepCommandReady(String, process.Subject(worker_command.Command))
   YamlStepFinished(String)
@@ -73,18 +73,6 @@ pub type WorkerHandle {
     workspace_path: String,
     session_id: String,
     command_subject: Option(process.Subject(worker_command.Command)),
-  )
-}
-
-type YamlRunHandle {
-  YamlRunHandle(
-    issue_id: String,
-    issue: domain.Issue,
-    run_id: String,
-    pid: process.Pid,
-    monitor: process.Monitor,
-    workspace_path: String,
-    session_id: String,
   )
 }
 
@@ -206,17 +194,6 @@ pub type RuntimeDependencies {
     make_linear_commands: fn(domain.TrackerConfig) -> linear.CommandClient,
     make_triage: fn(domain.TrackerConfig, domain.LinearContractConfig) ->
       linear_triage.TriageClient,
-    agent_runner: fn(
-      domain.Issue,
-      Option(Int),
-      domain.WorkflowDefinition,
-      domain.EffectiveConfig,
-      tracker.Client,
-      fn(String, runner.PiUpdate) -> Nil,
-      process.Subject(worker_command.Command),
-      fn() -> Nil,
-    ) ->
-      Result(runner.WorkerSuccess, runner.WorkerFailure),
     workflow_run_dependencies: workflow_run.Dependencies,
     cleanup: fn(String, String, domain.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
@@ -233,13 +210,17 @@ pub type RuntimeDependencies {
   )
 }
 
+type StepCommandSubjectLookupError {
+  NoActiveStepCommandSubject
+  MultipleActiveStepCommandSubjects
+}
+
 type State {
   State(
     subject: process.Subject(Message),
     workflow_path: Option(String),
     chosen_path: String,
     last_contents: String,
-    definition: domain.WorkflowDefinition,
     bundle: runtime_bundle.RuntimeBundle,
     reload_state: config.ReloadState,
     effective: domain.EffectiveConfig,
@@ -256,12 +237,12 @@ type State {
     retry_refreshes_in_flight: Dict(String, Int),
     workers: Dict(String, WorkerHandle),
     worker_monitors: Dict(process.Monitor, String),
-    yaml_runs: Dict(String, YamlRunHandle),
-    yaml_run_monitors: Dict(process.Monitor, String),
     issue_sessions: Dict(String, String),
     step_command_subjects: Dict(String, process.Subject(worker_command.Command)),
     step_command_monitors: Dict(process.Monitor, String),
     step_command_subject_monitors: Dict(String, process.Monitor),
+    yaml_step_runs: Dict(String, String),
+    stopped_yaml_runs: Dict(String, String),
     next_session_sequence: Int,
     pending_claims: Dict(String, PendingClaim),
     side_effects_in_flight: Int,
@@ -287,7 +268,6 @@ pub fn default_dependencies() -> RuntimeDependencies {
     },
     make_linear_commands: linear.real_command_client,
     make_triage: linear_triage.real_triage_client,
-    agent_runner: runner.run_attempt_with_command_ready,
     workflow_run_dependencies: workflow_run.default_dependencies(),
     cleanup: workspace.cleanup_stored_path,
     logger: fn(level, event, fields, secrets) {
@@ -417,16 +397,6 @@ pub fn apply_operator_command(
   process.receive(reply, within: timeout_ms)
 }
 
-fn workflow_definition_from_bundle(
-  bundle: runtime_bundle.RuntimeBundle,
-) -> domain.WorkflowDefinition {
-  case bundle.legacy_workflow {
-    Some(definition) -> definition
-    None ->
-      domain.WorkflowDefinition(config: yay.NodeMap([]), prompt_template: "")
-  }
-}
-
 pub fn start(
   workflow_path: Option(String),
   dependencies: RuntimeDependencies,
@@ -437,13 +407,7 @@ pub fn start(
   )
   let chosen_path = bundle.config_path
   let contents = bundle.config_contents
-  let definition = workflow_definition_from_bundle(bundle)
   let effective = bundle.effective
-  use _ <- try_startup(case bundle.mode {
-    runtime_bundle.LegacyMarkdown ->
-      config.validate_dispatch(effective) |> map_config_error
-    runtime_bundle.OrchestratorYaml -> Ok(Nil)
-  })
   let tracker_client = dependencies.make_tracker(effective.tracker)
   let handoff_client =
     dependencies.make_handoff(effective.tracker, effective.handoff)
@@ -482,7 +446,6 @@ pub fn start(
               workflow_path: workflow_path,
               chosen_path: chosen_path,
               last_contents: contents,
-              definition: definition,
               bundle: bundle,
               reload_state: reload_state,
               effective: effective,
@@ -499,12 +462,12 @@ pub fn start(
               retry_refreshes_in_flight: dict.new(),
               workers: dict.new(),
               worker_monitors: dict.new(),
-              yaml_runs: dict.new(),
-              yaml_run_monitors: dict.new(),
               issue_sessions: dict.new(),
               step_command_subjects: dict.new(),
               step_command_monitors: dict.new(),
               step_command_subject_monitors: dict.new(),
+              yaml_step_runs: dict.new(),
+              stopped_yaml_runs: dict.new(),
               next_session_sequence: 1,
               pending_claims: dict.new(),
               side_effects_in_flight: 0,
@@ -580,8 +543,24 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
         run_id,
         command_subject,
       ))
+    YamlStepStarted(session_id, run_id) ->
+      actor.continue(handle_yaml_step_started(state, session_id, run_id))
     YamlStepUpdate(session_id, update) -> {
       publish_worker_update(state, session_id, update)
+      case update.event {
+        "message_update" -> Nil
+        _ -> {
+          let message = case update.message {
+            Some(message) -> log.truncate(message, 200)
+            None -> ""
+          }
+          log_state(state, "info", "pi_event", [
+            #("session_id", session_id),
+            #("event_name", update.event),
+            #("message", message),
+          ])
+        }
+      }
       actor.continue(state)
     }
     YamlStepCommandReady(session_id, command_subject) ->
@@ -591,7 +570,7 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
         command_subject,
       ))
     YamlStepFinished(session_id) ->
-      actor.continue(clear_yaml_step_command_route(state, session_id))
+      actor.continue(handle_yaml_step_finished(state, session_id))
     AbortWorkerCommandTimedOut(operator_command, session_id, reply) -> {
       let #(state, result) =
         stop_session_for_operator(
@@ -698,6 +677,108 @@ fn clear_yaml_step_command_route(state: State, session_id: String) -> State {
         ),
       )
     }
+  }
+}
+
+fn clear_yaml_step_command_routes_for_run(state: State, run_id: String) -> State {
+  state.step_command_subjects
+  |> dict.keys
+  |> list.filter(fn(session_id) {
+    string.starts_with(session_id, run_id <> "-")
+  })
+  |> clear_yaml_step_command_routes(state)
+}
+
+fn clear_yaml_step_command_routes(
+  session_ids: List(String),
+  state: State,
+) -> State {
+  case session_ids {
+    [] -> state
+    [session_id, ..rest] ->
+      clear_yaml_step_command_routes(
+        rest,
+        clear_yaml_step_command_route(state, session_id),
+      )
+  }
+}
+
+fn handle_yaml_step_started(
+  state: State,
+  session_id: String,
+  run_id: String,
+) -> State {
+  case dict.get(state.stopped_yaml_runs, run_id) {
+    Ok(reason) -> {
+      hub.update_status(state.event_hub, session_id, session_event.Stopping)
+      publish_lifecycle(state, session_id, "operator_command", Some(reason))
+      publish_lifecycle(state, session_id, "worker_exited", Some(reason))
+      hub.finish_session(state.event_hub, session_id, reason)
+      state
+    }
+    Error(_) ->
+      case worker_for_run(state, run_id) {
+        Ok(_) ->
+          State(
+            ..state,
+            yaml_step_runs: dict.insert(
+              state.yaml_step_runs,
+              session_id,
+              run_id,
+            ),
+          )
+        Error(_) -> state
+      }
+  }
+}
+
+fn handle_yaml_step_finished(state: State, session_id: String) -> State {
+  let state = clear_yaml_step_command_route(state, session_id)
+  State(..state, yaml_step_runs: dict.delete(state.yaml_step_runs, session_id))
+}
+
+fn finish_yaml_step_sessions_for_run(
+  state: State,
+  run_id: String,
+  reason: String,
+) -> State {
+  let session_ids = active_yaml_step_sessions_for_run(state, run_id)
+  list.each(session_ids, fn(session_id) {
+    hub.update_status(state.event_hub, session_id, session_event.Stopping)
+    publish_lifecycle(state, session_id, "operator_command", Some(reason))
+    publish_lifecycle(state, session_id, "worker_exited", Some(reason))
+    hub.finish_session(state.event_hub, session_id, reason)
+  })
+  delete_yaml_step_sessions(state, session_ids)
+}
+
+fn active_yaml_step_sessions_for_run(
+  state: State,
+  run_id: String,
+) -> List(String) {
+  state.yaml_step_runs
+  |> dict.to_list
+  |> list.filter(fn(entry) {
+    let #(_, step_run_id) = entry
+    step_run_id == run_id
+  })
+  |> list.map(fn(entry) {
+    let #(session_id, _) = entry
+    session_id
+  })
+}
+
+fn delete_yaml_step_sessions(state: State, session_ids: List(String)) -> State {
+  case session_ids {
+    [] -> state
+    [session_id, ..rest] ->
+      delete_yaml_step_sessions(
+        State(
+          ..state,
+          yaml_step_runs: dict.delete(state.yaml_step_runs, session_id),
+        ),
+        rest,
+      )
   }
 }
 
@@ -1078,34 +1159,44 @@ fn route_worker_command_sync(
 ) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
     Error(Nil) ->
-      case yaml_run_for_session(state, session_id) {
-        Ok(_) -> #(
-          state,
-          command.not_allowed(
-            operator_command,
-            "worker_command_subject_unavailable",
-            Some("session worker does not accept operator commands"),
-          ),
-        )
-        Error(Nil) ->
-          route_step_command_sync(
-            state,
-            operator_command,
-            session_id,
-            timeout_ms,
-            send,
-          )
-      }
+      route_step_command_sync(
+        state,
+        operator_command,
+        session_id,
+        timeout_ms,
+        send,
+      )
     Ok(handle) ->
       case handle.command_subject {
-        None -> #(
-          state,
-          command.not_allowed(
-            operator_command,
-            "worker_command_subject_unavailable",
-            Some("session worker does not accept operator commands"),
-          ),
-        )
+        None ->
+          case step_command_subject_for_run(state, handle.run_id) {
+            Error(NoActiveStepCommandSubject) -> #(
+              state,
+              command.not_allowed(
+                operator_command,
+                "worker_command_subject_unavailable",
+                Some("session worker does not accept operator commands"),
+              ),
+            )
+            Error(MultipleActiveStepCommandSubjects) -> #(
+              state,
+              command.not_allowed(
+                operator_command,
+                "multiple_step_command_subjects",
+                Some(
+                  "multiple active step sessions accept operator commands; target a step session",
+                ),
+              ),
+            )
+            Ok(subject) ->
+              send_worker_command_sync(
+                state,
+                operator_command,
+                timeout_ms,
+                send,
+                subject,
+              )
+          }
         Some(subject) ->
           send_worker_command_sync(
             state,
@@ -1142,6 +1233,35 @@ fn route_step_command_sync(
         send,
         subject,
       )
+  }
+}
+
+fn step_command_subject_for_run(
+  state: State,
+  run_id: String,
+) -> Result(
+  process.Subject(worker_command.Command),
+  StepCommandSubjectLookupError,
+) {
+  state.step_command_subjects
+  |> dict.to_list
+  |> list.filter(fn(entry) {
+    let #(session_id, _) = entry
+    string.starts_with(session_id, run_id <> "-")
+  })
+  |> single_step_command_subject
+}
+
+fn single_step_command_subject(
+  entries: List(#(String, process.Subject(worker_command.Command))),
+) -> Result(
+  process.Subject(worker_command.Command),
+  StepCommandSubjectLookupError,
+) {
+  case entries {
+    [] -> Error(NoActiveStepCommandSubject)
+    [#(_, subject)] -> Ok(subject)
+    [_, _, ..] -> Error(MultipleActiveStepCommandSubjects)
   }
 }
 
@@ -1232,22 +1352,12 @@ fn abort_session_for_operator_sync(
 ) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
     Error(Nil) ->
-      case yaml_run_for_session(state, session_id) {
-        Ok(handle) ->
-          stop_yaml_session_for_operator(
-            state,
-            operator_command,
-            handle,
-            "operator_abort",
-          )
-        Error(Nil) ->
-          abort_step_session_for_operator_sync(
-            state,
-            operator_command,
-            session_id,
-            timeout_ms,
-          )
-      }
+      abort_step_session_for_operator_sync(
+        state,
+        operator_command,
+        session_id,
+        timeout_ms,
+      )
     Ok(handle) ->
       case handle.command_subject {
         None ->
@@ -1327,20 +1437,10 @@ fn stop_session_for_operator(
   reason: String,
 ) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
-    Error(Nil) ->
-      case yaml_run_for_session(state, session_id) {
-        Error(Nil) -> #(
-          state,
-          command.not_found(operator_command, Some("session not found")),
-        )
-        Ok(handle) ->
-          stop_yaml_session_for_operator(
-            state,
-            operator_command,
-            handle,
-            reason,
-          )
-      }
+    Error(Nil) -> #(
+      state,
+      command.not_found(operator_command, Some("session not found")),
+    )
     Ok(handle) -> {
       process.demonitor_process(handle.monitor)
       hub.update_status(
@@ -1356,7 +1456,19 @@ fn stop_session_for_operator(
       )
       publish_lifecycle(state, handle.session_id, "worker_exited", Some(reason))
       hub.finish_session(state.event_hub, handle.session_id, reason)
+      let state =
+        State(
+          ..state,
+          stopped_yaml_runs: dict.insert(
+            state.stopped_yaml_runs,
+            handle.run_id,
+            reason,
+          ),
+        )
       process.kill(handle.pid)
+      let state =
+        finish_yaml_step_sessions_for_run(state, handle.run_id, reason)
+      let state = clear_yaml_step_command_routes_for_run(state, handle.run_id)
       let state =
         State(
           ..state,
@@ -1372,7 +1484,6 @@ fn stop_session_for_operator(
 
 fn has_active_run(state: State, issue_id: String) -> Bool {
   dict.has_key(state.workers, issue_id)
-  || dict.has_key(state.yaml_runs, issue_id)
 }
 
 fn active_run_count(state: State) -> Int {
@@ -1383,7 +1494,6 @@ fn active_run_issue_ids(state: State) -> List(String) {
   []
   |> append_unique_list(dict.keys(state.runtime.running))
   |> append_unique_list(dict.keys(state.workers))
-  |> append_unique_list(dict.keys(state.yaml_runs))
 }
 
 fn active_run_issues(state: State) -> List(domain.Issue) {
@@ -1391,14 +1501,11 @@ fn active_run_issues(state: State) -> List(domain.Issue) {
     state.runtime.running
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
-  let legacy =
+  let active_workers =
     state.workers |> dict.values |> list.map(fn(handle) { handle.issue })
-  let yaml =
-    state.yaml_runs |> dict.values |> list.map(fn(handle) { handle.issue })
   []
   |> append_unique_issues(runtime)
-  |> append_unique_issues(legacy)
-  |> append_unique_issues(yaml)
+  |> append_unique_issues(active_workers)
 }
 
 fn append_unique_issues(
@@ -1411,29 +1518,6 @@ fn append_unique_issues(
       False -> list.append(acc, [issue])
     }
   })
-}
-
-fn stop_yaml_session_for_operator(
-  state: State,
-  operator_command: command.OperatorCommand,
-  handle: YamlRunHandle,
-  reason: String,
-) -> #(State, command.CommandResult) {
-  process.demonitor_process(handle.monitor)
-  hub.update_status(state.event_hub, handle.session_id, session_event.Stopping)
-  publish_lifecycle(state, handle.session_id, "operator_command", Some(reason))
-  publish_lifecycle(state, handle.session_id, "worker_exited", Some(reason))
-  hub.finish_session(state.event_hub, handle.session_id, reason)
-  process.kill(handle.pid)
-  let state =
-    State(
-      ..state,
-      yaml_runs: dict.delete(state.yaml_runs, handle.issue_id),
-      yaml_run_monitors: dict.delete(state.yaml_run_monitors, handle.monitor),
-      issue_sessions: dict.delete(state.issue_sessions, handle.issue_id),
-    )
-    |> park_issue_state(handle.issue, reason)
-  #(state, command.applied(operator_command, Some(reason)))
 }
 
 fn issue_is_running_claimed_or_pending(state: State, issue_id: String) -> Bool {
@@ -1585,24 +1669,14 @@ fn worker_for_session(
   |> first_worker
 }
 
-fn first_worker(handles: List(WorkerHandle)) -> Result(WorkerHandle, Nil) {
-  case handles {
-    [handle, ..] -> Ok(handle)
-    [] -> Error(Nil)
-  }
-}
-
-fn yaml_run_for_session(
-  state: State,
-  session_id: String,
-) -> Result(YamlRunHandle, Nil) {
-  state.yaml_runs
+fn worker_for_run(state: State, run_id: String) -> Result(WorkerHandle, Nil) {
+  state.workers
   |> dict.values
-  |> list.filter(fn(handle) { handle.session_id == session_id })
-  |> first_yaml_run
+  |> list.filter(fn(handle) { handle.run_id == run_id })
+  |> first_worker
 }
 
-fn first_yaml_run(handles: List(YamlRunHandle)) -> Result(YamlRunHandle, Nil) {
+fn first_worker(handles: List(WorkerHandle)) -> Result(WorkerHandle, Nil) {
   case handles {
     [handle, ..] -> Ok(handle)
     [] -> Error(Nil)
@@ -1708,35 +1782,8 @@ fn apply_new_contents(state: State, contents: String) -> State {
     }
     Ok(bundle) -> {
       let effective = bundle.effective
-      case validate_reloaded_bundle(bundle, effective) {
-        Error(err) -> {
-          let state =
-            State(
-              ..state,
-              last_contents: contents,
-              reload_state: config.ReloadState(
-                last_known_good: Some(state.effective),
-                current_status: config.CurrentInvalid(error.config_code(err)),
-              ),
-            )
-          log_state(state, "warn", "workflow_reload_failed", [
-            #("error", error.config_code(err)),
-          ])
-          state
-        }
-        Ok(Nil) -> apply_reloaded_bundle(state, contents, bundle, effective)
-      }
+      apply_reloaded_bundle(state, contents, bundle, effective)
     }
-  }
-}
-
-fn validate_reloaded_bundle(
-  bundle: runtime_bundle.RuntimeBundle,
-  effective: domain.EffectiveConfig,
-) -> Result(Nil, error.ConfigError) {
-  case bundle.mode {
-    runtime_bundle.LegacyMarkdown -> config.validate_dispatch(effective)
-    runtime_bundle.OrchestratorYaml -> Ok(Nil)
   }
 }
 
@@ -1757,7 +1804,6 @@ fn apply_reloaded_bundle(
     State(
       ..state,
       last_contents: contents,
-      definition: workflow_definition_from_bundle(bundle),
       bundle: bundle,
       effective: effective,
       tracker_client: state.dependencies.make_tracker(effective.tracker),
@@ -2519,20 +2565,16 @@ fn dispatch_issue_with_continuation(
 }
 
 fn can_route_issue_for_dispatch(state: State, issue: domain.Issue) -> Bool {
-  case state.bundle.mode {
-    runtime_bundle.LegacyMarkdown -> True
-    runtime_bundle.OrchestratorYaml ->
-      case runtime_bundle.select_workflow(state.bundle, issue) {
-        Ok(_) -> True
-        Error(runtime_bundle.BundleError(code, message)) -> {
-          log_state(state, "warn", "workflow_route_failed", [
-            #("issue_id", issue.id),
-            #("error", code),
-            #("message", message),
-          ])
-          False
-        }
-      }
+  case runtime_bundle.select_workflow(state.bundle, issue) {
+    Ok(_) -> True
+    Error(runtime_bundle.BundleError(code, message)) -> {
+      log_state(state, "warn", "workflow_route_failed", [
+        #("issue_id", issue.id),
+        #("error", code),
+        #("message", message),
+      ])
+      False
+    }
   }
 }
 
@@ -2588,100 +2630,50 @@ fn spawn_worker(
   let runtime = core.apply_worker_start(state.runtime, issue, workspace_path)
   let subject = state.subject
   let dependencies = state.dependencies
-  let definition = state.definition
-  let effective = state.effective
   let tracker_client = state.tracker_client
   let bundle = state.bundle
   let secrets = state.secrets
+  let event_hub = state.event_hub
   let pid =
     process.spawn_unlinked(fn() {
-      let result = case bundle.mode {
-        runtime_bundle.LegacyMarkdown -> {
-          let command_subject = process.new_subject()
-          dependencies.agent_runner(
-            issue,
-            None,
-            definition,
-            effective,
-            tracker_client,
-            fn(_, update) {
-              process.send(subject, WorkerUpdate(issue.id, update))
-            },
-            command_subject,
-            fn() {
-              process.send(
-                subject,
-                WorkerCommandReady(issue.id, run_id, command_subject),
-              )
-            },
-          )
-        }
-        runtime_bundle.OrchestratorYaml ->
-          run_yaml_worker(
-            issue,
-            run_id,
-            bundle,
-            tracker_client,
-            secrets,
-            dependencies.workflow_run_dependencies,
-            subject,
-            state.event_hub,
-            dependencies.now_ms,
-          )
-      }
+      let result =
+        run_workflow_worker(
+          issue,
+          run_id,
+          bundle,
+          tracker_client,
+          secrets,
+          dependencies.workflow_run_dependencies,
+          subject,
+          event_hub,
+          dependencies.now_ms,
+        )
       process.send(subject, WorkerFinished(issue.id, run_id, result))
     })
   let monitor = process.monitor(pid)
   publish_lifecycle(state, session_id, "worker_started", None)
   hub.update_status(state.event_hub, session_id, session_event.Running)
-  case bundle.mode {
-    runtime_bundle.LegacyMarkdown -> {
-      let handle =
-        WorkerHandle(
-          issue_id: issue.id,
-          issue: issue,
-          run_id: run_id,
-          pid: pid,
-          monitor: monitor,
-          workspace_path: workspace_path,
-          session_id: session_id,
-          command_subject: None,
-        )
-      State(
-        ..state,
-        runtime: runtime,
-        workers: dict.insert(state.workers, issue.id, handle),
-        worker_monitors: dict.insert(state.worker_monitors, monitor, issue.id),
-        issue_sessions: dict.insert(state.issue_sessions, issue.id, session_id),
-      )
-    }
-    runtime_bundle.OrchestratorYaml -> {
-      let handle =
-        YamlRunHandle(
-          issue_id: issue.id,
-          issue: issue,
-          run_id: run_id,
-          pid: pid,
-          monitor: monitor,
-          workspace_path: workspace_path,
-          session_id: session_id,
-        )
-      State(
-        ..state,
-        runtime: runtime,
-        yaml_runs: dict.insert(state.yaml_runs, issue.id, handle),
-        yaml_run_monitors: dict.insert(
-          state.yaml_run_monitors,
-          monitor,
-          issue.id,
-        ),
-        issue_sessions: dict.insert(state.issue_sessions, issue.id, session_id),
-      )
-    }
-  }
+  let handle =
+    WorkerHandle(
+      issue_id: issue.id,
+      issue: issue,
+      run_id: run_id,
+      pid: pid,
+      monitor: monitor,
+      workspace_path: workspace_path,
+      session_id: session_id,
+      command_subject: None,
+    )
+  State(
+    ..state,
+    runtime: runtime,
+    workers: dict.insert(state.workers, issue.id, handle),
+    worker_monitors: dict.insert(state.worker_monitors, monitor, issue.id),
+    issue_sessions: dict.insert(state.issue_sessions, issue.id, session_id),
+  )
 }
 
-fn run_yaml_worker(
+fn run_workflow_worker(
   issue: domain.Issue,
   run_id: String,
   bundle: runtime_bundle.RuntimeBundle,
@@ -2692,36 +2684,31 @@ fn run_yaml_worker(
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
 ) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
-  case bundle.orchestrator {
-    None ->
-      Error(yaml_worker_failure("missing_orchestrator_config", None, issue))
-    Some(orchestrator) ->
-      case runtime_bundle.select_workflow(bundle, issue) {
-        Error(runtime_bundle.BundleError(code, _)) ->
-          Error(yaml_worker_failure(code, None, issue))
-        Ok(#(_, dag)) ->
-          case
-            workflow_run.execute(
-              issue,
-              dag,
-              orchestrator,
-              tracker_client,
-              secrets,
-              run_id,
-              yaml_workflow_dependencies(
-                workflow_dependencies,
-                issue,
-                run_id,
-                daemon_subject,
-                event_hub,
-                now_ms,
-              ),
-            )
-          {
-            Ok(success) -> Ok(success.worker_success)
-            Error(failure) ->
-              Error(yaml_worker_failure(failure.reason, failure.run_root, issue))
-          }
+  case runtime_bundle.select_workflow(bundle, issue) {
+    Error(runtime_bundle.BundleError(code, _)) ->
+      Error(yaml_worker_failure(code, None, issue))
+    Ok(#(_, dag)) ->
+      case
+        workflow_run.execute(
+          issue,
+          dag,
+          bundle.orchestrator,
+          tracker_client,
+          secrets,
+          run_id,
+          yaml_workflow_dependencies(
+            workflow_dependencies,
+            issue,
+            run_id,
+            daemon_subject,
+            event_hub,
+            now_ms,
+          ),
+        )
+      {
+        Ok(success) -> Ok(success.worker_success)
+        Error(failure) ->
+          Error(yaml_worker_failure(failure.reason, failure.run_root, issue))
       }
   }
 }
@@ -2754,6 +2741,7 @@ fn yaml_workflow_dependencies(
         timeout_ms,
         secrets,
         limits,
+        daemon_subject,
         event_hub,
         now_ms,
       )
@@ -2842,6 +2830,7 @@ fn run_yaml_command_step(
   timeout_ms: Int,
   secrets: List(String),
   limits: domain.ArtifactLimits,
+  daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
 ) -> step_artifact.StepArtifact {
@@ -2854,6 +2843,7 @@ fn run_yaml_command_step(
     step_id,
     now_ms,
   )
+  process.send(daemon_subject, YamlStepStarted(session_id, run_id))
   let artifact =
     base.command_step(
       step_id,
@@ -2868,6 +2858,7 @@ fn run_yaml_command_step(
     False -> "failed"
   }
   hub.finish_session(event_hub, session_id, reason)
+  process.send(daemon_subject, YamlStepFinished(session_id))
   artifact
 }
 
@@ -2922,6 +2913,7 @@ fn run_yaml_agent_step(
       raw_json: None,
     ),
   )
+  process.send(daemon_subject, YamlStepStarted(session_id, run_id))
   let result =
     base.agent_step(
       issue,
@@ -3027,7 +3019,15 @@ fn handle_worker_finished(
   result: Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> State {
   case dict.get(state.workers, issue_id) {
-    Error(_) -> handle_yaml_workflow_finished(state, issue_id, run_id, result)
+    Error(_) -> {
+      log_state(state, "warn", "worker_finished_stale", [
+        #("issue_id", issue_id),
+      ])
+      State(
+        ..state,
+        issue_sessions: dict.delete(state.issue_sessions, issue_id),
+      )
+    }
     Ok(handle) ->
       case handle.run_id == run_id {
         False -> {
@@ -3058,67 +3058,6 @@ fn handle_worker_finished(
   }
 }
 
-fn handle_yaml_workflow_finished(
-  state: State,
-  issue_id: String,
-  run_id: String,
-  result: Result(runner.WorkerSuccess, runner.WorkerFailure),
-) -> State {
-  case dict.get(state.yaml_runs, issue_id) {
-    Error(_) -> {
-      log_state(state, "warn", "worker_finished_stale", [
-        #("issue_id", issue_id),
-      ])
-      State(
-        ..state,
-        issue_sessions: dict.delete(state.issue_sessions, issue_id),
-      )
-    }
-    Ok(handle) ->
-      case handle.run_id == run_id {
-        False -> {
-          log_state(state, "warn", "worker_finished_stale", [
-            #("issue_id", issue_id),
-            #("run_id", run_id),
-          ])
-          state
-        }
-        True -> {
-          process.demonitor_process(handle.monitor)
-          let state =
-            State(
-              ..state,
-              yaml_runs: dict.delete(state.yaml_runs, issue_id),
-              yaml_run_monitors: dict.delete(
-                state.yaml_run_monitors,
-                handle.monitor,
-              ),
-              issue_sessions: dict.delete(state.issue_sessions, issue_id),
-            )
-          let worker_handle = yaml_run_to_worker_handle(handle)
-          case result {
-            Ok(success) -> finish_worker_success(state, worker_handle, success)
-            Error(failure) ->
-              finish_worker_failure(state, worker_handle, failure)
-          }
-        }
-      }
-  }
-}
-
-fn yaml_run_to_worker_handle(handle: YamlRunHandle) -> WorkerHandle {
-  WorkerHandle(
-    issue_id: handle.issue_id,
-    issue: handle.issue,
-    run_id: handle.run_id,
-    pid: handle.pid,
-    monitor: handle.monitor,
-    workspace_path: handle.workspace_path,
-    session_id: handle.session_id,
-    command_subject: None,
-  )
-}
-
 fn finish_worker_success(
   state: State,
   handle: WorkerHandle,
@@ -3136,66 +3075,29 @@ fn finish_worker_success(
     Some(issue) -> issue
     None -> handle.issue
   }
-  case state.bundle.mode {
-    runtime_bundle.LegacyMarkdown -> {
-      let transition =
-        core.apply_worker_success_with_workspace_path(
-          state.runtime,
-          state.effective,
-          handle.issue_id,
-          final_issue,
-          success.workspace_path,
-          success.tokens,
-          state.dependencies.now_ms(),
-        )
-      let state = State(..state, runtime: transition.state)
-      let state =
-        enqueue_side_effect(
-          state,
-          ReportSuccess(
-            issue_id: handle.issue_id,
-            issue: final_issue,
-            success: success,
-            run_id: handle.run_id,
-            client: state.handoff_client,
-          ),
-        )
-      apply_effects(state, transition.effects)
-    }
-    runtime_bundle.OrchestratorYaml ->
-      finish_yaml_worker_success(state, handle, final_issue, success)
-  }
-}
-
-fn finish_yaml_worker_success(
-  state: State,
-  handle: WorkerHandle,
-  final_issue: domain.Issue,
-  success: runner.WorkerSuccess,
-) -> State {
-  let runtime =
-    domain.RuntimeState(
-      ..state.runtime,
-      running: dict.delete(state.runtime.running, handle.issue_id),
-      claimed: dict.delete(state.runtime.claimed, handle.issue_id),
-      completed: dict.insert(
-        state.runtime.completed,
-        handle.issue_id,
-        final_issue,
-      ),
-      aggregate_pi_totals: add_tokens(
-        state.runtime.aggregate_pi_totals,
-        success.tokens,
+  let transition =
+    core.apply_workflow_success(
+      state.runtime,
+      state.effective,
+      handle.issue_id,
+      final_issue,
+      success.tokens,
+      state.dependencies.now_ms(),
+      core.AlreadyCleaned,
+    )
+  let state = State(..state, runtime: transition.state)
+  let state =
+    enqueue_side_effect(
+      state,
+      ReportSuccess(
+        issue_id: handle.issue_id,
+        issue: final_issue,
+        success: success,
+        run_id: handle.run_id,
+        client: state.handoff_client,
       ),
     )
-  State(..state, runtime: runtime)
-  |> enqueue_side_effect(ReportSuccess(
-    issue_id: handle.issue_id,
-    issue: final_issue,
-    success: success,
-    run_id: handle.run_id,
-    client: state.handoff_client,
-  ))
+  apply_effects(state, transition.effects)
 }
 
 fn finish_worker_failure(
@@ -3302,51 +3204,11 @@ fn finish_operator_worker_exit(
   |> park_issue_state(final_issue, reason)
 }
 
-fn handle_yaml_workflow_down(state: State, monitor: process.Monitor) -> State {
-  case dict.get(state.yaml_run_monitors, monitor) {
-    Error(_) -> handle_step_command_down(state, monitor)
-    Ok(issue_id) ->
-      case dict.get(state.yaml_runs, issue_id) {
-        Error(_) -> {
-          log_state(state, "warn", "worker_down_stale", [])
-          State(
-            ..state,
-            yaml_run_monitors: dict.delete(state.yaml_run_monitors, monitor),
-            issue_sessions: dict.delete(state.issue_sessions, issue_id),
-          )
-        }
-        Ok(handle) -> {
-          let state =
-            State(
-              ..state,
-              yaml_runs: dict.delete(state.yaml_runs, issue_id),
-              yaml_run_monitors: dict.delete(state.yaml_run_monitors, monitor),
-              issue_sessions: dict.delete(state.issue_sessions, issue_id),
-            )
-          log_state(state, "warn", "worker_down", [#("issue_id", issue_id)])
-          publish_lifecycle(state, handle.session_id, "worker_down", None)
-          let failure =
-            runner.WorkerFailure(
-              reason: error.PiFailed(error.PiProtocolError("worker_down")),
-              workspace_path: Some(handle.workspace_path),
-              tokens: domain.zero_token_totals(),
-              final_issue: None,
-            )
-          finish_worker_failure(
-            state,
-            yaml_run_to_worker_handle(handle),
-            failure,
-          )
-        }
-      }
-  }
-}
-
 fn handle_worker_down(state: State, down: process.Down) -> State {
   case down {
     process.ProcessDown(monitor, _, _) ->
       case dict.get(state.worker_monitors, monitor) {
-        Error(_) -> handle_yaml_workflow_down(state, monitor)
+        Error(_) -> handle_step_command_down(state, monitor)
         Ok(issue_id) ->
           case dict.get(state.workers, issue_id) {
             Error(_) -> {
@@ -3740,48 +3602,6 @@ fn apply_effects(state: State, effects: List(core.Effect)) -> State {
   }
 }
 
-fn stop_yaml_run_for_effect(
-  state: State,
-  issue_id: String,
-  reason: String,
-) -> State {
-  case dict.get(state.yaml_runs, issue_id) {
-    Error(_) -> state
-    Ok(handle) -> {
-      hub.update_status(
-        state.event_hub,
-        handle.session_id,
-        session_event.Stopping,
-      )
-      publish_lifecycle(
-        state,
-        handle.session_id,
-        "stop_requested",
-        Some(reason),
-      )
-      process.demonitor_process(handle.monitor)
-      process.kill(handle.pid)
-      publish_lifecycle(
-        state,
-        handle.session_id,
-        "worker_exited",
-        Some("stopped"),
-      )
-      hub.finish_session(state.event_hub, handle.session_id, "stopped")
-      log_state(state, "warn", "worker_stop_requested", [
-        #("issue_id", issue_id),
-        #("reason", reason),
-      ])
-      State(
-        ..state,
-        yaml_runs: dict.delete(state.yaml_runs, issue_id),
-        yaml_run_monitors: dict.delete(state.yaml_run_monitors, handle.monitor),
-        issue_sessions: dict.delete(state.issue_sessions, issue_id),
-      )
-    }
-  }
-}
-
 fn apply_effect(state: State, effect: core.Effect) -> State {
   case effect {
     core.Dispatch(issue) -> dispatch_issue(state, issue)
@@ -3832,7 +3652,7 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
     }
     core.StopWorker(issue_id, reason) -> {
       case dict.get(state.workers, issue_id) {
-        Error(_) -> stop_yaml_run_for_effect(state, issue_id, reason)
+        Error(_) -> state
         Ok(handle) -> {
           hub.update_status(
             state.event_hub,
@@ -4067,14 +3887,10 @@ fn shutdown_state(state: State) -> State {
   dict.each(state.worker_monitors, fn(monitor, _) {
     process.demonitor_process(monitor)
   })
-  dict.each(state.yaml_run_monitors, fn(monitor, _) {
-    process.demonitor_process(monitor)
-  })
   dict.each(state.step_command_subject_monitors, fn(_, monitor) {
     process.demonitor_process(monitor)
   })
   dict.each(state.workers, fn(_, handle) { stop_worker(handle) })
-  dict.each(state.yaml_runs, fn(_, handle) { process.kill(handle.pid) })
   State(
     ..state,
     poll_in_flight: None,
@@ -4083,12 +3899,12 @@ fn shutdown_state(state: State) -> State {
     retry_refreshes_in_flight: dict.new(),
     workers: dict.new(),
     worker_monitors: dict.new(),
-    yaml_runs: dict.new(),
-    yaml_run_monitors: dict.new(),
     issue_sessions: dict.new(),
     step_command_subjects: dict.new(),
     step_command_monitors: dict.new(),
     step_command_subject_monitors: dict.new(),
+    yaml_step_runs: dict.new(),
+    stopped_yaml_runs: dict.new(),
     pending_claims: dict.new(),
     side_effects_in_flight: 0,
     side_effect_queue: [],
@@ -4130,15 +3946,6 @@ fn map_bundle_error(
     Ok(value) -> Ok(value)
     Error(runtime_bundle.BundleError(code, message)) ->
       Error(StartupError(code, message))
-  }
-}
-
-fn map_config_error(
-  result: Result(a, error.ConfigError),
-) -> Result(a, StartupError) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(StartupError(error.config_code(err), "config error"))
   }
 }
 

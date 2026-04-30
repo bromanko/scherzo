@@ -1,9 +1,6 @@
 import gleam/erlang/process
-import gleam/option.{None, Some}
+import gleam/option.{Some}
 import gleam/string
-import scherzo/agent/runner
-import scherzo/domain
-import scherzo/error
 import scherzo/handoff
 import scherzo/instance_lock
 import scherzo/lifecycle
@@ -24,16 +21,63 @@ fn reset_dir(dir: String) -> Nil {
 }
 
 fn workflow_text(root: String) -> String {
-  "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\nworkspace:\n  root: "
-  <> root
-  <> "\nhooks:\n  before_run: \"true\"\npolling:\n  interval_ms: 1000\nagent:\n  max_concurrent_agents: 0\n  max_retry_attempts: 1\n  max_sessions_per_issue: 1\npi:\n  command: fake\n---\nPrompt\n"
+  "version: 1
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: TEST
+  active_states: [Todo]
+  terminal_states: [Done]
+workspace:
+  root: " <> root <> "
+  hooks:
+    create: |
+      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"
+    before_step: |
+      test -d \"$SCHERZO_WORKSPACE_PATH\"
+    after_step: |
+      true
+    remove: |
+      rm -rf \"$SCHERZO_WORKSPACE_PATH\"
+    timeout_ms: 60000
+polling:
+  interval_ms: 1000
+agent:
+  max_concurrent_agents: 0
+  max_retry_attempts: 1
+  max_sessions_per_issue: 1
+pi:
+  command: fake
+routing:
+  workflow_label_prefix: \"workflow:\"
+  require_exactly_one_workflow_label: false
+  default_workflow: implementation
+  workflows:
+    implementation: workflows/implementation.yaml
+"
 }
 
 fn write_workflow(dir: String) -> #(String, String) {
   reset_dir(dir)
-  let workflow_path = dir <> "/WORKFLOW.md"
+  let workflow_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let prompt_dir = workflow_dir <> "/prompts"
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
   let assert Ok(Nil) = simplifile.write(workflow_path, workflow_text(root))
+  let assert Ok(Nil) = simplifile.write(prompt_dir <> "/task.md", "Prompt")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/task.md
+    workspace: main
+",
+    )
   #(workflow_path, root)
 }
 
@@ -45,14 +89,6 @@ fn daemon_dependencies(
     make_tracker: fn(_) { empty_tracker() },
     make_handoff: fn(_, _) { handoff.disabled_client() },
     make_linear_commands: fn(_) { empty_command_client() },
-    agent_runner: fn(_, _, _, _, _, _, _, _) {
-      Error(runner.WorkerFailure(
-        reason: error.PiFailed(error.PiProtocolError("not used")),
-        workspace_path: None,
-        tokens: domain.zero_token_totals(),
-        final_issue: None,
-      ))
-    },
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, fields, _) {
       process.send(log_subject, daemon_log_value(event, fields))

@@ -24,8 +24,7 @@ The service solves four operational problems:
 - It turns issue execution into a repeatable daemon workflow instead of manual scripts.
 - It isolates agent execution in per-issue workspaces so agent commands run only inside per-issue
   workspace directories.
-- It keeps the workflow policy in-repo (`WORKFLOW.md`) so teams version the agent prompt and runtime
-  settings with their code.
+- It keeps the workflow policy in-repo (`scherzo.yaml` plus YAML workflow DAGs and Markdown prompt templates) so teams version agent prompts and runtime settings with their code.
 - It provides enough observability to operate and debug multiple concurrent agent runs.
 
 Implementations are expected to document their trust and safety posture explicitly. This
@@ -50,7 +49,7 @@ Important boundary:
 - Create deterministic per-issue workspaces and preserve them across runs.
 - Stop active runs when issue state changes make them ineligible.
 - Recover from transient failures with exponential backoff.
-- Load runtime behavior from a repository-owned `WORKFLOW.md` contract.
+- Load runtime behavior from a repository-owned YAML orchestrator contract.
 - Expose operator-visible observability (at minimum structured logs).
 - Support tracker/filesystem-driven restart recovery without requiring a persistent database; exact
   in-memory scheduler state is not restored.
@@ -71,9 +70,9 @@ Important boundary:
 ### 3.1 Main Components
 
 1. `Workflow Loader`
-   - Reads legacy `WORKFLOW.md` files or an implementation-defined orchestrator config such as `.scherzo/scherzo.yaml`.
-   - For legacy Markdown, parses YAML front matter and prompt body and returns `{config, prompt_template}`.
-   - For YAML orchestrator config, loads tracker/runtime config separately from one or more workflow DAG files and their Markdown prompt templates.
+   - Reads an implementation-defined YAML orchestrator config such as `.scherzo/scherzo.yaml`.
+   - Loads tracker/runtime config separately from one or more workflow DAG files and their Markdown prompt templates.
+   - Rejects legacy Markdown runtime workflow files.
 
 2. `Config Layer`
    - Exposes typed getters for workflow config values.
@@ -116,11 +115,11 @@ Important boundary:
 Symphony is easiest to port when kept in these layers:
 
 1. `Policy Layer` (repo-defined)
-   - Legacy `WORKFLOW.md` prompt body or YAML workflow DAG files plus Markdown prompt templates.
+   - YAML workflow DAG files plus Markdown prompt templates.
    - Team-specific rules for ticket handling, validation, and handoff.
 
 2. `Configuration Layer` (typed getters)
-   - Parses front matter into typed runtime settings.
+   - Parses YAML orchestrator config into typed runtime settings.
    - Handles defaults, environment tokens, and path normalization.
 
 3. `Coordination Layer` (orchestrator)
@@ -178,16 +177,18 @@ Fields:
 
 #### 4.1.2 Workflow Definition
 
-Parsed `WORKFLOW.md` payload:
+Parsed workflow policy is split across a YAML orchestrator config and one or more YAML workflow DAG files:
 
-- `config` (map)
-  - YAML front matter root object.
-- `prompt_template` (string)
-  - Markdown body after front matter, trimmed.
+- `orchestrator` (typed config)
+  - Tracker, polling, workspace hooks, agent, pi, handoff, routing, artifact, contract, and command settings.
+- `workflows` (map)
+  - Workflow ids mapped to DAG definitions.
+- `prompt_templates` (files)
+  - Markdown prompt bodies referenced by DAG agent steps.
 
 #### 4.1.3 Service Config (Typed View)
 
-Typed runtime values derived from `WorkflowDefinition.config` plus environment resolution.
+Typed runtime values derived from the YAML orchestrator config plus environment resolution.
 
 Examples:
 
@@ -290,40 +291,38 @@ Fields:
 
 ### 5.1 File Discovery and Path Resolution
 
-Workflow file path precedence:
+Workflow config path precedence:
 
 1. Explicit application/runtime setting (set by CLI startup path).
-2. Default: `WORKFLOW.md` in the current process working directory.
+2. Implementation-defined YAML defaults such as `.scherzo/scherzo.yaml`, `.scherzo/scherzo.yml`, `scherzo.yaml`, and `scherzo.yml`.
 
 Loader behavior:
 
-- If the file cannot be read, return `missing_workflow_file` error.
-- The workflow file is expected to be repository-owned and version-controlled.
+- If the file cannot be read, return a typed config-load error.
+- Legacy `.md` runtime workflow files MUST be rejected.
+- The orchestrator config and referenced workflow/prompt files are expected to be repository-owned and version-controlled.
 
 ### 5.2 File Format
 
-`WORKFLOW.md` is a Markdown file with OPTIONAL YAML front matter.
+The runtime config is a YAML orchestrator file. Workflow DAG files are YAML files referenced from the orchestrator routing map. Agent prompts are Markdown files referenced by DAG agent steps.
 
 Design note:
 
-- `WORKFLOW.md` SHOULD be self-contained enough to describe and run different workflows (prompt,
-  runtime settings, hooks, and tracker selection/config) without requiring out-of-band
-  service-specific configuration.
+- The orchestrator config SHOULD be self-contained enough to describe runtime settings, hooks, tracker selection/config, and workflow routing without requiring out-of-band service-specific configuration.
 
 Parsing rules:
 
-- If file starts with `---`, parse lines until the next `---` as YAML front matter.
-- Remaining lines become the prompt body.
-- If front matter is absent, treat the entire file as prompt body and use an empty config map.
-- YAML front matter MUST decode to a map/object; non-map YAML is an error.
-- Prompt body is trimmed before use.
+- The orchestrator YAML root MUST decode to a map/object.
+- Each routed workflow YAML root MUST decode to a map/object with a matching workflow id and an acyclic `steps` list.
+- Prompt paths MUST resolve relative to the workflow YAML file and remain under that workflow directory.
 
 Returned workflow object:
 
-- `config`: front matter root object (not nested under a `config` key).
-- `prompt_template`: trimmed Markdown body.
+- `orchestrator`: typed runtime config.
+- `workflows`: routed YAML workflow DAGs.
+- `prompt_template`: Markdown bodies loaded for agent steps.
 
-### 5.3 Front Matter Schema
+### 5.3 Orchestrator Schema
 
 Top-level keys:
 
@@ -338,7 +337,7 @@ Unknown keys SHOULD be ignored for forward compatibility.
 
 Note:
 
-- The workflow front matter is extensible. Extensions MAY define additional top-level keys without
+- The workflow orchestrator config is extensible. Extensions MAY define additional top-level keys without
   changing the core schema above.
 - Extensions SHOULD document their field schema, defaults, validation rules, and whether changes
   apply dynamically or require restart.
@@ -378,7 +377,7 @@ Fields:
 - `root` (path string or `$VAR`)
   - Default: `<system-temp>/symphony_workspaces`
   - `~` is expanded.
-  - Relative paths are resolved relative to the directory containing `WORKFLOW.md`.
+  - Relative paths are resolved relative to the directory containing `scherzo.yaml`.
   - The effective workspace root is normalized to an absolute path before use.
 
 #### 5.3.4 `hooks` (object)
@@ -456,7 +455,7 @@ fields locally if they want stricter startup checks.
 
 ### 5.4 Prompt Template Contract
 
-The Markdown body of `WORKFLOW.md` is the per-issue prompt template.
+The Markdown prompt template referenced by a YAML workflow DAG is the per-issue prompt template.
 
 Rendering requirements:
 
@@ -501,7 +500,7 @@ Dispatch gating behavior:
 Configuration is resolved in this order:
 
 1. Select the workflow file path (explicit runtime setting, otherwise cwd default).
-2. Parse YAML front matter into a raw config map.
+2. Parse YAML orchestrator config into a raw config map.
 3. Apply built-in defaults for missing OPTIONAL fields.
 4. Resolve `$VAR_NAME` indirection only for config values that explicitly contain `$VAR_NAME`.
 5. Coerce and validate typed values.
@@ -517,13 +516,13 @@ Value coercion semantics:
   - Apply expansion only to values intended to be local filesystem paths; do not rewrite URIs or
     arbitrary shell command strings.
 - Relative `workspace.root` values resolve relative to the directory containing the selected
-  `WORKFLOW.md`.
+  `scherzo.yaml`.
 
 ### 6.2 Dynamic Reload Semantics
 
 Dynamic reload is REQUIRED:
 
-- The software MUST detect `WORKFLOW.md` changes.
+- The software MUST detect `scherzo.yaml` changes.
 - On change, it MUST re-read and re-apply workflow config and prompt template without restart.
 - The software MUST attempt to adjust live behavior to the new config (for example polling
   cadence, concurrency limits, active/terminal states, codex settings, workspace paths/hooks, and
@@ -1362,7 +1361,7 @@ Extension config:
 Enablement (extension):
 
 - Start the HTTP server when a CLI `--port` argument is provided.
-- Start the HTTP server when `server.port` is present in `WORKFLOW.md` front matter.
+- Start the HTTP server when `server.port` is present in `scherzo.yaml` orchestrator config.
 - The `server` top-level key is owned by this extension.
 - Positive `server.port` values bind that port.
 - Implementations SHOULD bind loopback by default (`127.0.0.1` or host equivalent) unless explicitly
@@ -1519,8 +1518,8 @@ API design notes:
 ### 14.1 Failure Classes
 
 1. `Workflow/Config Failures`
-   - Missing `WORKFLOW.md`
-   - Invalid YAML front matter
+   - Missing `scherzo.yaml`
+   - Invalid YAML orchestrator config
    - Unsupported tracker kind or missing tracker credentials/project slug
    - Missing coding-agent executable
 
@@ -1590,8 +1589,8 @@ After restart:
 
 Operators can control behavior by:
 
-- Editing `WORKFLOW.md` (prompt and most runtime settings).
-- `WORKFLOW.md` changes are detected and re-applied automatically without restart according to
+- Editing `scherzo.yaml` (prompt and most runtime settings).
+- `scherzo.yaml` changes are detected and re-applied automatically without restart according to
   Section 6.2.
 - Changing issue states in the tracker:
   - terminal state -> running session is stopped and workspace cleaned when reconciled
@@ -1636,7 +1635,7 @@ RECOMMENDED additional hardening for ports:
 
 ### 15.4 Hook Script Safety
 
-Workspace hooks are arbitrary shell scripts from `WORKFLOW.md`.
+Workspace hooks are arbitrary shell scripts from `scherzo.yaml`.
 
 Implications:
 
@@ -1930,15 +1929,15 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.1 Workflow and Config Parsing
 
-- Workflow file path precedence:
+- Workflow config path precedence:
   - explicit runtime path is used when provided
-  - cwd default is `WORKFLOW.md` when no explicit runtime path is provided
+  - implementation default checks `.scherzo/scherzo.yaml`, `.scherzo/scherzo.yml`, `scherzo.yaml`, then `scherzo.yml` when no explicit runtime path is provided
 - Workflow file changes are detected and trigger re-read/re-apply without restart
 - Invalid workflow reload keeps last known good effective configuration and emits an
   operator-visible error
-- Missing `WORKFLOW.md` returns typed error
-- Invalid YAML front matter returns typed error
-- Front matter non-map returns typed error
+- Missing `scherzo.yaml` returns typed error
+- Invalid YAML orchestrator config returns typed error
+- YAML orchestrator root non-map returns typed error
 - Config defaults apply when OPTIONAL values are missing
 - `tracker.kind` validation enforces currently supported kind (`linear`)
 - `tracker.api_key` works (including `$VAR` indirection)
@@ -2037,9 +2036,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.7 CLI and Host Lifecycle
 
-- CLI accepts a positional workflow path argument (`path-to-WORKFLOW.md`)
-- CLI uses `./WORKFLOW.md` when no workflow path argument is provided
-- CLI errors on nonexistent explicit workflow path or missing default `./WORKFLOW.md`
+- CLI accepts a positional workflow path argument (`path-to-scherzo.yaml`)
+- CLI uses implementation default YAML config discovery when no workflow path argument is provided
+- CLI errors on nonexistent explicit workflow path or missing default YAML config
 - CLI surfaces startup failure cleanly
 - CLI exits with success when application starts and shuts down normally
 - CLI exits nonzero when startup fails or the host process exits abnormally
@@ -2067,15 +2066,15 @@ Use the same validation profiles as Section 17:
 
 ### 18.1 REQUIRED for Conformance
 
-- Workflow path selection supports explicit runtime path and cwd default
-- `WORKFLOW.md` loader with YAML front matter + prompt body split
+- Workflow config path selection supports explicit runtime path and implementation default YAML discovery
+- YAML orchestrator loader supports config plus workflow DAG loading
 - Typed config layer with defaults and `$` resolution
-- Dynamic `WORKFLOW.md` watch/reload/re-apply for config and prompt
+- Dynamic `scherzo.yaml` watch/reload/re-apply for config, workflow DAGs, and prompt templates
 - Polling orchestrator with single-authority mutable state
 - Issue tracker client with candidate fetch + state refresh + terminal fetch
 - Workspace manager with sanitized per-issue workspaces
-- Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
-- Hook timeout config (`hooks.timeout_ms`, default `60000`)
+- Workspace lifecycle hooks (`workspace.hooks.create`, `before_step`, `after_step`, `remove`)
+- Hook timeout config (`workspace.hooks.timeout_ms`, default `60000`)
 - Coding-agent app-server subprocess client with JSON line protocol
 - Codex launch command config (`codex.command`, default `codex app-server`)
 - Strict prompt rendering with `issue` and `attempt` variables
@@ -2093,7 +2092,7 @@ Use the same validation profiles as Section 17:
 - `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the
   app-server session using configured Symphony auth.
 - TODO: Persist retry queue and session metadata across process restarts.
-- TODO: Make observability settings configurable in workflow front matter without prescribing UI
+- TODO: Make observability settings configurable in workflow orchestrator config without prescribing UI
   implementation details.
 - TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead
   of only via agent tools.
