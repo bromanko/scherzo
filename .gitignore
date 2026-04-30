@@ -3,15 +3,18 @@ _build/
 .devenv/
 .direnv/
 erl_crash.dump
+.env
+.env.local
+.env.*.local
 # Runtime state under .scherzo is ignored; checked-in workflows live in
 # .scherzo/workflows and are intentionally versioned.
 .scherzo/*
 !.scherzo/README.md
+!.scherzo/scherzo.yaml
 !.scherzo/workflows/
 !.scherzo/workflows/**
 .scherzo/scherzo.local.yaml
 .scherzo/scherzo.local.yml
-.scherzo/workflows/*.local.md
 .scherzo/workflows/**/*.local.yaml
 .scherzo/workflows/**/*.local.yml
 .scherzo/workflows/**/.scherzo/
