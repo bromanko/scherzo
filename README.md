@@ -4,6 +4,41 @@ Scherzo is a Gleam/Erlang daemon that polls one Linear project, prepares one wor
 
 The current implementation is ready for cautious use against one real Linear board from one Scherzo instance and one canonical workspace root. It includes reusable real Linear HTTPS reads, bounded smoke checks, a long-lived daemon actor with poll and retry timers, monitored pi workers, workflow reload by file contents, no-prompt pi probing, optional Linear handoff comments/state updates, Linear command comments, an authenticated local control API, `scherzoctl`, and a local instance lock. It is not a distributed job system: do not run multiple hosts or multiple independent workspace roots against the same Linear project until a durable claim backend exists.
 
+For real prompted runs today, use the legacy Markdown `WORKFLOW.md` format. The YAML orchestrator/DAG files under `examples/` are documented because the parser, scheduler model, workspace run model, and artifact handling are in progress, but the production daemon/agent path still uses the Markdown workflow path while the DAG runner is integrated.
+
+## Status at a glance
+
+- **Runtime:** Gleam targeting Erlang/OTP.
+- **Tracker:** Linear GraphQL over HTTPS, with read-only smoke and board-contract checks.
+- **Agent:** `pi --mode rpc` JSON Lines sessions launched inside per-issue workspaces.
+- **Supported production path:** one Scherzo process, one Linear project, one canonical workspace root, and one Markdown workflow file.
+- **Operator controls:** local token-authenticated `scherzoctl` plus optional Linear comment commands.
+- **Handoff:** optional Linear comments/state updates, including structured success result comments with redaction and truncation.
+- **Intentional limits:** no distributed claiming, no durable scheduler state, and no sandbox beyond host OS/pi/workflow controls.
+
+## Table of contents
+
+- [Development](#development)
+- [Quick start](#quick-start)
+- [Repository layout](#repository-layout)
+- [CLI modes](#cli-modes)
+- [Runtime requirements](#runtime-requirements)
+- [Workflow file convention](#workflow-file-convention)
+- [Workflow schema](#workflow-schema)
+- [Experimental YAML orchestrator config and DAG workflows](#experimental-yaml-orchestrator-config-and-dag-workflows)
+- [Linear board contract check](#linear-board-contract-check)
+- [Linear workflow-label dispatch policy](#linear-workflow-label-dispatch-policy)
+- [Linear handoff](#linear-handoff)
+- [Workspace population contract](#workspace-population-contract)
+- [Prompt template inputs](#prompt-template-inputs)
+- [Daemon behavior and shutdown](#daemon-behavior-and-shutdown)
+- [Session event model](#session-event-model)
+- [Local control API and scherzoctl](#local-control-api-and-scherzoctl)
+- [Linear command comments](#linear-command-comments)
+- [Safety posture](#safety-posture)
+- [Implemented coverage and current limits](#implemented-coverage-and-current-limits)
+- [Operational rollout](#operational-rollout)
+
 ## Development
 
 Install Nix, `devenv`, and `direnv` on the host. Then run:
@@ -18,9 +53,42 @@ Useful validation commands are:
     direnv exec . gleam run -- --help
     direnv exec . gleam run -- ctl --help
 
+## Quick start
+
+1. Create or copy a Markdown workflow. `examples/WORKFLOW.md` is the safest template for a first run; repo-local reusable workflows conventionally live under `.scherzo/workflows/*.md`.
+2. Export deployment-specific values rather than committing secrets:
+
+       export LINEAR_API_KEY=lin_api_...
+       export LINEAR_PROJECT_SLUG=<linear-project-slug>
+       export REPO_URL=git@github.com:example/repo.git
+
+3. Validate before allowing a real prompt:
+
+       direnv exec . gleam run -- --linear-smoke path/to/WORKFLOW.md
+       direnv exec . gleam run -- --linear-contract-check path/to/WORKFLOW.md
+       direnv exec . gleam run -- --pi-probe path/to/WORKFLOW.md
+
+4. Start daemon mode and supervise it from another terminal:
+
+       direnv exec . gleam run -- path/to/WORKFLOW.md
+       scripts/scherzoctl ps
+       scripts/scherzoctl attach <session-id>
+
+For a cautious rollout, keep `agent.max_concurrent_agents: 1`, leave `linear_commands.enabled: false`, and enable Linear handoff mutations only after read-only checks are clean.
+
+## Repository layout
+
+- `src/scherzo/` contains the Gleam application, including config loading, Linear integration, workspace lifecycle, scheduler/daemon logic, pi RPC, handoff, control API, and terminal rendering.
+- `test/` contains unit and integration-style tests with fake Linear/pi/control dependencies.
+- `examples/WORKFLOW.md` is the runnable legacy workflow template.
+- `examples/scherzo.yaml` and `examples/workflows/*.yaml` show the experimental DAG-oriented config model.
+- `.scherzo/workflows/` contains checked-in dogfood workflows for this repository; `.scherzo/workspaces/` is ignored runtime state.
+- `scripts/scherzoctl` is a development wrapper around `gleam run -- ctl`.
+- `docs/plans/` and `docs/SYMPHONY_SPEC.md` capture design history and the broader service specification.
+
 ## CLI modes
 
-With no mode flag, Scherzo runs daemon mode and keeps polling until the Erlang VM process is terminated:
+With no mode flag, Scherzo runs daemon mode and keeps polling until the Erlang VM process is terminated. If no path is provided, Scherzo looks for `WORKFLOW.md` in the current directory:
 
     direnv exec . gleam run -- path/to/WORKFLOW.md
 
@@ -57,7 +125,7 @@ If startup reports an existing instance lock, first verify that no Scherzo proce
 
 ## Workflow file convention
 
-Reusable, checked-in workflow definitions should live under `.scherzo/workflows/*.md`. Runtime workspaces and local state should stay under ignored `.scherzo/workspaces/<workflow-name>/` roots. Relative paths are resolved from the workflow file directory, so a checked-in workflow under `.scherzo/workflows/` should use `workspace.root: ../workspaces/<workflow-name>`. Machine-specific variants can use `.scherzo/workflows/*.local.md`, which is ignored by git.
+Reusable, checked-in Markdown workflow definitions should live under `.scherzo/workflows/*.md`. Runtime workspaces and local state should stay under ignored `.scherzo/workspaces/<workflow-name>/` roots. Relative paths are resolved from the workflow file directory, so a checked-in workflow under `.scherzo/workflows/` should use `workspace.root: ../workspaces/<workflow-name>`. Machine-specific variants can use `.scherzo/workflows/*.local.md`; experimental YAML variants can use `.scherzo/workflows/**/*.local.yaml`, `.scherzo/workflows/**/*.local.yml`, or `.scherzo/scherzo.local.yaml`. These local variants are ignored by git.
 
 This repository includes `.scherzo/workflows/research.md` as the first dogfood workflow. It uses `LINEAR_API_KEY` and `LINEAR_PROJECT_SLUG`, creates per-issue jj workspaces with `jj workspace add` instead of separate git clones, enforces exactly one `workflow:research` label, enables comments-only handoff, and leaves Linear comment commands disabled so the first runs can be supervised through `scripts/scherzoctl`.
 
@@ -139,18 +207,25 @@ See `examples/WORKFLOW.md` for a runnable template.
 
 ## Experimental YAML orchestrator config and DAG workflows
 
-Scherzo also has an experimental split between orchestrator config and workflow prompts. In this mode, runtime settings live in a YAML file such as `.scherzo/scherzo.yaml`, while individual workflows live in `.scherzo/workflows/*.yaml` and refer to Markdown prompt files. See `examples/scherzo.yaml`, `examples/workflows/research.yaml`, and `examples/workflows/implementation.yaml`.
+Scherzo also has an experimental split between orchestrator config and workflow prompts. Runtime settings live in a YAML file such as `.scherzo/scherzo.yaml`, while individual workflows live in `.scherzo/workflows/*.yaml` and refer to Markdown prompt files. See `examples/scherzo.yaml`, `examples/workflows/research.yaml`, and `examples/workflows/implementation.yaml`.
 
-The YAML workflow format supports a static directed acyclic graph: steps have stable ids, `kind: agent` or `kind: command`, `depends_on`, `workspace`, and `on_failure`. A workspace may be a string such as `main` or a derived workspace map such as `{ name: code-review, from: main }`. Scherzo validates duplicate step ids, missing dependencies, cycles, invalid identifiers, invalid derived workspace references, and prompt paths that are absolute or escape the workflow directory.
+This path is not the production daemon entrypoint yet. The loaders, validation, scheduler model, workspace-run model, command-step execution, and artifact shaping have tests, but agent-running service modes are still being wired through the DAG runtime bundle. Use Markdown for production CLI runs unless you are explicitly experimenting with YAML support.
 
-The new config owns routing and DAG workspace hooks:
+The YAML workflow format supports a static directed acyclic graph. Workflow files declare `version`, `id`, optional `description`, optional `max_parallel_steps`, and `steps`. Steps have stable ids, `kind: agent` or `kind: command`, `depends_on`, `workspace`, and `on_failure`. A workspace may be a string such as `main` or a derived workspace map such as `{ name: code-review, from: main }`. Scherzo validates duplicate step ids, missing dependencies, cycles, invalid identifiers, invalid derived workspace references, and prompt paths that are absolute or escape the workflow directory.
+
+The new config owns routing, artifact limits, and DAG workspace hooks:
 
     routing:
       workflow_label_prefix: "workflow:"
       require_exactly_one_workflow_label: true
+      default_workflow: research
       workflows:
         research: workflows/research.yaml
         implementation: workflows/implementation.yaml
+    artifact_limits:
+      command_stream_max_chars: 20000
+      template_field_max_chars: 8000
+      workflow_summary_max_chars: 20000
     workspace:
       root: .scherzo/workspaces
       hooks:
@@ -165,7 +240,7 @@ The new config owns routing and DAG workspace hooks:
 
 DAG hooks run with cwd set to the directory containing `scherzo.yaml`. They receive `SCHERZO_CONFIG_DIR`, `SCHERZO_WORKFLOW_ID`, `SCHERZO_RUN_ID`, `SCHERZO_ISSUE_ID`, `SCHERZO_ISSUE_IDENTIFIER`, `SCHERZO_STEP_ID`, `SCHERZO_WORKSPACE_ROOT`, `SCHERZO_WORKSPACE_NAME`, `SCHERZO_WORKSPACE_PATH`, `SCHERZO_SOURCE_WORKSPACE_NAME`, and `SCHERZO_SOURCE_WORKSPACE_PATH`. Source variables are empty strings when a step does not derive from another workspace.
 
-Command and agent step outputs are normalized as artifacts. Downstream prompts can reference locals such as `{{ steps.code_review.final_response }}`, `{{ steps.test_after_implement.exit_code }}`, `{{ steps.test_after_implement.stdout }}`, and `{{ steps.test_after_implement.stderr }}`. Artifacts are bounded by `artifact_limits` and known resolved secrets are redacted before they are exposed to prompts or workflow summaries.
+Command and agent step outputs are normalized as artifacts. Downstream prompts can reference locals such as `{{ steps.code_review.final_response }}`, `{{ steps.test_after_implement.exit_code }}`, `{{ steps.test_after_implement.stdout }}`, and `{{ steps.test_after_implement.stderr }}`. Artifacts are bounded by `artifact_limits`, and known resolved secrets are redacted before they are exposed to prompts or workflow summaries.
 
 Legacy `WORKFLOW.md` remains the default and is still the production-compatible path while the YAML DAG runner is being integrated into every CLI and daemon mode.
 
@@ -413,6 +488,8 @@ Implemented:
 - pi JSON Lines RPC launch, command/response correlation, compatibility probing with stats, prompt execution, turn/stall timeout handling, stats decoding, extension UI cancellation, and fake-pi integration tests.
 - Pure in-memory scheduling decisions for dispatch eligibility, retries, parking, continuation caps, reconciliation, and token accounting.
 - Long-lived daemon actor with poll/retry timers, monitored workers, WorkerUpdate logging, in-memory session event replay, local authenticated control API, shared operator command model, Linear command comments, `scherzoctl`, programmatic shutdown, graceful SIGTERM daemon shutdown, and optional Linear handoff.
+- Structured success/result handoff comments with assistant-visible final responses, truncation, and secret redaction.
+- Experimental YAML orchestrator/DAG config parsing, validation, scheduling primitives, workspace-run hooks, command-step artifacts, and prompt artifact rendering.
 - Structured key-value log formatting with secret redaction.
 
 Still intentionally out of scope:
@@ -420,7 +497,8 @@ Still intentionally out of scope:
 - Distributed exactly-once claiming across hosts or workspace roots.
 - Durable scheduler state across BEAM restarts.
 - CLI Ctrl-C/SIGINT graceful shutdown hooks and crash recovery after `kill -9`, host power loss, or BEAM VM termination.
-- HTTP dashboard, Scherzo-to-Linear final result reporting, SSH workers, and the optional `linear_graphql` pi tool extension.
+- Production CLI/daemon execution of YAML DAG workflows until the DAG runner is wired through service modes.
+- HTTP dashboard, durable Linear command receipts or webhook wake-up, SSH workers, and the optional `linear_graphql` pi tool extension.
 - Automatic discovery of Linear workflow state IDs by state name.
 
 ## Operational rollout
