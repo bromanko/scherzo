@@ -99,9 +99,21 @@ pub fn render_header(
       options.color_mode,
       sanitize.text(summary.issue_identifier <> " " <> summary.issue_title),
     )),
-    Line("workspace: " <> sanitize.text(summary.workspace_path)),
-    Line("session: " <> sanitize.text(summary.session_id)),
-    Line("status: " <> event.status_to_string(summary.status)),
+    Line(
+      style.meta_label(options.color_mode, "workspace:")
+      <> " "
+      <> sanitize.text(summary.workspace_path),
+    ),
+    Line(
+      style.meta_label(options.color_mode, "session:")
+      <> " "
+      <> sanitize.text(summary.session_id),
+    ),
+    Line(
+      style.meta_label(options.color_mode, "status:")
+      <> " "
+      <> event.status_to_string(summary.status),
+    ),
     Line(""),
   ]
 }
@@ -191,20 +203,24 @@ fn render_pi_cycle_start(
   case options.show_pi_cycles {
     False -> #(observed, [])
     True -> {
-      let #(observed, close_chunks) = close_assistant(observed)
-      let observed = close_tool(observed)
+      let #(observed, close_chunks) =
+        close_assistant(observed, options.color_mode)
+      let #(observed, tool_close_chunks) =
+        close_tool_with_gap(observed, options.color_mode)
       let #(observed, heading_chunks) =
         ensure_pass_heading(observed, payload, options)
       #(
         observed,
         list.flatten([
           close_chunks,
+          tool_close_chunks,
           heading_chunks,
           [
             Line(style.dim(
               options.color_mode,
               "pi cycle " <> int.to_string(observed.pi_cycle) <> " started",
             )),
+            Line(""),
           ],
         ]),
       )
@@ -220,20 +236,24 @@ fn render_pi_cycle_end(
   let observed = observe_pass(state, payload)
   case options.show_pi_cycles, observed.pi_cycle > 0 {
     True, True -> {
-      let #(observed, close_chunks) = close_assistant(observed)
-      let observed = close_tool(observed)
+      let #(observed, close_chunks) =
+        close_assistant(observed, options.color_mode)
+      let #(observed, tool_close_chunks) =
+        close_tool_with_gap(observed, options.color_mode)
       let #(observed, heading_chunks) =
         ensure_pass_heading(observed, payload, options)
       #(
         observed,
         list.flatten([
           close_chunks,
+          tool_close_chunks,
           heading_chunks,
           [
             Line(style.dim(
               options.color_mode,
               "pi cycle " <> int.to_string(observed.pi_cycle) <> " ended",
             )),
+            Line(""),
           ],
         ]),
       )
@@ -252,15 +272,16 @@ fn render_assistant(
     True -> #(observe_pass(state, payload), [])
     False -> {
       let #(state, close_chunks) = case assistant_must_close(state, payload) {
-        True -> close_assistant(state)
+        True -> close_assistant(state, options.color_mode)
         False -> #(state, [])
       }
-      let state = close_tool(state)
+      let #(state, tool_close_chunks) =
+        close_tool_with_gap(state, options.color_mode)
       let #(state, heading_chunks) =
         ensure_pass_heading(state, payload, options)
       let label_chunks = case state.assistant_active {
         True -> []
-        False -> [Line(style.assistant_label(options.color_mode, "assistant"))]
+        False -> [Line(style.thinking_label(options.color_mode, "thinking"))]
       }
       let state =
         RenderState(
@@ -272,7 +293,13 @@ fn render_assistant(
       let #(state, body_chunks) = assistant_delta_chunks(state, delta)
       #(
         state,
-        list.flatten([close_chunks, heading_chunks, label_chunks, body_chunks]),
+        list.flatten([
+          close_chunks,
+          tool_close_chunks,
+          heading_chunks,
+          label_chunks,
+          body_chunks,
+        ]),
       )
     }
   }
@@ -303,7 +330,7 @@ fn render_tool(
       #(state, [])
     }
     False -> {
-      let #(state, close_chunks) = close_assistant(state)
+      let #(state, close_chunks) = close_assistant(state, options.color_mode)
       let #(state, heading_chunks) =
         ensure_pass_heading(state, payload, options)
       let needs_label = tool_needs_label(state, label, payload)
@@ -312,11 +339,18 @@ fn render_tool(
         False -> state
       }
       let label_chunks = case needs_label {
-        True -> [Line(style.tool_label(options.color_mode, label))]
+        True ->
+          list.append(tool_top_padding_chunks(options.color_mode), [
+            Line(style.tool_label(options.color_mode, label)),
+          ])
         False -> []
       }
       let #(active_section, detail_chunks) =
-        tool_detail_chunks(state.active_tool_section, payload)
+        tool_detail_chunks(
+          state.active_tool_section,
+          payload,
+          options.color_mode,
+        )
       let state =
         mark_structured_tool_input_displayed(
           state,
@@ -333,6 +367,15 @@ fn render_tool(
         True -> None
         False -> active_section
       }
+      let section_chunks =
+        list.flatten([close_chunks, heading_chunks, label_chunks, detail_chunks])
+      let section_chunks = case should_close, section_chunks {
+        True, [_, ..] ->
+          list.append(section_chunks, [
+            Line(style.tool_gap_line(options.color_mode)),
+          ])
+        _, _ -> section_chunks
+      }
       #(
         RenderState(
           ..state,
@@ -341,7 +384,7 @@ fn render_tool(
           active_tool_label: next_label,
           active_tool_section: next_section,
         ),
-        list.flatten([close_chunks, heading_chunks, label_chunks, detail_chunks]),
+        section_chunks,
       )
     }
   }
@@ -352,8 +395,9 @@ fn render_ui_request(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  let #(state, close_chunks) = close_assistant(state)
-  let state = close_tool(state)
+  let #(state, close_chunks) = close_assistant(state, options.color_mode)
+  let #(state, tool_close_chunks) =
+    close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let method = safe_option_string(payload.method, "unknown")
   let request = safe_option_string(payload.request_id, "")
@@ -369,6 +413,7 @@ fn render_ui_request(
     RenderState(..state, assistant_active: False, assistant_line_open: False),
     list.flatten([
       close_chunks,
+      tool_close_chunks,
       heading_chunks,
       [
         Line(style.warning(
@@ -377,6 +422,7 @@ fn render_ui_request(
         )),
       ],
       message_chunks,
+      [Line("")],
     ]),
   )
 }
@@ -386,16 +432,18 @@ fn render_ui_response(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  let #(state, close_chunks) = close_assistant(state)
-  let state = close_tool(state)
+  let #(state, close_chunks) = close_assistant(state, options.color_mode)
+  let #(state, tool_close_chunks) =
+    close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let method = safe_option_string(payload.method, payload.name)
   #(
     RenderState(..state, assistant_active: False, assistant_line_open: False),
     list.flatten([
       close_chunks,
+      tool_close_chunks,
       heading_chunks,
-      [Line(style.dim(options.color_mode, "UI response: " <> method))],
+      [Line(style.dim(options.color_mode, "UI response: " <> method)), Line("")],
     ]),
   )
 }
@@ -405,10 +453,14 @@ fn render_tokens(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  let #(state, close_chunks) = close_assistant(state)
-  let state = close_tool(state)
+  let #(state, close_chunks) = close_assistant(state, options.color_mode)
+  let #(state, tool_close_chunks) =
+    close_tool_with_gap(state, options.color_mode)
   case tokens_are_nonzero(payload.tokens) {
-    False -> #(observe_pass(state, payload), close_chunks)
+    False -> #(
+      observe_pass(state, payload),
+      list.append(close_chunks, tool_close_chunks),
+    )
     True -> {
       let #(state, heading_chunks) =
         ensure_pass_heading(state, payload, options)
@@ -421,9 +473,11 @@ fn render_tokens(
         ),
         list.flatten([
           close_chunks,
+          tool_close_chunks,
           heading_chunks,
           [
             Line(style.dim(options.color_mode, token_line(payload.tokens, pass))),
+            Line(""),
           ],
         ]),
       )
@@ -447,13 +501,17 @@ fn render_unknown(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  let #(state, close_chunks) = close_assistant(state)
-  let state = close_tool(state)
+  let #(state, close_chunks) = close_assistant(state, options.color_mode)
+  let #(state, tool_close_chunks) =
+    close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let name = safe_option_string(payload.pi_type, payload.name)
   let raw_chunks = case options.show_raw_unknown, payload.raw_json {
     True, Some(raw) -> [
-      Line("  raw: " <> sanitize.text(compact_raw(raw.value))),
+      Line(style.raw_label(
+        options.color_mode,
+        "  raw: " <> sanitize.text(compact_raw(raw.value)),
+      )),
     ]
     _, _ -> []
   }
@@ -461,9 +519,11 @@ fn render_unknown(
     RenderState(..state, assistant_active: False, assistant_line_open: False),
     list.flatten([
       close_chunks,
+      tool_close_chunks,
       heading_chunks,
-      [Line("event " <> name)],
+      [Line(style.raw_label(options.color_mode, "event " <> name))],
       raw_chunks,
+      [Line("")],
     ]),
   )
 }
@@ -473,16 +533,18 @@ fn render_error_event(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  let #(state, close_chunks) = close_assistant(state)
-  let state = close_tool(state)
+  let #(state, close_chunks) = close_assistant(state, options.color_mode)
+  let #(state, tool_close_chunks) =
+    close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let message = safe_option_string(payload.message, payload.name)
   #(
     RenderState(..state, assistant_active: False, assistant_line_open: False),
     list.flatten([
       close_chunks,
+      tool_close_chunks,
       heading_chunks,
-      [Line(style.error(options.color_mode, "error: " <> message))],
+      [Line(style.error(options.color_mode, "error: " <> message)), Line("")],
     ]),
   )
 }
@@ -519,6 +581,7 @@ fn ensure_pass_heading(
             options.color_mode,
             "Scherzo pass " <> int.to_string(pass),
           )),
+          Line(""),
         ])
       }
     }
@@ -561,15 +624,18 @@ fn assistant_must_close(state: RenderState, payload: event.EventPayload) -> Bool
   }
 }
 
-fn close_assistant(state: RenderState) -> #(RenderState, List(RenderChunk)) {
+fn close_assistant(
+  state: RenderState,
+  _color_mode: style.ColorMode,
+) -> #(RenderState, List(RenderChunk)) {
   case state.assistant_active, state.assistant_line_open {
     True, True -> #(
       RenderState(..state, assistant_active: False, assistant_line_open: False),
-      [Line("")],
+      [Line(""), Line("")],
     )
     True, False -> #(
       RenderState(..state, assistant_active: False, assistant_line_open: False),
-      [],
+      [Line("")],
     )
     False, _ -> #(RenderState(..state, assistant_line_open: False), [])
   }
@@ -577,6 +643,23 @@ fn close_assistant(state: RenderState) -> #(RenderState, List(RenderChunk)) {
 
 fn close_tool(state: RenderState) -> RenderState {
   RenderState(..state, active_tool_label: None, active_tool_section: None)
+}
+
+fn close_tool_with_gap(
+  state: RenderState,
+  color_mode: style.ColorMode,
+) -> #(RenderState, List(RenderChunk)) {
+  case state.active_tool_label {
+    Some(_) -> #(close_tool(state), [Line(style.tool_gap_line(color_mode))])
+    None -> #(close_tool(state), [])
+  }
+}
+
+fn tool_top_padding_chunks(color_mode: style.ColorMode) -> List(RenderChunk) {
+  case style.color_enabled(color_mode) {
+    True -> [Line(style.tool_gap_line(color_mode))]
+    False -> []
+  }
 }
 
 fn assistant_delta_chunks(
@@ -693,21 +776,29 @@ fn tool_has_visible_details(payload: event.EventPayload) -> Bool {
 fn tool_detail_chunks(
   active_section: Option(ToolSection),
   payload: event.EventPayload,
+  color_mode: style.ColorMode,
 ) -> #(Option(ToolSection), List(RenderChunk)) {
   let #(active_section, input_chunks) =
-    tool_section_chunks(active_section, ToolInput, "input", payload.tool_input)
+    tool_section_chunks(
+      active_section,
+      ToolInput,
+      "input",
+      payload.tool_input,
+      color_mode,
+    )
   let #(active_section, output_chunks) =
     tool_section_chunks(
       active_section,
       ToolOutput,
       "output",
       payload.tool_output,
+      color_mode,
     )
   let status_chunks = case payload.tool_status {
     Some(status) ->
       case status == "" {
         True -> []
-        False -> [Line("  status: " <> sanitize.text(status))]
+        False -> [Line(tool_status_line(color_mode, sanitize.text(status)))]
       }
     None -> []
   }
@@ -723,6 +814,7 @@ fn tool_section_chunks(
   section: ToolSection,
   heading: String,
   value: Option(String),
+  color_mode: style.ColorMode,
 ) -> #(Option(ToolSection), List(RenderChunk)) {
   case value {
     Some(value) ->
@@ -731,9 +823,11 @@ fn tool_section_chunks(
         False -> {
           let heading_chunks = case active_section == Some(section) {
             True -> []
-            False -> [Line("  " <> heading)]
+            False -> [
+              Line(tool_section_heading(color_mode, section, "  " <> heading)),
+            ]
           }
-          let body_chunks = display_block_chunks("    ", value)
+          let body_chunks = display_block_chunks("    ", value, color_mode)
           #(Some(section), list.append(heading_chunks, body_chunks))
         }
       }
@@ -741,10 +835,37 @@ fn tool_section_chunks(
   }
 }
 
-fn display_block_chunks(indent: String, value: String) -> List(RenderChunk) {
+fn tool_section_heading(
+  color_mode: style.ColorMode,
+  section: ToolSection,
+  text: String,
+) -> String {
+  case section {
+    ToolInput -> style.input_label(color_mode, text)
+    ToolOutput -> style.output_label(color_mode, text)
+  }
+}
+
+fn tool_status_line(color_mode: style.ColorMode, status: String) -> String {
+  let line = "  status: " <> status
+  case string.lowercase(status) {
+    "success" | "succeeded" | "ok" ->
+      style.success_status_label(color_mode, line)
+    "failed" | "failure" | "error" -> style.error_status_label(color_mode, line)
+    _ -> style.status_label(color_mode, line)
+  }
+}
+
+fn display_block_chunks(
+  indent: String,
+  value: String,
+  color_mode: style.ColorMode,
+) -> List(RenderChunk) {
   value
   |> display_lines
-  |> list.map(fn(line) { Line(indent <> line) })
+  |> list.map(fn(line) {
+    Line(style.tool_body_line(color_mode, indent <> line))
+  })
 }
 
 fn plain_block_chunks(indent: String, value: String) -> List(RenderChunk) {

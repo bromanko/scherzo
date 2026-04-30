@@ -178,7 +178,7 @@ pub fn attach_pretty_replays_and_follows_without_duplicate_cursors_test() {
   assert string.contains(transcript, "ABC-1 Attach renderer\n")
   assert string.contains(
     transcript,
-    "Scherzo pass 1\nassistant\n  Hello world\ntool bash\n  output\n    ok\n",
+    "Scherzo pass 1\n\nthinking\n  Hello world\n\ntool bash\n  output\n    ok\n",
   )
   assert !string.contains(transcript, "turn 1 started")
   assert !string.contains(transcript, "turn 1 ended")
@@ -216,10 +216,10 @@ pub fn attach_verbose_shows_pi_cycles_when_requested_test() {
 
   assert result == Ok(Nil)
   let transcript = drain_output(subject)
-  assert string.contains(transcript, "Scherzo pass 1\npi cycle 1 started")
-  assert string.contains(transcript, "pi cycle 1 ended")
-  assert string.contains(transcript, "pi cycle 2 started")
-  assert string.contains(transcript, "assistant\n  hi\npi cycle 2 ended")
+  assert string.contains(transcript, "Scherzo pass 1\n\npi cycle 1 started")
+  assert string.contains(transcript, "pi cycle 1 ended\n\n")
+  assert string.contains(transcript, "pi cycle 2 started\n\n")
+  assert string.contains(transcript, "thinking\n  hi\n\npi cycle 2 ended")
   assert !string.contains(transcript, "turn 1 started")
 }
 

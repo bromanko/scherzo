@@ -70,6 +70,60 @@ pub fn sanitize_block_lines_preserves_newline_layout_and_escapes_controls_test()
   assert !string.contains(string.concat(escaped), "\u{1b}[31m")
 }
 
+pub fn render_color_always_styles_section_labels_test() {
+  let events = [
+    evt(1, payload(event.Lifecycle, "turn_start") |> with_turn(1)),
+    evt(
+      2,
+      payload(event.AssistantMessage, "message_update")
+        |> with_turn(1)
+        |> with_message("checking"),
+    ),
+    evt(
+      3,
+      payload(event.Tool, "tool_execution_start")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_input("gleam test"),
+    ),
+    evt(
+      4,
+      payload(event.Tool, "tool_execution_update")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_output("ok"),
+    ),
+    evt(
+      5,
+      payload(event.Tool, "tool_execution_end")
+        |> with_turn(1)
+        |> with_tool_name("bash")
+        |> with_tool_status("success"),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(
+      render.initial_state(0),
+      events,
+      render.default_options(style.ColorAlways),
+    )
+  let transcript = render.chunks_to_string(chunks)
+
+  assert string.contains(transcript, "\u{1b}[1mScherzo pass 1")
+  assert string.contains(
+    transcript,
+    "\u{1b}[3m\u{1b}[38;2;128;128;128mthinking",
+  )
+  assert string.contains(transcript, "\u{1b}[1m\u{1b}[48;2;40;40;50mtool bash")
+  assert string.contains(transcript, "\u{1b}[48;2;40;40;50m  input\u{1b}[0m")
+  assert string.contains(transcript, "\u{1b}[48;2;40;40;50m  output\u{1b}[0m")
+  assert string.contains(
+    transcript,
+    "\u{1b}[48;2;40;40;50m  status: success\u{1b}[0m",
+  )
+}
+
 pub fn render_sanitizes_untrusted_text_and_keeps_own_ansi_test() {
   let escape_probe = "\u{1b}[5n"
   let unsafe_summary =
@@ -136,14 +190,24 @@ pub fn render_sanitizes_untrusted_text_and_keeps_own_ansi_test() {
     |> render.chunks_to_string
 
   assert string.contains(transcript, "\u{1b}[1m")
+  assert string.contains(
+    transcript,
+    "\u{1b}[3m\u{1b}[38;2;128;128;128mthinking",
+  )
   assert !string.contains(transcript, "\u{1b}[5n")
   assert !string.contains(transcript, "\u{1b}]0;")
   assert string.contains(transcript, "Render ␛[5n")
   assert string.contains(transcript, "/tmp/␛]0;x␇")
   assert string.contains(transcript, "Scherzo pass 1")
   assert string.contains(transcript, "  hello ␛[5n␍")
-  assert string.contains(transcript, "tool bash␛[5n")
-  assert string.contains(transcript, "input\n    cmd\\u{9B}31m")
+  assert string.contains(
+    transcript,
+    "\u{1b}[1m\u{1b}[48;2;40;40;50mtool bash␛[5n",
+  )
+  assert string.contains(
+    transcript,
+    "\u{1b}[48;2;40;40;50m  input\u{1b}[0m\n\u{1b}[48;2;40;40;50m    cmd\\u{9B}31m",
+  )
   assert string.contains(transcript, "UI request waiting: confirm␛[5n #ui␇")
   assert string.contains(transcript, "approve␈")
   assert string.contains(transcript, "event mystery␛[5n")
@@ -218,7 +282,7 @@ pub fn render_defaults_to_scherzo_pass_and_hides_pi_cycles_test() {
   let transcript = render.chunks_to_string(chunks)
 
   assert transcript
-    == "Scherzo pass 1\nassistant\n  Hello world\ntool bash\n  input\n    gleam test\n  output\n    ok\n  status: success\nUI request waiting: confirm #ui-1\n  approve?\nScherzo pass 1 tokens: input=10 output=20 cache_read=3 cache_write=4 total=37\n"
+    == "Scherzo pass 1\n\nthinking\n  Hello world\n\ntool bash\n  input\n    gleam test\n  output\n    ok\n  status: success\n\nUI request waiting: confirm #ui-1\n  approve?\n\nScherzo pass 1 tokens: input=10 output=20 cache_read=3 cache_write=4 total=37\n\n"
   assert !string.contains(transcript, "turn 1 started")
   assert !string.contains(transcript, "turn 1 ended")
   assert !string.contains(transcript, "pi cycle")
@@ -246,7 +310,7 @@ pub fn render_verbose_shows_pi_cycle_labels_test() {
     )
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 1\npi cycle 1 started\npi cycle 1 ended\npi cycle 2 started\nassistant\n  hi\npi cycle 2 ended\n"
+    == "Scherzo pass 1\n\npi cycle 1 started\n\npi cycle 1 ended\n\npi cycle 2 started\n\nthinking\n  hi\n\npi cycle 2 ended\n\n"
 }
 
 pub fn render_continued_pass_and_suppresses_duplicate_cursor_test() {
@@ -275,7 +339,7 @@ pub fn render_continued_pass_and_suppresses_duplicate_cursor_test() {
     render.render_events(render.initial_state(5), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 2\nassistant\n  new\ntool read\n"
+    == "Scherzo pass 2\n\nthinking\n  new\n\ntool read\n"
 }
 
 pub fn render_assistant_multiline_body_test() {
@@ -293,7 +357,7 @@ pub fn render_assistant_multiline_body_test() {
     render.render_events(render.initial_state(0), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 1\nassistant\n  first\n  second"
+    == "Scherzo pass 1\n\nthinking\n  first\n  second"
 }
 
 pub fn render_assistant_newline_split_across_deltas_test() {
@@ -317,7 +381,7 @@ pub fn render_assistant_newline_split_across_deltas_test() {
     render.render_events(render.initial_state(0), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 1\nassistant\n  first\n  second"
+    == "Scherzo pass 1\n\nthinking\n  first\n  second"
 }
 
 pub fn render_assistant_adjacent_deltas_stay_on_one_line_test() {
@@ -341,7 +405,7 @@ pub fn render_assistant_adjacent_deltas_stay_on_one_line_test() {
     render.render_events(render.initial_state(0), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 1\nassistant\n  Hello world"
+    == "Scherzo pass 1\n\nthinking\n  Hello world"
 }
 
 pub fn render_tool_multiline_sections_and_repeated_output_updates_test() {
@@ -381,7 +445,7 @@ pub fn render_tool_multiline_sections_and_repeated_output_updates_test() {
     render.render_events(render.initial_state(0), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 1\ntool bash\n  input\n    gleam test\n    --target erlang\n  output\n    line one\n    line two\n  status: success\n"
+    == "Scherzo pass 1\n\ntool bash\n  input\n    gleam test\n    --target erlang\n  output\n    line one\n    line two\n  status: success\n\n"
 }
 
 pub fn render_tool_repeated_plain_input_updates_are_not_dropped_test() {
@@ -407,7 +471,7 @@ pub fn render_tool_repeated_plain_input_updates_are_not_dropped_test() {
     render.render_events(render.initial_state(0), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 1\ntool bash\n  input\n    echo\n    echo hello\n"
+    == "Scherzo pass 1\n\ntool bash\n  input\n    echo\n    echo hello\n"
 }
 
 pub fn render_tool_repeated_input_updates_are_collapsed_test() {
@@ -474,7 +538,7 @@ pub fn render_tool_repeated_input_updates_are_collapsed_test() {
     render.render_events(render.initial_state(0), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 1\ntool bash\n  input\n    [structured tool input; use --json for raw details]\ntool bash\n  output\n    ok\n"
+    == "Scherzo pass 1\n\ntool bash\n  input\n    [structured tool input; use --json for raw details]\ntool bash\n  output\n    ok\n"
 }
 
 pub fn render_tool_output_display_truncation_test() {
@@ -521,7 +585,7 @@ pub fn render_tool_label_resets_across_hidden_pass_boundary_test() {
     render.render_events(render.initial_state(0), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 1\ntool bash\n  output\n    first\nScherzo pass 2\ntool bash\n  output\n    second\n"
+    == "Scherzo pass 1\n\ntool bash\n  output\n    first\nScherzo pass 2\n\ntool bash\n  output\n    second\n"
 }
 
 pub fn render_ui_request_body_and_pass_token_summary_test() {
@@ -555,7 +619,7 @@ pub fn render_ui_request_body_and_pass_token_summary_test() {
     render.render_events(render.initial_state(0), events, options())
 
   assert render.chunks_to_string(chunks)
-    == "Scherzo pass 1\nUI request waiting: confirm #ui-1\n  line one\n  line two\nScherzo pass 1 tokens: input=1 output=2 cache_read=0 cache_write=0 total=3\n"
+    == "Scherzo pass 1\n\nUI request waiting: confirm #ui-1\n  line one\n  line two\n\nScherzo pass 1 tokens: input=1 output=2 cache_read=0 cache_write=0 total=3\n\n"
 }
 
 pub fn render_unknown_event_fallback_can_show_raw_excerpt_test() {
@@ -581,7 +645,7 @@ pub fn render_unknown_event_fallback_can_show_raw_excerpt_test() {
     render.render_event(render.initial_state(0), stored_event, opts)
 
   assert render.chunks_to_string(chunks)
-    == "event mystery\n  raw: {\"type\":\"mystery\",\"detail\":\"one\\ntwo\"}\n"
+    == "event mystery\n  raw: {\"type\":\"mystery\",\"detail\":\"one\\ntwo\"}\n\n"
 }
 
 fn with_turn(payload: event.EventPayload, turn: Int) -> event.EventPayload {
