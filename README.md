@@ -14,7 +14,7 @@ For real prompted runs today, use the legacy Markdown `WORKFLOW.md` format. The 
 - **Supported production path:** one Scherzo process, one Linear project, one canonical workspace root, and one Markdown workflow file.
 - **Operator controls:** local token-authenticated `scherzoctl` plus optional Linear comment commands.
 - **Handoff:** optional Linear comments/state updates, including structured success result comments with redaction and truncation.
-- **Intentional limits:** no distributed claiming, no durable scheduler state, and no sandbox beyond host OS/pi/workflow controls.
+- **Intentional limits:** no distributed claiming, no startup recovery from durable scheduler state yet, and no sandbox beyond host OS/pi/workflow controls.
 
 ## Table of contents
 
@@ -35,6 +35,7 @@ For real prompted runs today, use the legacy Markdown `WORKFLOW.md` format. The 
 - [Session event model](#session-event-model)
 - [Local control API and scherzoctl](#local-control-api-and-scherzoctl)
 - [Linear command comments](#linear-command-comments)
+- [Local durable ledger](#local-durable-ledger)
 - [Safety posture](#safety-posture)
 - [Implemented coverage and current limits](#implemented-coverage-and-current-limits)
 - [Operational rollout](#operational-rollout)
@@ -473,6 +474,20 @@ Issue-targeted commands (`retry`, `park`, and `unpark`) target the Linear issue 
 
 This transport is runtime-only. Commands posted while Scherzo is down are missed because old comments are ignored at daemon startup, and processed receipts are not durable across restart. Local `scherzoctl` remains the fallback control path.
 
+## Local durable ledger
+
+Scherzo includes a local durable state ledger under `workspace.root/.scherzo-state/ledger/` as a storage foundation for later crash recovery work. The ledger currently exposes Gleam APIs and tests only; daemon startup does not yet restore retry timers, parked issues, command receipts, outbox work, or interrupted runs from it.
+
+The ledger layout is:
+
+    .scherzo-state/ledger/current.jsonl
+    .scherzo-state/ledger/snapshot.json
+    .scherzo-state/ledger/archive/segment-<n>.jsonl
+
+`current.jsonl` is append-only JSON Lines. Each line is one schema-versioned record with `schema_version`, `record_id`, `kind`, and `at_ms`, plus fields for run, retry, park, Linear command, or outbox facts. Replay rejects unsupported schema versions and malformed middle records, while tolerating one truncated trailing JSON record from a crash during append. Compaction writes a projection snapshot through a temporary file and then archives the old current segment before starting a fresh `current.jsonl`.
+
+Ledger records are operational state, not transcripts. They should contain identifiers, statuses, bounded excerpts, result codes, and redacted strings only. Do not store API keys, raw pi JSON, full prompts, or full Linear comment bodies in the ledger.
+
 ## Safety posture
 
 Scherzo is intended for trusted repositories and trusted workflow files. Hooks are arbitrary shell. pi tool execution follows the operator's `pi.command` and host OS environment. Scherzo enforces workspace cwd and root containment, but it does not provide a VM or container sandbox.
@@ -492,13 +507,14 @@ Implemented:
 - Pure in-memory scheduling decisions for dispatch eligibility, retries, parking, continuation caps, reconciliation, and token accounting.
 - Long-lived daemon actor with poll/retry timers, monitored workers, WorkerUpdate logging, in-memory session event replay, local authenticated control API, shared operator command model, Linear command comments, `scherzoctl`, programmatic shutdown, graceful SIGTERM daemon shutdown, and optional Linear handoff.
 - Structured success/result handoff comments with assistant-visible final responses, truncation, and secret redaction.
+- Local durable ledger APIs for schema-versioned JSONL records, replay projections, tolerated truncated tails, and snapshot compaction; daemon recovery does not consume the ledger yet.
 - Experimental YAML orchestrator/DAG config parsing, validation, scheduling primitives, workspace-run hooks, command-step artifacts, and prompt artifact rendering.
 - Structured key-value log formatting with secret redaction.
 
 Still intentionally out of scope:
 
 - Distributed exactly-once claiming across hosts or workspace roots.
-- Durable scheduler state across BEAM restarts.
+- Startup recovery of scheduler state from the local durable ledger across BEAM restarts.
 - CLI Ctrl-C/SIGINT graceful shutdown hooks and crash recovery after `kill -9`, host power loss, or BEAM VM termination.
 - Production CLI/daemon execution of YAML DAG workflows until the DAG runner is wired through service modes.
 - HTTP dashboard, durable Linear command receipts or webhook wake-up, SSH workers, and the optional `linear_graphql` pi tool extension.
