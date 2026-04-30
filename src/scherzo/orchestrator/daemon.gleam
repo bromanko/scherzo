@@ -22,6 +22,7 @@ import scherzo/orchestrator/core
 import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/hub
+import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/workflow_policy
 import scherzo/workflow_run

@@ -110,6 +110,12 @@ The main concurrency risk is one issue running many inner pi agents while `agent
 - Observation: Ready batches can be run concurrently without making downstream artifact rendering nondeterministic.
   Evidence: `src/scherzo/workflow_run.gleam` now spawns each selected ready step after preparing the whole batch, collects step results, and applies them back in DAG order. `test/workflow_run_test.gleam` proves two blocked ready command steps both start before either is released, while the fan-in prompt still receives deterministic `steps.*` artifacts.
 
+- Observation: Fatal step results can stop blocked siblings at the shared workflow-runner layer before the full daemon per-step worker refactor.
+  Evidence: `test/workflow_run_test.gleam` now includes `workflow_run_fatal_ready_step_cancels_active_siblings_test`, where a failing ready step returns while a sibling command remains blocked; `workflow_run.execute` returns `workflow_step_failed`, runs `after:fail`, cleans up, and does not wait for or run `after:slow`.
+
+- Observation: Command-only YAML workflows also need concrete step sessions for operator observability, even though they do not accept operator prompts.
+  Evidence: `src/scherzo/orchestrator/daemon.gleam` wraps YAML command steps to register and finish event-hub sessions, and `test/orchestrator_daemon_test.gleam` asserts that the command workflow exposes `ABC-1-42-1-final_test`.
+
 - Observation: The current `WorkflowDefinition` is only a raw YAML config node plus a trimmed prompt body.
   Evidence: `src/scherzo/domain.gleam` defines `WorkflowDefinition(config: yay.Node, prompt_template: String)`, and `src/scherzo/workflow.gleam` fills those fields from optional Markdown front matter and body text.
 
