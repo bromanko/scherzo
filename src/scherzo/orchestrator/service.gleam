@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/erlang/process
 import gleam/io
 import gleam/list
@@ -15,11 +16,14 @@ import scherzo/linear_contract
 import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
+import scherzo/runtime_bundle
 import scherzo/signal
 import scherzo/smoke
 import scherzo/tracker
-import scherzo/workflow
+import scherzo/workflow_dag
+import scherzo/workflow_run
 import scherzo/workspace
+import scherzo/workspace_run
 
 pub type StartupError {
   StartupError(code: String, message: String)
@@ -37,6 +41,7 @@ pub type Dependencies {
       fn(String, runner.PiUpdate) -> Nil,
     ) ->
       Result(runner.WorkerSuccess, runner.WorkerFailure),
+    workflow_run_dependencies: workflow_run.Dependencies,
     cleanup: fn(String, String, domain.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
     logger: fn(String) -> Result(Nil, Nil),
@@ -70,6 +75,7 @@ pub fn default_dependencies() -> Dependencies {
   Dependencies(
     tracker: linear.real_client,
     agent_runner: runner.run_attempt,
+    workflow_run_dependencies: workflow_run.default_dependencies(),
     cleanup: workspace.cleanup_stored_path,
     logger: fn(line) {
       io.println_error(line)
@@ -108,16 +114,12 @@ pub fn start_with_dependencies(
 pub fn start_linear_smoke(
   workflow_path: Option(String),
 ) -> Result(Nil, StartupError) {
-  let path = workflow.choose_path(workflow_path)
-  use definition <- try_startup(
-    workflow.load(workflow_path)
-    |> map_workflow_error,
+  use bundle <- try_startup(
+    runtime_bundle.load(workflow_path)
+    |> map_bundle_error,
   )
-  use effective <- try_startup(
-    config.resolve(definition, path)
-    |> map_config_error,
-  )
-  let secrets = config.resolved_secrets(effective)
+  let effective = bundle.effective
+  let secrets = bundle.secrets
   let reader = smoke.real_linear_reader(effective.tracker)
   use result <- try_startup(
     smoke.linear_read_smoke(reader, effective.tracker.terminal_states)
@@ -153,16 +155,12 @@ pub fn start_linear_contract_check_with_dependencies(
   workflow_path: Option(String),
   dependencies: ContractCheckDependencies,
 ) -> Result(Nil, StartupError) {
-  let path = workflow.choose_path(workflow_path)
-  use definition <- try_startup(
-    workflow.load(workflow_path)
-    |> map_workflow_error,
+  use bundle <- try_startup(
+    runtime_bundle.load(workflow_path)
+    |> map_bundle_error,
   )
-  use effective <- try_startup(
-    config.resolve(definition, path)
-    |> map_config_error,
-  )
-  let secrets = config.resolved_secrets(effective)
+  let effective = bundle.effective
+  let secrets = bundle.secrets
   let client = dependencies.make_contract_client(effective.tracker)
   use remote <- try_startup(
     client.fetch_remote_contract()
@@ -367,20 +365,35 @@ fn diagnostic_log_fields(
 pub fn start_pi_probe(
   workflow_path: Option(String),
 ) -> Result(Nil, StartupError) {
-  let path = workflow.choose_path(workflow_path)
-  use definition <- try_startup(
-    workflow.load(workflow_path)
-    |> map_workflow_error,
+  use bundle <- try_startup(
+    runtime_bundle.load(workflow_path)
+    |> map_bundle_error,
   )
-  use effective <- try_startup(
-    config.resolve(definition, path)
-    |> map_config_error,
-  )
-  use _ <- try_startup(config.validate_dispatch(effective) |> map_config_error)
-  use lock <- try_startup(acquire_lock(effective.workspace.root))
-  let probe_result = run_pi_probe(effective)
-  instance_lock.release(lock)
-  probe_result
+  case bundle.mode {
+    runtime_bundle.LegacyMarkdown -> {
+      use _ <- try_startup(
+        config.validate_dispatch(bundle.effective) |> map_config_error,
+      )
+      use lock <- try_startup(acquire_lock(bundle.effective.workspace.root))
+      let probe_result = run_pi_probe(bundle.effective)
+      instance_lock.release(lock)
+      probe_result
+    }
+    runtime_bundle.OrchestratorYaml -> {
+      use lock <- try_startup(acquire_lock(bundle.effective.workspace.root))
+      let probe_result = case bundle.orchestrator {
+        Some(orchestrator) ->
+          run_pi_probe_orchestrator(orchestrator, bundle.secrets)
+        None ->
+          Error(StartupError(
+            "missing_orchestrator_config",
+            "missing orchestrator config",
+          ))
+      }
+      instance_lock.release(lock)
+      probe_result
+    }
+  }
 }
 
 pub fn log_stderr(
@@ -397,23 +410,18 @@ fn acquire_lock_for_workflow(
   workflow_path: Option(String),
   require_dispatch: Bool,
 ) -> Result(instance_lock.Lock, StartupError) {
-  let path = workflow.choose_path(workflow_path)
-  use definition <- try_startup(
-    workflow.load(workflow_path)
-    |> map_workflow_error,
+  use bundle <- try_startup(
+    runtime_bundle.load(workflow_path)
+    |> map_bundle_error,
   )
-  use effective <- try_startup(
-    config.resolve(definition, path)
-    |> map_config_error,
-  )
-  case require_dispatch {
-    True -> {
+  case require_dispatch, bundle.mode {
+    True, runtime_bundle.LegacyMarkdown -> {
       use _ <- try_startup(
-        config.validate_dispatch(effective) |> map_config_error,
+        config.validate_dispatch(bundle.effective) |> map_config_error,
       )
-      acquire_lock(effective.workspace.root)
+      acquire_lock(bundle.effective.workspace.root)
     }
-    False -> acquire_lock(effective.workspace.root)
+    _, _ -> acquire_lock(bundle.effective.workspace.root)
   }
 }
 
@@ -460,6 +468,66 @@ fn run_pi_probe(effective: domain.EffectiveConfig) -> Result(Nil, StartupError) 
   }
 }
 
+fn run_pi_probe_orchestrator(
+  orchestrator: domain.OrchestratorConfig,
+  secrets: List(String),
+) -> Result(Nil, StartupError) {
+  let issue =
+    domain.Issue(
+      id: "SCHERZO-PROBE",
+      identifier: "SCHERZO-PROBE",
+      title: "Scherzo probe",
+      description: None,
+      priority: None,
+      state: "",
+      branch_name: None,
+      url: None,
+      labels: [],
+      blocked_by: [],
+      created_at: None,
+      updated_at: None,
+    )
+  case
+    workspace_run.prepare_step(
+      issue,
+      "probe",
+      "probe",
+      "probe",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      dict.new(),
+    )
+  {
+    Error(workspace_run.WorkspaceFailure(err)) ->
+      Error(StartupError(error.workspace_code(err), "workspace error"))
+    Error(workspace_run.HookFailure(err)) ->
+      Error(StartupError(error.hook_code(err), "hook error"))
+    Ok(prepared) -> {
+      let probe_result =
+        probe.probe(
+          orchestrator.effective.pi.command,
+          prepared.path,
+          orchestrator.effective.pi.read_timeout_ms,
+        )
+      let _ = workspace_run.cleanup_run(prepared.run_root, orchestrator)
+      case probe_result {
+        Ok(Nil) -> {
+          let _ =
+            log_stderr(
+              "info",
+              "pi_probe_ok",
+              [#("workspace_path", prepared.path)],
+              secrets,
+            )
+          Ok(Nil)
+        }
+        Error(err) ->
+          Error(StartupError(error.pi_rpc_code(err), "pi probe error"))
+      }
+    }
+  }
+}
+
 fn cleanup_probe_workspace(
   effective: domain.EffectiveConfig,
   workspace_path: String,
@@ -493,16 +561,28 @@ pub fn run_once_with_dependencies(
   workflow_path: Option(String),
   dependencies: Dependencies,
 ) -> Result(ServiceResult, StartupError) {
-  let path = workflow.choose_path(workflow_path)
-  use definition <- try_startup(
-    workflow.load(workflow_path)
-    |> map_workflow_error,
+  use bundle <- try_startup(
+    runtime_bundle.load(workflow_path)
+    |> map_bundle_error,
   )
-  use effective <- try_startup(
-    config.resolve(definition, path)
-    |> map_config_error,
-  )
-  use _ <- try_startup(config.validate_dispatch(effective) |> map_config_error)
+  case bundle.mode {
+    runtime_bundle.LegacyMarkdown -> {
+      use _ <- try_startup(
+        config.validate_dispatch(bundle.effective) |> map_config_error,
+      )
+      run_once_loaded(bundle.config_path, bundle, dependencies)
+    }
+    runtime_bundle.OrchestratorYaml ->
+      run_once_loaded(bundle.config_path, bundle, dependencies)
+  }
+}
+
+fn run_once_loaded(
+  path: String,
+  bundle: runtime_bundle.RuntimeBundle,
+  dependencies: Dependencies,
+) -> Result(ServiceResult, StartupError) {
+  let effective = bundle.effective
   let tracker_client = dependencies.tracker(effective.tracker)
   let initial_state = core.new_state(effective)
   let logs = [
@@ -526,14 +606,27 @@ pub fn run_once_with_dependencies(
         state: initial_state,
       ))
     False ->
-      run_tick(
-        definition,
-        effective,
-        initial_state,
-        tracker_client,
-        dependencies,
-        logs,
-      )
+      case bundle.mode, bundle.legacy_workflow {
+        runtime_bundle.LegacyMarkdown, Some(definition) ->
+          run_tick(
+            definition,
+            effective,
+            initial_state,
+            tracker_client,
+            dependencies,
+            logs,
+          )
+        runtime_bundle.LegacyMarkdown, None ->
+          Error(StartupError("missing_workflow", "legacy workflow is missing"))
+        runtime_bundle.OrchestratorYaml, _ ->
+          run_tick_yaml(
+            bundle,
+            initial_state,
+            tracker_client,
+            dependencies,
+            logs,
+          )
+      }
   }
 }
 
@@ -574,6 +667,207 @@ fn run_tick(
         [fetched, tick_log, ..logs],
         0,
       )
+    }
+  }
+}
+
+fn run_tick_yaml(
+  bundle: runtime_bundle.RuntimeBundle,
+  state: domain.RuntimeState,
+  tracker_client: tracker.Client,
+  dependencies: Dependencies,
+  logs: List(String),
+) -> Result(ServiceResult, StartupError) {
+  let tick_log = log.info("tick_started", [])
+  let _ = dependencies.logger(tick_log)
+  case tracker_client.fetch_candidate_issues() {
+    Error(err) -> {
+      let line =
+        log.warn("candidate_fetch_failed", [#("error", error.tracker_code(err))])
+      let _ = dependencies.logger(line)
+      Ok(ServiceResult(
+        logs: [line, tick_log, ..logs],
+        dispatched: 0,
+        state: state,
+      ))
+    }
+    Ok(candidates) -> {
+      let fetched =
+        log.info("candidates_fetched", [
+          #("count", int_to_string(list.length(candidates))),
+        ])
+      let _ = dependencies.logger(fetched)
+      dispatch_candidates_yaml(
+        core.sort_candidates(candidates),
+        bundle,
+        state,
+        tracker_client,
+        dependencies,
+        [fetched, tick_log, ..logs],
+        0,
+      )
+    }
+  }
+}
+
+fn dispatch_candidates_yaml(
+  candidates: List(domain.Issue),
+  bundle: runtime_bundle.RuntimeBundle,
+  state: domain.RuntimeState,
+  tracker_client: tracker.Client,
+  dependencies: Dependencies,
+  logs: List(String),
+  dispatched: Int,
+) -> Result(ServiceResult, StartupError) {
+  case candidates {
+    [] -> Ok(ServiceResult(logs: logs, dispatched: dispatched, state: state))
+    [issue, ..rest] -> {
+      let state = core.unpark_if_issue_changed(state, issue)
+      case core.should_dispatch(state, bundle.effective, issue) {
+        False ->
+          dispatch_candidates_yaml(
+            rest,
+            bundle,
+            state,
+            tracker_client,
+            dependencies,
+            logs,
+            dispatched,
+          )
+        True ->
+          case runtime_bundle.select_workflow(bundle, issue) {
+            Error(runtime_bundle.BundleError(code, _)) -> {
+              let skipped =
+                log.warn("workflow_route_failed", [
+                  #("issue_id", issue.id),
+                  #("issue_identifier", issue.identifier),
+                  #("error", code),
+                ])
+              let _ = dependencies.logger(skipped)
+              dispatch_candidates_yaml(
+                rest,
+                bundle,
+                state,
+                tracker_client,
+                dependencies,
+                [skipped, ..logs],
+                dispatched,
+              )
+            }
+            Ok(#(workflow_id, dag)) ->
+              dispatch_yaml_issue(
+                rest,
+                issue,
+                workflow_id,
+                dag,
+                bundle,
+                state,
+                tracker_client,
+                dependencies,
+                logs,
+                dispatched,
+              )
+          }
+      }
+    }
+  }
+}
+
+fn dispatch_yaml_issue(
+  remaining: List(domain.Issue),
+  issue: domain.Issue,
+  workflow_id: String,
+  dag: workflow_dag.WorkflowDag,
+  bundle: runtime_bundle.RuntimeBundle,
+  state: domain.RuntimeState,
+  tracker_client: tracker.Client,
+  dependencies: Dependencies,
+  logs: List(String),
+  dispatched: Int,
+) -> Result(ServiceResult, StartupError) {
+  case bundle.orchestrator {
+    None ->
+      Error(StartupError(
+        "missing_orchestrator_config",
+        "missing orchestrator config",
+      ))
+    Some(orchestrator) -> {
+      let started =
+        log.info("dispatch_started", [
+          #("issue_id", issue.id),
+          #("issue_identifier", issue.identifier),
+          #("workflow_id", workflow_id),
+        ])
+      let _ = dependencies.logger(started)
+      let state = core.apply_worker_start(state, issue, "")
+      let run_id = issue.identifier <> "-once"
+      case
+        workflow_run.execute(
+          issue,
+          dag,
+          orchestrator,
+          tracker_client,
+          bundle.secrets,
+          run_id,
+          dependencies.workflow_run_dependencies,
+        )
+      {
+        Ok(success) -> {
+          let exited =
+            log.info("worker_exited", [
+              #("issue_id", issue.id),
+              #("issue_identifier", issue.identifier),
+              #("reason", "normal"),
+              #("workspace_path", success.run_root),
+            ])
+          let cleaned =
+            log.info("workspace_cleaned", [
+              #("workspace_path", success.run_root),
+            ])
+          let _ = dependencies.logger(exited)
+          let _ = dependencies.logger(cleaned)
+          let final_issue = case success.worker_success.final_issue {
+            Some(i) -> i
+            None -> issue
+          }
+          let state =
+            apply_dag_success_state(
+              state,
+              issue.id,
+              final_issue,
+              success.worker_success.tokens,
+            )
+          dispatch_candidates_yaml(
+            remaining,
+            bundle,
+            state,
+            tracker_client,
+            dependencies,
+            [cleaned, exited, started, ..logs],
+            dispatched + 1,
+          )
+        }
+        Error(failure) -> {
+          let failed =
+            log.warn("worker_exited", [
+              #("issue_id", issue.id),
+              #("issue_identifier", issue.identifier),
+              #("reason", "failed"),
+              #("error", failure.reason),
+            ])
+          let _ = dependencies.logger(failed)
+          let state = apply_dag_failure_state(state, issue.id)
+          dispatch_candidates_yaml(
+            remaining,
+            bundle,
+            state,
+            tracker_client,
+            dependencies,
+            [failed, started, ..logs],
+            dispatched + 1,
+          )
+        }
+      }
     }
   }
 }
@@ -710,6 +1004,45 @@ fn dispatch_candidates(
   }
 }
 
+fn apply_dag_success_state(
+  state: domain.RuntimeState,
+  issue_id: String,
+  final_issue: domain.Issue,
+  tokens: domain.TokenTotals,
+) -> domain.RuntimeState {
+  domain.RuntimeState(
+    ..state,
+    running: dict.delete(state.running, issue_id),
+    claimed: dict.delete(state.claimed, issue_id),
+    completed: dict.insert(state.completed, issue_id, final_issue),
+    aggregate_pi_totals: add_tokens(state.aggregate_pi_totals, tokens),
+  )
+}
+
+fn apply_dag_failure_state(
+  state: domain.RuntimeState,
+  issue_id: String,
+) -> domain.RuntimeState {
+  domain.RuntimeState(
+    ..state,
+    running: dict.delete(state.running, issue_id),
+    claimed: dict.delete(state.claimed, issue_id),
+  )
+}
+
+fn add_tokens(
+  left: domain.TokenTotals,
+  right: domain.TokenTotals,
+) -> domain.TokenTotals {
+  domain.TokenTotals(
+    input: left.input + right.input,
+    output: left.output + right.output,
+    cache_read: left.cache_read + right.cache_read,
+    cache_write: left.cache_write + right.cache_write,
+    total: left.total + right.total,
+  )
+}
+
 fn interpret_effects(
   effects: List(core.Effect),
   effective: domain.EffectiveConfig,
@@ -781,13 +1114,13 @@ fn interpret_effect(
   }
 }
 
-fn map_workflow_error(
-  result: Result(a, error.WorkflowError),
+fn map_bundle_error(
+  result: Result(a, runtime_bundle.BundleError),
 ) -> Result(a, StartupError) {
   case result {
     Ok(value) -> Ok(value)
-    Error(err) ->
-      Error(StartupError(error.workflow_code(err), "workflow error"))
+    Error(runtime_bundle.BundleError(code, message)) ->
+      Error(StartupError(code, message))
   }
 }
 

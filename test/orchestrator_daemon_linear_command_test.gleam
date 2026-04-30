@@ -15,6 +15,7 @@ import scherzo/orchestrator/daemon
 import scherzo/session/hub
 import scherzo/tracker
 import scherzo/workflow_policy
+import scherzo/workflow_run
 import simplifile
 
 fn reset_dir(dir: String) -> Nil {
@@ -291,6 +292,7 @@ fn dependencies(
     make_linear_commands: fn(_) { linear_command_client },
     make_triage: fn(_, _) { linear_triage.disabled_client() },
     agent_runner: agent_runner,
+    workflow_run_dependencies: workflow_run.default_dependencies(),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, fields, _) {
       process.send(log_subject, log_value(event, fields))

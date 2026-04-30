@@ -1,4 +1,5 @@
 import birl
+import gleam/dict
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -9,7 +10,10 @@ import scherzo/linear
 import scherzo/linear_contract
 import scherzo/orchestrator/service
 import scherzo/path
+import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/workflow_run
+import scherzo/workspace_run
 import simplifile
 
 pub type CapturedLog {
@@ -49,6 +53,19 @@ fn issue(state: String) -> domain.Issue {
   )
 }
 
+fn yaml_config(root: String, extra: String) -> String {
+  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
+  <> root
+  <> "\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n"
+  <> extra
+}
+
+fn command_workflow_yaml(command: String) -> String {
+  "version: 1\nid: implementation\nsteps:\n  - id: final_test\n    kind: command\n    run: "
+  <> command
+  <> "\n    workspace: main\n"
+}
+
 fn workflow_text(root: String, command: String, max_concurrent: Int) -> String {
   "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\nworkspace:\n  root: "
   <> root
@@ -63,6 +80,7 @@ fn deps(client: tracker.Client) -> service.Dependencies {
   service.Dependencies(
     tracker: fn(_) { client },
     agent_runner: runner.run_attempt,
+    workflow_run_dependencies: workflow_deps(),
     cleanup: fn(root, path, hooks) {
       let _ = root
       let _ = path
@@ -71,6 +89,74 @@ fn deps(client: tracker.Client) -> service.Dependencies {
     },
     logger: fn(_line) { Ok(Nil) },
     now_ms: fn() { 0 },
+  )
+}
+
+fn workflow_deps() -> workflow_run.Dependencies {
+  workflow_run.Dependencies(
+    prepare_step: fn(
+      issue,
+      workflow_id,
+      run_id,
+      _step_id,
+      workspace_ref,
+      orchestrator,
+      _known,
+    ) {
+      let run_root =
+        orchestrator.effective.workspace.root
+        <> "/"
+        <> workflow_id
+        <> "/"
+        <> issue.identifier
+        <> "/"
+        <> run_id
+      Ok(workspace_run.PreparedStepWorkspace(
+        workflow_id: workflow_id,
+        run_id: run_id,
+        run_root: run_root,
+        workspace_name: workspace_ref.name,
+        path: run_root <> "/" <> workspace_ref.name,
+        source_workspace_name: workspace_ref.from,
+        source_workspace_path: None,
+      ))
+    },
+    after_step: fn(_, _, _, _) { Nil },
+    cleanup_run: fn(_, _) { Ok(Nil) },
+    command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
+      step_artifact.from_command_result(
+        step_id,
+        0,
+        "stdout:" <> step_id,
+        "",
+        False,
+        secrets,
+        limits,
+      )
+    },
+    agent_step: fn(
+      issue,
+      _step_id,
+      prompt,
+      _effective,
+      _tracker,
+      workspace_path,
+      _emit_update,
+      _command_ready,
+    ) {
+      Ok(runner.WorkerSuccess(
+        final_issue: Some(issue),
+        final_classification: runner.FinalTerminal,
+        workspace_path: workspace_path,
+        tokens: domain.zero_token_totals(),
+        turns: 1,
+        result: domain.ResultArtifact(
+          final_response: Some(prompt),
+          truncated: False,
+          source: "test",
+        ),
+      ))
+    },
   )
 }
 
@@ -268,6 +354,88 @@ pub fn linear_contract_check_fetch_error_maps_to_startup_failure_test() {
     )
   assert err.code == "linear_api_status"
   assert process.receive(log_subject, within: 50) == Error(Nil)
+}
+
+pub fn yaml_once_runs_command_workflow_test() {
+  let dir = "test/tmp/service-yaml-once"
+  let root = "workspaces"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let config_path = dir <> "/scherzo.yaml"
+  let assert Ok(Nil) = simplifile.write(config_path, yaml_config(root, ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      command_workflow_yaml("sh -c 'exit 1'"),
+    )
+  let candidate =
+    domain.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+  let assert Ok(result) =
+    service.run_once_with_dependencies(
+      Some(config_path),
+      deps(tracker_with_candidate(candidate, candidate)),
+    )
+  assert result.dispatched == 1
+  assert contains_log(result.logs, "dispatch_started")
+  assert contains_log(result.logs, "worker_exited")
+  assert contains_log(result.logs, "workspace_cleaned")
+  assert dict.has_key(result.state.completed, "issue-id")
+  assert simplifile.is_directory(
+      dir <> "/workspaces/implementation/ABC-123/ABC-123-once",
+    )
+    != Ok(True)
+}
+
+pub fn yaml_once_skips_issue_without_workflow_label_test() {
+  let dir = "test/tmp/service-yaml-missing-label"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let config_path = dir <> "/scherzo.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(config_path, yaml_config("workspaces", ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
+  let assert Ok(result) =
+    service.run_once_with_dependencies(
+      Some(config_path),
+      deps(tracker_with_candidate(issue("Todo"), issue("Todo"))),
+    )
+  assert result.dispatched == 0
+  assert contains_log(result.logs, "workflow_route_failed")
+}
+
+pub fn yaml_linear_contract_check_uses_orchestrator_config_test() {
+  let dir = "test/tmp/service-yaml-contract"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let config_path = dir <> "/scherzo.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(config_path, yaml_config("workspaces", ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
+  let log_subject = process.new_subject()
+  let result =
+    service.start_linear_contract_check_with_dependencies(
+      Some(config_path),
+      contract_deps(
+        Ok(
+          contract_board([
+            contract_state("state-todo", "Todo"),
+            contract_state("state-done", "Done"),
+          ]),
+        ),
+        log_subject,
+      ),
+    )
+  assert result == Ok(Nil)
+  let assert Ok(CapturedLog(event: "linear_contract_ok", ..)) =
+    process.receive(log_subject, within: 1000)
 }
 
 pub fn fake_end_to_end_service_dispatch_test() {

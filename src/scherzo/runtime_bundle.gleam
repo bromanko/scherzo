@@ -19,6 +19,8 @@ pub type BundleMode {
 pub type RuntimeBundle {
   RuntimeBundle(
     mode: BundleMode,
+    config_path: String,
+    config_contents: String,
     effective: domain.EffectiveConfig,
     orchestrator: Option(domain.OrchestratorConfig),
     workflows: Dict(String, workflow_dag.WorkflowDag),
@@ -31,6 +33,27 @@ pub type BundleError {
   BundleError(code: String, message: String)
 }
 
+pub fn select_workflow(
+  bundle: RuntimeBundle,
+  issue: domain.Issue,
+) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
+  case bundle.mode, bundle.orchestrator {
+    LegacyMarkdown, _ ->
+      case dict.get(bundle.workflows, "legacy") {
+        Ok(dag) -> Ok(#("legacy", dag))
+        Error(_) ->
+          Error(BundleError("missing_workflow", "legacy workflow is missing"))
+      }
+    OrchestratorYaml, Some(orchestrator) ->
+      select_routed_workflow(bundle.workflows, orchestrator.routing, issue)
+    OrchestratorYaml, None ->
+      Error(BundleError(
+        "missing_orchestrator_config",
+        "orchestrator config is missing",
+      ))
+  }
+}
+
 pub fn load(explicit: Option(String)) -> Result(RuntimeBundle, BundleError) {
   load_with_env(explicit, real_env)
 }
@@ -39,7 +62,7 @@ pub fn load_with_env(
   explicit: Option(String),
   env: config.Env,
 ) -> Result(RuntimeBundle, BundleError) {
-  let selected = workflow.choose_path(explicit)
+  let selected = select_config_path(explicit)
   case path_kind(selected) {
     Some(LegacyMarkdown) -> load_legacy(selected, env)
     Some(OrchestratorYaml) -> load_orchestrator(selected, env)
@@ -51,14 +74,80 @@ pub fn load_with_env(
   }
 }
 
+fn select_routed_workflow(
+  workflows: Dict(String, workflow_dag.WorkflowDag),
+  routing: domain.RoutingConfig,
+  issue: domain.Issue,
+) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
+  let labels = workflow_labels(issue.labels, routing.workflow_label_prefix, [])
+  case labels {
+    [] ->
+      case routing.require_exactly_one_workflow_label {
+        True ->
+          Error(BundleError(
+            "missing_workflow_label",
+            "issue has no workflow label",
+          ))
+        False ->
+          case routing.default_workflow {
+            Some(id) -> lookup_workflow(workflows, id)
+            None ->
+              Error(BundleError(
+                "missing_workflow_label",
+                "issue has no workflow label",
+              ))
+          }
+      }
+    [id] -> lookup_workflow(workflows, id)
+    _ ->
+      Error(BundleError(
+        "multiple_workflow_labels",
+        "issue has multiple workflow labels",
+      ))
+  }
+}
+
+fn lookup_workflow(
+  workflows: Dict(String, workflow_dag.WorkflowDag),
+  id: String,
+) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
+  case dict.get(workflows, id) {
+    Ok(dag) -> Ok(#(id, dag))
+    Error(_) ->
+      Error(BundleError(
+        "unknown_workflow_label",
+        "unknown workflow label: " <> id,
+      ))
+  }
+}
+
+fn workflow_labels(
+  labels: List(String),
+  prefix: String,
+  acc: List(String),
+) -> List(String) {
+  case labels {
+    [] -> list.reverse(acc)
+    [label, ..rest] -> {
+      let label = label |> string.trim |> string.lowercase
+      case prefix != "" && string.starts_with(label, prefix) {
+        True ->
+          workflow_labels(rest, prefix, [
+            string.drop_start(label, string.length(prefix)),
+            ..acc
+          ])
+        False -> workflow_labels(rest, prefix, acc)
+      }
+    }
+  }
+}
+
 fn load_legacy(
   selected: String,
   env: config.Env,
 ) -> Result(RuntimeBundle, BundleError) {
-  use definition <- result_try(
-    workflow.load(Some(selected))
-    |> map_workflow_error,
-  )
+  use content <- result_try(read_file(selected, "missing_workflow_file"))
+  use definition <- result_try(workflow.parse(content) |> map_workflow_error)
   use effective <- result_try(
     config.resolve_with_env(definition, selected, env)
     |> map_config_error,
@@ -66,6 +155,8 @@ fn load_legacy(
   let dag = workflow_dag.legacy_inline("legacy", definition.prompt_template)
   Ok(RuntimeBundle(
     mode: LegacyMarkdown,
+    config_path: selected,
+    config_contents: content,
     effective: effective,
     orchestrator: None,
     workflows: dict.from_list([#("legacy", dag)]),
@@ -90,6 +181,8 @@ fn load_orchestrator(
   ))
   Ok(RuntimeBundle(
     mode: OrchestratorYaml,
+    config_path: selected,
+    config_contents: content,
     effective: orchestrator.effective,
     orchestrator: Some(orchestrator),
     workflows: workflows,
@@ -226,6 +319,43 @@ fn read_file(path: String, code: String) -> Result(String, BundleError) {
   case simplifile.read(path) {
     Ok(content) -> Ok(content)
     Error(_) -> Error(BundleError(code, "could not read " <> path))
+  }
+}
+
+fn select_config_path(explicit: Option(String)) -> String {
+  case explicit {
+    Some(path) -> path
+    None -> default_config_path()
+  }
+}
+
+fn default_config_path() -> String {
+  case file_exists("WORKFLOW.md") {
+    True -> "WORKFLOW.md"
+    False ->
+      case file_exists(".scherzo/scherzo.yaml") {
+        True -> ".scherzo/scherzo.yaml"
+        False ->
+          case file_exists(".scherzo/scherzo.yml") {
+            True -> ".scherzo/scherzo.yml"
+            False ->
+              case file_exists("scherzo.yaml") {
+                True -> "scherzo.yaml"
+                False ->
+                  case file_exists("scherzo.yml") {
+                    True -> "scherzo.yml"
+                    False -> workflow.choose_path(None)
+                  }
+              }
+          }
+      }
+  }
+}
+
+fn file_exists(path: String) -> Bool {
+  case simplifile.is_file(path) {
+    Ok(True) -> True
+    _ -> False
   }
 }
 

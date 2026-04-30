@@ -59,8 +59,23 @@ pub fn prepare_step(
       source_workspace_name: source_name,
       source_workspace_path: source_path,
     )
+  case finish_prepare_step(issue, step_id, prepared, orchestrator) {
+    Ok(prepared) -> Ok(prepared)
+    Error(err) -> {
+      let _ = cleanup_run(run_root, orchestrator)
+      Error(err)
+    }
+  }
+}
+
+fn finish_prepare_step(
+  issue: domain.Issue,
+  step_id: String,
+  prepared: PreparedStepWorkspace,
+  orchestrator: domain.OrchestratorConfig,
+) -> Result(PreparedStepWorkspace, PrepareError) {
   use _ <- result_try(run_create_hook(issue, step_id, prepared, orchestrator))
-  use _ <- try_prepare(ensure_directory_after_create(workspace_path))
+  use _ <- try_prepare(ensure_directory_after_create(prepared.path))
   use _ <- result_try(run_before_step_hook(
     issue,
     step_id,

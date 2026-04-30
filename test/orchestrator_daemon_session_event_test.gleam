@@ -14,6 +14,7 @@ import scherzo/path
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/tracker
+import scherzo/workflow_run
 import scherzo/workspace
 import simplifile
 
@@ -125,6 +126,7 @@ fn dependencies(
     make_linear_commands: fn(_) { disabled_linear_commands() },
     make_triage: fn(_, _) { linear_triage.disabled_client() },
     agent_runner: agent_runner,
+    workflow_run_dependencies: workflow_run.default_dependencies(),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, logged_event, _, _) {
       process.send(log_subject, logged_event)

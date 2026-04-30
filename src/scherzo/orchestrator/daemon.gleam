@@ -19,13 +19,15 @@ import scherzo/linear
 import scherzo/linear_triage
 import scherzo/log
 import scherzo/orchestrator/core
+import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/tracker
-import scherzo/workflow
 import scherzo/workflow_policy
+import scherzo/workflow_run
 import scherzo/workspace
 import simplifile
+import yay
 
 pub type StartupError {
   StartupError(code: String, message: String)
@@ -199,6 +201,7 @@ pub type RuntimeDependencies {
       fn() -> Nil,
     ) ->
       Result(runner.WorkerSuccess, runner.WorkerFailure),
+    workflow_run_dependencies: workflow_run.Dependencies,
     cleanup: fn(String, String, domain.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
     logger: fn(String, String, List(log.Field), List(String)) ->
@@ -221,6 +224,7 @@ type State {
     chosen_path: String,
     last_contents: String,
     definition: domain.WorkflowDefinition,
+    bundle: runtime_bundle.RuntimeBundle,
     reload_state: config.ReloadState,
     effective: domain.EffectiveConfig,
     tracker_client: tracker.Client,
@@ -263,6 +267,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     make_linear_commands: linear.real_command_client,
     make_triage: linear_triage.real_triage_client,
     agent_runner: runner.run_attempt_with_command_ready,
+    workflow_run_dependencies: workflow_run.default_dependencies(),
     cleanup: workspace.cleanup_stored_path,
     logger: fn(level, event, fields, secrets) {
       let _ = level
@@ -391,17 +396,33 @@ pub fn apply_operator_command(
   process.receive(reply, within: timeout_ms)
 }
 
+fn workflow_definition_from_bundle(
+  bundle: runtime_bundle.RuntimeBundle,
+) -> domain.WorkflowDefinition {
+  case bundle.legacy_workflow {
+    Some(definition) -> definition
+    None ->
+      domain.WorkflowDefinition(config: yay.NodeMap([]), prompt_template: "")
+  }
+}
+
 pub fn start(
   workflow_path: Option(String),
   dependencies: RuntimeDependencies,
 ) -> Result(actor.Started(process.Subject(Message)), StartupError) {
-  let chosen_path = workflow.choose_path(workflow_path)
-  use contents <- try_startup(read_workflow_contents(chosen_path))
-  use definition <- try_startup(workflow.parse(contents) |> map_workflow_error)
-  use effective <- try_startup(
-    config.resolve(definition, chosen_path) |> map_config_error,
+  use bundle <- try_startup(
+    runtime_bundle.load(workflow_path)
+    |> map_bundle_error,
   )
-  use _ <- try_startup(config.validate_dispatch(effective) |> map_config_error)
+  let chosen_path = bundle.config_path
+  let contents = bundle.config_contents
+  let definition = workflow_definition_from_bundle(bundle)
+  let effective = bundle.effective
+  use _ <- try_startup(case bundle.mode {
+    runtime_bundle.LegacyMarkdown ->
+      config.validate_dispatch(effective) |> map_config_error
+    runtime_bundle.OrchestratorYaml -> Ok(Nil)
+  })
   let tracker_client = dependencies.make_tracker(effective.tracker)
   let handoff_client =
     dependencies.make_handoff(effective.tracker, effective.handoff)
@@ -441,6 +462,7 @@ pub fn start(
               chosen_path: chosen_path,
               last_contents: contents,
               definition: definition,
+              bundle: bundle,
               reload_state: reload_state,
               effective: effective,
               tracker_client: tracker_client,
@@ -1333,24 +1355,23 @@ fn reload_if_changed(state: State) -> State {
 }
 
 fn apply_new_contents(state: State, contents: String) -> State {
-  case workflow.parse(contents) {
-    Error(err) -> {
+  case runtime_bundle.load(Some(state.chosen_path)) {
+    Error(runtime_bundle.BundleError(code, _)) -> {
       let state =
         State(
           ..state,
           last_contents: contents,
           reload_state: config.ReloadState(
             last_known_good: Some(state.effective),
-            current_status: config.CurrentInvalid(error.workflow_code(err)),
+            current_status: config.CurrentInvalid(code),
           ),
         )
-      log_state(state, "warn", "workflow_reload_failed", [
-        #("error", error.workflow_code(err)),
-      ])
+      log_state(state, "warn", "workflow_reload_failed", [#("error", code)])
       state
     }
-    Ok(definition) ->
-      case config.resolve(definition, state.chosen_path) {
+    Ok(bundle) -> {
+      let effective = bundle.effective
+      case validate_reloaded_bundle(bundle, effective) {
         Error(err) -> {
           let state =
             State(
@@ -1366,64 +1387,63 @@ fn apply_new_contents(state: State, contents: String) -> State {
           ])
           state
         }
-        Ok(effective) ->
-          case config.validate_dispatch(effective) {
-            Error(err) -> {
-              let state =
-                State(
-                  ..state,
-                  last_contents: contents,
-                  reload_state: config.ReloadState(
-                    last_known_good: Some(state.effective),
-                    current_status: config.CurrentInvalid(error.config_code(err)),
-                  ),
-                )
-              log_state(state, "warn", "workflow_reload_failed", [
-                #("error", error.config_code(err)),
-              ])
-              state
-            }
-            Ok(Nil) -> {
-              let secrets = config.resolved_secrets(effective)
-              let runtime =
-                domain.RuntimeState(
-                  ..state.runtime,
-                  poll_interval_ms: effective.polling.interval_ms,
-                  max_concurrent_agents: effective.agent.max_concurrent_agents,
-                )
-              let state =
-                State(
-                  ..state,
-                  last_contents: contents,
-                  definition: definition,
-                  effective: effective,
-                  tracker_client: state.dependencies.make_tracker(
-                    effective.tracker,
-                  ),
-                  handoff_client: state.dependencies.make_handoff(
-                    effective.tracker,
-                    effective.handoff,
-                  ),
-                  linear_command_client: state.dependencies.make_linear_commands(
-                    effective.tracker,
-                  ),
-                  triage_client: state.dependencies.make_triage(
-                    effective.tracker,
-                    effective.linear_contract,
-                  ),
-                  runtime: runtime,
-                  reload_state: config.ReloadState(
-                    last_known_good: Some(effective),
-                    current_status: config.CurrentValid,
-                  ),
-                  secrets: secrets,
-                )
-              log_state(state, "info", "workflow_reloaded", [])
-              state
-            }
-          }
+        Ok(Nil) -> apply_reloaded_bundle(state, contents, bundle, effective)
       }
+    }
   }
+}
+
+fn validate_reloaded_bundle(
+  bundle: runtime_bundle.RuntimeBundle,
+  effective: domain.EffectiveConfig,
+) -> Result(Nil, error.ConfigError) {
+  case bundle.mode {
+    runtime_bundle.LegacyMarkdown -> config.validate_dispatch(effective)
+    runtime_bundle.OrchestratorYaml -> Ok(Nil)
+  }
+}
+
+fn apply_reloaded_bundle(
+  state: State,
+  contents: String,
+  bundle: runtime_bundle.RuntimeBundle,
+  effective: domain.EffectiveConfig,
+) -> State {
+  let secrets = config.resolved_secrets(effective)
+  let runtime =
+    domain.RuntimeState(
+      ..state.runtime,
+      poll_interval_ms: effective.polling.interval_ms,
+      max_concurrent_agents: effective.agent.max_concurrent_agents,
+    )
+  let state =
+    State(
+      ..state,
+      last_contents: contents,
+      definition: workflow_definition_from_bundle(bundle),
+      bundle: bundle,
+      effective: effective,
+      tracker_client: state.dependencies.make_tracker(effective.tracker),
+      handoff_client: state.dependencies.make_handoff(
+        effective.tracker,
+        effective.handoff,
+      ),
+      linear_command_client: state.dependencies.make_linear_commands(
+        effective.tracker,
+      ),
+      triage_client: state.dependencies.make_triage(
+        effective.tracker,
+        effective.linear_contract,
+      ),
+      runtime: runtime,
+      reload_state: config.ReloadState(
+        last_known_good: Some(effective),
+        current_status: config.CurrentValid,
+      ),
+      secrets: secrets,
+    )
+  log_state(state, "info", "workflow_reloaded", [])
+  state
 }
 
 fn mark_reload_invalid(state: State, reason: String) -> State {
@@ -2107,50 +2127,76 @@ fn dispatch_issue_with_continuation(
   case can_reserve_dispatch_slot(state, issue) {
     False -> retry_dispatch_later_if_needed(state, issue)
     True ->
-      case
-        workspace.workspace_path(
-          state.effective.workspace.root,
-          issue.identifier,
-        )
-      {
-        Error(err) -> {
-          log_state(state, "warn", "dispatch_workspace_path_failed", [
+      case can_route_issue_for_dispatch(state, issue) {
+        False -> dispatch_candidates(remaining_candidates, state)
+        True ->
+          case
+            workspace.workspace_path(
+              state.effective.workspace.root,
+              issue.identifier,
+            )
+          {
+            Error(err) -> {
+              log_state(state, "warn", "dispatch_workspace_path_failed", [
+                #("issue_id", issue.id),
+                #("error", error.workspace_code(err)),
+              ])
+              dispatch_candidates(remaining_candidates, state)
+            }
+            Ok(#(_, workspace_path)) -> {
+              let session_sequence = state.next_session_sequence
+              let run_id =
+                make_run_id(
+                  issue,
+                  state.dependencies.now_ms(),
+                  session_sequence,
+                )
+              let pending =
+                PendingClaim(
+                  issue: issue,
+                  workspace_path: workspace_path,
+                  run_id: run_id,
+                  session_sequence: session_sequence,
+                  remaining_candidates: remaining_candidates,
+                )
+              let state =
+                State(
+                  ..state,
+                  next_session_sequence: session_sequence + 1,
+                  pending_claims: dict.insert(
+                    state.pending_claims,
+                    issue.id,
+                    pending,
+                  ),
+                )
+              enqueue_side_effect(
+                state,
+                ClaimIssue(
+                  issue: issue,
+                  workspace_path: workspace_path,
+                  run_id: run_id,
+                  client: state.handoff_client,
+                ),
+              )
+            }
+          }
+      }
+  }
+}
+
+fn can_route_issue_for_dispatch(state: State, issue: domain.Issue) -> Bool {
+  case state.bundle.mode {
+    runtime_bundle.LegacyMarkdown -> True
+    runtime_bundle.OrchestratorYaml ->
+      case runtime_bundle.select_workflow(state.bundle, issue) {
+        Ok(_) -> True
+        Error(runtime_bundle.BundleError(code, message)) -> {
+          log_state(state, "warn", "workflow_route_failed", [
             #("issue_id", issue.id),
-            #("error", error.workspace_code(err)),
+            #("error", code),
+            #("message", message),
           ])
-          dispatch_candidates(remaining_candidates, state)
-        }
-        Ok(#(_, workspace_path)) -> {
-          let session_sequence = state.next_session_sequence
-          let run_id =
-            make_run_id(issue, state.dependencies.now_ms(), session_sequence)
-          let pending =
-            PendingClaim(
-              issue: issue,
-              workspace_path: workspace_path,
-              run_id: run_id,
-              session_sequence: session_sequence,
-              remaining_candidates: remaining_candidates,
-            )
-          let state =
-            State(
-              ..state,
-              next_session_sequence: session_sequence + 1,
-              pending_claims: dict.insert(
-                state.pending_claims,
-                issue.id,
-                pending,
-              ),
-            )
-          enqueue_side_effect(
-            state,
-            ClaimIssue(
-              issue: issue,
-              workspace_path: workspace_path,
-              run_id: run_id,
-              client: state.handoff_client,
-            ),
-          )
+          False
         }
       }
   }
@@ -2211,27 +2257,44 @@ fn spawn_worker(
   let definition = state.definition
   let effective = state.effective
   let tracker_client = state.tracker_client
+  let bundle = state.bundle
+  let secrets = state.secrets
   let pid =
     process.spawn_unlinked(fn() {
-      let command_subject = process.new_subject()
-      let result =
-        dependencies.agent_runner(
-          issue,
-          None,
-          definition,
-          effective,
-          tracker_client,
-          fn(_, update) {
-            process.send(subject, WorkerUpdate(issue.id, update))
-          },
-          command_subject,
-          fn() {
-            process.send(
-              subject,
-              WorkerCommandReady(issue.id, run_id, command_subject),
-            )
-          },
-        )
+      let result = case bundle.mode {
+        runtime_bundle.LegacyMarkdown -> {
+          let command_subject = process.new_subject()
+          dependencies.agent_runner(
+            issue,
+            None,
+            definition,
+            effective,
+            tracker_client,
+            fn(_, update) {
+              process.send(subject, WorkerUpdate(issue.id, update))
+            },
+            command_subject,
+            fn() {
+              process.send(
+                subject,
+                WorkerCommandReady(issue.id, run_id, command_subject),
+              )
+            },
+          )
+        }
+        runtime_bundle.OrchestratorYaml ->
+          run_yaml_worker(
+            issue,
+            run_id,
+            bundle,
+            tracker_client,
+            secrets,
+            dependencies.workflow_run_dependencies,
+            subject,
+            state.event_hub,
+            dependencies.now_ms,
+          )
+      }
       process.send(subject, WorkerFinished(issue.id, run_id, result))
     })
   let monitor = process.monitor(pid)
@@ -2254,6 +2317,295 @@ fn spawn_worker(
     workers: dict.insert(state.workers, issue.id, handle),
     worker_monitors: dict.insert(state.worker_monitors, monitor, issue.id),
     issue_sessions: dict.insert(state.issue_sessions, issue.id, session_id),
+  )
+}
+
+fn run_yaml_worker(
+  issue: domain.Issue,
+  run_id: String,
+  bundle: runtime_bundle.RuntimeBundle,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  workflow_dependencies: workflow_run.Dependencies,
+  daemon_subject: process.Subject(Message),
+  event_hub: process.Subject(hub.Message),
+  now_ms: fn() -> Int,
+) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
+  case bundle.orchestrator {
+    None ->
+      Error(yaml_worker_failure("missing_orchestrator_config", None, issue))
+    Some(orchestrator) ->
+      case runtime_bundle.select_workflow(bundle, issue) {
+        Error(runtime_bundle.BundleError(code, _)) ->
+          Error(yaml_worker_failure(code, None, issue))
+        Ok(#(_, dag)) ->
+          case
+            workflow_run.execute(
+              issue,
+              dag,
+              orchestrator,
+              tracker_client,
+              secrets,
+              run_id,
+              yaml_workflow_dependencies(
+                workflow_dependencies,
+                issue,
+                run_id,
+                daemon_subject,
+                event_hub,
+                now_ms,
+              ),
+            )
+          {
+            Ok(success) -> Ok(success.worker_success)
+            Error(failure) ->
+              Error(yaml_worker_failure(failure.reason, failure.run_root, issue))
+          }
+      }
+  }
+}
+
+fn yaml_workflow_dependencies(
+  base: workflow_run.Dependencies,
+  issue: domain.Issue,
+  run_id: String,
+  daemon_subject: process.Subject(Message),
+  event_hub: process.Subject(hub.Message),
+  now_ms: fn() -> Int,
+) -> workflow_run.Dependencies {
+  workflow_run.Dependencies(
+    ..base,
+    command_step: fn(
+      step_id,
+      command,
+      workspace_path,
+      timeout_ms,
+      secrets,
+      limits,
+    ) {
+      run_yaml_command_step(
+        base,
+        issue,
+        run_id,
+        step_id,
+        command,
+        workspace_path,
+        timeout_ms,
+        secrets,
+        limits,
+        event_hub,
+        now_ms,
+      )
+    },
+    agent_step: fn(
+      issue,
+      step_id,
+      prompt,
+      effective,
+      tracker_client,
+      workspace_path,
+      _emit_update,
+      _command_ready,
+    ) {
+      run_yaml_agent_step(
+        base,
+        issue,
+        run_id,
+        step_id,
+        prompt,
+        effective,
+        tracker_client,
+        workspace_path,
+        daemon_subject,
+        event_hub,
+        now_ms,
+      )
+    },
+  )
+}
+
+fn register_yaml_step_session(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  issue: domain.Issue,
+  workspace_path: String,
+  step_id: String,
+  now_ms: fn() -> Int,
+) -> Nil {
+  let started_at_ms = now_ms()
+  hub.register_session(
+    event_hub,
+    session_event.SessionSummary(
+      session_id: session_id,
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_title: issue.title,
+      workspace_path: workspace_path,
+      pi_session_id: None,
+      status: session_event.Preparing,
+      current_turn: 0,
+      started_at_ms: started_at_ms,
+      last_event_at_ms: started_at_ms,
+      token_totals: domain.zero_token_totals(),
+    ),
+  )
+  hub.update_status(event_hub, session_id, session_event.Running)
+  hub.publish(
+    event_hub,
+    session_id,
+    session_event.EventPayload(
+      kind: session_event.Lifecycle,
+      name: "step_started",
+      turn: None,
+      pi_type: None,
+      message: Some(step_id),
+      request_id: None,
+      method: None,
+      tool_name: None,
+      tool_input: None,
+      tool_output: None,
+      tool_status: None,
+      tokens: domain.zero_token_totals(),
+      raw_json: None,
+    ),
+  )
+}
+
+fn run_yaml_command_step(
+  base: workflow_run.Dependencies,
+  issue: domain.Issue,
+  run_id: String,
+  step_id: String,
+  command: String,
+  workspace_path: String,
+  timeout_ms: Int,
+  secrets: List(String),
+  limits: domain.ArtifactLimits,
+  event_hub: process.Subject(hub.Message),
+  now_ms: fn() -> Int,
+) -> step_artifact.StepArtifact {
+  let session_id = run_id <> "-" <> step_id
+  register_yaml_step_session(
+    event_hub,
+    session_id,
+    issue,
+    workspace_path,
+    step_id,
+    now_ms,
+  )
+  let artifact =
+    base.command_step(
+      step_id,
+      command,
+      workspace_path,
+      timeout_ms,
+      secrets,
+      limits,
+    )
+  let reason = case artifact.status == "success" {
+    True -> "normal"
+    False -> "failed"
+  }
+  hub.finish_session(event_hub, session_id, reason)
+  artifact
+}
+
+fn run_yaml_agent_step(
+  base: workflow_run.Dependencies,
+  issue: domain.Issue,
+  run_id: String,
+  step_id: String,
+  prompt: String,
+  effective: domain.EffectiveConfig,
+  tracker_client: tracker.Client,
+  workspace_path: String,
+  daemon_subject: process.Subject(Message),
+  event_hub: process.Subject(hub.Message),
+  now_ms: fn() -> Int,
+) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
+  let session_id = run_id <> "-" <> step_id
+  let started_at_ms = now_ms()
+  hub.register_session(
+    event_hub,
+    session_event.SessionSummary(
+      session_id: session_id,
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_title: issue.title,
+      workspace_path: workspace_path,
+      pi_session_id: None,
+      status: session_event.Preparing,
+      current_turn: 0,
+      started_at_ms: started_at_ms,
+      last_event_at_ms: started_at_ms,
+      token_totals: domain.zero_token_totals(),
+    ),
+  )
+  hub.update_status(event_hub, session_id, session_event.Running)
+  hub.publish(
+    event_hub,
+    session_id,
+    session_event.EventPayload(
+      kind: session_event.Lifecycle,
+      name: "step_started",
+      turn: None,
+      pi_type: None,
+      message: Some(step_id),
+      request_id: None,
+      method: None,
+      tool_name: None,
+      tool_input: None,
+      tool_output: None,
+      tool_status: None,
+      tokens: domain.zero_token_totals(),
+      raw_json: None,
+    ),
+  )
+  let result =
+    base.agent_step(
+      issue,
+      step_id,
+      prompt,
+      effective,
+      tracker_client,
+      workspace_path,
+      fn(update) {
+        process.send(daemon_subject, YamlStepUpdate(session_id, update))
+      },
+      fn(command_subject) {
+        process.send(
+          daemon_subject,
+          YamlStepCommandReady(session_id, command_subject),
+        )
+      },
+    )
+  case result {
+    Ok(success) -> {
+      hub.update_tokens(event_hub, session_id, success.tokens)
+      hub.finish_session(event_hub, session_id, "normal")
+    }
+    Error(failure) -> {
+      case tokens_are_nonzero(failure.tokens) {
+        True -> hub.update_tokens(event_hub, session_id, failure.tokens)
+        False -> Nil
+      }
+      hub.finish_session(event_hub, session_id, "failed")
+    }
+  }
+  process.send(daemon_subject, YamlStepFinished(session_id))
+  result
+}
+
+fn yaml_worker_failure(
+  reason: String,
+  workspace_path: Option(String),
+  issue: domain.Issue,
+) -> runner.WorkerFailure {
+  runner.WorkerFailure(
+    reason: error.PiFailed(error.PiProtocolError(reason)),
+    workspace_path: workspace_path,
+    tokens: domain.zero_token_totals(),
+    final_issue: Some(issue),
   )
 }
 
@@ -2370,29 +2722,66 @@ fn finish_worker_success(
     Some(issue) -> issue
     None -> handle.issue
   }
-  let transition =
-    core.apply_worker_success_with_workspace_path(
-      state.runtime,
-      state.effective,
-      handle.issue_id,
-      final_issue,
-      success.workspace_path,
-      success.tokens,
-      state.dependencies.now_ms(),
-    )
-  let state = State(..state, runtime: transition.state)
-  let state =
-    enqueue_side_effect(
-      state,
-      ReportSuccess(
-        issue_id: handle.issue_id,
-        issue: final_issue,
-        success: success,
-        run_id: handle.run_id,
-        client: state.handoff_client,
+  case state.bundle.mode {
+    runtime_bundle.LegacyMarkdown -> {
+      let transition =
+        core.apply_worker_success_with_workspace_path(
+          state.runtime,
+          state.effective,
+          handle.issue_id,
+          final_issue,
+          success.workspace_path,
+          success.tokens,
+          state.dependencies.now_ms(),
+        )
+      let state = State(..state, runtime: transition.state)
+      let state =
+        enqueue_side_effect(
+          state,
+          ReportSuccess(
+            issue_id: handle.issue_id,
+            issue: final_issue,
+            success: success,
+            run_id: handle.run_id,
+            client: state.handoff_client,
+          ),
+        )
+      apply_effects(state, transition.effects)
+    }
+    runtime_bundle.OrchestratorYaml ->
+      finish_yaml_worker_success(state, handle, final_issue, success)
+  }
+}
+
+fn finish_yaml_worker_success(
+  state: State,
+  handle: WorkerHandle,
+  final_issue: domain.Issue,
+  success: runner.WorkerSuccess,
+) -> State {
+  let runtime =
+    domain.RuntimeState(
+      ..state.runtime,
+      running: dict.delete(state.runtime.running, handle.issue_id),
+      claimed: dict.delete(state.runtime.claimed, handle.issue_id),
+      completed: dict.insert(
+        state.runtime.completed,
+        handle.issue_id,
+        final_issue,
+      ),
+      aggregate_pi_totals: add_tokens(
+        state.runtime.aggregate_pi_totals,
+        success.tokens,
       ),
     )
-  apply_effects(state, transition.effects)
+  State(..state, runtime: runtime)
+  |> enqueue_side_effect(ReportSuccess(
+    issue_id: handle.issue_id,
+    issue: final_issue,
+    success: success,
+    run_id: handle.run_id,
+    client: state.handoff_client,
+  ))
 }
 
 fn finish_worker_failure(
@@ -3225,20 +3614,13 @@ fn log_state(
   Nil
 }
 
-fn read_workflow_contents(path: String) -> Result(String, StartupError) {
-  case simplifile.read(path) {
-    Ok(contents) -> Ok(contents)
-    Error(_) -> Error(StartupError("missing_workflow_file", "workflow error"))
-  }
-}
-
-fn map_workflow_error(
-  result: Result(a, error.WorkflowError),
+fn map_bundle_error(
+  result: Result(a, runtime_bundle.BundleError),
 ) -> Result(a, StartupError) {
   case result {
     Ok(value) -> Ok(value)
-    Error(err) ->
-      Error(StartupError(error.workflow_code(err), "workflow error"))
+    Error(runtime_bundle.BundleError(code, message)) ->
+      Error(StartupError(code, message))
   }
 }
 

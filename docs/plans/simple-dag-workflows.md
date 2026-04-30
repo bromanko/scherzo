@@ -80,9 +80,21 @@ The main concurrency risk is one issue running many inner pi agents while `agent
 - [x] (2026-04-30 02:20Z) Added pure scheduler, artifact, and template-local support with tests for fan-out/fan-in readiness, same-workspace serialization, bounded/redacted artifacts, and downstream `steps.*` prompt variables.
 - [x] (2026-04-30 02:35Z) Added port environment support, DAG hook environment support, `src/scherzo/workspace_run.gleam`, and tests proving hook cwd, `SCHERZO_*` variables, derived workspace source paths, and safe cleanup boundaries.
 - [x] (2026-04-30 02:45Z) Added a command-step executor and a lower-level `runner.run_prompt_in_workspace` entry point for prepared workspaces while preserving existing legacy runner behavior.
-- [ ] Integrate workflow-run scheduling into daemon and once mode.
+- [x] (2026-04-30 03:35Z) Added `src/scherzo/workflow_run.gleam` and tests for fan-out/fan-in artifact interpolation, `on_failure: continue`, fatal failure, and cleanup.
+- [x] (2026-04-30 04:05Z) Wired runtime bundle workflow routing into once mode, Linear smoke/contract/probe paths, and lock acquisition while preserving legacy Markdown dispatch validation.
+- [x] (2026-04-30 04:25Z) Added an initial YAML daemon path that claims an issue once, routes by workflow label, runs the DAG workflow runner, reports one workflow-level success, and reloads YAML bundles.
+- [x] (2026-04-30 04:45Z) Changed the workflow runner to execute each ready batch concurrently after preparing all selected workspaces, while applying completed artifacts back in DAG order for deterministic downstream prompts.
+- [x] (2026-04-30 05:05Z) Added concrete YAML agent step sessions in daemon mode and routed operator prompt/stop/respond/abort commands to the command subject registered by an active agent step session.
+- [x] (2026-04-30 10:10Z) Added fatal ready-step cancellation in the workflow runner: a `fail` step result terminates still-active sibling step workers, runs the failed step's after-step hook, and cleans up without waiting for blocked siblings.
+- [x] (2026-04-30 10:20Z) Added daemon event-hub sessions for YAML command steps, so command-only workflows also expose concrete step sessions such as `<run-id>-final_test`.
+- [x] (2026-04-30 10:30Z) Replaced the YAML workflow's use of the legacy `workers`/`WorkerHandle` map with a dedicated `YamlRunHandle`, while keeping concrete command and agent step sessions in the daemon event hub.
 - [x] (2026-04-30 03:00Z) Added `examples/scherzo.yaml`, example YAML workflows and prompts, README guidance, `.scherzo/README.md` guidance, `docs/SYMPHONY_SPEC.md` notes, and local YAML ignore rules.
 - [x] (2026-04-30 03:05Z) Ran validation after the foundation slice: `direnv exec . gleam format --check src test` exited 0 and `direnv exec . gleam test` reported `354 passed, no failures`.
+- [x] (2026-04-30 04:30Z) Ran validation after once-mode and initial daemon integration: `direnv exec . gleam format --check src test` exited 0 and `direnv exec . gleam test` reported `368 passed, no failures`.
+- [x] (2026-04-30 05:10Z) Ran validation after concurrent ready batches and YAML step-session routing: `direnv exec . gleam format --check src test` exited 0 and `direnv exec . gleam test` reported `373 passed, no failures`.
+- [x] (2026-04-30 10:15Z) Ran validation after fatal sibling cancellation: `direnv exec . gleam format --check src test` exited 0 and `direnv exec . gleam test` reported `377 passed, no failures`.
+- [x] (2026-04-30 10:25Z) Ran validation after adding YAML command-step sessions: `direnv exec . gleam format --check src test` exited 0 and `direnv exec . gleam test` reported `377 passed, no failures`.
+- [x] (2026-04-30 10:35Z) Ran final validation after replacing the YAML legacy worker-map wrapper: `direnv exec . gleam format --check src test` exited 0 and `direnv exec . gleam test` reported `377 passed, no failures`.
 
 ## Surprises & Discoveries
 
@@ -92,8 +104,11 @@ The main concurrency risk is one issue running many inner pi agents while `agent
 - Observation: Erlang ports support hook environment injection cleanly through the `{env, [...]}` option while preserving the existing stderr diagnostics wrapper.
   Evidence: `src/scherzo_port_ffi.erl` now exports `start_with_env/3`, and `test/workspace_run_test.gleam` proves hook scripts see `SCHERZO_CONFIG_DIR`, step/workspace/source variables, and cwd equal to the config directory.
 
-- Observation: Full once/daemon execution integration remains the riskiest unfinished part because current service and daemon paths still instantiate a single legacy worker.
-  Evidence: `src/scherzo/runtime_bundle.gleam` can load YAML bundles and validated DAGs, but `src/scherzo/orchestrator/service.gleam` and `src/scherzo/orchestrator/daemon.gleam` still dispatch through the existing legacy runner path.
+- Observation: Once mode can now execute YAML DAGs end-to-end through the shared workflow runner, and daemon mode exposes concrete command and agent step sessions without storing YAML runs in the legacy `workers` map.
+  Evidence: `test/orchestrator_service_test.gleam` covers YAML once-mode routing and command execution; `test/orchestrator_daemon_test.gleam` covers YAML daemon startup, routing, command execution, completed-state accounting, command and agent step session registration, operator prompt routing to the active step session, and cleanup of stale step command routes after step crashes.
+
+- Observation: Ready batches can be run concurrently without making downstream artifact rendering nondeterministic.
+  Evidence: `src/scherzo/workflow_run.gleam` now spawns each selected ready step after preparing the whole batch, collects step results, and applies them back in DAG order. `test/workflow_run_test.gleam` proves two blocked ready command steps both start before either is released, while the fan-in prompt still receives deterministic `steps.*` artifacts.
 
 - Observation: The current `WorkflowDefinition` is only a raw YAML config node plus a trimmed prompt body.
   Evidence: `src/scherzo/domain.gleam` defines `WorkflowDefinition(config: yay.Node, prompt_template: String)`, and `src/scherzo/workflow.gleam` fills those fields from optional Markdown front matter and body text.
@@ -156,9 +171,25 @@ The main concurrency risk is one issue running many inner pi agents while `agent
   Rationale: The current daemon has many existing control, Linear command, handoff, retry, and session tests. Keeping the new YAML DAG path additive first retired schema, path-safety, artifact, hook-environment, and command-execution risk while preserving the legacy one-worker path. The remaining daemon/once integration can now be implemented against tested pure modules instead of mixing graph validation with worker lifecycle refactoring.
   Date: 2026-04-30
 
+- Decision: Wire YAML once mode and an initial YAML daemon path through a shared workflow-level runner before refactoring daemon state into per-step workers.
+  Rationale: This proves routing, claim-once behavior, handoff-once behavior, cleanup, command steps, agent-step prompt rendering, and failure policy end-to-end without disrupting existing daemon control/session tests. A focused follow-up can now replace the workflow-level daemon worker with step-level sessions and operator command subjects.
+  Date: 2026-04-30
+
+- Decision: Run scheduler-selected ready batches concurrently inside the shared workflow runner, then apply their artifacts back in DAG order.
+  Rationale: This gives YAML workflows real fan-out/fan-in execution in once mode and the current daemon path without making artifact interpolation order depend on process scheduling. Same-workspace serialization still comes from the pure scheduler.
+  Date: 2026-04-30
+
+- Decision: Add concrete daemon-visible agent step sessions before replacing the workflow-level wrapper worker.
+  Rationale: Operators need session ids that identify active agent steps. Registering step sessions and routing commands to their command subjects removes the most confusing operator-control gap while keeping claim, handoff, and cleanup semantics stable until the remaining YAML run-handle refactor is done.
+  Date: 2026-04-30
+
+- Decision: Track YAML issue runs with a dedicated `YamlRunHandle` instead of the legacy `WorkerHandle` map, while keeping step execution inside the tested workflow runner.
+  Rationale: The feature needs one Linear claim/handoff lifecycle per issue and concrete step sessions for observability and operator commands. Replacing the legacy worker map entry with a YAML-specific run handle removes the misleading single-agent `WorkerHandle` without duplicating the pure DAG scheduler inside the daemon actor.
+  Date: 2026-04-30
+
 ## Outcomes & Retrospective
 
-The foundation milestones are complete. Scherzo now has a typed DAG parser, orchestrator YAML config resolver, runtime bundle loader, prompt-local rendering, redacted step artifacts, pure scheduler, hook environment support, DAG workspace preparation, command-step execution, a prepared-workspace agent-runner entry point, examples, and documentation. Legacy Markdown behavior still passes the existing suite. The remaining gap is the workflow-run executor plus once/daemon integration that will use these modules to execute DAGs end-to-end.
+The foundation milestones are complete, and YAML DAGs now run end-to-end in once mode plus a daemon path. Scherzo has a typed DAG parser, orchestrator YAML config resolver, runtime bundle loader, workflow runner, prompt-local rendering, redacted step artifacts, pure scheduler, hook environment support, DAG workspace preparation, command-step execution, a prepared-workspace agent-runner entry point, examples, and documentation. Ready DAG batches now execute concurrently, fatal ready-step failures terminate active siblings, and daemon YAML command and agent steps now get concrete event-hub sessions; active agent step sessions can receive operator prompts through their own command subjects. Legacy Markdown behavior still passes the existing suite. YAML issue runs are now tracked separately from the legacy `WorkerHandle` map, so the implementation satisfies the plan's claim-once, handoff-once, cleanup-once, fan-out/fan-in, failure-policy, and concrete step-session goals.
 
 ## Context and Orientation
 

@@ -9,9 +9,14 @@ import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/daemon
+import scherzo/path
+import scherzo/session/event as session_event
 import scherzo/session/hub
+import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/workflow_policy
+import scherzo/workflow_run
+import scherzo/workspace_run
 import simplifile
 
 fn reset_dir(dir: String) -> Nil {
@@ -74,6 +79,51 @@ fn write_enforcing_workflow(dir: String, max_concurrent: Int) -> String {
     max_concurrent,
     enforcing_linear_contract_text(),
   )
+}
+
+fn write_yaml_agent_workflow(dir: String) -> String {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let prompt_dir = workflow_dir <> "/prompts"
+  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
+  let root = dir <> "/workspaces"
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
+        <> root
+        <> "\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(prompt_dir <> "/implement.md", "agent prompt")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n    workspace: main\n",
+    )
+  config_path
+}
+
+fn write_yaml_workflow(dir: String, _marker: String) -> String {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let root = dir <> "/workspaces"
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
+        <> root
+        <> "\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: final_test\n    kind: command\n    run: sh -c 'exit 1'\n    workspace: main\n",
+    )
+  config_path
 }
 
 fn write_workflow_with_contract(
@@ -144,6 +194,7 @@ fn base_dependencies(
         "test/tmp/daemon/workspace",
       ))
     },
+    workflow_run_dependencies: fake_workflow_run_dependencies(log_subject),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, _, _) {
       process.send(log_subject, event)
@@ -163,6 +214,164 @@ fn disabled_linear_commands() -> linear.CommandClient {
   linear.CommandClient(fetch_comments: fn(_, _) { Ok([]) }, post_ack: fn(_, _) {
     Ok(Nil)
   })
+}
+
+fn fake_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+) -> workflow_run.Dependencies {
+  workflow_run.Dependencies(
+    prepare_step: fn(
+      issue,
+      workflow_id,
+      run_id,
+      _step_id,
+      workspace_ref,
+      orchestrator,
+      _known,
+    ) {
+      let run_root =
+        orchestrator.effective.workspace.root
+        <> "/"
+        <> workflow_id
+        <> "/"
+        <> issue.identifier
+        <> "/"
+        <> run_id
+      Ok(workspace_run.PreparedStepWorkspace(
+        workflow_id: workflow_id,
+        run_id: run_id,
+        run_root: run_root,
+        workspace_name: workspace_ref.name,
+        path: run_root <> "/" <> workspace_ref.name,
+        source_workspace_name: workspace_ref.from,
+        source_workspace_path: None,
+      ))
+    },
+    after_step: fn(_, step_id, _, _) {
+      process.send(log_subject, "yaml_after:" <> step_id)
+    },
+    cleanup_run: fn(run_root, _) {
+      process.send(log_subject, "yaml_cleanup:" <> run_root)
+      Ok(Nil)
+    },
+    command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
+      process.send(log_subject, "yaml_command:" <> step_id)
+      step_artifact.from_command_result(
+        step_id,
+        0,
+        "stdout:" <> step_id,
+        "",
+        False,
+        secrets,
+        limits,
+      )
+    },
+    agent_step: fn(
+      issue,
+      _step_id,
+      prompt,
+      _effective,
+      _tracker,
+      workspace_path,
+      _emit_update,
+      _command_ready,
+    ) {
+      process.send(log_subject, "yaml_agent:" <> prompt)
+      Ok(runner.WorkerSuccess(
+        final_issue: Some(issue),
+        final_classification: runner.FinalTerminal,
+        workspace_path: workspace_path,
+        tokens: domain.zero_token_totals(),
+        turns: 1,
+        result: domain.ResultArtifact(
+          final_response: Some(prompt),
+          truncated: False,
+          source: "test",
+        ),
+      ))
+    },
+  )
+}
+
+fn command_ready_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    agent_step: fn(
+      issue,
+      _step_id,
+      prompt,
+      _effective,
+      _tracker,
+      workspace_path,
+      _emit_update,
+      command_ready,
+    ) {
+      let command_subject = process.new_subject()
+      command_ready(command_subject)
+      process.send(log_subject, "agent_ready")
+      case process.receive(command_subject, within: 5000) {
+        Ok(worker_command.QueuePrompt(message, reply)) -> {
+          process.send(log_subject, "prompt:" <> message)
+          process.send(reply, worker_command.Queued(Some("queued")))
+          Ok(runner.WorkerSuccess(
+            final_issue: Some(issue),
+            final_classification: runner.FinalTerminal,
+            workspace_path: workspace_path,
+            tokens: domain.zero_token_totals(),
+            turns: 1,
+            result: domain.ResultArtifact(
+              final_response: Some(prompt <> ":" <> message),
+              truncated: False,
+              source: "test",
+            ),
+          ))
+        }
+        Ok(other) -> {
+          let _ = other
+          Error(runner.WorkerFailure(
+            reason: error.PiFailed(error.PiProtocolError("unexpected_command")),
+            workspace_path: Some(workspace_path),
+            tokens: domain.zero_token_totals(),
+            final_issue: Some(issue),
+          ))
+        }
+        Error(_) ->
+          Error(runner.WorkerFailure(
+            reason: error.PiFailed(error.PiProtocolError("command_timeout")),
+            workspace_path: Some(workspace_path),
+            tokens: domain.zero_token_totals(),
+            final_issue: Some(issue),
+          ))
+      }
+    },
+  )
+}
+
+fn crashing_command_ready_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    agent_step: fn(
+      _issue,
+      _step_id,
+      _prompt,
+      _effective,
+      _tracker,
+      _workspace_path,
+      _emit_update,
+      command_ready,
+    ) {
+      let command_subject = process.new_subject()
+      command_ready(command_subject)
+      process.send(log_subject, "agent_ready")
+      panic as "yaml agent crashed"
+    },
+  )
 }
 
 fn fake_triage(subject: process.Subject(String)) -> linear_triage.TriageClient {
@@ -281,6 +490,150 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "dispatch_started", 10)
   assert process.receive(triage_subject, within: 100) == Error(Nil)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_yaml_agent_steps_get_concrete_sessions_test() {
+  let dir = "test/tmp/daemon-yaml-agent-session"
+  let workflow_path = write_yaml_agent_workflow(dir)
+  let candidate =
+    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      start_event_hub: fn() { Ok(event_hub) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(log_subject, "worker_exited", 20)
+  let assert Ok(sessions) = hub.list_sessions(event_hub, 1000)
+  let session_ids = list.map(sessions, fn(summary) { summary.session_id })
+  assert list.contains(session_ids, "ABC-1-42-1")
+  assert list.contains(session_ids, "ABC-1-42-1-implement")
+  let matching_step_sessions =
+    list.filter(sessions, fn(summary) {
+      summary.session_id == "ABC-1-42-1-implement"
+    })
+  let assert [step_session] = matching_step_sessions
+  assert session_event.exit_reason(step_session.status) == Some("normal")
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_yaml_operator_prompt_routes_to_agent_step_session_test() {
+  let dir = "test/tmp/daemon-yaml-agent-command"
+  let workflow_path = write_yaml_agent_workflow(dir)
+  let candidate =
+    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: command_ready_workflow_run_dependencies(
+        log_subject,
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_event(log_subject, "agent_ready", 20)
+
+  let result = prompt_until_queued(started.data, "ABC-1-42-1-implement", 20)
+  assert result.status == command.Queued
+  assert wait_for_event(log_subject, "prompt:hello from operator", 20)
+  assert wait_for_event(log_subject, "worker_exited", 20)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
+  let dir = "test/tmp/daemon-yaml-agent-command-crash"
+  let workflow_path = write_yaml_agent_workflow(dir)
+  let candidate =
+    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: crashing_command_ready_workflow_run_dependencies(
+        log_subject,
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_event(log_subject, "agent_ready", 20)
+  assert wait_for_event(log_subject, "worker_exited", 20)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.PromptSession("ABC-1-42-1-implement", "after crash"),
+      1000,
+    )
+  assert result.status == command.NotFound
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_yaml_poll_dispatches_command_workflow_test() {
+  let dir = "test/tmp/daemon-yaml"
+  let assert Ok(marker) = path.absolute(dir <> "/marker")
+  let workflow_path = write_yaml_workflow(dir, marker)
+  let candidate =
+    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      start_event_hub: fn() { Ok(event_hub) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(log_subject, "yaml_command:final_test", 20)
+  assert wait_for_event(log_subject, "worker_exited", 20)
+  assert simplifile.is_file(marker) != Ok(True)
+  let assert Ok(sessions) = hub.list_sessions(event_hub, 1000)
+  let session_ids = list.map(sessions, fn(summary) { summary.session_id })
+  assert list.contains(session_ids, "ABC-1-42-1-final_test")
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(snapshot.completed, "issue-id")
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
