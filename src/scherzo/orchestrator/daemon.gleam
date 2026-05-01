@@ -21,6 +21,8 @@ import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/event_publisher
+import scherzo/orchestrator/poll_scheduler
+import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime_bundle
@@ -127,11 +129,8 @@ type State {
     triage_client: linear_triage.TriageClient,
     linear_command_state: linear_transport.TransportState,
     runtime: domain.RuntimeState,
-    poll_generation: Int,
-    poll_in_flight: Option(Int),
-    poll_timer: Option(TimerHandle),
-    retry_timers: Dict(String, TimerHandle),
-    retry_refreshes_in_flight: Dict(String, Int),
+    poll: poll_scheduler.State(TimerHandle),
+    retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
     pending_claims: Dict(String, PendingClaim),
     effect_runner: effect_runner.Handle,
@@ -364,13 +363,10 @@ pub fn start(
                   )
                 }
                 True -> {
-                  let poll_generation = 1
-                  let poll_timer =
-                    dependencies.send_after(
-                      subject,
-                      0,
-                      PollTick(poll_generation),
-                    )
+                  let poll =
+                    poll_scheduler.start(fn(generation) {
+                      dependencies.send_after(subject, 0, PollTick(generation))
+                    })
                   let state =
                     State(
                       subject: subject,
@@ -381,11 +377,8 @@ pub fn start(
                       triage_client: triage_client,
                       linear_command_state: linear_command_state,
                       runtime: runtime,
-                      poll_generation: poll_generation,
-                      poll_in_flight: None,
-                      poll_timer: Some(poll_timer),
-                      retry_timers: dict.new(),
-                      retry_refreshes_in_flight: dict.new(),
+                      poll: poll,
+                      retry: retry_scheduler.new(),
                       registry: worker_registry.new(),
                       pending_claims: dict.new(),
                       effect_runner: effect_runner_handle,
@@ -1544,22 +1537,25 @@ fn unpark_if_issue_changed_state(state: State, issue: domain.Issue) -> State {
 }
 
 fn cancel_retry_timer(state: State, issue_id: String) -> State {
-  case dict.get(state.retry_timers, issue_id) {
-    Ok(timer) -> state.dependencies.cancel_timer(timer)
-    Error(_) -> Nil
-  }
-  State(..state, retry_timers: dict.delete(state.retry_timers, issue_id))
+  State(
+    ..state,
+    retry: retry_scheduler.cancel_timer(
+      state.retry,
+      issue_id,
+      state.dependencies.cancel_timer,
+    ),
+  )
 }
 
 fn handle_poll_tick(state: State, generation: Int) -> State {
-  case generation != state.poll_generation || state.poll_in_flight != None {
-    True -> state
-    False -> {
+  case poll_scheduler.accept_tick(state.poll, generation) {
+    Error(_) -> state
+    Ok(poll) -> {
+      let state = State(..state, poll: poll)
       log_state(state, "info", "tick_started", [
         #("generation", int.to_string(generation)),
       ])
       let state = reload_if_changed(state)
-      let state = State(..state, poll_in_flight: Some(generation))
       begin_running_refresh(state, generation)
     }
   }
@@ -1890,8 +1886,7 @@ fn append_unique(values: List(String), value: String) -> List(String) {
 }
 
 fn poll_result_is_stale(state: State, generation: Int) -> Bool {
-  generation != state.poll_generation
-  || state.poll_in_flight != Some(generation)
+  poll_scheduler.result_is_stale(state.poll, generation)
 }
 
 fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
@@ -2003,23 +1998,19 @@ fn handle_invalid_workflow_candidate(
 }
 
 fn schedule_next_poll(state: State) -> State {
-  case state.poll_timer {
-    Some(timer) -> state.dependencies.cancel_timer(timer)
-    None -> Nil
-  }
-  let generation = state.poll_generation + 1
-  let timer =
-    state.dependencies.send_after(
-      state.subject,
-      state.workflow.effective.polling.interval_ms,
-      PollTick(generation),
+  let poll =
+    poll_scheduler.schedule_next(
+      state.poll,
+      fn(generation) {
+        state.dependencies.send_after(
+          state.subject,
+          state.workflow.effective.polling.interval_ms,
+          PollTick(generation),
+        )
+      },
+      state.dependencies.cancel_timer,
     )
-  State(
-    ..state,
-    poll_generation: generation,
-    poll_in_flight: None,
-    poll_timer: Some(timer),
-  )
+  State(..state, poll: poll)
 }
 
 fn handle_retry_tick(state: State, issue_id: String, generation: Int) -> State {
@@ -2041,7 +2032,7 @@ fn handle_retry_tick(state: State, issue_id: String, generation: Int) -> State {
           let state =
             State(
               ..state,
-              retry_timers: dict.delete(state.retry_timers, issue_id),
+              retry: retry_scheduler.remove_timer(state.retry, issue_id),
             )
           case
             state.operator_paused,
@@ -2072,25 +2063,25 @@ fn defer_retry_until_dispatch_available(
       1000,
       RetryTick(issue_id, generation),
     )
-  State(..state, retry_timers: dict.insert(state.retry_timers, issue_id, timer))
+  State(
+    ..state,
+    retry: retry_scheduler.schedule_timer(
+      state.retry,
+      issue_id,
+      timer,
+      state.dependencies.cancel_timer,
+    ),
+  )
 }
 
 fn begin_retry_refresh(state: State, issue_id: String, generation: Int) -> State {
-  case dict.get(state.retry_refreshes_in_flight, issue_id) {
-    Ok(_) -> {
+  case retry_scheduler.begin_refresh(state.retry, issue_id, generation) {
+    Error(_) -> {
       log_state(state, "info", "retry_timer_stale", [#("issue_id", issue_id)])
       state
     }
-    Error(_) -> {
-      let state =
-        State(
-          ..state,
-          retry_refreshes_in_flight: dict.insert(
-            state.retry_refreshes_in_flight,
-            issue_id,
-            generation,
-          ),
-        )
+    Ok(retry) -> {
+      let state = State(..state, retry: retry)
       enqueue_side_effect(
         state,
         effect_runner.RefreshRetry(
@@ -2110,13 +2101,7 @@ fn handle_retry_refresh_finished(
   result: Result(List(domain.Issue), error.TrackerError),
 ) -> State {
   let state =
-    State(
-      ..state,
-      retry_refreshes_in_flight: dict.delete(
-        state.retry_refreshes_in_flight,
-        issue_id,
-      ),
-    )
+    State(..state, retry: retry_scheduler.finish_refresh(state.retry, issue_id))
   case dict.get(state.runtime.retry_attempts, issue_id) {
     Error(_) -> {
       log_state(state, "info", "retry_timer_stale", [#("issue_id", issue_id)])
@@ -3422,16 +3407,15 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
         )
       State(
         ..state,
-        retry_timers: dict.insert(state.retry_timers, issue_id, timer),
+        retry: retry_scheduler.schedule_timer(
+          state.retry,
+          issue_id,
+          timer,
+          state.dependencies.cancel_timer,
+        ),
       )
     }
-    core.CancelRetry(issue_id) -> {
-      case dict.get(state.retry_timers, issue_id) {
-        Ok(timer) -> state.dependencies.cancel_timer(timer)
-        Error(_) -> Nil
-      }
-      State(..state, retry_timers: dict.delete(state.retry_timers, issue_id))
-    }
+    core.CancelRetry(issue_id) -> cancel_retry_timer(state, issue_id)
     core.CleanupWorkspace(workspace_path) -> {
       case string.trim(workspace_path) == "" {
         True -> state
@@ -3545,22 +3529,17 @@ fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
     Some(path) -> control_file.remove(path)
     None -> Nil
   }
-  case state.poll_timer {
-    Some(timer) -> state.dependencies.cancel_timer(timer)
-    None -> Nil
-  }
-  dict.each(state.retry_timers, fn(_, timer) {
-    state.dependencies.cancel_timer(timer)
-  })
+  let poll =
+    poll_scheduler.cancel_all(state.poll, state.dependencies.cancel_timer)
+  let retry =
+    retry_scheduler.cancel_all(state.retry, state.dependencies.cancel_timer)
   worker_registry.worker_handles(state.registry)
   |> list.each(fn(handle) { stop_worker(handle) })
   let registry = worker_registry.remove_all(state.registry)
   State(
     ..state,
-    poll_in_flight: None,
-    poll_timer: None,
-    retry_timers: dict.new(),
-    retry_refreshes_in_flight: dict.new(),
+    poll: poll,
+    retry: retry,
     registry: registry,
     pending_claims: dict.new(),
     control_server: NoControlServer,

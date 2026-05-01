@@ -58,7 +58,7 @@ The final daemon can remain too large if extractions stop halfway. Countermeasur
 - [x] (2026-04-30 16:30Z) Milestone 2: introduced `src/scherzo/orchestrator/workflow_reloader.gleam`, added `test/orchestrator_workflow_reloader_test.gleam`, replaced daemon workflow path/content/bundle/reload/effective/secrets fields with `workflow_reloader.State`, and reached a green checkpoint with `382 passed, no failures`.
 - [x] (2026-04-30 16:32Z) Milestone 3: introduced `src/scherzo/orchestrator/event_publisher.gleam`, added `test/orchestrator_event_publisher_test.gleam`, removed daemon-local event payload classification helpers, and reached a green checkpoint with `387 passed, no failures`.
 - [x] (2026-04-30 17:12Z) Milestone 4: introduced `src/scherzo/orchestrator/worker_registry.gleam`, added `test/orchestrator_worker_registry_test.gleam`, replaced the daemon's worker, monitor, issue-session, YAML step-session, stopped-run, step-command-route, and session-sequence fields with `worker_registry.Registry`, and reached a green checkpoint with `393 passed, no failures`.
-- [ ] Milestone 5: extract poll and retry timer bookkeeping into scheduler modules.
+- [x] (2026-04-30 17:22Z) Milestone 5: introduced `src/scherzo/orchestrator/poll_scheduler.gleam` and `src/scherzo/orchestrator/retry_scheduler.gleam`, added targeted scheduler tests, replaced the daemon's poll generation/in-flight/timer and retry timer/refresh dictionaries with scheduler state, and reached a green checkpoint with `402 passed, no failures`.
 - [ ] Milestone 6: extract operator/control command handling into `src/scherzo/orchestrator/control_command_handler.gleam`.
 - [ ] Milestone 7: clean up the daemon state shape, run final validation, and write the retrospective.
 
@@ -84,6 +84,9 @@ The final daemon can remain too large if extractions stop halfway. Countermeasur
 
 - Observation: Worker registry extraction can be completed without moving EventHub publishing or worker process stopping into the registry.
   Evidence: `src/scherzo/orchestrator/worker_registry.gleam` owns dictionaries, route registration, monitor resolution, and cleanup, while `src/scherzo/orchestrator/daemon.gleam` still performs lifecycle event publication and process kill/abort side effects around registry calls.
+
+- Observation: Poll and retry scheduling are separable even though both ultimately send messages back to the daemon actor.
+  Evidence: `src/scherzo/orchestrator/poll_scheduler.gleam` owns generation, in-flight, and timer state with daemon-supplied scheduling/cancel callbacks; `src/scherzo/orchestrator/retry_scheduler.gleam` owns retry timer handles and refresh-in-flight guards while core runtime state still owns retry policy generations.
 
 ## Decision Log
 
@@ -127,9 +130,13 @@ The final daemon can remain too large if extractions stop halfway. Countermeasur
   Rationale: The daemon still needs to read worker handle fields when publishing lifecycle events, stopping processes, and finishing workers, but it no longer needs direct access to the underlying worker, monitor, step-command, YAML-step, or session-sequence dictionaries. This preserves behavior while making bookkeeping ownership explicit.
   Date: 2026-04-30
 
+- Decision: Keep scheduler modules callback-based and generic over timer handles instead of importing daemon messages.
+  Rationale: `poll_scheduler` and `retry_scheduler` can own timer bookkeeping without depending on `daemon.Message` or `daemon.TimerHandle`. The daemon supplies `send_after`/`cancel_timer` callbacks, avoiding import cycles and preserving the public daemon test helpers.
+  Date: 2026-04-30
+
 ## Outcomes & Retrospective
 
-Milestones 0 through 4 are complete. The concrete side-effect queue stall is fixed: `test/orchestrator_effect_runner_test.gleam` proves a panicking cleanup side effect emits `Crashed` and then drains a queued cleanup, and `daemon_side_effect_crash_does_not_stall_future_polls_test` proves a crashing candidate fetch no longer prevents a later poll from fetching candidates. Workflow reload state now lives in `workflow_reloader.State`, EventHub payload classification now lives in `event_publisher`, and worker/YAML step/step-command route bookkeeping now lives in `worker_registry.Registry`. The daemon remains large because scheduler and control-command extraction are still pending.
+Milestones 0 through 5 are complete. The concrete side-effect queue stall is fixed: `test/orchestrator_effect_runner_test.gleam` proves a panicking cleanup side effect emits `Crashed` and then drains a queued cleanup, and `daemon_side_effect_crash_does_not_stall_future_polls_test` proves a crashing candidate fetch no longer prevents a later poll from fetching candidates. Workflow reload state now lives in `workflow_reloader.State`, EventHub payload classification now lives in `event_publisher`, worker/YAML step/step-command route bookkeeping now lives in `worker_registry.Registry`, and poll/retry timer bookkeeping now lives in scheduler modules. The daemon remains large because control-command extraction is still pending.
 
 ## Context and Orientation
 
