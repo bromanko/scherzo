@@ -58,9 +58,10 @@ The final daemon can remain too large if extractions stop halfway. Countermeasur
 - [x] (2026-04-30 16:30Z) Milestone 2: introduced `src/scherzo/orchestrator/workflow_reloader.gleam`, added `test/orchestrator_workflow_reloader_test.gleam`, replaced daemon workflow path/content/bundle/reload/effective/secrets fields with `workflow_reloader.State`, and reached a green checkpoint with `382 passed, no failures`.
 - [x] (2026-04-30 16:32Z) Milestone 3: introduced `src/scherzo/orchestrator/event_publisher.gleam`, added `test/orchestrator_event_publisher_test.gleam`, removed daemon-local event payload classification helpers, and reached a green checkpoint with `387 passed, no failures`.
 - [x] (2026-04-30 17:12Z) Milestone 4: introduced `src/scherzo/orchestrator/worker_registry.gleam`, added `test/orchestrator_worker_registry_test.gleam`, replaced the daemon's worker, monitor, issue-session, YAML step-session, stopped-run, step-command-route, and session-sequence fields with `worker_registry.Registry`, and reached a green checkpoint with `393 passed, no failures`.
-- [x] (2026-04-30 17:22Z) Milestone 5: introduced `src/scherzo/orchestrator/poll_scheduler.gleam` and `src/scherzo/orchestrator/retry_scheduler.gleam`, added targeted scheduler tests, replaced the daemon's poll generation/in-flight/timer and retry timer/refresh dictionaries with scheduler state, and reached a green checkpoint with `402 passed, no failures`.
+- [x] (2026-04-30 17:22Z) Milestone 5: introduced `src/scherzo/orchestrator/poll_scheduler.gleam` and `src/scherzo/orchestrator/retry_scheduler.gleam`, added targeted scheduler tests, replaced the daemon's poll generation/in-flight/timer and retry timer/refresh dictionaries with scheduler state, and reached a green checkpoint with `401 passed, no failures`.
 - [x] (2026-04-30 18:20Z) Milestone 6: introduced `src/scherzo/orchestrator/control_command_handler.gleam`, added `test/orchestrator_control_command_handler_test.gleam`, moved the operator command decision tree, prompt/UI size checks, worker-command timeout calculation, and worker-command reply mapping out of the daemon behind an explicit callback context, and reached a green checkpoint with `407 passed, no failures`.
-- [ ] Milestone 7: clean up the daemon state shape, run final validation, and write the retrospective.
+- [x] (2026-04-30 18:21Z) Milestone 7: ran final structural checks and validation. The required side-effect and event-publisher grep checks produced no matches, the control-command structural grep also produced no matches, `daemon.gleam` is now `3,490` lines versus the `3,991` baseline, and final validation passed with `410 passed, no failures`.
+- [x] (2026-04-30 20:06Z) Post-completion smoke validation against the junk Linear project passed: `--linear-smoke` reported `candidate_count=2 terminal_count=3 refreshed_count=1`, `--linear-contract-check` reported `linear_contract_ok`, `--pi-probe` reported `pi_probe_ok`, and a daemon/control smoke with `max_concurrent_agents: 0` successfully exercised `ping`, `ps`, `pause`, `resume`, `reload`, and graceful SIGTERM shutdown through the local control API.
 
 ## Surprises & Discoveries
 
@@ -73,8 +74,8 @@ The final daemon can remain too large if extractions stop halfway. Countermeasur
 - Observation: Some lifecycle decomposition has already happened outside the daemon.
   Evidence: `src/scherzo/orchestrator/service.gleam` already delegates graceful daemon stop behavior to `src/scherzo/lifecycle.gleam` and `src/scherzo/signal.gleam`. This plan should not reopen that work.
 
-- Observation: The current workspace is not a VCS checkout from the harness point of view, but direnv works once explicitly allowed.
-  Evidence: `git status --short` exits with `fatal: not a git repository`, no `.git` or `.jj` directory is present at the repository root, and `direnv allow . && direnv exec . gleam test` succeeds with `376 passed, no failures`.
+- Observation: The workspace metadata view changed during implementation.
+  Evidence: Early plan review saw no visible `.git` or `.jj` metadata, but final `jj status --no-pager` succeeds and reports the working copy on top of `refactor(orchestrator): extracted control command handling from the daemon`; after post-completion smoke documentation, only `docs/plans/daemon-decomposition.md` is modified in the working copy.
 
 - Observation: The current daemon does not define a `YamlRunHandle` or `yaml_run_monitors` field.
   Evidence: `State` in `src/scherzo/orchestrator/daemon.gleam` contains `yaml_step_runs` and `stopped_yaml_runs`, while monitor-backed process ownership is represented by `workers`, `worker_monitors`, `step_command_monitors`, and `step_command_subject_monitors`.
@@ -90,6 +91,9 @@ The final daemon can remain too large if extractions stop halfway. Countermeasur
 
 - Observation: Operator command handling can move without making daemon state public.
   Evidence: `src/scherzo/orchestrator/control_command_handler.gleam` is generic over the state type and receives explicit callbacks for state mutation, worker routing, and command-specific daemon actions. The daemon passes its private `State` into the generic context, avoiding an import cycle and preserving the existing public daemon API.
+
+- Observation: Final line count remains above the plan's rough 2,500-line review threshold even after all planned state-owner extractions.
+  Evidence: `wc -l src/scherzo/orchestrator/daemon.gleam` now reports `3,490`, down from `3,991`. The remaining code is largely integration glue for the single public daemon actor: startup/control-plane wiring, poll phase sequencing, dispatch policy orchestration around `core`, worker spawning and YAML workflow step callbacks, side-effect completion interpretation, handoff result handling, shutdown, and public message handling. These areas still belong together until a follow-up plan extracts worker lifecycle/poll phase orchestration or changes the public actor boundary.
 
 ## Decision Log
 
@@ -141,9 +145,19 @@ The final daemon can remain too large if extractions stop halfway. Countermeasur
   Rationale: `control_command_handler` needs to decide which operator command path to take, but command effects still touch daemon-owned concerns such as reload application, retry dispatch, worker registry lookups, and EventHub publication. A generic context moves command parsing/validation/routing decisions out of `daemon.gleam` while keeping private daemon state private.
   Date: 2026-04-30
 
+- Decision: Do not invent an extra final extraction solely to chase the rough 2,500-line threshold.
+  Rationale: The mandatory ownership boundaries are now in place and the remaining large sections are behavior-rich integration code, especially worker lifecycle and poll/dispatch phase orchestration. Extracting those safely would require another plan with new characterization tests rather than an opportunistic cleanup commit.
+  Date: 2026-04-30
+
 ## Outcomes & Retrospective
 
-Milestones 0 through 6 are complete. The concrete side-effect queue stall is fixed: `test/orchestrator_effect_runner_test.gleam` proves a panicking cleanup side effect emits `Crashed` and then drains a queued cleanup, and `daemon_side_effect_crash_does_not_stall_future_polls_test` proves a crashing candidate fetch no longer prevents a later poll from fetching candidates. Workflow reload state now lives in `workflow_reloader.State`, EventHub payload classification now lives in `event_publisher`, worker/YAML step/step-command route bookkeeping now lives in `worker_registry.Registry`, poll/retry timer bookkeeping now lives in scheduler modules, and the operator command decision tree now lives in `control_command_handler`. The remaining work is final cleanup, structural checks, and retrospective.
+All planned milestones are complete. The concrete side-effect queue stall is fixed: `test/orchestrator_effect_runner_test.gleam` proves a panicking cleanup side effect emits `Crashed` and then drains a queued cleanup, and `daemon_side_effect_crash_does_not_stall_future_polls_test` proves a crashing candidate fetch no longer prevents a later poll from fetching candidates. Workflow reload state now lives in `workflow_reloader.State`, EventHub payload classification now lives in `event_publisher`, worker/YAML step/step-command route bookkeeping now lives in `worker_registry.Registry`, poll/retry timer bookkeeping now lives in scheduler modules, and the operator command decision tree now lives in `control_command_handler`.
+
+Final structural checks passed for the required ownership boundaries: the daemon no longer contains `side_effects_in_flight`, `side_effect_queue`, `fn run_side_effect`, `fn spawn_side_effect`, `fn update_payload`, `fn kind_for_update`, or `fn publish_worker_update`. An additional control-command grep found no remaining direct operator command variant branches or moved helper definitions in `daemon.gleam`. Final validation passed with `direnv exec . gleam format --check src test` and `direnv exec . gleam test`, ending with `410 passed, no failures`.
+
+The final daemon is `3,490` lines, a substantial reduction from the `3,991` verified baseline but still above the rough `2,500`-line review threshold. The remaining size is intentional for this plan: `daemon.gleam` is still the public integration actor and retains startup/control-plane wiring, poll phase sequencing, dispatch orchestration, worker spawning and YAML step callbacks, side-effect completion interpretation, handoff result handling, shutdown, and public message handling. A follow-up refactor should target worker lifecycle or poll/dispatch phase orchestration with fresh characterization tests rather than folding that extra work into this completed decomposition.
+
+Additional smoke validation with real Linear credentials from the junk `~/Code/scherzo` project passed after automated acceptance. Read-only Linear smoke returned candidate, terminal, and refresh counts; Linear contract check returned `linear_contract_ok`; pi probe returned `pi_probe_ok`; and a daemon run using a temporary copy of the junk config with `max_concurrent_agents: 0` successfully served local control commands and handled graceful SIGTERM shutdown. No dispatch was allowed during that daemon smoke. Final `jj status --no-pager` succeeds and shows only this plan file modified after the implementation commits already present in the workspace.
 
 ## Context and Orientation
 
