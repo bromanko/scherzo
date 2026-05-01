@@ -6,11 +6,11 @@ This ExecPlan is a living document. The sections Progress, Surprises & Discoveri
 
 After this change, Scherzo daemon mode should be easier and safer to change because the top-level daemon actor in `src/scherzo/orchestrator/daemon.gleam` will be orchestration glue instead of the implementation home for polling, retry timers, worker bookkeeping, workflow reloads, event publishing, Linear command routing, control commands, and side-effect execution. Operators should not see a feature change: the same daemon CLI, local control API, Linear command behavior, EventHub stream, worker lifecycle, retry policy, and workflow reload behavior must continue to work.
 
-The visible proof is twofold. First, behavior stays green: from the repository root, `direnv exec . gleam test` continues to pass, daemon control tests still exercise the same public API, and targeted new tests prove side-effect worker crashes no longer stall the daemon. Second, the structure changes in an observable way: `src/scherzo/orchestrator/daemon.gleam` no longer owns the side-effect queue fields, side-effect spawning code, workflow reload implementation, event payload classification helpers, retry timer bookkeeping, or worker registry dictionaries directly. A reader adding a future daemon feature should be able to locate the relevant subsystem module without editing thousands of lines of unrelated actor code.
+The visible proof is twofold. First, behavior stays green: from the repository root, `direnv exec . gleam test` passes after the repository `.envrc` is allowed; if direnv is unavailable in a disposable workspace, plain `gleam test` may be used only as a fallback when Gleam is already available. Daemon control tests still exercise the same public API, and targeted new tests prove side-effect worker crashes no longer stall the daemon. Second, the structure changes in an observable way: `src/scherzo/orchestrator/daemon.gleam` no longer owns the side-effect queue fields, side-effect spawning code, workflow reload implementation, event payload classification helpers, retry timer bookkeeping, or worker registry dictionaries directly. A reader adding a future daemon feature should be able to locate the relevant subsystem module without editing thousands of lines of unrelated actor code.
 
 ## Problem Framing and Constraints
 
-The current daemon actor is a god object: one file, `src/scherzo/orchestrator/daemon.gleam`, is 4,184 lines and owns nearly every runtime concern. It defines the actor `Message` type, worker handles, YAML run handles, timer handles, control server handles, pending claims, side-effect variants, side-effect result variants, runtime dependencies, and one broad `State` record. The same file starts the control server, schedules poll ticks, reloads workflows, fetches tracker data, fetches Linear commands, dispatches workers, routes operator commands, publishes EventHub events, runs YAML workflow steps, schedules retries, performs handoff reporting, reports invalid workflow candidates, cleans workspaces, and shuts everything down.
+The current daemon actor is a god object: one file, `src/scherzo/orchestrator/daemon.gleam`, is 3,991 lines in the current review workspace and owns nearly every runtime concern. It defines the actor `Message` type, worker handles, YAML step-session mappings, timer handles, control server handles, pending claims, side-effect variants, side-effect result variants, runtime dependencies, and one broad `State` record. The same file starts the control server, schedules poll ticks, reloads workflows, fetches tracker data, fetches Linear commands, dispatches workers, routes operator commands, publishes EventHub events, runs YAML workflow steps, schedules retries, performs handoff reporting, reports invalid workflow candidates, cleans workspaces, and shuts everything down.
 
 This hurts operators indirectly. When unrelated behavior shares one actor and one state record, small changes increase the chance of stale state, missed cleanup, blocked command handling, and lifecycle bugs. The most concrete current safety risk is the side-effect queue: `src/scherzo/orchestrator/daemon.gleam` tracks `side_effects_in_flight` and `side_effect_queue`, then starts work with `process.spawn_unlinked`. If one side-effect process crashes before it sends `SideEffectFinished`, the daemon never decrements its in-flight count for that process. After enough crashes, the queue can stop draining even though the daemon actor itself is still alive.
 
@@ -26,7 +26,7 @@ The new structure should be proportionate. Only the side-effect subsystem needs 
 
 ## Alternatives Considered
 
-The simplest option is to leave the daemon as one file and add comments or region markers. That does not solve the side-effect crash stall, does not reduce the state surface touched by each feature, and still leaves every daemon change competing inside one 4,184-line module.
+The simplest option is to leave the daemon as one file and add comments or region markers. That does not solve the side-effect crash stall, does not reduce the state surface touched by each feature, and still leaves every daemon change competing inside one 3,991-line module.
 
 Another option is a full rewrite into a supervision tree with many OTP actors at once. That may eventually be attractive, but it is too risky for this problem. The existing daemon has broad behavior and a large test suite; a big-bang actor rewrite would make regressions hard to isolate. This plan introduces only one new actor where concurrency ownership is needed now.
 
@@ -36,7 +36,7 @@ A fourth option is to merge more behavior into `src/scherzo/orchestrator/core.gl
 
 ## Risks and Countermeasures
 
-The largest regression risk is changing lifecycle ordering while moving code. Countermeasure: each milestone is behavior-preserving except the side-effect crash fix, and each milestone ends with `direnv exec . gleam format --check src test` and `direnv exec . gleam test`. Existing daemon tests in `test/orchestrator_daemon_test.gleam`, `test/orchestrator_daemon_control_test.gleam`, `test/orchestrator_daemon_session_event_test.gleam`, `test/orchestrator_daemon_linear_command_test.gleam`, and `test/orchestrator_service_lifecycle_test.gleam` remain the primary parity suite.
+The largest regression risk is changing lifecycle ordering while moving code. Countermeasure: each milestone is behavior-preserving except the side-effect crash fix, and each milestone ends with the validation command sequence defined in Validation and Acceptance. Existing daemon tests in `test/orchestrator_daemon_test.gleam`, `test/orchestrator_daemon_control_test.gleam`, `test/orchestrator_daemon_session_event_test.gleam`, `test/orchestrator_daemon_linear_command_test.gleam`, and `test/orchestrator_service_lifecycle_test.gleam` remain the primary parity suite.
 
 The side-effect runner can accidentally deliver duplicate completions if a worker sends its result and then the monitor down message is also processed. Countermeasure: give every side effect a numeric id, keep an in-flight map by monitor and id, demonitor on normal finish, ignore stale monitor downs, and add a unit test that a successful effect produces exactly one completion.
 
@@ -46,31 +46,54 @@ Extracted modules can create import cycles. Countermeasure: lower-level modules 
 
 The public test helper API can churn. Countermeasure: keep `RuntimeDependencies`, `TimerHandle`, and `ControlServerHandle` in `daemon.gleam` during the main extraction. Move them only if the final cleanup proves it is worth the compatibility cost, and update all references in the same commit.
 
-The final daemon can remain too large if extractions stop halfway. Countermeasure: final acceptance includes structural checks: `grep -n "side_effects_in_flight\|side_effect_queue\|fn run_side_effect\|fn spawn_side_effect" src/scherzo/orchestrator/daemon.gleam` should return no matches, `grep -n "fn update_payload\|fn kind_for_update\|fn publish_worker_update" src/scherzo/orchestrator/daemon.gleam` should return no matches, and `wc -l src/scherzo/orchestrator/daemon.gleam` should show a substantial reduction from the verified baseline of 4,184 lines. The exact final count is less important than the ownership boundaries, but a daemon still above roughly 2,500 lines should trigger a review before calling this complete.
+The final daemon can remain too large if extractions stop halfway. Countermeasure: final acceptance includes structural checks: `grep -E -n "side_effects_in_flight|side_effect_queue|fn run_side_effect|fn spawn_side_effect" src/scherzo/orchestrator/daemon.gleam` should print no matches, `grep -E -n "fn update_payload|fn kind_for_update|fn publish_worker_update" src/scherzo/orchestrator/daemon.gleam` should print no matches, and `wc -l src/scherzo/orchestrator/daemon.gleam` should show a substantial reduction from the verified current baseline of 3,991 lines. The exact final count is less important than the ownership boundaries, but a daemon still above roughly 2,500 lines should trigger a review before calling this complete.
 
 ## Progress
 
-- [x] (2026-04-30 10:47Z) Verified the current repository baseline with `direnv exec . gleam test`; it passed with `377 passed, no failures`.
+- [x] (2026-04-30 10:47Z) Recorded the initial authoring baseline with `direnv exec . gleam test`; at that time it passed with `377 passed, no failures`.
 - [x] (2026-04-30 11:00Z) Drafted this plan against the current tree after reading `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/orchestrator/core.gleam`, `src/scherzo/orchestrator/service.gleam`, `src/scherzo/control/linear_transport.gleam`, `src/scherzo/tracker.gleam`, and `src/scherzo/error.gleam`.
-- [ ] Milestone 0: add characterization tests for side-effect crash recovery and current daemon parity.
-- [ ] Milestone 1: introduce `src/scherzo/orchestrator/effect_runner.gleam` and remove daemon-local side-effect queue ownership.
-- [ ] Milestone 2: extract workflow reload ownership into `src/scherzo/orchestrator/workflow_reloader.gleam`.
-- [ ] Milestone 3: extract EventHub publishing helpers into `src/scherzo/orchestrator/event_publisher.gleam`.
-- [ ] Milestone 4: extract worker, YAML run, and YAML step-command bookkeeping into `src/scherzo/orchestrator/worker_registry.gleam`.
-- [ ] Milestone 5: extract poll and retry timer bookkeeping into scheduler modules.
-- [ ] Milestone 6: extract operator/control command handling into `src/scherzo/orchestrator/control_command_handler.gleam`.
-- [ ] Milestone 7: clean up the daemon state shape, run final validation, and write the retrospective.
+- [x] (2026-04-30 23:14Z) Reviewed and corrected the plan against the current workspace: after reviewing `.envrc` and running `direnv allow .`, `direnv exec . gleam test` passes with `376 passed, no failures`, `daemon.gleam` is 3,991 lines, and no `.git` or `.jj` metadata is present in this checkout.
+- [x] (2026-04-30 16:23Z) Milestone 0: added characterization coverage for the side-effect crash stall; the daemon integration test failed against the old unmonitored side-effect queue as expected because no `side_effect_crashed` log was emitted.
+- [x] (2026-04-30 16:26Z) Milestone 1: introduced `src/scherzo/orchestrator/effect_runner.gleam`, added `test/orchestrator_effect_runner_test.gleam`, moved side-effect variants and result handling out of the daemon, removed daemon-local `side_effects_in_flight`, `side_effect_queue`, `spawn_side_effect`, and `run_side_effect`, and reached a green checkpoint with `379 passed, no failures`.
+- [x] (2026-04-30 16:30Z) Milestone 2: introduced `src/scherzo/orchestrator/workflow_reloader.gleam`, added `test/orchestrator_workflow_reloader_test.gleam`, replaced daemon workflow path/content/bundle/reload/effective/secrets fields with `workflow_reloader.State`, and reached a green checkpoint with `382 passed, no failures`.
+- [x] (2026-04-30 16:32Z) Milestone 3: introduced `src/scherzo/orchestrator/event_publisher.gleam`, added `test/orchestrator_event_publisher_test.gleam`, removed daemon-local event payload classification helpers, and reached a green checkpoint with `387 passed, no failures`.
+- [x] (2026-04-30 17:12Z) Milestone 4: introduced `src/scherzo/orchestrator/worker_registry.gleam`, added `test/orchestrator_worker_registry_test.gleam`, replaced the daemon's worker, monitor, issue-session, YAML step-session, stopped-run, step-command-route, and session-sequence fields with `worker_registry.Registry`, and reached a green checkpoint with `393 passed, no failures`.
+- [x] (2026-04-30 17:22Z) Milestone 5: introduced `src/scherzo/orchestrator/poll_scheduler.gleam` and `src/scherzo/orchestrator/retry_scheduler.gleam`, added targeted scheduler tests, replaced the daemon's poll generation/in-flight/timer and retry timer/refresh dictionaries with scheduler state, and reached a green checkpoint with `401 passed, no failures`.
+- [x] (2026-04-30 18:20Z) Milestone 6: introduced `src/scherzo/orchestrator/control_command_handler.gleam`, added `test/orchestrator_control_command_handler_test.gleam`, moved the operator command decision tree, prompt/UI size checks, worker-command timeout calculation, and worker-command reply mapping out of the daemon behind an explicit callback context, and reached a green checkpoint with `407 passed, no failures`.
+- [x] (2026-04-30 18:21Z) Milestone 7: ran final structural checks and validation. The required side-effect and event-publisher grep checks produced no matches, the control-command structural grep also produced no matches, `daemon.gleam` is now `3,490` lines versus the `3,991` baseline, and final validation passed with `410 passed, no failures`.
+- [x] (2026-04-30 20:06Z) Post-completion smoke validation against the junk Linear project passed: `--linear-smoke` reported `candidate_count=2 terminal_count=3 refreshed_count=1`, `--linear-contract-check` reported `linear_contract_ok`, `--pi-probe` reported `pi_probe_ok`, and a daemon/control smoke with `max_concurrent_agents: 0` successfully exercised `ping`, `ps`, `pause`, `resume`, `reload`, and graceful SIGTERM shutdown through the local control API.
 
 ## Surprises & Discoveries
 
 - Observation: The current test suite intentionally prints Erlang `ERROR REPORT` blocks from tests that verify crashed workers are handled.
-  Evidence: The baseline `direnv exec . gleam test` run printed crash reports from `test/orchestrator_daemon_test.gleam` and `test/workflow_run_test.gleam` but still ended with `377 passed, no failures`.
+  Evidence: The current `direnv exec . gleam test` run printed crash reports from `test/orchestrator_daemon_test.gleam` and `test/workflow_run_test.gleam` but still ended with `376 passed, no failures`.
 
 - Observation: `src/scherzo/orchestrator/core.gleam` is already a pure runtime-transition module and should not become the new god object.
   Evidence: It defines `core.Effect`, `core.Transition`, `core.new_state`, `core.apply_worker_success`, `core.apply_worker_failure`, `core.schedule_retry`, `core.reconcile_issue`, and invalid-workflow report state helpers, but it does not start processes, schedule timers, read files, or publish EventHub events.
 
 - Observation: Some lifecycle decomposition has already happened outside the daemon.
   Evidence: `src/scherzo/orchestrator/service.gleam` already delegates graceful daemon stop behavior to `src/scherzo/lifecycle.gleam` and `src/scherzo/signal.gleam`. This plan should not reopen that work.
+
+- Observation: The workspace metadata view changed during implementation.
+  Evidence: Early plan review saw no visible `.git` or `.jj` metadata, but final `jj status --no-pager` succeeds and reports the working copy on top of `refactor(orchestrator): extracted control command handling from the daemon`; after post-completion smoke documentation, only `docs/plans/daemon-decomposition.md` is modified in the working copy.
+
+- Observation: The current daemon does not define a `YamlRunHandle` or `yaml_run_monitors` field.
+  Evidence: `State` in `src/scherzo/orchestrator/daemon.gleam` contains `yaml_step_runs` and `stopped_yaml_runs`, while monitor-backed process ownership is represented by `workers`, `worker_monitors`, `step_command_monitors`, and `step_command_subject_monitors`.
+
+- Observation: A side-effect worker can crash too quickly for a plain spawn-then-monitor sequence to be fully deterministic in tests.
+  Evidence: `src/scherzo/orchestrator/effect_runner.gleam` now uses a tiny start handshake: the child process creates a start subject, sends it to the runner, waits, and only runs the side effect after the runner has installed the monitor and sent the start signal.
+
+- Observation: Worker registry extraction can be completed without moving EventHub publishing or worker process stopping into the registry.
+  Evidence: `src/scherzo/orchestrator/worker_registry.gleam` owns dictionaries, route registration, monitor resolution, and cleanup, while `src/scherzo/orchestrator/daemon.gleam` still performs lifecycle event publication and process kill/abort side effects around registry calls.
+
+- Observation: Poll and retry scheduling are separable even though both ultimately send messages back to the daemon actor.
+  Evidence: `src/scherzo/orchestrator/poll_scheduler.gleam` owns generation, in-flight, and timer state with daemon-supplied scheduling/cancel callbacks; `src/scherzo/orchestrator/retry_scheduler.gleam` owns retry timer handles and refresh-in-flight guards while core runtime state still owns retry policy generations.
+
+- Observation: Operator command handling can move without making daemon state public.
+  Evidence: `src/scherzo/orchestrator/control_command_handler.gleam` is generic over the state type and receives explicit callbacks for state mutation, worker routing, and command-specific daemon actions. The daemon passes its private `State` into the generic context, avoiding an import cycle and preserving the existing public daemon API.
+
+- Observation: Final line count remains above the plan's rough 2,500-line review threshold even after all planned state-owner extractions.
+  Evidence: `wc -l src/scherzo/orchestrator/daemon.gleam` now reports `3,490`, down from `3,991`. The remaining code is largely integration glue for the single public daemon actor: startup/control-plane wiring, poll phase sequencing, dispatch policy orchestration around `core`, worker spawning and YAML workflow step callbacks, side-effect completion interpretation, handoff result handling, shutdown, and public message handling. These areas still belong together until a follow-up plan extracts worker lifecycle/poll phase orchestration or changes the public actor boundary.
 
 ## Decision Log
 
@@ -90,9 +113,51 @@ The final daemon can remain too large if extractions stop halfway. Countermeasur
   Rationale: Durable recovery is a separate hardening project. This plan makes the live daemon robust to side-effect process crashes while preserving the current non-durable semantics.
   Date: 2026-04-30
 
+- Decision: Make validation and checkpoint instructions resilient to the actual checkout.
+  Rationale: This review workspace has no visible VCS metadata, and direnv requires an explicit `direnv allow .` before first use. The implementation plan should prefer the project's direnv commands after allowing the reviewed `.envrc`, but it must not confuse an unallowed `.envrc` or absent `.git` directory with a code failure.
+  Date: 2026-04-30
+
+- Decision: Treat YAML step-session bookkeeping as the registry extraction target instead of inventing a `YamlRunHandle` abstraction.
+  Rationale: The current daemon tracks YAML step sessions with `yaml_step_runs` and `stopped_yaml_runs`; there is no separate YAML run process monitor to move. The plan should extract current state accurately rather than prescribing stale types.
+  Date: 2026-04-30
+
+- Decision: Specify effect-runner monitor selection and crash-result mapping explicitly.
+  Rationale: A runner that monitors workers but does not select monitor messages will still miss crashes, and leaving crash-to-result conversion implicit would force the implementer to invent failure semantics for each effect variant.
+  Date: 2026-04-30
+
+- Decision: Use a child start handshake in `effect_runner.spawn_effect_worker` before running each side effect.
+  Rationale: Gleam's process monitor documentation says a monitor may not deliver a down message if the process is already dead when it is monitored. The handshake keeps the child alive until the runner records its monitor, making the crash-drain test deterministic without changing side-effect behavior.
+  Date: 2026-04-30
+
+- Decision: Keep `effect_runner` logging independent of reload-time secret changes and rely on the daemon's crash log for current redaction context.
+  Rationale: The runner is intentionally isolated from daemon state. Its crash log only includes id, effect kind, and a synthetic reason string, while the daemon also logs `side_effect_crashed` through `log_state` using the current `workflow_reloader.State.secrets`.
+  Date: 2026-04-30
+
+- Decision: Make `worker_registry.Registry` opaque while keeping `worker_registry.WorkerHandle` public.
+  Rationale: The daemon still needs to read worker handle fields when publishing lifecycle events, stopping processes, and finishing workers, but it no longer needs direct access to the underlying worker, monitor, step-command, YAML-step, or session-sequence dictionaries. This preserves behavior while making bookkeeping ownership explicit.
+  Date: 2026-04-30
+
+- Decision: Keep scheduler modules callback-based and generic over timer handles instead of importing daemon messages.
+  Rationale: `poll_scheduler` and `retry_scheduler` can own timer bookkeeping without depending on `daemon.Message` or `daemon.TimerHandle`. The daemon supplies `send_after`/`cancel_timer` callbacks, avoiding import cycles and preserving the public daemon test helpers.
+  Date: 2026-04-30
+
+- Decision: Extract the operator command decision tree through a generic callback context rather than exposing `daemon.State`.
+  Rationale: `control_command_handler` needs to decide which operator command path to take, but command effects still touch daemon-owned concerns such as reload application, retry dispatch, worker registry lookups, and EventHub publication. A generic context moves command parsing/validation/routing decisions out of `daemon.gleam` while keeping private daemon state private.
+  Date: 2026-04-30
+
+- Decision: Do not invent an extra final extraction solely to chase the rough 2,500-line threshold.
+  Rationale: The mandatory ownership boundaries are now in place and the remaining large sections are behavior-rich integration code, especially worker lifecycle and poll/dispatch phase orchestration. Extracting those safely would require another plan with new characterization tests rather than an opportunistic cleanup commit.
+  Date: 2026-04-30
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+All planned milestones are complete. The concrete side-effect queue stall is fixed: `test/orchestrator_effect_runner_test.gleam` proves a panicking cleanup side effect emits `Crashed` and then drains a queued cleanup, and `daemon_side_effect_crash_does_not_stall_future_polls_test` proves a crashing candidate fetch no longer prevents a later poll from fetching candidates. Workflow reload state now lives in `workflow_reloader.State`, EventHub payload classification now lives in `event_publisher`, worker/YAML step/step-command route bookkeeping now lives in `worker_registry.Registry`, poll/retry timer bookkeeping now lives in scheduler modules, and the operator command decision tree now lives in `control_command_handler`.
+
+Final structural checks passed for the required ownership boundaries: the daemon no longer contains `side_effects_in_flight`, `side_effect_queue`, `fn run_side_effect`, `fn spawn_side_effect`, `fn update_payload`, `fn kind_for_update`, or `fn publish_worker_update`. An additional control-command grep found no remaining direct operator command variant branches or moved helper definitions in `daemon.gleam`. Final validation passed with `direnv exec . gleam format --check src test` and `direnv exec . gleam test`, ending with `410 passed, no failures`.
+
+The final daemon is `3,490` lines, a substantial reduction from the `3,991` verified baseline but still above the rough `2,500`-line review threshold. The remaining size is intentional for this plan: `daemon.gleam` is still the public integration actor and retains startup/control-plane wiring, poll phase sequencing, dispatch orchestration, worker spawning and YAML step callbacks, side-effect completion interpretation, handoff result handling, shutdown, and public message handling. A follow-up refactor should target worker lifecycle or poll/dispatch phase orchestration with fresh characterization tests rather than folding that extra work into this completed decomposition.
+
+Additional smoke validation with real Linear credentials from the junk `~/Code/scherzo` project passed after automated acceptance. Read-only Linear smoke returned candidate, terminal, and refresh counts; Linear contract check returned `linear_contract_ok`; pi probe returned `pi_probe_ok`; and a daemon run using a temporary copy of the junk config with `max_concurrent_agents: 0` successfully served local control commands and handled graceful SIGTERM shutdown. No dispatch was allowed during that daemon smoke. Final `jj status --no-pager` succeeds and shows only this plan file modified after the implementation commits already present in the workspace.
 
 ## Context and Orientation
 
@@ -104,7 +169,7 @@ The daemon actor's public entry points are `daemon.start(workflow_path, dependen
 
 A side effect in this plan means work that may block or fail outside pure state transitions: tracker fetches, Linear command fetches and acknowledgements, handoff claim/success/failure reports, invalid-workflow triage reports, and workspace cleanup. Today these are represented by the private `SideEffect` type in `daemon.gleam`, run by `run_side_effect`, and completed through the public `SideEffectResult` type. A side-effect runner actor is a separate process that owns the queue and starts monitored worker processes for those effects.
 
-An EventHub is Scherzo's in-memory session event stream. The daemon currently publishes lifecycle events and pi updates directly through `scherzo/session/hub`. A worker registry is the runtime bookkeeping that maps issue ids, session ids, and process monitors to active legacy workers, YAML workflow runs, and YAML step command subjects.
+An EventHub is Scherzo's in-memory session event stream. The daemon currently publishes lifecycle events and pi updates directly through `scherzo/session/hub`. A worker registry is the runtime bookkeeping that maps issue ids, session ids, and process monitors to active worker processes, YAML step-session-to-run mappings, stopped YAML run reasons, and YAML step command subjects.
 
 The local control API is implemented in `src/scherzo/control/server.gleam`, `src/scherzo/control/command.gleam`, `src/scherzo/control/file.gleam`, and related modules. The daemon still owns the actor-side handling of those operator commands today.
 
@@ -112,31 +177,39 @@ The local control API is implemented in `src/scherzo/control/server.gleam`, `src
 
 The current tree has these relevant files:
 
-- `src/scherzo/orchestrator/daemon.gleam`, verified at 4,184 lines with `wc -l`.
-- `src/scherzo/orchestrator/core.gleam`, verified at 808 lines with `wc -l`.
-- `src/scherzo/orchestrator/service.gleam`, verified at 1,181 lines with `wc -l`.
+- `src/scherzo/orchestrator/daemon.gleam`, verified at 3,991 lines with `wc -l`.
+- `src/scherzo/orchestrator/core.gleam`, verified at 833 lines with `wc -l`.
+- `src/scherzo/orchestrator/service.gleam`, verified at 839 lines with `wc -l`.
 - `src/scherzo/control/linear_transport.gleam`, which already isolates Linear comment parsing, processed-comment state, and Linear command transport actions.
 - `src/scherzo/tracker.gleam`, where `tracker.Client` is a record of tracker fetch functions.
 - `src/scherzo/error.gleam`, where tracker and workspace error variants live.
 - Daemon tests under `test/orchestrator_daemon_test.gleam`, `test/orchestrator_daemon_control_test.gleam`, `test/orchestrator_daemon_session_event_test.gleam`, and `test/orchestrator_daemon_linear_command_test.gleam`.
 
-The current baseline command from the repository root is:
+The preferred baseline command from the repository root is:
 
     direnv exec . gleam test
 
-On 2026-04-30 it ended with:
+If the checkout has not allowed `.envrc` yet, first review `.envrc` and run:
 
-    377 passed, no failures
+    direnv allow .
+
+When direnv is unavailable in a disposable workspace and Gleam is already on `PATH`, use this fallback from the repository root:
+
+    gleam test
+
+On 2026-04-30, after `direnv allow .`, the preferred command ended with:
+
+    376 passed, no failures
 
 The baseline also showed expected Erlang crash reports from tests that intentionally crash worker processes. Do not treat those reports as failures unless the final line reports failures or the command exits nonzero.
 
 The current daemon side-effect implementation is in `src/scherzo/orchestrator/daemon.gleam` around the functions `enqueue_side_effect`, `drain_side_effects`, `max_side_effects`, `spawn_side_effect`, and `run_side_effect`. It uses `process.spawn_unlinked` for side-effect workers and increments `side_effects_in_flight` in the daemon state.
 
-The current daemon worker implementation also uses `process.spawn_unlinked` in `spawn_worker`. This plan does not remove worker process spawning from the daemon in the first milestone; it only removes unmonitored side-effect queue ownership. Worker processes are already monitored through `worker_monitors` and `yaml_run_monitors`.
+The current daemon worker implementation also uses `process.spawn_unlinked` in `spawn_worker`. This plan does not remove worker process spawning from the daemon in the first milestone; it only removes unmonitored side-effect queue ownership. Worker processes are already monitored through `worker_monitors`. YAML step command subjects are monitored through `step_command_monitors` and `step_command_subject_monitors`. YAML step sessions are tracked by `yaml_step_runs`, and stopped YAML run reasons are tracked by `stopped_yaml_runs`; there is no current `YamlRunHandle` or `yaml_run_monitors` field.
 
 ## Scope Boundaries
 
-In scope: extracting the side-effect queue into a monitored runner actor; adding tests for side-effect crash recovery; moving workflow reload code into a workflow reloader module; moving EventHub event payload helpers into an event publisher module; moving worker/YAML run/step command dictionaries into a worker registry module; moving poll and retry timer bookkeeping into scheduler modules; moving operator command decision logic into a command handler module; simplifying `State` in `daemon.gleam`; preserving all existing external daemon behavior.
+In scope: extracting the side-effect queue into a monitored runner actor; adding tests for side-effect crash recovery; moving workflow reload code into a workflow reloader module; moving EventHub event payload helpers into an event publisher module; moving worker, YAML step-run, and YAML step-command dictionaries into a worker registry module; moving poll and retry timer bookkeeping into scheduler modules; moving operator command decision logic into a command handler module; simplifying `State` in `daemon.gleam`; preserving all existing external daemon behavior.
 
 Out of scope: durable crash recovery after BEAM death, host restart, `kill -9`, or power loss; persisting side-effect queues; changing Linear command syntax; changing EventHub event shape; changing local control API routes or authentication; changing workflow YAML semantics; changing pi worker internals; converting Scherzo to a full OTP application or supervision tree; adding distributed daemon coordination.
 
@@ -144,7 +217,7 @@ The final top-level daemon actor may still start workers, decide when to dispatc
 
 ## Milestones
 
-Milestone 0 adds characterization tests and records the baseline. At the end, the suite still passes before any extraction, and there is at least one failing or skipped test that demonstrates the side-effect crash stall if run against the old implementation. If the crash test cannot be made to fail deterministically before the implementation, record why in Surprises & Discoveries and keep the effect-runner unit test as the primary proof.
+Milestone 0 adds characterization tests and records the baseline. During the red phase, the new side-effect crash tests should fail to compile or fail against the old implementation before the effect runner exists; do not commit or finish the milestone with a skipped or weakened safety test. If the daemon-level crash test cannot be made deterministic against the old implementation, record why in Surprises & Discoveries and keep the effect-runner unit test as the deterministic proof.
 
 Milestone 1 introduces `src/scherzo/orchestrator/effect_runner.gleam`. At the end, side-effect queue state and side-effect process monitoring live outside `daemon.gleam`. A crashing side-effect worker frees runner capacity, emits a crash completion, logs `side_effect_crashed`, and does not prevent later queued effects or later polls from running.
 
@@ -152,7 +225,7 @@ Milestone 2 introduces `src/scherzo/orchestrator/workflow_reloader.gleam`. At th
 
 Milestone 3 introduces `src/scherzo/orchestrator/event_publisher.gleam`. At the end, `publish_worker_update`, `publish_lifecycle`, `update_payload`, event kind classification, status classification, blocking UI method classification, and token nonzero checks are no longer in `daemon.gleam`.
 
-Milestone 4 introduces `src/scherzo/orchestrator/worker_registry.gleam`. At the end, active worker handles, YAML run handles, session lookup, monitor lookup, step command subject lookup, command-ready registration, route clearing, and registry cleanup are owned by the registry. The daemon asks the registry to register, find, remove, and resolve monitor-down events.
+Milestone 4 introduces `src/scherzo/orchestrator/worker_registry.gleam`. At the end, active worker handles, session lookup, monitor lookup, YAML step-session mappings, stopped YAML run reasons, step command subject lookup, command-ready registration, route clearing, and registry cleanup are owned by the registry. The daemon asks the registry to register, find, remove, and resolve monitor-down events.
 
 Milestone 5 introduces scheduler modules for poll and retry timer state. At the end, `poll_generation`, `poll_in_flight`, `poll_timer`, `retry_timers`, and `retry_refreshes_in_flight` are no longer top-level daemon state fields. The daemon still receives `PollTick` and `RetryTick`, but acceptance, staleness checks, rescheduling, canceling, and generation bookkeeping are delegated.
 
@@ -166,7 +239,7 @@ Begin with tests because this refactor changes concurrency ownership. Add the si
 
 After the side-effect runner is stable, move code that has minimal coupling. Workflow reload is a good next extraction because it mostly depends on `runtime_bundle`, `config`, `simplifile`, and `domain`. Event publishing is also low risk because it can accept an event hub subject, session id, and update payload without seeing daemon state.
 
-Then move registry state. This is more coupled because worker finish, worker down, command routing, shutdown, and EventHub publishing interact. Keep the migration incremental: first move the handle types and lookup functions, then command-ready route management, then monitor-down resolution, then shutdown cleanup. Run the daemon tests after each slice.
+Then move registry state. This is more coupled because worker finish, worker down, YAML step-session lifecycle, command routing, shutdown, and EventHub publishing interact. Keep the migration incremental: first move the worker handle type and lookup functions, then YAML step-session bookkeeping, then command-ready route management, then monitor-down resolution, then shutdown cleanup. Run the daemon tests after each slice.
 
 Next move scheduler state. Start with poll generation and staleness because that is small, then retry timers and retry refresh in-flight tracking. Do not move dispatch policy from `core.gleam`; keep pure runtime decisions where they already are.
 
@@ -174,27 +247,27 @@ Extract control command handling last because it depends on all earlier boundari
 
 ## Concrete Steps
 
-1. From the repository root, run `git status --short` and confirm there are no unrelated changes. If there are unrelated changes, stop and either commit/stash them or record exactly why they are safe to keep.
+1. From the repository root, check for unrelated changes using whatever VCS metadata exists. If `.git` is present, run `git status --short`. If `.jj` is present, run `jj status`. If neither is present, record that this checkout has no visible VCS metadata and use the harness' file-diff view, if available, as the change boundary. If there are unrelated changes, stop and either commit/stash them or record exactly why they are safe to keep.
 
-2. From the repository root, run `direnv exec . gleam test`. Expect the suite to end with `377 passed, no failures` if no other tests have changed since this plan was written. If the count differs because other tests were added, accept any count only if the command exits zero and reports `no failures`.
+2. From the repository root, run `direnv exec . gleam test`. If it fails before running tests with `.envrc is blocked`, review `.envrc`, run `direnv allow .`, and retry `direnv exec . gleam test`. Use the fallback `gleam test` only when direnv is unavailable and Gleam is already on `PATH`. Expect the suite to end with `376 passed, no failures` in the current baseline. If the count differs because tests were added or removed, accept any count only if the command exits zero and reports `no failures`.
 
 3. Create `test/orchestrator_effect_runner_test.gleam`. Add a test named `effect_runner_runs_successful_effect_once_test`. It should start the new runner with `max_concurrent: 1`, enqueue a `CleanupWorkspace` effect whose cleanup function sends `"cleanup_started"` to a test subject and returns `Ok(Nil)`, and assert that the notification subject receives exactly one `Finished` completion and no second completion within a short timeout.
 
 4. In the same test file, add `effect_runner_reports_crash_and_drains_queue_test`. It should enqueue a first `CleanupWorkspace` effect whose cleanup function panics with `panic as "boom"`, then enqueue a second `CleanupWorkspace` effect whose cleanup function returns `Ok(Nil)`. Assert that the notification subject receives one `Crashed` completion for the first effect and then one `Finished` completion for the second effect. This test proves a crash frees queue capacity.
 
-5. In `test/orchestrator_daemon_test.gleam`, add an integration test named `daemon_side_effect_crash_does_not_stall_future_polls_test`. Use a fake `tracker.Client` whose first `fetch_candidate_issues` call panics and whose second call returns `Ok([])`. Start the daemon with `send_after` returning `daemon.TestTimer(delay)`, send `daemon.PollTick(1)`, wait for a `side_effect_crashed` log event, then send `daemon.PollTick(2)` and assert that the second fetch is observed. If the old daemon cannot make this test deterministic, mark the discovery in this plan and keep the effect-runner unit test as the deterministic crash proof.
+5. In `test/orchestrator_daemon_test.gleam`, add an integration test named `daemon_side_effect_crash_does_not_stall_future_polls_test`. Use a fake `tracker.Client` backed by a test subject so the first `fetch_candidate_issues` call sends `"fetch:1"` and panics, while the second call sends `"fetch:2"` and returns `Ok([])`. Start the daemon with `send_after` returning `daemon.TestTimer(delay)`, send `daemon.PollTick(1)`, wait for a `side_effect_crashed` log event, then send `daemon.PollTick(2)` and assert that `"fetch:2"` is observed. If the old daemon cannot make this test deterministic, mark the discovery in this plan and keep the effect-runner unit test as the deterministic crash proof.
 
-6. Run `direnv exec . gleam test`. Before implementation, the new effect-runner tests will not compile because `src/scherzo/orchestrator/effect_runner.gleam` does not exist. This is the expected red phase.
+6. Run the baseline test command from step 2. Before implementation, the new effect-runner tests will not compile because `src/scherzo/orchestrator/effect_runner.gleam` does not exist. This is the expected red phase.
 
 7. Create `src/scherzo/orchestrator/effect_runner.gleam`. Define `pub type Effect` by moving the existing daemon-private side-effect variants: `FetchCandidates`, `FetchLinearCommands`, `RefreshRunning`, `RefreshRetry`, `ClaimIssue`, `ReportSuccess`, `ReportFailure`, `PostLinearCommandAck`, `ReportInvalidWorkflow`, and `CleanupWorkspace`. Define `pub type EffectResult` by moving the existing daemon `SideEffectResult` variants. Define `pub type Completion { Finished(id: Int, result: EffectResult) Crashed(id: Int, effect: Effect, reason: String) }`.
 
-8. In `effect_runner.gleam`, define an actor-owned message type with `Enqueue(Effect)`, `WorkerFinished(Int, EffectResult)`, `WorkerDown(process.Down)`, and `Shutdown(process.Subject(Nil))`. Define a `Handle` type wrapping `process.Subject(Message)` and public functions `start`, `enqueue`, and `shutdown`.
+8. In `effect_runner.gleam`, define an actor-owned message type with `Enqueue(Effect)`, `WorkerFinished(Int, EffectResult)`, `WorkerDown(process.Down)`, and `Shutdown(process.Subject(Nil))`. Define a `Handle` type wrapping `process.Subject(Message)` and public functions `start`, `enqueue`, and `shutdown`. In `start`, build the actor selector with `process.new_selector() |> process.select(subject) |> process.select_monitors(WorkerDown)` so monitored side-effect process exits are actually delivered to the runner.
 
-9. In `effect_runner.gleam`, implement internal state with `next_id: Int`, `queue: List(QueuedEffect)`, `in_flight: Dict(Int, InFlightEffect)`, `monitors: Dict(process.Monitor, Int)`, `max_concurrent: Int`, `notify: fn(Completion) -> Nil`, and `logger: fn(String, String, List(log.Field)) -> Nil`. Keep `max_concurrent` configurable but use `4` from production daemon wiring to preserve current behavior.
+9. In `effect_runner.gleam`, implement internal state with `next_id: Int`, `queue: List(QueuedEffect)`, `in_flight: Dict(Int, InFlightEffect)`, `monitors: Dict(process.Monitor, Int)`, `max_concurrent: Int`, `notify: fn(Completion) -> Nil`, and `logger: fn(String, String, List(log.Field)) -> Nil`. `InFlightEffect` must store at least the side-effect id, the original `Effect`, the worker `process.Pid`, and the worker `process.Monitor` so shutdown and monitor-down handling can clean up precisely. Keep `max_concurrent` configurable but use `4` from production daemon wiring to preserve current behavior.
 
 10. Move `run_side_effect` logic from `daemon.gleam` into `effect_runner.gleam`. Keep the behavior of every successful side effect unchanged: tracker fetches call the same client functions, handoff calls the same client functions, invalid workflow reports call the same triage client, and cleanup calls the supplied cleanup function.
 
-11. Implement runner draining so it starts queued effects while `dict.size(in_flight) < max_concurrent`. Each worker must be started with `process.spawn_unlinked`, monitored immediately, and tracked by id and monitor. On normal `WorkerFinished`, demonitor the process, remove the in-flight entry, call `notify(Finished(id, result))`, and drain again. On `WorkerDown` for a known monitor, remove the in-flight entry, call `notify(Crashed(id, effect, "process_down"))`, log `side_effect_crashed`, and drain again. Ignore stale monitor downs.
+11. Implement runner draining so it starts queued effects while `dict.size(in_flight) < max_concurrent`. Each worker must be started with `process.spawn_unlinked`, monitored immediately, and tracked by id, pid, effect, and monitor. On normal `WorkerFinished`, demonitor the process, remove the in-flight entry, call `notify(Finished(id, result))`, and drain again. On `WorkerDown` for a known monitor, remove the in-flight entry, convert `process.Normal` to `"side_effect_exited_without_result"`, `process.Killed` to `"side_effect_killed"`, and `process.Abnormal(_)` to `"side_effect_crashed"`; then call `notify(Crashed(id, effect, reason))`, log `side_effect_crashed` with `reason`, and drain again. Ignore stale monitor downs and stale `WorkerFinished` messages for ids no longer in flight.
 
 12. Update `src/scherzo/orchestrator/daemon.gleam` to import `scherzo/orchestrator/effect_runner`. Replace the daemon `SideEffect` and `SideEffectResult` types with uses of `effect_runner.Effect`, `effect_runner.EffectResult`, and `effect_runner.Completion`. Change the daemon message from `SideEffectFinished(SideEffectResult)` to `SideEffectCompleted(effect_runner.Completion)`.
 
@@ -202,11 +275,11 @@ Extract control command handling last because it depends on all earlier boundari
 
 14. Replace `enqueue_side_effect`, `drain_side_effects`, `max_side_effects`, `spawn_side_effect`, and `run_side_effect` in `daemon.gleam` with a small `enqueue_side_effect` wrapper that calls `effect_runner.enqueue(state.effect_runner, effect)` and returns `state`. Remove `side_effects_in_flight` and `side_effect_queue` from daemon `State`.
 
-15. Replace `handle_side_effect_finished` with `handle_side_effect_completed`. For `Finished(_, result)`, call the existing result-specific handlers. For `Crashed(_, effect, reason)`, log `side_effect_crashed` with an effect kind and synthesize an error result of the same shape the old handler expects. Use `error.LinearApiRequest("side_effect_crashed")` for tracker-like effects and `error.WorkspaceIo("side_effect_crashed")` for cleanup. Then call the same result-specific handler so poll, retry, pending claim, invalid workflow, ack, and cleanup paths complete normally.
+15. Replace `handle_side_effect_finished` with `handle_side_effect_completed`. For `Finished(_, result)`, call the existing result-specific handlers. For `Crashed(_, effect, reason)`, log `side_effect_crashed` with an effect kind and `reason`, then synthesize the exact error result the old handlers already understand: `FetchCandidates(generation, _)` becomes `CandidateFetchFinished(generation, Error(error.LinearApiRequest(reason)))`; `FetchLinearCommands(generation, _, candidates, dispatch_after, _, _)` becomes `LinearCommandFetchFinished(generation, candidates, dispatch_after, Error(error.LinearApiRequest(reason)))`; `RefreshRunning(generation, _, _)` becomes `RunningRefreshFinished(generation, Error(error.LinearApiRequest(reason)))`; `RefreshRetry(issue_id, generation, _)` becomes `RetryRefreshFinished(issue_id, generation, Error(error.LinearApiRequest(reason)))`; `ClaimIssue(issue, _, run_id, _)` becomes `HandoffClaimFinished(issue.id, run_id, Error(error.LinearApiRequest(reason)))`; `ReportSuccess(issue_id, _, _, run_id, _)` becomes `HandoffSuccessFinished(issue_id, run_id, Error(error.LinearApiRequest(reason)))`; `ReportFailure(issue_id, _, _, run_id, _)` becomes `HandoffFailureFinished(issue_id, run_id, Error(error.LinearApiRequest(reason)))`; `PostLinearCommandAck(issue_id, source_comment_id, _, _)` becomes `LinearCommandAckFinished(issue_id, source_comment_id, Error(error.LinearApiRequest(reason)))`; `ReportInvalidWorkflow(issue, _, violation_fingerprint, reporting_policy_fingerprint, _)` becomes `InvalidWorkflowReportFinished(issue.id, violation_fingerprint, reporting_policy_fingerprint, Error(error.LinearApiRequest(reason)))`; and `CleanupWorkspace(_, workspace_path, _, _)` becomes `CleanupFinished(workspace_path, Error(error.WorkspaceIo(reason)))`. Then call the same result-specific handler so poll, retry, pending claim, invalid workflow, ack, and cleanup paths complete normally.
 
-16. In `shutdown_state`, call `effect_runner.shutdown(state.effect_runner, 1000)` before clearing daemon runtime fields. The runner shutdown should kill or demonitor in-flight side-effect workers, drop queued effects, send the ack, and ignore any later stale completions.
+16. In `shutdown_state`, call `effect_runner.shutdown(state.effect_runner, 1000)` before clearing daemon runtime fields. The runner shutdown handler should iterate over stored `InFlightEffect` values, call `process.demonitor_process(monitor)`, call `process.kill(pid)`, drop queued effects, send the ack, and then stop the runner actor. If a stale completion reaches the daemon after shutdown has begun, the daemon should ignore it rather than re-enqueueing work.
 
-17. Run `direnv exec . gleam format --check src test`, then `direnv exec . gleam test`. Expect all tests to pass. The pass count should be at least the baseline plus the new tests. Commit this milestone with a message such as `Extract monitored side-effect runner`.
+17. Run the validation command sequence from Validation and Acceptance. Expect all tests to pass. The pass count should be at least the current baseline plus the new tests. Commit this milestone with a message such as `Extract monitored side-effect runner` when VCS metadata is available; otherwise record this as a green checkpoint in Progress.
 
 18. Create `src/scherzo/orchestrator/workflow_reloader.gleam`. Move `workflow_definition_from_bundle`, `reload_if_changed`, `apply_new_contents`, `validate_reloaded_bundle`, `apply_reloaded_bundle`'s pure reload-state construction, and `mark_reload_invalid` logic into this module. Define a `State` containing `workflow_path`, `chosen_path`, `last_contents`, `bundle`, `definition`, `reload_state`, `effective`, and `secrets`.
 
@@ -226,13 +299,13 @@ Extract control command handling last because it depends on all earlier boundari
 
 26. Run format and tests. Commit this milestone with a message such as `Extract daemon event publisher`.
 
-27. Create `src/scherzo/orchestrator/worker_registry.gleam`. Move `WorkerHandle` and `YamlRunHandle` into this module unless a public compatibility issue is found. Define `Registry` with workers, worker monitors, YAML runs, YAML run monitors, issue sessions, step command subjects, step command monitors, step command subject monitors, and next session sequence.
+27. Create `src/scherzo/orchestrator/worker_registry.gleam`. Move `WorkerHandle` into this module unless a public compatibility issue is found. Define `Registry` with workers, worker monitors, issue sessions, YAML step-session mappings, stopped YAML run reasons, step command subjects, step command monitors, step command subject monitors, and next session sequence. Do not introduce a `YamlRunHandle` or `yaml_run_monitors` abstraction unless new code first creates a real YAML run process handle that needs one.
 
-28. In `worker_registry.gleam`, implement `new`, `reserve_session_sequence`, `register_worker`, `register_yaml_run`, `register_worker_command_subject`, `register_yaml_step_command_subject`, `clear_yaml_step_command_route`, `worker_for_session`, `yaml_run_for_session`, `active_issue_ids`, `active_issues`, `has_active_run`, `remove_worker`, `remove_yaml_run`, `remove_all`, and `resolve_down`. `resolve_down` should return a value that tells the daemon whether a down monitor belonged to a legacy worker, YAML workflow run, YAML step command subject, or nothing known.
+28. In `worker_registry.gleam`, implement `new`, `reserve_session_sequence`, `register_worker`, `register_worker_command_subject`, `register_yaml_step_started`, `finish_yaml_step`, `active_yaml_step_sessions_for_run`, `mark_yaml_run_stopping`, `stopped_yaml_run_reason`, `clear_yaml_step_command_route`, `worker_for_session`, `active_issue_ids`, `active_issues`, `has_active_run`, `remove_worker`, `remove_all`, and `resolve_down`. `resolve_down` should return a value that tells the daemon whether a down monitor belonged to a worker, YAML step command subject, or nothing known.
 
-29. Add `test/orchestrator_worker_registry_test.gleam`. Cover registering a worker and looking it up by session id, registering a YAML run and resolving its monitor down, registering and clearing a YAML step command subject, and `remove_all` demonitoring or forgetting all entries without leaving session mappings behind.
+29. Add `test/orchestrator_worker_registry_test.gleam`. Cover registering a worker and looking it up by session id, registering a YAML step session and finding all active step sessions for a run id, marking a YAML run as stopping and reading its reason, registering and clearing a YAML step command subject, resolving worker and step-command monitor downs, and `remove_all` demonitoring or forgetting all entries without leaving session mappings behind.
 
-30. Update `daemon.gleam` in small slices. First replace lookup helpers such as `worker_for_session`, `yaml_run_for_session`, `active_run_issue_ids`, `active_run_issues`, `has_active_run`, and first-worker helpers with registry calls. Run tests. Then replace command-ready route management. Run tests. Then replace monitor-down handling. Run tests. Then replace shutdown registry cleanup. Run tests.
+30. Update `daemon.gleam` in small slices. First replace lookup helpers such as `worker_for_session`, `worker_for_run`, `active_run_issue_ids`, `active_run_issues`, `has_active_run`, and first-worker helpers with registry calls. Run tests. Then replace YAML step-session helpers such as `handle_yaml_step_started`, `handle_yaml_step_finished`, `active_yaml_step_sessions_for_run`, and `finish_yaml_step_sessions_for_run`. Run tests. Then replace command-ready route management. Run tests. Then replace monitor-down handling. Run tests. Then replace shutdown registry cleanup. Run tests.
 
 31. Commit each green slice or one green milestone, depending on diff size. Suggested final milestone message: `Extract daemon worker registry`.
 
@@ -260,20 +333,25 @@ Extract control command handling last because it depends on all earlier boundari
 
 43. Run structural checks from the repository root:
 
-    grep -n "side_effects_in_flight\|side_effect_queue\|fn run_side_effect\|fn spawn_side_effect" src/scherzo/orchestrator/daemon.gleam
-    grep -n "fn update_payload\|fn kind_for_update\|fn publish_worker_update" src/scherzo/orchestrator/daemon.gleam
+    grep -E -n "side_effects_in_flight|side_effect_queue|fn run_side_effect|fn spawn_side_effect" src/scherzo/orchestrator/daemon.gleam
+    grep -E -n "fn update_payload|fn kind_for_update|fn publish_worker_update" src/scherzo/orchestrator/daemon.gleam
     wc -l src/scherzo/orchestrator/daemon.gleam
 
-    The first two grep commands should print no matches. The line count should be substantially below 4,184; if it is still above roughly 2,500 lines, stop and record why the remaining code belongs in the daemon before calling this complete.
+    The first two grep commands should print no matches; with standard `grep`, exit status `1` with no output is the expected success case for these absence checks. The line count should be substantially below 3,991; if it is still above roughly 2,500 lines, stop and record why the remaining code belongs in the daemon before calling this complete.
 
-44. Run final validation:
+44. Run final validation through direnv:
 
     direnv exec . gleam format --check src test
     direnv exec . gleam test
 
-    Expect both commands to exit zero and the test command to report `no failures`. The exact passed count should be the baseline plus the tests added during this plan unless other concurrent work changes the count.
+    If direnv reports `.envrc is blocked`, review `.envrc`, run `direnv allow .`, and retry the direnv commands. If direnv is unavailable in a disposable workspace and Gleam is already on `PATH`, use the fallback commands:
 
-45. Update this plan's Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective. Commit the cleanup and plan update with a message such as `Document daemon decomposition outcome`.
+    gleam format --check src test
+    gleam test
+
+    Expect both commands to exit zero and the test command to report `no failures`. The exact passed count should be the current baseline plus the tests added during this plan unless other concurrent work changes the count.
+
+45. Update this plan's Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective. Commit the cleanup and plan update with a message such as `Document daemon decomposition outcome` when VCS metadata is available; otherwise record the green checkpoint and the absence of VCS metadata in Progress.
 
 ## Testing and Falsifiability
 
@@ -281,7 +359,7 @@ The main falsifiable safety claim is: a side-effect process crash no longer stal
 
 The behavior-preservation claim is falsified by any regression in the existing suite. The most important parity tests are the daemon tests for dispatch, retries, YAML workflow sessions, Linear operator commands, session events, control server commands, lifecycle shutdown, and service lifecycle. Existing tests must keep their current assertions; do not weaken tests to make extraction easier.
 
-The module-boundary claim is falsified if the final daemon still contains the side-effect queue implementation, event payload classification helpers, workflow reload implementation, retry timer dictionaries, worker registry dictionaries, and control command decision tree. The structural grep checks in Concrete Step 43 are mandatory. Line count alone is not acceptance, but a final daemon close to the original 4,184 lines means the extraction did not accomplish the maintainability goal.
+The module-boundary claim is falsified if the final daemon still contains the side-effect queue implementation, event payload classification helpers, workflow reload implementation, retry timer dictionaries, worker registry dictionaries, and control command decision tree. The structural grep checks in Concrete Step 43 are mandatory. Line count alone is not acceptance, but a final daemon close to the current 3,991-line baseline means the extraction did not accomplish the maintainability goal.
 
 For new tests, use these concrete scenarios:
 
@@ -289,17 +367,22 @@ For new tests, use these concrete scenarios:
 - In `test/orchestrator_effect_runner_test.gleam`, assert a panicking cleanup effect emits `Crashed`, then a queued cleanup effect emits `Finished`.
 - In `test/orchestrator_workflow_reloader_test.gleam`, assert unchanged contents do not reload, valid changed contents reload and update `effective.polling.interval_ms`, and invalid contents mark `config.CurrentInvalid` without discarding the last known good config.
 - In `test/orchestrator_event_publisher_test.gleam` or `test/session_event_test.gleam`, assert the moved event classifier still maps blocking UI requests to `session_event.UiRequest`, UI responses to `session_event.UiResponse`, tool-shaped messages to `session_event.Tool`, `turn_finished` to `session_event.TokenStats`, and raw unknown events to `session_event.PiRaw`.
-- In `test/orchestrator_worker_registry_test.gleam`, assert worker registration, YAML run registration, monitor resolution, session lookup, and route clearing remove all relevant maps.
+- In `test/orchestrator_worker_registry_test.gleam`, assert worker registration, YAML step-session registration, stopped YAML run reason tracking, monitor resolution, session lookup, and route clearing remove all relevant maps.
 - In `test/orchestrator_poll_scheduler_test.gleam`, assert stale poll ticks are rejected and finishing a poll clears in-flight state and increments generation.
 - In `test/orchestrator_retry_scheduler_test.gleam`, assert canceling one retry timer does not delete another issue's timer and stale retry refresh completions are ignored.
 - In `test/orchestrator_control_command_handler_test.gleam`, assert prompt and UI response size guards reject oversized payloads, worker replies map to the same command statuses, issue identifier resolution rejects ambiguous matches, and remote tracker fetch errors produce the same rejection reasons as the current daemon.
 
 ## Validation and Acceptance
 
-Acceptance requires all of the following from the repository root:
+Acceptance requires the validation command sequence to pass from the repository root. Prefer these commands through direnv:
 
     direnv exec . gleam format --check src test
     direnv exec . gleam test
+
+If `.envrc` is blocked, review `.envrc`, run `direnv allow .`, and retry the direnv commands. Use these fallback commands only when direnv is unavailable in a disposable workspace and Gleam is already on `PATH`:
+
+    gleam format --check src test
+    gleam test
 
 Both commands must exit zero. `gleam test` must report `no failures`. Expected Erlang crash reports from tests that intentionally crash worker or side-effect processes are acceptable only when the final test summary is green.
 
@@ -307,16 +390,16 @@ Behavior acceptance requires `daemon.start`, `daemon.shutdown`, `daemon.get_snap
 
 Structural acceptance requires these checks:
 
-    grep -n "side_effects_in_flight\|side_effect_queue\|fn run_side_effect\|fn spawn_side_effect" src/scherzo/orchestrator/daemon.gleam
-    grep -n "fn update_payload\|fn kind_for_update\|fn publish_worker_update" src/scherzo/orchestrator/daemon.gleam
+    grep -E -n "side_effects_in_flight|side_effect_queue|fn run_side_effect|fn spawn_side_effect" src/scherzo/orchestrator/daemon.gleam
+    grep -E -n "fn update_payload|fn kind_for_update|fn publish_worker_update" src/scherzo/orchestrator/daemon.gleam
 
-Both commands must return no matches. `wc -l src/scherzo/orchestrator/daemon.gleam` must show a substantial reduction from 4,184 lines. If the final daemon remains above roughly 2,500 lines, the implementer must record in Outcomes & Retrospective which concerns still remain and why they were intentionally left there.
+Both `grep` commands must print no matches; exit status `1` with no output is success for these absence checks. `wc -l src/scherzo/orchestrator/daemon.gleam` must show a substantial reduction from 3,991 lines. If the final daemon remains above roughly 2,500 lines, the implementer must record in Outcomes & Retrospective which concerns still remain and why they were intentionally left there.
 
 Safety acceptance requires the new side-effect crash tests to pass. The runner must not stall when a side-effect worker crashes. The daemon must log a crash and continue poll/retry flow instead of leaving an in-flight side effect counted forever.
 
 ## Rollout, Recovery, and Idempotence
 
-This is an internal refactor with one bug fix. There is no data migration and no operator rollout switch. Each milestone should be committed only after tests pass so the change can be backed out one milestone at a time. If a late extraction causes confusing failures, revert the last milestone rather than debugging across several uncommitted moves.
+This is an internal refactor with one bug fix. There is no data migration and no operator rollout switch. Each milestone should be committed only after tests pass when VCS metadata is available, so the change can be backed out one milestone at a time. In a checkout with no visible VCS metadata, treat those commit points as explicit green checkpoints in Progress. If a late extraction causes confusing failures, revert the last milestone rather than debugging across several uncommitted moves.
 
 The side-effect runner changes live concurrency behavior. If they cause production trouble, the rollback is to revert the `EffectRunner` milestone and return to the old daemon-local queue while investigating. That rollback reintroduces the known queue-stall risk, so keep the crash tests in the tree if possible and mark them pending only as a temporary measure if rollback is necessary.
 
@@ -330,13 +413,20 @@ Baseline command recorded during plan authoring:
     ...
     377 passed, no failures
 
-Baseline size check recorded during plan authoring:
+Current review validation note:
+
+    direnv allow .
+    direnv exec . gleam test
+    ...
+    376 passed, no failures
+
+Current size check recorded during plan review:
 
     wc -l src/scherzo/orchestrator/daemon.gleam src/scherzo/orchestrator/core.gleam src/scherzo/orchestrator/service.gleam
-      4184 src/scherzo/orchestrator/daemon.gleam
-       808 src/scherzo/orchestrator/core.gleam
-      1181 src/scherzo/orchestrator/service.gleam
-      6173 total
+      3991 src/scherzo/orchestrator/daemon.gleam
+       833 src/scherzo/orchestrator/core.gleam
+       839 src/scherzo/orchestrator/service.gleam
+      5663 total
 
 Current side-effect queue code to remove from the daemon is around `src/scherzo/orchestrator/daemon.gleam` functions `enqueue_side_effect`, `drain_side_effects`, `max_side_effects`, `spawn_side_effect`, and `run_side_effect`.
 
@@ -400,11 +490,13 @@ In `src/scherzo/orchestrator/effect_runner.gleam`, define these public shapes:
     pub fn enqueue(handle: Handle, effect: Effect) -> Nil
     pub fn shutdown(handle: Handle, timeout_ms: Int) -> Result(Nil, Nil)
 
+The effect runner actor must select both its subject and monitor messages with `process.select_monitors(WorkerDown)`. Its private in-flight record must store the original effect, pid, and monitor so `WorkerDown`, normal finish, and shutdown can all remove the same work item without duplicate completion notifications.
+
 In `src/scherzo/orchestrator/workflow_reloader.gleam`, define a state type that owns workflow path, chosen path, last contents, bundle, definition, reload state, effective config, and secrets. Expose reload functions that return an outcome and do not create network clients.
 
 In `src/scherzo/orchestrator/event_publisher.gleam`, expose only event publishing and event classification functions. It should import `scherzo/session/hub`, `scherzo/session/event`, `scherzo/agent/runner`, and `scherzo/domain`; it should not import `daemon.gleam`.
 
-In `src/scherzo/orchestrator/worker_registry.gleam`, define `Registry`, `WorkerHandle`, `YamlRunHandle`, and monitor/session lookup functions. It may import `gleam/erlang/process`, `gleam/dict`, `scherzo/domain`, and `scherzo/agent/worker_command`; it should not import `daemon.gleam`.
+In `src/scherzo/orchestrator/worker_registry.gleam`, define `Registry`, `WorkerHandle`, monitor/session lookup functions, YAML step-session functions, and stopped YAML run reason functions. It may import `gleam/erlang/process`, `gleam/dict`, `scherzo/domain`, and `scherzo/agent/worker_command`; it should not import `daemon.gleam`. It should not define `YamlRunHandle` unless the implementation first introduces a real YAML run process handle that is absent from the current daemon.
 
 In scheduler modules, keep timer state generic over the timer handle type or accept callbacks. Do not import `daemon.TimerHandle` from scheduler modules.
 
