@@ -92,6 +92,10 @@ verify_current_workspace() {
 case "$command" in
   after-create)
     require_jj_repo_root
+    if [ -d .jj ]; then
+      verify_current_workspace
+      exit 0
+    fi
     if [ -n "${SCHERZO_SOURCE_WORKSPACE_PATH:-}" ]; then
       test -d "$SCHERZO_SOURCE_WORKSPACE_PATH/.jj" || \
         fail "source workspace is missing .jj: $SCHERZO_SOURCE_WORKSPACE_PATH"
@@ -104,6 +108,7 @@ case "$command" in
     else
       jj --repository "$repo_root" workspace add \
         --name "$workspace_name" \
+        --revision @ \
         --message "Scherzo ${workflow_name} workspace for ${workspace_key}" \
         --sparse-patterns full \
         "$workspace_path"

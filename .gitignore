@@ -20,4 +20,5 @@ erl_crash.dump
 .scherzo/workflows/**/.scherzo/
 node_modules/
 *.log
+tmp/
 test/tmp/

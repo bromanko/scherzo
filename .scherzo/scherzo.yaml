@@ -43,12 +43,14 @@ agent:
   # First dogfood runs should be supervised and serial. Set to 0 to pause new
   # dispatch while preserving workflow reload and running-worker reconciliation.
   max_concurrent_agents: 1
-  max_turns: 12
+  # One pi turn is a full agent loop with tool calls. Keep dogfood workflow
+  # steps single-turn so active Linear issues do not repeat until max_turns.
+  max_turns: 1
   max_retry_backoff_ms: 300000
   max_retry_attempts: 2
   max_sessions_per_issue: 2
 pi:
-  command: "pi --mode rpc --no-session"
+  command: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi"'
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000
@@ -58,12 +60,19 @@ pi:
   ui_request_timeout_ms: 600000
   compatibility_probe: true
 handoff:
-  # Comments-only handoff is safe enough for dogfood and keeps state movement in
-  # human hands until result comments and state IDs feel proven.
+  # Move issues through the checked Linear states so successful daemon runs do
+  # not redispatch the same still-active issue on the next poll.
   enabled: true
   comment_on_claim: true
   comment_on_success: true
   comment_on_failure: true
+  claim_state_id: 2e245854-2a96-4ebf-9b67-cbef92ca9a1f
+  success_state_id: dbd4662f-635f-4a8d-acd7-cef0def44196
+  failure_state_id: 83eb55af-4c17-443f-9501-8a581be7de20
+  include_result_on_success: true
+  attach_result_on_success: true
+  attachment_fallback_to_markdown_link: true
+  result_max_chars: 20000
 routing:
   workflow_label_prefix: "workflow:"
   require_exactly_one_workflow_label: true
