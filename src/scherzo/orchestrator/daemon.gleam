@@ -19,6 +19,9 @@ import scherzo/linear
 import scherzo/linear_triage
 import scherzo/log
 import scherzo/orchestrator/core
+import scherzo/orchestrator/effect_runner
+import scherzo/orchestrator/event_publisher
+import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/hub
@@ -27,7 +30,6 @@ import scherzo/tracker
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace
-import simplifile
 
 pub type StartupError {
   StartupError(code: String, message: String)
@@ -53,7 +55,8 @@ pub type Message {
     process.Subject(command.CommandResult),
   )
   WorkerDown(process.Down)
-  SideEffectFinished(SideEffectResult)
+  EffectRunnerDown(process.Down)
+  SideEffectCompleted(effect_runner.Completion)
   Shutdown(process.Subject(Nil))
   GetSnapshot(process.Subject(domain.RuntimeState))
   ApplyOperatorCommand(
@@ -102,90 +105,6 @@ type PendingClaim {
   )
 }
 
-type SideEffect {
-  FetchCandidates(generation: Int, client: tracker.Client)
-  FetchLinearCommands(
-    generation: Int,
-    issue_ids: List(String),
-    candidates: List(domain.Issue),
-    dispatch_after: Bool,
-    client: linear.CommandClient,
-    limit_per_issue: Int,
-  )
-  RefreshRunning(generation: Int, ids: List(String), client: tracker.Client)
-  RefreshRetry(issue_id: String, generation: Int, client: tracker.Client)
-  ClaimIssue(
-    issue: domain.Issue,
-    workspace_path: String,
-    run_id: String,
-    client: handoff.Client,
-  )
-  ReportSuccess(
-    issue_id: String,
-    issue: domain.Issue,
-    success: runner.WorkerSuccess,
-    run_id: String,
-    client: handoff.Client,
-  )
-  ReportFailure(
-    issue_id: String,
-    issue: domain.Issue,
-    failure: runner.WorkerFailure,
-    run_id: String,
-    client: handoff.Client,
-  )
-  PostLinearCommandAck(
-    issue_id: String,
-    source_comment_id: String,
-    body: String,
-    client: linear.CommandClient,
-  )
-  ReportInvalidWorkflow(
-    issue: domain.Issue,
-    violation: workflow_policy.IssueWorkflowViolation,
-    violation_fingerprint: String,
-    reporting_policy_fingerprint: String,
-    client: linear_triage.TriageClient,
-  )
-  CleanupWorkspace(
-    root: String,
-    workspace_path: String,
-    hooks: domain.HooksConfig,
-    cleanup: fn(String, String, domain.HooksConfig) ->
-      Result(Nil, error.WorkspaceError),
-  )
-}
-
-pub type SideEffectResult {
-  CandidateFetchFinished(Int, Result(List(domain.Issue), error.TrackerError))
-  LinearCommandFetchFinished(
-    Int,
-    List(domain.Issue),
-    Bool,
-    Result(List(linear.LinearComment), error.TrackerError),
-  )
-  RunningRefreshFinished(Int, Result(List(domain.Issue), error.TrackerError))
-  RetryRefreshFinished(
-    String,
-    Int,
-    Result(List(domain.Issue), error.TrackerError),
-  )
-  HandoffClaimFinished(String, String, Result(Nil, error.TrackerError))
-  HandoffSuccessFinished(String, String, Result(Nil, error.TrackerError))
-  HandoffFailureFinished(String, String, Result(Nil, error.TrackerError))
-  LinearCommandAckFinished(String, String, Result(Nil, error.TrackerError))
-  InvalidWorkflowReportFinished(
-    issue_id: String,
-    violation_fingerprint: String,
-    reporting_policy_fingerprint: String,
-    result: Result(
-      linear_triage.InvalidWorkflowReportOutcome,
-      error.TrackerError,
-    ),
-  )
-  CleanupFinished(String, Result(Nil, error.WorkspaceError))
-}
-
 pub type RuntimeDependencies {
   RuntimeDependencies(
     make_tracker: fn(domain.TrackerConfig) -> tracker.Client,
@@ -218,12 +137,7 @@ type StepCommandSubjectLookupError {
 type State {
   State(
     subject: process.Subject(Message),
-    workflow_path: Option(String),
-    chosen_path: String,
-    last_contents: String,
-    bundle: runtime_bundle.RuntimeBundle,
-    reload_state: config.ReloadState,
-    effective: domain.EffectiveConfig,
+    workflow: workflow_reloader.State,
     tracker_client: tracker.Client,
     handoff_client: handoff.Client,
     linear_command_client: linear.CommandClient,
@@ -245,9 +159,8 @@ type State {
     stopped_yaml_runs: Dict(String, String),
     next_session_sequence: Int,
     pending_claims: Dict(String, PendingClaim),
-    side_effects_in_flight: Int,
-    side_effect_queue: List(SideEffect),
-    secrets: List(String),
+    effect_runner: effect_runner.Handle,
+    effect_runner_monitor: process.Monitor,
     event_hub: process.Subject(hub.Message),
     control_server: ControlServerHandle,
     control_file_path: Option(String),
@@ -371,6 +284,17 @@ fn start_control_plane(
   }
 }
 
+fn stop_control_plane(
+  dependencies: RuntimeDependencies,
+  control_plane: ControlPlane,
+) -> Nil {
+  dependencies.stop_control_server(control_plane.handle)
+  case control_plane.control_file_path {
+    Some(path) -> control_file.remove(path)
+    None -> Nil
+  }
+}
+
 fn control_backend(
   event_hub: process.Subject(hub.Message),
   daemon_subject: process.Subject(Message),
@@ -405,8 +329,7 @@ pub fn start(
     runtime_bundle.load(workflow_path)
     |> map_bundle_error,
   )
-  let chosen_path = bundle.config_path
-  let contents = bundle.config_contents
+  let workflow = workflow_reloader.from_bundle(workflow_path, bundle)
   let effective = bundle.effective
   let tracker_client = dependencies.make_tracker(effective.tracker)
   let handoff_client =
@@ -416,11 +339,6 @@ pub fn start(
   let triage_client =
     dependencies.make_triage(effective.tracker, effective.linear_contract)
   let linear_command_state = linear_transport.new_state(dependencies.now_ms())
-  let reload_state =
-    config.ReloadState(
-      last_known_good: Some(effective),
-      current_status: config.CurrentValid,
-    )
   let runtime = core.new_state(effective)
   let secrets = config.resolved_secrets(effective)
   use event_hub <- try_startup(dependencies.start_event_hub() |> map_hub_error)
@@ -436,58 +354,97 @@ pub fn start(
         )
       {
         Error(err) -> Error(encode_startup_error(err))
-        Ok(control_plane) -> {
-          let poll_generation = 1
-          let poll_timer =
-            dependencies.send_after(subject, 0, PollTick(poll_generation))
-          let state =
-            State(
-              subject: subject,
-              workflow_path: workflow_path,
-              chosen_path: chosen_path,
-              last_contents: contents,
-              bundle: bundle,
-              reload_state: reload_state,
-              effective: effective,
-              tracker_client: tracker_client,
-              handoff_client: handoff_client,
-              linear_command_client: linear_command_client,
-              triage_client: triage_client,
-              linear_command_state: linear_command_state,
-              runtime: runtime,
-              poll_generation: poll_generation,
-              poll_in_flight: None,
-              poll_timer: Some(poll_timer),
-              retry_timers: dict.new(),
-              retry_refreshes_in_flight: dict.new(),
-              workers: dict.new(),
-              worker_monitors: dict.new(),
-              issue_sessions: dict.new(),
-              step_command_subjects: dict.new(),
-              step_command_monitors: dict.new(),
-              step_command_subject_monitors: dict.new(),
-              yaml_step_runs: dict.new(),
-              stopped_yaml_runs: dict.new(),
-              next_session_sequence: 1,
-              pending_claims: dict.new(),
-              side_effects_in_flight: 0,
-              side_effect_queue: [],
-              secrets: secrets,
-              event_hub: event_hub,
-              control_server: control_plane.handle,
-              control_file_path: control_plane.control_file_path,
-              operator_paused: False,
-              dependencies: dependencies,
+        Ok(control_plane) ->
+          case
+            effect_runner.start(
+              effect_runner.Dependencies(
+                max_concurrent: 4,
+                notify: fn(completion) {
+                  process.send(subject, SideEffectCompleted(completion))
+                },
+              ),
             )
-          let selector =
-            process.new_selector()
-            |> process.select(subject)
-            |> process.select_monitors(WorkerDown)
-          actor.initialised(state)
-          |> actor.selecting(selector)
-          |> actor.returning(subject)
-          |> Ok
-        }
+          {
+            Error(_) -> {
+              stop_control_plane(dependencies, control_plane)
+              Error(
+                encode_startup_error(StartupError(
+                  "effect_runner_start_failed",
+                  "effect runner start failed",
+                )),
+              )
+            }
+            Ok(effect_runner_handle) -> {
+              let effect_runner_monitor =
+                effect_runner.monitor(effect_runner_handle)
+              case effect_runner.is_alive(effect_runner_handle) {
+                False -> {
+                  process.demonitor_process(effect_runner_monitor)
+                  stop_control_plane(dependencies, control_plane)
+                  Error(
+                    encode_startup_error(StartupError(
+                      "effect_runner_start_failed",
+                      "effect runner exited during startup",
+                    )),
+                  )
+                }
+                True -> {
+                  let poll_generation = 1
+                  let poll_timer =
+                    dependencies.send_after(
+                      subject,
+                      0,
+                      PollTick(poll_generation),
+                    )
+                  let state =
+                    State(
+                      subject: subject,
+                      workflow: workflow,
+                      tracker_client: tracker_client,
+                      handoff_client: handoff_client,
+                      linear_command_client: linear_command_client,
+                      triage_client: triage_client,
+                      linear_command_state: linear_command_state,
+                      runtime: runtime,
+                      poll_generation: poll_generation,
+                      poll_in_flight: None,
+                      poll_timer: Some(poll_timer),
+                      retry_timers: dict.new(),
+                      retry_refreshes_in_flight: dict.new(),
+                      workers: dict.new(),
+                      worker_monitors: dict.new(),
+                      issue_sessions: dict.new(),
+                      step_command_subjects: dict.new(),
+                      step_command_monitors: dict.new(),
+                      step_command_subject_monitors: dict.new(),
+                      yaml_step_runs: dict.new(),
+                      stopped_yaml_runs: dict.new(),
+                      next_session_sequence: 1,
+                      pending_claims: dict.new(),
+                      effect_runner: effect_runner_handle,
+                      effect_runner_monitor: effect_runner_monitor,
+                      event_hub: event_hub,
+                      control_server: control_plane.handle,
+                      control_file_path: control_plane.control_file_path,
+                      operator_paused: False,
+                      dependencies: dependencies,
+                    )
+                  let selector =
+                    process.new_selector()
+                    |> process.select(subject)
+                    |> process.select_specific_monitor(
+                      effect_runner_monitor,
+                      fn(down) { EffectRunnerDown(down) },
+                    )
+                    |> process.select_monitors(WorkerDown)
+                  actor.initialised(state)
+                  |> actor.selecting(selector)
+                  |> actor.returning(subject)
+                  |> Ok
+                }
+              }
+            }
+          }
       }
     })
     |> actor.on_message(handle_message)
@@ -546,7 +503,7 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
     YamlStepStarted(session_id, run_id) ->
       actor.continue(handle_yaml_step_started(state, session_id, run_id))
     YamlStepUpdate(session_id, update) -> {
-      publish_worker_update(state, session_id, update)
+      event_publisher.worker_update(state.event_hub, session_id, update)
       case update.event {
         "message_update" -> Nil
         _ -> {
@@ -583,8 +540,12 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
       actor.continue(state)
     }
     WorkerDown(down) -> actor.continue(handle_worker_down(state, down))
-    SideEffectFinished(result) ->
-      actor.continue(handle_side_effect_finished(state, result))
+    EffectRunnerDown(down) -> {
+      let _ = handle_effect_runner_down(state, down)
+      actor.stop_abnormal("effect_runner_down")
+    }
+    SideEffectCompleted(completion) ->
+      actor.continue(handle_side_effect_completed(state, completion))
     GetSnapshot(reply) -> {
       process.send(reply, state.runtime)
       actor.continue(state)
@@ -711,8 +672,18 @@ fn handle_yaml_step_started(
   case dict.get(state.stopped_yaml_runs, run_id) {
     Ok(reason) -> {
       hub.update_status(state.event_hub, session_id, session_event.Stopping)
-      publish_lifecycle(state, session_id, "operator_command", Some(reason))
-      publish_lifecycle(state, session_id, "worker_exited", Some(reason))
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        "operator_command",
+        Some(reason),
+      )
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        "worker_exited",
+        Some(reason),
+      )
       hub.finish_session(state.event_hub, session_id, reason)
       state
     }
@@ -745,8 +716,18 @@ fn finish_yaml_step_sessions_for_run(
   let session_ids = active_yaml_step_sessions_for_run(state, run_id)
   list.each(session_ids, fn(session_id) {
     hub.update_status(state.event_hub, session_id, session_event.Stopping)
-    publish_lifecycle(state, session_id, "operator_command", Some(reason))
-    publish_lifecycle(state, session_id, "worker_exited", Some(reason))
+    event_publisher.lifecycle(
+      state.event_hub,
+      session_id,
+      "operator_command",
+      Some(reason),
+    )
+    event_publisher.lifecycle(
+      state.event_hub,
+      session_id,
+      "worker_exited",
+      Some(reason),
+    )
     hub.finish_session(state.event_hub, session_id, reason)
   })
   delete_yaml_step_sessions(state, session_ids)
@@ -958,38 +939,17 @@ fn reload_workflow_for_operator(
   state: State,
   operator_command: command.OperatorCommand,
 ) -> #(State, command.CommandResult) {
-  case simplifile.read(state.chosen_path) {
-    Error(_) -> {
-      let state = mark_reload_invalid(state, "missing_workflow_file")
-      #(
-        state,
-        command.rejected(
-          operator_command,
-          "missing_workflow_file",
-          Some("workflow file could not be read"),
-        ),
-      )
-    }
-    Ok(contents) -> {
-      let state = case contents == state.last_contents {
-        True -> state
-        False -> apply_new_contents(state, contents)
-      }
-      case state.reload_state.current_status {
-        config.CurrentValid -> #(
-          state,
-          command.applied(operator_command, Some("workflow reloaded")),
-        )
-        config.CurrentInvalid(reason) -> #(
-          state,
-          command.rejected(
-            operator_command,
-            reason,
-            Some("workflow reload failed"),
-          ),
-        )
-      }
-    }
+  let outcome = workflow_reloader.reload_now(state.workflow)
+  let state = apply_workflow_reload_outcome(state, outcome)
+  case state.workflow.reload_state.current_status {
+    config.CurrentValid -> #(
+      state,
+      command.applied(operator_command, Some("workflow reloaded")),
+    )
+    config.CurrentInvalid(reason) -> #(
+      state,
+      command.rejected(operator_command, reason, Some("workflow reload failed")),
+    )
   }
 }
 
@@ -1055,8 +1015,8 @@ fn retry_resolved_issue(
     )
   let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue.id)
   case
-    config.can_dispatch(state.reload_state)
-    && core.should_dispatch(state.runtime, state.effective, issue)
+    config.can_dispatch(state.workflow.reload_state)
+    && core.should_dispatch(state.runtime, state.workflow.effective, issue)
     && can_reserve_dispatch_slot(state, issue)
   {
     True -> {
@@ -1448,13 +1408,18 @@ fn stop_session_for_operator(
         handle.session_id,
         session_event.Stopping,
       )
-      publish_lifecycle(
-        state,
+      event_publisher.lifecycle(
+        state.event_hub,
         handle.session_id,
         "operator_command",
         Some(reason),
       )
-      publish_lifecycle(state, handle.session_id, "worker_exited", Some(reason))
+      event_publisher.lifecycle(
+        state.event_hub,
+        handle.session_id,
+        "worker_exited",
+        Some(reason),
+      )
       hub.finish_session(state.event_hub, handle.session_id, reason)
       let state =
         State(
@@ -1755,45 +1720,33 @@ fn handle_poll_tick(state: State, generation: Int) -> State {
 }
 
 fn reload_if_changed(state: State) -> State {
-  case simplifile.read(state.chosen_path) {
-    Error(_) -> mark_reload_invalid(state, "missing_workflow_file")
-    Ok(contents) ->
-      case contents == state.last_contents {
-        True -> state
-        False -> apply_new_contents(state, contents)
-      }
-  }
+  apply_workflow_reload_outcome(
+    state,
+    workflow_reloader.reload_if_changed(state.workflow),
+  )
 }
 
-fn apply_new_contents(state: State, contents: String) -> State {
-  case runtime_bundle.load(Some(state.chosen_path)) {
-    Error(runtime_bundle.BundleError(code, _)) -> {
-      let state =
-        State(
-          ..state,
-          last_contents: contents,
-          reload_state: config.ReloadState(
-            last_known_good: Some(state.effective),
-            current_status: config.CurrentInvalid(code),
-          ),
-        )
-      log_state(state, "warn", "workflow_reload_failed", [#("error", code)])
+fn apply_workflow_reload_outcome(
+  state: State,
+  outcome: workflow_reloader.Outcome,
+) -> State {
+  case outcome {
+    workflow_reloader.Unchanged(workflow) -> State(..state, workflow: workflow)
+    workflow_reloader.Reloaded(workflow) ->
+      apply_reloaded_workflow(state, workflow)
+    workflow_reloader.Invalid(workflow, reason) -> {
+      let state = State(..state, workflow: workflow)
+      log_state(state, "warn", "workflow_reload_failed", [#("error", reason)])
       state
     }
-    Ok(bundle) -> {
-      let effective = bundle.effective
-      apply_reloaded_bundle(state, contents, bundle, effective)
-    }
   }
 }
 
-fn apply_reloaded_bundle(
+fn apply_reloaded_workflow(
   state: State,
-  contents: String,
-  bundle: runtime_bundle.RuntimeBundle,
-  effective: domain.EffectiveConfig,
+  workflow: workflow_reloader.State,
 ) -> State {
-  let secrets = config.resolved_secrets(effective)
+  let effective = workflow.effective
   let runtime =
     domain.RuntimeState(
       ..state.runtime,
@@ -1803,9 +1756,7 @@ fn apply_reloaded_bundle(
   let state =
     State(
       ..state,
-      last_contents: contents,
-      bundle: bundle,
-      effective: effective,
+      workflow: workflow,
       tracker_client: state.dependencies.make_tracker(effective.tracker),
       handoff_client: state.dependencies.make_handoff(
         effective.tracker,
@@ -1819,26 +1770,8 @@ fn apply_reloaded_bundle(
         effective.linear_contract,
       ),
       runtime: runtime,
-      reload_state: config.ReloadState(
-        last_known_good: Some(effective),
-        current_status: config.CurrentValid,
-      ),
-      secrets: secrets,
     )
   log_state(state, "info", "workflow_reloaded", [])
-  state
-}
-
-fn mark_reload_invalid(state: State, reason: String) -> State {
-  let state =
-    State(
-      ..state,
-      reload_state: config.ReloadState(
-        last_known_good: Some(state.effective),
-        current_status: config.CurrentInvalid(reason),
-      ),
-    )
-  log_state(state, "warn", "workflow_reload_failed", [#("error", reason)])
   state
 }
 
@@ -1849,7 +1782,7 @@ fn begin_running_refresh(state: State, generation: Int) -> State {
     _ ->
       enqueue_side_effect(
         state,
-        RefreshRunning(
+        effect_runner.RefreshRunning(
           generation: generation,
           ids: ids,
           client: state.tracker_client,
@@ -1861,15 +1794,18 @@ fn begin_running_refresh(state: State, generation: Int) -> State {
 fn begin_candidate_fetch_or_finish(state: State, generation: Int) -> State {
   case
     !state.operator_paused
-    && config.can_dispatch(state.reload_state)
-    && state.effective.agent.max_concurrent_agents != 0
+    && config.can_dispatch(state.workflow.reload_state)
+    && state.workflow.effective.agent.max_concurrent_agents != 0
     && slots_remain(state)
   {
     False -> begin_linear_command_fetch_or_finish(state, generation, [], False)
     True ->
       enqueue_side_effect(
         state,
-        FetchCandidates(generation: generation, client: state.tracker_client),
+        effect_runner.FetchCandidates(
+          generation: generation,
+          client: state.tracker_client,
+        ),
       )
   }
 }
@@ -1892,7 +1828,7 @@ fn handle_running_refresh_finished(
         Ok(issues) ->
           list.fold(issues, state, fn(acc, issue) {
             let transition =
-              core.reconcile_issue(acc.runtime, acc.effective, issue)
+              core.reconcile_issue(acc.runtime, acc.workflow.effective, issue)
             let acc = State(..acc, runtime: transition.state)
             apply_effects(acc, transition.effects)
           })
@@ -1938,7 +1874,7 @@ fn begin_linear_command_fetch_or_finish(
   candidates: List(domain.Issue),
   dispatch_after: Bool,
 ) -> State {
-  case state.effective.linear_commands.enabled {
+  case state.workflow.effective.linear_commands.enabled {
     False -> finish_linear_command_phase(state, candidates, dispatch_after)
     True -> {
       let issue_ids = observed_issue_ids(state, candidates)
@@ -1947,13 +1883,13 @@ fn begin_linear_command_fetch_or_finish(
         _ ->
           enqueue_side_effect(
             state,
-            FetchLinearCommands(
+            effect_runner.FetchLinearCommands(
               generation: generation,
               issue_ids: issue_ids,
               candidates: candidates,
               dispatch_after: dispatch_after,
               client: state.linear_command_client,
-              limit_per_issue: state.effective.linear_commands.poll_limit_per_issue,
+              limit_per_issue: state.workflow.effective.linear_commands.poll_limit_per_issue,
             ),
           )
       }
@@ -2004,7 +1940,7 @@ fn process_linear_command_comments(
   let #(transport_state, actions) =
     linear_transport.process_comments(
       state.linear_command_state,
-      state.effective.linear_commands,
+      state.workflow.effective.linear_commands,
       comments,
       state.issue_sessions,
     )
@@ -2041,21 +1977,21 @@ fn apply_linear_transport_action(
       ])
       case
         linear_transport.should_ack_result(
-          state.effective.linear_commands,
+          state.workflow.effective.linear_commands,
           result,
         )
       {
         True ->
           enqueue_side_effect(
             state,
-            PostLinearCommandAck(
+            effect_runner.PostLinearCommandAck(
               issue_id: comment.issue_id,
               source_comment_id: comment.id,
               body: linear_transport.result_ack_body(
                 comment.id,
                 parsed,
                 result,
-                state.secrets,
+                state.workflow.secrets,
               ),
               client: state.linear_command_client,
             ),
@@ -2066,7 +2002,7 @@ fn apply_linear_transport_action(
     linear_transport.PostAck(issue_id, body) ->
       enqueue_side_effect(
         state,
-        PostLinearCommandAck(
+        effect_runner.PostLinearCommandAck(
           issue_id: issue_id,
           source_comment_id: "",
           body: body,
@@ -2113,7 +2049,9 @@ fn poll_result_is_stale(state: State, generation: Int) -> Bool {
 }
 
 fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
-  case !state.operator_paused && config.can_dispatch(state.reload_state) {
+  case
+    !state.operator_paused && config.can_dispatch(state.workflow.reload_state)
+  {
     False -> state
     True ->
       case issues {
@@ -2123,7 +2061,7 @@ fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
           case
             core.dispatch_preconditions_satisfied_without_slot_capacity(
               state.runtime,
-              state.effective,
+              state.workflow.effective,
               issue,
             )
             && !dict.has_key(state.pending_claims, issue.id)
@@ -2132,7 +2070,7 @@ fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
             True ->
               case
                 workflow_policy.classify_issue(
-                  state.effective.linear_contract,
+                  state.workflow.effective.linear_contract,
                   issue,
                 )
               {
@@ -2177,7 +2115,7 @@ fn handle_invalid_workflow_candidate(
       state.runtime,
       issue,
       violation,
-      state.effective.linear_contract,
+      state.workflow.effective.linear_contract,
     )
   {
     True -> dispatch_candidates(remaining_candidates, state)
@@ -2185,14 +2123,14 @@ fn handle_invalid_workflow_candidate(
       let fingerprint = workflow_policy.violation_fingerprint(violation)
       let reporting_policy_fingerprint =
         workflow_policy.reporting_policy_fingerprint(
-          state.effective.linear_contract,
+          state.workflow.effective.linear_contract,
         )
       let runtime =
         core.mark_invalid_workflow_report_pending(
           state.runtime,
           issue,
           violation,
-          state.effective.linear_contract,
+          state.workflow.effective.linear_contract,
           state.dependencies.now_ms(),
         )
       let state = State(..state, runtime: runtime)
@@ -2205,7 +2143,7 @@ fn handle_invalid_workflow_candidate(
       let state =
         enqueue_side_effect(
           state,
-          ReportInvalidWorkflow(
+          effect_runner.ReportInvalidWorkflow(
             issue: issue,
             violation: violation,
             violation_fingerprint: fingerprint,
@@ -2227,7 +2165,7 @@ fn schedule_next_poll(state: State) -> State {
   let timer =
     state.dependencies.send_after(
       state.subject,
-      state.effective.polling.interval_ms,
+      state.workflow.effective.polling.interval_ms,
       PollTick(generation),
     )
   State(
@@ -2259,7 +2197,10 @@ fn handle_retry_tick(state: State, issue_id: String, generation: Int) -> State {
               ..state,
               retry_timers: dict.delete(state.retry_timers, issue_id),
             )
-          case state.operator_paused, config.can_dispatch(state.reload_state) {
+          case
+            state.operator_paused,
+            config.can_dispatch(state.workflow.reload_state)
+          {
             True, _ ->
               defer_retry_until_dispatch_available(state, issue_id, generation)
             _, False ->
@@ -2306,7 +2247,7 @@ fn begin_retry_refresh(state: State, issue_id: String, generation: Int) -> State
         )
       enqueue_side_effect(
         state,
-        RefreshRetry(
+        effect_runner.RefreshRetry(
           issue_id: issue_id,
           generation: generation,
           client: state.tracker_client,
@@ -2345,7 +2286,7 @@ fn handle_retry_refresh_finished(
           state
         }
         False ->
-          case config.can_dispatch(state.reload_state) {
+          case config.can_dispatch(state.workflow.reload_state) {
             False ->
               defer_retry_until_dispatch_available(state, issue_id, generation)
             True -> {
@@ -2375,7 +2316,7 @@ fn handle_retry_candidate_after_refresh(
       case
         core.retry_candidate_preconditions_satisfied_without_slot_capacity(
           state.runtime,
-          state.effective,
+          state.workflow.effective,
           issue_id,
           issue,
         )
@@ -2384,7 +2325,7 @@ fn handle_retry_candidate_after_refresh(
         True ->
           case
             workflow_policy.classify_issue(
-              state.effective.linear_contract,
+              state.workflow.effective.linear_contract,
               issue,
             )
           {
@@ -2425,7 +2366,7 @@ fn handle_retry_candidate_with_slots(
       let transition =
         core.handle_retry_candidate(
           state.runtime,
-          state.effective,
+          state.workflow.effective,
           issue_id,
           candidate,
         )
@@ -2446,8 +2387,9 @@ fn retry_candidate_needs_slot_retry(
 }
 
 fn slots_remain(state: State) -> Bool {
-  state.effective.agent.max_concurrent_agents != 0
-  && dispatch_slots_used(state) < state.effective.agent.max_concurrent_agents
+  state.workflow.effective.agent.max_concurrent_agents != 0
+  && dispatch_slots_used(state)
+  < state.workflow.effective.agent.max_concurrent_agents
 }
 
 fn can_reserve_dispatch_slot(state: State, issue: domain.Issue) -> Bool {
@@ -2463,7 +2405,9 @@ fn dispatch_slots_used(state: State) -> Int {
 
 fn per_state_dispatch_slot_available(state: State, issue_state: String) -> Bool {
   let key = normalize_state(issue_state)
-  case dict.get(state.effective.agent.max_concurrent_agents_by_state, key) {
+  case
+    dict.get(state.workflow.effective.agent.max_concurrent_agents_by_state, key)
+  {
     Error(_) -> True
     Ok(limit) -> dispatch_count_for_state(state, key) < limit
   }
@@ -2512,7 +2456,7 @@ fn dispatch_issue_with_continuation(
         True ->
           case
             workspace.workspace_path(
-              state.effective.workspace.root,
+              state.workflow.effective.workspace.root,
               issue.identifier,
             )
           {
@@ -2551,7 +2495,7 @@ fn dispatch_issue_with_continuation(
                 )
               enqueue_side_effect(
                 state,
-                ClaimIssue(
+                effect_runner.ClaimIssue(
                   issue: issue,
                   workspace_path: workspace_path,
                   run_id: run_id,
@@ -2565,7 +2509,7 @@ fn dispatch_issue_with_continuation(
 }
 
 fn can_route_issue_for_dispatch(state: State, issue: domain.Issue) -> Bool {
-  case runtime_bundle.select_workflow(state.bundle, issue) {
+  case workflow_reloader.select_workflow(state.workflow, issue) {
     Ok(_) -> True
     Error(runtime_bundle.BundleError(code, message)) -> {
       log_state(state, "warn", "workflow_route_failed", [
@@ -2620,7 +2564,12 @@ fn spawn_worker(
       token_totals: domain.zero_token_totals(),
     ),
   )
-  publish_lifecycle(state, session_id, "dispatch_started", None)
+  event_publisher.lifecycle(
+    state.event_hub,
+    session_id,
+    "dispatch_started",
+    None,
+  )
   log_state(state, "info", "dispatch_started", [
     #("issue_id", issue.id),
     #("issue_identifier", issue.identifier),
@@ -2631,8 +2580,8 @@ fn spawn_worker(
   let subject = state.subject
   let dependencies = state.dependencies
   let tracker_client = state.tracker_client
-  let bundle = state.bundle
-  let secrets = state.secrets
+  let bundle = state.workflow.bundle
+  let secrets = state.workflow.secrets
   let event_hub = state.event_hub
   let pid =
     process.spawn_unlinked(fn() {
@@ -2651,7 +2600,7 @@ fn spawn_worker(
       process.send(subject, WorkerFinished(issue.id, run_id, result))
     })
   let monitor = process.monitor(pid)
-  publish_lifecycle(state, session_id, "worker_started", None)
+  event_publisher.lifecycle(state.event_hub, session_id, "worker_started", None)
   hub.update_status(state.event_hub, session_id, session_event.Running)
   let handle =
     WorkerHandle(
@@ -2938,7 +2887,7 @@ fn run_yaml_agent_step(
       hub.finish_session(event_hub, session_id, "normal")
     }
     Error(failure) -> {
-      case tokens_are_nonzero(failure.tokens) {
+      case event_publisher.tokens_are_nonzero(failure.tokens) {
         True -> hub.update_tokens(event_hub, session_id, failure.tokens)
         False -> Nil
       }
@@ -2992,7 +2941,8 @@ fn handle_worker_update(
   update: runner.PiUpdate,
 ) -> State {
   case dict.get(state.workers, issue_id) {
-    Ok(handle) -> publish_worker_update(state, handle.session_id, update)
+    Ok(handle) ->
+      event_publisher.worker_update(state.event_hub, handle.session_id, update)
     Error(_) -> Nil
   }
   case update.event {
@@ -3069,7 +3019,12 @@ fn finish_worker_success(
     #("reason", "normal"),
   ])
   hub.update_tokens(state.event_hub, handle.session_id, success.tokens)
-  publish_lifecycle(state, handle.session_id, "worker_exited", Some("normal"))
+  event_publisher.lifecycle(
+    state.event_hub,
+    handle.session_id,
+    "worker_exited",
+    Some("normal"),
+  )
   hub.finish_session(state.event_hub, handle.session_id, "normal")
   let final_issue = case success.final_issue {
     Some(issue) -> issue
@@ -3078,7 +3033,7 @@ fn finish_worker_success(
   let transition =
     core.apply_workflow_success(
       state.runtime,
-      state.effective,
+      state.workflow.effective,
       handle.issue_id,
       final_issue,
       success.tokens,
@@ -3089,7 +3044,7 @@ fn finish_worker_success(
   let state =
     enqueue_side_effect(
       state,
-      ReportSuccess(
+      effect_runner.ReportSuccess(
         issue_id: handle.issue_id,
         issue: final_issue,
         success: success,
@@ -3121,8 +3076,8 @@ fn finish_worker_failure(
         #("run_id", handle.run_id),
         #("reason", "failed"),
       ])
-      publish_lifecycle(
-        state,
+      event_publisher.lifecycle(
+        state.event_hub,
         handle.session_id,
         "worker_exited",
         Some("failed"),
@@ -3139,7 +3094,7 @@ fn finish_worker_failure(
       let transition =
         core.apply_worker_failure(
           state.runtime,
-          state.effective,
+          state.workflow.effective,
           handle.issue_id,
           baseline_issue,
           state.dependencies.now_ms(),
@@ -3148,7 +3103,7 @@ fn finish_worker_failure(
       let state =
         enqueue_side_effect(
           state,
-          ReportFailure(
+          effect_runner.ReportFailure(
             issue_id: handle.issue_id,
             issue: handle.issue,
             failure: failure,
@@ -3172,12 +3127,17 @@ fn finish_operator_worker_exit(
     #("run_id", handle.run_id),
     #("reason", reason),
   ])
-  case tokens_are_nonzero(failure.tokens) {
+  case event_publisher.tokens_are_nonzero(failure.tokens) {
     True ->
       hub.update_tokens(state.event_hub, handle.session_id, failure.tokens)
     False -> Nil
   }
-  publish_lifecycle(state, handle.session_id, "worker_exited", Some(reason))
+  event_publisher.lifecycle(
+    state.event_hub,
+    handle.session_id,
+    "worker_exited",
+    Some(reason),
+  )
   hub.finish_session(state.event_hub, handle.session_id, reason)
   let final_issue = case failure.final_issue {
     Some(issue) ->
@@ -3228,7 +3188,12 @@ fn handle_worker_down(state: State, down: process.Down) -> State {
                   issue_sessions: dict.delete(state.issue_sessions, issue_id),
                 )
               log_state(state, "warn", "worker_down", [#("issue_id", issue_id)])
-              publish_lifecycle(state, handle.session_id, "worker_down", None)
+              event_publisher.lifecycle(
+                state.event_hub,
+                handle.session_id,
+                "worker_down",
+                None,
+              )
               let failure =
                 runner.WorkerFailure(
                   reason: error.PiFailed(error.PiProtocolError("worker_down")),
@@ -3244,16 +3209,65 @@ fn handle_worker_down(state: State, down: process.Down) -> State {
   }
 }
 
-fn handle_side_effect_finished(state: State, result: SideEffectResult) -> State {
-  let in_flight = case state.side_effects_in_flight <= 0 {
-    True -> 0
-    False -> state.side_effects_in_flight - 1
+fn handle_effect_runner_down(state: State, down: process.Down) -> State {
+  log_state(
+    state,
+    "error",
+    "effect_runner_down",
+    effect_runner_down_fields(down),
+  )
+  shutdown_state_after_effect_runner_down(state)
+}
+
+fn effect_runner_down_fields(down: process.Down) -> List(log.Field) {
+  case down {
+    process.ProcessDown(_, _, reason) -> [
+      #("reason", process_exit_reason_to_string(reason)),
+    ]
+    process.PortDown(_, _, reason) -> [
+      #("reason", process_exit_reason_to_string(reason)),
+    ]
   }
-  let state = State(..state, side_effects_in_flight: in_flight)
-  let state = case result {
-    CandidateFetchFinished(generation, result) ->
+}
+
+fn process_exit_reason_to_string(reason: process.ExitReason) -> String {
+  case reason {
+    process.Normal -> "normal"
+    process.Killed -> "killed"
+    process.Abnormal(_) -> "abnormal"
+  }
+}
+
+fn handle_side_effect_completed(
+  state: State,
+  completion: effect_runner.Completion,
+) -> State {
+  case completion {
+    effect_runner.Finished(_, result) ->
+      handle_side_effect_result(state, result)
+    effect_runner.Crashed(_, effect, reason) -> {
+      log_state(state, "warn", "side_effect_crashed", [
+        #("effect", effect_runner.effect_kind(effect)),
+        #("reason", reason),
+      ])
+      handle_side_effect_result(state, crash_result_for_effect(effect, reason))
+    }
+  }
+}
+
+fn handle_side_effect_result(
+  state: State,
+  result: effect_runner.EffectResult,
+) -> State {
+  case result {
+    effect_runner.CandidateFetchFinished(generation, result) ->
       handle_candidate_fetch_finished(state, generation, result)
-    LinearCommandFetchFinished(generation, candidates, dispatch_after, result) ->
+    effect_runner.LinearCommandFetchFinished(
+      generation,
+      candidates,
+      dispatch_after,
+      result,
+    ) ->
       handle_linear_command_fetch_finished(
         state,
         generation,
@@ -3261,19 +3275,19 @@ fn handle_side_effect_finished(state: State, result: SideEffectResult) -> State 
         dispatch_after,
         result,
       )
-    RunningRefreshFinished(generation, result) ->
+    effect_runner.RunningRefreshFinished(generation, result) ->
       handle_running_refresh_finished(state, generation, result)
-    RetryRefreshFinished(issue_id, generation, result) ->
+    effect_runner.RetryRefreshFinished(issue_id, generation, result) ->
       handle_retry_refresh_finished(state, issue_id, generation, result)
-    HandoffClaimFinished(issue_id, run_id, result) ->
+    effect_runner.HandoffClaimFinished(issue_id, run_id, result) ->
       handle_handoff_claim_finished(state, issue_id, run_id, result)
-    HandoffSuccessFinished(issue_id, _run_id, result) ->
+    effect_runner.HandoffSuccessFinished(issue_id, _run_id, result) ->
       handle_handoff_success_finished(state, issue_id, result)
-    HandoffFailureFinished(issue_id, _run_id, result) ->
+    effect_runner.HandoffFailureFinished(issue_id, _run_id, result) ->
       handle_handoff_failure_finished(state, issue_id, result)
-    LinearCommandAckFinished(issue_id, comment_id, result) ->
+    effect_runner.LinearCommandAckFinished(issue_id, comment_id, result) ->
       handle_linear_command_ack_finished(state, issue_id, comment_id, result)
-    InvalidWorkflowReportFinished(
+    effect_runner.InvalidWorkflowReportFinished(
       issue_id,
       violation_fingerprint,
       reporting_policy_fingerprint,
@@ -3286,10 +3300,89 @@ fn handle_side_effect_finished(state: State, result: SideEffectResult) -> State 
         reporting_policy_fingerprint,
         result,
       )
-    CleanupFinished(workspace_path, result) ->
+    effect_runner.CleanupFinished(workspace_path, result) ->
       handle_cleanup_finished(state, workspace_path, result)
   }
-  drain_side_effects(state)
+}
+
+fn crash_result_for_effect(
+  effect: effect_runner.Effect,
+  reason: String,
+) -> effect_runner.EffectResult {
+  case effect {
+    effect_runner.FetchCandidates(generation, _) ->
+      effect_runner.CandidateFetchFinished(
+        generation,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.FetchLinearCommands(
+      generation,
+      _,
+      candidates,
+      dispatch_after,
+      _,
+      _,
+    ) ->
+      effect_runner.LinearCommandFetchFinished(
+        generation,
+        candidates,
+        dispatch_after,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.RefreshRunning(generation, _, _) ->
+      effect_runner.RunningRefreshFinished(
+        generation,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.RefreshRetry(issue_id, generation, _) ->
+      effect_runner.RetryRefreshFinished(
+        issue_id,
+        generation,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.ClaimIssue(issue, _, run_id, _) ->
+      effect_runner.HandoffClaimFinished(
+        issue.id,
+        run_id,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.ReportSuccess(issue_id, _, _, run_id, _) ->
+      effect_runner.HandoffSuccessFinished(
+        issue_id,
+        run_id,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.ReportFailure(issue_id, _, _, run_id, _) ->
+      effect_runner.HandoffFailureFinished(
+        issue_id,
+        run_id,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.PostLinearCommandAck(issue_id, source_comment_id, _, _) ->
+      effect_runner.LinearCommandAckFinished(
+        issue_id,
+        source_comment_id,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.ReportInvalidWorkflow(
+      issue,
+      _,
+      violation_fingerprint,
+      reporting_policy_fingerprint,
+      _,
+    ) ->
+      effect_runner.InvalidWorkflowReportFinished(
+        issue.id,
+        violation_fingerprint,
+        reporting_policy_fingerprint,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.CleanupWorkspace(_, workspace_path, _, _) ->
+      effect_runner.CleanupFinished(
+        workspace_path,
+        Error(error.WorkspaceIo(reason)),
+      )
+  }
 }
 
 fn handle_handoff_claim_finished(
@@ -3487,112 +3580,9 @@ fn handle_cleanup_finished(
   }
 }
 
-fn enqueue_side_effect(state: State, effect: SideEffect) -> State {
-  let state =
-    State(
-      ..state,
-      side_effect_queue: list.append(state.side_effect_queue, [effect]),
-    )
-  drain_side_effects(state)
-}
-
-fn drain_side_effects(state: State) -> State {
-  case state.side_effects_in_flight >= max_side_effects() {
-    True -> state
-    False ->
-      case state.side_effect_queue {
-        [] -> state
-        [effect, ..rest] -> {
-          spawn_side_effect(state.subject, effect)
-          let state =
-            State(
-              ..state,
-              side_effects_in_flight: state.side_effects_in_flight + 1,
-              side_effect_queue: rest,
-            )
-          drain_side_effects(state)
-        }
-      }
-  }
-}
-
-fn max_side_effects() -> Int {
-  4
-}
-
-fn spawn_side_effect(
-  subject: process.Subject(Message),
-  effect: SideEffect,
-) -> Nil {
-  let _ =
-    process.spawn_unlinked(fn() {
-      process.send(subject, SideEffectFinished(run_side_effect(effect)))
-    })
-  Nil
-}
-
-fn run_side_effect(effect: SideEffect) -> SideEffectResult {
-  case effect {
-    FetchCandidates(generation, client) ->
-      CandidateFetchFinished(generation, client.fetch_candidate_issues())
-    FetchLinearCommands(
-      generation,
-      issue_ids,
-      candidates,
-      dispatch_after,
-      client,
-      limit_per_issue,
-    ) ->
-      LinearCommandFetchFinished(
-        generation,
-        candidates,
-        dispatch_after,
-        client.fetch_comments(issue_ids, limit_per_issue),
-      )
-    RefreshRunning(generation, ids, client) ->
-      RunningRefreshFinished(generation, client.fetch_issue_states_by_ids(ids))
-    RefreshRetry(issue_id, generation, client) ->
-      RetryRefreshFinished(
-        issue_id,
-        generation,
-        client.fetch_issue_states_by_ids([issue_id]),
-      )
-    ClaimIssue(issue, _workspace_path, run_id, client) ->
-      HandoffClaimFinished(issue.id, run_id, client.claim_issue(issue, run_id))
-    ReportSuccess(issue_id, issue, success, run_id, client) ->
-      HandoffSuccessFinished(
-        issue_id,
-        run_id,
-        client.report_success(issue, success, run_id),
-      )
-    ReportFailure(issue_id, issue, failure, run_id, client) ->
-      HandoffFailureFinished(
-        issue_id,
-        run_id,
-        client.report_failure(issue, failure, run_id),
-      )
-    PostLinearCommandAck(issue_id, source_comment_id, body, client) ->
-      LinearCommandAckFinished(
-        issue_id,
-        source_comment_id,
-        client.post_ack(issue_id, body),
-      )
-    ReportInvalidWorkflow(
-      issue,
-      violation,
-      violation_fingerprint,
-      reporting_policy_fingerprint,
-      client,
-    ) ->
-      InvalidWorkflowReportFinished(
-        issue.id,
-        violation_fingerprint,
-        reporting_policy_fingerprint,
-        client.report_invalid_workflow(issue, violation),
-      )
-    CleanupWorkspace(root, workspace_path, hooks, cleanup) ->
-      CleanupFinished(workspace_path, cleanup(root, workspace_path, hooks))
-  }
+fn enqueue_side_effect(state: State, effect: effect_runner.Effect) -> State {
+  effect_runner.enqueue(state.effect_runner, effect)
+  state
 }
 
 fn apply_effects(state: State, effects: List(core.Effect)) -> State {
@@ -3608,7 +3598,12 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
     core.ScheduleRetry(issue_id, delay_ms, generation, reason) -> {
       case dict.get(state.issue_sessions, issue_id) {
         Ok(session_id) ->
-          publish_lifecycle(state, session_id, "retry_scheduled", Some(reason))
+          event_publisher.lifecycle(
+            state.event_hub,
+            session_id,
+            "retry_scheduled",
+            Some(reason),
+          )
         Error(_) -> Nil
       }
       log_state(state, "info", "retry_scheduled", [
@@ -3641,10 +3636,10 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
         False ->
           enqueue_side_effect(
             state,
-            CleanupWorkspace(
-              root: state.effective.workspace.root,
+            effect_runner.CleanupWorkspace(
+              root: state.workflow.effective.workspace.root,
               workspace_path: workspace_path,
-              hooks: state.effective.hooks,
+              hooks: state.workflow.effective.hooks,
               cleanup: state.dependencies.cleanup,
             ),
           )
@@ -3659,16 +3654,16 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
             handle.session_id,
             session_event.Stopping,
           )
-          publish_lifecycle(
-            state,
+          event_publisher.lifecycle(
+            state.event_hub,
             handle.session_id,
             "stop_requested",
             Some(reason),
           )
           process.demonitor_process(handle.monitor)
           stop_worker(handle)
-          publish_lifecycle(
-            state,
+          event_publisher.lifecycle(
+            state.event_hub,
             handle.session_id,
             "worker_exited",
             Some("stopped"),
@@ -3701,152 +3696,6 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
   }
 }
 
-fn publish_worker_update(
-  state: State,
-  session_id: String,
-  update: runner.PiUpdate,
-) -> Nil {
-  case status_for_update(update) {
-    Some(status) -> hub.update_status(state.event_hub, session_id, status)
-    None -> Nil
-  }
-  case update.pi_session_id {
-    Some(pi_session_id) ->
-      hub.update_pi_session(state.event_hub, session_id, pi_session_id)
-    None -> Nil
-  }
-  case tokens_are_nonzero(update.tokens) {
-    True -> hub.update_tokens(state.event_hub, session_id, update.tokens)
-    False -> Nil
-  }
-  hub.publish(state.event_hub, session_id, update_payload(update))
-}
-
-fn publish_lifecycle(
-  state: State,
-  session_id: String,
-  name: String,
-  message: Option(String),
-) -> Nil {
-  hub.publish(
-    state.event_hub,
-    session_id,
-    session_event.EventPayload(
-      kind: session_event.Lifecycle,
-      name: name,
-      turn: None,
-      pi_type: None,
-      message: message,
-      request_id: None,
-      method: None,
-      tool_name: None,
-      tool_input: None,
-      tool_output: None,
-      tool_status: None,
-      tokens: domain.zero_token_totals(),
-      raw_json: None,
-    ),
-  )
-}
-
-fn update_payload(update: runner.PiUpdate) -> session_event.EventPayload {
-  session_event.EventPayload(
-    kind: kind_for_update(update),
-    name: update.event,
-    turn: update.turn,
-    pi_type: pi_type_for_update(update),
-    message: update.message,
-    request_id: update.request_id,
-    method: update.method,
-    tool_name: update.tool_name,
-    tool_input: update.tool_input,
-    tool_output: update.tool_output,
-    tool_status: update.tool_status,
-    tokens: update.tokens,
-    raw_json: update.raw_json,
-  )
-}
-
-fn kind_for_update(update: runner.PiUpdate) -> session_event.EventKind {
-  case update.event {
-    "probe_started" | "probe_finished" | "pi_session_started" ->
-      session_event.Lifecycle
-    "turn_finished" -> session_event.TokenStats
-    "message_start" | "message_update" | "message_end" ->
-      session_event.AssistantMessage
-    "tool_execution_start" | "tool_execution_update" | "tool_execution_end" ->
-      session_event.Tool
-    "message" ->
-      case
-        update.tool_name,
-        update.tool_input,
-        update.tool_output,
-        update.tool_status
-      {
-        Some(_), _, _, _
-        | _, Some(_), _, _
-        | _, _, Some(_), _
-        | _, _, _, Some(_)
-        -> session_event.Tool
-        _, _, _, _ -> session_event.Pi
-      }
-    "extension_ui_request" ->
-      case is_blocking_ui_method(update.method) {
-        True -> session_event.UiRequest
-        False -> session_event.Pi
-      }
-    "extension_ui_response" -> session_event.UiResponse
-    "agent_start" | "turn_start" | "turn_end" | "agent_end" -> session_event.Pi
-    _ ->
-      case update.raw_json {
-        Some(_) -> session_event.PiRaw
-        None -> session_event.Lifecycle
-      }
-  }
-}
-
-fn pi_type_for_update(update: runner.PiUpdate) -> Option(String) {
-  case update.raw_json {
-    Some(_) -> Some(update.event)
-    None -> None
-  }
-}
-
-fn status_for_update(
-  update: runner.PiUpdate,
-) -> Option(session_event.SessionStatus) {
-  case update.event {
-    "probe_started" | "probe_finished" -> Some(session_event.Probing)
-    "pi_session_started" -> Some(session_event.Running)
-    "extension_ui_request" ->
-      case is_blocking_ui_method(update.method) {
-        True -> Some(session_event.WaitingUi)
-        False -> Some(session_event.Running)
-      }
-    "extension_ui_response" | "turn_finished" -> Some(session_event.Running)
-    _ ->
-      case update.raw_json {
-        Some(_) -> Some(session_event.Running)
-        None -> None
-      }
-  }
-}
-
-fn is_blocking_ui_method(method: Option(String)) -> Bool {
-  case method {
-    Some("select") | Some("confirm") | Some("input") | Some("editor") -> True
-    _ -> False
-  }
-}
-
-fn tokens_are_nonzero(tokens: domain.TokenTotals) -> Bool {
-  tokens.input > 0
-  || tokens.output > 0
-  || tokens.cache_read > 0
-  || tokens.cache_write > 0
-  || tokens.total > 0
-}
-
 fn add_tokens(
   a: domain.TokenTotals,
   b: domain.TokenTotals,
@@ -3872,6 +3721,22 @@ fn stop_worker(handle: WorkerHandle) -> Nil {
 }
 
 fn shutdown_state(state: State) -> State {
+  shutdown_state_internal(state, True)
+}
+
+fn shutdown_state_after_effect_runner_down(state: State) -> State {
+  shutdown_state_internal(state, False)
+}
+
+fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
+  process.demonitor_process(state.effect_runner_monitor)
+  case stop_effect_runner {
+    True -> {
+      let _ = effect_runner.shutdown(state.effect_runner, 1000)
+      Nil
+    }
+    False -> Nil
+  }
   state.dependencies.stop_control_server(state.control_server)
   case state.control_file_path {
     Some(path) -> control_file.remove(path)
@@ -3906,8 +3771,6 @@ fn shutdown_state(state: State) -> State {
     yaml_step_runs: dict.new(),
     stopped_yaml_runs: dict.new(),
     pending_claims: dict.new(),
-    side_effects_in_flight: 0,
-    side_effect_queue: [],
     control_server: NoControlServer,
     control_file_path: None,
   )
@@ -3935,7 +3798,8 @@ fn log_state(
   event: String,
   fields: List(log.Field),
 ) -> Nil {
-  let _ = state.dependencies.logger(level, event, fields, state.secrets)
+  let _ =
+    state.dependencies.logger(level, event, fields, state.workflow.secrets)
   Nil
 }
 

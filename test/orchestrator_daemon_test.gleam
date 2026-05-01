@@ -256,6 +256,15 @@ fn disabled_linear_commands() -> linear.CommandClient {
   })
 }
 
+type FetchRequest {
+  FetchRequest(process.Subject(FetchDirective))
+}
+
+type FetchDirective {
+  CrashFetch
+  ReturnCandidates(List(domain.Issue))
+}
+
 fn fake_workflow_run_dependencies(
   log_subject: process.Subject(String),
 ) -> workflow_run.Dependencies {
@@ -900,6 +909,41 @@ pub fn daemon_poll_dispatches_fake_worker_routes_update_and_shutdown_test() {
   assert wait_for_event(log_subject, "dispatch_started", 10)
   assert wait_for_event(log_subject, "pi_event", 10)
   assert wait_for_event(log_subject, "worker_exited", 10)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_side_effect_crash_does_not_stall_future_polls_test() {
+  let workflow_path = write_workflow("test/tmp/daemon-side-effect-crash", 1)
+  let fetch_subject = process.new_subject()
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() {
+        let reply = process.new_subject()
+        process.send(fetch_subject, FetchRequest(reply))
+        case process.receive(reply, within: 1000) {
+          Ok(CrashFetch) -> panic as "candidate fetch crashed"
+          Ok(ReturnCandidates(candidates)) -> Ok(candidates)
+          Error(_) -> Error(error.LinearApiRequest("fetch directive timeout"))
+        }
+      },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(started) =
+    daemon.start(Some(workflow_path), base_dependencies(client, log_subject))
+
+  process.send(started.data, daemon.PollTick(1))
+  let assert Ok(FetchRequest(first_reply)) =
+    process.receive(fetch_subject, within: 1000)
+  process.send(first_reply, CrashFetch)
+  assert wait_for_event(log_subject, "side_effect_crashed", 20)
+
+  process.send(started.data, daemon.PollTick(2))
+  let assert Ok(FetchRequest(second_reply)) =
+    process.receive(fetch_subject, within: 1000)
+  process.send(second_reply, ReturnCandidates([]))
+
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
