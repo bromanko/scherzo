@@ -21,6 +21,7 @@ import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/event_publisher
+import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime_bundle
 import scherzo/session/event as session_event
@@ -63,19 +64,6 @@ pub type Message {
     command.OperatorCommand,
     Int,
     process.Subject(command.CommandResult),
-  )
-}
-
-pub type WorkerHandle {
-  WorkerHandle(
-    issue_id: String,
-    issue: domain.Issue,
-    run_id: String,
-    pid: process.Pid,
-    monitor: process.Monitor,
-    workspace_path: String,
-    session_id: String,
-    command_subject: Option(process.Subject(worker_command.Command)),
   )
 }
 
@@ -129,11 +117,6 @@ pub type RuntimeDependencies {
   )
 }
 
-type StepCommandSubjectLookupError {
-  NoActiveStepCommandSubject
-  MultipleActiveStepCommandSubjects
-}
-
 type State {
   State(
     subject: process.Subject(Message),
@@ -149,15 +132,7 @@ type State {
     poll_timer: Option(TimerHandle),
     retry_timers: Dict(String, TimerHandle),
     retry_refreshes_in_flight: Dict(String, Int),
-    workers: Dict(String, WorkerHandle),
-    worker_monitors: Dict(process.Monitor, String),
-    issue_sessions: Dict(String, String),
-    step_command_subjects: Dict(String, process.Subject(worker_command.Command)),
-    step_command_monitors: Dict(process.Monitor, String),
-    step_command_subject_monitors: Dict(String, process.Monitor),
-    yaml_step_runs: Dict(String, String),
-    stopped_yaml_runs: Dict(String, String),
-    next_session_sequence: Int,
+    registry: worker_registry.Registry,
     pending_claims: Dict(String, PendingClaim),
     effect_runner: effect_runner.Handle,
     effect_runner_monitor: process.Monitor,
@@ -411,15 +386,7 @@ pub fn start(
                       poll_timer: Some(poll_timer),
                       retry_timers: dict.new(),
                       retry_refreshes_in_flight: dict.new(),
-                      workers: dict.new(),
-                      worker_monitors: dict.new(),
-                      issue_sessions: dict.new(),
-                      step_command_subjects: dict.new(),
-                      step_command_monitors: dict.new(),
-                      step_command_subject_monitors: dict.new(),
-                      yaml_step_runs: dict.new(),
-                      stopped_yaml_runs: dict.new(),
-                      next_session_sequence: 1,
+                      registry: worker_registry.new(),
                       pending_claims: dict.new(),
                       effect_runner: effect_runner_handle,
                       effect_runner_monitor: effect_runner_monitor,
@@ -571,97 +538,24 @@ fn handle_yaml_step_command_ready(
   session_id: String,
   command_subject: process.Subject(worker_command.Command),
 ) -> State {
-  let state = clear_yaml_step_command_route(state, session_id)
-  case process.subject_owner(command_subject) {
-    Error(_) ->
-      State(
-        ..state,
-        step_command_subjects: dict.insert(
-          state.step_command_subjects,
-          session_id,
-          command_subject,
-        ),
-      )
-    Ok(pid) -> {
-      let monitor = process.monitor(pid)
-      case process.is_alive(pid) {
-        False -> {
-          process.demonitor_process(monitor)
-          state
-        }
-        True ->
-          State(
-            ..state,
-            step_command_subjects: dict.insert(
-              state.step_command_subjects,
-              session_id,
-              command_subject,
-            ),
-            step_command_monitors: dict.insert(
-              state.step_command_monitors,
-              monitor,
-              session_id,
-            ),
-            step_command_subject_monitors: dict.insert(
-              state.step_command_subject_monitors,
-              session_id,
-              monitor,
-            ),
-          )
-      }
-    }
-  }
-}
-
-fn clear_yaml_step_command_route(state: State, session_id: String) -> State {
-  case dict.get(state.step_command_subject_monitors, session_id) {
-    Error(_) ->
-      State(
-        ..state,
-        step_command_subjects: dict.delete(
-          state.step_command_subjects,
-          session_id,
-        ),
-      )
-    Ok(monitor) -> {
-      process.demonitor_process(monitor)
-      State(
-        ..state,
-        step_command_subjects: dict.delete(
-          state.step_command_subjects,
-          session_id,
-        ),
-        step_command_monitors: dict.delete(state.step_command_monitors, monitor),
-        step_command_subject_monitors: dict.delete(
-          state.step_command_subject_monitors,
-          session_id,
-        ),
-      )
-    }
-  }
+  State(
+    ..state,
+    registry: worker_registry.register_yaml_step_command_subject(
+      state.registry,
+      session_id,
+      command_subject,
+    ),
+  )
 }
 
 fn clear_yaml_step_command_routes_for_run(state: State, run_id: String) -> State {
-  state.step_command_subjects
-  |> dict.keys
-  |> list.filter(fn(session_id) {
-    string.starts_with(session_id, run_id <> "-")
-  })
-  |> clear_yaml_step_command_routes(state)
-}
-
-fn clear_yaml_step_command_routes(
-  session_ids: List(String),
-  state: State,
-) -> State {
-  case session_ids {
-    [] -> state
-    [session_id, ..rest] ->
-      clear_yaml_step_command_routes(
-        rest,
-        clear_yaml_step_command_route(state, session_id),
-      )
-  }
+  State(
+    ..state,
+    registry: worker_registry.clear_yaml_step_command_routes_for_run(
+      state.registry,
+      run_id,
+    ),
+  )
 }
 
 fn handle_yaml_step_started(
@@ -669,7 +563,7 @@ fn handle_yaml_step_started(
   session_id: String,
   run_id: String,
 ) -> State {
-  case dict.get(state.stopped_yaml_runs, run_id) {
+  case worker_registry.stopped_yaml_run_reason(state.registry, run_id) {
     Ok(reason) -> {
       hub.update_status(state.event_hub, session_id, session_event.Stopping)
       event_publisher.lifecycle(
@@ -688,12 +582,12 @@ fn handle_yaml_step_started(
       state
     }
     Error(_) ->
-      case worker_for_run(state, run_id) {
+      case worker_registry.worker_for_run(state.registry, run_id) {
         Ok(_) ->
           State(
             ..state,
-            yaml_step_runs: dict.insert(
-              state.yaml_step_runs,
+            registry: worker_registry.register_yaml_step_started(
+              state.registry,
               session_id,
               run_id,
             ),
@@ -704,8 +598,10 @@ fn handle_yaml_step_started(
 }
 
 fn handle_yaml_step_finished(state: State, session_id: String) -> State {
-  let state = clear_yaml_step_command_route(state, session_id)
-  State(..state, yaml_step_runs: dict.delete(state.yaml_step_runs, session_id))
+  State(
+    ..state,
+    registry: worker_registry.finish_yaml_step(state.registry, session_id),
+  )
 }
 
 fn finish_yaml_step_sessions_for_run(
@@ -713,7 +609,8 @@ fn finish_yaml_step_sessions_for_run(
   run_id: String,
   reason: String,
 ) -> State {
-  let session_ids = active_yaml_step_sessions_for_run(state, run_id)
+  let session_ids =
+    worker_registry.active_yaml_step_sessions_for_run(state.registry, run_id)
   list.each(session_ids, fn(session_id) {
     hub.update_status(state.event_hub, session_id, session_event.Stopping)
     event_publisher.lifecycle(
@@ -730,61 +627,51 @@ fn finish_yaml_step_sessions_for_run(
     )
     hub.finish_session(state.event_hub, session_id, reason)
   })
-  delete_yaml_step_sessions(state, session_ids)
+  State(
+    ..state,
+    registry: worker_registry.delete_yaml_step_sessions(
+      state.registry,
+      session_ids,
+    ),
+  )
 }
 
-fn active_yaml_step_sessions_for_run(
+fn handle_registry_down_resolution(
   state: State,
-  run_id: String,
-) -> List(String) {
-  state.yaml_step_runs
-  |> dict.to_list
-  |> list.filter(fn(entry) {
-    let #(_, step_run_id) = entry
-    step_run_id == run_id
-  })
-  |> list.map(fn(entry) {
-    let #(session_id, _) = entry
-    session_id
-  })
-}
-
-fn delete_yaml_step_sessions(state: State, session_ids: List(String)) -> State {
-  case session_ids {
-    [] -> state
-    [session_id, ..rest] ->
-      delete_yaml_step_sessions(
-        State(
-          ..state,
-          yaml_step_runs: dict.delete(state.yaml_step_runs, session_id),
-        ),
-        rest,
-      )
-  }
-}
-
-fn handle_step_command_down(state: State, monitor: process.Monitor) -> State {
-  case dict.get(state.step_command_monitors, monitor) {
-    Error(_) -> {
+  resolution: worker_registry.DownResolution,
+) -> State {
+  case resolution {
+    worker_registry.UnknownDown(registry) -> {
       log_state(state, "warn", "worker_down_stale", [])
-      state
+      State(..state, registry: registry)
     }
-    Ok(session_id) -> {
+    worker_registry.StepCommandDown(registry, session_id) -> {
       log_state(state, "warn", "yaml_step_command_down", [
         #("session_id", session_id),
       ])
-      State(
-        ..state,
-        step_command_subjects: dict.delete(
-          state.step_command_subjects,
-          session_id,
-        ),
-        step_command_monitors: dict.delete(state.step_command_monitors, monitor),
-        step_command_subject_monitors: dict.delete(
-          state.step_command_subject_monitors,
-          session_id,
-        ),
+      State(..state, registry: registry)
+    }
+    worker_registry.WorkerDown(registry, issue_id, handle) -> {
+      let state = State(..state, registry: registry)
+      log_state(state, "warn", "worker_down", [#("issue_id", issue_id)])
+      event_publisher.lifecycle(
+        state.event_hub,
+        handle.session_id,
+        "worker_down",
+        None,
       )
+      let failure =
+        runner.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("worker_down")),
+          workspace_path: Some(handle.workspace_path),
+          tokens: domain.zero_token_totals(),
+          final_issue: None,
+        )
+      finish_worker_failure(state, handle, failure)
+    }
+    worker_registry.WorkerDownStale(registry, _issue_id) -> {
+      log_state(state, "warn", "worker_down_stale", [])
+      State(..state, registry: registry)
     }
   }
 }
@@ -1129,8 +1016,13 @@ fn route_worker_command_sync(
     Ok(handle) ->
       case handle.command_subject {
         None ->
-          case step_command_subject_for_run(state, handle.run_id) {
-            Error(NoActiveStepCommandSubject) -> #(
+          case
+            worker_registry.step_command_subject_for_run(
+              state.registry,
+              handle.run_id,
+            )
+          {
+            Error(worker_registry.NoActiveStepCommandSubject) -> #(
               state,
               command.not_allowed(
                 operator_command,
@@ -1138,7 +1030,7 @@ fn route_worker_command_sync(
                 Some("session worker does not accept operator commands"),
               ),
             )
-            Error(MultipleActiveStepCommandSubjects) -> #(
+            Error(worker_registry.MultipleActiveStepCommandSubjects) -> #(
               state,
               command.not_allowed(
                 operator_command,
@@ -1180,7 +1072,9 @@ fn route_step_command_sync(
   ) ->
     Nil,
 ) -> #(State, command.CommandResult) {
-  case dict.get(state.step_command_subjects, session_id) {
+  case
+    worker_registry.step_command_subject_for_session(state.registry, session_id)
+  {
     Error(_) -> #(
       state,
       command.not_found(operator_command, Some("session not found")),
@@ -1193,35 +1087,6 @@ fn route_step_command_sync(
         send,
         subject,
       )
-  }
-}
-
-fn step_command_subject_for_run(
-  state: State,
-  run_id: String,
-) -> Result(
-  process.Subject(worker_command.Command),
-  StepCommandSubjectLookupError,
-) {
-  state.step_command_subjects
-  |> dict.to_list
-  |> list.filter(fn(entry) {
-    let #(session_id, _) = entry
-    string.starts_with(session_id, run_id <> "-")
-  })
-  |> single_step_command_subject
-}
-
-fn single_step_command_subject(
-  entries: List(#(String, process.Subject(worker_command.Command))),
-) -> Result(
-  process.Subject(worker_command.Command),
-  StepCommandSubjectLookupError,
-) {
-  case entries {
-    [] -> Error(NoActiveStepCommandSubject)
-    [#(_, subject)] -> Ok(subject)
-    [_, _, ..] -> Error(MultipleActiveStepCommandSubjects)
   }
 }
 
@@ -1359,7 +1224,9 @@ fn abort_step_session_for_operator_sync(
   session_id: String,
   timeout_ms: Int,
 ) -> #(State, command.CommandResult) {
-  case dict.get(state.step_command_subjects, session_id) {
+  case
+    worker_registry.step_command_subject_for_session(state.registry, session_id)
+  {
     Error(_) -> #(
       state,
       command.not_found(operator_command, Some("session not found")),
@@ -1424,8 +1291,8 @@ fn stop_session_for_operator(
       let state =
         State(
           ..state,
-          stopped_yaml_runs: dict.insert(
-            state.stopped_yaml_runs,
+          registry: worker_registry.mark_yaml_run_stopping(
+            state.registry,
             handle.run_id,
             reason,
           ),
@@ -1434,13 +1301,10 @@ fn stop_session_for_operator(
       let state =
         finish_yaml_step_sessions_for_run(state, handle.run_id, reason)
       let state = clear_yaml_step_command_routes_for_run(state, handle.run_id)
+      let registry =
+        worker_registry.remove_worker_handle(state.registry, handle)
       let state =
-        State(
-          ..state,
-          workers: dict.delete(state.workers, handle.issue_id),
-          worker_monitors: dict.delete(state.worker_monitors, handle.monitor),
-          issue_sessions: dict.delete(state.issue_sessions, handle.issue_id),
-        )
+        State(..state, registry: registry)
         |> park_issue_state(handle.issue, reason)
       #(state, command.applied(operator_command, Some(reason)))
     }
@@ -1448,7 +1312,7 @@ fn stop_session_for_operator(
 }
 
 fn has_active_run(state: State, issue_id: String) -> Bool {
-  dict.has_key(state.workers, issue_id)
+  worker_registry.has_active_run(state.registry, issue_id)
 }
 
 fn active_run_count(state: State) -> Int {
@@ -1458,7 +1322,7 @@ fn active_run_count(state: State) -> Int {
 fn active_run_issue_ids(state: State) -> List(String) {
   []
   |> append_unique_list(dict.keys(state.runtime.running))
-  |> append_unique_list(dict.keys(state.workers))
+  |> append_unique_list(worker_registry.worker_issue_ids(state.registry))
 }
 
 fn active_run_issues(state: State) -> List(domain.Issue) {
@@ -1466,8 +1330,7 @@ fn active_run_issues(state: State) -> List(domain.Issue) {
     state.runtime.running
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
-  let active_workers =
-    state.workers |> dict.values |> list.map(fn(handle) { handle.issue })
+  let active_workers = worker_registry.worker_issues(state.registry)
   []
   |> append_unique_issues(runtime)
   |> append_unique_issues(active_workers)
@@ -1627,25 +1490,8 @@ fn parked_issue_id_for_identifier(
 fn worker_for_session(
   state: State,
   session_id: String,
-) -> Result(WorkerHandle, Nil) {
-  state.workers
-  |> dict.values
-  |> list.filter(fn(handle) { handle.session_id == session_id })
-  |> first_worker
-}
-
-fn worker_for_run(state: State, run_id: String) -> Result(WorkerHandle, Nil) {
-  state.workers
-  |> dict.values
-  |> list.filter(fn(handle) { handle.run_id == run_id })
-  |> first_worker
-}
-
-fn first_worker(handles: List(WorkerHandle)) -> Result(WorkerHandle, Nil) {
-  case handles {
-    [handle, ..] -> Ok(handle)
-    [] -> Error(Nil)
-  }
+) -> Result(worker_registry.WorkerHandle, Nil) {
+  worker_registry.worker_for_session(state.registry, session_id)
 }
 
 fn park_issue_state(state: State, issue: domain.Issue, reason: String) -> State {
@@ -1942,7 +1788,7 @@ fn process_linear_command_comments(
       state.linear_command_state,
       state.workflow.effective.linear_commands,
       comments,
-      state.issue_sessions,
+      worker_registry.issue_sessions(state.registry),
     )
   let state = State(..state, linear_command_state: transport_state)
   apply_linear_transport_actions(state, actions)
@@ -2468,7 +2314,9 @@ fn dispatch_issue_with_continuation(
               dispatch_candidates(remaining_candidates, state)
             }
             Ok(#(_, workspace_path)) -> {
-              let session_sequence = state.next_session_sequence
+              let #(registry, session_sequence) =
+                worker_registry.reserve_session_sequence(state.registry)
+              let state = State(..state, registry: registry)
               let run_id =
                 make_run_id(
                   issue,
@@ -2486,7 +2334,6 @@ fn dispatch_issue_with_continuation(
               let state =
                 State(
                   ..state,
-                  next_session_sequence: session_sequence + 1,
                   pending_claims: dict.insert(
                     state.pending_claims,
                     issue.id,
@@ -2603,7 +2450,7 @@ fn spawn_worker(
   event_publisher.lifecycle(state.event_hub, session_id, "worker_started", None)
   hub.update_status(state.event_hub, session_id, session_event.Running)
   let handle =
-    WorkerHandle(
+    worker_registry.WorkerHandle(
       issue_id: issue.id,
       issue: issue,
       run_id: run_id,
@@ -2616,9 +2463,7 @@ fn spawn_worker(
   State(
     ..state,
     runtime: runtime,
-    workers: dict.insert(state.workers, issue.id, handle),
-    worker_monitors: dict.insert(state.worker_monitors, monitor, issue.id),
-    issue_sessions: dict.insert(state.issue_sessions, issue.id, session_id),
+    registry: worker_registry.register_worker(state.registry, handle),
   )
 }
 
@@ -2917,22 +2762,15 @@ fn handle_worker_command_ready(
   run_id: String,
   command_subject: process.Subject(worker_command.Command),
 ) -> State {
-  case dict.get(state.workers, issue_id) {
-    Error(_) -> state
-    Ok(handle) ->
-      case handle.run_id == run_id {
-        False -> state
-        True ->
-          State(
-            ..state,
-            workers: dict.insert(
-              state.workers,
-              issue_id,
-              WorkerHandle(..handle, command_subject: Some(command_subject)),
-            ),
-          )
-      }
-  }
+  State(
+    ..state,
+    registry: worker_registry.register_worker_command_subject(
+      state.registry,
+      issue_id,
+      run_id,
+      command_subject,
+    ),
+  )
 }
 
 fn handle_worker_update(
@@ -2940,7 +2778,7 @@ fn handle_worker_update(
   issue_id: String,
   update: runner.PiUpdate,
 ) -> State {
-  case dict.get(state.workers, issue_id) {
+  case worker_registry.worker_for_issue(state.registry, issue_id) {
     Ok(handle) ->
       event_publisher.worker_update(state.event_hub, handle.session_id, update)
     Error(_) -> Nil
@@ -2968,14 +2806,14 @@ fn handle_worker_finished(
   run_id: String,
   result: Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> State {
-  case dict.get(state.workers, issue_id) {
+  case worker_registry.worker_for_issue(state.registry, issue_id) {
     Error(_) -> {
       log_state(state, "warn", "worker_finished_stale", [
         #("issue_id", issue_id),
       ])
       State(
         ..state,
-        issue_sessions: dict.delete(state.issue_sessions, issue_id),
+        registry: worker_registry.forget_issue_session(state.registry, issue_id),
       )
     }
     Ok(handle) ->
@@ -2992,12 +2830,10 @@ fn handle_worker_finished(
           let state =
             State(
               ..state,
-              workers: dict.delete(state.workers, issue_id),
-              worker_monitors: dict.delete(
-                state.worker_monitors,
-                handle.monitor,
+              registry: worker_registry.remove_worker_handle(
+                state.registry,
+                handle,
               ),
-              issue_sessions: dict.delete(state.issue_sessions, issue_id),
             )
           case result {
             Ok(success) -> finish_worker_success(state, handle, success)
@@ -3010,7 +2846,7 @@ fn handle_worker_finished(
 
 fn finish_worker_success(
   state: State,
-  handle: WorkerHandle,
+  handle: worker_registry.WorkerHandle,
   success: runner.WorkerSuccess,
 ) -> State {
   log_state(state, "info", "worker_exited", [
@@ -3057,7 +2893,7 @@ fn finish_worker_success(
 
 fn finish_worker_failure(
   state: State,
-  handle: WorkerHandle,
+  handle: worker_registry.WorkerHandle,
   failure: runner.WorkerFailure,
 ) -> State {
   case failure.reason {
@@ -3118,7 +2954,7 @@ fn finish_worker_failure(
 
 fn finish_operator_worker_exit(
   state: State,
-  handle: WorkerHandle,
+  handle: worker_registry.WorkerHandle,
   failure: runner.WorkerFailure,
   reason: String,
 ) -> State {
@@ -3167,44 +3003,10 @@ fn finish_operator_worker_exit(
 fn handle_worker_down(state: State, down: process.Down) -> State {
   case down {
     process.ProcessDown(monitor, _, _) ->
-      case dict.get(state.worker_monitors, monitor) {
-        Error(_) -> handle_step_command_down(state, monitor)
-        Ok(issue_id) ->
-          case dict.get(state.workers, issue_id) {
-            Error(_) -> {
-              log_state(state, "warn", "worker_down_stale", [])
-              State(
-                ..state,
-                worker_monitors: dict.delete(state.worker_monitors, monitor),
-                issue_sessions: dict.delete(state.issue_sessions, issue_id),
-              )
-            }
-            Ok(handle) -> {
-              let state =
-                State(
-                  ..state,
-                  workers: dict.delete(state.workers, issue_id),
-                  worker_monitors: dict.delete(state.worker_monitors, monitor),
-                  issue_sessions: dict.delete(state.issue_sessions, issue_id),
-                )
-              log_state(state, "warn", "worker_down", [#("issue_id", issue_id)])
-              event_publisher.lifecycle(
-                state.event_hub,
-                handle.session_id,
-                "worker_down",
-                None,
-              )
-              let failure =
-                runner.WorkerFailure(
-                  reason: error.PiFailed(error.PiProtocolError("worker_down")),
-                  workspace_path: Some(handle.workspace_path),
-                  tokens: domain.zero_token_totals(),
-                  final_issue: None,
-                )
-              finish_worker_failure(state, handle, failure)
-            }
-          }
-      }
+      handle_registry_down_resolution(
+        state,
+        worker_registry.resolve_down(state.registry, monitor),
+      )
     process.PortDown(_, _, _) -> state
   }
 }
@@ -3596,7 +3398,7 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
   case effect {
     core.Dispatch(issue) -> dispatch_issue(state, issue)
     core.ScheduleRetry(issue_id, delay_ms, generation, reason) -> {
-      case dict.get(state.issue_sessions, issue_id) {
+      case worker_registry.issue_session(state.registry, issue_id) {
         Ok(session_id) ->
           event_publisher.lifecycle(
             state.event_hub,
@@ -3646,7 +3448,7 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
       }
     }
     core.StopWorker(issue_id, reason) -> {
-      case dict.get(state.workers, issue_id) {
+      case worker_registry.worker_for_issue(state.registry, issue_id) {
         Error(_) -> state
         Ok(handle) -> {
           hub.update_status(
@@ -3675,9 +3477,10 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
           ])
           State(
             ..state,
-            workers: dict.delete(state.workers, issue_id),
-            worker_monitors: dict.delete(state.worker_monitors, handle.monitor),
-            issue_sessions: dict.delete(state.issue_sessions, issue_id),
+            registry: worker_registry.remove_worker_handle(
+              state.registry,
+              handle,
+            ),
           )
         }
       }
@@ -3709,7 +3512,7 @@ fn add_tokens(
   )
 }
 
-fn stop_worker(handle: WorkerHandle) -> Nil {
+fn stop_worker(handle: worker_registry.WorkerHandle) -> Nil {
   case handle.command_subject {
     Some(subject) -> {
       let reply = process.new_subject()
@@ -3749,27 +3552,16 @@ fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
   dict.each(state.retry_timers, fn(_, timer) {
     state.dependencies.cancel_timer(timer)
   })
-  dict.each(state.worker_monitors, fn(monitor, _) {
-    process.demonitor_process(monitor)
-  })
-  dict.each(state.step_command_subject_monitors, fn(_, monitor) {
-    process.demonitor_process(monitor)
-  })
-  dict.each(state.workers, fn(_, handle) { stop_worker(handle) })
+  worker_registry.worker_handles(state.registry)
+  |> list.each(fn(handle) { stop_worker(handle) })
+  let registry = worker_registry.remove_all(state.registry)
   State(
     ..state,
     poll_in_flight: None,
     poll_timer: None,
     retry_timers: dict.new(),
     retry_refreshes_in_flight: dict.new(),
-    workers: dict.new(),
-    worker_monitors: dict.new(),
-    issue_sessions: dict.new(),
-    step_command_subjects: dict.new(),
-    step_command_monitors: dict.new(),
-    step_command_subject_monitors: dict.new(),
-    yaml_step_runs: dict.new(),
-    stopped_yaml_runs: dict.new(),
+    registry: registry,
     pending_claims: dict.new(),
     control_server: NoControlServer,
     control_file_path: None,
