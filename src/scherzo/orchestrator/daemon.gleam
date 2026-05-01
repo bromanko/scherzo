@@ -18,6 +18,7 @@ import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_triage
 import scherzo/log
+import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/event_publisher
@@ -82,8 +83,6 @@ pub type ControlServerHandle {
 type ControlPlane {
   ControlPlane(handle: ControlServerHandle, control_file_path: Option(String))
 }
-
-const max_worker_command_wait_ms = 500
 
 type PendingClaim {
   PendingClaim(
@@ -686,121 +685,22 @@ fn apply_operator_command_to_state(
   operator_command: command.OperatorCommand,
   timeout_ms: Int,
 ) -> #(State, command.CommandResult) {
-  case operator_command {
-    command.PauseDispatch -> {
-      let pending = dict.size(state.pending_claims)
-      let state = State(..state, operator_paused: True)
-      let result =
-        command.applied(
-          operator_command,
-          Some("dispatch paused; pending_claims=" <> int.to_string(pending)),
-        )
-      log_operator_result(state, result, [
-        #("pending_claims", int.to_string(pending)),
-      ])
-      #(state, result)
-    }
-    command.ResumeDispatch -> {
-      let state = State(..state, operator_paused: False)
-      let result = command.applied(operator_command, Some("dispatch resumed"))
-      log_operator_result(state, result, [])
-      #(state, result)
-    }
-    command.ReloadWorkflow ->
-      log_operator_transition(reload_workflow_for_operator(
-        state,
-        operator_command,
-      ))
-    command.RetryIssue(issue_ref) ->
-      log_operator_transition(retry_issue_for_operator(
-        state,
-        operator_command,
-        issue_ref,
-      ))
-    command.ParkIssue(issue_ref, reason) ->
-      log_operator_transition(park_issue_for_operator(
-        state,
-        operator_command,
-        issue_ref,
-        reason,
-      ))
-    command.UnparkIssue(issue_ref) ->
-      log_operator_transition(unpark_issue_for_operator(
-        state,
-        operator_command,
-        issue_ref,
-      ))
-    command.AbortSession(session_id) ->
-      abort_session_for_operator_sync(
-        state,
-        operator_command,
-        session_id,
-        timeout_ms,
-      )
-    command.StopAfterCurrentTurn(session_id) ->
-      route_worker_command_sync(
-        state,
-        operator_command,
-        session_id,
-        timeout_ms,
-        fn(subject, reply) {
-          process.send(subject, worker_command.StopAfterCurrentTurn(reply))
-        },
-      )
-    command.PromptSession(session_id, message) ->
-      case operator_prompt_too_large(message) {
-        True -> #(
-          state,
-          command.rejected(
-            operator_command,
-            "prompt_too_large",
-            Some("operator prompt is too large"),
-          ),
-        )
-        False ->
-          route_worker_command_sync(
-            state,
-            operator_command,
-            session_id,
-            timeout_ms,
-            fn(subject, reply) {
-              process.send(subject, worker_command.QueuePrompt(message, reply))
-            },
-          )
-      }
-    command.RespondUi(session_id, request_id, response) ->
-      case ui_response_too_large(response) {
-        True -> #(
-          state,
-          command.rejected(
-            operator_command,
-            "ui_response_too_large",
-            Some("operator UI response value is too large"),
-          ),
-        )
-        False ->
-          route_worker_command_sync(
-            state,
-            operator_command,
-            session_id,
-            timeout_ms,
-            fn(subject, reply) {
-              process.send(
-                subject,
-                worker_command.RespondToUi(request_id, response, reply),
-              )
-            },
-          )
-      }
-  }
-}
-
-fn log_operator_transition(
-  transition: #(State, command.CommandResult),
-) -> #(State, command.CommandResult) {
-  let #(state, result) = transition
-  log_operator_result(state, result, [])
-  #(state, result)
+  control_command_handler.apply(
+    control_command_handler.Context(
+      state: state,
+      pending_claim_count: fn(state) { dict.size(state.pending_claims) },
+      set_paused: fn(state, paused) { State(..state, operator_paused: paused) },
+      reload_workflow: reload_workflow_for_operator,
+      retry_issue: retry_issue_for_operator,
+      park_issue: park_issue_for_operator,
+      unpark_issue: unpark_issue_for_operator,
+      abort_session: abort_session_for_operator_sync,
+      route_worker_command: route_worker_command_sync,
+      log_result: log_operator_result,
+    ),
+    operator_command,
+    timeout_ms,
+  )
 }
 
 fn log_operator_result(
@@ -1097,11 +997,17 @@ fn send_worker_command_sync(
   let worker_reply = process.new_subject()
   send(subject, worker_reply)
   case
-    process.receive(worker_reply, within: worker_command_timeout(timeout_ms))
+    process.receive(
+      worker_reply,
+      within: control_command_handler.worker_command_timeout(timeout_ms),
+    )
   {
     Ok(reply) -> #(
       state,
-      worker_reply_to_command_result(operator_command, reply),
+      control_command_handler.worker_reply_to_command_result(
+        operator_command,
+        reply,
+      ),
     )
     Error(_) -> #(
       state,
@@ -1111,54 +1017,6 @@ fn send_worker_command_sync(
         Some("worker command timed out"),
       ),
     )
-  }
-}
-
-fn worker_command_timeout(timeout_ms: Int) -> Int {
-  let client_timeout = case timeout_ms > 25 {
-    True -> timeout_ms - 25
-    False ->
-      case timeout_ms > 1 {
-        True -> timeout_ms - 1
-        False -> timeout_ms
-      }
-  }
-  min_int(client_timeout, max_worker_command_wait_ms)
-}
-
-fn min_int(a: Int, b: Int) -> Int {
-  case a < b {
-    True -> a
-    False -> b
-  }
-}
-
-fn operator_prompt_too_large(message: String) -> Bool {
-  string.length(message) > worker_command.max_operator_prompt_chars
-}
-
-fn ui_response_too_large(response: command.UiResponse) -> Bool {
-  case response {
-    command.UiCancel -> False
-    command.UiValue(value) ->
-      string.length(value) > worker_command.max_operator_ui_value_chars
-  }
-}
-
-fn worker_reply_to_command_result(
-  operator_command: command.OperatorCommand,
-  reply: worker_command.Reply,
-) -> command.CommandResult {
-  case reply {
-    worker_command.Applied(message) ->
-      command.applied(operator_command, message)
-    worker_command.Queued(message) -> command.queued(operator_command, message)
-    worker_command.Rejected(reason, message) ->
-      command.rejected(operator_command, reason, message)
-    worker_command.NotFound(message) ->
-      command.not_found(operator_command, message)
-    worker_command.NotAllowed(reason, message) ->
-      command.not_allowed(operator_command, reason, message)
   }
 }
 
@@ -1191,12 +1049,15 @@ fn abort_session_for_operator_sync(
           case
             process.receive(
               worker_reply,
-              within: worker_command_timeout(timeout_ms),
+              within: control_command_handler.worker_command_timeout(timeout_ms),
             )
           {
             Ok(reply) -> #(
               state,
-              worker_reply_to_command_result(operator_command, reply),
+              control_command_handler.worker_reply_to_command_result(
+                operator_command,
+                reply,
+              ),
             )
             Error(_) ->
               stop_session_for_operator(
@@ -1230,12 +1091,15 @@ fn abort_step_session_for_operator_sync(
       case
         process.receive(
           worker_reply,
-          within: worker_command_timeout(timeout_ms),
+          within: control_command_handler.worker_command_timeout(timeout_ms),
         )
       {
         Ok(reply) -> #(
           state,
-          worker_reply_to_command_result(operator_command, reply),
+          control_command_handler.worker_reply_to_command_result(
+            operator_command,
+            reply,
+          ),
         )
         Error(_) -> #(
           state,
