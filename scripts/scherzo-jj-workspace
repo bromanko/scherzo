@@ -32,7 +32,22 @@ fi
 command=$1
 workflow_name=$2
 workspace_path=$(pwd -P)
-workspace_key=$(basename "$workspace_path")
+
+sanitize_key() {
+  printf '%s' "$1" \
+    | tr -c 'A-Za-z0-9_.-' '-' \
+    | sed 's/^-*//; s/-*$//; s/--*/-/g'
+}
+
+issue_key=$(sanitize_key "${SCHERZO_ISSUE_IDENTIFIER:-issue}")
+run_key=$(sanitize_key "${SCHERZO_RUN_ID:-run}" | cut -c 1-12)
+logical_workspace_key=$(sanitize_key "${SCHERZO_WORKSPACE_NAME:-$(basename "$workspace_path")}")
+
+[ -n "$issue_key" ] || issue_key=issue
+[ -n "$run_key" ] || run_key=run
+[ -n "$logical_workspace_key" ] || logical_workspace_key=workspace
+
+workspace_key="${issue_key}-${run_key}-${logical_workspace_key}"
 workspace_name="scherzo-${workflow_name}-${workspace_key}"
 
 infer_repo_root() {
@@ -77,11 +92,22 @@ verify_current_workspace() {
 case "$command" in
   after-create)
     require_jj_repo_root
-    jj --repository "$repo_root" workspace add \
-      --name "$workspace_name" \
-      --message "Scherzo ${workflow_name} workspace for ${workspace_key}" \
-      --sparse-patterns full \
-      "$workspace_path"
+    if [ -n "${SCHERZO_SOURCE_WORKSPACE_PATH:-}" ]; then
+      test -d "$SCHERZO_SOURCE_WORKSPACE_PATH/.jj" || \
+        fail "source workspace is missing .jj: $SCHERZO_SOURCE_WORKSPACE_PATH"
+      jj --repository "$SCHERZO_SOURCE_WORKSPACE_PATH" workspace add \
+        --name "$workspace_name" \
+        --revision @ \
+        --message "Scherzo ${workflow_name} workspace for ${workspace_key}" \
+        --sparse-patterns full \
+        "$workspace_path"
+    else
+      jj --repository "$repo_root" workspace add \
+        --name "$workspace_name" \
+        --message "Scherzo ${workflow_name} workspace for ${workspace_key}" \
+        --sparse-patterns full \
+        "$workspace_path"
+    fi
     verify_current_workspace
     ;;
 

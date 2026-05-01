@@ -1,0 +1,56 @@
+version: 1
+id: implementation
+description: Implement a focused Scherzo issue, validate it, review it, apply feedback, and produce a Linear-ready summary.
+max_parallel_steps: 1
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/implement.md
+    workspace: main
+
+  - id: format_after_implement
+    kind: command
+    depends_on: [implement]
+    run: |
+      direnv allow .
+      direnv exec . gleam format --check src test
+    workspace: main
+    on_failure: continue
+
+  - id: test_after_implement
+    kind: command
+    depends_on: [implement]
+    run: |
+      direnv allow .
+      direnv exec . gleam test
+    workspace: main
+    on_failure: continue
+
+  - id: code_review
+    kind: agent
+    depends_on:
+      - format_after_implement
+      - test_after_implement
+    prompt: prompts/code-review.md
+    workspace: main
+
+  - id: apply_feedback
+    kind: agent
+    depends_on: [code_review]
+    prompt: prompts/apply-feedback.md
+    workspace: main
+
+  - id: final_validate
+    kind: command
+    depends_on: [apply_feedback]
+    run: |
+      direnv allow .
+      direnv exec . gleam format --check src test
+      direnv exec . gleam test
+    workspace: main
+
+  - id: final_report
+    kind: agent
+    depends_on: [final_validate]
+    prompt: prompts/final-report.md
+    workspace: main
