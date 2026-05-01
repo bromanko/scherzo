@@ -4,6 +4,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import scherzo/domain
 import scherzo/orchestrator/worker_registry
+import scherzo/session/reason
+import scherzo/tracker/state as issue_state
 
 fn issue(id: String, identifier: String) -> domain.Issue {
   domain.Issue(
@@ -12,7 +14,7 @@ fn issue(id: String, identifier: String) -> domain.Issue {
     title: "Title " <> identifier,
     description: None,
     priority: None,
-    state: "Todo",
+    state: issue_state.from_string_unchecked("Todo"),
     branch_name: None,
     url: None,
     labels: [],
@@ -59,7 +61,7 @@ pub fn worker_registry_tracks_yaml_steps_and_stopped_runs_test() {
     |> worker_registry.register_yaml_step_started("run-1-step-a", "run-1")
     |> worker_registry.register_yaml_step_started("run-1-step-b", "run-1")
     |> worker_registry.register_yaml_step_started("run-2-step-a", "run-2")
-    |> worker_registry.mark_yaml_run_stopping("run-1", "operator_abort")
+    |> worker_registry.mark_yaml_run_stopping("run-1", reason.OperatorAbort)
 
   let sessions =
     worker_registry.active_yaml_step_sessions_for_run(registry, "run-1")
@@ -67,7 +69,7 @@ pub fn worker_registry_tracks_yaml_steps_and_stopped_runs_test() {
   assert list.contains(sessions, "run-1-step-b")
   assert !list.contains(sessions, "run-2-step-a")
   assert worker_registry.stopped_yaml_run_reason(registry, "run-1")
-    == Ok("operator_abort")
+    == Ok(reason.OperatorAbort)
 }
 
 pub fn worker_registry_registers_and_clears_step_command_route_test() {

@@ -90,7 +90,8 @@ pub fn command_failure_and_timeout_are_artifacts_test() {
       [],
       limits(),
     )
-  assert artifact.status == "failure"
+  assert artifact.status == step_artifact.StepFailed
+  assert step_artifact.status_to_string(artifact.status) == "failure"
   assert artifact.exit_code == Some(124)
   assert artifact.timed_out == True
 }

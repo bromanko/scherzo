@@ -2,6 +2,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/domain
 import scherzo/session/event
 import scherzo/terminal/sanitize
@@ -176,8 +177,10 @@ fn render_fresh_event(
 ) -> #(RenderState, List(RenderChunk)) {
   let payload = stored_event.payload
   case payload.name {
-    "turn_start" -> render_pi_cycle_start(state, payload, options)
-    "turn_end" -> render_pi_cycle_end(state, payload, options)
+    event.PiName(pi_event.TurnStart) ->
+      render_pi_cycle_start(state, payload, options)
+    event.PiName(pi_event.TurnEnd) ->
+      render_pi_cycle_end(state, payload, options)
     _ ->
       case payload.kind {
         event.AssistantMessage -> render_assistant(state, payload, options)
@@ -436,7 +439,8 @@ fn render_ui_response(
   let #(state, tool_close_chunks) =
     close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
-  let method = safe_option_string(payload.method, payload.name)
+  let method =
+    safe_option_string(payload.method, event.name_to_string(payload.name))
   #(
     RenderState(..state, assistant_active: False, assistant_line_open: False),
     list.flatten([
@@ -505,7 +509,8 @@ fn render_unknown(
   let #(state, tool_close_chunks) =
     close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
-  let name = safe_option_string(payload.pi_type, payload.name)
+  let name =
+    safe_option_string(payload.pi_type, event.name_to_string(payload.name))
   let raw_chunks = case options.show_raw_unknown, payload.raw_json {
     True, Some(raw) -> [
       Line(style.raw_label(
@@ -537,7 +542,8 @@ fn render_error_event(
   let #(state, tool_close_chunks) =
     close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
-  let message = safe_option_string(payload.message, payload.name)
+  let message =
+    safe_option_string(payload.message, event.name_to_string(payload.name))
   #(
     RenderState(..state, assistant_active: False, assistant_line_open: False),
     list.flatten([
@@ -719,7 +725,7 @@ fn tool_needs_label(
     False -> True
     True ->
       case
-        payload.name,
+        event.name_to_string(payload.name),
         has_text(payload.tool_input),
         state.active_tool_section
       {
@@ -901,7 +907,10 @@ fn body_block_lines(value: String) -> List(String) {
 }
 
 fn tool_closes(payload: event.EventPayload) -> Bool {
-  case payload.tool_status, string.ends_with(payload.name, "_end") {
+  case
+    payload.tool_status,
+    string.ends_with(event.name_to_string(payload.name), "_end")
+  {
     Some(_), _ -> True
     None, True -> True
     None, False -> False
@@ -911,7 +920,7 @@ fn tool_closes(payload: event.EventPayload) -> Bool {
 fn tool_label(payload: event.EventPayload) -> String {
   case payload.tool_name {
     Some(name) -> "tool " <> sanitize.text(name)
-    None -> "tool " <> sanitize.text(payload.name)
+    None -> "tool " <> sanitize.text(event.name_to_string(payload.name))
   }
 }
 

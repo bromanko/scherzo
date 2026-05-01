@@ -12,6 +12,7 @@ import scherzo/domain
 import scherzo/error
 import scherzo/linear_contract
 import scherzo/tracker
+import scherzo/tracker/state as issue_state
 
 pub type Request {
   Request(
@@ -163,7 +164,7 @@ pub fn fetch_candidate_issues(
 
 pub fn fetch_issues_by_states(
   config: domain.TrackerConfig,
-  states: List(String),
+  states: List(issue_state.IssueState),
   transport: Transport,
 ) -> Result(List(domain.Issue), error.TrackerError) {
   case states {
@@ -238,7 +239,7 @@ fn compare_comments(a: LinearComment, b: LinearComment) {
 
 fn fetch_pages(
   config: domain.TrackerConfig,
-  states: List(String),
+  states: List(issue_state.IssueState),
   after: Option(String),
   transport: Transport,
   acc: List(domain.Issue),
@@ -260,7 +261,7 @@ fn fetch_pages(
 
 pub fn build_candidate_request(
   config: domain.TrackerConfig,
-  states: List(String),
+  states: List(issue_state.IssueState),
   after: Option(String),
 ) -> Result(Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
@@ -273,7 +274,10 @@ pub fn build_candidate_request(
         "variables",
         json.object([
           #("projectSlug", json.string(project_slug)),
-          #("activeStates", json.array(states, of: json.string)),
+          #(
+            "activeStates",
+            json.array(issue_state.to_strings(states), of: json.string),
+          ),
           #("after", json.nullable(after, of: json.string)),
         ]),
       ),
@@ -959,9 +963,9 @@ fn issue_decoder() -> decode.Decoder(domain.Issue) {
   ))
 }
 
-fn state_name_decoder() -> decode.Decoder(String) {
+fn state_name_decoder() -> decode.Decoder(issue_state.IssueState) {
   use name <- decode.field("name", decode.string)
-  decode.success(name)
+  decode.success(issue_state.from_string_unchecked(name))
 }
 
 fn labels_decoder() -> decode.Decoder(List(String)) {
@@ -994,7 +998,7 @@ pub type RelatedIssue {
   RelatedIssue(
     id: Option(String),
     identifier: Option(String),
-    state: Option(String),
+    state: Option(issue_state.IssueState),
   )
 }
 
@@ -1018,9 +1022,14 @@ fn related_issue_decoder() -> decode.Decoder(RelatedIssue) {
   decode.success(RelatedIssue(id: id, identifier: identifier, state: state))
 }
 
-fn optional_state_name_decoder() -> decode.Decoder(Option(String)) {
+fn optional_state_name_decoder() -> decode.Decoder(
+  Option(issue_state.IssueState),
+) {
   use name <- decode.field("name", decode.optional(decode.string))
-  decode.success(name)
+  decode.success(case name {
+    Some(name) -> Some(issue_state.from_string_unchecked(name))
+    None -> None
+  })
 }
 
 fn parse_optional_time(value: Option(String)) -> Option(birl.Time) {

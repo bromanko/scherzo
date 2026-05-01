@@ -1,5 +1,7 @@
 import gleam/option.{type Option, None, Some}
+import scherzo/agent/pi_event
 import scherzo/domain
+import scherzo/session/reason
 
 pub type SessionStatus {
   Preparing
@@ -7,7 +9,7 @@ pub type SessionStatus {
   Running
   WaitingUi
   Stopping
-  Exited(reason: String)
+  Exited(reason: reason.WorkerExitReason)
 }
 
 pub type EventKind {
@@ -22,6 +24,22 @@ pub type EventKind {
   PiRaw
 }
 
+pub type LifecycleEventName {
+  DispatchStarted
+  WorkerStarted
+  StopRequested
+  WorkerExited
+  WorkerDown
+  RetryScheduled
+  OperatorCommand
+  StepStarted
+}
+
+pub type EventName {
+  LifecycleName(LifecycleEventName)
+  PiName(pi_event.PiEvent)
+}
+
 pub type RedactedRawJson {
   RedactedRawJson(value: String, truncated: Bool)
 }
@@ -29,7 +47,7 @@ pub type RedactedRawJson {
 pub type EventPayload {
   EventPayload(
     kind: EventKind,
-    name: String,
+    name: EventName,
     turn: Option(Int),
     pi_type: Option(String),
     message: Option(String),
@@ -74,7 +92,7 @@ pub type EventPage {
   EventPage(events: List(SessionEvent), next_cursor: Int, truncated: Bool)
 }
 
-pub fn empty_payload(kind: EventKind, name: String) -> EventPayload {
+pub fn empty_payload(kind: EventKind, name: EventName) -> EventPayload {
   EventPayload(
     kind: kind,
     name: name,
@@ -103,10 +121,51 @@ pub fn status_to_string(status: SessionStatus) -> String {
   }
 }
 
-pub fn exit_reason(status: SessionStatus) -> Option(String) {
+pub fn exit_reason(status: SessionStatus) -> Option(reason.WorkerExitReason) {
   case status {
     Exited(reason) -> Some(reason)
     _ -> None
+  }
+}
+
+pub fn lifecycle_name_to_string(name: LifecycleEventName) -> String {
+  case name {
+    DispatchStarted -> "dispatch_started"
+    WorkerStarted -> "worker_started"
+    StopRequested -> "stop_requested"
+    WorkerExited -> "worker_exited"
+    WorkerDown -> "worker_down"
+    RetryScheduled -> "retry_scheduled"
+    OperatorCommand -> "operator_command"
+    StepStarted -> "step_started"
+  }
+}
+
+pub fn name_to_string(name: EventName) -> String {
+  case name {
+    LifecycleName(name) -> lifecycle_name_to_string(name)
+    PiName(name) -> pi_event.to_string(name)
+  }
+}
+
+pub fn lifecycle_name_from_string(value: String) -> Option(LifecycleEventName) {
+  case value {
+    "dispatch_started" -> Some(DispatchStarted)
+    "worker_started" -> Some(WorkerStarted)
+    "stop_requested" -> Some(StopRequested)
+    "worker_exited" -> Some(WorkerExited)
+    "worker_down" -> Some(WorkerDown)
+    "retry_scheduled" -> Some(RetryScheduled)
+    "operator_command" -> Some(OperatorCommand)
+    "step_started" -> Some(StepStarted)
+    _ -> None
+  }
+}
+
+pub fn name_from_string(value: String) -> Result(EventName, Nil) {
+  case lifecycle_name_from_string(value) {
+    Some(name) -> Ok(LifecycleName(name))
+    None -> Ok(PiName(pi_event.from_string(value)))
   }
 }
 

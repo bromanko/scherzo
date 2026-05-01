@@ -3,6 +3,7 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/agent/worker_command
 import scherzo/control/command
@@ -15,8 +16,10 @@ import scherzo/orchestrator/daemon
 import scherzo/path
 import scherzo/session/event
 import scherzo/session/hub
+import scherzo/session/reason
 import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace_run
@@ -35,7 +38,7 @@ fn issue(id: String, identifier: String, state: String) -> domain.Issue {
     title: "Title " <> identifier,
     description: None,
     priority: Some(1),
-    state: state,
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: [],
@@ -327,7 +330,7 @@ fn fake_workflow_run_dependencies(
     ) {
       process.send(log_subject, "yaml_agent:" <> prompt)
       emit_update(runner.PiUpdate(
-        event: "turn_finished",
+        event: pi_event.TurnFinished,
         message: Some("hello"),
         raw_json: None,
         turn: Some(1),
@@ -645,7 +648,12 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
       fetch_issue_states_by_ids: fn(_) {
-        Ok([domain.Issue(..candidate, state: "Done")])
+        Ok([
+          domain.Issue(
+            ..candidate,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+        ])
       },
     )
   let log_subject = process.new_subject()
@@ -808,7 +816,7 @@ pub fn daemon_yaml_parent_abort_kills_active_step_worker_test() {
   assert wait_for_session_status(
     event_hub,
     "ABC-1-42-1-implement",
-    event.Exited("operator_abort"),
+    event.Exited(reason.OperatorAbort),
     20,
   )
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -896,7 +904,12 @@ pub fn daemon_poll_dispatches_fake_worker_routes_update_and_shutdown_test() {
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
       fetch_issue_states_by_ids: fn(_) {
-        Ok([domain.Issue(..candidate, state: "Done")])
+        Ok([
+          domain.Issue(
+            ..candidate,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+        ])
       },
     )
   let log_subject = process.new_subject()
@@ -974,7 +987,13 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
                 final_issue: None,
               ))
             True ->
-              Ok(success(domain.Issue(..issue, state: "Done"), workspace_path))
+              Ok(success(
+                domain.Issue(
+                  ..issue,
+                  state: issue_state.from_string_unchecked("Done"),
+                ),
+                workspace_path,
+              ))
           }
         },
       ),

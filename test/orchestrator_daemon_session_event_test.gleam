@@ -2,6 +2,7 @@ import birl
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/agent/worker_command
 import scherzo/domain
@@ -13,7 +14,9 @@ import scherzo/orchestrator/daemon
 import scherzo/path
 import scherzo/session/event
 import scherzo/session/hub
+import scherzo/session/reason
 import scherzo/tracker
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_run
 import scherzo/workspace
 import simplifile
@@ -31,7 +34,7 @@ fn issue(id: String, identifier: String, state: String) -> domain.Issue {
     title: "Title " <> identifier,
     description: None,
     priority: Some(1),
-    state: state,
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: [],
@@ -126,7 +129,7 @@ fn success(final: domain.Issue, workspace_path: String) -> runner.WorkerSuccess 
 
 fn update(name: String, message: Option(String)) -> runner.PiUpdate {
   runner.PiUpdate(
-    event: name,
+    event: pi_event.from_string(name),
     message: message,
     raw_json: None,
     turn: Some(1),
@@ -146,7 +149,12 @@ fn client_with(candidate: domain.Issue) -> tracker.Client {
     fetch_candidate_issues: fn() { Ok([candidate]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
     fetch_issue_states_by_ids: fn(_) {
-      Ok([domain.Issue(..candidate, state: "Done")])
+      Ok([
+        domain.Issue(
+          ..candidate,
+          state: issue_state.from_string_unchecked("Done"),
+        ),
+      ])
     },
   )
 }
@@ -248,7 +256,13 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
         emit_update(issue.id, update("message_update", Some("hello")))
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
-        Ok(success(domain.Issue(..issue, state: "Done"), expected_workspace))
+        Ok(success(
+          domain.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+          expected_workspace,
+        ))
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -261,7 +275,7 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
     workspace.workspace_path(root, "ABC-123")
   assert summary.issue_identifier == "ABC-123"
   assert summary.workspace_path == expected_workspace
-  assert summary.status == event.Exited("normal")
+  assert summary.status == event.Exited(reason.Normal)
   assert summary.token_totals.total == 3
 
   let assert Ok(page) =
@@ -295,7 +309,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
         emit_update(
           issue.id,
           runner.PiUpdate(
-            event: "message",
+            event: pi_event.Message,
             message: None,
             raw_json: None,
             turn: Some(1),
@@ -311,7 +325,13 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
         )
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
-        Ok(success(domain.Issue(..issue, state: "Done"), expected_workspace))
+        Ok(success(
+          domain.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+          expected_workspace,
+        ))
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -346,7 +366,13 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
         process.sleep(800)
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
-        Ok(success(domain.Issue(..issue, state: "Done"), expected_workspace))
+        Ok(success(
+          domain.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+          expected_workspace,
+        ))
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -407,7 +433,13 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
               final_issue: None,
             ))
           True ->
-            Ok(success(domain.Issue(..issue, state: "Done"), expected_workspace))
+            Ok(success(
+              domain.Issue(
+                ..issue,
+                state: issue_state.from_string_unchecked("Done"),
+              ),
+              expected_workspace,
+            ))
         }
       },
     )
@@ -418,7 +450,7 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
 
   let assert Ok(failed_summary) =
     wait_for_session(hub_subject, "ABC-RETRY-42-1", 20)
-  assert failed_summary.status == event.Exited("failed")
+  assert failed_summary.status == event.Exited(reason.Failed)
   let assert Ok(failed_page) =
     hub.events_after(hub_subject, "ABC-RETRY-42-1", 0, 20, 1000)
   assert !list.contains(event_names(failed_page.events), "retry_scheduled")
@@ -428,7 +460,7 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
 
   let assert Ok(succeeded_summary) =
     wait_for_session(hub_subject, "ABC-RETRY-42-2", 20)
-  assert succeeded_summary.status == event.Exited("normal")
+  assert succeeded_summary.status == event.Exited(reason.Normal)
   let assert Ok(_) =
     hub.events_after(hub_subject, "ABC-RETRY-42-1", 0, 20, 1000)
   let assert Ok(_) =
@@ -452,7 +484,13 @@ pub fn daemon_success_continuation_does_not_publish_retry_to_exited_session_test
       fn(issue, _, _, _, _, _, _, _) {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
-        Ok(success(domain.Issue(..issue, state: "Todo"), expected_workspace))
+        Ok(success(
+          domain.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Todo"),
+          ),
+          expected_workspace,
+        ))
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -461,7 +499,7 @@ pub fn daemon_success_continuation_does_not_publish_retry_to_exited_session_test
   assert wait_for_log(log_subject, "worker_exited", 20)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-ACTIVE-42-1", 20)
-  assert summary.status == event.Exited("normal")
+  assert summary.status == event.Exited(reason.Normal)
   let assert Ok(page) =
     hub.events_after(hub_subject, "ABC-ACTIVE-42-1", 0, 20, 1000)
   assert !list.contains(event_names(page.events), "retry_scheduled")
@@ -499,7 +537,7 @@ pub fn daemon_worker_down_does_not_publish_retry_to_exited_session_test() {
   assert wait_for_log(log_subject, "retry_scheduled", 20)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-DOWN-42-1", 20)
-  assert summary.status == event.Exited("failed")
+  assert summary.status == event.Exited(reason.Failed)
   let assert Ok(page) =
     hub.events_after(hub_subject, "ABC-DOWN-42-1", 0, 20, 1000)
   assert list.contains(event_names(page.events), "worker_exited")
@@ -513,7 +551,8 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
   let #(workflow_path, root) =
     write_workflow("test/tmp/daemon-stop-session-cleanup")
   let candidate = issue("stop-id", "ABC-STOP", "Todo")
-  let terminal = domain.Issue(..candidate, state: "Done")
+  let terminal =
+    domain.Issue(..candidate, state: issue_state.from_string_unchecked("Done"))
   let log_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
   let client =
@@ -531,7 +570,13 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
         let assert Ok(#(_, _expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         process.sleep(2000)
-        Ok(success(domain.Issue(..issue, state: "Done"), "unreachable"))
+        Ok(success(
+          domain.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+          "unreachable",
+        ))
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -542,7 +587,7 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
   assert wait_for_log(log_subject, "worker_stop_requested", 20)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-STOP-42-1", 20)
-  assert summary.status == event.Exited("stopped")
+  assert summary.status == event.Exited(reason.Stopped)
   let assert Ok(page) =
     hub.events_after(hub_subject, "ABC-STOP-42-1", 0, 20, 1000)
   assert list.contains(event_names(page.events), "stop_requested")
@@ -659,7 +704,7 @@ fn find_event(
   case events {
     [] -> None
     [stored_event, ..rest] ->
-      case stored_event.payload.name == name {
+      case event.name_to_string(stored_event.payload.name) == name {
         True -> Some(stored_event)
         False -> find_event(rest, name)
       }
@@ -667,7 +712,9 @@ fn find_event(
 }
 
 fn event_names(events: List(event.SessionEvent)) -> List(String) {
-  list.map(events, fn(stored_event) { stored_event.payload.name })
+  list.map(events, fn(stored_event) {
+    event.name_to_string(stored_event.payload.name)
+  })
 }
 
 fn event_cursors(events: List(event.SessionEvent)) -> List(Int) {

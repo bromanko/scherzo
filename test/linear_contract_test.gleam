@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/config
 import scherzo/domain
 import scherzo/linear_contract
+import scherzo/tracker/state as issue_state
 
 fn state(id: String, name: String) -> linear_contract.RemoteState {
   linear_contract.RemoteState(id: id, name: name, type_: "started")
@@ -93,8 +94,8 @@ fn effective(
       ..config.default_tracker_config(),
       api_key: Some("secret"),
       project_slug: Some("PROJ"),
-      active_states: active_states,
-      terminal_states: terminal_states,
+      active_states: issue_state.list_from_strings(active_states),
+      terminal_states: issue_state.list_from_strings(terminal_states),
     ),
     polling: config.default_polling_config(),
     workspace: config.default_workspace_config("scherzo.yaml"),

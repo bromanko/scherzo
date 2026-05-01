@@ -2,6 +2,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/domain
 import scherzo/session/event
 import scherzo/session/json as session_json
@@ -41,7 +42,11 @@ pub fn session_summary_serializes_exact_required_fields_test() {
 }
 
 pub fn event_page_serializes_cursor_and_truncation_test() {
-  let payload = event.empty_payload(event.Lifecycle, "worker_started")
+  let payload =
+    event.empty_payload(
+      event.Lifecycle,
+      event.LifecycleName(event.WorkerStarted),
+    )
   let page =
     event.EventPage(
       events: [
@@ -57,7 +62,10 @@ pub fn event_page_serializes_cursor_and_truncation_test() {
           at_ms: 101,
           session_id: "session-1",
           issue_id: "issue-1",
-          payload: event.EventPayload(..payload, name: "worker_exited"),
+          payload: event.EventPayload(
+            ..payload,
+            name: event.LifecycleName(event.WorkerExited),
+          ),
         ),
       ],
       next_cursor: 2,
@@ -76,7 +84,7 @@ pub fn event_payload_has_no_cursor_or_timestamp_test() {
   let payload =
     event.EventPayload(
       kind: event.Pi,
-      name: "message_update",
+      name: event.PiName(pi_event.MessageUpdate),
       turn: Some(1),
       pi_type: Some("message_update"),
       message: Some("hello"),

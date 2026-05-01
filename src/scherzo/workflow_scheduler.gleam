@@ -74,7 +74,7 @@ pub fn mark_finished(
   step_id: String,
   artifact: step_artifact.StepArtifact,
 ) -> SchedulerState {
-  let status = case artifact.status == "success" {
+  let status = case step_artifact.succeeded(artifact.status) {
     True -> Succeeded
     False ->
       case dict.get(state.failure_policies, step_id) {

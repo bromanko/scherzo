@@ -5,6 +5,7 @@ import scherzo/domain
 import scherzo/error
 import scherzo/hooks
 import scherzo/path
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workspace
 import simplifile
@@ -132,7 +133,7 @@ pub fn cleanup_run(
               title: "",
               description: None,
               priority: None,
-              state: "",
+              state: issue_state.from_string_unchecked(""),
               branch_name: None,
               url: None,
               labels: [],

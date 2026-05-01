@@ -1,4 +1,5 @@
 import gleam/option.{type Option, None, Some}
+import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/domain
 import scherzo/orchestrator/event_publisher
@@ -12,7 +13,7 @@ fn update(
   tokens: domain.TokenTotals,
 ) -> runner.PiUpdate {
   runner.PiUpdate(
-    event: event_name,
+    event: pi_event.from_string(event_name),
     message: None,
     raw_json: raw_json,
     turn: None,

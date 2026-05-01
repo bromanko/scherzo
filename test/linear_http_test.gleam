@@ -3,15 +3,17 @@ import gleam/option.{Some}
 import gleam/string
 import scherzo/domain
 import scherzo/linear
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 
 fn tracker_config() -> domain.TrackerConfig {
   domain.TrackerConfig(
-    kind: "linear",
+    kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
-    active_states: ["Todo"],
-    terminal_states: ["Done"],
+    active_states: issue_state.list_from_strings(["Todo"]),
+    terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }
 
@@ -30,7 +32,8 @@ pub fn real_client_delegates_candidate_terminal_and_refresh_queries_test() {
   let client = linear.client(tracker_config(), transport)
 
   let assert Ok(candidates) = client.fetch_candidate_issues()
-  let assert Ok(terminals) = client.fetch_issues_by_states(["Done"])
+  let assert Ok(terminals) =
+    client.fetch_issues_by_states(issue_state.list_from_strings(["Done"]))
   let assert Ok(refreshed) = client.fetch_issue_states_by_ids(["ABC-1-id"])
 
   assert list_identifiers(candidates) == ["ABC-1"]

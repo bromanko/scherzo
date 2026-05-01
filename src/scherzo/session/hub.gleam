@@ -5,6 +5,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import scherzo/domain
 import scherzo/session/event
+import scherzo/session/reason
 
 pub const default_max_events_per_session = 2000
 
@@ -23,7 +24,7 @@ pub type Message {
   UpdatePiSession(String, String)
   UpdateTokens(String, domain.TokenTotals)
   Publish(String, event.EventPayload)
-  FinishSession(String, String)
+  FinishSession(String, reason.WorkerExitReason)
   ListSessions(process.Subject(Result(List(event.SessionSummary), HubError)))
   GetSession(
     String,
@@ -136,7 +137,7 @@ pub fn publish(
 pub fn finish_session(
   subject: process.Subject(Message),
   session_id: String,
-  reason: String,
+  reason: reason.WorkerExitReason,
 ) -> Nil {
   process.send(subject, FinishSession(session_id, reason))
 }

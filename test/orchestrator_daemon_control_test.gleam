@@ -14,7 +14,9 @@ import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/session/event
 import scherzo/session/hub
+import scherzo/session/reason as session_reason
 import scherzo/tracker
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_run
 import simplifile
 
@@ -127,7 +129,7 @@ fn issue(id: String, identifier: String, state: String) -> domain.Issue {
     title: "Title " <> identifier,
     description: None,
     priority: None,
-    state: state,
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: [],
@@ -695,7 +697,7 @@ pub fn abort_command_falls_back_to_kill_and_park_when_worker_does_not_reply_test
     "test/tmp/daemon-control-abort",
     issue("abort-issue", "ABC-ABORT", "Todo"),
     command.AbortSession("ABC-ABORT-42-1"),
-    "operator_abort",
+    session_reason.OperatorAbort,
   )
 }
 
@@ -808,7 +810,7 @@ fn assert_session_stop_command(
   dir: String,
   candidate: domain.Issue,
   operator_command: command.OperatorCommand,
-  reason: String,
+  reason: session_reason.WorkerExitReason,
 ) -> Nil {
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) = write_workflow_with_limits(dir, 1, 3, 3)

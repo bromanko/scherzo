@@ -1,9 +1,11 @@
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/control/command
 import scherzo/control/protocol
 import scherzo/domain
 import scherzo/session/event
+import scherzo/session/reason as session_reason
 
 pub fn decode_ping_request_requires_token_test() {
   let assert Ok(protocol.Ping("1", "secret")) =
@@ -241,6 +243,31 @@ pub fn decode_events_response_accepts_missing_and_new_tool_fields_test() {
   assert new_event.payload.tool_status == Some("success")
 }
 
+pub fn decode_events_response_uses_kind_when_decoding_event_name_test() {
+  let tool_json =
+    "{\"version\":1,\"id\":\"events-kind\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":1,\"at_ms\":100,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"tool\",\"name\":\"worker_started\",\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}],\"next_cursor\":1,\"truncated\":false}}"
+  let assert Ok(tool_page) = protocol.decode_get_events_response(tool_json)
+  let assert [tool_event] = tool_page.events
+  assert tool_event.payload.name
+    == event.PiName(pi_event.UnknownPiEvent("worker_started"))
+
+  let lifecycle_json =
+    "{\"version\":1,\"id\":\"events-lifecycle\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":2,\"at_ms\":101,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"lifecycle\",\"name\":\"worker_started\",\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}],\"next_cursor\":2,\"truncated\":false}}"
+  let assert Ok(lifecycle_page) =
+    protocol.decode_get_events_response(lifecycle_json)
+  let assert [lifecycle_event] = lifecycle_page.events
+  assert lifecycle_event.payload.name
+    == event.LifecycleName(event.WorkerStarted)
+}
+
+pub fn decode_session_summary_maps_unknown_exit_reason_to_failed_test() {
+  let line =
+    "{\"version\":1,\"id\":\"sessions-1\",\"ok\":true,\"data\":{\"sessions\":[{\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"exited\",\"exit_reason\":\"legacy_cancelled\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
+
+  let assert Ok([summary]) = protocol.decode_list_sessions_response(line)
+  assert summary.status == event.Exited(session_reason.Failed)
+}
+
 pub fn encode_events_response_contains_cursor_and_session_test() {
   let page =
     event.EventPage(
@@ -252,7 +279,7 @@ pub fn encode_events_response_contains_cursor_and_session_test() {
           issue_id: "issue-1",
           payload: event.EventPayload(
             kind: event.Lifecycle,
-            name: "worker_started",
+            name: event.LifecycleName(event.WorkerStarted),
             turn: None,
             pi_type: None,
             message: None,

@@ -1,5 +1,6 @@
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
+import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/domain
 import scherzo/session/event as session_event
@@ -29,7 +30,7 @@ pub fn worker_update(
 pub fn lifecycle(
   event_hub: process.Subject(hub.Message),
   session_id: String,
-  name: String,
+  name: session_event.LifecycleEventName,
   message: Option(String),
 ) -> Nil {
   hub.publish(
@@ -37,7 +38,7 @@ pub fn lifecycle(
     session_id,
     session_event.EventPayload(
       kind: session_event.Lifecycle,
-      name: name,
+      name: session_event.LifecycleName(name),
       turn: None,
       pi_type: None,
       message: message,
@@ -56,7 +57,7 @@ pub fn lifecycle(
 pub fn update_payload(update: runner.PiUpdate) -> session_event.EventPayload {
   session_event.EventPayload(
     kind: kind_for_update(update),
-    name: update.event,
+    name: session_event.PiName(update.event),
     turn: update.turn,
     pi_type: pi_type_for_update(update),
     message: update.message,
@@ -73,14 +74,15 @@ pub fn update_payload(update: runner.PiUpdate) -> session_event.EventPayload {
 
 pub fn kind_for_update(update: runner.PiUpdate) -> session_event.EventKind {
   case update.event {
-    "probe_started" | "probe_finished" | "pi_session_started" ->
+    pi_event.ProbeStarted | pi_event.ProbeFinished | pi_event.PiSessionStarted ->
       session_event.Lifecycle
-    "turn_finished" -> session_event.TokenStats
-    "message_start" | "message_update" | "message_end" ->
+    pi_event.TurnFinished -> session_event.TokenStats
+    pi_event.MessageStart | pi_event.MessageUpdate | pi_event.MessageEnd ->
       session_event.AssistantMessage
-    "tool_execution_start" | "tool_execution_update" | "tool_execution_end" ->
-      session_event.Tool
-    "message" ->
+    pi_event.ToolExecutionStart
+    | pi_event.ToolExecutionUpdate
+    | pi_event.ToolExecutionEnd -> session_event.Tool
+    pi_event.Message ->
       case
         update.tool_name,
         update.tool_input,
@@ -94,24 +96,28 @@ pub fn kind_for_update(update: runner.PiUpdate) -> session_event.EventKind {
         -> session_event.Tool
         _, _, _, _ -> session_event.Pi
       }
-    "extension_ui_request" ->
+    pi_event.ExtensionUiRequest ->
       case is_blocking_ui_method(update.method) {
         True -> session_event.UiRequest
         False -> session_event.Pi
       }
-    "extension_ui_response" -> session_event.UiResponse
-    "agent_start" | "turn_start" | "turn_end" | "agent_end" -> session_event.Pi
-    _ ->
+    pi_event.ExtensionUiResponse -> session_event.UiResponse
+    pi_event.AgentStart
+    | pi_event.TurnStart
+    | pi_event.TurnEnd
+    | pi_event.AgentEnd -> session_event.Pi
+    pi_event.UnknownPiEvent(_) ->
       case update.raw_json {
         Some(_) -> session_event.PiRaw
         None -> session_event.Lifecycle
       }
+    _ -> session_event.Lifecycle
   }
 }
 
 pub fn pi_type_for_update(update: runner.PiUpdate) -> Option(String) {
   case update.raw_json {
-    Some(_) -> Some(update.event)
+    Some(_) -> Some(pi_event.to_string(update.event))
     None -> None
   }
 }
@@ -120,14 +126,16 @@ pub fn status_for_update(
   update: runner.PiUpdate,
 ) -> Option(session_event.SessionStatus) {
   case update.event {
-    "probe_started" | "probe_finished" -> Some(session_event.Probing)
-    "pi_session_started" -> Some(session_event.Running)
-    "extension_ui_request" ->
+    pi_event.ProbeStarted | pi_event.ProbeFinished ->
+      Some(session_event.Probing)
+    pi_event.PiSessionStarted -> Some(session_event.Running)
+    pi_event.ExtensionUiRequest ->
       case is_blocking_ui_method(update.method) {
         True -> Some(session_event.WaitingUi)
         False -> Some(session_event.Running)
       }
-    "extension_ui_response" | "turn_finished" -> Some(session_event.Running)
+    pi_event.ExtensionUiResponse | pi_event.TurnFinished ->
+      Some(session_event.Running)
     _ ->
       case update.raw_json {
         Some(_) -> Some(session_event.Running)

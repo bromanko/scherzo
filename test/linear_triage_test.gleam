@@ -7,16 +7,18 @@ import scherzo/domain
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_triage
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 
 fn tracker_config() -> domain.TrackerConfig {
   domain.TrackerConfig(
-    kind: "linear",
+    kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.test/graphql",
     api_key: Some("lin_api_secret"),
     project_slug: Some("TEST"),
-    active_states: ["Ready for Agent"],
-    terminal_states: ["Done"],
+    active_states: issue_state.list_from_strings(["Ready for Agent"]),
+    terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }
 
@@ -40,7 +42,7 @@ fn issue() -> domain.Issue {
     title: "Needs workflow",
     description: Some("description must not appear in triage comment"),
     priority: Some(1),
-    state: "Ready for Agent",
+    state: issue_state.from_string_unchecked("Ready for Agent"),
     branch_name: None,
     url: None,
     labels: [],

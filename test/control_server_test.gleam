@@ -3,6 +3,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/control/client
 import scherzo/control/command
 import scherzo/control/file
@@ -11,6 +12,7 @@ import scherzo/control/server
 import scherzo/domain
 import scherzo/session/event
 import scherzo/session/hub
+import scherzo/session/reason
 
 fn summary(session_id: String) -> event.SessionSummary {
   event.SessionSummary(
@@ -31,7 +33,7 @@ fn summary(session_id: String) -> event.SessionSummary {
 fn payload(name: String) -> event.EventPayload {
   event.EventPayload(
     kind: event.Lifecycle,
-    name: name,
+    name: event.PiName(pi_event.UnknownPiEvent(name)),
     turn: None,
     pi_type: None,
     message: None,
@@ -205,7 +207,9 @@ pub fn server_returns_event_page_test() {
   let #(server_handle, control_file) = start_server_for_hub(subject, "token")
   let assert Ok(page) = client.get_events(control_file, "session-events", 0, 10)
 
-  assert list.map(page.events, fn(stored_event) { stored_event.payload.name })
+  assert list.map(page.events, fn(stored_event) {
+      event.name_to_string(stored_event.payload.name)
+    })
     == ["first", "second"]
   assert page.truncated == False
 
@@ -244,7 +248,7 @@ pub fn server_returns_large_event_page_test() {
 pub fn server_stream_closes_after_exited_session_replay_test() {
   let subject = start_hub_with_session("session-exited-stream")
   hub.publish(subject, "session-exited-stream", payload("only"))
-  hub.finish_session(subject, "session-exited-stream", "normal")
+  hub.finish_session(subject, "session-exited-stream", reason.Normal)
   let assert Ok(_) =
     hub.events_after(subject, "session-exited-stream", 0, 10, 1000)
   let #(server_handle, control_file) = start_server_for_hub(subject, "token")
@@ -256,7 +260,10 @@ pub fn server_stream_closes_after_exited_session_replay_test() {
       "session-exited-stream",
       0,
       fn(stored_event) {
-        process.send(event_subject, stored_event.payload.name)
+        process.send(
+          event_subject,
+          event.name_to_string(stored_event.payload.name),
+        )
         client.Continue
       },
     )
@@ -282,8 +289,9 @@ pub fn server_streams_events_by_polling_after_cursor_test() {
           "session-stream",
           0,
           fn(stored_event) {
-            process.send(event_subject, stored_event.payload.name)
-            case stored_event.payload.name == "after" {
+            let event_name = event.name_to_string(stored_event.payload.name)
+            process.send(event_subject, event_name)
+            case event_name == "after" {
               True -> client.Stop
               False -> client.Continue
             }
@@ -319,7 +327,10 @@ pub fn server_stop_closes_active_stream_test() {
           "session-active-stream",
           0,
           fn(stored_event) {
-            process.send(event_subject, stored_event.payload.name)
+            process.send(
+              event_subject,
+              event.name_to_string(stored_event.payload.name),
+            )
             client.Continue
           },
         )

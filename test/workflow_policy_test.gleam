@@ -4,6 +4,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/config
 import scherzo/domain
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 
 fn enforcing_config() -> domain.LinearContractConfig {
@@ -22,7 +23,7 @@ fn issue_with_labels(labels: List(String)) -> domain.Issue {
     title: "Title",
     description: None,
     priority: Some(1),
-    state: "Ready for Agent",
+    state: issue_state.from_string_unchecked("Ready for Agent"),
     branch_name: None,
     url: None,
     labels: labels,

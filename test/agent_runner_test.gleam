@@ -4,10 +4,13 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/domain
 import scherzo/path
 import scherzo/tracker
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 import simplifile
 
 fn reset_dir(dir: String) -> Nil {
@@ -28,7 +31,7 @@ fn issue(state: String) -> domain.Issue {
     title: "Fix tests",
     description: Some("Broken"),
     priority: Some(1),
-    state: state,
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: ["bug"],
@@ -46,12 +49,12 @@ fn config(
 ) -> domain.EffectiveConfig {
   domain.EffectiveConfig(
     tracker: domain.TrackerConfig(
-      kind: "linear",
+      kind: tracker_kind.LinearTracker,
       endpoint: "endpoint",
       api_key: Some("key"),
       project_slug: Some("PROJ"),
-      active_states: ["Todo", "In Progress"],
-      terminal_states: ["Done"],
+      active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+      terminal_states: issue_state.list_from_strings(["Done"]),
     ),
     polling: domain.PollingConfig(interval_ms: 30_000),
     workspace: domain.WorkspaceConfig(root: root),
@@ -148,7 +151,7 @@ fn find_update(
   case updates {
     [] -> None
     [update, ..rest] ->
-      case update.event == name {
+      case pi_event.to_string(update.event) == name {
         True -> Some(update)
         False -> find_update(rest, name)
       }
@@ -191,7 +194,7 @@ fn receive_update_named(
     False ->
       case process.receive(subject, within: 500) {
         Ok(update) ->
-          case update.event == name {
+          case pi_event.to_string(update.event) == name {
             True -> Ok(update)
             False -> receive_update_named(subject, name, attempts - 1)
           }
@@ -383,10 +386,11 @@ pub fn runner_redacts_normalized_tool_fields_test() {
 
   let updates = drain_updates(update_subject, [])
   let assert Some(start) = find_update_with_tool_input(updates)
-  assert start.event == "message"
+  assert start.event == pi_event.Message
+  assert pi_event.to_string(start.event) == "message"
   assert start.tool_input == Some("gleam test [REDACTED]")
   let assert Some(result) = find_update_with_tool_output(updates)
-  assert result.event == "message"
+  assert result.event == pi_event.Message
   assert result.tool_output == Some("2 failures [REDACTED]")
   assert result.tool_status == Some("failed")
 }

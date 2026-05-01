@@ -7,15 +7,17 @@ import scherzo/domain
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 
 fn tracker_config() -> domain.TrackerConfig {
   domain.TrackerConfig(
-    kind: "linear",
+    kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
-    active_states: ["Todo"],
-    terminal_states: ["Done"],
+    active_states: issue_state.list_from_strings(["Todo"]),
+    terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }
 
@@ -40,7 +42,7 @@ fn issue() -> domain.Issue {
     title: "Title",
     description: None,
     priority: None,
-    state: "Todo",
+    state: issue_state.from_string_unchecked("Todo"),
     branch_name: None,
     url: None,
     labels: [],
@@ -52,7 +54,9 @@ fn issue() -> domain.Issue {
 
 fn success() -> runner.WorkerSuccess {
   runner.WorkerSuccess(
-    final_issue: Some(domain.Issue(..issue(), state: "Done")),
+    final_issue: Some(
+      domain.Issue(..issue(), state: issue_state.from_string_unchecked("Done")),
+    ),
     final_classification: runner.FinalTerminal,
     workspace_path: "workspace",
     tokens: domain.TokenTotals(

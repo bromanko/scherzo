@@ -14,6 +14,7 @@ import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/session/hub
 import scherzo/tracker
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import simplifile
@@ -31,7 +32,7 @@ fn issue(id: String, identifier: String, state: String) -> domain.Issue {
     title: "Title " <> identifier,
     description: None,
     priority: Some(1),
-    state: state,
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: [],

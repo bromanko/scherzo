@@ -3,15 +3,17 @@ import gleam/string
 import scherzo/domain
 import scherzo/error
 import scherzo/linear
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 
 fn tracker_config() -> domain.TrackerConfig {
   domain.TrackerConfig(
-    kind: "linear",
+    kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
-    active_states: ["Todo", "In Progress"],
-    terminal_states: ["Done"],
+    active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+    terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }
 
@@ -35,11 +37,15 @@ pub fn candidate_query_uses_project_slug_filter_test() {
   let assert Error(error.LinearApiRequest(_)) =
     linear.build_candidate_request(
       domain.TrackerConfig(..tracker_config(), endpoint: "http://linear.test"),
-      ["Todo"],
+      issue_state.list_from_strings(["Todo"]),
       Some("cursor"),
     )
   let assert Ok(request) =
-    linear.build_candidate_request(tracker_config(), ["Todo"], Some("cursor"))
+    linear.build_candidate_request(
+      tracker_config(),
+      issue_state.list_from_strings(["Todo"]),
+      Some("cursor"),
+    )
   assert string.contains(request.body, "slugId")
   assert string.contains(request.body, "projectSlug")
   assert string.contains(request.body, "activeStates")

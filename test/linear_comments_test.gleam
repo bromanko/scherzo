@@ -3,15 +3,17 @@ import gleam/string
 import scherzo/domain
 import scherzo/error
 import scherzo/linear
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 
 fn tracker_config() -> domain.TrackerConfig {
   domain.TrackerConfig(
-    kind: "linear",
+    kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
-    active_states: ["Todo"],
-    terminal_states: ["Done"],
+    active_states: issue_state.list_from_strings(["Todo"]),
+    terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }
 

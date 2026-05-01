@@ -60,6 +60,10 @@ Reusable examples live under `examples/`:
 - `examples/workflows/implementation.yaml`
 - `examples/workflows/prompts/*.md`
 
+## Planning posture
+
+Scherzo is still moving quickly, so implementation plans should not assume backward compatibility unless the plan or operator explicitly calls it out. Prefer the simpler clean change over compatibility shims: update schemas, tests, docs, examples, and local state handling together. Local development state such as `.scherzo-state/ledger` may be deleted or regenerated after breaking internal changes.
+
 ## Orchestrator config
 
 The orchestrator config owns runtime policy: tracker settings, polling, workspace hooks, pi command and timeouts, agent limits, handoff, workflow routing, artifact limits, Linear contract checking, and Linear comment command transport.

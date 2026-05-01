@@ -21,7 +21,7 @@ pub fn folding_records_produces_expected_projection_test() {
 
   let assert Ok(projection.RetryScheduled(
     issue_identifier: "SCH-1",
-    due_at_ms: 10_000,
+    delay_ms: 10_000,
     generation: 3,
     reason: "backoff",
     scheduled_at_ms: 3000,
@@ -60,6 +60,19 @@ pub fn projection_snapshot_roundtrips_test() {
   assert decoded == folded
 }
 
+pub fn projection_snapshot_requires_retry_delay_ms_test() {
+  let snapshot =
+    snapshot_json(
+      runs: "[]",
+      retries: "[{\"issue_id\":\"issue-missing-delay\",\"status\":\"scheduled\",\"issue_identifier\":\"SCH-1\",\"generation\":4,\"reason\":\"backoff\",\"scheduled_at_ms\":3000}]",
+      parked_issues: "[]",
+      commands: "[]",
+      outbox: "[]",
+    )
+
+  let assert Error(_) = projection.decode_string(snapshot)
+}
+
 pub fn retry_status_transitions_replace_previous_status_test() {
   let scheduled =
     record.with_id(
@@ -68,7 +81,7 @@ pub fn retry_status_transitions_replace_previous_status_test() {
       record.RetryScheduled(
         issue_id: "issue-retry",
         issue_identifier: "SCH-10",
-        due_at_ms: 1000,
+        delay_ms: 1000,
         generation: 7,
         reason: "backoff",
       ),
@@ -87,7 +100,7 @@ pub fn retry_status_transitions_replace_previous_status_test() {
   let after_scheduled = projection.apply(projection.new(), scheduled)
   let assert Ok(projection.RetryScheduled(
     issue_identifier: "SCH-10",
-    due_at_ms: 1000,
+    delay_ms: 1000,
     generation: 7,
     reason: "backoff",
     scheduled_at_ms: 100,
@@ -413,7 +426,7 @@ fn sample_records() -> List(record.LedgerRecord) {
       record.RetryScheduled(
         issue_id: "issue-1",
         issue_identifier: "SCH-1",
-        due_at_ms: 10_000,
+        delay_ms: 10_000,
         generation: 3,
         reason: "backoff",
       ),

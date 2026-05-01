@@ -5,6 +5,8 @@ import gleam/order.{Gt, Lt}
 import gleam/string
 import scherzo/domain
 import scherzo/error
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 import yay
 
 pub type ReloadStatus {
@@ -28,12 +30,18 @@ pub type Env =
 
 pub fn default_tracker_config() -> domain.TrackerConfig {
   domain.TrackerConfig(
-    kind: "linear",
+    kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: None,
     project_slug: None,
-    active_states: ["Todo", "In Progress"],
-    terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+    active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+    terminal_states: issue_state.list_from_strings([
+      "Closed",
+      "Cancelled",
+      "Canceled",
+      "Duplicate",
+      "Done",
+    ]),
   )
 }
 
@@ -259,8 +267,9 @@ fn resolve_tracker(
       error.UnsupportedTrackerKind("missing"),
     )
   use kind <- result_try(kind)
-  case string.lowercase(kind) {
-    "linear" -> {
+  let normalized_kind = kind |> string.trim |> string.lowercase
+  case tracker_kind.from_string(normalized_kind) {
+    Ok(kind) -> {
       let endpoint =
         get_string(tracker_node, "endpoint")
         |> option_unwrap("https://api.linear.app/graphql")
@@ -287,15 +296,15 @@ fn resolve_tracker(
         error.MissingTrackerApiKey,
       ))
       Ok(domain.TrackerConfig(
-        kind: "linear",
+        kind: kind,
         endpoint: endpoint,
         api_key: Some(api_key),
         project_slug: Some(project_slug),
-        active_states: active_states,
-        terminal_states: terminal_states,
+        active_states: issue_state.list_from_strings(active_states),
+        terminal_states: issue_state.list_from_strings(terminal_states),
       ))
     }
-    other -> Error(error.UnsupportedTrackerKind(other))
+    Error(_) -> Error(error.UnsupportedTrackerKind(normalized_kind))
   }
 }
 
@@ -1225,7 +1234,10 @@ fn read_contract_string_map(
   }
 }
 
-fn get_positive_int_map(node: yay.Node, key: String) -> dict.Dict(String, Int) {
+fn get_positive_int_map(
+  node: yay.Node,
+  key: String,
+) -> dict.Dict(issue_state.IssueStateKey, Int) {
   case node {
     yay.NodeMap(pairs) ->
       case list.key_find(pairs, yay.NodeStr(key)) {
@@ -1234,7 +1246,7 @@ fn get_positive_int_map(node: yay.Node, key: String) -> dict.Dict(String, Int) {
           |> list.filter_map(fn(entry) {
             case entry {
               #(yay.NodeStr(k), yay.NodeInt(v)) if v > 0 ->
-                Ok(#(string.lowercase(k), v))
+                Ok(#(issue_state.key_from_string(k), v))
               _ -> Error(Nil)
             }
           })

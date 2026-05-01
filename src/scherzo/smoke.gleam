@@ -3,12 +3,13 @@ import gleam/option.{type Option, None, Some}
 import scherzo/domain
 import scherzo/error
 import scherzo/linear
+import scherzo/tracker/state as issue_state
 
 pub type LinearSmokeReader {
   LinearSmokeReader(
     fetch_candidate_sample: fn() ->
       Result(List(domain.Issue), error.TrackerError),
-    fetch_terminal_sample: fn(List(String)) ->
+    fetch_terminal_sample: fn(List(issue_state.IssueState)) ->
       Result(List(domain.Issue), error.TrackerError),
     refresh_issue_states_by_ids: fn(List(String)) ->
       Result(List(domain.Issue), error.TrackerError),
@@ -25,7 +26,7 @@ pub type LinearSmokeResult {
 
 pub fn linear_read_smoke(
   reader: LinearSmokeReader,
-  terminal_states: List(String),
+  terminal_states: List(issue_state.IssueState),
 ) -> Result(LinearSmokeResult, error.TrackerError) {
   use candidates <- try_tracker(reader.fetch_candidate_sample())
   use terminals <- try_tracker(reader.fetch_terminal_sample(terminal_states))
@@ -64,7 +65,7 @@ pub fn real_linear_reader(config: domain.TrackerConfig) -> LinearSmokeReader {
 
 fn fetch_one_page(
   config: domain.TrackerConfig,
-  states: List(String),
+  states: List(issue_state.IssueState),
   transport: linear.Transport,
 ) -> Result(List(domain.Issue), error.TrackerError) {
   case states {

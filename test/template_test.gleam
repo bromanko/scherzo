@@ -3,6 +3,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/domain
 import scherzo/template
+import scherzo/tracker/state as issue_state
 
 fn issue() -> domain.Issue {
   domain.Issue(
@@ -11,7 +12,7 @@ fn issue() -> domain.Issue {
     title: "Fix tests",
     description: Some("Tests are broken"),
     priority: Some(1),
-    state: "Todo",
+    state: issue_state.from_string_unchecked("Todo"),
     branch_name: None,
     url: None,
     labels: ["bug", "tests"],
