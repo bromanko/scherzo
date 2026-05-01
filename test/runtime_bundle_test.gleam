@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/domain
 import scherzo/runtime_bundle
 import scherzo/tracker/state as issue_state
@@ -146,6 +147,52 @@ pub fn rejects_absolute_prompt_paths_test() {
   let assert Error(runtime_bundle.BundleError(code, _)) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   assert code == "invalid_prompt_path"
+}
+
+pub fn rejects_invalid_project_model_thinking_combination_test() {
+  let dir = "test/tmp/runtime-bundle-invalid-model-combo"
+  reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/implement.md", "Implement")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\npi:\n  model: openai/gpt-4o\n  thinking: high\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "invalid_model_thinking"
+  assert string.contains(message, "thinking=high")
+}
+
+pub fn rejects_invalid_step_model_thinking_combination_after_default_resolution_test() {
+  let dir = "test/tmp/runtime-bundle-invalid-step-model-combo"
+  reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/implement.md", "Implement")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n    model: openai/gpt-4o\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\npi:\n  thinking: high\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "invalid_model_thinking"
+  assert string.contains(message, "workflow implementation step implement")
 }
 
 pub fn selects_yaml_workflow_from_issue_label_test() {

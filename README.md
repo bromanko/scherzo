@@ -102,6 +102,10 @@ agent:
 
 pi:
   command: "pi --mode rpc --no-session"
+  # Optional project defaults for workflow agent steps. `model` is the full
+  # pi model/provider selection key; `thinking` is configured separately.
+  model: google/gemini-2.5-flash
+  thinking: low
   compatibility_probe: true
 
 routing:
@@ -140,6 +144,9 @@ steps:
     kind: agent
     depends_on: [implement]
     prompt: prompts/code-review.md
+    # Per-step overrides are independent: this step keeps the project default
+    # model/provider but asks pi for a higher thinking level.
+    thinking: high
     workspace:
       name: code-review
       from: main
@@ -160,6 +167,9 @@ Important rules:
 - Steps sharing the same logical workspace are serialized.
 - Steps using different logical workspaces may run concurrently up to `max_parallel_steps` and global agent limits.
 - A derived workspace (`name` + `from`) is prepared from the named source workspace before the step runs.
+- Agent steps inherit `pi.model` and `pi.thinking` from the orchestrator config. An agent step can override `model`, `thinking`, or both; unspecified values continue to inherit the project default.
+- Command steps do not run pi, so `model` and `thinking` are only valid on agent steps.
+- `model` is passed to pi as one selection key (for example `google/gemini-2.5-flash` or `github-copilot/gpt-5.1-codex`). Do not include pi's `:<thinking>` shorthand in `model`; set `thinking` separately (`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`).
 
 ## Prompt templates
 
