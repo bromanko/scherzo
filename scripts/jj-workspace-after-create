@@ -1,0 +1,137 @@
+#!/bin/sh
+# Prepare a newly created jj workspace by reusing ignored local files from the
+# default workspace. Intended to be called after `jj workspace add` succeeds.
+#
+# Expected environment from a caller such as /ws-create:
+#   JJ_WORKSPACE_PATH          path to the newly-created workspace
+#   JJ_WORKSPACE_NAME          optional workspace name, used for logs only
+#   JJ_DEFAULT_WORKSPACE_PATH  optional path to the default workspace
+#
+# Optional configuration:
+#   JJ_WORKSPACE_SYMLINK_PATHS     space-separated paths to symlink
+#   JJ_WORKSPACE_COPY_PATHS        space-separated paths to copy instead
+#   JJ_WORKSPACE_DIRENV_ALLOW=0    skip `direnv allow .`
+
+set -eu
+
+log() {
+  printf '%s\n' "jj-workspace-after-create: $*" >&2
+}
+
+fail() {
+  log "$*"
+  exit 1
+}
+
+canonical_dir() {
+  path=$1
+  [ -n "$path" ] || return 1
+  cd "$path" && pwd -P
+}
+
+workspace_path=${JJ_WORKSPACE_PATH:-${1:-}}
+if [ -z "$workspace_path" ]; then
+  if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then
+    workspace_path=$(jj root)
+  else
+    workspace_path=$(pwd -P)
+  fi
+fi
+workspace_path=$(canonical_dir "$workspace_path") || fail "workspace path does not exist: ${workspace_path:-<empty>}"
+
+# Prefer an explicit default workspace path from the caller. Otherwise ask jj.
+default_path=${JJ_DEFAULT_WORKSPACE_PATH:-}
+if [ -z "$default_path" ] && command -v jj >/dev/null 2>&1; then
+  default_path=$(jj workspace root --name default 2>/dev/null || true)
+fi
+[ -n "$default_path" ] || fail "could not determine default workspace path; set JJ_DEFAULT_WORKSPACE_PATH"
+default_path=$(canonical_dir "$default_path") || fail "default workspace path does not exist: $default_path"
+
+[ "$workspace_path" != "$default_path" ] || fail "refusing to prep the default workspace"
+
+workspace_name=${JJ_WORKSPACE_NAME:-$(basename "$workspace_path")}
+log "preparing workspace '$workspace_name' at $workspace_path from $default_path"
+
+link_path() {
+  rel=$1
+  [ -n "$rel" ] || return 0
+
+  src=$default_path/$rel
+  dst=$workspace_path/$rel
+
+  if [ ! -e "$src" ] && [ ! -L "$src" ]; then
+    return 0
+  fi
+
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
+    log "kept existing $rel"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$dst")"
+  ln -s "$src" "$dst"
+  log "symlinked $rel"
+}
+
+copy_path() {
+  rel=$1
+  [ -n "$rel" ] || return 0
+
+  src=$default_path/$rel
+  dst=$workspace_path/$rel
+
+  if [ ! -e "$src" ] && [ ! -L "$src" ]; then
+    return 0
+  fi
+
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
+    log "kept existing $rel"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$dst")"
+  cp -R "$src" "$dst"
+  log "copied $rel"
+}
+
+# Defaults cover common ignored local config/secrets. Callers can override the
+# full list with JJ_WORKSPACE_SYMLINK_PATHS or add copies with
+# JJ_WORKSPACE_COPY_PATHS.
+symlink_paths=${JJ_WORKSPACE_SYMLINK_PATHS:-".env .env.local .scherzo/scherzo.local.yaml .scherzo/scherzo.local.yml"}
+copy_paths=${JJ_WORKSPACE_COPY_PATHS:-}
+
+for rel in $symlink_paths; do
+  link_path "$rel"
+done
+
+# Also pick up named local env files such as .env.development.local.
+for src in "$default_path"/.env.*.local; do
+  [ -e "$src" ] || [ -L "$src" ] || continue
+  link_path "$(basename "$src")"
+done
+
+# Scherzo workflow-local overrides are intentionally ignored by git; mirror them
+# into new workspaces when present.
+if [ -d "$default_path/.scherzo/workflows" ]; then
+  find "$default_path/.scherzo/workflows" -type f \( -name '*.local.yaml' -o -name '*.local.yml' \) | while IFS= read -r src; do
+    rel=${src#"$default_path"/}
+    link_path "$rel"
+  done
+fi
+
+for rel in $copy_paths; do
+  copy_path "$rel"
+done
+
+if [ "${JJ_WORKSPACE_DIRENV_ALLOW:-1}" != "0" ]; then
+  if command -v direnv >/dev/null 2>&1; then
+    if [ -f "$workspace_path/.envrc" ]; then
+      log "running direnv allow ."
+      (cd "$workspace_path" && direnv allow .)
+    fi
+  else
+    log "direnv not found; skipping direnv allow"
+  fi
+fi
+
+log "workspace prep complete"
