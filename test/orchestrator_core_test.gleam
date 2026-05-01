@@ -52,6 +52,8 @@ fn config() -> domain.EffectiveConfig {
       success_state_id: None,
       failure_state_id: None,
       include_result_on_success: False,
+      attach_result_on_success: False,
+      attachment_fallback_to_markdown_link: True,
       result_max_chars: 8000,
     ),
     linear_contract: domain.LinearContractConfig(

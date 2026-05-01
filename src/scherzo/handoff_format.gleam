@@ -1,5 +1,5 @@
 import gleam/int
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import scherzo/agent/runner
 import scherzo/domain
 import scherzo/log
@@ -19,6 +19,29 @@ pub fn success_comment(
     False -> header <> "\n\n" <> metadata(success)
   }
   log.redact("comment_body", body, secrets)
+}
+
+pub fn success_result_attachment_markdown(
+  issue: domain.Issue,
+  success: runner.WorkerSuccess,
+  run_id: String,
+  secrets: List(String),
+) -> Option(String) {
+  case success.result.final_response {
+    None -> None
+    Some(_) -> {
+      let body =
+        "# Scherzo result for "
+        <> issue.identifier
+        <> " run "
+        <> run_id
+        <> "\n\n"
+        <> result_section(success)
+        <> "\n\n"
+        <> metadata(success)
+      Some(log.redact("attachment_body", body, secrets))
+    }
+  }
 }
 
 fn result_section(success: runner.WorkerSuccess) -> String {

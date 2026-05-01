@@ -17,6 +17,7 @@ pub type RunMode {
 
 pub type CliResult {
   Run(RunMode, Option(String))
+  LinearAttachCommentFile(String, String, Option(String))
   Control(List(String))
   Doctor(doctor.Options)
   Help
@@ -42,6 +43,10 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
       Ok(Run(LinearContractCheck, Some(path)))
     ["--pi-probe"] -> Ok(Run(PiProbe, None))
     ["--pi-probe", path] -> Ok(Run(PiProbe, Some(path)))
+    ["--linear-attach-comment-file", comment_id, file_path] ->
+      Ok(LinearAttachCommentFile(comment_id, file_path, None))
+    ["--linear-attach-comment-file", comment_id, file_path, path] ->
+      Ok(LinearAttachCommentFile(comment_id, file_path, Some(path)))
     [path] ->
       case string.starts_with(path, "-") {
         True -> Error(UsageError)
@@ -84,7 +89,7 @@ fn parse_doctor_args(
 }
 
 pub fn usage() -> String {
-  "Usage: gleam run -- [mode] [path-to-scherzo.yaml]\n       gleam run -- doctor [options] [path-to-scherzo.yaml]\n       gleam run -- ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, linear-contract, linear-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke          Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --linear-contract-check Compare workflow state/label policy to the Linear project board; read-only.\n  --pi-probe              Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                     Inspect a running daemon through the local read-only control API.\n  --help, -h              Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace.hooks that create or verify each step workspace.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT may still terminate abruptly in this runtime phase, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
+  "Usage: gleam run -- [mode] [path-to-scherzo.yaml]\n       gleam run -- --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n       gleam run -- doctor [options] [path-to-scherzo.yaml]\n       gleam run -- ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, linear-contract, linear-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke          Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --linear-contract-check Compare workflow state/label policy to the Linear project board; read-only.\n  --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n                          Upload a local Markdown file to Linear and attach it to an existing comment; mutates Linear.\n  --pi-probe              Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                     Inspect a running daemon through the local read-only control API.\n  --help, -h              Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace.hooks that create or verify each step workspace.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT may still terminate abruptly in this runtime phase, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
 }
 
 pub fn main() -> Nil {
@@ -124,6 +129,21 @@ pub fn main() -> Nil {
                 ]),
               )
           }
+          halt(1)
+        }
+      }
+    Ok(LinearAttachCommentFile(comment_id, file_path, path)) ->
+      case
+        service.start_linear_attach_comment_file(path, comment_id, file_path)
+      {
+        Ok(Nil) -> Nil
+        Error(err) -> {
+          io.println_error(
+            log.error("startup_failed", [
+              #("code", err.code),
+              #("message", err.message),
+            ]),
+          )
           halt(1)
         }
       }

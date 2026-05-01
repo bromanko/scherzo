@@ -265,6 +265,8 @@ pub fn handoff_defaults_and_parsing_test() {
     )
   assert defaulted.handoff.enabled == False
   assert defaulted.handoff.comment_on_claim == False
+  assert defaulted.handoff.attach_result_on_success == False
+  assert defaulted.handoff.attachment_fallback_to_markdown_link == True
 
   let comments_only = minimal_front() <> "handoff:\n  enabled: true\n"
   let assert Ok(enabled) =
@@ -280,7 +282,7 @@ pub fn handoff_defaults_and_parsing_test() {
 
   let with_states =
     minimal_front()
-    <> "handoff:\n  enabled: true\n  comment_on_failure: false\n  claim_state_id: state-claim\n  success_state_id: state-success\n  failure_state_id: state-fail\n"
+    <> "handoff:\n  enabled: true\n  comment_on_failure: false\n  claim_state_id: state-claim\n  success_state_id: state-success\n  failure_state_id: state-fail\n  attach_result_on_success: true\n  attachment_fallback_to_markdown_link: false\n"
   let assert Ok(parsed) =
     config.resolve_with_env(
       definition(with_states),
@@ -291,6 +293,8 @@ pub fn handoff_defaults_and_parsing_test() {
   assert parsed.handoff.claim_state_id == Some("state-claim")
   assert parsed.handoff.success_state_id == Some("state-success")
   assert parsed.handoff.failure_state_id == Some("state-fail")
+  assert parsed.handoff.attach_result_on_success == True
+  assert parsed.handoff.attachment_fallback_to_markdown_link == False
 }
 
 pub fn handoff_result_defaults_follow_success_comments_test() {
@@ -315,6 +319,14 @@ pub fn handoff_can_disable_result_in_success_comment_test() {
 pub fn handoff_result_max_chars_must_be_positive_test() {
   let front =
     minimal_front() <> "handoff:\n  enabled: true\n  result_max_chars: 0\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+}
+
+pub fn handoff_attachment_requires_success_comment_test() {
+  let front =
+    minimal_front()
+    <> "handoff:\n  attach_result_on_success: true\n  comment_on_success: false\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
 }

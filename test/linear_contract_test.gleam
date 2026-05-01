@@ -56,6 +56,8 @@ fn handoff_config(
     success_state_id: success,
     failure_state_id: failure,
     include_result_on_success: enabled,
+    attach_result_on_success: False,
+    attachment_fallback_to_markdown_link: True,
     result_max_chars: 8000,
   )
 }
