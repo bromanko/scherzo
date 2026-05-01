@@ -1,0 +1,40 @@
+version: 1
+id: execplan
+description: Turn a Linear ticket into a reviewed ExecPlan under docs/plans and open a ready PR for review.
+max_parallel_steps: 1
+steps:
+  - id: draft_plan
+    kind: agent
+    prompt: prompts/execplan-draft.md
+    workspace: main
+
+  - id: validate_draft
+    kind: command
+    depends_on: [draft_plan]
+    run: scripts/scherzo-execplan validate
+    workspace: main
+
+  - id: review_plan
+    kind: agent
+    depends_on: [validate_draft]
+    prompt: prompts/execplan-review.md
+    workspace: main
+
+  - id: incorporate_review
+    kind: agent
+    depends_on: [review_plan]
+    prompt: prompts/execplan-incorporate-review.md
+    workspace: main
+
+  - id: final_validate
+    kind: command
+    depends_on: [incorporate_review]
+    run: scripts/scherzo-execplan validate
+    workspace: main
+
+  - id: create_pr
+    kind: command
+    depends_on: [final_validate]
+    run: scripts/scherzo-execplan create-pr
+    timeout_ms: 300000
+    workspace: main

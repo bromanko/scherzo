@@ -30,6 +30,8 @@ pub type TrackerError {
   LinearGraphqlErrors(String)
   LinearUnknownPayload(String)
   LinearMissingEndCursor
+  LinearUploadStatus(Int)
+  LinearAttachmentError(String)
 }
 
 pub type PiRpcError {
@@ -134,6 +136,8 @@ pub fn tracker_code(error: TrackerError) -> String {
     LinearGraphqlErrors(_) -> "linear_graphql_errors"
     LinearUnknownPayload(_) -> "linear_unknown_payload"
     LinearMissingEndCursor -> "linear_missing_end_cursor"
+    LinearUploadStatus(_) -> "linear_upload_status"
+    LinearAttachmentError(_) -> "linear_attachment_error"
   }
 }
 

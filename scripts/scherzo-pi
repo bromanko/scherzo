@@ -1,0 +1,23 @@
+#!/bin/sh
+# Launch pi for Scherzo dogfood workflows.
+#
+# Scherzo currently has one pi.command for all routed workflows, so this wrapper
+# selects workflow-specific pi flags from the prepared workspace path.
+
+set -eu
+
+cwd=$(pwd -P)
+research_model=${SCHERZO_RESEARCH_PI_MODEL:-openai-codex/gpt-5.5:xhigh}
+execplan_model=${SCHERZO_EXECPLAN_PI_MODEL:-openai-codex/gpt-5.5:xhigh}
+
+case "$cwd" in
+  */.scherzo/workspaces/research/*)
+    exec pi --model "$research_model" --mode rpc --no-session "$@"
+    ;;
+  */.scherzo/workspaces/execplan/*|*/.scherzo/workspaces/execplan-revision/*)
+    exec pi --model "$execplan_model" --mode rpc --no-session "$@"
+    ;;
+  *)
+    exec pi --mode rpc --no-session "$@"
+    ;;
+esac

@@ -136,3 +136,43 @@ pub fn success_comment_reports_missing_result_text_test() {
 
   assert string.contains(body, "_No assistant result text was captured._")
 }
+
+pub fn success_result_attachment_markdown_includes_result_metadata_and_redaction_test() {
+  let assert Some(markdown) =
+    handoff_format.success_result_attachment_markdown(
+      issue(),
+      success(domain.ResultArtifact(
+        final_response: Some("answer secret-key"),
+        truncated: True,
+        source: "agent_end_messages",
+      )),
+      "run-attachment",
+      ["secret-key"],
+    )
+
+  assert string.contains(
+    markdown,
+    "# Scherzo result for ABC-1 run run-attachment",
+  )
+  assert string.contains(markdown, "Result:")
+  assert string.contains(markdown, "answer [REDACTED]")
+  assert !string.contains(markdown, "secret-key")
+  assert string.contains(markdown, "_Result truncated by Scherzo._")
+  assert string.contains(markdown, "Metadata:")
+  assert string.contains(markdown, "- classification: terminal")
+  assert string.contains(markdown, "- turns: 2")
+}
+
+pub fn success_result_attachment_markdown_returns_none_without_result_test() {
+  assert handoff_format.success_result_attachment_markdown(
+      issue(),
+      success(domain.ResultArtifact(
+        final_response: None,
+        truncated: False,
+        source: "none",
+      )),
+      "run-attachment",
+      [],
+    )
+    == None
+}

@@ -11,6 +11,7 @@ import scherzo/error
 import scherzo/instance_lock
 import scherzo/lifecycle
 import scherzo/linear
+import scherzo/linear_attachment
 import scherzo/linear_contract
 import scherzo/log
 import scherzo/orchestrator/core
@@ -195,6 +196,38 @@ pub fn start_linear_contract_check(
       logger: log_stderr,
     ),
   )
+}
+
+pub fn start_linear_attach_comment_file(
+  workflow_path: Option(String),
+  comment_id: String,
+  file_path: String,
+) -> Result(Nil, StartupError) {
+  use bundle <- try_startup(
+    runtime_bundle.load(workflow_path)
+    |> map_bundle_error,
+  )
+  use outcome <- try_startup(
+    linear_attachment.attach_markdown_file_to_comment(
+      bundle.effective.tracker,
+      comment_id,
+      file_path,
+      linear_attachment.AttachOptions(
+        fallback_to_markdown_link: True,
+        dedupe_by_filename: False,
+      ),
+      linear_attachment.real_dependencies(linear.http_transport),
+    )
+    |> map_attachment_tracker_error,
+  )
+  let _ =
+    log_stderr(
+      "info",
+      "linear_comment_attachment_ok",
+      attachment_log_fields(outcome),
+      bundle.secrets,
+    )
+  Ok(Nil)
 }
 
 pub fn start_linear_contract_check_with_dependencies(
@@ -1530,6 +1563,28 @@ fn interpret_effect(
   }
 }
 
+fn attachment_log_fields(
+  outcome: linear_attachment.AttachmentOutcome,
+) -> List(log.Field) {
+  case outcome {
+    linear_attachment.AttachedNative(comment_id, filename, _) -> [
+      #("comment_id", comment_id),
+      #("filename", filename),
+      #("mode", linear_attachment.outcome_mode(outcome)),
+    ]
+    linear_attachment.AttachedMarkdownLink(comment_id, filename, _) -> [
+      #("comment_id", comment_id),
+      #("filename", filename),
+      #("mode", linear_attachment.outcome_mode(outcome)),
+    ]
+    linear_attachment.AlreadyAttached(comment_id, filename) -> [
+      #("comment_id", comment_id),
+      #("filename", filename),
+      #("mode", linear_attachment.outcome_mode(outcome)),
+    ]
+  }
+}
+
 fn map_bundle_error(
   result: Result(a, runtime_bundle.BundleError),
 ) -> Result(a, StartupError) {
@@ -1546,6 +1601,30 @@ fn map_tracker_error(
   case result {
     Ok(value) -> Ok(value)
     Error(err) -> Error(StartupError(error.tracker_code(err), "tracker error"))
+  }
+}
+
+fn map_attachment_tracker_error(
+  result: Result(a, error.TrackerError),
+) -> Result(a, StartupError) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(err) ->
+      Error(StartupError(error.tracker_code(err), tracker_error_message(err)))
+  }
+}
+
+fn tracker_error_message(err: error.TrackerError) -> String {
+  case err {
+    error.LinearApiRequest(message) -> message
+    error.LinearApiStatus(status) ->
+      "Linear API returned status " <> int_to_string(status)
+    error.LinearGraphqlErrors(message) -> message
+    error.LinearUnknownPayload(message) -> message
+    error.LinearMissingEndCursor -> "Linear response was missing endCursor"
+    error.LinearUploadStatus(status) ->
+      "Linear upload returned status " <> int_to_string(status)
+    error.LinearAttachmentError(message) -> message
   }
 }
 
