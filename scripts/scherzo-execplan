@@ -1,0 +1,218 @@
+#!/bin/sh
+# Helpers for Scherzo's workflow:execplan pipeline.
+
+set -eu
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: scherzo-execplan <validate|create-pr>
+
+Run from the Scherzo jj workspace root. The workflow must leave exactly one
+changed ExecPlan file under docs/plans/. create-pr validates, pushes a jj
+bookmark to origin, and opens a ready GitHub PR against main.
+EOF
+}
+
+fail() {
+  echo "scherzo-execplan: $*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+sanitize_ref_part() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -c 'a-z0-9._-' '-' \
+    | sed 's/^-*//; s/-*$//; s/--*/-/g'
+}
+
+changed_files() {
+  jj diff --from @- --to @ --name-only --color=never
+}
+
+find_plan_path() {
+  files=$(changed_files | sed '/^[[:space:]]*$/d')
+  [ -n "$files" ] || fail "no changed files found"
+
+  plan_files=$(printf '%s\n' "$files" | grep -E '^docs/plans/[^/]+\.md$' || true)
+  plan_count=$(printf '%s\n' "$plan_files" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
+  [ "$plan_count" = "1" ] || fail "expected exactly one changed docs/plans/*.md file, found $plan_count"
+
+  plan=$(printf '%s\n' "$plan_files" | sed -n '1p')
+  [ -f "$plan" ] || fail "plan file does not exist: $plan"
+  plan_status=$(jj diff --summary --from @- --to @ --color=never -- "$plan" | awk '{ print $1; exit }')
+  [ "$plan_status" = "A" ] || fail "plan file must be newly added, got status ${plan_status:-unknown}: $plan"
+
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    [ "$file" = "$plan" ] || fail "unexpected changed file: $file; workflow:execplan PRs may only change $plan"
+  done <<EOF_FILES
+$files
+EOF_FILES
+
+  printf '%s\n' "$plan"
+}
+
+require_heading() {
+  plan=$1
+  heading=$2
+  grep -Fx "## $heading" "$plan" >/dev/null 2>&1 || fail "missing required heading: ## $heading"
+}
+
+warn_heading() {
+  plan=$1
+  heading=$2
+  if ! grep -Fx "## $heading" "$plan" >/dev/null 2>&1; then
+    echo "scherzo-execplan: warning: missing expected heading: ## $heading" >&2
+  fi
+}
+
+validate_plan() {
+  plan=$1
+
+  grep -Eq '^# .+' "$plan" || fail "plan must start with a level-1 title"
+
+  warn_heading "$plan" "Purpose / Big Picture"
+  warn_heading "$plan" "Problem Framing and Constraints"
+  warn_heading "$plan" "Strategy Overview"
+  warn_heading "$plan" "Alternatives Considered"
+  warn_heading "$plan" "Risks and Countermeasures"
+  require_heading "$plan" "Progress"
+  warn_heading "$plan" "Surprises & Discoveries"
+  warn_heading "$plan" "Decision Log"
+  warn_heading "$plan" "Outcomes & Retrospective"
+  warn_heading "$plan" "Context and Orientation"
+  warn_heading "$plan" "Preconditions and Verified Facts"
+  warn_heading "$plan" "Scope Boundaries"
+  warn_heading "$plan" "Milestones"
+  warn_heading "$plan" "Plan of Work"
+  warn_heading "$plan" "Concrete Steps"
+  warn_heading "$plan" "Testing and Falsifiability"
+  warn_heading "$plan" "Validation and Acceptance"
+  warn_heading "$plan" "Rollout, Recovery, and Idempotence"
+  warn_heading "$plan" "Artifacts and Notes"
+  warn_heading "$plan" "Interfaces and Dependencies"
+  require_heading "$plan" "Open Questions and Clarifications Needed"
+
+  grep -Eq '^- \[[ xX]\] ' "$plan" || fail "Progress must contain at least one checklist item"
+
+  if grep -nE '/Users/|/home/|/private/|/var/folders/' "$plan" >&2; then
+    fail "plan contains absolute local paths; use repository-relative paths only"
+  fi
+}
+
+validate_command() {
+  require_command jj
+  plan=$(find_plan_path)
+  validate_plan "$plan"
+  echo "PLAN_PATH=$plan"
+  echo "VALIDATION=ok"
+}
+
+owner_repo_from_url() {
+  url=$1
+  case "$url" in
+    https://github.com/*)
+      value=${url#https://github.com/}
+      value=${value%.git}
+      printf '%s\n' "$value"
+      ;;
+    git@github.com:*)
+      value=${url#git@github.com:}
+      value=${value%.git}
+      printf '%s\n' "$value"
+      ;;
+    ssh://git@github.com/*)
+      value=${url#ssh://git@github.com/}
+      value=${value%.git}
+      printf '%s\n' "$value"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+remote_url() {
+  remote=$1
+  jj git remote list --color=never | awk -v remote="$remote" '$1 == remote { print $2; exit }'
+}
+
+create_pr_command() {
+  require_command jj
+  require_command gh
+
+  plan=$(find_plan_path)
+  validate_plan "$plan"
+
+  base=${SCHERZO_PR_BASE:-main}
+  remote=${SCHERZO_PR_REMOTE:-origin}
+  repo=${SCHERZO_PR_REPO:-}
+  if [ -z "$repo" ]; then
+    url=$(remote_url "$remote")
+    [ -n "$url" ] || fail "could not find jj git remote: $remote"
+    repo=$(owner_repo_from_url "$url") || fail "could not infer GitHub owner/repo from remote URL: $url"
+  fi
+
+  title=$(sed -n 's/^# //p' "$plan" | sed -n '1p')
+  [ -n "$title" ] || title="Add ExecPlan $(basename "$plan" .md)"
+  case "$title" in
+    ExecPlan:*|execplan:*) pr_title=$title ;;
+    *) pr_title="ExecPlan: $title" ;;
+  esac
+
+  slug=$(sanitize_ref_part "$(basename "$plan" .md)" | cut -c 1-60)
+  [ -n "$slug" ] || slug=plan
+  change_id=$(jj log -r @ --no-graph -T 'change_id.short()' --color=never | tr -d '[:space:]')
+  [ -n "$change_id" ] || fail "could not determine jj change id"
+  branch="scherzo/execplan/${slug}-${change_id}"
+
+  jj describe -m "docs(plan): add execplan for $slug"
+  jj bookmark set "$branch" --revision @
+  jj git push --remote "$remote" --bookmark "$branch"
+
+  mkdir -p tmp
+  body_file=tmp/execplan-pr-body.md
+  cat >"$body_file" <<EOF_BODY
+Adds an ExecPlan generated from a Linear \`workflow:execplan\` ticket.
+
+Plan: \`$plan\`
+
+This PR is ready for review. If the source ticket left unresolved design choices, they are recorded in the plan's \`Open Questions and Clarifications Needed\` section.
+EOF_BODY
+
+  if pr_url=$(gh pr view "$branch" --repo "$repo" --json url --jq .url 2>/dev/null); then
+    :
+  else
+    pr_url=$(gh pr create --repo "$repo" --base "$base" --head "$branch" --title "$pr_title" --body-file "$body_file") || {
+      if pr_url=$(gh pr view "$branch" --repo "$repo" --json url --jq .url 2>/dev/null); then
+        :
+      else
+        fail "failed to create or locate PR for branch $branch"
+      fi
+    }
+  fi
+
+  echo "PLAN_PATH=$plan"
+  echo "BRANCH=$branch"
+  echo "PR_URL=$pr_url"
+}
+
+case "${1:-}" in
+  validate)
+    validate_command
+    ;;
+  create-pr)
+    create_pr_command
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

@@ -8,10 +8,14 @@ set -eu
 
 cwd=$(pwd -P)
 research_model=${SCHERZO_RESEARCH_PI_MODEL:-openai-codex/gpt-5.5:xhigh}
+execplan_model=${SCHERZO_EXECPLAN_PI_MODEL:-openai-codex/gpt-5.5:xhigh}
 
 case "$cwd" in
   */.scherzo/workspaces/research/*)
     exec pi --model "$research_model" --mode rpc --no-session "$@"
+    ;;
+  */.scherzo/workspaces/execplan/*)
+    exec pi --model "$execplan_model" --mode rpc --no-session "$@"
     ;;
   *)
     exec pi --mode rpc --no-session "$@"
