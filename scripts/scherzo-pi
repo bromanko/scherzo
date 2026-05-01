@@ -14,7 +14,7 @@ case "$cwd" in
   */.scherzo/workspaces/research/*)
     exec pi --model "$research_model" --mode rpc --no-session "$@"
     ;;
-  */.scherzo/workspaces/execplan/*)
+  */.scherzo/workspaces/execplan/*|*/.scherzo/workspaces/execplan-revision/*)
     exec pi --model "$execplan_model" --mode rpc --no-session "$@"
     ;;
   *)
