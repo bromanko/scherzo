@@ -1,6 +1,7 @@
 import birl.{type Time}
 import gleam/dict.{type Dict}
 import gleam/option.{type Option}
+import scherzo/model_config
 import scherzo/orchestrator/reason
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -173,6 +174,7 @@ pub type OrchestratorConfig {
     routing: RoutingConfig,
     dag_hooks: DagHooksConfig,
     artifact_limits: ArtifactLimits,
+    model_settings: model_config.Settings,
   )
 }
 

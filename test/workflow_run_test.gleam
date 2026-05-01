@@ -7,6 +7,7 @@ import scherzo/agent/runner
 import scherzo/config
 import scherzo/domain
 import scherzo/error
+import scherzo/model_config
 import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/tracker/kind as tracker_kind
@@ -82,6 +83,7 @@ fn orchestrator() -> domain.OrchestratorConfig {
       template_field_max_chars: 1000,
       workflow_summary_max_chars: 4000,
     ),
+    model_settings: model_config.default_settings(),
   )
 }
 
@@ -256,6 +258,61 @@ pub fn workflow_run_on_failure_continue_makes_artifact_available_test() {
     )
   let assert Some(text) = success.worker_success.result.final_response
   assert string.contains(text, "response:apply response:code review prompt 1")
+}
+
+pub fn workflow_run_resolves_default_and_step_model_settings_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: default_step\n    kind: agent\n    prompt: default prompt\n    workspace: main\n  - id: full_override\n    kind: agent\n    depends_on: [default_step]\n    prompt: full prompt\n    workspace: main\n    model: github-copilot/gpt-5.1-codex\n    thinking: high\n  - id: partial_thinking\n    kind: agent\n    depends_on: [full_override]\n    prompt: thinking prompt\n    workspace: main\n    thinking: xhigh\n  - id: partial_model\n    kind: agent\n    depends_on: [partial_thinking]\n    prompt: model prompt\n    workspace: main\n    model: openai/gpt-5.1\n",
+    )
+  let event_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let base = deps(event_subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        step_id,
+        prompt,
+        effective: domain.EffectiveConfig,
+        _tracker,
+        _workspace_path,
+        _emit_update,
+        _command_ready,
+      ) {
+        process.send(command_subject, step_id <> ":" <> effective.pi.command)
+        Ok(success_agent(prompt))
+      },
+    )
+  let orch =
+    domain.OrchestratorConfig(
+      ..orchestrator(),
+      model_settings: model_config.Settings(
+        model: Some("google/gemini-2.5-flash"),
+        thinking: Some(model_config.ThinkingLow),
+      ),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orch,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert receive_event(command_subject)
+    == "default_step:pi --mode rpc --no-session --model 'google/gemini-2.5-flash' --thinking 'low'"
+  assert receive_event(command_subject)
+    == "full_override:pi --mode rpc --no-session --model 'github-copilot/gpt-5.1-codex' --thinking 'high'"
+  assert receive_event(command_subject)
+    == "partial_thinking:pi --mode rpc --no-session --model 'google/gemini-2.5-flash' --thinking 'xhigh'"
+  assert receive_event(command_subject)
+    == "partial_model:pi --mode rpc --no-session --model 'openai/gpt-5.1' --thinking 'low'"
 }
 
 pub fn workflow_run_prepare_failure_cleans_partial_ready_batch_test() {

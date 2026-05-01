@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/string
+import scherzo/model_config
 import yay
 
 pub type WorkflowDag {
@@ -21,6 +22,7 @@ pub type WorkflowStep {
     depends_on: List(String),
     workspace: WorkspaceRef,
     on_failure: FailurePolicy,
+    model_settings: model_config.Settings,
   )
 }
 
@@ -83,6 +85,7 @@ pub fn inline_agent_step(prompt: String) -> WorkflowStep {
     depends_on: [],
     workspace: WorkspaceRef(name: "main", from: None),
     on_failure: FailWorkflow,
+    model_settings: model_config.default_settings(),
   )
 }
 
@@ -181,12 +184,14 @@ fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
       use depends_on <- result_try(read_depends_on(node))
       use workspace <- result_try(read_workspace(node))
       use on_failure <- result_try(read_failure_policy(node))
+      use model_settings <- result_try(read_model_settings(kind, node))
       Ok(WorkflowStep(
         id: id,
         kind: kind,
         depends_on: depends_on,
         workspace: workspace,
         on_failure: on_failure,
+        model_settings: model_settings,
       ))
     }
     _ -> Error(DagError("step_not_map", "each step must be a map"))
@@ -291,6 +296,61 @@ fn read_failure_policy(node: yay.Node) -> Result(FailurePolicy, DagError) {
             "invalid_on_failure",
             "unknown failure policy: " <> other,
           ))
+      }
+  }
+}
+
+fn read_model_settings(
+  kind: StepKind,
+  node: yay.Node,
+) -> Result(model_config.Settings, DagError) {
+  case kind {
+    AgentStep(_) -> read_agent_model_settings(node)
+    CommandStep(_, _) -> reject_command_model_settings(node)
+  }
+}
+
+fn read_agent_model_settings(
+  node: yay.Node,
+) -> Result(model_config.Settings, DagError) {
+  model_config.read_settings(
+    node,
+    model_config.SettingsPaths(
+      provider_path: "step.provider",
+      provider_model_path: "model",
+      model_path: "step.model",
+      thinking_path: "step.thinking",
+    ),
+    fn(code, message) { DagError(code, message) },
+  )
+}
+
+fn reject_command_model_settings(
+  node: yay.Node,
+) -> Result(model_config.Settings, DagError) {
+  case first_model_settings_field(node) {
+    None -> Ok(model_config.default_settings())
+    Some(field) ->
+      Error(DagError(
+        "model_settings_on_command_step",
+        "command steps do not run pi, so "
+          <> field
+          <> " is not supported; move model/thinking settings to an agent step",
+      ))
+  }
+}
+
+fn first_model_settings_field(node: yay.Node) -> Option(String) {
+  case get_node(node, "provider") {
+    Some(_) -> Some("provider")
+    None ->
+      case get_node(node, "model") {
+        Some(_) -> Some("model")
+        None ->
+          case get_node(node, "thinking") {
+            Some(_) -> Some("thinking")
+            None -> None
+          }
       }
   }
 }

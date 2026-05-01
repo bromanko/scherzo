@@ -5,6 +5,7 @@ import gleam/order.{Gt, Lt}
 import gleam/string
 import scherzo/domain
 import scherzo/error
+import scherzo/model_config
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import yay
@@ -173,6 +174,7 @@ pub fn resolve_orchestrator_root(
   use routing <- result_try(resolve_routing(root, config_path))
   use dag_hooks <- result_try(resolve_dag_hooks(root))
   use artifact_limits <- result_try(resolve_artifact_limits(root))
+  use model_settings <- result_try(resolve_workflow_model_settings(root))
   use linear_contract <- result_try(resolve_orchestrator_linear_contract(
     root,
     effective.linear_contract,
@@ -188,6 +190,7 @@ pub fn resolve_orchestrator_root(
     routing: routing,
     dag_hooks: dag_hooks,
     artifact_limits: artifact_limits,
+    model_settings: model_settings,
   ))
 }
 
@@ -792,6 +795,22 @@ fn resolve_artifact_limits(
         workflow_summary_max_chars: workflow_summary_max_chars,
       ))
   }
+}
+
+fn resolve_workflow_model_settings(
+  root: yay.Node,
+) -> Result(model_config.Settings, error.ConfigError) {
+  let pi = get_map(root, "pi")
+  model_config.read_settings(
+    pi,
+    model_config.SettingsPaths(
+      provider_path: "pi.provider",
+      provider_model_path: "pi.model",
+      model_path: "pi.model",
+      thinking_path: "pi.thinking",
+    ),
+    fn(_code, message) { error.InvalidConfig(message) },
+  )
 }
 
 fn resolve_orchestrator_linear_contract(

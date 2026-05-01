@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import scherzo/agent/runner
 import scherzo/domain
+import scherzo/model_config
 import scherzo/step_artifact
 import scherzo/template
 import scherzo/workflow_dag
@@ -141,6 +142,7 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
           depends_on: [],
           workspace: workflow_dag.WorkspaceRef(name: "main", from: None),
           on_failure: workflow_dag.FailWorkflow,
+          model_settings: model_config.default_settings(),
         ),
         workflow_dag.WorkflowStep(
           id: "final_test",
@@ -148,6 +150,7 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
           depends_on: ["implement"],
           workspace: workflow_dag.WorkspaceRef(name: "main", from: None),
           on_failure: workflow_dag.FailWorkflow,
+          model_settings: model_config.default_settings(),
         ),
       ],
     )
