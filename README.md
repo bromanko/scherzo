@@ -10,10 +10,11 @@ Legacy Markdown runtime workflows (`WORKFLOW.md` or `.scherzo/workflows/*.md`) a
 direnv allow
 direnv exec . gleam test
 
-# Optional validation before dispatching work
-LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-smoke .scherzo/scherzo.yaml
-LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-contract-check .scherzo/scherzo.yaml
-LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --pi-probe .scherzo/scherzo.yaml
+# Readiness validation before dispatching work
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml
+
+# Read-only readiness subset when you do not want workspace hooks or pi probing
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check workflow-config --check linear-contract --check linear-smoke .scherzo/scherzo.yaml
 
 # Run one eligible issue and exit
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.yaml
@@ -226,14 +227,72 @@ scripts/scherzoctl ui respond <session-id> ui-1 --value ok
 
 When YAML DAG agent steps run, Scherzo creates concrete step sessions such as `ABC-123-42-1-implement`. Operator prompts sent to the top-level issue session are routed to the active agent step when that step exposes a command subject.
 
+## Doctor readiness checks
+
+Run `doctor` before cautious real-board operation. The command loads the YAML orchestrator config, routed workflow DAGs, and prompt templates, then prints a human-readable readiness report inspired by tools such as `flutter doctor`: each selected check is marked with `✓`, `!`, `✗`, or `-`, followed by a readable summary and remediation hints for failures. The default check set runs in this order: `workflow-config`, `linear-contract`, `linear-smoke`, `instance-lock`, `workspace-hooks`, and `pi-probe`. Use `--logfmt` when you need the previous machine-readable `doctor_check_*` events and `doctor_summary` fields.
+
+```sh
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml
+direnv exec . gleam run -- doctor --list-checks
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --logfmt .scherzo/scherzo.yaml
+```
+
+A successful default run looks like:
+
+```text
+Scherzo doctor
+Config: .scherzo/scherzo.yaml
+
+✓ Workflow config
+  Loaded YAML orchestrator config and 1 workflow DAG.
+
+✓ Linear contract
+  Project board matches configured states and labels.
+  Team count: 1, states: 7, labels: 7.
+
+✓ Linear smoke
+  Read-only Linear API check succeeded.
+  Candidates: 2, terminal sample: 3, refreshed: 1.
+
+✓ Instance lock
+  Local instance lock can be acquired and released.
+
+✓ Workspace hooks
+  Scratch workspace was prepared and cleaned up.
+  Hooks: create,before_step,remove.
+
+✓ Pi probe
+  pi RPC launched successfully and no prompt was sent.
+
+Summary: 6 passed, 0 warnings, 0 failed, 0 skipped
+
+Ready for cautious real-board operation.
+```
+
+Use repeated `--check` flags to run a subset. This read-only subset loads config and queries Linear metadata/issues, but it does not acquire the local instance lock, run workspace hooks, prepare a scratch workspace, or launch pi:
+
+```sh
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check workflow-config --check linear-contract --check linear-smoke .scherzo/scherzo.yaml
+```
+
+The default doctor run includes local checks. `workspace-hooks` prepares and cleans up a scratch workflow-run workspace using the configured `workspace.hooks.create`, `workspace.hooks.before_step`, and `workspace.hooks.remove` snippets. `pi-probe` launches pi RPC in that scratch workspace and performs the compatibility probe without sending a task prompt.
+
+The focused one-off readiness modes remain available for troubleshooting individual surfaces:
+
+```sh
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-smoke .scherzo/scherzo.yaml
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-contract-check .scherzo/scherzo.yaml
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --pi-probe .scherzo/scherzo.yaml
+```
+
 ## Linear workflow labels
 
 Scherzo routes issues by label. With the default prefix `workflow:`, an issue labeled `workflow:research` is routed to the `research` workflow key in `routing.workflows`.
 
-Use `--linear-contract-check` before enforcing labels or state handoff on a real board:
+Use `doctor --check linear-contract` or `--linear-contract-check` before enforcing labels or state handoff on a real board:
 
 ```sh
-LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-contract-check .scherzo/scherzo.yaml
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check linear-contract .scherzo/scherzo.yaml
 ```
 
 ## Linear command comments

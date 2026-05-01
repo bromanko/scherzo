@@ -1,7 +1,9 @@
 import gleam/io
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/ctl
+import scherzo/doctor
 import scherzo/log
 import scherzo/orchestrator/service
 
@@ -16,6 +18,7 @@ pub type RunMode {
 pub type CliResult {
   Run(RunMode, Option(String))
   Control(List(String))
+  Doctor(doctor.Options)
   Help
 }
 
@@ -28,6 +31,8 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
     [] -> Ok(Run(Daemon, None))
     ["--help"] | ["-h"] -> Ok(Help)
     ["ctl", ..rest] -> Ok(Control(rest))
+    ["doctor", ..rest] ->
+      parse_doctor_args(rest, doctor.Options(None, [], False, doctor.Human))
     ["--once"] -> Ok(Run(Once, None))
     ["--once", path] -> Ok(Run(Once, Some(path)))
     ["--linear-smoke"] -> Ok(Run(LinearSmoke, None))
@@ -46,8 +51,40 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
   }
 }
 
+fn parse_doctor_args(
+  args: List(String),
+  options: doctor.Options,
+) -> Result(CliResult, CliError) {
+  case args {
+    [] -> Ok(Doctor(options))
+    ["--list-checks", ..rest] ->
+      parse_doctor_args(rest, doctor.Options(..options, list_checks: True))
+    ["--logfmt", ..rest] ->
+      parse_doctor_args(rest, doctor.Options(..options, output: doctor.Logfmt))
+    ["--check"] -> Error(UsageError)
+    ["--check", name, ..rest] ->
+      parse_doctor_args(
+        rest,
+        doctor.Options(..options, checks: list.append(options.checks, [name])),
+      )
+    [arg, ..rest] ->
+      case string.starts_with(arg, "-") {
+        True -> Error(UsageError)
+        False ->
+          case options.path {
+            Some(_) -> Error(UsageError)
+            None ->
+              parse_doctor_args(
+                rest,
+                doctor.Options(..options, path: Some(arg)),
+              )
+          }
+      }
+  }
+}
+
 pub fn usage() -> String {
-  "Usage: gleam run -- [mode] [path-to-scherzo.yaml]\n       gleam run -- ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  --once                   Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke           Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --linear-contract-check  Compare workflow state/label policy to the Linear project board; read-only.\n  --pi-probe               Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                      Inspect a running daemon through the local read-only control API.\n  --help, -h               Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace.hooks that create or verify each step workspace.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT may still terminate abruptly in this runtime phase, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
+  "Usage: gleam run -- [mode] [path-to-scherzo.yaml]\n       gleam run -- doctor [options] [path-to-scherzo.yaml]\n       gleam run -- ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, linear-contract, linear-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke          Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --linear-contract-check Compare workflow state/label policy to the Linear project board; read-only.\n  --pi-probe              Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                     Inspect a running daemon through the local read-only control API.\n  --help, -h              Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace.hooks that create or verify each step workspace.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT may still terminate abruptly in this runtime phase, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
 }
 
 pub fn main() -> Nil {
@@ -67,6 +104,27 @@ pub fn main() -> Nil {
             ctl.UsageError(_) -> halt(2)
             _ -> halt(1)
           }
+        }
+      }
+    Ok(Doctor(options)) ->
+      case service.start_doctor(options) {
+        Ok(Nil) -> Nil
+        Error(err) -> {
+          case options.output {
+            doctor.Human ->
+              case err.code == "doctor_failed" {
+                True -> Nil
+                False -> io.println_error("Error: " <> err.message)
+              }
+            doctor.Logfmt ->
+              io.println_error(
+                log.error("startup_failed", [
+                  #("code", err.code),
+                  #("message", err.message),
+                ]),
+              )
+          }
+          halt(1)
         }
       }
     Ok(Run(mode, path)) ->
