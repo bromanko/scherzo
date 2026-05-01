@@ -635,7 +635,7 @@ fn is_fatal_result(
   result: StepExecutionResult,
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
 ) -> Bool {
-  case result.artifact.status == "success" {
+  case step_artifact.succeeded(result.artifact.status) {
     True -> False
     False ->
       case dict.get(failure_policies, result.step_id) {

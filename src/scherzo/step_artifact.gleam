@@ -8,10 +8,15 @@ import scherzo/log
 import scherzo/template
 import scherzo/workflow_dag
 
+pub type StepStatus {
+  StepSucceeded
+  StepFailed
+}
+
 pub type StepArtifact {
   StepArtifact(
     step_id: String,
-    status: String,
+    status: StepStatus,
     final_response: Option(String),
     exit_code: Option(Int),
     stdout: String,
@@ -22,6 +27,27 @@ pub type StepArtifact {
     stderr_truncated: Bool,
     summary_text: String,
   )
+}
+
+pub fn status_to_string(status: StepStatus) -> String {
+  case status {
+    StepSucceeded -> "success"
+    StepFailed -> "failure"
+  }
+}
+
+pub fn status_from_exit(exit_code: Int, timed_out: Bool) -> StepStatus {
+  case exit_code == 0 && !timed_out {
+    True -> StepSucceeded
+    False -> StepFailed
+  }
+}
+
+pub fn succeeded(status: StepStatus) -> Bool {
+  case status {
+    StepSucceeded -> True
+    StepFailed -> False
+  }
 }
 
 pub fn from_agent_success(
@@ -39,7 +65,7 @@ pub fn from_agent_success(
   let summary = step_id <> " success agent"
   StepArtifact(
     step_id: step_id,
-    status: "success",
+    status: StepSucceeded,
     final_response: final_response,
     exit_code: None,
     stdout: "",
@@ -99,14 +125,12 @@ pub fn from_command_result_with_truncation(
       limits.command_stream_max_chars,
       stderr_already_truncated,
     )
-  let status = case exit_code == 0 && !timed_out {
-    True -> "success"
-    False -> "failure"
-  }
+  let status = status_from_exit(exit_code, timed_out)
+  let status_text = status_to_string(status)
   let summary =
     step_id
     <> " "
-    <> status
+    <> status_text
     <> " command exit_code="
     <> int_to_string(exit_code)
     <> case timed_out {
@@ -179,7 +203,7 @@ fn artifact_locals(
 ) -> List(#(String, template.Value)) {
   let prefix = "steps." <> step_id <> "."
   [
-    #(prefix <> "status", template.VString(artifact.status)),
+    #(prefix <> "status", template.VString(status_to_string(artifact.status))),
     #(prefix <> "final_response", option_string_value(artifact.final_response)),
     #(prefix <> "exit_code", option_int_value(artifact.exit_code)),
     #(prefix <> "stdout", template.VString(artifact.stdout)),

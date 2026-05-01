@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/agent/pi_rpc
 import scherzo/agent/probe
 import scherzo/agent/worker_command
@@ -15,6 +16,7 @@ import scherzo/session/event as session_event
 import scherzo/session/redaction
 import scherzo/template
 import scherzo/tracker
+import scherzo/tracker/state as issue_state
 import scherzo/workspace
 
 const max_tool_text_chars = 4096
@@ -49,7 +51,7 @@ pub type WorkerFailure {
 
 pub type PiUpdate {
   PiUpdate(
-    event: String,
+    event: pi_event.PiEvent,
     message: Option(String),
     raw_json: Option(session_event.RedactedRawJson),
     turn: Option(Int),
@@ -182,7 +184,7 @@ pub fn run_prompt_in_workspace(
 ) -> Result(WorkerSuccess, WorkerFailure) {
   case config.pi.compatibility_probe {
     True -> {
-      emit_update(issue.id, lifecycle_update("probe_started"))
+      emit_update(issue.id, lifecycle_update(pi_event.ProbeStarted))
       case
         probe.probe(
           config.pi.command,
@@ -195,7 +197,7 @@ pub fn run_prompt_in_workspace(
           Error(worker_failure(error.ProbeFailed(err), Some(workspace_path)))
         }
         Ok(Nil) -> {
-          emit_update(issue.id, lifecycle_update("probe_finished"))
+          emit_update(issue.id, lifecycle_update(pi_event.ProbeFinished))
           run_pi_loop(
             issue,
             prompt,
@@ -242,7 +244,7 @@ fn run_prepared(
     Ok(prompt) ->
       case config.pi.compatibility_probe {
         True -> {
-          emit_update(issue.id, lifecycle_update("probe_started"))
+          emit_update(issue.id, lifecycle_update(pi_event.ProbeStarted))
           case
             probe.probe(
               config.pi.command,
@@ -255,7 +257,7 @@ fn run_prepared(
               Error(worker_failure(error.ProbeFailed(err), Some(prepared.path)))
             }
             Ok(Nil) -> {
-              emit_update(issue.id, lifecycle_update("probe_finished"))
+              emit_update(issue.id, lifecycle_update(pi_event.ProbeFinished))
               run_pi_loop(
                 issue,
                 prompt,
@@ -378,7 +380,7 @@ fn loop_turns(
               emit_update(
                 issue.id,
                 lifecycle_update_with_message(
-                  "operator_prompt_sent",
+                  pi_event.OperatorPromptSent,
                   Some(redact_operator_message(
                     prompt,
                     config_module.resolved_secrets(config),
@@ -493,7 +495,7 @@ fn finish_after_turn(
       )
     Ok(#(session, turn_tokens)) -> {
       let totals = add_tokens(prior_totals, turn_tokens)
-      emit_update(issue.id, token_update("turn_finished", turn, totals))
+      emit_update(issue.id, token_update(pi_event.TurnFinished, turn, totals))
       case tracker_client.fetch_issue_states_by_ids([issue.id]) {
         Error(err) -> {
           let _ = pi_rpc.terminate(session)
@@ -1091,10 +1093,11 @@ fn handle_turn_record(
   workspace_path: String,
 ) -> Result(ActiveTurn, WorkerFailure) {
   let secrets = config_module.resolved_secrets(config)
+  let event = pi_event.from_string(record.type_)
   emit_update(issue_id, update_from_record(record, turn, secrets))
   let turn_records = list.append(turn_records, [record])
-  case record.type_ {
-    "agent_end" ->
+  case event {
+    pi_event.AgentEnd ->
       case pending_ui {
         None ->
           Ok(ActiveTurn(session, prompt_queue, stop_after_turn, turn_records))
@@ -1113,7 +1116,7 @@ fn handle_turn_record(
             None,
           ))
       }
-    "extension_ui_request" ->
+    pi_event.ExtensionUiRequest ->
       handle_extension_ui_record(
         session,
         record,
@@ -1309,7 +1312,7 @@ fn handle_blocking_ui_policy(
           emit_update(
             issue_id,
             lifecycle_update_with_request(
-              "extension_ui_response",
+              pi_event.ExtensionUiResponse,
               Some("cancelled"),
               request_id,
               method,
@@ -1500,7 +1503,7 @@ fn handle_ui_response_command(
                   emit_update(
                     issue_id,
                     lifecycle_update_with_request(
-                      "extension_ui_response",
+                      pi_event.ExtensionUiResponse,
                       Some("operator response sent"),
                       request_id,
                       ui.method,
@@ -1570,7 +1573,7 @@ fn handle_operator_ui_timeout(
       emit_update(
         issue_id,
         lifecycle_update_with_request(
-          "operator_ui_timeout",
+          pi_event.OperatorUiTimeout,
           Some("operator UI request timed out"),
           ui.request_id,
           ui.method,
@@ -1580,7 +1583,7 @@ fn handle_operator_ui_timeout(
       emit_update(
         issue_id,
         lifecycle_update_with_request(
-          "extension_ui_response",
+          pi_event.ExtensionUiResponse,
           Some("cancelled"),
           ui.request_id,
           ui.method,
@@ -1627,14 +1630,14 @@ fn handle_abort_command(
         config_module.resolved_secrets(config),
         emit_update,
       )
-      emit_update(issue_id, lifecycle_update("pi_abort_sent"))
+      emit_update(issue_id, lifecycle_update(pi_event.PiAbortSent))
       process.send(reply, worker_command.Applied(Some("abort sent")))
     }
     Error(err) -> {
       emit_update(
         issue_id,
         lifecycle_update_with_message(
-          "pi_abort_failed",
+          pi_event.PiAbortFailed,
           Some(error.pi_rpc_code(err)),
         ),
       )
@@ -1785,7 +1788,7 @@ fn emit_operator_prompt_queued(
   emit_update(
     issue_id,
     lifecycle_update_with_message(
-      "operator_prompt_queued",
+      pi_event.OperatorPromptQueued,
       Some(redact_operator_message(
         message,
         config_module.resolved_secrets(config),
@@ -1806,7 +1809,7 @@ fn emit_dropped_prompts(
       emit_update(
         issue_id,
         lifecycle_update_with_message(
-          "operator_prompt_dropped",
+          pi_event.OperatorPromptDropped,
           Some(redact_operator_message(message, secrets)),
         ),
       )
@@ -1864,12 +1867,12 @@ fn try_active(
   }
 }
 
-fn lifecycle_update(name: String) -> PiUpdate {
+fn lifecycle_update(name: pi_event.PiEvent) -> PiUpdate {
   lifecycle_update_with_message(name, None)
 }
 
 fn lifecycle_update_with_message(
-  name: String,
+  name: pi_event.PiEvent,
   message: Option(String),
 ) -> PiUpdate {
   PiUpdate(
@@ -1889,7 +1892,7 @@ fn lifecycle_update_with_message(
 }
 
 fn lifecycle_update_with_request(
-  name: String,
+  name: pi_event.PiEvent,
   message: Option(String),
   request_id: String,
   method: String,
@@ -1913,7 +1916,7 @@ fn lifecycle_update_with_request(
 
 fn pi_session_started_update(pi_session_id: Option(String)) -> PiUpdate {
   PiUpdate(
-    event: "pi_session_started",
+    event: pi_event.PiSessionStarted,
     message: None,
     raw_json: None,
     turn: None,
@@ -1928,7 +1931,11 @@ fn pi_session_started_update(pi_session_id: Option(String)) -> PiUpdate {
   )
 }
 
-fn token_update(name: String, turn: Int, tokens: domain.TokenTotals) -> PiUpdate {
+fn token_update(
+  name: pi_event.PiEvent,
+  turn: Int,
+  tokens: domain.TokenTotals,
+) -> PiUpdate {
   PiUpdate(
     event: name,
     message: None,
@@ -1950,12 +1957,13 @@ fn update_from_record(
   turn: Int,
   secrets: List(String),
 ) -> PiUpdate {
-  let message = case record.type_ {
-    "extension_ui_request" -> record.message
+  let event = pi_event.from_string(record.type_)
+  let message = case event {
+    pi_event.ExtensionUiRequest -> record.message
     _ -> record.delta
   }
   PiUpdate(
-    event: record.type_,
+    event: event,
     message: redact_message(message, secrets),
     raw_json: Some(redaction.redact_raw_json(record.raw_json, secrets)),
     turn: Some(turn),
@@ -2002,7 +2010,7 @@ fn normalize_tool_text(
 
 fn classify(
   config: domain.EffectiveConfig,
-  state: String,
+  state: issue_state.IssueState,
 ) -> FinalClassification {
   case contains(config.tracker.terminal_states, state) {
     True -> FinalTerminal
@@ -2014,12 +2022,11 @@ fn classify(
   }
 }
 
-fn contains(states: List(String), state: String) -> Bool {
-  list.any(states, fn(s) { string_lower(s) == string_lower(state) })
-}
-
-fn string_lower(value: String) -> String {
-  value |> string.trim |> string.lowercase
+fn contains(
+  states: List(issue_state.IssueState),
+  state: issue_state.IssueState,
+) -> Bool {
+  list.any(states, fn(s) { issue_state.equals_normalized(s, state) })
 }
 
 fn add_tokens(

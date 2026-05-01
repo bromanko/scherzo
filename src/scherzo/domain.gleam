@@ -1,12 +1,15 @@
 import birl.{type Time}
 import gleam/dict.{type Dict}
 import gleam/option.{type Option}
+import scherzo/orchestrator/reason
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 
 pub type BlockerRef {
   BlockerRef(
     id: Option(String),
     identifier: Option(String),
-    state: Option(String),
+    state: Option(issue_state.IssueState),
   )
 }
 
@@ -17,7 +20,7 @@ pub type Issue {
     title: String,
     description: Option(String),
     priority: Option(Int),
-    state: String,
+    state: issue_state.IssueState,
     branch_name: Option(String),
     url: Option(String),
     labels: List(String),
@@ -29,12 +32,12 @@ pub type Issue {
 
 pub type TrackerConfig {
   TrackerConfig(
-    kind: String,
+    kind: tracker_kind.TrackerKind,
     endpoint: String,
     api_key: Option(String),
     project_slug: Option(String),
-    active_states: List(String),
-    terminal_states: List(String),
+    active_states: List(issue_state.IssueState),
+    terminal_states: List(issue_state.IssueState),
   )
 }
 
@@ -70,7 +73,7 @@ pub type AgentConfig {
     max_retry_backoff_ms: Int,
     max_retry_attempts: Int,
     max_sessions_per_issue: Int,
-    max_concurrent_agents_by_state: Dict(String, Int),
+    max_concurrent_agents_by_state: Dict(issue_state.IssueStateKey, Int),
   )
 }
 
@@ -227,7 +230,7 @@ pub type LiveSession {
 }
 
 pub type RetryEntry {
-  RetryEntry(issue_id: String, due_at_ms: Int, timer_generation: Int)
+  RetryEntry(issue_id: String, delay_ms: Int, timer_generation: Int)
 }
 
 pub type RunningEntry {
@@ -255,7 +258,7 @@ pub type ParkedEntry {
   ParkedEntry(
     issue_id: String,
     identifier: String,
-    reason: String,
+    reason: reason.ParkReason,
     release_policy: ParkReleasePolicy,
     parked_at_ms: Int,
   )

@@ -9,6 +9,8 @@ import scherzo/domain
 import scherzo/error
 import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_run
 import scherzo/workspace_run
@@ -24,7 +26,7 @@ fn issue() -> domain.Issue {
     title: "Implement DAGs",
     description: None,
     priority: None,
-    state: "Todo",
+    state: issue_state.from_string_unchecked("Todo"),
     branch_name: None,
     url: None,
     labels: ["workflow:implementation"],
@@ -37,12 +39,12 @@ fn issue() -> domain.Issue {
 fn effective() -> domain.EffectiveConfig {
   domain.EffectiveConfig(
     tracker: domain.TrackerConfig(
-      kind: "linear",
+      kind: tracker_kind.LinearTracker,
       endpoint: "https://api.linear.app/graphql",
       api_key: Some("test-key"),
       project_slug: Some("TEST"),
-      active_states: ["Todo"],
-      terminal_states: ["Done"],
+      active_states: issue_state.list_from_strings(["Todo"]),
+      terminal_states: issue_state.list_from_strings(["Done"]),
     ),
     polling: config.default_polling_config(),
     workspace: domain.WorkspaceConfig(root: "test/tmp/workflow-run/workspaces"),

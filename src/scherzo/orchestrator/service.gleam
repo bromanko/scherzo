@@ -15,10 +15,12 @@ import scherzo/linear_contract
 import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/runtime_bundle
 import scherzo/signal
 import scherzo/smoke
 import scherzo/tracker
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_run
 import scherzo/workspace
@@ -695,7 +697,7 @@ fn doctor_issue() -> domain.Issue {
     title: "Scherzo doctor",
     description: None,
     priority: None,
-    state: "",
+    state: issue_state.from_string_unchecked(""),
     branch_name: None,
     url: None,
     labels: [],
@@ -1151,7 +1153,7 @@ fn run_pi_probe_orchestrator(
       title: "Scherzo probe",
       description: None,
       priority: None,
-      state: "",
+      state: issue_state.from_string_unchecked(""),
       branch_name: None,
       url: None,
       labels: [],
@@ -1514,7 +1516,7 @@ fn interpret_effect(
         #("issue_id", issue_id),
         #("delay_ms", int_to_string(delay_ms)),
         #("generation", int_to_string(generation)),
-        #("reason", reason),
+        #("reason", orchestrator_reason.retry_to_string(reason)),
       ])
     core.CancelRetry(issue_id) ->
       log.info("retry_cancelled", [#("issue_id", issue_id)])
@@ -1523,10 +1525,13 @@ fn interpret_effect(
     core.StopWorker(issue_id, reason) ->
       log.warn("worker_stop_requested", [
         #("issue_id", issue_id),
-        #("reason", reason),
+        #("reason", orchestrator_reason.stop_to_string(reason)),
       ])
     core.ParkIssue(issue_id, reason) ->
-      log.warn("issue_parked", [#("issue_id", issue_id), #("reason", reason)])
+      log.warn("issue_parked", [
+        #("issue_id", issue_id),
+        #("reason", orchestrator_reason.park_to_string(reason)),
+      ])
   }
 }
 

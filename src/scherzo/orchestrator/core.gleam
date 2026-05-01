@@ -5,6 +5,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
 import gleam/string
 import scherzo/domain
+import scherzo/orchestrator/reason
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 
 const invalid_workflow_report_cache_limit = 1024
@@ -15,13 +17,13 @@ pub type Effect {
     issue_id: String,
     delay_ms: Int,
     generation: Int,
-    reason: String,
+    reason: reason.RetryReason,
   )
   CancelRetry(issue_id: String)
   CleanupWorkspace(path: String)
   ReleaseClaim(issue_id: String)
-  StopWorker(issue_id: String, reason: String)
-  ParkIssue(issue_id: String, reason: String)
+  StopWorker(issue_id: String, reason: reason.StopReason)
+  ParkIssue(issue_id: String, reason: reason.ParkReason)
 }
 
 pub type Transition {
@@ -76,7 +78,7 @@ pub fn issue_fingerprint(issue: domain.Issue) -> String {
     encode_string(issue.title),
     encode_optional_string(issue.description),
     encode_optional_int(issue.priority),
-    encode_string(issue.state),
+    encode_string(issue_state.to_string(issue.state)),
     encode_optional_string(issue.branch_name),
     blocker_fingerprint(issue.blocked_by),
   ]
@@ -94,6 +96,13 @@ fn encode_optional_string(value: Option(String)) -> String {
   }
 }
 
+fn encode_optional_issue_state(value: Option(issue_state.IssueState)) -> String {
+  case value {
+    None -> "none"
+    Some(value) -> "some:" <> encode_string(issue_state.to_string(value))
+  }
+}
+
 fn encode_optional_int(value: Option(Int)) -> String {
   case value {
     None -> "none"
@@ -107,7 +116,7 @@ fn blocker_fingerprint(blockers: List(domain.BlockerRef)) -> String {
     [
       encode_optional_string(blocker.id),
       encode_optional_string(blocker.identifier),
-      encode_optional_string(blocker.state),
+      encode_optional_issue_state(blocker.state),
     ]
     |> string.join(with: ",")
   })
@@ -155,11 +164,17 @@ pub fn workflow_policy_satisfied(
   |> workflow_policy.workflow_satisfied
 }
 
-pub fn is_active(config: domain.EffectiveConfig, state: String) -> Bool {
+pub fn is_active(
+  config: domain.EffectiveConfig,
+  state: issue_state.IssueState,
+) -> Bool {
   contains_normalized(config.tracker.active_states, state)
 }
 
-pub fn is_terminal(config: domain.EffectiveConfig, state: String) -> Bool {
+pub fn is_terminal(
+  config: domain.EffectiveConfig,
+  state: issue_state.IssueState,
+) -> Bool {
   contains_normalized(config.tracker.terminal_states, state)
 }
 
@@ -205,7 +220,7 @@ fn issue_has_required_fields(issue: domain.Issue) -> Bool {
   string.trim(issue.id) != ""
   && string.trim(issue.identifier) != ""
   && string.trim(issue.title) != ""
-  && string.trim(issue.state) != ""
+  && string.trim(issue_state.to_string(issue.state)) != ""
 }
 
 fn is_parked_for_issue(state: domain.RuntimeState, issue: domain.Issue) -> Bool {
@@ -225,22 +240,22 @@ fn park_blocks_dispatch(parked: domain.ParkedEntry, issue: domain.Issue) -> Bool
 fn slots_available(
   state: domain.RuntimeState,
   config: domain.EffectiveConfig,
-  issue_state: String,
+  issue_state_value: issue_state.IssueState,
 ) -> Bool {
   case config.agent.max_concurrent_agents == 0 {
     True -> False
     False ->
       dict.size(state.running) < config.agent.max_concurrent_agents
-      && per_state_slot_available(state, config, issue_state)
+      && per_state_slot_available(state, config, issue_state_value)
   }
 }
 
 fn per_state_slot_available(
   state: domain.RuntimeState,
   config: domain.EffectiveConfig,
-  issue_state: String,
+  issue_state_value: issue_state.IssueState,
 ) -> Bool {
-  let key = normalize(issue_state)
+  let key = issue_state.key(issue_state_value)
   case dict.get(config.agent.max_concurrent_agents_by_state, key) {
     Error(_) -> True
     Ok(limit) -> running_count_for_state(state, key) < limit
@@ -249,13 +264,13 @@ fn per_state_slot_available(
 
 fn running_count_for_state(
   state: domain.RuntimeState,
-  normalized_state: String,
+  normalized_state: issue_state.IssueStateKey,
 ) -> Int {
   state.running
   |> dict.to_list
   |> list.filter(fn(entry) {
     let #(_, running) = entry
-    normalize(running.issue.state) == normalized_state
+    issue_state.key(running.issue.state) == normalized_state
   })
   |> list.length
 }
@@ -264,7 +279,7 @@ fn blockers_satisfied(
   config: domain.EffectiveConfig,
   issue: domain.Issue,
 ) -> Bool {
-  case normalize(issue.state) == "todo" {
+  case issue_state.equals_key(issue.state, issue_state.todo_key()) {
     False -> True
     True ->
       issue.blocked_by
@@ -388,13 +403,13 @@ pub fn apply_worker_failure(
   let counter = domain.IssueCounter(..counter, failure_attempts: failures)
   let state = put_counter(state, issue_id, counter)
   case failures >= config.agent.max_retry_attempts {
-    True -> park(state, baseline_issue, "max_retry_attempts", now_ms)
+    True -> park(state, baseline_issue, reason.ParkMaxRetryAttempts, now_ms)
     False ->
       schedule_retry(
         state,
         issue_id,
         backoff_delay(failures, config.agent.max_retry_backoff_ms),
-        "failure",
+        reason.RetryAfterFailure,
       )
   }
 }
@@ -420,8 +435,9 @@ fn continue_or_park(
   let counter = domain.IssueCounter(..counter, worker_sessions: sessions)
   let state = put_counter(state, issue.id, counter)
   case sessions >= config.agent.max_sessions_per_issue {
-    True -> park(state, issue, "max_sessions_per_issue", now_ms)
-    False -> schedule_retry(state, issue.id, 1000, "continuation")
+    True -> park(state, issue, reason.ParkMaxSessionsPerIssue, now_ms)
+    False ->
+      schedule_retry(state, issue.id, 1000, reason.RetryAfterContinuation)
   }
 }
 
@@ -450,7 +466,7 @@ pub fn schedule_retry(
   state: domain.RuntimeState,
   issue_id: String,
   delay_ms: Int,
-  reason: String,
+  reason: reason.RetryReason,
 ) -> Transition {
   let generation = case dict.get(state.retry_attempts, issue_id) {
     Ok(entry) -> entry.timer_generation + 1
@@ -459,7 +475,7 @@ pub fn schedule_retry(
   let retry =
     domain.RetryEntry(
       issue_id: issue_id,
-      due_at_ms: delay_ms,
+      delay_ms: delay_ms,
       timer_generation: generation,
     )
   Transition(
@@ -481,7 +497,7 @@ pub fn handle_retry_candidate(
   candidate: Result(Option(domain.Issue), String),
 ) -> Transition {
   case candidate {
-    Error(_) -> schedule_retry(state, issue_id, 1000, "retry poll failed")
+    Error(_) -> schedule_retry(state, issue_id, 1000, reason.RetryPollFailed)
     Ok(None) ->
       Transition(
         state: release_claim(clear_retry(state, issue_id), issue_id),
@@ -497,13 +513,7 @@ pub fn handle_retry_candidate(
           Transition(state: clear_retry(state, issue_id), effects: [
             Dispatch(issue),
           ])
-        False ->
-          schedule_retry(
-            state,
-            issue_id,
-            1000,
-            "no available orchestrator slots",
-          )
+        False -> schedule_retry(state, issue_id, 1000, reason.RetryNoSlots)
       }
     }
   }
@@ -528,7 +538,7 @@ pub fn reconcile_issue(
               refreshed.id,
             ),
             effects: [
-              StopWorker(refreshed.id, "terminal"),
+              StopWorker(refreshed.id, reason.StopTerminal),
               ..cleanup_effects(entry.workspace_path)
             ],
           )
@@ -555,7 +565,7 @@ pub fn reconcile_issue(
                   ),
                   refreshed.id,
                 ),
-                effects: [StopWorker(refreshed.id, "non_active")],
+                effects: [StopWorker(refreshed.id, reason.StopNonActive)],
               )
           }
       }
@@ -618,7 +628,7 @@ pub fn add_tokens(
 fn park(
   state: domain.RuntimeState,
   baseline_issue: domain.Issue,
-  reason: String,
+  reason: reason.ParkReason,
   now_ms: Int,
 ) -> Transition {
   let issue_id = baseline_issue.id
@@ -817,12 +827,11 @@ fn put_counter(
   )
 }
 
-fn contains_normalized(states: List(String), state: String) -> Bool {
-  list.any(states, fn(s) { normalize(s) == normalize(state) })
-}
-
-fn normalize(value: String) -> String {
-  value |> string.trim |> string.lowercase
+fn contains_normalized(
+  states: List(issue_state.IssueState),
+  state: issue_state.IssueState,
+) -> Bool {
+  list.any(states, fn(s) { issue_state.equals_normalized(s, state) })
 }
 
 fn result_unwrap(result: Result(a, b), default: a) -> a {

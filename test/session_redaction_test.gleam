@@ -1,5 +1,6 @@
 import gleam/option.{Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/session/event
 import scherzo/session/json as session_json
 import scherzo/session/redaction
@@ -39,7 +40,10 @@ pub fn raw_json_redaction_keeps_multibyte_truncation_json_encodable_test() {
   assert redacted.truncated == True
   let payload =
     event.EventPayload(
-      ..event.empty_payload(event.PiRaw, "unknown_raw"),
+      ..event.empty_payload(
+        event.PiRaw,
+        event.PiName(pi_event.UnknownPiEvent("unknown_raw")),
+      ),
       raw_json: Some(redacted),
     )
   let encoded = session_json.payload_to_string(payload)

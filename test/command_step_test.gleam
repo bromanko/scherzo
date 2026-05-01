@@ -1,6 +1,7 @@
 import gleam/option.{Some}
 import scherzo/command_step
 import scherzo/domain
+import scherzo/step_artifact
 import simplifile
 
 fn limits() -> domain.ArtifactLimits {
@@ -29,7 +30,8 @@ pub fn command_step_captures_stdout_and_exit_zero_test() {
       [],
       limits(),
     )
-  assert artifact.status == "success"
+  assert artifact.status == step_artifact.StepSucceeded
+  assert step_artifact.status_to_string(artifact.status) == "success"
   assert artifact.exit_code == Some(0)
   assert artifact.stdout == "hello\nworld\n"
 }
@@ -46,7 +48,8 @@ pub fn command_step_captures_stderr_and_nonzero_exit_test() {
       [],
       limits(),
     )
-  assert artifact.status == "failure"
+  assert artifact.status == step_artifact.StepFailed
+  assert step_artifact.status_to_string(artifact.status) == "failure"
   assert artifact.exit_code == Some(7)
   assert artifact.stderr == "bad\n"
 }
@@ -55,7 +58,7 @@ pub fn command_step_timeout_returns_failed_artifact_test() {
   let dir = "test/tmp/command-step-timeout"
   reset_dir(dir)
   let artifact = command_step.run("slow", "sleep 1", dir, 10, [], limits())
-  assert artifact.status == "failure"
+  assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(124)
   assert artifact.timed_out == True
 }
@@ -88,7 +91,7 @@ pub fn command_step_caps_stdout_while_collecting_test() {
       [],
       limits(),
     )
-  assert artifact.status == "success"
+  assert artifact.status == step_artifact.StepSucceeded
   assert artifact.stdout_truncated == True
   assert artifact.stdout
     == "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."

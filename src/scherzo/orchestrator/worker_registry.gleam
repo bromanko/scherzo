@@ -5,6 +5,7 @@ import gleam/option.{type Option, Some}
 import gleam/string
 import scherzo/agent/worker_command
 import scherzo/domain
+import scherzo/session/reason as session_reason
 
 pub type WorkerHandle {
   WorkerHandle(
@@ -40,7 +41,7 @@ pub opaque type Registry {
     step_command_monitors: Dict(process.Monitor, String),
     step_command_subject_monitors: Dict(String, process.Monitor),
     yaml_step_runs: Dict(String, String),
-    stopped_yaml_runs: Dict(String, String),
+    stopped_yaml_runs: Dict(String, session_reason.WorkerExitReason),
     next_session_sequence: Int,
   )
 }
@@ -244,7 +245,7 @@ pub fn delete_yaml_step_sessions(
 pub fn mark_yaml_run_stopping(
   registry: Registry,
   run_id: String,
-  reason: String,
+  reason: session_reason.WorkerExitReason,
 ) -> Registry {
   Registry(
     ..registry,
@@ -255,7 +256,7 @@ pub fn mark_yaml_run_stopping(
 pub fn stopped_yaml_run_reason(
   registry: Registry,
   run_id: String,
-) -> Result(String, Nil) {
+) -> Result(session_reason.WorkerExitReason, Nil) {
   dict.get(registry.stopped_yaml_runs, run_id)
 }
 

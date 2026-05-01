@@ -12,6 +12,7 @@ import scherzo/orchestrator/service
 import scherzo/path
 import scherzo/runtime_bundle
 import scherzo/smoke
+import scherzo/tracker/state as issue_state
 import scherzo/workspace_run
 import simplifile
 
@@ -48,7 +49,7 @@ fn issue(id: String) -> domain.Issue {
     title: "Issue " <> id,
     description: None,
     priority: None,
-    state: "Todo",
+    state: issue_state.from_string_unchecked("Todo"),
     branch_name: None,
     url: None,
     labels: ["workflow:implementation"],

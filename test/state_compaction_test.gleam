@@ -128,7 +128,7 @@ fn initial_records() -> List(record.LedgerRecord) {
       record.RetryScheduled(
         issue_id: "issue-1",
         issue_identifier: "SCH-1",
-        due_at_ms: 10_000,
+        delay_ms: 10_000,
         generation: 2,
         reason: "backoff",
       ),

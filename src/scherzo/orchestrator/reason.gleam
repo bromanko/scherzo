@@ -1,0 +1,41 @@
+pub type RetryReason {
+  RetryAfterFailure
+  RetryAfterContinuation
+  RetryNoSlots
+  RetryPollFailed
+}
+
+pub type ParkReason {
+  ParkMaxRetryAttempts
+  ParkMaxSessionsPerIssue
+  ParkOperator(reason: String)
+}
+
+pub type StopReason {
+  StopTerminal
+  StopNonActive
+}
+
+pub fn retry_to_string(reason: RetryReason) -> String {
+  case reason {
+    RetryAfterFailure -> "failure"
+    RetryAfterContinuation -> "continuation"
+    RetryNoSlots -> "no available orchestrator slots"
+    RetryPollFailed -> "retry poll failed"
+  }
+}
+
+pub fn park_to_string(reason: ParkReason) -> String {
+  case reason {
+    ParkMaxRetryAttempts -> "max_retry_attempts"
+    ParkMaxSessionsPerIssue -> "max_sessions_per_issue"
+    ParkOperator(reason) -> reason
+  }
+}
+
+pub fn stop_to_string(reason: StopReason) -> String {
+  case reason {
+    StopTerminal -> "terminal"
+    StopNonActive -> "non_active"
+  }
+}

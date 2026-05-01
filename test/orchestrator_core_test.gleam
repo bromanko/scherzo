@@ -3,17 +3,26 @@ import gleam/dict
 import gleam/option.{type Option, None, Some}
 import scherzo/domain
 import scherzo/orchestrator/core
+import scherzo/orchestrator/reason
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 
 fn config() -> domain.EffectiveConfig {
   domain.EffectiveConfig(
     tracker: domain.TrackerConfig(
-      kind: "linear",
+      kind: tracker_kind.LinearTracker,
       endpoint: "endpoint",
       api_key: Some("key"),
       project_slug: Some("PROJ"),
-      active_states: ["Todo", "In Progress"],
-      terminal_states: ["Done", "Closed", "Canceled", "Cancelled", "Duplicate"],
+      active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+      terminal_states: issue_state.list_from_strings([
+        "Done",
+        "Closed",
+        "Canceled",
+        "Cancelled",
+        "Duplicate",
+      ]),
     ),
     polling: domain.PollingConfig(interval_ms: 30_000),
     workspace: domain.WorkspaceConfig(root: "test/tmp/workspaces"),
@@ -30,7 +39,9 @@ fn config() -> domain.EffectiveConfig {
       max_retry_backoff_ms: 40_000,
       max_retry_attempts: 3,
       max_sessions_per_issue: 2,
-      max_concurrent_agents_by_state: dict.from_list([#("todo", 1)]),
+      max_concurrent_agents_by_state: dict.from_list([
+        #(issue_state.key_from_string("todo"), 1),
+      ]),
     ),
     pi: domain.PiConfig(
       command: "fake",
@@ -100,7 +111,7 @@ fn issue(
     title: "Title " <> identifier,
     description: None,
     priority: priority,
-    state: state,
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: [],
@@ -121,12 +132,12 @@ fn rich_issue() -> domain.Issue {
       domain.BlockerRef(
         id: Some("block-1"),
         identifier: Some("ABC-0"),
-        state: Some("Todo"),
+        state: Some(issue_state.from_string_unchecked("Todo")),
       ),
       domain.BlockerRef(
         id: Some("block-2"),
         identifier: Some("ABC-00"),
-        state: Some("In Progress"),
+        state: Some(issue_state.from_string_unchecked("In Progress")),
       ),
     ],
     created_at: Some(birl.from_unix(1)),
@@ -134,7 +145,10 @@ fn rich_issue() -> domain.Issue {
   )
 }
 
-fn auto_parked_entry(issue: domain.Issue, reason: String) -> domain.ParkedEntry {
+fn auto_parked_entry(
+  issue: domain.Issue,
+  reason: reason.ParkReason,
+) -> domain.ParkedEntry {
   domain.ParkedEntry(
     issue_id: issue.id,
     identifier: issue.identifier,
@@ -146,7 +160,7 @@ fn auto_parked_entry(issue: domain.Issue, reason: String) -> domain.ParkedEntry 
 
 fn explicit_parked_entry(
   issue: domain.Issue,
-  reason: String,
+  reason: reason.ParkReason,
 ) -> domain.ParkedEntry {
   domain.ParkedEntry(
     issue_id: issue.id,
@@ -188,19 +202,22 @@ pub fn issue_fingerprint_changes_for_blockers_test() {
     domain.BlockerRef(
       id: Some("block-1"),
       identifier: Some("ABC-0"),
-      state: Some("Todo"),
+      state: Some(issue_state.from_string_unchecked("Todo")),
     )
   let second =
     domain.BlockerRef(
       id: Some("block-2"),
       identifier: Some("ABC-00"),
-      state: Some("In Progress"),
+      state: Some(issue_state.from_string_unchecked("In Progress")),
     )
   let base = domain.Issue(..rich_issue(), blocked_by: [first, second])
   let reordered = domain.Issue(..base, blocked_by: [second, first])
   let blocker_changed =
     domain.Issue(..base, blocked_by: [
-      domain.BlockerRef(..first, state: Some("Done")),
+      domain.BlockerRef(
+        ..first,
+        state: Some(issue_state.from_string_unchecked("Done")),
+      ),
       second,
     ])
 
@@ -222,7 +239,12 @@ pub fn issue_fingerprint_changes_for_core_fields_test() {
     != base_fingerprint
   assert core.issue_fingerprint(domain.Issue(..base, priority: Some(2)))
     != base_fingerprint
-  assert core.issue_fingerprint(domain.Issue(..base, state: "In Progress"))
+  assert core.issue_fingerprint(
+      domain.Issue(
+        ..base,
+        state: issue_state.from_string_unchecked("In Progress"),
+      ),
+    )
     != base_fingerprint
   assert core.issue_fingerprint(domain.Issue(..base, branch_name: Some("new")))
     != base_fingerprint
@@ -239,7 +261,7 @@ pub fn candidate_sorting_and_eligibility_test() {
   assert !core.should_dispatch(
     state,
     config(),
-    domain.Issue(..b, state: "Done"),
+    domain.Issue(..b, state: issue_state.from_string_unchecked("Done")),
   )
 }
 
@@ -271,7 +293,7 @@ pub fn dispatch_preconditions_skip_parked_before_workflow_reporting_test() {
     state_with_parked(
       core.new_state(enforcing_config()),
       issue,
-      explicit_parked_entry(issue, "operator_hold"),
+      explicit_parked_entry(issue, reason.ParkOperator("operator_hold")),
     )
   assert !core.dispatch_preconditions_satisfied(
     parked,
@@ -408,7 +430,7 @@ pub fn running_claimed_parked_and_slots_reject_dispatch_test() {
     state_with_parked(
       state,
       issue,
-      explicit_parked_entry(issue, "operator_hold"),
+      explicit_parked_entry(issue, reason.ParkOperator("operator_hold")),
     )
   assert !core.should_dispatch(parked, config(), issue)
 
@@ -431,14 +453,18 @@ pub fn per_state_slots_and_blockers_test() {
     domain.BlockerRef(
       id: Some("block"),
       identifier: Some("B-1"),
-      state: Some("Todo"),
+      state: Some(issue_state.from_string_unchecked("Todo")),
     )
   assert !core.should_dispatch(
     core.new_state(config()),
     config(),
     domain.Issue(..second, blocked_by: [blocker]),
   )
-  let done_blocker = domain.BlockerRef(..blocker, state: Some("Done"))
+  let done_blocker =
+    domain.BlockerRef(
+      ..blocker,
+      state: Some(issue_state.from_string_unchecked("Done")),
+    )
   assert core.should_dispatch(
     core.new_state(config()),
     config(),
@@ -448,7 +474,8 @@ pub fn per_state_slots_and_blockers_test() {
 
 pub fn worker_success_terminal_cleans_and_releases_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
-  let final = domain.Issue(..issue, state: "Done")
+  let final =
+    domain.Issue(..issue, state: issue_state.from_string_unchecked("Done"))
   let state =
     core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
   let core.Transition(state: next, effects:) =
@@ -513,7 +540,10 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
       100,
     )
   assert effects
-    == [core.CancelRetry("a"), core.ScheduleRetry("a", 1000, 1, "continuation")]
+    == [
+      core.CancelRetry("a"),
+      core.ScheduleRetry("a", 1000, 1, reason.RetryAfterContinuation),
+    ]
 
   let state2 = core.apply_worker_start(next, issue, "/tmp/ws")
   let core.Transition(state: parked, effects: park_effects) =
@@ -531,7 +561,10 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
   assert parked_entry.release_policy
     == domain.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
   assert park_effects
-    == [core.ParkIssue("a", "max_sessions_per_issue"), core.ReleaseClaim("a")]
+    == [
+      core.ParkIssue("a", reason.ParkMaxSessionsPerIssue),
+      core.ReleaseClaim("a"),
+    ]
 }
 
 pub fn worker_failure_backoff_and_retry_cap_test() {
@@ -545,7 +578,10 @@ pub fn worker_failure_backoff_and_retry_cap_test() {
   let core.Transition(state: one, effects: effects1) =
     core.apply_worker_failure(state, config(), "a", issue, 100)
   assert effects1
-    == [core.CancelRetry("a"), core.ScheduleRetry("a", 10_000, 1, "failure")]
+    == [
+      core.CancelRetry("a"),
+      core.ScheduleRetry("a", 10_000, 1, reason.RetryAfterFailure),
+    ]
   let state = core.apply_worker_start(one, issue, "/tmp/ws")
   let core.Transition(state: two, effects: _) =
     core.apply_worker_failure(state, config(), "a", issue, 200)
@@ -560,7 +596,10 @@ pub fn worker_failure_backoff_and_retry_cap_test() {
   assert parked_entry.release_policy
     != domain.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
   assert effects3
-    == [core.ParkIssue("a", "max_retry_attempts"), core.ReleaseClaim("a")]
+    == [
+      core.ParkIssue("a", reason.ParkMaxRetryAttempts),
+      core.ReleaseClaim("a"),
+    ]
 }
 
 pub fn worker_failure_uses_dispatched_issue_id_for_lifecycle_test() {
@@ -594,7 +633,10 @@ pub fn worker_failure_uses_dispatched_issue_id_for_lifecycle_test() {
   assert dict.has_key(parked.parked, "a")
   assert !dict.has_key(parked.parked, "different-id")
   assert effects
-    == [core.ParkIssue("a", "max_retry_attempts"), core.ReleaseClaim("a")]
+    == [
+      core.ParkIssue("a", reason.ParkMaxRetryAttempts),
+      core.ReleaseClaim("a"),
+    ]
 }
 
 pub fn retry_candidate_can_dispatch_self_claimed_issue_test() {
@@ -648,7 +690,7 @@ pub fn retry_timer_handling_test() {
   assert poll_failed
     == [
       core.CancelRetry("a"),
-      core.ScheduleRetry("a", 1000, 2, "retry poll failed"),
+      core.ScheduleRetry("a", 1000, 2, reason.RetryPollFailed),
     ]
 
   let core.Transition(effects: absent, state: released) =
@@ -663,7 +705,7 @@ pub fn explicit_park_blocks_even_when_issue_changes_test() {
     state_with_parked(
       core.new_state(config()),
       issue,
-      explicit_parked_entry(issue, "operator_abort"),
+      explicit_parked_entry(issue, reason.ParkOperator("operator_abort")),
     )
   let changed =
     domain.Issue(
@@ -684,7 +726,7 @@ pub fn auto_park_ignores_comment_and_non_core_changes_test() {
     state_with_parked(
       core.new_state(config()),
       issue,
-      auto_parked_entry(issue, "max_retry_attempts"),
+      auto_parked_entry(issue, reason.ParkMaxRetryAttempts),
     )
 
   let timestamp_changed =
@@ -704,19 +746,19 @@ pub fn auto_park_clears_on_blocker_change_test() {
     state_with_parked(
       core.new_state(config()),
       issue,
-      auto_parked_entry(issue, "max_retry_attempts"),
+      auto_parked_entry(issue, reason.ParkMaxRetryAttempts),
     )
   let blockers_satisfied =
     domain.Issue(..issue, blocked_by: [
       domain.BlockerRef(
         id: Some("block-1"),
         identifier: Some("ABC-0"),
-        state: Some("Done"),
+        state: Some(issue_state.from_string_unchecked("Done")),
       ),
       domain.BlockerRef(
         id: Some("block-2"),
         identifier: Some("ABC-00"),
-        state: Some("Closed"),
+        state: Some(issue_state.from_string_unchecked("Closed")),
       ),
     ])
 
@@ -750,7 +792,7 @@ pub fn auto_park_clears_on_core_issue_change_test() {
         ),
       ]),
       parked: dict.from_list([
-        #(issue.id, auto_parked_entry(issue, "max_retry_attempts")),
+        #(issue.id, auto_parked_entry(issue, reason.ParkMaxRetryAttempts)),
       ]),
     )
   let changed =
@@ -773,11 +815,15 @@ pub fn reconciliation_and_token_accounting_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let state =
     core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
-  let terminal = domain.Issue(..issue, state: "Done")
+  let terminal =
+    domain.Issue(..issue, state: issue_state.from_string_unchecked("Done"))
   let core.Transition(effects: effects, state: next) =
     core.reconcile_issue(state, config(), terminal)
   assert effects
-    == [core.StopWorker("a", "terminal"), core.CleanupWorkspace("/tmp/ws")]
+    == [
+      core.StopWorker("a", reason.StopTerminal),
+      core.CleanupWorkspace("/tmp/ws"),
+    ]
   assert !dict.has_key(next.running, "a")
 
   let totals =

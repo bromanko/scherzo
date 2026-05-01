@@ -34,7 +34,7 @@ pub type RunStatus {
 pub type RetryStatus {
   RetryScheduled(
     issue_identifier: String,
-    due_at_ms: Int,
+    delay_ms: Int,
     generation: Int,
     reason: String,
     scheduled_at_ms: Int,
@@ -174,7 +174,7 @@ pub fn apply(
     record.RetryScheduled(
       issue_id,
       issue_identifier,
-      due_at_ms,
+      delay_ms,
       generation,
       reason,
     ) ->
@@ -183,7 +183,7 @@ pub fn apply(
         retries: dict.insert(
           projection.retries,
           issue_id,
-          RetryScheduled(issue_identifier, due_at_ms, generation, reason, at_ms),
+          RetryScheduled(issue_identifier, delay_ms, generation, reason, at_ms),
         ),
       )
     record.RetryCancelled(issue_id, generation, reason) ->
@@ -394,7 +394,7 @@ fn retry_entry_to_json(entry: #(String, RetryStatus)) -> json.Json {
   case status {
     RetryScheduled(
       issue_identifier,
-      due_at_ms,
+      delay_ms,
       generation,
       reason,
       scheduled_at_ms,
@@ -403,7 +403,7 @@ fn retry_entry_to_json(entry: #(String, RetryStatus)) -> json.Json {
         #("issue_id", json.string(issue_id)),
         #("status", json.string("scheduled")),
         #("issue_identifier", json.string(issue_identifier)),
-        #("due_at_ms", json.int(due_at_ms)),
+        #("delay_ms", json.int(delay_ms)),
         #("generation", json.int(generation)),
         #("reason", json.string(reason)),
         #("scheduled_at_ms", json.int(scheduled_at_ms)),
@@ -601,7 +601,7 @@ fn retry_snapshot_decoder() -> decode.Decoder(RetrySnapshot) {
   case status {
     "scheduled" -> {
       use issue_identifier <- decode.field("issue_identifier", decode.string)
-      use due_at_ms <- decode.field("due_at_ms", decode.int)
+      use delay_ms <- decode.field("delay_ms", decode.int)
       use generation <- decode.field("generation", decode.int)
       use reason <- decode.field("reason", decode.string)
       use scheduled_at_ms <- decode.field("scheduled_at_ms", decode.int)
@@ -609,7 +609,7 @@ fn retry_snapshot_decoder() -> decode.Decoder(RetrySnapshot) {
         issue_id,
         RetryScheduled(
           issue_identifier,
-          due_at_ms,
+          delay_ms,
           generation,
           reason,
           scheduled_at_ms,

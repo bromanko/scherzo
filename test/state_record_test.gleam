@@ -49,7 +49,7 @@ pub fn encodes_and_decodes_retry_and_park_records_test() {
     record.RetryScheduled(
       issue_id: "issue-1",
       issue_identifier: "SCH-1",
-      due_at_ms: 10_000,
+      delay_ms: 10_000,
       generation: 2,
       reason: "backoff",
     ),
@@ -82,6 +82,13 @@ pub fn encodes_and_decodes_retry_and_park_records_test() {
       reason: "operator",
     ),
   ))
+}
+
+pub fn retry_scheduled_requires_delay_ms_test() {
+  let missing_delay_line =
+    "{\"schema_version\":1,\"record_id\":\"retry-missing-delay\",\"at_ms\":4000,\"kind\":\"retry_scheduled\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"generation\":2,\"reason\":\"backoff\"}"
+
+  let assert Error(_) = record.decode_string(missing_delay_line)
 }
 
 pub fn encodes_and_decodes_linear_command_records_test() {

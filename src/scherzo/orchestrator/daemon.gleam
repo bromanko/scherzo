@@ -5,6 +5,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/agent/worker_command
 import scherzo/config
@@ -23,14 +24,17 @@ import scherzo/orchestrator/core
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/poll_scheduler
+import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/hub
+import scherzo/session/reason as session_reason
 import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace
@@ -463,16 +467,16 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
       actor.continue(handle_yaml_step_started(state, session_id, run_id))
     YamlStepUpdate(session_id, update) -> {
       event_publisher.worker_update(state.event_hub, session_id, update)
-      case update.event {
-        "message_update" -> Nil
-        _ -> {
+      case pi_event.is_message_update(update.event) {
+        True -> Nil
+        False -> {
           let message = case update.message {
             Some(message) -> log.truncate(message, 200)
             None -> ""
           }
           log_state(state, "info", "pi_event", [
             #("session_id", session_id),
-            #("event_name", update.event),
+            #("event_name", pi_event.to_string(update.event)),
             #("message", message),
           ])
         }
@@ -493,7 +497,7 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
           state,
           operator_command,
           session_id,
-          "operator_abort",
+          session_reason.OperatorAbort,
         )
       process.send(reply, result)
       actor.continue(state)
@@ -557,18 +561,19 @@ fn handle_yaml_step_started(
 ) -> State {
   case worker_registry.stopped_yaml_run_reason(state.registry, run_id) {
     Ok(reason) -> {
+      let reason_text = session_reason.to_string(reason)
       hub.update_status(state.event_hub, session_id, session_event.Stopping)
       event_publisher.lifecycle(
         state.event_hub,
         session_id,
-        "operator_command",
-        Some(reason),
+        session_event.OperatorCommand,
+        Some(reason_text),
       )
       event_publisher.lifecycle(
         state.event_hub,
         session_id,
-        "worker_exited",
-        Some(reason),
+        session_event.WorkerExited,
+        Some(reason_text),
       )
       hub.finish_session(state.event_hub, session_id, reason)
       state
@@ -599,8 +604,9 @@ fn handle_yaml_step_finished(state: State, session_id: String) -> State {
 fn finish_yaml_step_sessions_for_run(
   state: State,
   run_id: String,
-  reason: String,
+  reason: session_reason.WorkerExitReason,
 ) -> State {
+  let reason_text = session_reason.to_string(reason)
   let session_ids =
     worker_registry.active_yaml_step_sessions_for_run(state.registry, run_id)
   list.each(session_ids, fn(session_id) {
@@ -608,14 +614,14 @@ fn finish_yaml_step_sessions_for_run(
     event_publisher.lifecycle(
       state.event_hub,
       session_id,
-      "operator_command",
-      Some(reason),
+      session_event.OperatorCommand,
+      Some(reason_text),
     )
     event_publisher.lifecycle(
       state.event_hub,
       session_id,
-      "worker_exited",
-      Some(reason),
+      session_event.WorkerExited,
+      Some(reason_text),
     )
     hub.finish_session(state.event_hub, session_id, reason)
   })
@@ -649,12 +655,16 @@ fn handle_registry_down_resolution(
       event_publisher.lifecycle(
         state.event_hub,
         handle.session_id,
-        "worker_down",
+        session_event.WorkerDown,
         None,
       )
       let failure =
         runner.WorkerFailure(
-          reason: error.PiFailed(error.PiProtocolError("worker_down")),
+          reason: error.PiFailed(
+            error.PiProtocolError(session_reason.to_string(
+              session_reason.WorkerDown,
+            )),
+          ),
           workspace_path: Some(handle.workspace_path),
           tokens: domain.zero_token_totals(),
           final_issue: None,
@@ -850,7 +860,12 @@ fn park_issue_for_operator(
           ),
         )
         False -> {
-          let state = park_issue_state(state, issue, reason)
+          let state =
+            park_issue_state(
+              state,
+              issue,
+              orchestrator_reason.ParkOperator(reason),
+            )
           #(state, command.applied(operator_command, Some("issue parked")))
         }
       }
@@ -1041,7 +1056,7 @@ fn abort_session_for_operator_sync(
             state,
             operator_command,
             session_id,
-            "operator_abort",
+            session_reason.OperatorAbort,
           )
         Some(subject) -> {
           let worker_reply = process.new_subject()
@@ -1064,7 +1079,7 @@ fn abort_session_for_operator_sync(
                 state,
                 operator_command,
                 session_id,
-                "operator_abort",
+                session_reason.OperatorAbort,
               )
           }
         }
@@ -1118,7 +1133,7 @@ fn stop_session_for_operator(
   state: State,
   operator_command: command.OperatorCommand,
   session_id: String,
-  reason: String,
+  reason: session_reason.WorkerExitReason,
 ) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
     Error(Nil) -> #(
@@ -1126,6 +1141,7 @@ fn stop_session_for_operator(
       command.not_found(operator_command, Some("session not found")),
     )
     Ok(handle) -> {
+      let reason_text = session_reason.to_string(reason)
       process.demonitor_process(handle.monitor)
       hub.update_status(
         state.event_hub,
@@ -1135,14 +1151,14 @@ fn stop_session_for_operator(
       event_publisher.lifecycle(
         state.event_hub,
         handle.session_id,
-        "operator_command",
-        Some(reason),
+        session_event.OperatorCommand,
+        Some(reason_text),
       )
       event_publisher.lifecycle(
         state.event_hub,
         handle.session_id,
-        "worker_exited",
-        Some(reason),
+        session_event.WorkerExited,
+        Some(reason_text),
       )
       hub.finish_session(state.event_hub, handle.session_id, reason)
       let state =
@@ -1162,8 +1178,11 @@ fn stop_session_for_operator(
         worker_registry.remove_worker_handle(state.registry, handle)
       let state =
         State(..state, registry: registry)
-        |> park_issue_state(handle.issue, reason)
-      #(state, command.applied(operator_command, Some(reason)))
+        |> park_issue_state(
+          handle.issue,
+          orchestrator_reason.ParkOperator(reason_text),
+        )
+      #(state, command.applied(operator_command, Some(reason_text)))
     }
   }
 }
@@ -1351,7 +1370,11 @@ fn worker_for_session(
   worker_registry.worker_for_session(state.registry, session_id)
 }
 
-fn park_issue_state(state: State, issue: domain.Issue, reason: String) -> State {
+fn park_issue_state(
+  state: State,
+  issue: domain.Issue,
+  reason: orchestrator_reason.ParkReason,
+) -> State {
   let parked =
     domain.ParkedEntry(
       issue_id: issue.id,
@@ -1370,9 +1393,10 @@ fn park_issue_state(state: State, issue: domain.Issue, reason: String) -> State 
       parked: dict.insert(state.runtime.parked, issue.id, parked),
     )
   let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue.id)
+  let reason_text = orchestrator_reason.park_to_string(reason)
   log_state(state, "warn", "issue_parked", [
     #("issue_id", issue.id),
-    #("reason", reason),
+    #("reason", reason_text),
   ])
   state
 }
@@ -2052,7 +2076,7 @@ fn handle_retry_candidate_with_slots(
           state.runtime,
           issue_id,
           1000,
-          "no available orchestrator slots",
+          orchestrator_reason.RetryNoSlots,
         )
       let state = State(..state, runtime: transition.state)
       apply_effects(state, transition.effects)
@@ -2098,8 +2122,11 @@ fn dispatch_slots_used(state: State) -> Int {
   active_run_count(state) + dict.size(state.pending_claims)
 }
 
-fn per_state_dispatch_slot_available(state: State, issue_state: String) -> Bool {
-  let key = normalize_state(issue_state)
+fn per_state_dispatch_slot_available(
+  state: State,
+  issue_state_value: issue_state.IssueState,
+) -> Bool {
+  let key = issue_state.key(issue_state_value)
   case
     dict.get(state.workflow.effective.agent.max_concurrent_agents_by_state, key)
   {
@@ -2108,30 +2135,35 @@ fn per_state_dispatch_slot_available(state: State, issue_state: String) -> Bool 
   }
 }
 
-fn dispatch_count_for_state(state: State, normalized_state: String) -> Int {
+fn dispatch_count_for_state(
+  state: State,
+  normalized_state: issue_state.IssueStateKey,
+) -> Int {
   running_count_for_state(state, normalized_state)
   + pending_claim_count_for_state(state, normalized_state)
 }
 
-fn running_count_for_state(state: State, normalized_state: String) -> Int {
+fn running_count_for_state(
+  state: State,
+  normalized_state: issue_state.IssueStateKey,
+) -> Int {
   state
   |> active_run_issues
-  |> list.filter(fn(issue) { normalize_state(issue.state) == normalized_state })
+  |> list.filter(fn(issue) { issue_state.key(issue.state) == normalized_state })
   |> list.length
 }
 
-fn pending_claim_count_for_state(state: State, normalized_state: String) -> Int {
+fn pending_claim_count_for_state(
+  state: State,
+  normalized_state: issue_state.IssueStateKey,
+) -> Int {
   state.pending_claims
   |> dict.to_list
   |> list.filter(fn(entry) {
     let #(_, pending) = entry
-    normalize_state(pending.issue.state) == normalized_state
+    issue_state.key(pending.issue.state) == normalized_state
   })
   |> list.length
-}
-
-fn normalize_state(value: String) -> String {
-  value |> string.trim |> string.lowercase
 }
 
 fn dispatch_issue(state: State, issue: domain.Issue) -> State {
@@ -2227,7 +2259,7 @@ fn retry_dispatch_later_if_needed(state: State, issue: domain.Issue) -> State {
           state.runtime,
           issue.id,
           1000,
-          "no available orchestrator slots",
+          orchestrator_reason.RetryNoSlots,
         )
       let state = State(..state, runtime: transition.state)
       apply_effects(state, transition.effects)
@@ -2263,7 +2295,7 @@ fn spawn_worker(
   event_publisher.lifecycle(
     state.event_hub,
     session_id,
-    "dispatch_started",
+    session_event.DispatchStarted,
     None,
   )
   log_state(state, "info", "dispatch_started", [
@@ -2296,7 +2328,12 @@ fn spawn_worker(
       process.send(subject, WorkerFinished(issue.id, run_id, result))
     })
   let monitor = process.monitor(pid)
-  event_publisher.lifecycle(state.event_hub, session_id, "worker_started", None)
+  event_publisher.lifecycle(
+    state.event_hub,
+    session_id,
+    session_event.WorkerStarted,
+    None,
+  )
   hub.update_status(state.event_hub, session_id, session_event.Running)
   let handle =
     worker_registry.WorkerHandle(
@@ -2447,7 +2484,7 @@ fn register_yaml_step_session(
     session_id,
     session_event.EventPayload(
       kind: session_event.Lifecycle,
-      name: "step_started",
+      name: session_event.LifecycleName(session_event.StepStarted),
       turn: None,
       pi_type: None,
       message: Some(step_id),
@@ -2496,9 +2533,9 @@ fn run_yaml_command_step(
       secrets,
       limits,
     )
-  let reason = case artifact.status == "success" {
-    True -> "normal"
-    False -> "failed"
+  let reason = case step_artifact.succeeded(artifact.status) {
+    True -> session_reason.Normal
+    False -> session_reason.Failed
   }
   hub.finish_session(event_hub, session_id, reason)
   process.send(daemon_subject, YamlStepFinished(session_id))
@@ -2542,7 +2579,7 @@ fn run_yaml_agent_step(
     session_id,
     session_event.EventPayload(
       kind: session_event.Lifecycle,
-      name: "step_started",
+      name: session_event.LifecycleName(session_event.StepStarted),
       turn: None,
       pi_type: None,
       message: Some(step_id),
@@ -2578,14 +2615,14 @@ fn run_yaml_agent_step(
   case result {
     Ok(success) -> {
       hub.update_tokens(event_hub, session_id, success.tokens)
-      hub.finish_session(event_hub, session_id, "normal")
+      hub.finish_session(event_hub, session_id, session_reason.Normal)
     }
     Error(failure) -> {
       case event_publisher.tokens_are_nonzero(failure.tokens) {
         True -> hub.update_tokens(event_hub, session_id, failure.tokens)
         False -> Nil
       }
-      hub.finish_session(event_hub, session_id, "failed")
+      hub.finish_session(event_hub, session_id, session_reason.Failed)
     }
   }
   process.send(daemon_subject, YamlStepFinished(session_id))
@@ -2632,16 +2669,16 @@ fn handle_worker_update(
       event_publisher.worker_update(state.event_hub, handle.session_id, update)
     Error(_) -> Nil
   }
-  case update.event {
-    "message_update" -> state
-    _ -> {
+  case pi_event.is_message_update(update.event) {
+    True -> state
+    False -> {
       let message = case update.message {
         Some(message) -> log.truncate(message, 200)
         None -> ""
       }
       log_state(state, "info", "pi_event", [
         #("issue_id", issue_id),
-        #("event_name", update.event),
+        #("event_name", pi_event.to_string(update.event)),
         #("message", message),
       ])
       state
@@ -2707,10 +2744,10 @@ fn finish_worker_success(
   event_publisher.lifecycle(
     state.event_hub,
     handle.session_id,
-    "worker_exited",
+    session_event.WorkerExited,
     Some("normal"),
   )
-  hub.finish_session(state.event_hub, handle.session_id, "normal")
+  hub.finish_session(state.event_hub, handle.session_id, session_reason.Normal)
   let final_issue = case success.final_issue {
     Some(issue) -> issue
     None -> handle.issue
@@ -2747,13 +2784,18 @@ fn finish_worker_failure(
 ) -> State {
   case failure.reason {
     error.OperatorAbort ->
-      finish_operator_worker_exit(state, handle, failure, "operator_abort")
+      finish_operator_worker_exit(
+        state,
+        handle,
+        failure,
+        session_reason.OperatorAbort,
+      )
     error.OperatorStopAfterCurrentTurn ->
       finish_operator_worker_exit(
         state,
         handle,
         failure,
-        "operator_stop_after_current_turn",
+        session_reason.OperatorStopAfterCurrentTurn,
       )
     _ -> {
       log_state(state, "warn", "worker_exited", [
@@ -2764,10 +2806,14 @@ fn finish_worker_failure(
       event_publisher.lifecycle(
         state.event_hub,
         handle.session_id,
-        "worker_exited",
+        session_event.WorkerExited,
         Some("failed"),
       )
-      hub.finish_session(state.event_hub, handle.session_id, "failed")
+      hub.finish_session(
+        state.event_hub,
+        handle.session_id,
+        session_reason.Failed,
+      )
       let baseline_issue = case failure.final_issue {
         Some(issue) ->
           case issue.id == handle.issue_id {
@@ -2805,12 +2851,13 @@ fn finish_operator_worker_exit(
   state: State,
   handle: worker_registry.WorkerHandle,
   failure: runner.WorkerFailure,
-  reason: String,
+  reason: session_reason.WorkerExitReason,
 ) -> State {
+  let reason_text = session_reason.to_string(reason)
   log_state(state, "warn", "worker_exited", [
     #("issue_id", handle.issue_id),
     #("run_id", handle.run_id),
-    #("reason", reason),
+    #("reason", reason_text),
   ])
   case event_publisher.tokens_are_nonzero(failure.tokens) {
     True ->
@@ -2820,8 +2867,8 @@ fn finish_operator_worker_exit(
   event_publisher.lifecycle(
     state.event_hub,
     handle.session_id,
-    "worker_exited",
-    Some(reason),
+    session_event.WorkerExited,
+    Some(reason_text),
   )
   hub.finish_session(state.event_hub, handle.session_id, reason)
   let final_issue = case failure.final_issue {
@@ -2846,7 +2893,10 @@ fn finish_operator_worker_exit(
       ),
     )
   State(..state, runtime: runtime)
-  |> park_issue_state(final_issue, reason)
+  |> park_issue_state(
+    final_issue,
+    orchestrator_reason.ParkOperator(reason_text),
+  )
 }
 
 fn handle_worker_down(state: State, down: process.Down) -> State {
@@ -3247,13 +3297,14 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
   case effect {
     core.Dispatch(issue) -> dispatch_issue(state, issue)
     core.ScheduleRetry(issue_id, delay_ms, generation, reason) -> {
+      let reason_text = orchestrator_reason.retry_to_string(reason)
       case worker_registry.issue_session(state.registry, issue_id) {
         Ok(session_id) ->
           event_publisher.lifecycle(
             state.event_hub,
             session_id,
-            "retry_scheduled",
-            Some(reason),
+            session_event.RetryScheduled,
+            Some(reason_text),
           )
         Error(_) -> Nil
       }
@@ -3261,7 +3312,7 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
         #("issue_id", issue_id),
         #("delay_ms", int.to_string(delay_ms)),
         #("generation", int.to_string(generation)),
-        #("reason", reason),
+        #("reason", reason_text),
       ])
       let timer =
         state.dependencies.send_after(
@@ -3296,6 +3347,7 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
       }
     }
     core.StopWorker(issue_id, reason) -> {
+      let reason_text = orchestrator_reason.stop_to_string(reason)
       case worker_registry.worker_for_issue(state.registry, issue_id) {
         Error(_) -> state
         Ok(handle) -> {
@@ -3307,21 +3359,25 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
           event_publisher.lifecycle(
             state.event_hub,
             handle.session_id,
-            "stop_requested",
-            Some(reason),
+            session_event.StopRequested,
+            Some(reason_text),
           )
           process.demonitor_process(handle.monitor)
           stop_worker(handle)
           event_publisher.lifecycle(
             state.event_hub,
             handle.session_id,
-            "worker_exited",
-            Some("stopped"),
+            session_event.WorkerExited,
+            Some(session_reason.to_string(session_reason.Stopped)),
           )
-          hub.finish_session(state.event_hub, handle.session_id, "stopped")
+          hub.finish_session(
+            state.event_hub,
+            handle.session_id,
+            session_reason.Stopped,
+          )
           log_state(state, "warn", "worker_stop_requested", [
             #("issue_id", issue_id),
-            #("reason", reason),
+            #("reason", reason_text),
           ])
           State(
             ..state,
@@ -3340,7 +3396,7 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
     core.ParkIssue(issue_id, reason) -> {
       log_state(state, "warn", "issue_parked", [
         #("issue_id", issue_id),
-        #("reason", reason),
+        #("reason", orchestrator_reason.park_to_string(reason)),
       ])
       state
     }

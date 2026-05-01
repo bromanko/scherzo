@@ -3,6 +3,7 @@ import gleam/option.{None, Some}
 import scherzo/domain
 import scherzo/session/event
 import scherzo/session/hub
+import scherzo/session/reason
 
 fn summary(session_id: String) -> event.SessionSummary {
   event.SessionSummary(
@@ -21,7 +22,8 @@ fn summary(session_id: String) -> event.SessionSummary {
 }
 
 fn payload(name: String) -> event.EventPayload {
-  event.empty_payload(event.Lifecycle, name)
+  let assert Ok(event_name) = event.name_from_string(name)
+  event.empty_payload(event.Lifecycle, event_name)
 }
 
 pub fn hub_registers_lists_and_finishes_session_test() {
@@ -35,9 +37,9 @@ pub fn hub_registers_lists_and_finishes_session_test() {
   let assert Ok(Some(running)) = hub.get_session(subject, "session-1", 1000)
   assert running.status == event.Running
 
-  hub.finish_session(subject, "session-1", "normal")
+  hub.finish_session(subject, "session-1", reason.Normal)
   let assert Ok(Some(finished)) = hub.get_session(subject, "session-1", 1000)
-  assert finished.status == event.Exited("normal")
+  assert finished.status == event.Exited(reason.Normal)
   hub.stop(subject)
 }
 

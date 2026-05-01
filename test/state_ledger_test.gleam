@@ -31,7 +31,7 @@ pub fn append_and_replay_records_test() {
   )) = dict.get(replayed.projection.runs, "run-1")
   let assert Ok(projection.RetryScheduled(
     issue_identifier: "SCH-1",
-    due_at_ms: 10_000,
+    delay_ms: 10_000,
     generation: 2,
     reason: "backoff",
     scheduled_at_ms: 2000,
@@ -245,7 +245,7 @@ fn retry_scheduled_record() -> record.LedgerRecord {
     record.RetryScheduled(
       issue_id: "issue-1",
       issue_identifier: "SCH-1",
-      due_at_ms: 10_000,
+      delay_ms: 10_000,
       generation: 2,
       reason: "backoff",
     ),

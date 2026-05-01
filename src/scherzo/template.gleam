@@ -3,6 +3,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/domain
 import scherzo/error
+import scherzo/tracker/state as issue_state
 
 pub type Value {
   VString(String)
@@ -385,7 +386,7 @@ fn eval_no_filter(
         "issue.title" -> Ok(VString(context.issue.title))
         "issue.description" -> Ok(option_to_value(context.issue.description))
         "issue.priority" -> Ok(option_int_to_value(context.issue.priority))
-        "issue.state" -> Ok(VString(context.issue.state))
+        "issue.state" -> Ok(VString(issue_state.to_string(context.issue.state)))
         "issue.branch_name" -> Ok(option_to_value(context.issue.branch_name))
         "issue.url" -> Ok(option_to_value(context.issue.url))
         "issue.labels" -> Ok(VList(list.map(context.issue.labels, VString)))

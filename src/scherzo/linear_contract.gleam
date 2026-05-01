@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/domain
+import scherzo/tracker/state as issue_state
 
 pub type RemoteBoard {
   RemoteBoard(
@@ -130,11 +131,13 @@ fn state_requirements(
 }
 
 fn state_requirements_from_list(
-  names: List(String),
+  names: List(issue_state.IssueState),
   source: String,
 ) -> List(StateRequirement) {
   names
-  |> list.map(fn(name) { StateRequirement(name: string.trim(name), source:) })
+  |> list.map(fn(name) {
+    StateRequirement(name: issue_state.to_string(name) |> string.trim, source:)
+  })
   |> list.filter(fn(req) { req.name != "" })
 }
 

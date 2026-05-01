@@ -12,6 +12,7 @@ import scherzo/orchestrator/service
 import scherzo/path
 import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
@@ -43,7 +44,7 @@ fn issue(state: String) -> domain.Issue {
     title: "Fix tests",
     description: Some("Broken"),
     priority: Some(1),
-    state: state,
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: [],

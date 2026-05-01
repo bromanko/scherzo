@@ -3,6 +3,7 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/agent/worker_command
 import scherzo/control/command
@@ -10,6 +11,8 @@ import scherzo/domain
 import scherzo/error
 import scherzo/path
 import scherzo/tracker
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 import simplifile
 
 fn reset_dir(dir: String) -> Nil {
@@ -30,7 +33,7 @@ fn issue(state: String) -> domain.Issue {
     title: "Worker controls",
     description: Some("Exercise command-aware loop"),
     priority: Some(1),
-    state: state,
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: [],
@@ -48,12 +51,12 @@ fn config(
 ) -> domain.EffectiveConfig {
   domain.EffectiveConfig(
     tracker: domain.TrackerConfig(
-      kind: "linear",
+      kind: tracker_kind.LinearTracker,
       endpoint: "endpoint",
       api_key: Some("key"),
       project_slug: Some("PROJ"),
-      active_states: ["Todo", "In Progress"],
-      terminal_states: ["Done"],
+      active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+      terminal_states: issue_state.list_from_strings(["Done"]),
     ),
     polling: domain.PollingConfig(interval_ms: 30_000),
     workspace: domain.WorkspaceConfig(root: root),
@@ -139,7 +142,7 @@ fn receive_update_named(
     False ->
       case process.receive(subject, within: 200) {
         Ok(update) ->
-          case update.event == name {
+          case pi_event.to_string(update.event) == name {
             True -> Ok(update)
             False -> receive_update_named(subject, name, attempts - 1)
           }

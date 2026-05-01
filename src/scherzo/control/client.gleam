@@ -271,7 +271,7 @@ pub fn compact_event_line(stored_event: event.SessionEvent) -> String {
   <> " "
   <> event.kind_to_string(stored_event.payload.kind)
   <> " "
-  <> stored_event.payload.name
+  <> event.name_to_string(stored_event.payload.name)
   <> compact_message(stored_event.payload.message)
 }
 

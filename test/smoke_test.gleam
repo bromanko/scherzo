@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import scherzo/domain
 import scherzo/smoke
+import scherzo/tracker/state as issue_state
 
 fn issue(id: String, identifier: String, state: String) -> domain.Issue {
   domain.Issue(
@@ -11,7 +12,7 @@ fn issue(id: String, identifier: String, state: String) -> domain.Issue {
     title: "Title " <> identifier,
     description: None,
     priority: None,
-    state: state,
+    state: issue_state.from_string_unchecked(state),
     branch_name: None,
     url: None,
     labels: [],
@@ -34,7 +35,8 @@ pub fn linear_smoke_counts_non_empty_samples_test() {
       },
     )
 
-  let assert Ok(result) = smoke.linear_read_smoke(reader, ["Done"])
+  let assert Ok(result) =
+    smoke.linear_read_smoke(reader, issue_state.list_from_strings(["Done"]))
   assert result.candidate_count == 1
   assert result.terminal_count == 1
   assert result.refreshed_count == 1
@@ -48,7 +50,8 @@ pub fn linear_smoke_succeeds_with_no_samples_test() {
       refresh_issue_states_by_ids: fn(_) { Ok([]) },
     )
 
-  let assert Ok(result) = smoke.linear_read_smoke(reader, ["Done"])
+  let assert Ok(result) =
+    smoke.linear_read_smoke(reader, issue_state.list_from_strings(["Done"]))
   assert result.candidate_count == 0
   assert result.terminal_count == 0
   assert result.refreshed_count == 0
@@ -72,7 +75,8 @@ pub fn linear_smoke_calls_each_sample_reader_once_test() {
       },
     )
 
-  let assert Ok(result) = smoke.linear_read_smoke(reader, ["Done"])
+  let assert Ok(result) =
+    smoke.linear_read_smoke(reader, issue_state.list_from_strings(["Done"]))
   assert result.refreshed_count == 0
   assert process.receive(subject, within: 20) == Ok("candidate")
   assert process.receive(subject, within: 20) == Ok("terminal")

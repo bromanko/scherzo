@@ -33,7 +33,8 @@ fn evt(cursor: Int, payload: event.EventPayload) -> event.SessionEvent {
 }
 
 fn payload(kind: event.EventKind, name: String) -> event.EventPayload {
-  event.empty_payload(kind, name)
+  let assert Ok(event_name) = event.name_from_string(name)
+  event.empty_payload(kind, event_name)
 }
 
 fn options() -> render.RenderOptions {

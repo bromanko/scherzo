@@ -4,6 +4,8 @@ import gleam/string
 import scherzo/config
 import scherzo/domain
 import scherzo/error
+import scherzo/tracker/kind as tracker_kind
+import scherzo/tracker/state as issue_state
 import yay
 
 fn env(name: String) -> Option(String) {
@@ -29,8 +31,10 @@ fn minimal_front() -> String {
 pub fn default_values_test() {
   let tracker = config.default_tracker_config()
   assert tracker.endpoint == "https://api.linear.app/graphql"
-  assert tracker.active_states == ["Todo", "In Progress"]
-  assert tracker.terminal_states
+  assert tracker.kind == tracker_kind.LinearTracker
+  assert issue_state.to_strings(tracker.active_states)
+    == ["Todo", "In Progress"]
+  assert issue_state.to_strings(tracker.terminal_states)
     == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
 
   let agent = config.default_agent_config()
@@ -173,8 +177,15 @@ pub fn hooks_and_agent_limit_validation_test() {
       env,
     )
   assert paused.agent.max_concurrent_agents == 0
-  assert dict.get(paused.agent.max_concurrent_agents_by_state, "todo") == Ok(2)
-  assert dict.get(paused.agent.max_concurrent_agents_by_state, "bad")
+  assert dict.get(
+      paused.agent.max_concurrent_agents_by_state,
+      issue_state.key_from_string("todo"),
+    )
+    == Ok(2)
+  assert dict.get(
+      paused.agent.max_concurrent_agents_by_state,
+      issue_state.key_from_string("bad"),
+    )
     == Error(Nil)
 
   let invalid_front = minimal_front() <> "agent:\n  max_concurrent_agents: -1\n"
@@ -206,6 +217,16 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
     )
   assert configured_operator_policy.pi.ui_request_policy == domain.Operator
   assert configured_operator_policy.pi.ui_request_timeout_ms == 1234
+
+  let cancel_policy =
+    minimal_front() <> "pi:\n  ui_request_policy: \" Cancel \"\n"
+  let assert Ok(configured_cancel_policy) =
+    config.resolve_with_env(
+      definition(cancel_policy),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert configured_cancel_policy.pi.ui_request_policy == domain.Cancel
 
   let explicit_timeout =
     minimal_front() <> "pi:\n  ui_request_timeout_ms: 1234\n"
@@ -437,12 +458,14 @@ pub fn linear_contract_rejects_invalid_values_test() {
   let missing_binding_target =
     minimal_front()
     <> "linear_contract:\n  required_states:\n    done: Done\n  handoff_state_bindings:\n    success: closed\n"
-  let assert Error(error.InvalidConfig(_)) =
+  let assert Error(error.InvalidConfig(missing_binding_message)) =
     config.resolve_with_env(
       definition(missing_binding_target),
       "test/tmp/scherzo.yaml",
       env,
     )
+  assert missing_binding_message
+    == "linear_contract.handoff_state_bindings.success references unknown required state: closed"
 
   let non_string_list_entry =
     minimal_front() <> "linear_contract:\n  workflow_labels: [bugfix, 123]\n"

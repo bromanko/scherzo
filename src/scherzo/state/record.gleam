@@ -31,7 +31,7 @@ pub type RecordBody {
   RetryScheduled(
     issue_id: String,
     issue_identifier: String,
-    due_at_ms: Int,
+    delay_ms: Int,
     generation: Int,
     reason: String,
   )
@@ -98,7 +98,7 @@ type RecordFields {
     token_total: Option(Int),
     turns: Option(Int),
     reason: Option(String),
-    due_at_ms: Option(Int),
+    delay_ms: Option(Int),
     generation: Option(Int),
     observed_updated_at_ms: Option(Int),
     comment_id: Option(String),
@@ -212,10 +212,10 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("issue_id", json.string(issue_id)),
       #("reason", json.string(reason)),
     ]
-    RetryScheduled(issue_id, issue_identifier, due_at_ms, generation, reason) -> [
+    RetryScheduled(issue_id, issue_identifier, delay_ms, generation, reason) -> [
       #("issue_id", json.string(issue_id)),
       #("issue_identifier", json.string(issue_identifier)),
-      #("due_at_ms", json.int(due_at_ms)),
+      #("delay_ms", json.int(delay_ms)),
       #("generation", json.int(generation)),
       #("reason", json.string(reason)),
     ]
@@ -332,13 +332,13 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         fields.issue_identifier,
         "issue_identifier",
       ))
-      use due_at_ms <- result.try(required_int(fields.due_at_ms, "due_at_ms"))
+      use delay_ms <- result.try(required_int(fields.delay_ms, "delay_ms"))
       use generation <- result.try(required_int(fields.generation, "generation"))
       use reason <- result.try(required_string(fields.reason, "reason"))
       Ok(RetryScheduled(
         issue_id,
         issue_identifier,
-        due_at_ms,
+        delay_ms,
         generation,
         reason,
       ))
@@ -504,8 +504,8 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
-  use due_at_ms <- decode.optional_field(
-    "due_at_ms",
+  use delay_ms <- decode.optional_field(
+    "delay_ms",
     None,
     decode.optional(decode.int),
   )
@@ -582,7 +582,7 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     token_total: token_total,
     turns: turns,
     reason: reason,
-    due_at_ms: due_at_ms,
+    delay_ms: delay_ms,
     generation: generation,
     observed_updated_at_ms: observed_updated_at_ms,
     comment_id: comment_id,

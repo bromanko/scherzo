@@ -4,6 +4,7 @@ import gleam/string
 import scherzo/config
 import scherzo/domain
 import scherzo/error
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workspace_run
 import simplifile
@@ -20,7 +21,7 @@ fn issue() -> domain.Issue {
     title: "Implement DAGs",
     description: None,
     priority: None,
-    state: "Todo",
+    state: issue_state.from_string_unchecked("Todo"),
     branch_name: None,
     url: None,
     labels: [],

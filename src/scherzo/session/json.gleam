@@ -2,6 +2,7 @@ import gleam/json
 import gleam/option.{type Option, None, Some}
 import scherzo/domain
 import scherzo/session/event
+import scherzo/session/reason
 
 pub fn summary_to_string(summary: event.SessionSummary) -> String {
   summary_to_json(summary) |> json.to_string
@@ -28,7 +29,7 @@ pub fn summary_to_json(summary: event.SessionSummary) -> json.Json {
     #("workspace_path", json.string(summary.workspace_path)),
     #("pi_session_id", optional_string(summary.pi_session_id)),
     #("status", json.string(event.status_to_string(summary.status))),
-    #("exit_reason", optional_string(event.exit_reason(summary.status))),
+    #("exit_reason", optional_exit_reason(event.exit_reason(summary.status))),
     #("current_turn", json.int(summary.current_turn)),
     #("started_at_ms", json.int(summary.started_at_ms)),
     #("last_event_at_ms", json.int(summary.last_event_at_ms)),
@@ -61,7 +62,7 @@ pub fn page_to_json(page: event.EventPage) -> json.Json {
 fn payload_entries(payload: event.EventPayload) -> List(#(String, json.Json)) {
   [
     #("kind", json.string(event.kind_to_string(payload.kind))),
-    #("name", json.string(payload.name)),
+    #("name", json.string(event.name_to_string(payload.name))),
     #("turn", optional_int(payload.turn)),
     #("pi_type", optional_string(payload.pi_type)),
     #("message", optional_string(payload.message)),
@@ -89,6 +90,13 @@ fn tokens_to_json(tokens: domain.TokenTotals) -> json.Json {
 fn optional_string(value: Option(String)) -> json.Json {
   case value {
     Some(value) -> json.string(value)
+    None -> json.null()
+  }
+}
+
+fn optional_exit_reason(value: Option(reason.WorkerExitReason)) -> json.Json {
+  case value {
+    Some(value) -> json.string(reason.to_string(value))
     None -> json.null()
   }
 }

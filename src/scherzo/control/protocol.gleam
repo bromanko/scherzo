@@ -4,10 +4,12 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/control/command
 import scherzo/domain
 import scherzo/session/event
 import scherzo/session/json as session_json
+import scherzo/session/reason as session_reason
 
 pub const version = 1
 
@@ -848,19 +850,39 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
   use started_at_ms <- decode.field("started_at_ms", decode.int)
   use last_event_at_ms <- decode.field("last_event_at_ms", decode.int)
   use token_totals <- decode.field("tokens", token_totals_decoder())
-  decode.success(event.SessionSummary(
-    session_id: session_id,
-    issue_id: issue_id,
-    issue_identifier: issue_identifier,
-    issue_title: issue_title,
-    workspace_path: workspace_path,
-    pi_session_id: pi_session_id,
-    status: status_from_string(status_name, exit_reason),
-    current_turn: current_turn,
-    started_at_ms: started_at_ms,
-    last_event_at_ms: last_event_at_ms,
-    token_totals: token_totals,
-  ))
+  case status_from_string(status_name, exit_reason) {
+    Ok(status) ->
+      decode.success(event.SessionSummary(
+        session_id: session_id,
+        issue_id: issue_id,
+        issue_identifier: issue_identifier,
+        issue_title: issue_title,
+        workspace_path: workspace_path,
+        pi_session_id: pi_session_id,
+        status: status,
+        current_turn: current_turn,
+        started_at_ms: started_at_ms,
+        last_event_at_ms: last_event_at_ms,
+        token_totals: token_totals,
+      ))
+    Error(_) ->
+      decode.failure(
+        event.SessionSummary(
+          session_id: session_id,
+          issue_id: issue_id,
+          issue_identifier: issue_identifier,
+          issue_title: issue_title,
+          workspace_path: workspace_path,
+          pi_session_id: pi_session_id,
+          status: event.Exited(session_reason.Failed),
+          current_turn: current_turn,
+          started_at_ms: started_at_ms,
+          last_event_at_ms: last_event_at_ms,
+          token_totals: token_totals,
+        ),
+        expected: "SessionSummary",
+      )
+  }
 }
 
 fn event_page_decoder() -> decode.Decoder(event.EventPage) {
@@ -896,7 +918,7 @@ fn session_event_decoder() -> decode.Decoder(event.SessionEvent) {
 
 fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
   use kind <- decode.field("kind", event_kind_decoder())
-  use name <- decode.field("name", decode.string)
+  use name_string <- decode.field("name", decode.string)
   use turn <- decode.optional_field("turn", None, decode.optional(decode.int))
   use pi_type <- decode.optional_field(
     "pi_type",
@@ -950,7 +972,7 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
   )
   decode.success(event.EventPayload(
     kind: kind,
-    name: name,
+    name: event_name_decoder(kind, name_string),
     turn: turn,
     pi_type: pi_type,
     message: message,
@@ -963,6 +985,20 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
     tokens: tokens,
     raw_json: raw_json,
   ))
+}
+
+fn event_name_decoder(
+  kind: event.EventKind,
+  name_string: String,
+) -> event.EventName {
+  case kind {
+    event.Lifecycle ->
+      case event.lifecycle_name_from_string(name_string) {
+        Some(name) -> event.LifecycleName(name)
+        None -> event.PiName(pi_event.UnknownPiEvent(name_string))
+      }
+    _ -> event.PiName(pi_event.from_string(name_string))
+  }
 }
 
 fn token_totals_decoder() -> decode.Decoder(domain.TokenTotals) {
@@ -1009,19 +1045,23 @@ fn kind_from_string(name: String) -> event.EventKind {
 fn status_from_string(
   name: String,
   exit_reason: Option(String),
-) -> event.SessionStatus {
+) -> Result(event.SessionStatus, Nil) {
   case name {
-    "preparing" -> event.Preparing
-    "probing" -> event.Probing
-    "running" -> event.Running
-    "waiting_ui" -> event.WaitingUi
-    "stopping" -> event.Stopping
+    "preparing" -> Ok(event.Preparing)
+    "probing" -> Ok(event.Probing)
+    "running" -> Ok(event.Running)
+    "waiting_ui" -> Ok(event.WaitingUi)
+    "stopping" -> Ok(event.Stopping)
     "exited" ->
       case exit_reason {
-        Some(reason) -> event.Exited(reason)
-        None -> event.Exited("unknown")
+        Some(reason) ->
+          case session_reason.from_string(reason) {
+            Ok(reason) -> Ok(event.Exited(reason))
+            Error(_) -> Ok(event.Exited(session_reason.Failed))
+          }
+        None -> Error(Nil)
       }
-    _ -> event.Exited("unknown_status:" <> name)
+    _ -> Error(Nil)
   }
 }
 

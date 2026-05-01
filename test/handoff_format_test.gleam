@@ -4,6 +4,7 @@ import gleam/string
 import scherzo/agent/runner
 import scherzo/domain
 import scherzo/handoff_format
+import scherzo/tracker/state as issue_state
 
 fn issue() -> domain.Issue {
   domain.Issue(
@@ -12,7 +13,7 @@ fn issue() -> domain.Issue {
     title: "Title",
     description: None,
     priority: None,
-    state: "Todo",
+    state: issue_state.from_string_unchecked("Todo"),
     branch_name: None,
     url: None,
     labels: [],
@@ -24,7 +25,9 @@ fn issue() -> domain.Issue {
 
 fn success(result: domain.ResultArtifact) -> runner.WorkerSuccess {
   runner.WorkerSuccess(
-    final_issue: Some(domain.Issue(..issue(), state: "Done")),
+    final_issue: Some(
+      domain.Issue(..issue(), state: issue_state.from_string_unchecked("Done")),
+    ),
     final_classification: runner.FinalTerminal,
     workspace_path: "workspace",
     tokens: domain.TokenTotals(
