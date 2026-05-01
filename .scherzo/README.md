@@ -22,12 +22,34 @@ The checked-in workflow expects:
 
 ```sh
 export LINEAR_API_KEY=lin_api_...
-export LINEAR_PROJECT_SLUG=<linear-project-slug>
 # Optional. Defaults to the repository root inferred from .scherzo/scherzo.yaml.
 export SCHERZO_REPO_ROOT=$(pwd)
 ```
 
-`LINEAR_PROJECT_SLUG` works because Scherzo resolves single-value `$ENV_VAR` references in `tracker.project_slug`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository, but setting it makes the jj workspace hook independent of the current directory layout.
+The checked-in `tracker.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository, but setting it makes the jj workspace hook independent of the current directory layout.
+
+## Linear project contract
+
+`linear_contract.enabled: true` makes Scherzo fail readiness checks if the Linear project drifts from this checked-in dogfood contract. The project must expose these states for every associated Linear team:
+
+- `Todo`
+- `In Progress`
+- `Done`
+- `Canceled`
+- `Duplicate`
+- `Needs Workflow`
+
+The project must also make these issue labels assignable:
+
+- `workflow:research`
+- `needs-workflow`
+- `needs-clarification`
+
+Run the contract check after changing workflow labels, states, or team membership:
+
+```sh
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check linear-contract .scherzo/scherzo.yaml
+```
 
 ## First dogfood workflow
 
@@ -37,7 +59,7 @@ Use the research workflow for the first supervised run:
 direnv exec . gleam run -- --linear-smoke .scherzo/scherzo.yaml
 direnv exec . gleam run -- --linear-contract-check .scherzo/scherzo.yaml
 direnv exec . gleam run -- --pi-probe .scherzo/scherzo.yaml
-LINEAR_API_KEY=$LINEAR_API_KEY LINEAR_PROJECT_SLUG=$LINEAR_PROJECT_SLUG SCHERZO_REPO_ROOT=$(pwd) \
+LINEAR_API_KEY=$LINEAR_API_KEY SCHERZO_REPO_ROOT=$(pwd) \
   direnv exec . gleam run -- .scherzo/scherzo.yaml
 ```
 

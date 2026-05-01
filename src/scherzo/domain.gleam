@@ -98,6 +98,8 @@ pub type HandoffConfig {
     success_state_id: Option(String),
     failure_state_id: Option(String),
     include_result_on_success: Bool,
+    attach_result_on_success: Bool,
+    attachment_fallback_to_markdown_link: Bool,
     result_max_chars: Int,
   )
 }

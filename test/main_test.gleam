@@ -15,6 +15,23 @@ pub fn parse_args_default_explicit_and_help_test() {
     == Ok(main.Run(main.LinearContractCheck, Some("scherzo.yaml")))
   assert main.parse_args(["--pi-probe", "scherzo.yaml"])
     == Ok(main.Run(main.PiProbe, Some("scherzo.yaml")))
+  assert main.parse_args([
+      "--linear-attach-comment-file",
+      "comment-id",
+      "result.md",
+    ])
+    == Ok(main.LinearAttachCommentFile("comment-id", "result.md", None))
+  assert main.parse_args([
+      "--linear-attach-comment-file",
+      "comment-id",
+      "result.md",
+      "scherzo.yaml",
+    ])
+    == Ok(main.LinearAttachCommentFile(
+      "comment-id",
+      "result.md",
+      Some("scherzo.yaml"),
+    ))
   assert main.parse_args(["--help"]) == Ok(main.Help)
   assert main.parse_args(["ctl", "ps"]) == Ok(main.Control(["ps"]))
   assert main.parse_args(["ctl", "events", "ABC-123"])
@@ -56,6 +73,16 @@ pub fn parse_args_rejects_usage_errors_test() {
   assert main.parse_args(["doctor", "--check"]) == Error(main.UsageError)
   assert main.parse_args(["doctor", "one.yaml", "two.yaml"])
     == Error(main.UsageError)
+  assert main.parse_args(["--linear-attach-comment-file", "comment-id"])
+    == Error(main.UsageError)
+  assert main.parse_args([
+      "--linear-attach-comment-file",
+      "comment-id",
+      "result.md",
+      "one.yaml",
+      "two.yaml",
+    ])
+    == Error(main.UsageError)
 }
 
 pub fn usage_mentions_required_operational_constraints_test() {
@@ -77,6 +104,9 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "--once")
   assert string.contains(usage, "--linear-smoke")
   assert string.contains(usage, "--linear-contract-check")
+  assert string.contains(usage, "--linear-attach-comment-file")
+  assert string.contains(usage, "<comment-id> <file.md>")
+  assert string.contains(usage, "mutates Linear")
   assert string.contains(usage, "--pi-probe")
   assert string.contains(usage, "ctl ps")
   assert string.contains(usage, "ctl attach --raw")

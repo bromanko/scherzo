@@ -3,7 +3,7 @@ tracker:
   kind: linear
   endpoint: https://api.linear.app/graphql
   api_key: "$LINEAR_API_KEY"
-  project_slug: "$LINEAR_PROJECT_SLUG"
+  project_slug: scherzo-f6f4bc92d6d7
   active_states: [Todo, In Progress]
   terminal_states: [Canceled, Duplicate, Done]
 polling:
@@ -73,7 +73,7 @@ artifact_limits:
   template_field_max_chars: 8000
   workflow_summary_max_chars: 20000
 linear_contract:
-  enabled: false
+  enabled: true
   workflow_label_prefix: "workflow:"
   workflow_labels: [research]
   support_labels: [needs-workflow, needs-clarification]
