@@ -3,6 +3,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
 import scherzo/error
+import scherzo/model_config
 import yay
 
 fn env(name: String) -> Option(String) {
@@ -67,6 +68,50 @@ pub fn orchestrator_config_resolves_routing_and_dag_hooks_test() {
   assert orchestrator.artifact_limits.command_stream_max_chars == 111
   assert orchestrator.artifact_limits.template_field_max_chars == 222
   assert orchestrator.artifact_limits.workflow_summary_max_chars == 333
+  assert orchestrator.model_settings == model_config.default_settings()
+}
+
+pub fn orchestrator_config_parses_project_model_defaults_test() {
+  let source =
+    base_config(
+      "pi:\n  model: github-copilot/gpt-5.1-codex\n  thinking: high\n",
+    )
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert orchestrator.model_settings.model
+    == Some("github-copilot/gpt-5.1-codex")
+  assert orchestrator.model_settings.thinking == Some(model_config.ThinkingHigh)
+}
+
+pub fn orchestrator_config_rejects_invalid_project_model_defaults_test() {
+  let invalid_thinking = base_config("pi:\n  thinking: extreme\n")
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_orchestrator_root(
+      root(invalid_thinking),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+
+  let invalid_model = base_config("pi:\n  model: \"sonnet:high\"\n")
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_orchestrator_root(
+      root(invalid_model),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+
+  let separate_provider =
+    base_config("pi:\n  provider: openai\n  model: gpt-5\n")
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_orchestrator_root(
+      root(separate_provider),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
 }
 
 pub fn orchestrator_config_validates_default_workflow_test() {

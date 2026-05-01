@@ -7,6 +7,7 @@ import scherzo/agent/worker_command
 import scherzo/command_step
 import scherzo/domain
 import scherzo/error
+import scherzo/model_config
 import scherzo/process_ext
 import scherzo/step_artifact
 import scherzo/template
@@ -1045,13 +1046,14 @@ fn run_step(
           None,
           0,
         )
-        Ok(prompt) ->
+        Ok(prompt) -> {
+          let effective = effective_for_step(orchestrator, step)
           case
             dependencies.agent_step(
               issue,
               step.id,
               prompt,
-              orchestrator.effective,
+              effective,
               tracker_client,
               workspace.path,
               fn(_) { Nil },
@@ -1084,9 +1086,24 @@ fn run_step(
               0,
             )
           }
+        }
       }
     }
   }
+}
+
+fn effective_for_step(
+  orchestrator: domain.OrchestratorConfig,
+  step: workflow_dag.WorkflowStep,
+) -> domain.EffectiveConfig {
+  let settings =
+    model_config.resolve(orchestrator.model_settings, step.model_settings)
+  let command =
+    model_config.apply_to_command(orchestrator.effective.pi.command, settings)
+  domain.EffectiveConfig(
+    ..orchestrator.effective,
+    pi: domain.PiConfig(..orchestrator.effective.pi, command: command),
+  )
 }
 
 fn mark_all_running(

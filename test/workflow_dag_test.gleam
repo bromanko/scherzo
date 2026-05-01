@@ -1,4 +1,5 @@
 import gleam/option.{None, Some}
+import scherzo/model_config
 import scherzo/workflow_dag
 
 fn parse_ok(source: String) -> workflow_dag.WorkflowDag {
@@ -24,9 +25,39 @@ pub fn parses_minimal_workflow_dag_test() {
   assert step.depends_on == []
   assert step.workspace == workflow_dag.WorkspaceRef(name: "main", from: None)
   assert step.on_failure == workflow_dag.FailWorkflow
+  assert step.model_settings == model_config.default_settings()
   let assert workflow_dag.AgentStep(workflow_dag.PromptFile(
     "prompts/research.md",
   )) = step.kind
+}
+
+pub fn parses_per_step_model_settings_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n    model: github-copilot/gpt-5.1-codex\n    thinking: xhigh\n",
+    )
+  let assert [step] = dag.steps
+  assert step.model_settings.model == Some("github-copilot/gpt-5.1-codex")
+  assert step.model_settings.thinking == Some(model_config.ThinkingXHigh)
+}
+
+pub fn rejects_invalid_per_step_model_settings_test() {
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n    model: \"sonnet:high\"\n",
+    )
+    == "invalid_model"
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n    thinking: extreme\n",
+    )
+    == "invalid_thinking"
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n    provider: openai\n    model: gpt-5\n",
+    )
+    == "unsupported_provider_field"
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: test\n    kind: command\n    run: gleam test\n    thinking: high\n",
+    )
+    == "model_settings_on_command_step"
 }
 
 pub fn rejects_duplicate_step_ids_test() {

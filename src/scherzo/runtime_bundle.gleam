@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/config
 import scherzo/domain
 import scherzo/error
+import scherzo/model_config
 import scherzo/path
 import scherzo/workflow_dag
 import simplifile
@@ -133,6 +134,10 @@ fn load_orchestrator(
     dict.to_list(orchestrator.routing.workflows),
     dict.new(),
   ))
+  use _ <- result_try(validate_workflow_model_settings(
+    orchestrator.model_settings,
+    dict.to_list(workflows),
+  ))
   Ok(RuntimeBundle(
     config_path: selected,
     config_contents: content,
@@ -201,6 +206,56 @@ fn resolve_step_prompts(
           resolve_step_prompts(rest, workflow_path, [step, ..acc])
         }
         _ -> resolve_step_prompts(rest, workflow_path, [step, ..acc])
+      }
+    }
+  }
+}
+
+fn validate_workflow_model_settings(
+  defaults: model_config.Settings,
+  workflows: List(#(String, workflow_dag.WorkflowDag)),
+) -> Result(Nil, BundleError) {
+  use _ <- result_try(
+    model_config.validate_resolved(defaults, "pi") |> map_model_error,
+  )
+  validate_workflow_model_entries(workflows, defaults)
+}
+
+fn validate_workflow_model_entries(
+  workflows: List(#(String, workflow_dag.WorkflowDag)),
+  defaults: model_config.Settings,
+) -> Result(Nil, BundleError) {
+  case workflows {
+    [] -> Ok(Nil)
+    [#(id, dag), ..rest] -> {
+      use _ <- result_try(validate_step_model_settings(id, dag.steps, defaults))
+      validate_workflow_model_entries(rest, defaults)
+    }
+  }
+}
+
+fn validate_step_model_settings(
+  workflow_id: String,
+  steps: List(workflow_dag.WorkflowStep),
+  defaults: model_config.Settings,
+) -> Result(Nil, BundleError) {
+  case steps {
+    [] -> Ok(Nil)
+    [step, ..rest] -> {
+      case step.kind {
+        workflow_dag.AgentStep(_) -> {
+          let resolved = model_config.resolve(defaults, step.model_settings)
+          use _ <- result_try(
+            model_config.validate_resolved(
+              resolved,
+              "workflow " <> workflow_id <> " step " <> step.id,
+            )
+            |> map_model_error,
+          )
+          validate_step_model_settings(workflow_id, rest, defaults)
+        }
+        workflow_dag.CommandStep(_, _) ->
+          validate_step_model_settings(workflow_id, rest, defaults)
       }
     }
   }
@@ -328,6 +383,19 @@ fn map_dag_error(
     Ok(value) -> Ok(value)
     Error(workflow_dag.DagError(code, message)) ->
       Error(BundleError(code, message))
+  }
+}
+
+fn map_model_error(
+  result: Result(a, model_config.ModelError),
+) -> Result(a, BundleError) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(err) ->
+      Error(BundleError(
+        model_config.error_code(err),
+        model_config.error_message(err),
+      ))
   }
 }
 

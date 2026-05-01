@@ -1,7 +1,12 @@
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option.{None, Some}
+import gleam/order.{type Order, Eq}
+import gleam/string
+import scherzo/domain
 import scherzo/state/record
 
 pub type Projection {
@@ -11,6 +16,8 @@ pub type Projection {
     parked_issues: Dict(String, ParkedIssue),
     commands: Dict(String, CommandStatus),
     outbox: Dict(String, OutboxStatus),
+    issue_counters: Dict(String, IssueCounterStatus),
+    known_workspaces: Dict(String, KnownWorkspace),
   )
 }
 
@@ -48,6 +55,27 @@ pub type ParkedIssue {
     reason: String,
     observed_updated_at_ms: Int,
     parked_at_ms: Int,
+    release_policy: String,
+    issue_fingerprint: String,
+  )
+}
+
+pub type IssueCounterStatus {
+  IssueCounterStatus(
+    issue_identifier: String,
+    failure_attempts: Int,
+    worker_sessions: Int,
+    observed_updated_at_ms: Int,
+    source_run_ids: List(String),
+    updated_at_ms: Int,
+  )
+}
+
+pub type KnownWorkspace {
+  KnownWorkspace(
+    issue_identifier: String,
+    workspace_path: String,
+    recorded_at_ms: Int,
   )
 }
 
@@ -76,6 +104,13 @@ pub type OutboxStatus {
     dedupe_key: String,
     pending_at_ms: Int,
   )
+  OutboxPendingV2(
+    issue_id: String,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+    pending_at_ms: Int,
+  )
   OutboxCompleted(issue_id: String, outbox_kind: String, completed_at_ms: Int)
   OutboxFailed(
     issue_id: String,
@@ -83,6 +118,20 @@ pub type OutboxStatus {
     error_code: String,
     failed_at_ms: Int,
   )
+}
+
+pub type OutboxReplay {
+  OutboxReplay(
+    outbox_id: String,
+    issue_id: String,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
+  )
+}
+
+pub type PendingOutboxError {
+  OutboxPayloadMissing(outbox_id: String)
 }
 
 type RunSnapshot {
@@ -105,6 +154,14 @@ type OutboxSnapshot {
   OutboxSnapshot(outbox_id: String, status: OutboxStatus)
 }
 
+type IssueCounterSnapshot {
+  IssueCounterSnapshot(issue_id: String, status: IssueCounterStatus)
+}
+
+type KnownWorkspaceSnapshot {
+  KnownWorkspaceSnapshot(issue_id: String, workspace: KnownWorkspace)
+}
+
 type SnapshotFields {
   SnapshotFields(
     runs: List(RunSnapshot),
@@ -112,6 +169,8 @@ type SnapshotFields {
     parked_issues: List(ParkedSnapshot),
     commands: List(CommandSnapshot),
     outbox: List(OutboxSnapshot),
+    issue_counters: List(IssueCounterSnapshot),
+    known_workspaces: List(KnownWorkspaceSnapshot),
   )
 }
 
@@ -122,6 +181,8 @@ pub fn new() -> Projection {
     parked_issues: dict.new(),
     commands: dict.new(),
     outbox: dict.new(),
+    issue_counters: dict.new(),
+    known_workspaces: dict.new(),
   )
 }
 
@@ -195,6 +256,47 @@ pub fn apply(
           RetryCancelled(generation, reason, at_ms),
         ),
       )
+    record.IssueCounterUpdated(
+      issue_id,
+      issue_identifier,
+      failure_attempts,
+      worker_sessions,
+      observed_updated_at_ms,
+      source_run_id,
+    ) -> {
+      let source_run_ids = case dict.get(projection.issue_counters, issue_id) {
+        Ok(existing) -> existing.source_run_ids
+        Error(_) -> []
+      }
+      let source_run_ids = case source_run_id {
+        Some(run_id) -> insert_unique_string(source_run_ids, run_id)
+        None -> source_run_ids
+      }
+      Projection(
+        ..projection,
+        issue_counters: dict.insert(
+          projection.issue_counters,
+          issue_id,
+          IssueCounterStatus(
+            issue_identifier,
+            failure_attempts,
+            worker_sessions,
+            observed_updated_at_ms,
+            source_run_ids,
+            at_ms,
+          ),
+        ),
+      )
+    }
+    record.KnownWorkspace(issue_id, issue_identifier, workspace_path) ->
+      Projection(
+        ..projection,
+        known_workspaces: dict.insert(
+          projection.known_workspaces,
+          issue_id,
+          KnownWorkspace(issue_identifier, workspace_path, at_ms),
+        ),
+      )
     record.IssueParked(
       issue_id,
       issue_identifier,
@@ -206,7 +308,37 @@ pub fn apply(
         parked_issues: dict.insert(
           projection.parked_issues,
           issue_id,
-          ParkedIssue(issue_identifier, reason, observed_updated_at_ms, at_ms),
+          ParkedIssue(
+            issue_identifier,
+            reason,
+            observed_updated_at_ms,
+            at_ms,
+            "explicit_unpark_only",
+            "",
+          ),
+        ),
+      )
+    record.IssueParkedV2(
+      issue_id,
+      issue_identifier,
+      reason,
+      release_policy,
+      issue_fingerprint,
+      observed_updated_at_ms,
+    ) ->
+      Projection(
+        ..projection,
+        parked_issues: dict.insert(
+          projection.parked_issues,
+          issue_id,
+          ParkedIssue(
+            issue_identifier,
+            reason,
+            observed_updated_at_ms,
+            at_ms,
+            release_policy,
+            issue_fingerprint,
+          ),
         ),
       )
     record.IssueUnparked(issue_id, _, _) ->
@@ -265,6 +397,27 @@ pub fn apply(
           OutboxPending(issue_id, outbox_kind, dedupe_key, at_ms),
         ),
       )
+    record.OutboxPendingV2(
+      outbox_id,
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+    ) ->
+      Projection(
+        ..projection,
+        outbox: dict.insert(
+          projection.outbox,
+          outbox_id,
+          OutboxPendingV2(
+            issue_id,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            at_ms,
+          ),
+        ),
+      )
     record.OutboxCompleted(outbox_id, issue_id, outbox_kind) ->
       Projection(
         ..projection,
@@ -284,6 +437,67 @@ pub fn apply(
         ),
       )
   }
+}
+
+pub fn known_issue_ids(projection: Projection) -> List(String) {
+  []
+  |> append_unique_strings(run_issue_ids(projection.runs))
+  |> append_unique_strings(dict.keys(projection.retries))
+  |> append_unique_strings(dict.keys(projection.parked_issues))
+  |> append_unique_strings(command_issue_ids(projection.commands))
+  |> append_unique_strings(outbox_issue_ids(projection.outbox))
+  |> append_unique_strings(dict.keys(projection.issue_counters))
+  |> append_unique_strings(dict.keys(projection.known_workspaces))
+}
+
+pub fn known_workspace_for_issue(
+  projection: Projection,
+  issue_id: String,
+) -> Result(String, Nil) {
+  case dict.get(projection.known_workspaces, issue_id) {
+    Ok(workspace) -> Ok(workspace.workspace_path)
+    Error(_) -> Error(Nil)
+  }
+}
+
+pub fn latest_counter(
+  projection: Projection,
+  issue_id: String,
+) -> domain.IssueCounter {
+  case dict.get(projection.issue_counters, issue_id) {
+    Ok(counter) ->
+      domain.IssueCounter(counter.failure_attempts, counter.worker_sessions)
+    Error(_) -> domain.new_issue_counter()
+  }
+}
+
+pub fn counter_has_source_run(
+  projection: Projection,
+  issue_id: String,
+  run_id: String,
+) -> Bool {
+  case dict.get(projection.issue_counters, issue_id) {
+    Ok(counter) -> list.contains(counter.source_run_ids, run_id)
+    Error(_) -> False
+  }
+}
+
+pub fn retry_due_at_ms(status: RetryStatus) -> Result(Int, Nil) {
+  case status {
+    RetryScheduled(_, delay_ms, _, _, scheduled_at_ms) ->
+      Ok(scheduled_at_ms + delay_ms)
+    RetryCancelled(_, _, _) -> Error(Nil)
+  }
+}
+
+pub fn pending_outbox_replays(
+  projection: Projection,
+) -> Result(List(OutboxReplay), PendingOutboxError) {
+  let entries =
+    projection.outbox
+    |> dict.to_list
+    |> list.sort(by: compare_outbox_entries_by_time)
+  pending_outbox_replays_loop(entries, [])
 }
 
 pub fn to_json(projection: Projection) -> json.Json {
@@ -309,6 +523,20 @@ pub fn to_json(projection: Projection) -> json.Json {
     #(
       "outbox",
       json.array(dict.to_list(projection.outbox), of: outbox_entry_to_json),
+    ),
+    #(
+      "issue_counters",
+      json.array(
+        dict.to_list(projection.issue_counters),
+        of: issue_counter_entry_to_json,
+      ),
+    ),
+    #(
+      "known_workspaces",
+      json.array(
+        dict.to_list(projection.known_workspaces),
+        of: known_workspace_entry_to_json,
+      ),
     ),
   ])
 }
@@ -349,6 +577,18 @@ pub fn decode_string(contents: String) -> Result(Projection, String) {
           |> list.map(fn(entry) {
             let OutboxSnapshot(outbox_id, status) = entry
             #(outbox_id, status)
+          })
+          |> dict.from_list,
+        issue_counters: fields.issue_counters
+          |> list.map(fn(entry) {
+            let IssueCounterSnapshot(issue_id, status) = entry
+            #(issue_id, status)
+          })
+          |> dict.from_list,
+        known_workspaces: fields.known_workspaces
+          |> list.map(fn(entry) {
+            let KnownWorkspaceSnapshot(issue_id, workspace) = entry
+            #(issue_id, workspace)
           })
           |> dict.from_list,
       ))
@@ -426,6 +666,8 @@ fn parked_entry_to_json(entry: #(String, ParkedIssue)) -> json.Json {
     reason,
     observed_updated_at_ms,
     parked_at_ms,
+    release_policy,
+    issue_fingerprint,
   ) = parked
   json.object([
     #("issue_id", json.string(issue_id)),
@@ -433,6 +675,8 @@ fn parked_entry_to_json(entry: #(String, ParkedIssue)) -> json.Json {
     #("reason", json.string(reason)),
     #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
     #("parked_at_ms", json.int(parked_at_ms)),
+    #("release_policy", json.string(release_policy)),
+    #("issue_fingerprint", json.string(issue_fingerprint)),
   ])
 }
 
@@ -488,6 +732,22 @@ fn outbox_entry_to_json(entry: #(String, OutboxStatus)) -> json.Json {
         #("dedupe_key", json.string(dedupe_key)),
         #("pending_at_ms", json.int(pending_at_ms)),
       ])
+    OutboxPendingV2(
+      issue_id,
+      outbox_kind,
+      dedupe_key,
+      payload_json,
+      pending_at_ms,
+    ) ->
+      json.object([
+        #("outbox_id", json.string(outbox_id)),
+        #("status", json.string("pending_v2")),
+        #("issue_id", json.string(issue_id)),
+        #("outbox_kind", json.string(outbox_kind)),
+        #("dedupe_key", json.string(dedupe_key)),
+        #("payload_json", json.string(payload_json)),
+        #("pending_at_ms", json.int(pending_at_ms)),
+      ])
     OutboxCompleted(issue_id, outbox_kind, completed_at_ms) ->
       json.object([
         #("outbox_id", json.string(outbox_id)),
@@ -506,6 +766,31 @@ fn outbox_entry_to_json(entry: #(String, OutboxStatus)) -> json.Json {
         #("failed_at_ms", json.int(failed_at_ms)),
       ])
   }
+}
+
+fn issue_counter_entry_to_json(
+  entry: #(String, IssueCounterStatus),
+) -> json.Json {
+  let #(issue_id, status) = entry
+  json.object([
+    #("issue_id", json.string(issue_id)),
+    #("issue_identifier", json.string(status.issue_identifier)),
+    #("failure_attempts", json.int(status.failure_attempts)),
+    #("worker_sessions", json.int(status.worker_sessions)),
+    #("observed_updated_at_ms", json.int(status.observed_updated_at_ms)),
+    #("source_run_ids", json.array(status.source_run_ids, of: json.string)),
+    #("updated_at_ms", json.int(status.updated_at_ms)),
+  ])
+}
+
+fn known_workspace_entry_to_json(entry: #(String, KnownWorkspace)) -> json.Json {
+  let #(issue_id, workspace) = entry
+  json.object([
+    #("issue_id", json.string(issue_id)),
+    #("issue_identifier", json.string(workspace.issue_identifier)),
+    #("workspace_path", json.string(workspace.workspace_path)),
+    #("recorded_at_ms", json.int(workspace.recorded_at_ms)),
+  ])
 }
 
 fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
@@ -528,6 +813,16 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     "outbox",
     decode.list(of: outbox_snapshot_decoder()),
   )
+  use issue_counters <- decode.optional_field(
+    "issue_counters",
+    [],
+    decode.list(of: issue_counter_snapshot_decoder()),
+  )
+  use known_workspaces <- decode.optional_field(
+    "known_workspaces",
+    [],
+    decode.list(of: known_workspace_snapshot_decoder()),
+  )
   case
     schema_version == record.schema_version && kind == "projection_snapshot"
   {
@@ -538,10 +833,12 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         parked_issues,
         commands,
         outbox,
+        issue_counters,
+        known_workspaces,
       ))
     False ->
       decode.failure(
-        SnapshotFields([], [], [], [], []),
+        SnapshotFields([], [], [], [], [], [], []),
         expected: "SnapshotFields",
       )
   }
@@ -642,9 +939,26 @@ fn parked_snapshot_decoder() -> decode.Decoder(ParkedSnapshot) {
     decode.int,
   )
   use parked_at_ms <- decode.field("parked_at_ms", decode.int)
+  use release_policy <- decode.optional_field(
+    "release_policy",
+    "explicit_unpark_only",
+    decode.string,
+  )
+  use issue_fingerprint <- decode.optional_field(
+    "issue_fingerprint",
+    "",
+    decode.string,
+  )
   decode.success(ParkedSnapshot(
     issue_id,
-    ParkedIssue(issue_identifier, reason, observed_updated_at_ms, parked_at_ms),
+    ParkedIssue(
+      issue_identifier,
+      reason,
+      observed_updated_at_ms,
+      parked_at_ms,
+      release_policy,
+      issue_fingerprint,
+    ),
   ))
 }
 
@@ -717,6 +1031,23 @@ fn outbox_snapshot_decoder() -> decode.Decoder(OutboxSnapshot) {
         OutboxPending(issue_id, outbox_kind, dedupe_key, pending_at_ms),
       ))
     }
+    "pending_v2" -> {
+      use issue_id <- decode.field("issue_id", decode.string)
+      use outbox_kind <- decode.field("outbox_kind", decode.string)
+      use dedupe_key <- decode.field("dedupe_key", decode.string)
+      use payload_json <- decode.field("payload_json", decode.string)
+      use pending_at_ms <- decode.field("pending_at_ms", decode.int)
+      decode.success(OutboxSnapshot(
+        outbox_id,
+        OutboxPendingV2(
+          issue_id,
+          outbox_kind,
+          dedupe_key,
+          payload_json,
+          pending_at_ms,
+        ),
+      ))
+    }
     "completed" -> {
       use issue_id <- decode.field("issue_id", decode.string)
       use outbox_kind <- decode.field("outbox_kind", decode.string)
@@ -741,5 +1072,175 @@ fn outbox_snapshot_decoder() -> decode.Decoder(OutboxSnapshot) {
         OutboxSnapshot("", OutboxFailed("", "", "", 0)),
         expected: "OutboxSnapshot",
       )
+  }
+}
+
+fn issue_counter_snapshot_decoder() -> decode.Decoder(IssueCounterSnapshot) {
+  use issue_id <- decode.field("issue_id", decode.string)
+  use issue_identifier <- decode.field("issue_identifier", decode.string)
+  use failure_attempts <- decode.field("failure_attempts", decode.int)
+  use worker_sessions <- decode.field("worker_sessions", decode.int)
+  use observed_updated_at_ms <- decode.field(
+    "observed_updated_at_ms",
+    decode.int,
+  )
+  use source_run_ids <- decode.optional_field(
+    "source_run_ids",
+    [],
+    decode.list(of: decode.string),
+  )
+  use updated_at_ms <- decode.field("updated_at_ms", decode.int)
+  decode.success(IssueCounterSnapshot(
+    issue_id,
+    IssueCounterStatus(
+      issue_identifier,
+      failure_attempts,
+      worker_sessions,
+      observed_updated_at_ms,
+      source_run_ids,
+      updated_at_ms,
+    ),
+  ))
+}
+
+fn known_workspace_snapshot_decoder() -> decode.Decoder(KnownWorkspaceSnapshot) {
+  use issue_id <- decode.field("issue_id", decode.string)
+  use issue_identifier <- decode.field("issue_identifier", decode.string)
+  use workspace_path <- decode.field("workspace_path", decode.string)
+  use recorded_at_ms <- decode.field("recorded_at_ms", decode.int)
+  decode.success(KnownWorkspaceSnapshot(
+    issue_id,
+    KnownWorkspace(issue_identifier, workspace_path, recorded_at_ms),
+  ))
+}
+
+fn run_issue_ids(runs: Dict(String, RunStatus)) -> List(String) {
+  runs
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(_, status) = entry
+    case status {
+      RunRunning(issue_id, _, _, _) -> issue_id
+      RunFinished(issue_id, _, _, _, _) -> issue_id
+      RunInterrupted(issue_id, _, _) -> issue_id
+    }
+  })
+}
+
+fn command_issue_ids(commands: Dict(String, CommandStatus)) -> List(String) {
+  commands
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(_, status) = entry
+    case status {
+      CommandSeen(issue_id, _, _, _, _) -> issue_id
+      CommandStarted(issue_id, _, _) -> issue_id
+      CommandCompleted(issue_id, _, _, _) -> issue_id
+      CommandAcked(issue_id, _) -> issue_id
+    }
+  })
+}
+
+fn outbox_issue_ids(outbox: Dict(String, OutboxStatus)) -> List(String) {
+  outbox
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(_, status) = entry
+    case status {
+      OutboxPending(issue_id, _, _, _) -> issue_id
+      OutboxPendingV2(issue_id, _, _, _, _) -> issue_id
+      OutboxCompleted(issue_id, _, _) -> issue_id
+      OutboxFailed(issue_id, _, _, _) -> issue_id
+    }
+  })
+}
+
+fn append_unique_strings(
+  values: List(String),
+  more: List(String),
+) -> List(String) {
+  list.fold(more, values, insert_unique_string)
+}
+
+fn insert_unique_string(values: List(String), value: String) -> List(String) {
+  case list.contains(values, value) {
+    True -> values
+    False -> [value, ..values]
+  }
+}
+
+fn pending_outbox_replays_loop(
+  entries: List(#(String, OutboxStatus)),
+  acc: List(OutboxReplay),
+) -> Result(List(OutboxReplay), PendingOutboxError) {
+  case entries {
+    [] -> Ok(list.reverse(acc))
+    [entry, ..rest] -> {
+      let #(outbox_id, status) = entry
+      case status {
+        OutboxPending(_, _, _, _) -> pending_outbox_replays_loop(rest, acc)
+        OutboxPendingV2(issue_id, outbox_kind, dedupe_key, payload_json, _) ->
+          pending_outbox_replays_loop(rest, [
+            OutboxReplay(
+              outbox_id,
+              issue_id,
+              outbox_kind,
+              dedupe_key,
+              payload_json,
+            ),
+            ..acc
+          ])
+        OutboxCompleted(_, _, _) | OutboxFailed(_, _, _, _) ->
+          pending_outbox_replays_loop(rest, acc)
+      }
+    }
+  }
+}
+
+fn compare_outbox_entries_by_time(
+  a: #(String, OutboxStatus),
+  b: #(String, OutboxStatus),
+) -> Order {
+  let #(a_id, a_status) = a
+  let #(b_id, b_status) = b
+  case int.compare(outbox_status_time(a_status), outbox_status_time(b_status)) {
+    Eq -> string.compare(a_id, b_id)
+    order -> order
+  }
+}
+
+fn outbox_status_time(status: OutboxStatus) -> Int {
+  case status {
+    OutboxPending(_, _, _, pending_at_ms) -> pending_at_ms
+    OutboxPendingV2(_, _, _, _, pending_at_ms) -> pending_at_ms
+    OutboxCompleted(_, _, completed_at_ms) -> completed_at_ms
+    OutboxFailed(_, _, _, failed_at_ms) -> failed_at_ms
+  }
+}
+
+pub fn describe_pending_outbox_error(error: PendingOutboxError) -> String {
+  case error {
+    OutboxPayloadMissing(outbox_id) -> "outbox_payload_missing:" <> outbox_id
+  }
+}
+
+pub fn retry_status_to_string(status: RetryStatus) -> String {
+  case status {
+    RetryScheduled(_, delay_ms, generation, reason, scheduled_at_ms) ->
+      "scheduled delay_ms="
+      <> int.to_string(delay_ms)
+      <> " generation="
+      <> int.to_string(generation)
+      <> " reason="
+      <> reason
+      <> " scheduled_at_ms="
+      <> int.to_string(scheduled_at_ms)
+    RetryCancelled(generation, reason, cancelled_at_ms) ->
+      "cancelled generation="
+      <> int.to_string(generation)
+      <> " reason="
+      <> reason
+      <> " cancelled_at_ms="
+      <> int.to_string(cancelled_at_ms)
   }
 }

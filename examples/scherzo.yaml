@@ -33,6 +33,9 @@ agent:
   max_sessions_per_issue: 3
 pi:
   command: "pi --mode rpc --no-session"
+  # Optional project defaults inherited by workflow agent steps.
+  # model: google/gemini-2.5-flash
+  # thinking: low
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000

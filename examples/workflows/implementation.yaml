@@ -19,6 +19,8 @@ steps:
     kind: agent
     depends_on: [implement]
     prompt: prompts/code-review.md
+    # Keep the project default model/provider but use more reasoning here.
+    thinking: high
     workspace:
       name: code-review
       from: main
