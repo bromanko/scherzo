@@ -13,10 +13,23 @@ steps:
     depends_on: [draft_plan]
     run: scripts/scherzo-execplan validate
     workspace: main
+    on_failure: continue
+
+  - id: repair_validation
+    kind: agent
+    depends_on: [validate_draft]
+    prompt: prompts/execplan-repair-validation.md
+    workspace: main
+
+  - id: validate_after_repair
+    kind: command
+    depends_on: [repair_validation]
+    run: scripts/scherzo-execplan validate
+    workspace: main
 
   - id: review_plan
     kind: agent
-    depends_on: [validate_draft]
+    depends_on: [validate_after_repair]
     prompt: prompts/execplan-review.md
     workspace: main
 
