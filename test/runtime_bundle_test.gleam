@@ -219,6 +219,20 @@ pub fn selects_yaml_workflow_from_issue_label_test() {
   assert dag.id == "implementation"
 }
 
+pub fn loads_checked_in_execplan_implementation_workflow_test() {
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(".scherzo/scherzo.yaml"), env)
+  assert dict.has_key(bundle.workflows, "execplan-implementation")
+  let assert Ok(#("execplan-implementation", dag)) =
+    runtime_bundle.select_workflow(
+      bundle,
+      issue(["workflow:execplan-implementation"]),
+    )
+  assert dag.id == "execplan-implementation"
+  let assert Some(terminal) = workflow_dag.terminal_step(dag)
+  assert terminal.id == "publish_pr"
+}
+
 pub fn routing_rejects_missing_unknown_and_multiple_labels_test() {
   let dir = "test/tmp/runtime-bundle-routing-errors"
   reset_dir(dir)

@@ -1,0 +1,48 @@
+version: 1
+id: execplan-implementation
+description: Implement an existing ExecPlan, review the changed Gleam code, validate, publish a PR, and clean up safely.
+max_parallel_steps: 1
+steps:
+  - id: prepare_plan
+    kind: command
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-execplan-implementation" prepare'
+    timeout_ms: 300000
+    workspace: main
+
+  - id: implement_plan
+    kind: agent
+    depends_on: [prepare_plan]
+    prompt: prompts/execplan-implementation-implement.md
+    workspace: main
+
+  - id: analyze_changes
+    kind: command
+    depends_on: [implement_plan]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-execplan-implementation" analyze'
+    workspace: main
+
+  - id: review_changes
+    kind: agent
+    depends_on: [analyze_changes]
+    prompt: prompts/execplan-implementation-review.md
+    workspace: main
+
+  - id: apply_review_feedback
+    kind: agent
+    depends_on: [review_changes]
+    prompt: prompts/execplan-implementation-apply-feedback.md
+    workspace: main
+
+  - id: final_validate
+    kind: command
+    depends_on: [apply_review_feedback]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-execplan-implementation" validate'
+    timeout_ms: 1200000
+    workspace: main
+
+  - id: publish_pr
+    kind: command
+    depends_on: [final_validate]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-execplan-implementation" publish'
+    timeout_ms: 300000
+    workspace: main
