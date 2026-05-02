@@ -330,7 +330,7 @@ Authorization is by explicit Linear user id allowlist only. The transport is run
 
 ## Local durable ledger
 
-Scherzo includes a local durable state ledger under `workspace.root/.scherzo-state/ledger/` as a storage foundation for later crash recovery work. The ledger currently exposes Gleam APIs and tests only; daemon startup does not yet restore retry timers, parked issues, command receipts, outbox work, or interrupted runs from it.
+Scherzo includes a local durable state ledger under `workspace.root/.scherzo-state/ledger/`. Daemon startup now replays this ledger before the first poll tick and uses it for single-instance restart recovery for the same canonical workspace root. Recovery restores durable retry counters, worker-session counters, parked issues, retry timers, known workspace paths, and replayable pending Linear outbox entries that include bounded v2 payloads. Started runs that lack a finish record are marked interrupted because live pi sessions and Erlang ports cannot survive a BEAM restart.
 
 The ledger layout is:
 
@@ -340,15 +340,27 @@ The ledger layout is:
 .scherzo-state/ledger/archive/segment-<n>.jsonl
 ```
 
-`current.jsonl` is append-only JSON Lines. Each line is one schema-versioned record with `schema_version`, `record_id`, `kind`, and `at_ms`, plus fields for run, retry, park, Linear command, or outbox facts. Replay rejects unsupported schema versions and malformed middle records, while tolerating one truncated trailing JSON record from a crash during append. Compaction writes a projection snapshot through a temporary file and then archives the old current segment before starting a fresh `current.jsonl`.
+`current.jsonl` is append-only JSON Lines. Each line is one schema-versioned record with `schema_version`, `record_id`, `kind`, and `at_ms`, plus fields for run, retry, park, counters, known workspaces, Linear command, or outbox facts. Replay rejects unsupported schema versions and malformed middle records, while tolerating one truncated trailing JSON record from a crash during append. Compaction writes a projection snapshot through a temporary file and then archives the old current segment before starting a fresh `current.jsonl`.
 
-Ledger records are operational state, not transcripts. They should contain identifiers, statuses, bounded excerpts, result codes, and redacted strings only. Do not store API keys, raw pi JSON, full prompts, or full Linear comment bodies in the ledger.
+Ledger records are operational state, not transcripts. They should contain identifiers, statuses, bounded excerpts, result codes, and redacted strings only. Outbox replay requires `outbox_pending_v2` records with bounded, redacted payload JSON; payload-less old pending outbox records fail startup clearly instead of being silently dropped. Do not store API keys, raw pi JSON, full prompts, or full Linear comment bodies in the ledger.
+
+## Daemon behavior and restart recovery
+
+On startup, Scherzo resolves config, builds Linear clients, replays the local ledger, fetches current Linear state only for ledger-known issue ids in chunks of at most 50, appends any recovery records with fsync, installs the recovered runtime state, schedules recovered retry timers, enqueues known terminal workspace cleanup, and only then allows polling. If Linear cannot refresh the known issue ids, startup fails before dispatching new work; starting from stale local facts would be less safe than refusing to start.
+
+Interrupted active runs are counted as one failure using their run id as the durable counter source, so restarting repeatedly does not double-count the same interrupted run. If retry caps are exhausted, the issue remains parked with its release policy. Explicit operator parks survive issue edits until explicitly unparked. Auto-unpark parks are released only when the refreshed issue fingerprint has changed, matching the normal runtime policy.
+
+This recovery is at-least-once rather than exactly-once. A crash after a real Linear side effect succeeds but before its `outbox_completed` record is written can replay the side effect on restart. Dedupe keys, run ids, and source comment ids are recorded to make duplicates auditable, but Linear-side idempotency is not guaranteed.
+
+## Implemented coverage
+
+The deterministic test suite covers ledger record roundtrips for counters, known workspaces, v2 parking, and v2 outbox payloads; projection helpers for retry due time and pending outbox replay; pure recovery for interrupted, parked, terminal, overdue-retry, future-retry, and payload-less outbox cases; and daemon startup ordering through the existing actor tests. Real Linear and real pi are not required for these recovery tests.
 
 ## Safety posture
 
 Scherzo is intended for trusted repositories and trusted workflow files. Hooks are arbitrary shell. pi tool execution follows the operator's `pi.command` and host OS environment. Scherzo enforces workspace cwd and root containment, but it does not provide a VM or container sandbox.
 
-Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. The local durable ledger is not yet a startup recovery backend, so retry timers, parked issues, command receipts, outbox work, and interrupted runs are not restored from it after a daemon restart. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT, `kill -9`, host power loss, or BEAM VM crashes may leave stale local state that operators must remove only after checking no Scherzo process remains active.
+Run only one Scherzo instance per Linear project and canonical workspace root. The local durable ledger supports single-instance restart recovery, not multi-host or multi-workspace exactly-once behavior. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT, `kill -9`, host power loss, or BEAM VM crashes may leave a stale `workspace.root/.scherzo-state/instance.lock`; operators must remove it only after checking no Scherzo process remains active. Live pi sessions, EventHub history, and Linear command comments posted while Scherzo was down are still not recovered in this phase.
 
 ## Legacy Markdown removal
 
