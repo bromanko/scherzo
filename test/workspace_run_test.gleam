@@ -167,6 +167,34 @@ pub fn cleanup_rejects_paths_outside_workspace_root_test() {
     workspace_run.cleanup_run("/tmp/not-under-scherzo-root", orchestrator)
 }
 
+pub fn cleanup_retention_marker_skips_delete_until_removed_test() {
+  let dir = "test/tmp/workspace-run-retained-cleanup"
+  reset_dir(dir)
+  let orchestrator =
+    orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "execplan-implementation",
+      "run-retained",
+      "prepare_plan",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      dict.new(),
+    )
+  let marker = workspace_run.cleanup_retention_marker(main.run_root)
+  let assert Ok(Nil) = simplifile.write(marker, "keep until PR publish\n")
+  let assert Ok(Nil) = simplifile.write(main.path <> "/work", "saved")
+
+  let assert Ok(Nil) = workspace_run.cleanup_run(main.run_root, orchestrator)
+  let assert Ok(True) = simplifile.is_directory(main.run_root)
+  let assert Ok(True) = simplifile.is_file(main.path <> "/work")
+
+  let assert Ok(Nil) = simplifile.delete(marker)
+  let assert Ok(Nil) = workspace_run.cleanup_run(main.run_root, orchestrator)
+  let assert Ok(False) = simplifile.is_directory(main.run_root)
+}
+
 fn list_map(values: List(a), mapper: fn(a) -> b) -> List(b) {
   case values {
     [] -> []
