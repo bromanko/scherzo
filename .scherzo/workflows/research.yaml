@@ -1,9 +1,18 @@
 version: 1
 id: research
-description: Investigate an issue and report findings without broad code changes.
+description: Investigate an issue, write Markdown findings, verify the findings file, and use it as the Linear result artifact.
 max_parallel_steps: 1
 steps:
   - id: research
     kind: agent
     prompt: prompts/research.md
+    workspace: main
+
+  - id: collect_findings
+    kind: command
+    depends_on: [research]
+    run: |
+      set -eu
+      test -f research-findings.md
+      cat research-findings.md
     workspace: main

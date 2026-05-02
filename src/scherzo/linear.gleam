@@ -10,6 +10,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/domain
 import scherzo/error
+import scherzo/linear_body_data
 import scherzo/linear_contract
 import scherzo/tracker
 import scherzo/tracker/state as issue_state
@@ -39,6 +40,29 @@ pub type LinearComment {
     created_at_ms: Int,
     updated_at_ms: Int,
     author: LinearCommentAuthor,
+  )
+}
+
+pub type LinearCommentDocument {
+  LinearCommentDocument(
+    id: String,
+    body: String,
+    body_data: linear_body_data.JsonValue,
+  )
+}
+
+pub type UploadHeader {
+  UploadHeader(key: String, value: String)
+}
+
+pub type UploadFile {
+  UploadFile(
+    filename: String,
+    content_type: String,
+    size: Int,
+    upload_url: String,
+    asset_url: String,
+    headers: List(UploadHeader),
   )
 }
 
@@ -366,6 +390,91 @@ pub fn build_comment_create_request(
   Ok(graphql_request(endpoint, api_key, body))
 }
 
+pub fn build_comment_fetch_request(
+  config: domain.TrackerConfig,
+  comment_id: String,
+) -> Result(Request, error.TrackerError) {
+  use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
+  use api_key <- try_tracker(require_api_key(config))
+  let body =
+    json.object([
+      #("query", json.string(comment_fetch_query())),
+      #("variables", json.object([#("commentId", json.string(comment_id))])),
+    ])
+    |> json.to_string
+  Ok(graphql_request(endpoint, api_key, body))
+}
+
+pub fn build_file_upload_request(
+  config: domain.TrackerConfig,
+  filename: String,
+  content_type: String,
+  size: Int,
+  meta_data: json.Json,
+) -> Result(Request, error.TrackerError) {
+  use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
+  use api_key <- try_tracker(require_api_key(config))
+  let body =
+    json.object([
+      #("query", json.string(file_upload_mutation())),
+      #(
+        "variables",
+        json.object([
+          #("filename", json.string(filename)),
+          #("contentType", json.string(content_type)),
+          #("size", json.int(size)),
+          #("metaData", meta_data),
+        ]),
+      ),
+    ])
+    |> json.to_string
+  Ok(graphql_request(endpoint, api_key, body))
+}
+
+pub fn build_comment_update_body_data_request(
+  config: domain.TrackerConfig,
+  comment_id: String,
+  body_data: json.Json,
+) -> Result(Request, error.TrackerError) {
+  use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
+  use api_key <- try_tracker(require_api_key(config))
+  let body =
+    json.object([
+      #("query", json.string(comment_update_body_data_mutation())),
+      #(
+        "variables",
+        json.object([
+          #("commentId", json.string(comment_id)),
+          #("bodyData", body_data),
+        ]),
+      ),
+    ])
+    |> json.to_string
+  Ok(graphql_request(endpoint, api_key, body))
+}
+
+pub fn build_comment_update_body_request(
+  config: domain.TrackerConfig,
+  comment_id: String,
+  body: String,
+) -> Result(Request, error.TrackerError) {
+  use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
+  use api_key <- try_tracker(require_api_key(config))
+  let body =
+    json.object([
+      #("query", json.string(comment_update_body_mutation())),
+      #(
+        "variables",
+        json.object([
+          #("commentId", json.string(comment_id)),
+          #("body", json.string(body)),
+        ]),
+      ),
+    ])
+    |> json.to_string
+  Ok(graphql_request(endpoint, api_key, body))
+}
+
 pub fn build_issue_update_state_request(
   config: domain.TrackerConfig,
   issue_id: String,
@@ -413,7 +522,23 @@ pub fn issue_comments_query() -> String {
 }
 
 pub fn comment_create_mutation() -> String {
-  "mutation ScherzoCommentCreate($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success } }"
+  "mutation ScherzoCommentCreate($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success comment { id body bodyData } } }"
+}
+
+pub fn comment_fetch_query() -> String {
+  "query ScherzoCommentFetch($commentId: String!) { comment(id: $commentId) { id body bodyData } }"
+}
+
+pub fn file_upload_mutation() -> String {
+  "mutation ScherzoFileUpload($filename: String!, $contentType: String!, $size: Int!, $metaData: JSON) { fileUpload(filename: $filename, contentType: $contentType, size: $size, metaData: $metaData) { success uploadFile { filename contentType size uploadUrl assetUrl headers { key value } } } }"
+}
+
+pub fn comment_update_body_data_mutation() -> String {
+  "mutation ScherzoCommentUpdateBodyData($commentId: String!, $bodyData: JSON!) { commentUpdate(id: $commentId, input: { bodyData: $bodyData }, skipEditedAt: true) { success comment { id body bodyData } } }"
+}
+
+pub fn comment_update_body_mutation() -> String {
+  "mutation ScherzoCommentUpdateBody($commentId: String!, $body: String!) { commentUpdate(id: $commentId, input: { body: $body }, skipEditedAt: true) { success comment { id body bodyData } } }"
 }
 
 pub fn issue_update_state_mutation() -> String {
@@ -490,6 +615,77 @@ pub fn parse_mutation_response(
   }
 }
 
+pub fn parse_comment_fetch_response(
+  response: Response,
+) -> Result(LinearCommentDocument, error.TrackerError) {
+  case response.status == 200 {
+    False -> Error(error.LinearApiStatus(response.status))
+    True ->
+      case json.parse(response.body, comment_fetch_graphql_decoder()) {
+        Ok(Ok(comment)) -> Ok(comment)
+        Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
+        Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
+      }
+  }
+}
+
+pub fn parse_file_upload_response(
+  response: Response,
+) -> Result(UploadFile, error.TrackerError) {
+  case response.status == 200 {
+    False -> Error(error.LinearApiStatus(response.status))
+    True ->
+      case json.parse(response.body, file_upload_graphql_decoder()) {
+        Ok(Ok(payload)) ->
+          case payload.success, payload.upload_file {
+            False, _ ->
+              Error(error.LinearUnknownPayload("fileUpload returned false"))
+            True, Some(upload_file) -> Ok(upload_file)
+            True, None ->
+              Error(error.LinearAttachmentError(
+                "fileUpload succeeded without uploadFile",
+              ))
+          }
+        Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
+        Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
+      }
+  }
+}
+
+pub fn parse_comment_update_response(
+  response: Response,
+) -> Result(LinearCommentDocument, error.TrackerError) {
+  parse_comment_payload_response(response, "commentUpdate")
+}
+
+pub fn parse_comment_create_response(
+  response: Response,
+) -> Result(LinearCommentDocument, error.TrackerError) {
+  parse_comment_payload_response(response, "commentCreate")
+}
+
+fn parse_comment_payload_response(
+  response: Response,
+  root_field: String,
+) -> Result(LinearCommentDocument, error.TrackerError) {
+  case response.status == 200 {
+    False -> Error(error.LinearApiStatus(response.status))
+    True ->
+      case
+        json.parse(response.body, comment_payload_graphql_decoder(root_field))
+      {
+        Ok(Ok(payload)) ->
+          case payload.success {
+            True -> Ok(payload.comment)
+            False ->
+              Error(error.LinearUnknownPayload(root_field <> " returned false"))
+          }
+        Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
+        Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
+      }
+  }
+}
+
 fn graphql_decoder() -> decode.Decoder(Result(Page, String)) {
   use errors <- decode.optional_field(
     "errors",
@@ -520,6 +716,124 @@ fn mutation_decoder(root_field: String) -> decode.Decoder(Result(Bool, String)) 
     [] ->
       decode.at(["data", root_field, "success"], decode.bool) |> decode.map(Ok)
     errors -> decode.success(Error(string.join(errors, with: "; ")))
+  }
+}
+
+fn comment_fetch_graphql_decoder() -> decode.Decoder(
+  Result(LinearCommentDocument, String),
+) {
+  use errors <- decode.optional_field(
+    "errors",
+    [],
+    decode.list(error_message_decoder()),
+  )
+  case errors {
+    [] ->
+      decode.at(["data", "comment"], comment_document_decoder())
+      |> decode.map(Ok)
+    errors -> decode.success(Error(string.join(errors, with: "; ")))
+  }
+}
+
+type UploadPayload {
+  UploadPayload(success: Bool, upload_file: Option(UploadFile))
+}
+
+fn file_upload_graphql_decoder() -> decode.Decoder(
+  Result(UploadPayload, String),
+) {
+  use errors <- decode.optional_field(
+    "errors",
+    [],
+    decode.list(error_message_decoder()),
+  )
+  case errors {
+    [] ->
+      decode.at(["data", "fileUpload"], upload_payload_decoder())
+      |> decode.map(Ok)
+    errors -> decode.success(Error(string.join(errors, with: "; ")))
+  }
+}
+
+fn upload_payload_decoder() -> decode.Decoder(UploadPayload) {
+  use success <- decode.field("success", decode.bool)
+  use upload_file <- decode.field(
+    "uploadFile",
+    decode.optional(upload_file_decoder()),
+  )
+  decode.success(UploadPayload(success: success, upload_file: upload_file))
+}
+
+fn upload_file_decoder() -> decode.Decoder(UploadFile) {
+  use filename <- decode.field("filename", decode.string)
+  use content_type <- decode.field("contentType", decode.string)
+  use size <- decode.field("size", decode.int)
+  use upload_url <- decode.field("uploadUrl", decode.string)
+  use asset_url <- decode.field("assetUrl", decode.string)
+  use headers <- decode.field("headers", decode.list(upload_header_decoder()))
+  decode.success(UploadFile(
+    filename: filename,
+    content_type: content_type,
+    size: size,
+    upload_url: upload_url,
+    asset_url: asset_url,
+    headers: headers,
+  ))
+}
+
+fn upload_header_decoder() -> decode.Decoder(UploadHeader) {
+  use key <- decode.field("key", decode.string)
+  use value <- decode.field("value", decode.string)
+  decode.success(UploadHeader(key: key, value: value))
+}
+
+type CommentPayload {
+  CommentPayload(success: Bool, comment: LinearCommentDocument)
+}
+
+fn comment_payload_graphql_decoder(
+  root_field: String,
+) -> decode.Decoder(Result(CommentPayload, String)) {
+  use errors <- decode.optional_field(
+    "errors",
+    [],
+    decode.list(error_message_decoder()),
+  )
+  case errors {
+    [] ->
+      decode.at(["data", root_field], comment_payload_decoder())
+      |> decode.map(Ok)
+    errors -> decode.success(Error(string.join(errors, with: "; ")))
+  }
+}
+
+fn comment_payload_decoder() -> decode.Decoder(CommentPayload) {
+  use success <- decode.field("success", decode.bool)
+  use comment <- decode.field("comment", comment_document_decoder())
+  decode.success(CommentPayload(success: success, comment: comment))
+}
+
+fn comment_document_decoder() -> decode.Decoder(LinearCommentDocument) {
+  use id <- decode.field("id", decode.string)
+  use body <- decode.field("body", decode.string)
+  use body_data <- decode.field("bodyData", body_data_decoder())
+  decode.success(LinearCommentDocument(id: id, body: body, body_data: body_data))
+}
+
+fn body_data_decoder() -> decode.Decoder(linear_body_data.JsonValue) {
+  use data <- decode.then(decode.dynamic)
+  case decode.run(data, decode.string) {
+    Ok(body_data_json) ->
+      case linear_body_data.parse_json(body_data_json) {
+        Ok(value) -> decode.success(value)
+        Error(_) -> decode.success(linear_body_data.JString(body_data_json))
+      }
+    Error(_) ->
+      case decode.run(data, linear_body_data.json_value_decoder()) {
+        Ok(value) -> decode.success(value)
+        Error(_) ->
+          decode.failure(linear_body_data.JNull, expected: "bodyData JSON")
+      }
   }
 }
 

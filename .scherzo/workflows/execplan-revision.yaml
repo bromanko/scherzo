@@ -1,0 +1,36 @@
+version: 1
+id: execplan-revision
+description: Revise an existing ExecPlan PR from GitHub review feedback and update the PR branch.
+max_parallel_steps: 1
+steps:
+  - id: prepare_pr
+    kind: command
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-execplan-revision" prepare'
+    timeout_ms: 300000
+    workspace: main
+
+  - id: revise_plan
+    kind: agent
+    depends_on: [prepare_pr]
+    prompt: prompts/execplan-revision.md
+    workspace: main
+
+  - id: validate_revision
+    kind: command
+    depends_on: [revise_plan]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-execplan-revision" validate'
+    workspace: main
+
+  - id: publish_revision
+    kind: command
+    depends_on: [validate_revision]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-execplan-revision" publish'
+    timeout_ms: 300000
+    workspace: main
+
+  - id: acknowledge_feedback
+    kind: command
+    depends_on: [publish_revision]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-execplan-revision" acknowledge'
+    timeout_ms: 300000
+    workspace: main

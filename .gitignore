@@ -19,5 +19,8 @@ erl_crash.dump
 .scherzo/workflows/**/*.local.yml
 .scherzo/workflows/**/.scherzo/
 node_modules/
+__pycache__/
+*.pyc
 *.log
+tmp/
 test/tmp/

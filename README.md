@@ -299,6 +299,30 @@ LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-contract-check .s
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --pi-probe .scherzo/scherzo.yaml
 ```
 
+A mutating Linear attachment diagnostic is also available for throwaway or quiescent comments. It uploads a local Markdown file and attaches it to an existing Linear comment id:
+
+```sh
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --linear-attach-comment-file <comment-id> notes.md .scherzo/scherzo.yaml
+```
+
+This command first tries Linear's native comment-file representation. It uses Linear's internal `Comment.bodyData` rich-text field to append a top-level `file` node, which is the shape Linear's web UI uses for files on comments. Because `bodyData` is internal to Linear and may change, Scherzo enables a fallback for this operation: if native bodyData parsing fails, it uploads the file and updates the comment body with a normal Markdown link to the uploaded asset. Scherzo does not request public Linear uploads and rejects non-HTTPS asset URLs before writing links back to comments; still treat uploaded agent output as sensitive Linear-hosted content.
+
+## Handoff result attachments
+
+Linear handoff comments are disabled unless `handoff.enabled: true`. Existing behavior is unchanged by default: Scherzo posts text comments and state updates according to the configured handoff booleans, and `handoff.attach_result_on_success` defaults to `false`.
+
+To attach successful agent result text as a Markdown file instead of including it inline, enable result attachments:
+
+```yaml
+handoff:
+  enabled: true
+  attach_result_on_success: true
+  include_result_on_success: false
+  attachment_fallback_to_markdown_link: true
+```
+
+When enabled, Scherzo creates the normal success comment, uploads the captured final result as a deterministic Markdown filename containing the issue identifier and run id, and attaches that upload to the success comment. Native attachment uses Linear's internal `Comment.bodyData` rich-text JSON and appends a `file` node while preserving existing comment content. If Linear changes that internal field and `attachment_fallback_to_markdown_link: true`, Scherzo falls back to appending a normal Markdown link to the comment body after upload. `attach_result_on_success: true` requires success comments to be enabled, and attachment payloads are capped to avoid uploading unexpectedly large agent results. Set `attach_result_on_success: false` to return to text-only handoff behavior.
+
 ## Linear workflow labels
 
 Scherzo routes issues by label. With the default prefix `workflow:`, an issue labeled `workflow:research` is routed to the `research` workflow key in `routing.workflows`.

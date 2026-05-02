@@ -100,6 +100,8 @@ pub fn default_handoff_config() -> domain.HandoffConfig {
     success_state_id: None,
     failure_state_id: None,
     include_result_on_success: False,
+    attach_result_on_success: False,
+    attachment_fallback_to_markdown_link: True,
     result_max_chars: 8000,
   )
 }
@@ -455,27 +457,42 @@ fn resolve_handoff(
     get_bool(handoff, "comment_on_success") |> bool_default(default_comment)
   let result_max_chars =
     get_int(handoff, "result_max_chars") |> int_default(8000)
+  let attach_result_on_success =
+    get_bool(handoff, "attach_result_on_success") |> bool_default(False)
   case result_max_chars <= 0 {
     True ->
       Error(error.InvalidConfig("handoff.result_max_chars must be positive"))
     False ->
-      Ok(domain.HandoffConfig(
-        enabled: enabled,
-        comment_on_claim: get_bool(handoff, "comment_on_claim")
-          |> bool_default(default_comment),
-        comment_on_success: comment_on_success,
-        comment_on_failure: get_bool(handoff, "comment_on_failure")
-          |> bool_default(default_comment),
-        claim_state_id: get_non_empty_string(handoff, "claim_state_id"),
-        success_state_id: get_non_empty_string(handoff, "success_state_id"),
-        failure_state_id: get_non_empty_string(handoff, "failure_state_id"),
-        include_result_on_success: get_bool(
-          handoff,
-          "include_result_on_success",
-        )
-          |> bool_default(comment_on_success),
-        result_max_chars: result_max_chars,
-      ))
+      case attach_result_on_success && !comment_on_success {
+        True ->
+          Error(error.InvalidConfig(
+            "handoff.attach_result_on_success requires handoff.comment_on_success to be true",
+          ))
+        False ->
+          Ok(domain.HandoffConfig(
+            enabled: enabled,
+            comment_on_claim: get_bool(handoff, "comment_on_claim")
+              |> bool_default(default_comment),
+            comment_on_success: comment_on_success,
+            comment_on_failure: get_bool(handoff, "comment_on_failure")
+              |> bool_default(default_comment),
+            claim_state_id: get_non_empty_string(handoff, "claim_state_id"),
+            success_state_id: get_non_empty_string(handoff, "success_state_id"),
+            failure_state_id: get_non_empty_string(handoff, "failure_state_id"),
+            include_result_on_success: get_bool(
+              handoff,
+              "include_result_on_success",
+            )
+              |> bool_default(comment_on_success),
+            attach_result_on_success: attach_result_on_success,
+            attachment_fallback_to_markdown_link: get_bool(
+              handoff,
+              "attachment_fallback_to_markdown_link",
+            )
+              |> bool_default(True),
+            result_max_chars: result_max_chars,
+          ))
+      }
   }
 }
 

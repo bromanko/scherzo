@@ -376,6 +376,32 @@ pub fn linear_contract_check_mismatch_logs_diagnostics_and_fails_test() {
   assert field_value(diagnostic_fields, "name") == Some("Ready for Agent")
 }
 
+pub fn linear_attach_comment_file_validation_failure_surfaces_detail_test() {
+  let root = "test/tmp/service-attach-validation/workspaces"
+  reset_dir("test/tmp/service-attach-validation")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      "test/tmp/service-attach-validation/workflows",
+    )
+  let workflow_path = "test/tmp/service-attach-validation/scherzo.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(workflow_path, contract_config_text(root, "Todo"))
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-attach-validation/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
+  let assert Error(err) =
+    service.start_linear_attach_comment_file(
+      Some(workflow_path),
+      "comment-id",
+      "test/tmp/result.txt",
+    )
+  assert err.code == "linear_attachment_error"
+  assert string.contains(err.message, ".md or .markdown")
+  assert err.message != "tracker error"
+}
+
 pub fn linear_contract_check_fetch_error_maps_to_startup_failure_test() {
   let root = "test/tmp/service-contract-fetch-error/workspaces"
   reset_dir("test/tmp/service-contract-fetch-error")
