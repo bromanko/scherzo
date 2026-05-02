@@ -11,7 +11,7 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Put runtime jj workspaces under `.scherzo/workspaces/<workflow-name>/`; they are ignored by git.
 - Config-relative paths are resolved from `.scherzo/scherzo.yaml`, so this repository uses `workspace.root: workspaces` to land at repo-root `.scherzo/workspaces`.
 - Populate Scherzo workspaces with `jj workspace add --revision @`, not separate `git clone` checkouts, so dogfood runs share the local repository and can see the coordinating workspace's current snapshot while still making their own child working-copy changes.
-- Use `scripts/scherzo-jj-workspace` from YAML `workspace.hooks` instead of inlining jj lifecycle shell; pass the workflow name as the second argument.
+- Use `scripts/scherzo-jj-workspace` from YAML `workspace.hooks` instead of inlining jj lifecycle shell; pass the workflow name as the second argument. The helper runs `direnv allow .` during trusted workspace creation when `.envrc` is present, so later direnv-backed validation does not fail on a blocked workspace-local `.envrc`.
 - Use `scripts/scherzo-pi` as the checked-in `pi.command` wrapper so workflows such as research, execplan, and execplan-revision can select `openai-codex/gpt-5.5:xhigh` while other workflows keep the default pi model.
 - Keep machine-specific variants as `.scherzo/workflows/**/*.local.yaml`, `.scherzo/workflows/**/*.local.yml`, `.scherzo/scherzo.local.yaml`, or `.scherzo/scherzo.local.yml`; they are ignored by git.
 - Do not put secrets in workflow files. Use environment variables for secrets and deployment-specific values.

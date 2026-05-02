@@ -77,7 +77,19 @@ workspace_row_for_change() {
     | awk -F: -v change="$change" '$2 == change { print $0; exit }'
 }
 
+prepare_destination_for_workspace_add() {
+  workspace_parent=$(dirname "$workspace_path")
+  workspace_leaf=$(basename "$workspace_path")
+  mkdir -p "$workspace_parent" || fail "could not create workspace parent: $workspace_parent"
+  cd "$workspace_parent"
+  if [ -d "$workspace_leaf" ]; then
+    rmdir "$workspace_leaf" 2>/dev/null || \
+      fail "workspace path exists and is not empty before jj workspace add: $workspace_path"
+  fi
+}
+
 verify_current_workspace() {
+  cd "$workspace_path"
   test -e .jj || fail "workspace is missing .jj: $workspace_path"
   test "$(jj root)" = "$workspace_path" || fail "jj root does not match workspace path"
 
@@ -89,31 +101,44 @@ verify_current_workspace() {
   jj status --color=never
 }
 
+allow_trusted_envrc_after_create() {
+  cd "$workspace_path"
+  if [ -f .envrc ]; then
+    command -v direnv >/dev/null 2>&1 || \
+      fail ".envrc exists but direnv is not installed in workspace setup environment"
+    if ! output=$(direnv allow . 2>&1); then
+      printf '%s\n' "$output" >&2
+      fail "direnv allow failed for workspace: $workspace_path"
+    fi
+  fi
+}
+
 case "$command" in
   after-create)
     require_jj_repo_root
-    if [ -d .jj ]; then
+    if [ -d "$workspace_path/.jj" ]; then
       verify_current_workspace
+      allow_trusted_envrc_after_create
       exit 0
     fi
+    prepare_destination_for_workspace_add
     if [ -n "${SCHERZO_SOURCE_WORKSPACE_PATH:-}" ]; then
       test -d "$SCHERZO_SOURCE_WORKSPACE_PATH/.jj" || \
         fail "source workspace is missing .jj: $SCHERZO_SOURCE_WORKSPACE_PATH"
       jj --repository "$SCHERZO_SOURCE_WORKSPACE_PATH" workspace add \
         --name "$workspace_name" \
         --revision @ \
-        --message "Scherzo ${workflow_name} workspace for ${workspace_key}" \
         --sparse-patterns full \
         "$workspace_path"
     else
       jj --repository "$repo_root" workspace add \
         --name "$workspace_name" \
         --revision @ \
-        --message "Scherzo ${workflow_name} workspace for ${workspace_key}" \
         --sparse-patterns full \
         "$workspace_path"
     fi
     verify_current_workspace
+    allow_trusted_envrc_after_create
     ;;
 
   before-run)
@@ -121,6 +146,9 @@ case "$command" in
     ;;
 
   before-remove)
+    if [ -d "$workspace_path" ]; then
+      cd "$workspace_path"
+    fi
     if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then
       change=$(current_change_id)
       row=$(workspace_row_for_change "$change")
