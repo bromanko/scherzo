@@ -491,7 +491,10 @@ fn file_upload_response_with_asset_url(asset_url: String) -> String {
   )
 }
 
-fn header_value(headers: List(#(String, String)), key: String) -> Option(String) {
+fn header_value(
+  headers: List(#(String, String)),
+  key: String,
+) -> Option(String) {
   case list.key_find(headers, key) {
     Ok(value) -> Some(value)
     Error(_) -> None

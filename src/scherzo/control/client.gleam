@@ -55,11 +55,18 @@ pub fn ping(control_file: file.ControlFile) -> Result(Nil, ControlError) {
 pub fn list_sessions(
   control_file: file.ControlFile,
 ) -> Result(List(event.SessionSummary), ControlError) {
+  use snapshot <- try_control(list_sessions_snapshot(control_file))
+  Ok(snapshot.sessions)
+}
+
+pub fn list_sessions_snapshot(
+  control_file: file.ControlFile,
+) -> Result(event.SessionList, ControlError) {
   use line <- try_control(raw_request(
     control_file,
     protocol.ListSessions("1", ""),
   ))
-  protocol.decode_list_sessions_response(line) |> map_error_body
+  protocol.decode_list_sessions_snapshot_response(line) |> map_error_body
 }
 
 pub fn get_session(

@@ -209,7 +209,9 @@ pub fn request_to_json(request: Request) -> json.Json {
   }
 }
 
-fn issue_ref_entries(issue_ref: command.IssueRef) -> List(#(String, json.Json)) {
+fn issue_ref_entries(
+  issue_ref: command.IssueRef,
+) -> List(#(String, json.Json)) {
   case issue_ref {
     command.IssueId(id) -> [#("issue_id", json.string(id))]
     command.IssueIdentifier(identifier) -> [
@@ -591,9 +593,13 @@ pub fn ping_data() -> json.Json {
   json.object([#("pong", json.bool(True))])
 }
 
-pub fn list_sessions_data(sessions: List(event.SessionSummary)) -> json.Json {
+pub fn list_sessions_data(snapshot: event.SessionList) -> json.Json {
   json.object([
-    #("sessions", json.array(sessions, of: session_json.summary_to_json)),
+    #(
+      "sessions",
+      json.array(snapshot.sessions, of: session_json.summary_to_json),
+    ),
+    #("now_ms", json.int(snapshot.now_ms)),
   ])
 }
 
@@ -713,10 +719,16 @@ pub fn decode_ping_response(line: String) -> Result(Nil, ErrorBody) {
 pub fn decode_list_sessions_response(
   line: String,
 ) -> Result(List(event.SessionSummary), ErrorBody) {
-  decode_response_result(
-    line,
-    decode.at(["sessions"], decode.list(of: session_summary_decoder())),
-  )
+  case decode_list_sessions_snapshot_response(line) {
+    Ok(snapshot) -> Ok(snapshot.sessions)
+    Error(error) -> Error(error)
+  }
+}
+
+pub fn decode_list_sessions_snapshot_response(
+  line: String,
+) -> Result(event.SessionList, ErrorBody) {
+  decode_response_result(line, session_list_decoder())
 }
 
 pub fn decode_get_session_response(
@@ -827,6 +839,36 @@ fn command_result_decoder() -> decode.Decoder(command.CommandResult) {
     target: target,
     message: message,
   ))
+}
+
+fn session_list_decoder() -> decode.Decoder(event.SessionList) {
+  use sessions <- decode.field(
+    "sessions",
+    decode.list(of: session_summary_decoder()),
+  )
+  use now_ms <- decode.optional_field(
+    "now_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  let snapshot_now_ms = case now_ms {
+    Some(value) -> value
+    None -> fallback_list_now_ms(sessions)
+  }
+  decode.success(event.SessionList(sessions: sessions, now_ms: snapshot_now_ms))
+}
+
+fn fallback_list_now_ms(sessions: List(event.SessionSummary)) -> Int {
+  case sessions {
+    [] -> 0
+    [first, ..rest] ->
+      list.fold(rest, first.last_event_at_ms, fn(latest, summary) {
+        case summary.last_event_at_ms > latest {
+          True -> summary.last_event_at_ms
+          False -> latest
+        }
+      })
+  }
 }
 
 fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {

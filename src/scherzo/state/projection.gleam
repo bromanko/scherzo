@@ -783,7 +783,9 @@ fn issue_counter_entry_to_json(
   ])
 }
 
-fn known_workspace_entry_to_json(entry: #(String, KnownWorkspace)) -> json.Json {
+fn known_workspace_entry_to_json(
+  entry: #(String, KnownWorkspace),
+) -> json.Json {
   let #(issue_id, workspace) = entry
   json.object([
     #("issue_id", json.string(issue_id)),

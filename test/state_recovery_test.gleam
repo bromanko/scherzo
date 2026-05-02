@@ -481,7 +481,9 @@ fn has_record_kind(records: List(record.LedgerRecord), kind: String) -> Bool {
   })
 }
 
-fn unwrap_counter(result: Result(domain.IssueCounter, a)) -> domain.IssueCounter {
+fn unwrap_counter(
+  result: Result(domain.IssueCounter, a),
+) -> domain.IssueCounter {
   let assert Ok(counter) = result
   counter
 }

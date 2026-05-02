@@ -17,7 +17,11 @@ fn tracker_config() -> domain.TrackerConfig {
   )
 }
 
-fn response_page(identifier: String, has_next: String, cursor: String) -> String {
+fn response_page(
+  identifier: String,
+  has_next: String,
+  cursor: String,
+) -> String {
   "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\""
   <> identifier
   <> "-id\",\"identifier\":\""

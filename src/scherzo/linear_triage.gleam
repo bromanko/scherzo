@@ -17,8 +17,7 @@ pub type TriageClient {
     report_invalid_workflow: fn(
       domain.Issue,
       workflow_policy.IssueWorkflowViolation,
-    ) ->
-      Result(InvalidWorkflowReportOutcome, error.TrackerError),
+    ) -> Result(InvalidWorkflowReportOutcome, error.TrackerError),
   )
 }
 

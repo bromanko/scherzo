@@ -59,6 +59,8 @@ pub type Error {
 
 pub type ControlClient {
   ControlClient(
+    list_sessions: fn(file.ControlFile) ->
+      Result(event.SessionList, client.ControlError),
     get_session: fn(file.ControlFile, String) ->
       Result(Option(event.SessionSummary), client.ControlError),
     get_events: fn(file.ControlFile, String, Int, Int) ->
@@ -68,8 +70,7 @@ pub type ControlClient {
       String,
       Int,
       fn(event.SessionEvent) -> client.StreamAction,
-    ) ->
-      Result(Nil, client.ControlError),
+    ) -> Result(Nil, client.ControlError),
     raw_request: fn(file.ControlFile, protocol.Request) ->
       Result(String, client.ControlError),
   )
@@ -142,7 +143,7 @@ fn default_flags() -> Flags {
 }
 
 pub fn usage() -> String {
-  "Usage: gleam run -- ctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions.\n  session <session-id>         Show one session summary.\n  events <session-id>          Replay recent compact event lines.\n  events --pretty <session-id> Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-id>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-id>          Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-id>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-id>    Replay and follow compact event lines.\n  attach --json <session-id>   Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-id>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-id> --yes     Abort a running session.\n  stop-after-turn <session-id> --yes\n                               Stop after the current turn.\n  prompt <session-id> <text>   Queue an operator prompt for a session.\n  ui respond <session-id> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --yes                        Confirm destructive commands.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: gleam run -- ctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST_EVENT is daemon-relative age; long ids are shortened).\n  session <session-id>         Show one session summary.\n  events <session-id>          Replay recent compact event lines.\n  events --pretty <session-id> Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-id>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-id>          Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-id>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-id>    Replay and follow compact event lines.\n  attach --json <session-id>   Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-id>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-id> --yes     Abort a running session.\n  stop-after-turn <session-id> --yes\n                               Stop after the current turn.\n  prompt <session-id> <text>   Queue an operator prompt for a session.\n  ui respond <session-id> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --yes                        Confirm destructive commands.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -350,7 +351,10 @@ fn events_color(mode: OutputMode, color: style.ColorMode) -> style.ColorMode {
   }
 }
 
-fn pretty_options(color: style.ColorMode, verbose: Bool) -> render.RenderOptions {
+fn pretty_options(
+  color: style.ColorMode,
+  verbose: Bool,
+) -> render.RenderOptions {
   case verbose {
     True -> render.verbose_options(color)
     False -> render.default_options(color)
@@ -408,9 +412,9 @@ pub fn run_with_deps(
             output,
           )
         False ->
-          case client.list_sessions(control_file) {
-            Ok(sessions) -> {
-              print_sessions_table(sessions, output)
+          case deps.list_sessions(control_file) {
+            Ok(snapshot) -> {
+              print_sessions_table(snapshot.sessions, snapshot.now_ms, output)
               Ok(Nil)
             }
             Error(err) -> Error(client_error(err))
@@ -771,24 +775,105 @@ fn print_raw_request(
   }
 }
 
+const ps_session_width = 34
+
+const ps_issue_width = 10
+
+const ps_status_width = 10
+
+const ps_turn_width = 4
+
 fn print_sessions_table(
   sessions: List(event.SessionSummary),
+  now_ms: Int,
   output: Output,
 ) -> Nil {
-  output.line("SESSION\tISSUE\tSTATUS\tTURN\tLAST_EVENT")
+  output.line(ps_table_row("SESSION", "ISSUE", "STATUS", "TURN", "LAST_EVENT"))
   list.each(sessions, fn(summary) {
-    output.line(
-      summary.session_id
-      <> "\t"
-      <> summary.issue_identifier
-      <> "\t"
-      <> event.status_to_string(summary.status)
-      <> "\t"
-      <> int.to_string(summary.current_turn)
-      <> "\t"
-      <> int.to_string(summary.last_event_at_ms),
-    )
+    output.line(ps_table_row(
+      ellipsize_middle(summary.session_id, ps_session_width),
+      ellipsize_middle(summary.issue_identifier, ps_issue_width),
+      event.status_to_string(summary.status),
+      int.to_string(summary.current_turn),
+      format_last_event_age(now_ms, summary.last_event_at_ms),
+    ))
   })
+}
+
+fn ps_table_row(
+  session_id: String,
+  issue: String,
+  status: String,
+  turn: String,
+  last_event: String,
+) -> String {
+  pad_right(session_id, ps_session_width)
+  <> "  "
+  <> pad_right(issue, ps_issue_width)
+  <> "  "
+  <> pad_right(status, ps_status_width)
+  <> "  "
+  <> pad_right(turn, ps_turn_width)
+  <> "  "
+  <> last_event
+}
+
+fn format_last_event_age(now_ms: Int, event_ms: Int) -> String {
+  let age_ms = case now_ms - event_ms < 0 {
+    True -> 0
+    False -> now_ms - event_ms
+  }
+  let seconds = age_ms / 1000
+  case seconds < 60 {
+    True -> int.to_string(seconds) <> "s ago"
+    False -> {
+      let minutes = seconds / 60
+      case minutes < 60 {
+        True -> int.to_string(minutes) <> "m ago"
+        False -> {
+          let hours = minutes / 60
+          case hours < 24 {
+            True -> int.to_string(hours) <> "h ago"
+            False -> int.to_string(hours / 24) <> "d ago"
+          }
+        }
+      }
+    }
+  }
+}
+
+fn ellipsize_middle(value: String, max_width: Int) -> String {
+  case string.length(value) <= max_width {
+    True -> value
+    False ->
+      case max_width <= 0 {
+        True -> ""
+        False ->
+          case max_width == 1 {
+            True -> "…"
+            False -> {
+              let available_width = max_width - 1
+              let prefix_width = available_width / 2
+              let suffix_width = available_width - prefix_width
+              string.slice(value, 0, prefix_width)
+              <> "…"
+              <> string.slice(
+                value,
+                string.length(value) - suffix_width,
+                suffix_width,
+              )
+            }
+          }
+      }
+  }
+}
+
+fn pad_right(value: String, width: Int) -> String {
+  let padding = width - string.length(value)
+  case padding > 0 {
+    True -> value <> string.repeat(" ", times: padding)
+    False -> value
+  }
 }
 
 fn print_session(summary: event.SessionSummary, output: Output) -> Nil {
@@ -858,6 +943,7 @@ fn get_cursor_state(key: String) -> Int
 
 fn real_control_client() -> ControlClient {
   ControlClient(
+    list_sessions: client.list_sessions_snapshot,
     get_session: client.get_session,
     get_events: client.get_events,
     stream_events: client.stream_events,
@@ -875,14 +961,18 @@ fn load_control_file(
   file.discover(explicit_path, file.get_env) |> map_file_error
 }
 
-fn map_file_error(result: Result(a, file.ControlFileError)) -> Result(a, Error) {
+fn map_file_error(
+  result: Result(a, file.ControlFileError),
+) -> Result(a, Error) {
   case result {
     Ok(value) -> Ok(value)
     Error(err) -> Error(file_error(err))
   }
 }
 
-fn map_client_error(result: Result(a, client.ControlError)) -> Result(a, Error) {
+fn map_client_error(
+  result: Result(a, client.ControlError),
+) -> Result(a, Error) {
   case result {
     Ok(value) -> Ok(value)
     Error(err) -> Error(client_error(err))

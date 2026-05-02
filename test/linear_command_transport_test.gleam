@@ -223,7 +223,9 @@ fn ack_count(actions: List(linear_transport.TransportAction)) -> Int {
   }
 }
 
-fn first_ack(actions: List(linear_transport.TransportAction)) -> Option(String) {
+fn first_ack(
+  actions: List(linear_transport.TransportAction),
+) -> Option(String) {
   case actions {
     [] -> None
     [linear_transport.PostAck(_, body), ..] -> Some(body)

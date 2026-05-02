@@ -91,7 +91,10 @@ pub fn status_reason(status: CommandStatus) -> Option(String) {
   }
 }
 
-pub fn status_from_string(name: String, reason: Option(String)) -> CommandStatus {
+pub fn status_from_string(
+  name: String,
+  reason: Option(String),
+) -> CommandStatus {
   case name {
     "applied" -> Applied
     "queued" -> Queued

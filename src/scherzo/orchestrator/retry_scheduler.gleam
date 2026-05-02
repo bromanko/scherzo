@@ -65,7 +65,10 @@ pub fn finish_refresh(state: State(timer), issue_id: String) -> State(timer) {
   )
 }
 
-pub fn cancel_all(state: State(timer), cancel: fn(timer) -> Nil) -> State(timer) {
+pub fn cancel_all(
+  state: State(timer),
+  cancel: fn(timer) -> Nil,
+) -> State(timer) {
   dict.each(state.timers, fn(_, timer) { cancel(timer) })
   new()
 }

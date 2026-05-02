@@ -78,6 +78,10 @@ pub type SessionSummary {
   )
 }
 
+pub type SessionList {
+  SessionList(sessions: List(SessionSummary), now_ms: Int)
+}
+
 pub type SessionEvent {
   SessionEvent(
     cursor: Int,

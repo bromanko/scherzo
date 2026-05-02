@@ -691,7 +691,10 @@ fn fail_startup_recovery_outbox(
   state
 }
 
-fn log_startup_recovery_warnings(state: State, warnings: List(String)) -> State {
+fn log_startup_recovery_warnings(
+  state: State,
+  warnings: List(String),
+) -> State {
   list.each(warnings, fn(warning) {
     log_state(state, "warn", "startup_recovery_warning", [#("warning", warning)])
   })
@@ -731,7 +734,10 @@ fn map_recovery_error(
   }
 }
 
-fn handle_message(state: State, message: Message) -> actor.Next(State, Message) {
+fn handle_message(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
   case message {
     PollTick(generation) -> actor.continue(handle_poll_tick(state, generation))
     RetryTick(issue_id, generation) ->
@@ -828,7 +834,10 @@ fn handle_yaml_step_command_ready(
   )
 }
 
-fn clear_yaml_step_command_routes_for_run(state: State, run_id: String) -> State {
+fn clear_yaml_step_command_routes_for_run(
+  state: State,
+  run_id: String,
+) -> State {
   State(
     ..state,
     registry: worker_registry.clear_yaml_step_command_routes_for_run(
@@ -1209,8 +1218,7 @@ fn route_worker_command_sync(
   send: fn(
     process.Subject(worker_command.Command),
     process.Subject(worker_command.Reply),
-  ) ->
-    Nil,
+  ) -> Nil,
 ) -> #(State, command.CommandResult) {
   case worker_for_session(state, session_id) {
     Error(Nil) ->
@@ -1277,8 +1285,7 @@ fn route_step_command_sync(
   send: fn(
     process.Subject(worker_command.Command),
     process.Subject(worker_command.Reply),
-  ) ->
-    Nil,
+  ) -> Nil,
 ) -> #(State, command.CommandResult) {
   case
     worker_registry.step_command_subject_for_session(state.registry, session_id)
@@ -1305,8 +1312,7 @@ fn send_worker_command_sync(
   send: fn(
     process.Subject(worker_command.Command),
     process.Subject(worker_command.Reply),
-  ) ->
-    Nil,
+  ) -> Nil,
   subject: process.Subject(worker_command.Command),
 ) -> #(State, command.CommandResult) {
   let worker_reply = process.new_subject()
@@ -2344,7 +2350,11 @@ fn defer_retry_until_dispatch_available(
   )
 }
 
-fn begin_retry_refresh(state: State, issue_id: String, generation: Int) -> State {
+fn begin_retry_refresh(
+  state: State,
+  issue_id: String,
+  generation: Int,
+) -> State {
   case retry_scheduler.begin_refresh(state.retry, issue_id, generation) {
     Error(_) -> {
       log_state(state, "info", "retry_timer_stale", [#("issue_id", issue_id)])

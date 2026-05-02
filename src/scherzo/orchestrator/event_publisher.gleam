@@ -74,8 +74,9 @@ pub fn update_payload(update: runner.PiUpdate) -> session_event.EventPayload {
 
 pub fn kind_for_update(update: runner.PiUpdate) -> session_event.EventKind {
   case update.event {
-    pi_event.ProbeStarted | pi_event.ProbeFinished | pi_event.PiSessionStarted ->
-      session_event.Lifecycle
+    pi_event.ProbeStarted
+    | pi_event.ProbeFinished
+    | pi_event.PiSessionStarted -> session_event.Lifecycle
     pi_event.TurnFinished -> session_event.TokenStats
     pi_event.MessageStart | pi_event.MessageUpdate | pi_event.MessageEnd ->
       session_event.AssistantMessage

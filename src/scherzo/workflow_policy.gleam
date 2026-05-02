@@ -50,7 +50,9 @@ pub fn workflow_satisfied(decision: IssueWorkflowDecision) -> Bool {
   }
 }
 
-pub fn allowed_label_names(config: domain.LinearContractConfig) -> List(String) {
+pub fn allowed_label_names(
+  config: domain.LinearContractConfig,
+) -> List(String) {
   let prefix = normalize(config.workflow_label_prefix)
   normalized_allowed_workflows(config)
   |> list.map(fn(suffix) { prefix <> suffix })

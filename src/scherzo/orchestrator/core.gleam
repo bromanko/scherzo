@@ -96,7 +96,9 @@ fn encode_optional_string(value: Option(String)) -> String {
   }
 }
 
-fn encode_optional_issue_state(value: Option(issue_state.IssueState)) -> String {
+fn encode_optional_issue_state(
+  value: Option(issue_state.IssueState),
+) -> String {
   case value {
     None -> "none"
     Some(value) -> "some:" <> encode_string(issue_state.to_string(value))
@@ -223,14 +225,20 @@ fn issue_has_required_fields(issue: domain.Issue) -> Bool {
   && string.trim(issue_state.to_string(issue.state)) != ""
 }
 
-fn is_parked_for_issue(state: domain.RuntimeState, issue: domain.Issue) -> Bool {
+fn is_parked_for_issue(
+  state: domain.RuntimeState,
+  issue: domain.Issue,
+) -> Bool {
   case dict.get(state.parked, issue.id) {
     Ok(parked) -> park_blocks_dispatch(parked, issue)
     Error(_) -> False
   }
 }
 
-fn park_blocks_dispatch(parked: domain.ParkedEntry, issue: domain.Issue) -> Bool {
+fn park_blocks_dispatch(
+  parked: domain.ParkedEntry,
+  issue: domain.Issue,
+) -> Bool {
   case parked.release_policy {
     domain.ExplicitUnparkOnly -> True
     domain.AutoUnparkOnIssueChange(stored) -> stored == issue_fingerprint(issue)

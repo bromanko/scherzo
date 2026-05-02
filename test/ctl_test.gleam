@@ -1,8 +1,103 @@
+import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/command
+import scherzo/control/file
+import scherzo/control/protocol
 import scherzo/ctl
+import scherzo/domain
+import scherzo/session/event
 import scherzo/terminal/style
+
+const ps_now_ms = -576_460_678_330
+
+type OutMsg {
+  OutLine(String)
+  OutInline(String)
+}
+
+fn control_file() -> file.ControlFile {
+  file.ControlFile(
+    host: "127.0.0.1",
+    port: 1,
+    token: "token",
+    workspace_root: "test/tmp/ctl-ps/workspaces",
+    started_at_ms: 1,
+  )
+}
+
+fn write_control_file(path: String) -> Nil {
+  let assert Ok(Nil) = file.write(path, control_file())
+  Nil
+}
+
+fn session_summary(
+  session_id: String,
+  last_event_at_ms: Int,
+) -> event.SessionSummary {
+  event.SessionSummary(
+    session_id: session_id,
+    issue_id: "issue-1",
+    issue_identifier: "LIV-41",
+    issue_title: "Improve ctl ps output readability",
+    workspace_path: "/tmp/workspace",
+    pi_session_id: None,
+    status: event.Running,
+    current_turn: 1,
+    started_at_ms: last_event_at_ms - 1000,
+    last_event_at_ms: last_event_at_ms,
+    token_totals: domain.zero_token_totals(),
+  )
+}
+
+fn ps_deps(
+  sessions: List(event.SessionSummary),
+  now_ms: Int,
+  raw_response: String,
+) -> ctl.ControlClient {
+  ctl.ControlClient(
+    list_sessions: fn(_) {
+      Ok(event.SessionList(sessions: sessions, now_ms: now_ms))
+    },
+    get_session: fn(_, _) { Ok(None) },
+    get_events: fn(_, _, _, _) {
+      Ok(event.EventPage(events: [], next_cursor: 0, truncated: False))
+    },
+    stream_events: fn(_, _, _, _) { Ok(Nil) },
+    raw_request: fn(_, request) {
+      case raw_response == "" {
+        True -> Ok(protocol.request_to_string(request))
+        False -> Ok(raw_response)
+      }
+    },
+  )
+}
+
+fn output(subject: process.Subject(OutMsg)) -> ctl.Output {
+  ctl.Output(
+    line: fn(text) {
+      process.send(subject, OutLine(text))
+      Nil
+    },
+    inline: fn(text) {
+      process.send(subject, OutInline(text))
+      Nil
+    },
+  )
+}
+
+fn drain_output(subject: process.Subject(OutMsg)) -> String {
+  drain_output_loop(subject, "")
+}
+
+fn drain_output_loop(subject: process.Subject(OutMsg), acc: String) -> String {
+  case process.receive(subject, within: 10) {
+    Ok(OutLine(text)) -> drain_output_loop(subject, acc <> text <> "\n")
+    Ok(OutInline(text)) -> drain_output_loop(subject, acc <> text)
+    Error(Nil) -> acc
+  }
+}
 
 pub fn parse_ping_ps_session_events_and_attach_test() {
   assert ctl.parse(["ping"]) == Ok(ctl.Ping(None, False))
@@ -168,6 +263,7 @@ pub fn usage_mentions_commands_and_options_test() {
   let usage = ctl.usage()
   assert string.contains(usage, "ping")
   assert string.contains(usage, "ps")
+  assert string.contains(usage, "LAST_EVENT is daemon-relative age")
   assert string.contains(usage, "session <session-id>")
   assert string.contains(usage, "events <session-id>")
   assert string.contains(usage, "events --pretty <session-id>")
@@ -183,4 +279,66 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "--json")
   assert string.contains(usage, "--verbose")
   assert string.contains(usage, "--since-cursor <n>")
+}
+
+pub fn ps_human_table_shortens_long_session_ids_and_formats_last_event_age_test() {
+  let path = "test/tmp/ctl-ps/table-control.json"
+  write_control_file(path)
+  let top_level_session_id = "LONGISSUE-12345--576460690849-123456789"
+  let step_session_id = "LONGISSUE-12345--576460690849-123456789-validate_draft"
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Ps(Some(path), False),
+      ps_deps(
+        [
+          session_summary(top_level_session_id, -576_460_690_330),
+          session_summary(step_session_id, ps_now_ms - 180_000),
+        ],
+        ps_now_ms,
+        "",
+      ),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "SESSION")
+  assert string.contains(transcript, "LAST_EVENT")
+  assert string.contains(transcript, "12s ago")
+  assert string.contains(transcript, "3m ago")
+  assert string.contains(transcript, "…")
+  assert string.contains(transcript, "123456789")
+  assert string.contains(transcript, "validate_draft")
+  assert !string.contains(transcript, top_level_session_id)
+  assert !string.contains(transcript, step_session_id)
+  assert !string.contains(transcript, "-576460690330")
+
+  let rows = string.trim(transcript) |> string.split(on: "\n")
+  assert list.all(rows, fn(row) { string.length(row) <= 80 })
+}
+
+pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
+  let path = "test/tmp/ctl-ps/json-control.json"
+  write_control_file(path)
+  let session_id = "LONGISSUE-12345--576460690849-123456789-validate_draft"
+  let raw_response =
+    "{\"session_id\":\""
+    <> session_id
+    <> "\",\"last_event_at_ms\":-576460690330}"
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Ps(Some(path), True),
+      ps_deps([], ps_now_ms, raw_response),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, session_id)
+  assert string.contains(transcript, "-576460690330")
+  assert !string.contains(transcript, "…")
 }

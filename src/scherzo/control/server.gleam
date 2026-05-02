@@ -19,7 +19,7 @@ pub type Settings {
 
 pub type Backend {
   Backend(
-    list_sessions: fn(Int) -> Result(List(event.SessionSummary), hub.HubError),
+    list_sessions: fn(Int) -> Result(event.SessionList, hub.HubError),
     get_session: fn(String, Int) ->
       Result(Option(event.SessionSummary), hub.HubError),
     events_after: fn(String, Int, Int, Int) ->
@@ -54,7 +54,9 @@ pub fn default_settings(token: String) -> Settings {
 
 pub fn event_hub_store(subject: process.Subject(hub.Message)) -> Backend {
   Backend(
-    list_sessions: fn(timeout_ms) { hub.list_sessions(subject, timeout_ms) },
+    list_sessions: fn(timeout_ms) {
+      hub.list_sessions_snapshot(subject, timeout_ms)
+    },
     get_session: fn(session_id, timeout_ms) {
       hub.get_session(subject, session_id, timeout_ms)
     },
@@ -71,7 +73,10 @@ pub fn event_hub_store(subject: process.Subject(hub.Message)) -> Backend {
   )
 }
 
-pub fn start(settings: Settings, store: Backend) -> Result(Server, ServerError) {
+pub fn start(
+  settings: Settings,
+  store: Backend,
+) -> Result(Server, ServerError) {
   case ffi_listen(settings.host, settings.port) {
     Error(message) -> Error(ServerStartFailed(message))
     Ok(listener) -> {
@@ -116,7 +121,11 @@ fn drain_trapped_exits() -> Nil {
   }
 }
 
-fn handle_connection(socket: Socket, settings: Settings, store: Backend) -> Nil {
+fn handle_connection(
+  socket: Socket,
+  settings: Settings,
+  store: Backend,
+) -> Nil {
   case ffi_recv_line(socket, 5000) {
     Error(_) -> close_socket(socket)
     Ok(line) ->
@@ -162,8 +171,8 @@ fn handle_authorized_request(
     }
     protocol.ListSessions(id, _) -> {
       let response = case store.list_sessions(settings.event_timeout_ms) {
-        Ok(sessions) ->
-          protocol.success_response(id, protocol.list_sessions_data(sessions))
+        Ok(snapshot) ->
+          protocol.success_response(id, protocol.list_sessions_data(snapshot))
         Error(err) -> error_for_hub(id, err)
       }
       let _ = send_response(socket, response)

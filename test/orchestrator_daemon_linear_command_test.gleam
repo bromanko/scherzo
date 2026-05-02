@@ -340,8 +340,7 @@ fn dependencies(
     fn(String, runner.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) ->
-    Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     make_tracker: fn(_) { tracker_client },
@@ -393,8 +392,7 @@ fn workflow_deps_from_agent(
     fn(String, runner.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) ->
-    Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> workflow_run.Dependencies {
   workflow_run.Dependencies(
     ..workflow_run.default_dependencies(),

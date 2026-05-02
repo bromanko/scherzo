@@ -113,7 +113,9 @@ pub fn compact(ledger_path: LedgerPath) -> Result(Nil, LedgerError) {
   with_ledger_lock(ledger_path.ledger_dir, fn() { compact_locked(ledger_path) })
 }
 
-fn replay_unlocked(ledger_path: LedgerPath) -> Result(ReplayResult, LedgerError) {
+fn replay_unlocked(
+  ledger_path: LedgerPath,
+) -> Result(ReplayResult, LedgerError) {
   use snapshot_projection <- result.try(read_snapshot(ledger_path))
   use read <- result.try(read_records_unlocked(ledger_path))
   Ok(ReplayResult(
@@ -334,7 +336,9 @@ fn write_snapshot_atomically(
   }
 }
 
-fn archive_current_segment(ledger_path: LedgerPath) -> Result(Nil, LedgerError) {
+fn archive_current_segment(
+  ledger_path: LedgerPath,
+) -> Result(Nil, LedgerError) {
   case simplifile.file_info(ledger_path.current_path) {
     Error(simplifile.Enoent) ->
       simplifile.write(ledger_path.current_path, "")
