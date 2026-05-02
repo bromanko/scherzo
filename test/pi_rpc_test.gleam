@@ -46,6 +46,12 @@ pub fn decode_response_and_event_test() {
     pi_rpc.decode_record("{\"type\":\"message_update\",\"delta\":\"hi\"}")
   assert event.delta == Some("hi")
   assert string.contains(event.raw_json, "message_update")
+
+  let assert Ok(codex_event) =
+    pi_rpc.decode_record(
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"delta\":\"nested hi\"}}",
+    )
+  assert codex_event.delta == Some("nested hi")
 }
 
 pub fn stepwise_prompt_read_and_stats_with_fake_pi_test() {
@@ -110,6 +116,12 @@ pub fn decode_agent_end_assistant_messages_test() {
       "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":\"final answer\"},{\"role\":\"user\",\"content\":\"ignored\"},{\"role\":\"assistant\",\"content\":123}]}",
     )
   assert record.assistant_messages == ["final answer"]
+
+  let assert Ok(codex_record) =
+    pi_rpc.decode_record(
+      "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hidden\"},{\"type\":\"text\",\"text\":\"visible final\"},{\"type\":\"text\",\"text\":\"second block\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"ignored\"}]}]}",
+    )
+  assert codex_record.assistant_messages == ["visible final\nsecond block"]
 }
 
 pub fn decode_captured_assistant_tool_call_and_tool_result_test() {

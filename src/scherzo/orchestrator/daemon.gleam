@@ -3184,6 +3184,28 @@ fn finish_worker_success(
   }
 }
 
+fn worker_failure_message(
+  failure: runner.WorkerFailure,
+  secrets: List(String),
+) -> String {
+  let code = error.agent_code(failure.reason)
+  case failure.reason {
+    error.PiFailed(error.PiProtocolError(reason)) ->
+      code <> ":pi_protocol_error:" <> log.redact("failure", reason, secrets)
+    error.PiFailed(pi_error) -> code <> ":" <> error.pi_rpc_code(pi_error)
+    error.ProbeFailed(pi_error) -> code <> ":" <> error.pi_rpc_code(pi_error)
+    error.PromptFailed(template_error) ->
+      code <> ":" <> error.template_code(template_error)
+    error.WorkspaceFailed(workspace_error) ->
+      code <> ":" <> error.workspace_code(workspace_error)
+    error.HookFailedError(hook_error) ->
+      code <> ":" <> error.hook_code(hook_error)
+    error.StateRefreshFailed(tracker_error) ->
+      code <> ":" <> error.tracker_code(tracker_error)
+    error.OperatorAbort | error.OperatorStopAfterCurrentTurn -> code
+  }
+}
+
 fn finish_worker_failure(
   state: State,
   handle: worker_registry.WorkerHandle,
@@ -3205,16 +3227,18 @@ fn finish_worker_failure(
         session_reason.OperatorStopAfterCurrentTurn,
       )
     _ -> {
+      let failure_message =
+        worker_failure_message(failure, state.workflow.secrets)
       log_state(state, "warn", "worker_exited", [
         #("issue_id", handle.issue_id),
         #("run_id", handle.run_id),
-        #("reason", "failed"),
+        #("reason", failure_message),
       ])
       event_publisher.lifecycle(
         state.event_hub,
         handle.session_id,
         session_event.WorkerExited,
-        Some("failed"),
+        Some(failure_message),
       )
       hub.finish_session(
         state.event_hub,

@@ -40,7 +40,7 @@ sanitize_key() {
 }
 
 issue_key=$(sanitize_key "${SCHERZO_ISSUE_IDENTIFIER:-issue}")
-run_key=$(sanitize_key "${SCHERZO_RUN_ID:-run}" | cut -c 1-12)
+run_key=$(sanitize_key "${SCHERZO_RUN_ID:-run}")
 logical_workspace_key=$(sanitize_key "${SCHERZO_WORKSPACE_NAME:-$(basename "$workspace_path")}")
 
 [ -n "$issue_key" ] || issue_key=issue
@@ -118,7 +118,6 @@ case "$command" in
     require_jj_repo_root
     if [ -d "$workspace_path/.jj" ]; then
       verify_current_workspace
-      allow_trusted_envrc_after_create
       exit 0
     fi
     prepare_destination_for_workspace_add

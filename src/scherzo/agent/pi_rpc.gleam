@@ -673,11 +673,16 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     decode.optional(decode.bool),
   )
   use data <- decode.optional_field("data", empty_data(), data_decoder())
-  use delta <- decode.optional_field(
+  use top_delta <- decode.optional_field(
     "delta",
     None,
     decode.optional(decode.string),
   )
+  use assistant_event_delta <- decode.then(decode.optionally_at(
+    ["assistantMessageEvent", "delta"],
+    None,
+    decode.optional(decode.string),
+  ))
   use message <- decode.optional_field(
     "message",
     None,
@@ -753,6 +758,7 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     None,
     decode.optional(decode.string),
   )
+  let delta = first_non_empty([top_delta, assistant_event_delta])
   decode.success(RpcRecord(
     type_: type_,
     id: id,
@@ -839,9 +845,31 @@ fn agent_end_message_decoder() -> decode.Decoder(AgentEndMessage) {
   use content <- decode.optional_field(
     "content",
     None,
-    tolerant_optional_string_decoder(),
+    agent_end_content_decoder(),
   )
   decode.success(AgentEndMessage(role: role, content: content))
+}
+
+fn agent_end_content_decoder() -> decode.Decoder(Option(String)) {
+  decode.one_of(decode.optional(decode.string), or: [
+    decode.list(of: content_item_decoder())
+      |> decode.map(all_text_content),
+    decode.dynamic |> decode.map(fn(_) { None }),
+  ])
+}
+
+fn all_text_content(items: List(ContentItem)) -> Option(String) {
+  let texts =
+    list.filter_map(items, fn(item) {
+      case item.text {
+        Some(text) -> non_empty(text) |> option_to_result
+        None -> Error(Nil)
+      }
+    })
+  case texts {
+    [] -> None
+    _ -> Some(string.join(texts, with: "\n"))
+  }
 }
 
 fn assistant_message_texts(messages: List(AgentEndMessage)) -> List(String) {
