@@ -59,6 +59,8 @@ pub fn load_projection_replays_snapshot_plus_current_segment_test() {
     reason: "blocked",
     observed_updated_at_ms: 2900,
     parked_at_ms: 3000,
+    release_policy: "explicit_unpark_only",
+    issue_fingerprint: "",
   )) = dict.get(loaded.parked_issues, "issue-2")
 }
 

@@ -1,3 +1,4 @@
+import gleam/option.{Some}
 import gleam/string
 import scherzo/state/record
 
@@ -82,6 +83,77 @@ pub fn encodes_and_decodes_retry_and_park_records_test() {
       reason: "operator",
     ),
   ))
+}
+
+pub fn encodes_and_decodes_recovery_records_test() {
+  assert_roundtrip(record.with_id(
+    "counter-1",
+    9000,
+    record.IssueCounterUpdated(
+      issue_id: "issue-1",
+      issue_identifier: "SCH-1",
+      failure_attempts: 2,
+      worker_sessions: 1,
+      observed_updated_at_ms: 8999,
+      source_run_id: Some("run-1"),
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "workspace-1",
+    9100,
+    record.KnownWorkspace(
+      issue_id: "issue-1",
+      issue_identifier: "SCH-1",
+      workspace_path: ".scherzo/workspaces/SCH-1",
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "park-v2-1",
+    9200,
+    record.IssueParkedV2(
+      issue_id: "issue-2",
+      issue_identifier: "SCH-2",
+      reason: "max_retry_attempts",
+      release_policy: "auto_unpark_on_issue_change",
+      issue_fingerprint: "fingerprint",
+      observed_updated_at_ms: 9199,
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "outbox-v2-1",
+    9300,
+    record.OutboxPendingV2(
+      outbox_id: "outbox-1",
+      issue_id: "issue-1",
+      outbox_kind: "linear_comment",
+      dedupe_key: "run-1:success",
+      payload_json: "{\"body\":\"ok\"}",
+    ),
+  ))
+}
+
+pub fn outbox_pending_v2_payload_is_redacted_and_bounded_test() {
+  let long = string.repeat("x", times: record.max_excerpt_chars + 20)
+  let unsafe =
+    record.with_id(
+      "outbox-secret",
+      9400,
+      record.OutboxPendingV2(
+        outbox_id: "outbox-secret",
+        issue_id: "issue-1",
+        outbox_kind: "linear_comment",
+        dedupe_key: "run-1:secret",
+        payload_json: "{\"body\":\"secret-value " <> long <> "\"}",
+      ),
+    )
+  let encoded =
+    unsafe
+    |> record.redact_excerpts(["secret-value"])
+    |> record.to_string
+
+  assert !string.contains(encoded, "secret-value")
+  assert string.contains(encoded, "[REDACTED]")
+  assert string.length(encoded) < record.max_excerpt_chars + 260
 }
 
 pub fn retry_scheduled_requires_delay_ms_test() {

@@ -41,6 +41,8 @@ pub fn append_and_replay_records_test() {
     reason: "blocked",
     observed_updated_at_ms: 2900,
     parked_at_ms: 3000,
+    release_policy: "explicit_unpark_only",
+    issue_fingerprint: "",
   )) = dict.get(replayed.projection.parked_issues, "issue-2")
   let assert Ok(projection.CommandCompleted(
     issue_id: "issue-1",
