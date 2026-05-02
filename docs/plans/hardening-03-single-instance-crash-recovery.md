@@ -95,6 +95,11 @@ The main stale-lock risk remains manual after an abrupt kill. Countermeasure: do
 - [x] (2026-05-01 23:43Z) Ran `direnv exec . gleam format`, `direnv exec . gleam format --check src test`, and `direnv exec . gleam test`; observed 520 passed, no failures before the stale jj workspace update.
 - [x] (2026-05-01 23:44Z) Skipped the final commit step because this workspace initially appeared to have no Git or Jujutsu metadata while the working copy was stale.
 - [x] (2026-05-01 23:56Z) Ran `jj workspace update-stale`, resolved conflicts only in the `liv-20-crash-recovery` workspace history, adapted the new recovery test config to the rebased `HandoffConfig` shape, and reran validation; observed 493 passed, no failures.
+- [x] (2026-05-02 00:40Z) Performed manual local daemon recovery smoke validation with an ad-hoc temporary test module, covering empty-ledger startup and preseeded-ledger startup recovery for parked state, overdue retry state, terminal known-workspace cleanup, and appended `run_interrupted`; removed the temporary module and scratch dirs afterward.
+- [x] (2026-05-02 00:42Z) Rebuilt from a clean `build/` directory and reran `direnv exec . gleam test`; observed 497 passed, no failures.
+- [x] (2026-05-02 01:28Z) Used Linear credentials from `~/Code/scherzo/.env.local` and ran a live read-only doctor smoke against `.scherzo/scherzo.yaml`; workflow config and Linear smoke passed with 2 candidates, 8 terminal samples, and 1 refreshed issue.
+- [x] (2026-05-02 01:29Z) Ran an isolated live daemon recovery smoke with a temporary `.scherzo/scherzo.recovery-smoke.yaml` that set `workspace.root: workspaces/recovery-smoke`, `max_concurrent_agents: 0`, and `max_retry_attempts: 1`; verified empty-ledger startup/control ping, live Linear refresh for a preseeded active interrupted run, one-time `run_interrupted`/counter/park append, repeat-restart idempotence, and recovered parked state via `ctl unpark`.
+- [x] (2026-05-02 02:58Z) Ran a safe live end-to-end daemon dogfood with a disposable Linear issue `LIV-38`, temporary `.scherzo/scherzo.e2e-safe.yaml`, real workspace hooks, real pi, and the checked-in `research` workflow; observed two successful claim/run/completion cycles, two claim comments, two completion comments, no failure comments, and ledger records `known_workspace`, `run_started`, `run_finished`, and counter updates. Manually moved the disposable issue to `Done` afterward because this repository's checked-in handoff config is comments-only and does not update Linear state.
 
 ## Surprises & Discoveries
 
@@ -112,6 +117,18 @@ The main stale-lock risk remains manual after an abrupt kill. Countermeasure: do
 
 - Observation: The stale workspace update rebased this workspace onto a history that no longer includes Linear attachment tests or the newer 11-field `HandoffConfig` shape.
   Evidence: The conflict resolution deleted `test/linear_attachment_graphql_test.gleam` and `test/linear_attachment_test.gleam`, removed the stray `scherzo/linear_attachment` import from `test/handoff_test.gleam`, and `direnv exec . gleam test` then required `test/state_recovery_test.gleam` to use the 9-field `domain.HandoffConfig`; the final suite reported 493 passed.
+
+- Observation: Manual daemon validation exposed the same relative workspace-root normalization behavior visible in other tests: relative `workspace.root` values are resolved from the config directory, so preseeded ledger records must be written to the resolved root, not the literal YAML text.
+  Evidence: The first ad-hoc preseeded daemon validation started successfully but recovered no parked state because the ledger was written under `test/tmp/manual-recovery-preseeded/workspaces` while daemon startup looked under the config-directory-resolved root. Rewriting the preseed to that resolved root made the validation pass.
+
+- Observation: The live smoke can validate startup recovery with real Linear reads without dispatching work or launching pi by using an isolated workspace root and `max_concurrent_agents: 0`.
+  Evidence: A temporary `.scherzo/scherzo.recovery-smoke.yaml` passed `doctor --check workflow-config --check linear-smoke`, started the daemon, responded to `ctl ping`, recovered a preseeded `run_started` for active issue `LIV-11` by appending exactly one `run_interrupted`, one recovery counter update, and one `issue_parked_v2`, did not append duplicates on a second restart, and exposed the recovered parked runtime state through `ctl unpark`.
+
+- Observation: The smoke harness must terminate the BEAM process, not just the wrapper command, when backgrounding `direnv exec . gleam run`.
+  Evidence: Killing the background wrapper left two smoke-only `beam.smp` processes running with `.scherzo/scherzo.recovery-smoke.yaml` in their command lines. Sending `SIGTERM` to those exact BEAM pids stopped them and removed the smoke control file and instance lock.
+
+- Observation: The checked-in handoff configuration is genuinely comments-only, so a successful daemon run can remain in an active Linear state and be picked up again on a later poll unless an operator moves it to a terminal state.
+  Evidence: The safe e2e issue `LIV-38` started in `In Progress`, received a Scherzo claim comment and completion comment, and recorded `run_finished` with terminal classification, but its Linear state stayed `In Progress`. The temporary e2e daemon polled again after its 600-second interval and repeated the successful run, producing a second claim/completion pair. The issue was manually moved to `Done` after the smoke to prevent future dispatch by the normal config.
 
 ## Decision Log
 
@@ -161,7 +178,7 @@ Implemented single-instance startup recovery from the local ledger. The final re
 
 The daemon now emits durable facts for successful claims before worker spawn, worker finish before handoff reporting, retry schedule/cancel effects, park/unpark transitions, and Linear command acknowledgement outbox pending/completed status. Startup replays the ledger, refreshes ledger-known issue ids in chunks of 50, appends recovery records with fsync, initializes runtime state from the recovery plan, schedules recovered retry timers, enqueues terminal workspace cleanup, and then polls.
 
-Final validation passed with `direnv exec . gleam format --check src test` and `direnv exec . gleam test`; after the stale workspace update and conflict resolution, the suite reported 493 passed, no failures. The main remaining duplicate window is still at-least-once Linear side effects: a crash after the external side effect succeeds but before `OutboxCompleted` is appended can replay the side effect on restart.
+Final validation passed with `direnv exec . gleam format --check src test` and `direnv exec . gleam test`; after the stale workspace update, conflict resolution, and manual smoke validation cleanup, a clean rebuild reported 497 passed, no failures. Additional live smoke validation used real Linear credentials from `~/Code/scherzo/.env.local` in an isolated, non-dispatching daemon config and proved empty startup, Linear-backed interrupted-run recovery, restart idempotence, and recovered parked-state control behavior without launching pi or claiming work. A further safe e2e dogfood created disposable issue `LIV-38`, ran the real daemon, workspace hooks, pi probe/session, and `research` workflow, and produced claim/completion comments plus durable run ledger records; it also confirmed that comments-only handoff requires operator state cleanup to avoid repeat dispatch. The main remaining duplicate window is still at-least-once Linear side effects: a crash after the external side effect succeeds but before `OutboxCompleted` is appended can replay the side effect on restart, and the live smokes did not exercise the mutating Linear-command outbox replay path.
 
 ## Context and Orientation
 
