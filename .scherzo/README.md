@@ -26,11 +26,11 @@ The checked-in workflow expects:
 export LINEAR_API_KEY=lin_api_...
 # Optional. Defaults to openai-codex/gpt-5.5:xhigh for workflow:research.
 export SCHERZO_RESEARCH_PI_MODEL=openai-codex/gpt-5.5:xhigh
-# Optional. Defaults to openai-codex/gpt-5.5:xhigh for workflow:execplan and workflow:execplan-revision.
+# Optional. Defaults to openai-codex/gpt-5.5:xhigh for workflow:execplan, workflow:execplan-revision, and workflow:execplan-implementation.
 export SCHERZO_EXECPLAN_PI_MODEL=openai-codex/gpt-5.5:xhigh
-# Optional. Git remote used by workflow:execplan and workflow:execplan-revision.
+# Optional. Git remote used by workflow:execplan, workflow:execplan-revision, and workflow:execplan-implementation.
 export SCHERZO_PR_REMOTE=origin
-# Optional. PR base used by workflow:execplan when creating a new PR.
+# Optional. PR base used by workflow:execplan and workflow:execplan-implementation when creating a new PR.
 export SCHERZO_PR_BASE=main
 # Optional. Defaults to the owner/repo inferred from SCHERZO_PR_REMOTE.
 export SCHERZO_PR_REPO=bromanko/scherzo
@@ -57,6 +57,7 @@ The project must also make these issue labels assignable:
 - `workflow:implementation`
 - `workflow:execplan`
 - `workflow:execplan-revision`
+- `workflow:execplan-implementation`
 - `needs-workflow`
 - `needs-clarification`
 
@@ -74,6 +75,7 @@ The checked-in workflows are:
 - `workflow:implementation` — implement, run format/tests, review, apply feedback, final validate, and summarize.
 - `workflow:execplan` — uses repo-local exec-plan skills with `openai-codex/gpt-5.5:xhigh` to draft a plan in `docs/plans/`, adversarially review it, incorporate the review, push a jj bookmark, and open a ready GitHub PR.
 - `workflow:execplan-revision` — finds an existing ExecPlan PR referenced by a human-friendly Linear issue phrase such as `Revise PR #51`, fetches the latest PR head, collects top-level/review/inline GitHub feedback, revises only the plan file, pushes the existing PR branch, and posts one concise PR acknowledgement.
+- `workflow:execplan-implementation` — finds exactly one `docs/plans/*.md` ExecPlan referenced by the Linear issue, implements it in an isolated jj workspace, detects changed Gleam files across the full workflow diff, runs vendored project-local Gleam review with medium fixes, validates format and tests through direnv, publishes a final jj bookmark as a GitHub PR, and lets Scherzo delete the workspace only after publication. If the workflow stops before publication, a `.scherzo-keep-workspace` marker keeps the run directory for operator recovery instead of deleting unpushed work.
 
 Use the research workflow for the first supervised run:
 
@@ -93,4 +95,4 @@ scripts/scherzoctl attach <session-id>
 scripts/scherzoctl prompt <session-id> "Please produce a Linear-ready result summary."
 ```
 
-For the first run, create or select one Linear issue in an active state with exactly one workflow label such as `workflow:research`, `workflow:implementation`, `workflow:execplan`, or `workflow:execplan-revision`. For revision issues, reference the PR in the title, description, or a comment with text like `Revise PR #51`, `bromanko/scherzo#51`, or a full GitHub PR URL; bare `#51` is intentionally not enough. Handoff moves claimed issues to `In Progress`, successful issues to `Done`, and failed issues to `Needs Workflow` using checked Linear state IDs, and success comments include the workflow result inline rather than as a Markdown attachment. Keep `linear_commands.enabled: false`; use `scherzoctl` until the operator loop feels boring.
+For the first run, create or select one Linear issue in an active state with exactly one workflow label such as `workflow:research`, `workflow:implementation`, `workflow:execplan`, `workflow:execplan-revision`, or `workflow:execplan-implementation`. For revision issues, reference the PR in the title, description, or a comment with text like `Revise PR #51`, `bromanko/scherzo#51`, or a full GitHub PR URL; bare `#51` is intentionally not enough. For ExecPlan implementation issues, reference exactly one checked-in plan path such as `docs/plans/LIV-123-example.md` in the title, description, or a comment. Handoff moves claimed issues to `In Progress`, successful issues to `Done`, and failed issues to `Needs Workflow` using checked Linear state IDs, and success comments include the workflow result inline rather than as a Markdown attachment. Keep `linear_commands.enabled: false`; use `scherzoctl` until the operator loop feels boring.

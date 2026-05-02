@@ -123,52 +123,61 @@ pub fn cleanup_run(
   {
     True -> Error(error.WorkspaceOutsideRoot(target_abs))
     False -> {
-      case orchestrator.dag_hooks.remove {
-        None -> Nil
-        Some(script) -> {
-          let dummy_issue =
-            domain.Issue(
-              id: "",
-              identifier: "",
-              title: "",
-              description: None,
-              priority: None,
-              state: issue_state.from_string_unchecked(""),
-              branch_name: None,
-              url: None,
-              labels: [],
-              blocked_by: [],
-              created_at: None,
-              updated_at: None,
-            )
-          let prepared =
-            PreparedStepWorkspace(
-              workflow_id: "",
-              run_id: "",
-              run_root: target_abs,
-              workspace_name: "",
-              path: target_abs,
-              source_workspace_name: None,
-              source_workspace_path: None,
-            )
-          let _ =
-            hooks.run_best_effort_with_env(
-              "remove",
-              script,
-              orchestrator.config_dir,
-              orchestrator.dag_hooks.timeout_ms,
-              hook_env(dummy_issue, "", prepared, orchestrator),
-            )
-          Nil
+      case retain_cleanup(target_abs) {
+        True -> Ok(Nil)
+        False -> {
+          case orchestrator.dag_hooks.remove {
+            None -> Nil
+            Some(script) -> {
+              let dummy_issue =
+                domain.Issue(
+                  id: "",
+                  identifier: "",
+                  title: "",
+                  description: None,
+                  priority: None,
+                  state: issue_state.from_string_unchecked(""),
+                  branch_name: None,
+                  url: None,
+                  labels: [],
+                  blocked_by: [],
+                  created_at: None,
+                  updated_at: None,
+                )
+              let prepared =
+                PreparedStepWorkspace(
+                  workflow_id: "",
+                  run_id: "",
+                  run_root: target_abs,
+                  workspace_name: "",
+                  path: target_abs,
+                  source_workspace_name: None,
+                  source_workspace_path: None,
+                )
+              let _ =
+                hooks.run_best_effort_with_env(
+                  "remove",
+                  script,
+                  orchestrator.config_dir,
+                  orchestrator.dag_hooks.timeout_ms,
+                  hook_env(dummy_issue, "", prepared, orchestrator),
+                )
+              Nil
+            }
+          }
+          case simplifile.delete(target_abs) {
+            Ok(Nil) -> Ok(Nil)
+            Error(simplifile.Enoent) -> Ok(Nil)
+            Error(_) -> Error(error.WorkspaceIo("delete failed"))
+          }
         }
-      }
-      case simplifile.delete(target_abs) {
-        Ok(Nil) -> Ok(Nil)
-        Error(simplifile.Enoent) -> Ok(Nil)
-        Error(_) -> Error(error.WorkspaceIo("delete failed"))
       }
     }
   }
+}
+
+pub fn cleanup_retention_marker(run_root: String) -> String {
+  path.join(run_root, ".scherzo-keep-workspace")
 }
 
 pub fn workspace_path_for(
@@ -215,6 +224,13 @@ fn workspace_paths(
   {
     True -> Ok(#(run_root_abs, workspace_abs))
     False -> Error(error.WorkspaceOutsideRoot(workspace_abs))
+  }
+}
+
+fn retain_cleanup(run_root: String) -> Bool {
+  case simplifile.is_file(cleanup_retention_marker(run_root)) {
+    Ok(True) -> True
+    _ -> False
   }
 }
 
