@@ -24,23 +24,28 @@ The main risk is changing production behavior during a workflow validation. Avoi
 
 ## Progress
 
-- [ ] Add `parses_optional_description_test` to `test/workflow_dag_test.gleam`.
-- [ ] Run targeted validation for `workflow_dag_test` if practical.
-- [ ] Record the result in this plan's Outcomes & Retrospective section.
+- [x] (2026-05-02 02:28Z) Added `parses_optional_description_test` to `test/workflow_dag_test.gleam`.
+- [x] (2026-05-02 02:28Z) Ran validation with `direnv exec . gleam test`; it passed.
+- [x] (2026-05-02 02:28Z) Ran `direnv exec . gleam format --check src test`; it passed.
+- [x] (2026-05-02 02:28Z) Recorded the result in this plan's Outcomes & Retrospective section.
 
 ## Surprises & Discoveries
 
-- None yet.
+- Observation: The first attempt to run `direnv exec . gleam test` failed because the workspace-local `.envrc` had not yet been approved.
+  Evidence: `direnv` reported that `.envrc` was blocked. After reading `.envrc` and running `direnv allow .`, `direnv exec . gleam test` completed successfully with `513 passed, no failures`.
 
 ## Decision Log
 
 - Decision: Use a test-only Gleam change for this E2E validation.
   Rationale: It exercises changed-file language detection and Gleam review without changing runtime behavior.
   Date: 2026-05-01.
+- Decision: Leave `src/scherzo/workflow_dag.gleam` unchanged.
+  Rationale: The existing parser already reads `description` with `optional_string(root, "description")`, and the new regression test passes without production changes.
+  Date: 2026-05-02.
 
 ## Outcomes & Retrospective
 
-(To be filled after implementation.)
+Implementation is complete. `test/workflow_dag_test.gleam` now includes `parses_optional_description_test`, which parses YAML containing `description: Test description` and asserts that `WorkflowDag.description` is `Some("Test description")`. Validation passed with `direnv exec . gleam test`, reporting `513 passed, no failures`; `direnv exec . gleam format --check src test` also passed. The change stayed within the intended tiny, test-only scope and should provide a `.gleam` diff for the workflow's language detection.
 
 ## Context and Orientation
 
