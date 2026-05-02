@@ -36,10 +36,31 @@ pub type RecordBody {
     reason: String,
   )
   RetryCancelled(issue_id: String, generation: Int, reason: String)
+  IssueCounterUpdated(
+    issue_id: String,
+    issue_identifier: String,
+    failure_attempts: Int,
+    worker_sessions: Int,
+    observed_updated_at_ms: Int,
+    source_run_id: Option(String),
+  )
+  KnownWorkspace(
+    issue_id: String,
+    issue_identifier: String,
+    workspace_path: String,
+  )
   IssueParked(
     issue_id: String,
     issue_identifier: String,
     reason: String,
+    observed_updated_at_ms: Int,
+  )
+  IssueParkedV2(
+    issue_id: String,
+    issue_identifier: String,
+    reason: String,
+    release_policy: String,
+    issue_fingerprint: String,
     observed_updated_at_ms: Int,
   )
   IssueUnparked(issue_id: String, issue_identifier: String, reason: String)
@@ -67,6 +88,13 @@ pub type RecordBody {
     issue_id: String,
     outbox_kind: String,
     dedupe_key: String,
+  )
+  OutboxPendingV2(
+    outbox_id: String,
+    issue_id: String,
+    outbox_kind: String,
+    dedupe_key: String,
+    payload_json: String,
   )
   OutboxCompleted(outbox_id: String, issue_id: String, outbox_kind: String)
   OutboxFailed(
@@ -100,7 +128,12 @@ type RecordFields {
     reason: Option(String),
     delay_ms: Option(Int),
     generation: Option(Int),
+    failure_attempts: Option(Int),
+    worker_sessions: Option(Int),
     observed_updated_at_ms: Option(Int),
+    source_run_id: Option(String),
+    release_policy: Option(String),
+    issue_fingerprint: Option(String),
     comment_id: Option(String),
     author_id: Option(String),
     command_name: Option(String),
@@ -110,6 +143,7 @@ type RecordFields {
     outbox_id: Option(String),
     outbox_kind: Option(String),
     dedupe_key: Option(String),
+    payload_json: Option(String),
     error_code: Option(String),
   )
 }
@@ -137,13 +171,17 @@ pub fn kind(body: RecordBody) -> String {
     RunInterrupted(..) -> "run_interrupted"
     RetryScheduled(..) -> "retry_scheduled"
     RetryCancelled(..) -> "retry_cancelled"
+    IssueCounterUpdated(..) -> "issue_counter_updated"
+    KnownWorkspace(..) -> "known_workspace"
     IssueParked(..) -> "issue_parked"
+    IssueParkedV2(..) -> "issue_parked_v2"
     IssueUnparked(..) -> "issue_unparked"
     LinearCommandSeen(..) -> "linear_command_seen"
     LinearCommandStarted(..) -> "linear_command_started"
     LinearCommandCompleted(..) -> "linear_command_completed"
     LinearCommandAcked(..) -> "linear_command_acked"
     OutboxPending(..) -> "outbox_pending"
+    OutboxPendingV2(..) -> "outbox_pending_v2"
     OutboxCompleted(..) -> "outbox_completed"
     OutboxFailed(..) -> "outbox_failed"
   }
@@ -224,10 +262,45 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("generation", json.int(generation)),
       #("reason", json.string(reason)),
     ]
+    IssueCounterUpdated(
+      issue_id,
+      issue_identifier,
+      failure_attempts,
+      worker_sessions,
+      observed_updated_at_ms,
+      source_run_id,
+    ) -> [
+      #("issue_id", json.string(issue_id)),
+      #("issue_identifier", json.string(issue_identifier)),
+      #("failure_attempts", json.int(failure_attempts)),
+      #("worker_sessions", json.int(worker_sessions)),
+      #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
+      #("source_run_id", option_string_to_json(source_run_id)),
+    ]
+    KnownWorkspace(issue_id, issue_identifier, workspace_path) -> [
+      #("issue_id", json.string(issue_id)),
+      #("issue_identifier", json.string(issue_identifier)),
+      #("workspace_path", json.string(workspace_path)),
+    ]
     IssueParked(issue_id, issue_identifier, reason, observed_updated_at_ms) -> [
       #("issue_id", json.string(issue_id)),
       #("issue_identifier", json.string(issue_identifier)),
       #("reason", json.string(reason)),
+      #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
+    ]
+    IssueParkedV2(
+      issue_id,
+      issue_identifier,
+      reason,
+      release_policy,
+      issue_fingerprint,
+      observed_updated_at_ms,
+    ) -> [
+      #("issue_id", json.string(issue_id)),
+      #("issue_identifier", json.string(issue_identifier)),
+      #("reason", json.string(reason)),
+      #("release_policy", json.string(release_policy)),
+      #("issue_fingerprint", json.string(issue_fingerprint)),
       #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
     ]
     IssueUnparked(issue_id, issue_identifier, reason) -> [
@@ -263,6 +336,13 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("outbox_kind", json.string(outbox_kind)),
       #("dedupe_key", json.string(dedupe_key)),
     ]
+    OutboxPendingV2(outbox_id, issue_id, outbox_kind, dedupe_key, payload_json) -> [
+      #("outbox_id", json.string(outbox_id)),
+      #("issue_id", json.string(issue_id)),
+      #("outbox_kind", json.string(outbox_kind)),
+      #("dedupe_key", json.string(dedupe_key)),
+      #("payload_json", json.string(payload_json)),
+    ]
     OutboxCompleted(outbox_id, issue_id, outbox_kind) -> [
       #("outbox_id", json.string(outbox_id)),
       #("issue_id", json.string(issue_id)),
@@ -274,6 +354,13 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("outbox_kind", json.string(outbox_kind)),
       #("error_code", json.string(error_code)),
     ]
+  }
+}
+
+fn option_string_to_json(value: Option(String)) -> json.Json {
+  case value {
+    Some(value) -> json.string(value)
+    None -> json.null()
   }
 }
 
@@ -349,6 +436,45 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       use reason <- result.try(required_string(fields.reason, "reason"))
       Ok(RetryCancelled(issue_id, generation, reason))
     }
+    "issue_counter_updated" -> {
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use issue_identifier <- result.try(required_string(
+        fields.issue_identifier,
+        "issue_identifier",
+      ))
+      use failure_attempts <- result.try(required_int(
+        fields.failure_attempts,
+        "failure_attempts",
+      ))
+      use worker_sessions <- result.try(required_int(
+        fields.worker_sessions,
+        "worker_sessions",
+      ))
+      use observed_updated_at_ms <- result.try(required_int(
+        fields.observed_updated_at_ms,
+        "observed_updated_at_ms",
+      ))
+      Ok(IssueCounterUpdated(
+        issue_id,
+        issue_identifier,
+        failure_attempts,
+        worker_sessions,
+        observed_updated_at_ms,
+        fields.source_run_id,
+      ))
+    }
+    "known_workspace" -> {
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use issue_identifier <- result.try(required_string(
+        fields.issue_identifier,
+        "issue_identifier",
+      ))
+      use workspace_path <- result.try(required_string(
+        fields.workspace_path,
+        "workspace_path",
+      ))
+      Ok(KnownWorkspace(issue_id, issue_identifier, workspace_path))
+    }
     "issue_parked" -> {
       use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
       use issue_identifier <- result.try(required_string(
@@ -361,6 +487,34 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         "observed_updated_at_ms",
       ))
       Ok(IssueParked(issue_id, issue_identifier, reason, observed_updated_at_ms))
+    }
+    "issue_parked_v2" -> {
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use issue_identifier <- result.try(required_string(
+        fields.issue_identifier,
+        "issue_identifier",
+      ))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      use release_policy <- result.try(required_string(
+        fields.release_policy,
+        "release_policy",
+      ))
+      use issue_fingerprint <- result.try(required_string(
+        fields.issue_fingerprint,
+        "issue_fingerprint",
+      ))
+      use observed_updated_at_ms <- result.try(required_int(
+        fields.observed_updated_at_ms,
+        "observed_updated_at_ms",
+      ))
+      Ok(IssueParkedV2(
+        issue_id,
+        issue_identifier,
+        reason,
+        release_policy,
+        issue_fingerprint,
+        observed_updated_at_ms,
+      ))
     }
     "issue_unparked" -> {
       use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
@@ -436,6 +590,29 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         "dedupe_key",
       ))
       Ok(OutboxPending(outbox_id, issue_id, outbox_kind, dedupe_key))
+    }
+    "outbox_pending_v2" -> {
+      use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use outbox_kind <- result.try(required_string(
+        fields.outbox_kind,
+        "outbox_kind",
+      ))
+      use dedupe_key <- result.try(required_string(
+        fields.dedupe_key,
+        "dedupe_key",
+      ))
+      use payload_json <- result.try(required_string(
+        fields.payload_json,
+        "payload_json",
+      ))
+      Ok(OutboxPendingV2(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+        payload_json,
+      ))
     }
     "outbox_completed" -> {
       use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
@@ -514,10 +691,35 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.int),
   )
+  use failure_attempts <- decode.optional_field(
+    "failure_attempts",
+    None,
+    decode.optional(decode.int),
+  )
+  use worker_sessions <- decode.optional_field(
+    "worker_sessions",
+    None,
+    decode.optional(decode.int),
+  )
   use observed_updated_at_ms <- decode.optional_field(
     "observed_updated_at_ms",
     None,
     decode.optional(decode.int),
+  )
+  use source_run_id <- decode.optional_field(
+    "source_run_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use release_policy <- decode.optional_field(
+    "release_policy",
+    None,
+    decode.optional(decode.string),
+  )
+  use issue_fingerprint <- decode.optional_field(
+    "issue_fingerprint",
+    None,
+    decode.optional(decode.string),
   )
   use comment_id <- decode.optional_field(
     "comment_id",
@@ -564,6 +766,11 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use payload_json <- decode.optional_field(
+    "payload_json",
+    None,
+    decode.optional(decode.string),
+  )
   use error_code <- decode.optional_field(
     "error_code",
     None,
@@ -584,7 +791,12 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     reason: reason,
     delay_ms: delay_ms,
     generation: generation,
+    failure_attempts: failure_attempts,
+    worker_sessions: worker_sessions,
     observed_updated_at_ms: observed_updated_at_ms,
+    source_run_id: source_run_id,
+    release_policy: release_policy,
+    issue_fingerprint: issue_fingerprint,
     comment_id: comment_id,
     author_id: author_id,
     command_name: command_name,
@@ -594,6 +806,7 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     outbox_id: outbox_id,
     outbox_kind: outbox_kind,
     dedupe_key: dedupe_key,
+    payload_json: payload_json,
     error_code: error_code,
   ))
 }
@@ -632,8 +845,21 @@ fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
         status,
         safe_excerpt(message_excerpt, secrets),
       )
+    OutboxPendingV2(outbox_id, issue_id, outbox_kind, dedupe_key, payload_json) ->
+      OutboxPendingV2(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        dedupe_key,
+        safe_payload(payload_json, secrets),
+      )
     other -> other
   }
+}
+
+fn safe_payload(value: String, secrets: List(String)) -> String {
+  log.redact("outbox_payload", value, secrets)
+  |> log.truncate(max_excerpt_chars)
 }
 
 fn safe_excerpt(value: String, secrets: List(String)) -> String {

@@ -1,4 +1,5 @@
 import gleam/dict
+import gleam/option.{Some}
 import scherzo/state/projection
 import scherzo/state/record
 
@@ -32,6 +33,8 @@ pub fn folding_records_produces_expected_projection_test() {
     reason: "blocked",
     observed_updated_at_ms: 3900,
     parked_at_ms: 4000,
+    release_policy: "explicit_unpark_only",
+    issue_fingerprint: "",
   )) = dict.get(folded.parked_issues, "issue-2")
   let assert Error(_) = dict.get(folded.parked_issues, "issue-3")
 
@@ -51,6 +54,165 @@ pub fn folding_records_produces_expected_projection_test() {
     error_code: "http_500",
     failed_at_ms: 6000,
   )) = dict.get(folded.outbox, "outbox-1")
+}
+
+pub fn projection_exposes_recovery_facts_test() {
+  let records = [
+    record.with_id(
+      "known-1",
+      1000,
+      record.KnownWorkspace(
+        issue_id: "issue-1",
+        issue_identifier: "SCH-1",
+        workspace_path: ".scherzo/workspaces/SCH-1",
+      ),
+    ),
+    record.with_id(
+      "run-started-1",
+      1100,
+      record.RunStarted(
+        run_id: "run-1",
+        issue_id: "issue-1",
+        issue_identifier: "SCH-1",
+        workspace_path: ".scherzo/workspaces/SCH-1",
+      ),
+    ),
+    record.with_id(
+      "run-finished-1",
+      1200,
+      record.RunFinished(
+        run_id: "run-1",
+        issue_id: "issue-1",
+        classification: "success",
+        token_total: 1,
+        turns: 1,
+      ),
+    ),
+    record.with_id(
+      "counter-1",
+      1300,
+      record.IssueCounterUpdated(
+        issue_id: "issue-1",
+        issue_identifier: "SCH-1",
+        failure_attempts: 2,
+        worker_sessions: 3,
+        observed_updated_at_ms: 1299,
+        source_run_id: Some("run-1"),
+      ),
+    ),
+    record.with_id(
+      "park-v2-1",
+      1400,
+      record.IssueParkedV2(
+        issue_id: "issue-2",
+        issue_identifier: "SCH-2",
+        reason: "max_retry_attempts",
+        release_policy: "auto_unpark_on_issue_change",
+        issue_fingerprint: "fingerprint",
+        observed_updated_at_ms: 1399,
+      ),
+    ),
+    record.with_id(
+      "retry-1",
+      1500,
+      record.RetryScheduled(
+        issue_id: "issue-1",
+        issue_identifier: "SCH-1",
+        delay_ms: 5000,
+        generation: 4,
+        reason: "failure",
+      ),
+    ),
+    record.with_id(
+      "outbox-v2-1",
+      1600,
+      record.OutboxPendingV2(
+        outbox_id: "outbox-1",
+        issue_id: "issue-1",
+        outbox_kind: "linear_comment",
+        dedupe_key: "run-1:success",
+        payload_json: "{\"body\":\"ok\"}",
+      ),
+    ),
+  ]
+  let folded = projection.fold(records)
+
+  let assert Ok(".scherzo/workspaces/SCH-1") =
+    projection.known_workspace_for_issue(folded, "issue-1")
+  assert projection.latest_counter(folded, "issue-1").failure_attempts == 2
+  assert projection.latest_counter(folded, "issue-1").worker_sessions == 3
+  assert projection.counter_has_source_run(folded, "issue-1", "run-1")
+
+  let assert Ok(projection.ParkedIssue(
+    issue_identifier: "SCH-2",
+    reason: "max_retry_attempts",
+    observed_updated_at_ms: 1399,
+    parked_at_ms: 1400,
+    release_policy: "auto_unpark_on_issue_change",
+    issue_fingerprint: "fingerprint",
+  )) = dict.get(folded.parked_issues, "issue-2")
+  let assert Ok(retry_status) = dict.get(folded.retries, "issue-1")
+  let assert Ok(6500) = projection.retry_due_at_ms(retry_status)
+  let assert Ok([
+    projection.OutboxReplay(
+      outbox_id: "outbox-1",
+      issue_id: "issue-1",
+      outbox_kind: "linear_comment",
+      dedupe_key: "run-1:success",
+      payload_json: "{\"body\":\"ok\"}",
+    ),
+  ]) = projection.pending_outbox_replays(folded)
+}
+
+pub fn payload_less_pending_outbox_is_skipped_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "outbox-old",
+        1000,
+        record.OutboxPending(
+          outbox_id: "outbox-old",
+          issue_id: "issue-1",
+          outbox_kind: "linear_comment",
+          dedupe_key: "old",
+        ),
+      ),
+    ])
+
+  let assert Ok([]) = projection.pending_outbox_replays(folded)
+}
+
+pub fn pending_outbox_replays_are_chronological_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "outbox-a",
+        2000,
+        record.OutboxPendingV2(
+          outbox_id: "outbox-a",
+          issue_id: "issue-a",
+          outbox_kind: "linear_command_ack",
+          dedupe_key: "ack:a",
+          payload_json: "{\"type\":\"linear_command_ack\",\"body\":\"a\"}",
+        ),
+      ),
+      record.with_id(
+        "outbox-b",
+        1000,
+        record.OutboxPendingV2(
+          outbox_id: "outbox-b",
+          issue_id: "issue-b",
+          outbox_kind: "linear_command_ack",
+          dedupe_key: "ack:b",
+          payload_json: "{\"type\":\"linear_command_ack\",\"body\":\"b\"}",
+        ),
+      ),
+    ])
+
+  let assert Ok([
+    projection.OutboxReplay(outbox_id: "outbox-b", ..),
+    projection.OutboxReplay(outbox_id: "outbox-a", ..),
+  ]) = projection.pending_outbox_replays(folded)
 }
 
 pub fn projection_snapshot_roundtrips_test() {
