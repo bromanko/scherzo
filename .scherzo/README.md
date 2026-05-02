@@ -40,6 +40,70 @@ export SCHERZO_REPO_ROOT=$(pwd)
 
 The checked-in `tracker.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository, but setting it makes the jj workspace hook independent of the current directory layout.
 
+### Scherzo agent devenv profile
+
+Use the optional `scherzo-agent` devenv profile when Scherzo should act through dedicated agent identities instead of the operator's personal GitHub, Linear, git, or jj identity. The profile is inactive unless it is selected with `devenv shell -P scherzo-agent`; the normal development shell remains unchanged.
+
+Put local agent values in ignored `.env.local` or export them in the shell. Do not commit tokens, real private key paths, or machine-specific agent configuration.
+
+```sh
+SCHERZO_AGENT_GITHUB_TOKEN=github_pat_redacted
+SCHERZO_AGENT_GITHUB_LOGIN=scherzo-agent-login
+SCHERZO_AGENT_LINEAR_API_KEY=lin_api_redacted
+SCHERZO_AGENT_GIT_NAME="Scherzo Agent"
+SCHERZO_AGENT_GIT_EMAIL=agent-email@example.invalid
+# Optional. Defaults to github-scherzo-agent.
+SCHERZO_AGENT_SSH_HOST=github-scherzo-agent
+# Optional. Defaults to scherzo-agent.
+SCHERZO_AGENT_PR_REMOTE=scherzo-agent
+# Optional. Defaults to bromanko/scherzo.
+SCHERZO_AGENT_PR_REPO=bromanko/scherzo
+```
+
+`SCHERZO_AGENT_GITHUB_TOKEN` should be a fine-grained GitHub token limited to `bromanko/scherzo`. It needs metadata read access, pull request read/write access, and issue read/write access for PR creation, PR lookup, feedback collection, and PR comments. The scripts map this value to `GH_TOKEN` and `GITHUB_TOKEN` only inside the profile and set `GH_CONFIG_DIR` to ignored `.scherzo/gh-agent/`; they do not run `gh auth login` or write the token to GitHub CLI config.
+
+`SCHERZO_AGENT_LINEAR_API_KEY` must belong to the Linear actor that should appear on Scherzo issue claims, state transitions, and comments. The scripts map it to `LINEAR_API_KEY` only inside the profile. If the agent-specific key is missing, inherited `LINEAR_API_KEY`, `GH_TOKEN`, and `GITHUB_TOKEN` values are unset so Scherzo does not silently fall back to personal credentials.
+
+Configure SSH outside this repository so the agent remote uses the agent GitHub account. For example, add a host alias to `~/.ssh/config` and keep any 1Password, hardware-key, or private-key details there rather than in `.env.local`:
+
+```sshconfig
+Host github-scherzo-agent
+  HostName github.com
+  User git
+  # Configure IdentityAgent / IdentityFile here if your system needs it.
+  # With 1Password, this belongs in ~/.ssh/config, not in .env.local.
+```
+
+Add a separate remote for agent pushes instead of rewriting `origin`:
+
+```sh
+jj git remote add scherzo-agent git@github-scherzo-agent:bromanko/scherzo.git
+```
+
+If the remote already exists, inspect it with `jj git remote list --color=never` and make sure the `scherzo-agent` URL is SSH-based and uses the host from `SCHERZO_AGENT_SSH_HOST`, such as `git@github-scherzo-agent:bromanko/scherzo.git` or `ssh://git@github-scherzo-agent/bromanko/scherzo.git`.
+
+Run the non-networked local check first. It reports whether credentials are configured without printing token values, writes ignored `.scherzo/jj-agent.toml` from the agent git name and email, uses ignored `.scherzo/gh-agent/` for GitHub CLI config isolation, and shows the effective git and jj identity:
+
+```sh
+direnv exec . devenv shell -P scherzo-agent scherzo-agent-env-check
+```
+
+With real credentials and the agent remote in place, run the live identity check before starting the daemon:
+
+```sh
+direnv exec . devenv shell -P scherzo-agent scherzo-agent-whoami
+```
+
+This command verifies that `gh api user` returns `SCHERZO_AGENT_GITHUB_LOGIN`, the token can read `SCHERZO_AGENT_PR_REPO`, the Linear viewer query succeeds with the agent API key, git and jj show the agent identity, the configured remote uses the expected SSH host alias, and `ssh -T git@$SCHERZO_AGENT_SSH_HOST` authenticates as the same GitHub login.
+
+Start Scherzo through the guarded run command only when the operator is ready for the daemon to poll Linear and dispatch work:
+
+```sh
+direnv exec . devenv shell -P scherzo-agent scherzo-agent-run
+```
+
+`scherzo-agent-run` performs the same strict checks as `scherzo-agent-whoami`, confirms `LINEAR_API_KEY` was derived from `SCHERZO_AGENT_LINEAR_API_KEY`, and then runs `gleam run -- .scherzo/scherzo.yaml` under the isolated agent environment.
+
 ## Linear project contract
 
 `linear_contract.enabled: true` makes Scherzo fail readiness checks if the Linear project drifts from this checked-in dogfood contract. The project must expose these states for every associated Linear team:

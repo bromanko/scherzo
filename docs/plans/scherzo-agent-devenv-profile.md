@@ -65,10 +65,17 @@ The main external-service risk is that GitHub CLI, SSH verification, or Linear v
 - [x] (2026-05-01 00:00Z) Reviewed the plan for implementability and tightened profile validation around credential fallback, jj config ordering, SSH isolation, required GitHub login comparison, and profile evaluation commands.
 - [x] (2026-05-01 00:00Z) Incorporated the operator decision to use a separate Linear API key so Linear comments and issue state activity come from the agent identity rather than the human operator.
 - [x] (2026-05-01 00:00Z) Incorporated the operator decision to use system SSH configuration and 1Password-backed keys through a dedicated SSH host alias rather than requiring a private key path in repository-local configuration.
-- [ ] Add the optional `scherzo-agent` profile and scripts to `devenv.nix`.
-- [ ] Document local secret variables, agent remote setup, and run commands in `.scherzo/README.md`.
-- [ ] Validate that normal development commands still pass without the profile.
-- [ ] Validate the agent profile with local checks and, when real credentials are available, live `gh` and SSH identity checks.
+- [x] (2026-05-02 03:17Z) Ran baseline validation with `direnv exec . gleam format --check src test` and `direnv exec . gleam test`; formatting passed and 507 tests passed.
+- [x] (2026-05-02 03:19Z) Added the optional `scherzo-agent` profile and scripts to `devenv.nix` with profile-only `gh`, OpenSSH, Jujutsu, and curl packages.
+- [x] (2026-05-02 03:20Z) Validated profile evaluation with `direnv exec . devenv shell -P scherzo-agent true`.
+- [x] (2026-05-02 03:21Z) Validated `scherzo-agent-env-check` with dummy GitHub and Linear values; the output reported configured status without printing `dummy-token` or `dummy-linear-token`, showed agent git and jj identities, and put `.scherzo/jj-agent.toml` last in `JJ_CONFIG`.
+- [x] (2026-05-02 03:21Z) Validated credential fallback guards by running `scherzo-agent-env-check` with inherited `GH_TOKEN`, `GITHUB_TOKEN`, and `LINEAR_API_KEY` but without Scherzo agent source variables; the script reported the public credential names as missing.
+- [x] (2026-05-02 03:21Z) Validated remote guard behavior with dummy live-check values: missing `scherzo-agent` remote and HTTPS `origin` both failed before any live API check.
+- [x] (2026-05-02 03:22Z) Documented local secret variables, GitHub token permissions, Linear agent key expectations, SSH host alias setup, agent remote setup, verification commands, and run commands in `.scherzo/README.md`.
+- [x] (2026-05-02 03:22Z) Re-ran normal validation with `direnv exec . gleam format --check src test` and `direnv exec . gleam test`; formatting passed and 507 tests passed, so the optional profile did not break normal development commands.
+- [x] (2026-05-02 03:23Z) Removed dummy-generated `.scherzo/jj-agent.toml` and `.scherzo/gh-agent/` after validation; `jj status --color=never` showed only tracked implementation and plan files before the commit point.
+- [x] (2026-05-02 03:24Z) Recorded the implementation in a jj commit with message `feat(devenv): add Scherzo agent profile`.
+- [ ] Live `scherzo-agent-whoami` and `scherzo-agent-run` validation with real GitHub, Linear, and SSH agent credentials remains pending operator-provided `.env.local` values and a real `scherzo-agent` remote.
 
 ## Surprises & Discoveries
 
@@ -92,6 +99,12 @@ The main external-service risk is that GitHub CLI, SSH verification, or Linear v
 
 - Observation: SSH remote URLs can use a host alias, so the repository remote can select a system SSH configuration entry such as `github-scherzo-agent` without naming a private key file in this repository.
   Evidence: SSH-style Git URLs use the host portion before the colon or slash, for example `git@github-scherzo-agent:bromanko/scherzo.git`; `ssh` resolves that host through the operator's SSH config, where 1Password or another agent can supply the key.
+
+- Observation: `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT` can validate the exported agent commit identity in this jj workspace even though plain `git rev-parse --show-toplevel` does not see a `.git` checkout.
+  Evidence: `scherzo-agent-env-check` printed `git author: Scherzo Agent <agent@example.invalid>` and `git committer: Scherzo Agent <agent@example.invalid>` while the repository is being operated through jj.
+
+- Observation: The existing `.gitignore` rules successfully hide generated agent-profile artifacts.
+  Evidence: after `scherzo-agent-env-check` created `.scherzo/jj-agent.toml` and `.scherzo/gh-agent/`, `jj status --color=never` showed only tracked edits to `devenv.nix` and `.scherzo/README.md` before this plan file was updated.
 
 ## Decision Log
 
@@ -139,9 +152,15 @@ The main external-service risk is that GitHub CLI, SSH verification, or Linear v
   Rationale: `--help` can exit successfully without loading the requested profile, so it is not a valid profile evaluation test.
   Date: 2026-05-01
 
+- Decision: Keep live-check scripts strict about the agent remote before making GitHub, Linear, or SSH identity calls.
+  Rationale: Failing first on a missing, HTTPS, or wrong-host remote gives a deterministic local safety check with dummy credentials and prevents an operator from proving API identity while the eventual jj push path would still use a personal or generic remote.
+  Date: 2026-05-02
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Milestones 1 through 3 are implemented locally. `devenv.nix` now exposes the optional `scherzo-agent` profile with `scherzo-agent-env-check`, `scherzo-agent-whoami`, and `scherzo-agent-run`. The local check proves environment mapping, public credential fallback prevention, ignored GitHub CLI config isolation, ignored jj identity generation, and agent git/jj identity without contacting GitHub or Linear. `.scherzo/README.md` now documents the one-time local setup and the safe run path.
+
+Normal development validation still passes: `direnv exec . gleam format --check src test` completed successfully, and `direnv exec . gleam test` reported 507 passed and no failures. Live identity validation is intentionally not complete in this workspace because no real agent GitHub token, Linear API key, SSH host alias, or `scherzo-agent` remote was provided. The remaining operator acceptance step is to add those local credentials outside version control, add the SSH-based remote, run `scherzo-agent-whoami`, and only then start `scherzo-agent-run`.
 
 ## Context and Orientation
 
