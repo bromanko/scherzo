@@ -113,6 +113,9 @@ fn deps(
   stream_events: List(event.SessionEvent),
 ) -> ctl.ControlClient {
   ctl.ControlClient(
+    list_sessions: fn(_) {
+      Ok(event.SessionList(sessions: [summary()], now_ms: 0))
+    },
     get_session: fn(_, _) { Ok(Some(summary())) },
     get_events: fn(_, _, cursor, _) {
       Ok(event.EventPage(
@@ -280,6 +283,9 @@ pub fn attach_raw_and_json_follow_skip_replayed_duplicates_test() {
 pub fn events_pretty_uses_paginated_replay_helper_test() {
   let deps =
     ctl.ControlClient(
+      list_sessions: fn(_) {
+        Ok(event.SessionList(sessions: [summary()], now_ms: 0))
+      },
       get_session: fn(_, _) { Ok(Some(summary())) },
       get_events: fn(_, _, cursor, _) {
         case cursor {

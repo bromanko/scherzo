@@ -160,7 +160,11 @@ pub fn new(at_ms: Int, sequence: Int, body: RecordBody) -> LedgerRecord {
   )
 }
 
-pub fn with_id(record_id: String, at_ms: Int, body: RecordBody) -> LedgerRecord {
+pub fn with_id(
+  record_id: String,
+  at_ms: Int,
+  body: RecordBody,
+) -> LedgerRecord {
   LedgerRecord(record_id: record_id, at_ms: at_ms, body: body)
 }
 

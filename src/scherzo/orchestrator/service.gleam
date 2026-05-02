@@ -80,8 +80,7 @@ pub type DoctorDependencies {
       workflow_dag.WorkspaceRef,
       domain.OrchestratorConfig,
       Dict(String, workspace_run.PreparedStepWorkspace),
-    ) ->
-      Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
+    ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
     cleanup_run: fn(String, domain.OrchestratorConfig) ->
       Result(Nil, error.WorkspaceError),
     pi_probe: fn(String, String, Int) -> Result(Nil, error.PiRpcError),
@@ -973,7 +972,9 @@ fn doctor_result_level(result: doctor.CheckResult) -> String {
   }
 }
 
-pub fn start_daemon(workflow_path: Option(String)) -> Result(Nil, StartupError) {
+pub fn start_daemon(
+  workflow_path: Option(String),
+) -> Result(Nil, StartupError) {
   start_daemon_with_lifecycle(
     workflow_path,
     DaemonLifecycleDependencies(

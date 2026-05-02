@@ -285,7 +285,10 @@ fn human_conclusion(report: Report) -> String {
   }
 }
 
-fn report_config_path(report: Report, requested_path: Option(String)) -> String {
+fn report_config_path(
+  report: Report,
+  requested_path: Option(String),
+) -> String {
   case find_result(report.results, WorkflowConfig) {
     Some(result) ->
       field_or(result.fields, "config_path", option_path(requested_path))
@@ -480,7 +483,10 @@ fn parse_selected_checks(
   }
 }
 
-fn result_try(result: Result(a, e), next: fn(a) -> Result(b, e)) -> Result(b, e) {
+fn result_try(
+  result: Result(a, e),
+  next: fn(a) -> Result(b, e),
+) -> Result(b, e) {
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)

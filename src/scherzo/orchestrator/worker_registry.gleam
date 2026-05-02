@@ -412,7 +412,10 @@ pub fn remove_all(registry: Registry) -> Registry {
   Registry(..new(), next_session_sequence: registry.next_session_sequence)
 }
 
-fn delete_yaml_step_session(registry: Registry, session_id: String) -> Registry {
+fn delete_yaml_step_session(
+  registry: Registry,
+  session_id: String,
+) -> Registry {
   Registry(
     ..registry,
     yaml_step_runs: dict.delete(registry.yaml_step_runs, session_id),

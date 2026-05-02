@@ -50,7 +50,9 @@ pub fn default_polling_config() -> domain.PollingConfig {
   domain.PollingConfig(interval_ms: 30_000)
 }
 
-pub fn default_workspace_config(workflow_path: String) -> domain.WorkspaceConfig {
+pub fn default_workspace_config(
+  workflow_path: String,
+) -> domain.WorkspaceConfig {
   let root = default_workspace_root(workflow_path)
   domain.WorkspaceConfig(root: root)
 }
@@ -1419,7 +1421,10 @@ fn config_error_message(err: error.ConfigError) -> String {
   error.config_code(err)
 }
 
-fn result_try(result: Result(a, e), next: fn(a) -> Result(b, e)) -> Result(b, e) {
+fn result_try(
+  result: Result(a, e),
+  next: fn(a) -> Result(b, e),
+) -> Result(b, e) {
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)

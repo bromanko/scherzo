@@ -355,7 +355,9 @@ fn first_model_settings_field(node: yay.Node) -> Option(String) {
   }
 }
 
-fn validate_unique_step_ids(steps: List(WorkflowStep)) -> Result(Nil, DagError) {
+fn validate_unique_step_ids(
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
   validate_unique_step_ids_loop(steps, [])
 }
 
@@ -700,7 +702,10 @@ fn option_unwrap(value: Option(a), default: a) -> a {
   }
 }
 
-fn result_try(result: Result(a, e), next: fn(a) -> Result(b, e)) -> Result(b, e) {
+fn result_try(
+  result: Result(a, e),
+  next: fn(a) -> Result(b, e),
+) -> Result(b, e) {
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)

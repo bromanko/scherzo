@@ -350,7 +350,11 @@ fn parse_error_reason(err: linear_parser.ParseError) -> String {
   }
 }
 
-fn redacted_truncated(value: String, secrets: List(String), max: Int) -> String {
+fn redacted_truncated(
+  value: String,
+  secrets: List(String),
+  max: Int,
+) -> String {
   log.redact("linear_command", value, secrets) |> log.truncate(max)
 }
 

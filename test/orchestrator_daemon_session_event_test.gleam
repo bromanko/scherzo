@@ -106,7 +106,10 @@ steps:
   #(config_path, root)
 }
 
-fn success(final: domain.Issue, workspace_path: String) -> runner.WorkerSuccess {
+fn success(
+  final: domain.Issue,
+  workspace_path: String,
+) -> runner.WorkerSuccess {
   runner.WorkerSuccess(
     final_issue: Some(final),
     final_classification: runner.FinalTerminal,
@@ -169,8 +172,7 @@ fn workflow_deps_from_agent(
     fn(String, runner.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) ->
-    Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> workflow_run.Dependencies {
   workflow_run.Dependencies(
     ..workflow_run.default_dependencies(),
@@ -212,8 +214,7 @@ fn dependencies(
     fn(String, runner.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) ->
-    Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     make_tracker: fn(_) { client },

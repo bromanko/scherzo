@@ -213,7 +213,10 @@ steps:
   config_path
 }
 
-fn success(final: domain.Issue, workspace_path: String) -> runner.WorkerSuccess {
+fn success(
+  final: domain.Issue,
+  workspace_path: String,
+) -> runner.WorkerSuccess {
   runner.WorkerSuccess(
     final_issue: Some(final),
     final_classification: runner.FinalTerminal,

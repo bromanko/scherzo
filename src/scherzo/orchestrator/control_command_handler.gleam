@@ -31,10 +31,8 @@ pub type Context(state) {
       fn(
         process.Subject(worker_command.Command),
         process.Subject(worker_command.Reply),
-      ) ->
-        Nil,
-    ) ->
-      #(state, command.CommandResult),
+      ) -> Nil,
+    ) -> #(state, command.CommandResult),
     log_result: fn(state, command.CommandResult, List(log.Field)) -> Nil,
   )
 }

@@ -219,6 +219,8 @@ scripts/scherzoctl stop-after-turn <session-id> --yes
 scripts/scherzoctl abort <session-id> --yes
 ```
 
+`ps` prints a bounded human table: long session IDs are middle-ellipsized for readability, and `LAST_EVENT` is a daemon-relative age such as `12s ago`. Use `ps --json` when scripts need full session IDs or raw timestamp fields (including the daemon `now_ms` used for age calculations), and pass the full session ID to `session`, `events`, `attach`, and mutating commands.
+
 `attach` replays retained events and then follows new events with a human-readable renderer. It groups visible output by Scherzo pass, streams assistant deltas as thinking text, shows tool input and output as readable blocks, highlights blocking UI requests, and prints token summaries when available. Use `--verbose` for pi lifecycle and raw diagnostic lines, `--no-follow` for replay only, `--since-cursor <n>` to resume after a known cursor, and `--color=auto|always|never` to control ANSI styling.
 
 Every command accepts `--control-file <path>`. Non-streaming commands accept `--json` for automation.

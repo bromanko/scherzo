@@ -26,6 +26,7 @@ pub type Message {
   Publish(String, event.EventPayload)
   FinishSession(String, reason.WorkerExitReason)
   ListSessions(process.Subject(Result(List(event.SessionSummary), HubError)))
+  ListSessionsSnapshot(process.Subject(Result(event.SessionList, HubError)))
   GetSession(
     String,
     process.Subject(Result(Option(event.SessionSummary), HubError)),
@@ -151,6 +152,15 @@ pub fn list_sessions(
   receive_reply(reply, timeout_ms)
 }
 
+pub fn list_sessions_snapshot(
+  subject: process.Subject(Message),
+  timeout_ms: Int,
+) -> Result(event.SessionList, HubError) {
+  let reply = process.new_subject()
+  process.send(subject, ListSessionsSnapshot(reply))
+  receive_reply(reply, timeout_ms)
+}
+
 pub fn get_session(
   subject: process.Subject(Message),
   session_id: String,
@@ -183,7 +193,10 @@ fn receive_reply(
   }
 }
 
-fn handle_message(state: State, message: Message) -> actor.Next(State, Message) {
+fn handle_message(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
   case message {
     RegisterSession(summary) -> actor.continue(register_summary(state, summary))
     UpdateStatus(session_id, status) ->
@@ -202,6 +215,10 @@ fn handle_message(state: State, message: Message) -> actor.Next(State, Message) 
       ))
     ListSessions(reply) -> {
       process.send(reply, Ok(summaries_in_order(state)))
+      actor.continue(state)
+    }
+    ListSessionsSnapshot(reply) -> {
+      process.send(reply, Ok(session_list(state)))
       actor.continue(state)
     }
     GetSession(session_id, reply) -> {
@@ -224,6 +241,10 @@ fn summaries_in_order(state: State) -> List(event.SessionSummary) {
   list.filter_map(state.session_order, fn(session_id) {
     dict.get(state.summaries, session_id)
   })
+}
+
+fn session_list(state: State) -> event.SessionList {
+  event.SessionList(sessions: summaries_in_order(state), now_ms: state.now_ms())
 }
 
 fn register_summary(state: State, summary: event.SessionSummary) -> State {

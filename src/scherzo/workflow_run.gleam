@@ -42,15 +42,13 @@ pub type Dependencies {
       workflow_dag.WorkspaceRef,
       domain.OrchestratorConfig,
       Dict(String, workspace_run.PreparedStepWorkspace),
-    ) ->
-      Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
+    ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
     after_step: fn(
       domain.Issue,
       String,
       workspace_run.PreparedStepWorkspace,
       domain.OrchestratorConfig,
-    ) ->
-      Nil,
+    ) -> Nil,
     cleanup_run: fn(String, domain.OrchestratorConfig) ->
       Result(Nil, error.WorkspaceError),
     command_step: fn(
@@ -60,8 +58,7 @@ pub type Dependencies {
       Int,
       List(String),
       domain.ArtifactLimits,
-    ) ->
-      step_artifact.StepArtifact,
+    ) -> step_artifact.StepArtifact,
     agent_step: fn(
       domain.Issue,
       String,
@@ -71,8 +68,7 @@ pub type Dependencies {
       String,
       fn(runner.PiUpdate) -> Nil,
       fn(process.Subject(worker_command.Command)) -> Nil,
-    ) ->
-      Result(runner.WorkerSuccess, runner.WorkerFailure),
+    ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
   )
 }
 
@@ -978,7 +974,10 @@ fn after_step_down_result(
   }
 }
 
-fn after_step_down_reason(step_id: String, reason: process.ExitReason) -> String {
+fn after_step_down_reason(
+  step_id: String,
+  reason: process.ExitReason,
+) -> String {
   case reason {
     process.Normal -> "after_step_exited_without_result:" <> step_id
     process.Killed -> "after_step_killed:" <> step_id

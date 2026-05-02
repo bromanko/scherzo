@@ -186,8 +186,7 @@ fn in_process_dependencies(
     fn(String, runner.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) ->
-    Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     ..dependencies_with_tracker(log_subject, tracker_client),
@@ -210,8 +209,7 @@ fn workflow_deps_from_agent(
     fn(String, runner.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) ->
-    Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
 ) -> workflow_run.Dependencies {
   workflow_run.Dependencies(
     ..workflow_run.default_dependencies(),
@@ -267,8 +265,7 @@ fn long_running_agent(
   fn(String, runner.PiUpdate) -> Nil,
   process.Subject(worker_command.Command),
   fn() -> Nil,
-) ->
-  Result(runner.WorkerSuccess, runner.WorkerFailure) {
+) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
   fn(issue: domain.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.id)
     process.sleep(5000)
@@ -292,8 +289,7 @@ fn failing_agent(
   fn(String, runner.PiUpdate) -> Nil,
   process.Subject(worker_command.Command),
   fn() -> Nil,
-) ->
-  Result(runner.WorkerSuccess, runner.WorkerFailure) {
+) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
   fn(issue: domain.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.id)
     Error(runner.WorkerFailure(
@@ -316,8 +312,7 @@ fn fail_original_then_block_agent(
   fn(String, runner.PiUpdate) -> Nil,
   process.Subject(worker_command.Command),
   fn() -> Nil,
-) ->
-  Result(runner.WorkerSuccess, runner.WorkerFailure) {
+) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
   fn(issue: domain.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.title)
     case issue.title == "Changed title" {
