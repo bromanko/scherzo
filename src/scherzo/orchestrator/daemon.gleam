@@ -32,6 +32,10 @@ import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/reason as session_reason
+import scherzo/state/ledger
+import scherzo/state/outbox
+import scherzo/state/record
+import scherzo/state/recovery
 import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/tracker/state as issue_state
@@ -95,6 +99,16 @@ type PendingClaim {
     run_id: String,
     session_sequence: Int,
     remaining_candidates: List(domain.Issue),
+  )
+}
+
+type StartupRecovery {
+  StartupRecovery(
+    runtime: domain.RuntimeState,
+    retry_timers: List(recovery.RecoveredRetry),
+    cleanup_workspaces: List(recovery.CleanupRequest),
+    outbox_to_replay: List(recovery.OutboxReplay),
+    warnings: List(String),
   )
 }
 
@@ -316,8 +330,14 @@ pub fn start(
   let triage_client =
     dependencies.make_triage(effective.tracker, effective.linear_contract)
   let linear_command_state = linear_transport.new_state(dependencies.now_ms())
-  let runtime = core.new_state(effective)
   let secrets = config.resolved_secrets(effective)
+  use startup_recovery <- try_startup(load_startup_recovery(
+    effective,
+    tracker_client,
+    dependencies,
+    secrets,
+  ))
+  let runtime = startup_recovery.runtime
   use event_hub <- try_startup(dependencies.start_event_hub() |> map_hub_error)
   let builder =
     actor.new_with_initialiser(1000, fn(subject) {
@@ -392,6 +412,16 @@ pub fn start(
                       operator_paused: False,
                       dependencies: dependencies,
                     )
+                    |> schedule_recovered_retry_timers(
+                      startup_recovery.retry_timers,
+                    )
+                    |> enqueue_recovered_cleanups(
+                      startup_recovery.cleanup_workspaces,
+                    )
+                    |> enqueue_startup_recovery_outbox(
+                      startup_recovery.outbox_to_replay,
+                    )
+                    |> log_startup_recovery_warnings(startup_recovery.warnings)
                   let selector =
                     process.new_selector()
                     |> process.select(subject)
@@ -445,6 +475,260 @@ pub fn get_snapshot(
   let reply = process.new_subject()
   process.send(subject, GetSnapshot(reply))
   process.receive(reply, within: timeout_ms)
+}
+
+fn load_startup_recovery(
+  effective: domain.EffectiveConfig,
+  tracker_client: tracker.Client,
+  dependencies: RuntimeDependencies,
+  secrets: List(String),
+) -> Result(StartupRecovery, StartupError) {
+  use ledger_path <- try_startup(
+    ledger.path_for_workspace_root(effective.workspace.root)
+    |> map_ledger_error("ledger_path_failed"),
+  )
+  use replayed <- try_startup(
+    ledger.replay(ledger_path)
+    |> map_ledger_error("ledger_replay_failed"),
+  )
+  let _ = list.length(replayed.records)
+  let _ = case replayed.truncated_tail {
+    True ->
+      dependencies.logger("warn", "ledger_truncated_tail_ignored", [], secrets)
+    False -> Ok(Nil)
+  }
+  use refreshed_issues <- try_startup(fetch_recovery_issue_states(
+    tracker_client,
+    recovery.known_issue_ids(replayed.projection),
+  ))
+  use recovery_plan <- try_startup(
+    recovery.plan(
+      replayed.projection,
+      effective,
+      refreshed_issues,
+      dependencies.now_ms(),
+    )
+    |> map_recovery_error,
+  )
+  use Nil <- try_startup(
+    ledger.append_many(ledger_path, recovery_plan.records_to_append, True)
+    |> map_ledger_error("ledger_recovery_append_failed"),
+  )
+  Ok(StartupRecovery(
+    runtime: recovery_plan.runtime,
+    retry_timers: recovery_plan.retry_timers,
+    cleanup_workspaces: recovery_plan.cleanup_workspaces,
+    outbox_to_replay: recovery_plan.outbox_to_replay,
+    warnings: recovery_plan.warnings,
+  ))
+}
+
+fn fetch_recovery_issue_states(
+  tracker_client: tracker.Client,
+  issue_ids: List(String),
+) -> Result(List(domain.Issue), StartupError) {
+  fetch_recovery_issue_chunks(tracker_client, chunk_strings(issue_ids, 50), [])
+}
+
+fn fetch_recovery_issue_chunks(
+  tracker_client: tracker.Client,
+  chunks: List(List(String)),
+  acc: List(domain.Issue),
+) -> Result(List(domain.Issue), StartupError) {
+  case chunks {
+    [] -> Ok(list.reverse(acc))
+    [chunk, ..rest] ->
+      case tracker_client.fetch_issue_states_by_ids(chunk) {
+        Ok(issues) ->
+          fetch_recovery_issue_chunks(
+            tracker_client,
+            rest,
+            list.append(list.reverse(issues), acc),
+          )
+        Error(err) ->
+          Error(StartupError(
+            "recovery_issue_fetch_failed",
+            error.tracker_code(err),
+          ))
+      }
+  }
+}
+
+fn chunk_strings(values: List(String), size: Int) -> List(List(String)) {
+  case values {
+    [] -> []
+    _ -> {
+      let size = case size <= 0 {
+        True -> 1
+        False -> size
+      }
+      let chunk = list.take(values, size)
+      let rest = list.drop(values, size)
+      [chunk, ..chunk_strings(rest, size)]
+    }
+  }
+}
+
+fn schedule_recovered_retry_timers(
+  state: State,
+  retries: List(recovery.RecoveredRetry),
+) -> State {
+  list.fold(retries, state, fn(state, retry) {
+    let recovery.RecoveredRetry(issue_id, _, delay_ms, generation, reason_text) =
+      retry
+    log_state(state, "info", "recovered_retry_scheduled", [
+      #("issue_id", issue_id),
+      #("delay_ms", int.to_string(delay_ms)),
+      #("generation", int.to_string(generation)),
+      #("reason", reason_text),
+    ])
+    let timer =
+      state.dependencies.send_after(
+        state.subject,
+        delay_ms,
+        RetryTick(issue_id, generation),
+      )
+    State(
+      ..state,
+      retry: retry_scheduler.schedule_timer(
+        state.retry,
+        issue_id,
+        timer,
+        state.dependencies.cancel_timer,
+      ),
+    )
+  })
+}
+
+fn enqueue_recovered_cleanups(
+  state: State,
+  cleanups: List(recovery.CleanupRequest),
+) -> State {
+  list.fold(cleanups, state, fn(state, cleanup) {
+    let recovery.CleanupRequest(issue_id, _, workspace_path) = cleanup
+    log_state(state, "info", "recovered_workspace_cleanup", [
+      #("issue_id", issue_id),
+      #("workspace_path", workspace_path),
+    ])
+    enqueue_side_effect(
+      state,
+      effect_runner.CleanupWorkspace(
+        root: state.workflow.effective.workspace.root,
+        workspace_path: workspace_path,
+        hooks: state.workflow.effective.hooks,
+        cleanup: state.dependencies.cleanup,
+      ),
+    )
+  })
+}
+
+fn enqueue_startup_recovery_outbox(
+  state: State,
+  outbox_entries: List(recovery.OutboxReplay),
+) -> State {
+  list.fold(outbox_entries, state, fn(state, entry) {
+    let recovery.OutboxReplay(outbox_id, issue_id, outbox_kind, _, payload_json) =
+      entry
+    case outbox.decode_payload(payload_json) {
+      Error(error_code) ->
+        fail_startup_recovery_outbox(
+          state,
+          outbox_id,
+          issue_id,
+          outbox_kind,
+          error_code,
+        )
+      Ok(payload) ->
+        case outbox.recovery_replay_error(outbox_kind, payload.kind) {
+          Error(error_code) ->
+            fail_startup_recovery_outbox(
+              state,
+              outbox_id,
+              issue_id,
+              outbox_kind,
+              error_code,
+            )
+          Ok(Nil) -> {
+            log_state(state, "info", "outbox_replay_enqueued", [
+              #("outbox_id", outbox_id),
+              #("issue_id", issue_id),
+              #("kind", outbox_kind),
+            ])
+            enqueue_side_effect(
+              state,
+              effect_runner.PostLinearCommandAck(
+                issue_id: issue_id,
+                source_comment_id: outbox_id,
+                body: payload.body,
+                client: state.linear_command_client,
+              ),
+            )
+          }
+        }
+    }
+  })
+}
+
+fn fail_startup_recovery_outbox(
+  state: State,
+  outbox_id: String,
+  issue_id: String,
+  outbox_kind: String,
+  error_code: String,
+) -> State {
+  log_state(state, "warn", "outbox_replay_failed", [
+    #("outbox_id", outbox_id),
+    #("issue_id", issue_id),
+    #("kind", outbox_kind),
+    #("error", error_code),
+  ])
+  let _ =
+    append_ledger_bodies(
+      state,
+      [record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code)],
+      "ledger_append_failed",
+    )
+  state
+}
+
+fn log_startup_recovery_warnings(state: State, warnings: List(String)) -> State {
+  list.each(warnings, fn(warning) {
+    log_state(state, "warn", "startup_recovery_warning", [#("warning", warning)])
+  })
+  state
+}
+
+fn map_ledger_error(
+  result: Result(a, ledger.LedgerError),
+  code: String,
+) -> Result(a, StartupError) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(err) -> Error(StartupError(code, ledger_error_message(err)))
+  }
+}
+
+fn ledger_error_message(error: ledger.LedgerError) -> String {
+  case error {
+    ledger.Io(message) -> message
+    ledger.UnsupportedVersion(version) ->
+      "unsupported ledger schema version " <> int.to_string(version)
+    ledger.CorruptRecord(line, reason) ->
+      "corrupt ledger record at line " <> int.to_string(line) <> ": " <> reason
+  }
+}
+
+fn map_recovery_error(
+  result: Result(a, recovery.RecoveryError),
+) -> Result(a, StartupError) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(err) ->
+      Error(StartupError(
+        "startup_recovery_failed",
+        recovery.describe_error(err),
+      ))
+  }
 }
 
 fn handle_message(state: State, message: Message) -> actor.Next(State, Message) {
@@ -796,6 +1080,22 @@ fn retry_resolved_issue(
   operator_command: command.OperatorCommand,
   issue: domain.Issue,
 ) -> #(State, command.CommandResult) {
+  let _ =
+    append_ledger_bodies(
+      state,
+      [
+        record.IssueUnparked(issue.id, issue.identifier, "operator_retry"),
+        record.IssueCounterUpdated(
+          issue.id,
+          issue.identifier,
+          0,
+          0,
+          state.dependencies.now_ms(),
+          None,
+        ),
+      ],
+      "ledger_append_failed",
+    )
   let runtime =
     domain.RuntimeState(
       ..state.runtime,
@@ -1394,6 +1694,7 @@ fn park_issue_state(
     )
   let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue.id)
   let reason_text = orchestrator_reason.park_to_string(reason)
+  let _ = append_parked_record_for_runtime(state, issue.id, reason_text)
   log_state(state, "warn", "issue_parked", [
     #("issue_id", issue.id),
     #("reason", reason_text),
@@ -1402,6 +1703,7 @@ fn park_issue_state(
 }
 
 fn unpark_issue_state(state: State, issue_id: String) -> State {
+  let issue_identifier = identifier_for_runtime(state.runtime, issue_id)
   let runtime =
     domain.RuntimeState(
       ..state.runtime,
@@ -1410,14 +1712,53 @@ fn unpark_issue_state(state: State, issue_id: String) -> State {
       issue_counters: dict.delete(state.runtime.issue_counters, issue_id),
     )
   let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue_id)
+  let _ =
+    append_ledger_bodies(
+      state,
+      [
+        record.IssueUnparked(issue_id, issue_identifier, "operator"),
+        record.IssueCounterUpdated(
+          issue_id,
+          issue_identifier,
+          0,
+          0,
+          state.dependencies.now_ms(),
+          None,
+        ),
+      ],
+      "ledger_append_failed",
+    )
   log_state(state, "info", "issue_unparked", [#("issue_id", issue_id)])
   state
 }
 
 fn unpark_if_issue_changed_state(state: State, issue: domain.Issue) -> State {
   let had_retry = dict.has_key(state.runtime.retry_attempts, issue.id)
+  let was_parked = dict.has_key(state.runtime.parked, issue.id)
   let runtime = core.unpark_if_issue_changed(state.runtime, issue)
   let state = State(..state, runtime: runtime)
+  let state = case was_parked && !dict.has_key(runtime.parked, issue.id) {
+    True -> {
+      let _ =
+        append_ledger_bodies(
+          state,
+          [
+            record.IssueUnparked(issue.id, issue.identifier, "issue_changed"),
+            record.IssueCounterUpdated(
+              issue.id,
+              issue.identifier,
+              0,
+              0,
+              state.dependencies.now_ms(),
+              None,
+            ),
+          ],
+          "ledger_append_failed",
+        )
+      state
+    }
+    False -> state
+  }
   case had_retry && !dict.has_key(runtime.retry_attempts, issue.id) {
     True -> cancel_retry_timer(state, issue.id)
     False -> state
@@ -1711,34 +2052,75 @@ fn apply_linear_transport_action(
           result,
         )
       {
-        True ->
+        True -> {
+          let body =
+            linear_transport.result_ack_body(
+              comment.id,
+              parsed,
+              result,
+              state.workflow.secrets,
+            )
+          let _ =
+            append_ledger_bodies(
+              state,
+              [
+                record.OutboxPendingV2(
+                  comment.id,
+                  comment.issue_id,
+                  "linear_command_ack",
+                  "linear_command_ack:" <> comment.id,
+                  outbox.linear_command_ack_payload(
+                    comment.id,
+                    body,
+                    state.workflow.secrets,
+                  ),
+                ),
+              ],
+              "ledger_append_failed",
+            )
           enqueue_side_effect(
             state,
             effect_runner.PostLinearCommandAck(
               issue_id: comment.issue_id,
               source_comment_id: comment.id,
-              body: linear_transport.result_ack_body(
-                comment.id,
-                parsed,
-                result,
-                state.workflow.secrets,
-              ),
+              body: body,
               client: state.linear_command_client,
             ),
           )
+        }
         False -> state
       }
     }
-    linear_transport.PostAck(issue_id, body) ->
+    linear_transport.PostAck(issue_id, body) -> {
+      let outbox_id = "linear-command-ack-" <> issue_id
+      let _ =
+        append_ledger_bodies(
+          state,
+          [
+            record.OutboxPendingV2(
+              outbox_id,
+              issue_id,
+              "linear_command_ack",
+              "linear_command_ack:" <> issue_id,
+              outbox.linear_command_ack_payload(
+                outbox_id,
+                body,
+                state.workflow.secrets,
+              ),
+            ),
+          ],
+          "ledger_append_failed",
+        )
       enqueue_side_effect(
         state,
         effect_runner.PostLinearCommandAck(
           issue_id: issue_id,
-          source_comment_id: "",
+          source_comment_id: outbox_id,
           body: body,
           client: state.linear_command_client,
         ),
       )
+    }
     linear_transport.LogIgnored(reason, comment_id) -> {
       log_state(state, "info", "linear_command_ignored", [
         #("comment_id", comment_id),
@@ -2763,18 +3145,43 @@ fn finish_worker_success(
       core.AlreadyCleaned,
     )
   let state = State(..state, runtime: transition.state)
-  let state =
-    enqueue_side_effect(
+  case
+    append_ledger_bodies(
       state,
-      effect_runner.ReportSuccess(
-        issue_id: handle.issue_id,
-        issue: final_issue,
-        success: success,
-        run_id: handle.run_id,
-        client: state.handoff_client,
-      ),
+      [
+        record.RunFinished(
+          handle.run_id,
+          handle.issue_id,
+          classification_to_string(success.final_classification),
+          success.tokens.total,
+          success.turns,
+        ),
+        counter_record_for_state(
+          state,
+          handle.issue_id,
+          final_issue.identifier,
+          Some(handle.run_id),
+        ),
+      ],
+      "ledger_append_failed",
     )
-  apply_effects(state, transition.effects)
+  {
+    False -> state
+    True -> {
+      let state =
+        enqueue_side_effect(
+          state,
+          effect_runner.ReportSuccess(
+            issue_id: handle.issue_id,
+            issue: final_issue,
+            success: success,
+            run_id: handle.run_id,
+            client: state.handoff_client,
+          ),
+        )
+      apply_effects(state, transition.effects)
+    }
+  }
 }
 
 fn finish_worker_failure(
@@ -2831,18 +3238,43 @@ fn finish_worker_failure(
           state.dependencies.now_ms(),
         )
       let state = State(..state, runtime: transition.state)
-      let state =
-        enqueue_side_effect(
+      case
+        append_ledger_bodies(
           state,
-          effect_runner.ReportFailure(
-            issue_id: handle.issue_id,
-            issue: handle.issue,
-            failure: failure,
-            run_id: handle.run_id,
-            client: state.handoff_client,
-          ),
+          [
+            record.RunFinished(
+              handle.run_id,
+              handle.issue_id,
+              "failure",
+              failure.tokens.total,
+              0,
+            ),
+            counter_record_for_state(
+              state,
+              handle.issue_id,
+              baseline_issue.identifier,
+              Some(handle.run_id),
+            ),
+          ],
+          "ledger_append_failed",
         )
-      apply_effects(state, transition.effects)
+      {
+        False -> state
+        True -> {
+          let state =
+            enqueue_side_effect(
+              state,
+              effect_runner.ReportFailure(
+                issue_id: handle.issue_id,
+                issue: handle.issue,
+                failure: failure,
+                run_id: handle.run_id,
+                client: state.handoff_client,
+              ),
+            )
+          apply_effects(state, transition.effects)
+        }
+      }
     }
   }
 }
@@ -3121,15 +3553,54 @@ fn handle_handoff_claim_finished(
               dispatch_candidates(pending.remaining_candidates, state)
             }
             Ok(Nil) -> {
-              let state =
-                spawn_worker(
-                  state,
+              let post_spawn_runtime =
+                core.apply_worker_start(
+                  state.runtime,
                   pending.issue,
                   pending.workspace_path,
-                  pending.run_id,
-                  pending.session_sequence,
                 )
-              dispatch_candidates(pending.remaining_candidates, state)
+              let counter =
+                counter_for_runtime(post_spawn_runtime, pending.issue.id)
+              case
+                append_ledger_bodies(
+                  state,
+                  [
+                    record.KnownWorkspace(
+                      pending.issue.id,
+                      pending.issue.identifier,
+                      pending.workspace_path,
+                    ),
+                    record.RunStarted(
+                      pending.run_id,
+                      pending.issue.id,
+                      pending.issue.identifier,
+                      pending.workspace_path,
+                    ),
+                    record.IssueCounterUpdated(
+                      pending.issue.id,
+                      pending.issue.identifier,
+                      counter.failure_attempts,
+                      counter.worker_sessions,
+                      state.dependencies.now_ms(),
+                      None,
+                    ),
+                  ],
+                  "ledger_append_failed",
+                )
+              {
+                False -> state
+                True -> {
+                  let state =
+                    spawn_worker(
+                      state,
+                      pending.issue,
+                      pending.workspace_path,
+                      pending.run_id,
+                      pending.session_sequence,
+                    )
+                  dispatch_candidates(pending.remaining_candidates, state)
+                }
+              }
             }
           }
         }
@@ -3178,7 +3649,17 @@ fn handle_linear_command_ack_finished(
   result: Result(Nil, error.TrackerError),
 ) -> State {
   case result {
-    Ok(Nil) -> state
+    Ok(Nil) -> {
+      let _ =
+        append_ledger_bodies(
+          state,
+          [
+            record.OutboxCompleted(comment_id, issue_id, "linear_command_ack"),
+          ],
+          "ledger_append_failed",
+        )
+      state
+    }
     Error(err) -> {
       log_state(state, "warn", "linear_command_ack_failed", [
         #("issue_id", issue_id),
@@ -3286,6 +3767,66 @@ fn enqueue_side_effect(state: State, effect: effect_runner.Effect) -> State {
   state
 }
 
+fn append_ledger_bodies(
+  state: State,
+  bodies: List(record.RecordBody),
+  event: String,
+) -> Bool {
+  case bodies {
+    [] -> True
+    _ ->
+      case
+        ledger.path_for_workspace_root(state.workflow.effective.workspace.root)
+      {
+        Error(err) -> {
+          log_state(state, "error", event, [
+            #("error", ledger_error_message(err)),
+          ])
+          False
+        }
+        Ok(ledger_path) ->
+          case
+            ledger.append_many(
+              ledger_path,
+              ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
+              True,
+            )
+          {
+            Ok(Nil) -> True
+            Error(err) -> {
+              log_state(state, "error", event, [
+                #("error", ledger_error_message(err)),
+              ])
+              False
+            }
+          }
+      }
+  }
+}
+
+fn ledger_records_for_bodies(
+  now_ms: Int,
+  bodies: List(record.RecordBody),
+) -> List(record.LedgerRecord) {
+  ledger_records_for_bodies_loop(bodies, now_ms, 1, [])
+}
+
+fn ledger_records_for_bodies_loop(
+  bodies: List(record.RecordBody),
+  now_ms: Int,
+  sequence: Int,
+  acc: List(record.LedgerRecord),
+) -> List(record.LedgerRecord) {
+  case bodies {
+    [] -> list.reverse(acc)
+    [body, ..rest] ->
+      ledger_records_for_bodies_loop(rest, now_ms, sequence + 1, [
+        record.new(now_ms, sequence, body),
+        ..acc
+      ])
+  }
+}
+
 fn apply_effects(state: State, effects: List(core.Effect)) -> State {
   case effects {
     [] -> state
@@ -3314,6 +3855,20 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
         #("generation", int.to_string(generation)),
         #("reason", reason_text),
       ])
+      let _ =
+        append_ledger_bodies(
+          state,
+          [
+            record.RetryScheduled(
+              issue_id,
+              identifier_for_runtime(state.runtime, issue_id),
+              delay_ms,
+              generation,
+              reason_text,
+            ),
+          ],
+          "ledger_append_failed",
+        )
       let timer =
         state.dependencies.send_after(
           state.subject,
@@ -3330,7 +3885,17 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
         ),
       )
     }
-    core.CancelRetry(issue_id) -> cancel_retry_timer(state, issue_id)
+    core.CancelRetry(issue_id) -> {
+      let _ =
+        append_ledger_bodies(
+          state,
+          [
+            record.RetryCancelled(issue_id, 0, "cancel_retry"),
+          ],
+          "ledger_append_failed",
+        )
+      cancel_retry_timer(state, issue_id)
+    }
     core.CleanupWorkspace(workspace_path) -> {
       case string.trim(workspace_path) == "" {
         True -> state
@@ -3394,12 +3959,102 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
       state
     }
     core.ParkIssue(issue_id, reason) -> {
+      let reason_text = orchestrator_reason.park_to_string(reason)
       log_state(state, "warn", "issue_parked", [
         #("issue_id", issue_id),
-        #("reason", orchestrator_reason.park_to_string(reason)),
+        #("reason", reason_text),
       ])
+      let _ = append_parked_record_for_runtime(state, issue_id, reason_text)
       state
     }
+  }
+}
+
+fn counter_for_runtime(
+  runtime: domain.RuntimeState,
+  issue_id: String,
+) -> domain.IssueCounter {
+  case dict.get(runtime.issue_counters, issue_id) {
+    Ok(counter) -> counter
+    Error(_) -> domain.new_issue_counter()
+  }
+}
+
+fn identifier_for_runtime(
+  runtime: domain.RuntimeState,
+  issue_id: String,
+) -> String {
+  case dict.get(runtime.claimed, issue_id) {
+    Ok(identifier) -> identifier
+    Error(_) ->
+      case dict.get(runtime.completed, issue_id) {
+        Ok(issue) -> issue.identifier
+        Error(_) ->
+          case dict.get(runtime.parked, issue_id) {
+            Ok(parked) -> parked.identifier
+            Error(_) -> issue_id
+          }
+      }
+  }
+}
+
+fn append_parked_record_for_runtime(
+  state: State,
+  issue_id: String,
+  reason_text: String,
+) -> Bool {
+  case dict.get(state.runtime.parked, issue_id) {
+    Error(_) -> True
+    Ok(parked) -> {
+      let #(release_policy, issue_fingerprint) = case parked.release_policy {
+        domain.ExplicitUnparkOnly -> #("explicit_unpark_only", "")
+        domain.AutoUnparkOnIssueChange(fingerprint) -> #(
+          "auto_unpark_on_issue_change",
+          fingerprint,
+        )
+      }
+      append_ledger_bodies(
+        state,
+        [
+          record.IssueParkedV2(
+            issue_id,
+            parked.identifier,
+            reason_text,
+            release_policy,
+            issue_fingerprint,
+            state.dependencies.now_ms(),
+          ),
+        ],
+        "ledger_append_failed",
+      )
+    }
+  }
+}
+
+fn counter_record_for_state(
+  state: State,
+  issue_id: String,
+  issue_identifier: String,
+  source_run_id: Option(String),
+) -> record.RecordBody {
+  let counter = counter_for_runtime(state.runtime, issue_id)
+  record.IssueCounterUpdated(
+    issue_id,
+    issue_identifier,
+    counter.failure_attempts,
+    counter.worker_sessions,
+    state.dependencies.now_ms(),
+    source_run_id,
+  )
+}
+
+fn classification_to_string(
+  classification: runner.FinalClassification,
+) -> String {
+  case classification {
+    runner.FinalActive -> "active"
+    runner.FinalTerminal -> "terminal"
+    runner.FinalNonActive -> "non_active"
   }
 }
 
