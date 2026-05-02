@@ -25,7 +25,7 @@ Workflow contract:
 - Do not implement the ticket. Do not edit source code, tests, config, or existing docs except for the one new plan file.
 - Create exactly one Markdown ExecPlan under `docs/plans/`.
 - Name the file `docs/plans/{{ issue.identifier }}-<short-kebab-title>.md`, using a lowercase title slug.
-- The plan must be self-contained and portable. Use repository-relative paths only; never write absolute local paths.
+- The plan must be self-contained and portable. Use repository-relative paths only; never write absolute local paths, even as examples or negative test data. Do not include literal prefixes such as `/Users/`, `/home/`, `/private/`, or `/var/folders/`; use placeholders like `<absolute-local-path>` when discussing forbidden path shapes.
 - If the ticket lacks information needed to close a design choice, still produce the best plan you can. Mark uncertainty with `[CLARIFY]` and include it in `## Open Questions and Clarifications Needed`.
 - Include `## Open Questions and Clarifications Needed` even when there are no open questions; write `None.` in that case.
 - Keep the plan suitable for review in a PR. It should be detailed enough to implement later, but it must not start implementation now.

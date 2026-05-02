@@ -6,9 +6,26 @@ Linear issue:
 - Title: {{ issue.title }}
 - URL: {{ issue.url }}
 
-Draft validation output:
+Initial draft validation status: {{ steps.validate_draft.status }}
+Initial draft validation stdout:
 
 {{ steps.validate_draft.stdout }}
+
+Initial draft validation stderr:
+
+{{ steps.validate_draft.stderr }}
+
+Repair step response:
+
+{{ steps.repair_validation.final_response }}
+
+Final validation stdout:
+
+{{ steps.validate_after_repair.stdout }}
+
+Final validation stderr:
+
+{{ steps.validate_after_repair.stderr }}
 
 Review step response:
 
@@ -27,7 +44,7 @@ Workflow contract:
 - Preserve the ExecPlan as a living document and keep all sections self-contained.
 - If any stakeholder input remains unresolved, keep explicit `[CLARIFY]` tags and list each item in `## Open Questions and Clarifications Needed`.
 - Include `## Open Questions and Clarifications Needed` even when there are no open questions; write `None.` in that case.
-- Use repository-relative paths only. Do not introduce absolute local paths.
+- Use repository-relative paths only. Do not introduce absolute local paths, even as examples or negative test data. Do not include literal prefixes such as `/Users/`, `/home/`, `/private/`, or `/var/folders/`; use placeholders like `<absolute-local-path>` when discussing forbidden path shapes.
 
 Dogfood time budget:
 
@@ -37,7 +54,7 @@ Dogfood time budget:
 Incorporation process:
 
 1. Read both repo-local skill files.
-2. Read the plan path printed in `PLAN_PATH=<path>` above, or discover it with `jj diff --from @- --to @ --name-only --color=never` if needed.
+2. Read the plan path printed as `PLAN_PATH=<path>` in the final validation stdout above, or discover it with `jj diff --from @- --to @ --name-only --color=never` if needed.
 3. Read `tmp/execplan-review.md`.
 4. Update the plan so a later implementation workflow can start from the plan alone.
 5. Re-read the final plan for consistency across purpose, scope, milestones, concrete steps, tests, validation, rollout, risks, and open questions.
