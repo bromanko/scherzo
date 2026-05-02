@@ -6,11 +6,11 @@ This ExecPlan is a living document. The sections Progress, Surprises & Discoveri
 
 After this change, the riskiest part of Scherzo's agent execution path should be easier to reason about and test. JSON protocol encoding/decoding for pi RPC should live in a protocol module with no process IO. Port launch, command sending, stdout reading, deadlines, and termination should live in a pi client module. Operator controls and active turn state should live in agent-specific modules. The existing high-level behavior should remain the same: Scherzo still prepares workspaces, renders prompts, optionally probes pi compatibility, starts pi, runs turns, handles operator prompts and blocking UI requests, accounts for tokens, refreshes issue state, classifies the final issue, and cleans up.
 
-The visible proof is that `src/scherzo/agent/pi_rpc.gleam` no longer mixes JSON protocol logic with port/process management and turn event loops, and `src/scherzo/agent/runner.gleam` no longer contains the active turn loop, UI policy handling, operator command queueing, and high-level run composition in one 2,039-line file. From the repository root, `direnv exec . gleam test` must continue to pass. Existing fake-pi tests must still prove launch, prompt, abort, UI response, tool-event extraction, timeout, and stall behavior.
+The visible proof is that `src/scherzo/agent/pi_rpc.gleam` no longer mixes JSON protocol logic with port/process management and turn event loops, and `src/scherzo/agent/runner.gleam` no longer contains the active turn loop, UI policy handling, operator command queueing, and high-level run composition in one 2,046-line file. From the repository root, `direnv exec . gleam test` must continue to pass; at the 2026-05-02 review baseline it reported `529 passed, no failures`. Existing fake-pi tests must still prove launch, prompt, abort, UI response, tool-event extraction, timeout, and stall behavior.
 
 ## Problem Framing and Constraints
 
-The current `src/scherzo/agent/runner.gleam` is 2,039 lines. It defines public worker result/update types, prepares workspaces, renders templates, runs compatibility probes, launches pi, runs a multi-turn loop, handles worker commands from operators, implements blocking UI policy, accounts for tokens, refreshes tracker state, classifies final issues, and performs cleanup. The active turn loop starts around `active_turn_loop` and command/UI handling spans functions such as `handle_active_command`, `handle_turn_record`, `handle_extension_ui_record`, `handle_blocking_ui_policy`, `handle_ui_response_command`, `handle_operator_ui_timeout`, and `handle_abort_command`.
+The current `src/scherzo/agent/runner.gleam` is 2,046 lines as of the 2026-05-02 review. It defines public worker result/update types, prepares workspaces, renders templates, runs compatibility probes, launches pi, runs a multi-turn loop, handles worker commands from operators, implements blocking UI policy, accounts for tokens, refreshes tracker state, classifies final issues, and performs cleanup. The active turn loop starts around `active_turn_loop` and command/UI handling spans functions such as `handle_active_command`, `handle_turn_record`, `handle_extension_ui_record`, `handle_blocking_ui_policy`, `handle_ui_response_command`, `handle_operator_ui_timeout`, and `handle_abort_command`.
 
 The current `src/scherzo/agent/pi_rpc.gleam` is 1,242 lines. It defines `Session`, a large loose `RpcRecord`, command JSON encoders, response decoders, process launch, prompt sending, read loops, timeout and stall handling, blocking UI request handling, token and tool extraction, port error mapping, and termination. `RpcRecord` is a wide record of optional fields because it tries to represent responses, lifecycle events, messages, tool calls, tool results, UI requests, session stats, and raw JSON in one type. `launch` is in the same module as JSON decoding. `read_events_until_agent_end` and `handle_blocking_ui_request` live beside protocol decoders.
 
@@ -20,16 +20,16 @@ The plan must preserve current runtime behavior and public daemon behavior. It m
 
 ## Strategy Overview
 
-Use a strangler refactor. First move pure protocol code out of `pi_rpc.gleam`; this is low risk because it has no IO. Then move port/client code into `src/scherzo/pi/client.gleam`, leaving a temporary `src/scherzo/agent/pi_rpc.gleam` facade so tests and callers can migrate gradually. Next move public agent result/update types into `src/scherzo/agent/types.gleam` and keep `runner.gleam` as a temporary facade. Then extract operator-control state and active turn-loop behavior from `runner.gleam`. Finally move high-level run composition into `src/scherzo/agent/run_attempt.gleam`, leaving `runner.gleam` either deleted or reduced to a small compatibility wrapper.
+Use a strangler refactor. First move pure protocol code out of `pi_rpc.gleam`; this is low risk because it has no IO. Then move only stepwise port/client code into `src/scherzo/pi/client.gleam`, leaving a temporary `src/scherzo/agent/pi_rpc.gleam` facade while tests and callers migrate. Do not move the legacy high-level `prompt` or `prompt_with_ui_policy` helpers into `pi/client.gleam`; they combine client IO with UI policy and should either remain in a temporary agent-level facade or be replaced by test-local helpers before final cleanup. Next move public agent result/update types into `src/scherzo/agent/types.gleam`, but migrate qualified type constructors and variants rather than relying on Gleam type aliases to preserve `runner.WorkerSuccess(...)` or `runner.FinalTerminal`. Then extract operator-control state and active turn-loop behavior from `runner.gleam`. Finally move high-level run composition into `src/scherzo/agent/run_attempt.gleam`, leaving `runner.gleam` either deleted or reduced to a small compatibility wrapper for functions only.
 
 The desired final ownership is:
 
 - `src/scherzo/pi/protocol.gleam`: encode/decode only. It should know JSON and pi record shapes, but it should not import `scherzo/port`, launch processes, read stdout, or implement operator policy.
-- `src/scherzo/pi/client.gleam`: launch/send/read/terminate only. It should know the port abstraction, deadlines, timeout mapping, and protocol module, but it should not know Scherzo workspaces, tracker issues, template rendering, handoff, or final classification.
-- `src/scherzo/agent/operator_control.gleam`: prompt queue, stop-after-turn flag, abort/queue/UI response command decisions, size guards, and pending UI state.
-- `src/scherzo/agent/turn_loop.gleam`: the active turn finite-state machine. It reads records from `pi/client`, applies operator-control decisions, emits updates, and returns a turn result.
-- `src/scherzo/agent/run_attempt.gleam`: high-level composition: workspace prep, prompt render, optional probe, pi launch, turn loop iteration, state refresh, classification, and cleanup.
-- `src/scherzo/agent/types.gleam`: shared result/update types used by daemon, service, workflow run, handoff, result artifacts, and tests.
+- `src/scherzo/pi/client.gleam`: launch/send/read/terminate only. It should know the port abstraction, deadlines, timeout mapping, and protocol module, but it should not know Scherzo workspaces, tracker issues, template rendering, handoff, final classification, or UI-request policy.
+- `src/scherzo/agent/operator_control.gleam`: prompt queue, stop-after-turn flag, abort/queue/UI response command decisions, size guards, pending UI state, and the reply/update effects that the caller must perform.
+- `src/scherzo/agent/turn_loop.gleam`: the active turn finite-state machine. It reads records from `pi/client`, applies operator-control decisions, emits updates, and returns a turn result or cleanup request. It may send pi turn-local commands such as abort or extension UI responses, but it must not perform workspace cleanup, tracker refresh, handoff, or final classification.
+- `src/scherzo/agent/run_attempt.gleam`: high-level composition: workspace prep, prompt render, optional probe, pi launch, turn loop iteration, state refresh, classification, worker-failure construction, and cleanup.
+- `src/scherzo/agent/types.gleam`: shared result/update types used by daemon, workflow run, handoff, result artifacts, event publishing, step artifacts, and tests.
 
 ## Alternatives Considered
 
@@ -43,22 +43,24 @@ A fourth alternative is to introduce an OTP actor for the pi client immediately.
 
 ## Risks and Countermeasures
 
-The main behavior risk is changing timeout and stall semantics. Countermeasure: keep the existing fake-pi timeout tests in `test/pi_rpc_test.gleam` or their migrated equivalents, and add focused client tests before moving code. Do not change deadline calculations while extracting modules.
+The main behavior risk is changing timeout, stall, or interleaved-response semantics. Countermeasure: keep the existing fake-pi timeout tests in `test/pi_rpc_test.gleam` or their migrated equivalents, and add focused client tests before moving code. Do not change deadline calculations, skipped-record limits, skipped-record byte accounting, or the order in which command responses and event records are surfaced while extracting modules.
 
-The main protocol risk is changing decoded `RpcRecord` fields such as tool name, tool input, tool output, tool status, assistant messages, tokens, or raw JSON. Countermeasure: move protocol tests first and keep assertions unchanged for captured fixtures such as `test/fixtures/pi_tool_events_captured.jsonl`.
+The main protocol risk is changing decoded `RpcRecord` fields such as tool name, tool input, tool output, tool status, assistant messages, tokens, or raw JSON. Countermeasure: move protocol tests first and keep assertions unchanged for captured fixtures such as `test/fixtures/pi_tool_events_captured.jsonl`. Keep `RpcRecord.type_` as the raw pi event string in `pi/protocol.gleam`; convert to `src/scherzo/agent/pi_event.gleam` only in agent-level update code so the lower `pi` package does not depend on `scherzo/agent`.
 
-The main operator-control risk is changing reply timing or queue semantics. Countermeasure: preserve tests in `test/agent_worker_control_test.gleam`, especially abort, queued prompt, UI response, UI timeout, and prompt-too-large behavior. Add direct unit tests for the extracted `operator_control` module.
+The main operator-control risk is changing reply timing, reply variant, command ordering, or queue semantics. Countermeasure: preserve tests in `test/agent_worker_control_test.gleam`, especially abort, queued prompt, UI response, UI timeout, and prompt-too-large behavior. Add direct unit tests for the extracted `operator_control` module that assert the exact `worker_command.Reply` variant and message for active-turn and between-turn modes.
 
-The main compatibility risk is changing imports used by daemon, service, workflow run, handoff, and tests. Countermeasure: introduce `agent/types.gleam` and temporary facade modules. Migrate production imports one group at a time. Keep `runner.run_attempt`, `runner.run_attempt_with_commands`, and `runner.run_attempt_with_command_ready` available until all production callers use `agent/run_attempt.gleam`.
+The main compatibility risk is changing imports used by daemon, workflow run, handoff, event publishing, step artifacts, result artifacts, and tests. Countermeasure: introduce `agent/types.gleam` and temporary facade modules, but do not assume type aliases preserve qualified constructors or variants in Gleam. Search for `runner.WorkerSuccess(`, `runner.WorkerFailure(`, `runner.PiUpdate(`, `runner.FinalActive`, `runner.FinalTerminal`, and `runner.FinalNonActive`; migrate those call sites to `agent/types.gleam` in the same green slice that moves the type definitions. Keep `runner.run_attempt`, `runner.run_attempt_with_commands`, and `runner.run_attempt_with_command_ready` available until all production callers use `agent/run_attempt.gleam`.
 
-The main import-cycle risk is letting `pi/client.gleam` import agent modules or letting `pi/protocol.gleam` import client modules. Countermeasure: dependencies must point one way: protocol is lowest; client imports protocol; agent turn loop imports client and operator control; run attempt imports turn loop; runner facade imports run attempt.
+The main ownership risk is accidentally moving legacy UI policy into the low-level pi client or workspace cleanup into the turn loop. Countermeasure: `pi/client.gleam` exposes only stepwise launch/send/read/stat/terminate primitives. `turn_loop.gleam` may emit updates and send pi turn-local commands, but `run_attempt.gleam` remains the owner of workspace hooks, cleanup, tracker refresh, final classification, and conversion to `types.WorkerFailure`.
+
+The main import-cycle risk is letting `pi/client.gleam` import agent modules or letting `pi/protocol.gleam` import client modules. Countermeasure: dependencies must point one way: protocol is lowest; client imports protocol; agent operator control imports worker commands; agent turn loop imports client, protocol, pi events, and operator control; run attempt imports turn loop; runner facade imports run attempt.
 
 ## Progress
 
-- [x] (2026-04-30 10:47Z) Verified the current test baseline earlier in this work session with `direnv exec . gleam test`; it passed with `377 passed, no failures`.
-- [x] (2026-04-30 12:15Z) Fact-checked current file sizes: `src/scherzo/agent/runner.gleam` has 2,039 lines and `src/scherzo/agent/pi_rpc.gleam` has 1,242 lines.
-- [x] (2026-04-30 12:20Z) Reviewed current public functions and tests in `pi_rpc.gleam`, `runner.gleam`, `test/pi_rpc_test.gleam`, `test/agent_runner_test.gleam`, and `test/agent_worker_control_test.gleam`.
-- [ ] Milestone 0: add characterization tests and record baseline behavior for protocol, client IO, and operator controls.
+- [x] (2026-05-02 10:01Z) Approved the workspace `.envrc` after inspecting it because `direnv exec . gleam test` was blocked, then verified the current baseline with `direnv exec . gleam test`; it passed with `529 passed, no failures`.
+- [x] (2026-05-02 10:02Z) Fact-checked current file sizes: `src/scherzo/agent/runner.gleam` has 2,046 lines and `src/scherzo/agent/pi_rpc.gleam` has 1,242 lines.
+- [x] (2026-05-02 10:03Z) Reviewed current public functions, imports, constructor call sites, and tests in `pi_rpc.gleam`, `runner.gleam`, `pi_event.gleam`, `result_artifact.gleam`, `test/pi_rpc_test.gleam`, `test/agent_runner_test.gleam`, and `test/agent_worker_control_test.gleam`.
+- [ ] Milestone 0: verify or add characterization tests and record baseline behavior for protocol, client IO, and operator controls.
 - [ ] Milestone 1: extract pi protocol encoding/decoding to `src/scherzo/pi/protocol.gleam`.
 - [ ] Milestone 2: extract pi client IO/deadline behavior to `src/scherzo/pi/client.gleam`.
 - [ ] Milestone 3: move shared agent result/update types to `src/scherzo/agent/types.gleam`.
@@ -78,15 +80,21 @@ The main import-cycle risk is letting `pi/client.gleam` import agent modules or 
 - Observation: The existing tests are well positioned for this refactor.
   Evidence: `test/pi_rpc_test.gleam` already separates codec assertions, stepwise prompt reads, deadlines, abort/UI helper commands, launch/prompt/stats, tool event decoding, malformed JSON, and timeout/stall scenarios. `test/agent_worker_control_test.gleam` already exercises command-aware runner behavior.
 
+- Observation: `src/scherzo/agent/pi_event.gleam` already exists and `runner.PiUpdate.event` is already typed as `pi_event.PiEvent`.
+  Evidence: `src/scherzo/agent/pi_event.gleam` defines `PiEvent`, `from_string`, `to_string`, and `is_blocking_ui_request`; `src/scherzo/agent/runner.gleam` converts `RpcRecord.type_` with `pi_event.from_string` when creating updates. The protocol extraction should not reintroduce a dependency from `src/scherzo/pi/protocol.gleam` back to `src/scherzo/agent/pi_event.gleam`.
+
+- Observation: Many production and test modules construct or pattern-match `runner` type constructors and variants directly.
+  Evidence: searches for `runner.WorkerSuccess(`, `runner.WorkerFailure(`, `runner.PiUpdate(`, and `runner.FinalTerminal` returned matches in `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/workflow_run.gleam`, `src/scherzo/handoff.gleam`, `src/scherzo/handoff_format.gleam`, `src/scherzo/step_artifact.gleam`, and many tests. Milestone 3 must migrate constructor call sites to `agent/types.gleam`; a simple type alias in `runner.gleam` is not a safe compatibility plan for qualified constructors.
+
 ## Decision Log
 
 - Decision: Keep a temporary `src/scherzo/agent/pi_rpc.gleam` facade while migrating callers.
   Rationale: Existing tests and modules import `scherzo/agent/pi_rpc`. A facade lets protocol and client extraction land in small green commits. Final production imports should move to `scherzo/pi/protocol` and `scherzo/pi/client` before completion.
   Date: 2026-04-30
 
-- Decision: Move shared worker result/update types to `src/scherzo/agent/types.gleam` before extracting turn loop and run attempt.
-  Rationale: Daemon, service, workflow run, handoff, result artifact, and tests use `runner.WorkerSuccess`, `runner.WorkerFailure`, and `runner.PiUpdate`. A neutral types module avoids import cycles when `turn_loop` and `run_attempt` are split.
-  Date: 2026-04-30
+- Decision: Move shared worker result/update types to `src/scherzo/agent/types.gleam` before extracting turn loop and run attempt, and migrate qualified constructor/variant call sites in the same green slice.
+  Rationale: Daemon, workflow run, handoff, handoff formatting, event publishing, step artifacts, and tests use `runner.WorkerSuccess`, `runner.WorkerFailure`, `runner.PiUpdate`, and final-classification variants. A neutral types module avoids import cycles when `turn_loop` and `run_attempt` are split, but relying on aliases would leave qualified constructors ambiguous or broken.
+  Date: 2026-05-02
 
 - Decision: Do not introduce a pi client actor in this plan.
   Rationale: The immediate problem is module entanglement. A new process boundary would add supervision, mailbox ordering, and shutdown semantics before the simpler split is proven.
@@ -96,6 +104,18 @@ The main import-cycle risk is letting `pi/client.gleam` import agent modules or 
   Rationale: The wide optional record is a real smell, but changing it while moving modules would combine protocol behavior changes with extraction. First move it unchanged, then optionally split response/event/tool records in a later plan or final cleanup milestone if tests make it low risk.
   Date: 2026-04-30
 
+- Decision: Keep `src/scherzo/pi/client.gleam` free of legacy high-level prompt/UI policy helpers.
+  Rationale: `prompt` and `prompt_with_ui_policy` combine process IO with blocking UI policy and are not used by production runner code. Moving them into the low-level client would recreate the coupling this plan is meant to remove. Migrate those tests to stepwise client helpers, a temporary agent-level compatibility helper, or turn-loop integration tests instead.
+  Date: 2026-05-02
+
+- Decision: Keep workspace cleanup and worker-failure construction in `src/scherzo/agent/run_attempt.gleam`, not in `src/scherzo/agent/turn_loop.gleam`.
+  Rationale: The active turn loop owns reading pi records, processing operator commands during a turn, sending turn-local pi commands, and returning turn outcomes. Workspace hooks, tracker refresh, final classification, and cleanup are high-level run-attempt responsibilities and would create a larger blast radius if moved into the turn loop.
+  Date: 2026-05-02
+
+- Decision: Treat `src/scherzo/agent/pi_event.gleam` as an agent/update-layer type during this extraction.
+  Rationale: The current repository already uses typed pi update names, but `src/scherzo/pi/protocol.gleam` should remain a protocol decoder with raw wire strings to avoid a lower-level pi module importing the higher-level agent package. The conversion from raw record `type_` to `pi_event.PiEvent` belongs in `turn_loop` or update-construction helpers.
+  Date: 2026-05-02
+
 ## Outcomes & Retrospective
 
 (To be filled at major milestones and at completion.)
@@ -104,7 +124,7 @@ The main import-cycle risk is letting `pi/client.gleam` import agent modules or 
 
 Scherzo runs pi through an RPC-style subprocess. The current low-level module is `src/scherzo/agent/pi_rpc.gleam`. It starts a port with `scherzo/port`, writes JSON command lines to stdin, reads JSONL records from stdout, decodes them into `RpcRecord`, maps port errors to `error.PiRpcError`, and terminates the process. It also currently includes protocol encoders and decoders.
 
-The current high-level agent runner is `src/scherzo/agent/runner.gleam`. Its public functions are `run_attempt`, `run_attempt_with_commands`, `run_attempt_with_command_ready`, and `run_prompt_in_workspace`. It also exports `FinalClassification`, `WorkerSuccess`, `WorkerFailure`, and `PiUpdate`. The daemon starts workers through `runner.run_attempt_with_command_ready`, workflow YAML agent steps use runner dependencies, and tests import runner result types.
+The current high-level agent runner is `src/scherzo/agent/runner.gleam`. Its public functions are `run_attempt`, `run_attempt_with_commands`, `run_attempt_with_command_ready`, and `run_prompt_in_workspace`. It also exports `FinalClassification`, `WorkerSuccess`, `WorkerFailure`, and `PiUpdate`. The daemon starts workers through `runner.run_attempt_with_command_ready`, workflow YAML agent steps use runner dependencies, and tests import runner result types. `PiUpdate.event` is already typed as `pi_event.PiEvent` from `src/scherzo/agent/pi_event.gleam`; raw pi protocol records still carry a string `type_` field.
 
 Worker commands are defined in `src/scherzo/agent/worker_command.gleam`. The runner receives commands through a `process.Subject(worker_command.Command)` while a turn is active or between turns. Operator commands can abort, request stop after current turn, queue another prompt, or respond to a pending UI request.
 
@@ -118,24 +138,27 @@ Before implementation starts, run from the repository root:
     direnv exec . gleam test
     wc -l src/scherzo/agent/runner.gleam src/scherzo/agent/pi_rpc.gleam
 
-At plan authoring, the file-size output was:
+If `direnv exec . gleam test` reports that `.envrc` is blocked, inspect `.envrc`; at review time it contained only devenv setup plus optional `.env`/`.env.local` loading. Then run `direnv allow .` from the repository root and retry the test command.
 
-    2039 src/scherzo/agent/runner.gleam
+At the 2026-05-02 plan review, the file-size output was:
+
+    2046 src/scherzo/agent/runner.gleam
     1242 src/scherzo/agent/pi_rpc.gleam
-    3281 total
+    3288 total
 
-The baseline test output earlier in this work session was:
+The baseline test output at the same review was:
 
-    377 passed, no failures
+    529 passed, no failures
 
 Use these searches to normalize if the tree has changed:
 
-    grep -R "^import scherzo/agent/pi_rpc" -n src test --include='*.gleam'
-    grep -R "^import scherzo/agent/runner" -n src test --include='*.gleam'
+    grep -R "import scherzo/agent/pi_rpc" -n src test --include='*.gleam'
+    grep -R "import scherzo/agent/runner" -n src test --include='*.gleam'
+    grep -R "runner\.WorkerSuccess\|runner\.WorkerFailure\|runner\.PiUpdate\|runner\.Final" -n src test --include='*.gleam'
     grep -n "^pub type \|^type \|^pub fn \|^fn " src/scherzo/agent/pi_rpc.gleam
     grep -n "^pub type \|^type \|^pub fn \|^fn " src/scherzo/agent/runner.gleam
 
-At plan authoring, production imports of `agent/pi_rpc` were `src/scherzo/agent/probe.gleam`, `src/scherzo/agent/runner.gleam`, and `src/scherzo/result_artifact.gleam`; tests also import it. Production imports of `agent/runner` included handoff, handoff formatting, orchestrator daemon/service, step artifact, and workflow run.
+At review time, production imports of `agent/pi_rpc` were `src/scherzo/agent/probe.gleam`, `src/scherzo/agent/runner.gleam`, and `src/scherzo/result_artifact.gleam`; tests also import it. Production imports of `agent/runner` were `src/scherzo/step_artifact.gleam`, `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/orchestrator/event_publisher.gleam`, `src/scherzo/orchestrator/effect_runner.gleam`, `src/scherzo/handoff_format.gleam`, `src/scherzo/handoff.gleam`, and `src/scherzo/workflow_run.gleam`; tests also import it.
 
 This repository uses Jujutsu. Do not use mutating `git` commands. Use `jj status`, `jj describe -m "message"`, and `jj new` for milestone commit discipline.
 
@@ -145,21 +168,21 @@ In scope: extracting pure pi protocol encoding/decoding; extracting pi client pr
 
 Out of scope: changing the pi JSON protocol; changing fake pi fixture behavior; changing worker command message variants; changing EventHub payload shape; changing token accounting semantics; changing workspace hook behavior; changing final issue classification rules; introducing supervision/OTP actors for pi; splitting the large `RpcRecord` into a richer event ADT beyond what is required for extraction.
 
-If `docs/plans/typed-internal-state.md` has already introduced `PiEvent` or typed step/status values, use those types in the new modules instead of reintroducing raw strings. If it has not landed, preserve the current string fields and let that later plan type them.
+`src/scherzo/agent/pi_event.gleam` has already introduced typed pi update names. Use `pi_event.PiEvent` in `agent/types.gleam`, `agent/turn_loop.gleam`, update construction, event publishing, and tests that deal with Scherzo updates. Keep `protocol.RpcRecord.type_` as the raw string decoded from pi JSON so `src/scherzo/pi/protocol.gleam` stays independent of `src/scherzo/agent`.
 
 ## Milestones
 
-Milestone 0 adds characterization tests and records current behavior. At the end, tests prove the current protocol strings, decoded record fields, fake-pi IO, timeout/stall behavior, and operator-control behavior before any extraction.
+Milestone 0 verifies existing characterization tests, adds any missing coverage after tree drift, and records current behavior. At the end, tests prove the current protocol strings, decoded record fields, fake-pi IO, timeout/stall behavior, and operator-control behavior before any extraction.
 
 Milestone 1 creates `src/scherzo/pi/protocol.gleam`. At the end, JSON command encoding and record decoding live there, and `agent/pi_rpc.gleam` delegates encoding/decoding to the new module.
 
-Milestone 2 creates `src/scherzo/pi/client.gleam`. At the end, process launch, command sending, response collection, turn-record reading, timeouts, stall deadlines, session stats, and termination live there. `agent/pi_rpc.gleam` is a small compatibility facade.
+Milestone 2 creates `src/scherzo/pi/client.gleam`. At the end, process launch, command sending, response collection, turn-record reading, timeouts, stall deadlines, session stats, and termination live there. Legacy `prompt` and `prompt_with_ui_policy` coverage has either been rewritten around stepwise client calls, kept temporarily in an agent-level facade, or migrated to turn-loop integration tests; it must not live in `pi/client.gleam`. `agent/pi_rpc.gleam` is a small compatibility facade for the remaining old import paths.
 
-Milestone 3 creates `src/scherzo/agent/types.gleam`. At the end, `FinalClassification`, `WorkerSuccess`, `WorkerFailure`, and `PiUpdate` live there, and `runner.gleam` no longer needs to be imported solely for types.
+Milestone 3 creates `src/scherzo/agent/types.gleam`. At the end, `FinalClassification`, `WorkerSuccess`, `WorkerFailure`, and `PiUpdate` live there, direct constructor and variant call sites use `agent/types.gleam`, and `runner.gleam` no longer needs to be imported solely for types.
 
-Milestone 4 creates `src/scherzo/agent/operator_control.gleam`. At the end, prompt queue manipulation, stop-after-turn state, pending UI state, size guards, and command reply decisions are outside `runner.gleam`.
+Milestone 4 creates `src/scherzo/agent/operator_control.gleam`. At the end, prompt queue manipulation, stop-after-turn state, pending UI state, size guards, command reply decisions, and caller-executed command effects are outside `runner.gleam`.
 
-Milestone 5 creates `src/scherzo/agent/turn_loop.gleam`. At the end, the active turn loop and blocking UI policy handling are outside `runner.gleam`, and they depend only on pi client, operator control, worker commands, config, and update emission.
+Milestone 5 creates `src/scherzo/agent/turn_loop.gleam`. At the end, the active turn loop and blocking UI policy handling are outside `runner.gleam`, and they depend only on pi client, protocol records, pi events, operator control, worker commands, config values, and update emission. Workspace cleanup and final failure construction remain in run-attempt code.
 
 Milestone 6 creates `src/scherzo/agent/run_attempt.gleam`. At the end, workspace preparation, template rendering, compatibility probing, pi launch, multi-turn orchestration, state refresh, final classification, and cleanup are composed there. `runner.gleam` becomes a wrapper or is deleted after all imports move.
 
@@ -167,25 +190,25 @@ Milestone 7 migrates imports, removes obsolete facades if possible, runs final s
 
 ## Plan of Work
 
-Begin by moving pure protocol code because it is easiest to validate and has the lowest risk. Then move client IO while preserving the public `pi_rpc` API through a facade. Next move shared types so later agent modules can import them without depending on `runner.gleam`. Extract operator control before turn loop so the turn loop can call a smaller API instead of carrying every queue/UI/reply detail itself. Extract the active turn loop before high-level run-attempt composition. Finally, reduce `runner.gleam` to a facade that calls `agent/run_attempt.gleam`, then update production imports to the new modules.
+Begin by moving pure protocol code because it is easiest to validate and has the lowest risk. Then move stepwise client IO while preserving the public `pi_rpc` API through a facade and avoiding a new UI-policy dependency in `pi/client.gleam`. Next move shared types so later agent modules can import them without depending on `runner.gleam`, migrating constructor and variant call sites in the same slice. Extract operator control before turn loop so the turn loop can call a smaller API instead of carrying every queue/UI/reply detail itself. Extract the active turn loop before high-level run-attempt composition, but leave workspace cleanup and worker-failure construction in the high-level run-attempt layer. Finally, reduce `runner.gleam` to a facade that calls `agent/run_attempt.gleam`, then update production imports to the new modules.
 
-Each milestone should be behavior-preserving. When a function moves, copy it first, call it from the old place, run tests, then delete the old implementation. Avoid simultaneous semantic cleanup. The only acceptable behavior changes in this plan are test-only import changes and module ownership changes.
+Each milestone should be behavior-preserving. When a function moves, copy it first, call it from the old place, run tests, then delete the old implementation. Avoid simultaneous semantic cleanup. The only acceptable behavior changes in this plan are test-only import changes and module ownership changes. If a compatibility helper would force a lower-level module to import a higher-level policy module, keep that helper in a temporary higher-level facade or test helper instead.
 
 ## Concrete Steps
 
-1. From the repository root, run `jj status`. If unrelated source changes exist, stop and decide whether to move to a clean workspace or record them in this plan.
+1. From the repository root, run `jj status`. If unrelated source changes exist, stop and decide whether to move to a clean workspace or record them in this plan. If only ignored build artifacts such as `_build/` or `.direnv/` exist, leave them alone.
 
-2. Run `direnv exec . gleam test`. Expect `no failures`. At plan authoring, the suite reported `377 passed, no failures`.
+2. Run `direnv exec . gleam test`. Expect `no failures`. At the 2026-05-02 review baseline, the suite reported `529 passed, no failures`. If `.envrc` is blocked, inspect `.envrc`, run `direnv allow .`, and retry.
 
-3. Add characterization tests before moving code. In `test/pi_rpc_test.gleam`, ensure existing tests cover command encoding, response decoding, extension UI request decoding, assistant message extraction, captured tool call/result extraction, launch/prompt/stats with fake pi, stepwise prompt/read, abort/UI helpers, malformed JSON, read timeout, stall timeout, and turn timeout. If any of those assertions are missing after tree drift, add them now.
+3. Confirm the characterization tests before moving code. In `test/pi_rpc_test.gleam`, the relevant existing tests at review time were `codec_helpers_encode_commands_test`, `decode_response_and_event_test`, `decode_extension_ui_request_message_test`, `decode_agent_end_assistant_messages_test`, `decode_captured_assistant_tool_call_and_tool_result_test`, `decode_top_level_and_data_tool_execution_aliases_test`, `stepwise_prompt_read_and_stats_with_fake_pi_test`, `read_turn_record_uses_absolute_deadlines_test`, `send_abort_and_ui_response_helpers_test`, `malformed_json_and_timeout_fail_test`, `prompt_allows_short_read_timeouts_until_event_test`, `prompt_fails_when_stall_timeout_expires_test`, `prompt_fails_when_turn_timeout_expires_before_agent_end_test`, and `turn_timeout_and_failed_stats_are_errors_test`. If any of those tests are missing after tree drift, add an equivalent characterization test before extraction.
 
-4. Add one test in `test/agent_worker_control_test.gleam` if not already present that queues a prompt while a turn is active and verifies the transcript contains a second prompt after the current turn. Add one test for operator UI timeout if not already present. Run `direnv exec . gleam test` and record the pass count in Progress.
+4. Confirm command-aware runner coverage. In `test/agent_worker_control_test.gleam`, the relevant existing tests at review time were `abort_command_stops_fake_pi_worker_test`, `operator_prompt_queued_during_turn_and_sent_next_turn_test`, `operator_ui_request_timeout_cancels_before_read_timeout_test`, and `operator_ui_request_cancel_response_test`. If the tree has drifted and one is missing, add it now. Run `direnv exec . gleam test` and record the pass count in Progress.
 
 5. Create directory `src/scherzo/pi/` if it does not exist. Create `src/scherzo/pi/protocol.gleam`.
 
-6. Move these protocol-only definitions from `src/scherzo/agent/pi_rpc.gleam` to `src/scherzo/pi/protocol.gleam`: `RpcRecord`, command encoders `encode_set_session_name`, `encode_set_auto_retry`, `encode_get_state`, `encode_prompt`, `encode_abort`, `encode_get_session_stats`, `encode_extension_ui_response`, `encode_extension_ui_value_response`, `decode_record`, private decoder types `MessageObject`, `AgentEndMessage`, `ContentItem`, `Data`, decoder helpers, token decoder, tool extraction helpers, and any JSON-only helper required by decoding.
+6. Move these protocol-only definitions from `src/scherzo/agent/pi_rpc.gleam` to `src/scherzo/pi/protocol.gleam`: `RpcRecord`, command encoders `encode_set_session_name`, `encode_set_auto_retry`, `encode_get_state`, `encode_prompt`, `encode_abort`, `encode_get_session_stats`, `encode_extension_ui_response`, `encode_extension_ui_value_response`, `decode_record`, private decoder types `MessageObject`, `AgentEndMessage`, `ContentItem`, `Data`, decoder helpers, token decoder, tool extraction helpers, and any JSON-only helper required by decoding. Keep `RpcRecord.type_` as a raw `String`; do not import `scherzo/agent/pi_event` into this protocol module.
 
-7. In `src/scherzo/agent/pi_rpc.gleam`, import `scherzo/pi/protocol`. Replace moved implementations with forwarding functions. Use type aliases for `RpcRecord` and `Data` if needed. Because current source and tests do not construct `pi_rpc.RpcRecord(...)`, a type alias is safe during migration.
+7. In `src/scherzo/agent/pi_rpc.gleam`, import `scherzo/pi/protocol`. Replace moved implementations with forwarding functions. Use type aliases for `RpcRecord` and `Data` if needed. This is safe for `RpcRecord` and `Data` because review-time searches showed current source and tests do not construct `pi_rpc.RpcRecord(...)` or `pi_rpc.Data(...)` outside the decoder implementation.
 
 8. Create `test/pi_protocol_test.gleam` and move protocol-only tests from `test/pi_rpc_test.gleam`: command encoder checks, decode response/event, extension UI request message, assistant messages, captured tool call/tool result, and top-level/data tool execution aliases. Update imports to `scherzo/pi/protocol`.
 
@@ -197,36 +220,42 @@ Each milestone should be behavior-preserving. When a function moves, copy it fir
 
     The grep may show forwarding functions in `pi_rpc.gleam`, but JSON decoder implementation details such as `record_decoder` and `MessageObject` should live only in `pi/protocol.gleam`. Record the milestone with `jj describe -m "Extract pi protocol codec"` and start a new change with `jj new` if keeping milestones separate.
 
-10. Create `src/scherzo/pi/client.gleam`. Move `Session`, `launch`, `send_prompt`, `read_turn_record`, `send_abort`, `send_extension_ui_cancel`, `send_extension_ui_value`, `get_session_stats`, `terminate`, `send_expect_success`, `send_auto_retry`, `send_get_state`, response collection, skipped-record limits, deadline calculations, port error mapping, `try_pi`, `int_to_string`, and `monotonic_ms` from `agent/pi_rpc.gleam` into `pi/client.gleam`. The client module should import `scherzo/pi/protocol`, `scherzo/port`, `scherzo/error`, and low-level stdlib modules only.
+10. Create `src/scherzo/pi/client.gleam`. Move `Session`, `launch`, `send_prompt`, `read_turn_record`, `send_abort`, `send_extension_ui_cancel`, `send_extension_ui_value`, `get_session_stats`, `terminate`, `send_expect_success`, `send_auto_retry`, `send_get_state`, response collection, skipped-record limits, deadline calculations, port error mapping, `try_pi`, `int_to_string`, and `monotonic_ms` from `agent/pi_rpc.gleam` into `pi/client.gleam`. The client module should import `scherzo/pi/protocol`, `scherzo/port`, `scherzo/error`, `scherzo/domain`, and low-level stdlib modules only. Do not move `prompt`, `prompt_with_ui_policy`, `read_events_until_agent_end`, or blocking UI policy helpers into `pi/client.gleam`.
 
-11. Move `prompt` and `prompt_with_ui_policy` into `pi/client.gleam` only as compatibility helpers if tests still need them. Mark them in comments as high-level legacy helpers because blocking UI policy should move to `agent/turn_loop.gleam`. Do not let new production code call them.
+11. Create `test/pi_client_test.gleam` and move stepwise client/port/fake-pi tests from `test/pi_rpc_test.gleam`: stepwise prompt read and stats, absolute deadlines, abort/UI response helpers, launch/session setup/get stats, malformed JSON and launch timeout, short read timeouts, stall timeout, turn timeout, failed stats, and diagnostics on process exit. For existing tests that call high-level `pi_rpc.prompt` or `pi_rpc.prompt_with_ui_policy`, either rewrite them to use a small test-local helper that calls `client.send_prompt` plus repeated `client.read_turn_record`, or migrate their UI-policy assertion to `test/agent_worker_control_test.gleam` or `test/agent_turn_loop_test.gleam`. Do not add public `prompt` or `prompt_with_ui_policy` functions to `pi/client.gleam`.
 
-12. In `agent/pi_rpc.gleam`, replace client implementations with forwarding functions to `pi/client.gleam`. Use `pub type Session = client.Session` as a temporary alias. Keep public function signatures unchanged for this milestone.
+12. In `src/scherzo/agent/pi_rpc.gleam`, replace stepwise client implementations with forwarding functions to `pi/client.gleam`. Use `pub type Session = client.Session` as a temporary alias. If the old public `prompt` or `prompt_with_ui_policy` names must remain temporarily for tests, put their implementation in a temporary `src/scherzo/agent/pi_rpc_legacy.gleam` using `pi/client` stepwise primitives and have `agent/pi_rpc.gleam` forward to it. Mark that module as legacy test compatibility and remove it before final structural acceptance.
 
-13. Create `test/pi_client_test.gleam` and move client/port/fake-pi tests from `test/pi_rpc_test.gleam`: stepwise prompt read and stats, absolute deadlines, abort/UI response helpers, launch/prompt/stats, fake tool events, malformed JSON and timeout, short read timeouts, stall timeout, turn timeout, UI policy legacy helper tests if kept, and diagnostics tests. Update imports to `scherzo/pi/client` and `scherzo/pi/protocol` as appropriate.
+13. Run:
 
-14. Run:
-
-    grep -n "port\.\|read_turn_line\|read_until_response\|launch(" src/scherzo/agent/pi_rpc.gleam
+    ! grep -n "port\.\|read_turn_line\|read_until_response" src/scherzo/agent/pi_rpc.gleam
+    ! grep -n "prompt_with_ui_policy\|UiRequestPolicy" src/scherzo/pi/client.gleam
     direnv exec . gleam format --check src test
     direnv exec . gleam test
 
-    `agent/pi_rpc.gleam` should have no direct `port.` calls or read-loop implementations. Record the milestone.
+    Both grep checks should produce no matches and exit zero because of the leading `!`. `agent/pi_rpc.gleam` should have no direct `port.` calls or low-level read-loop implementations. `pi/client.gleam` should not mention `UiRequestPolicy` or `prompt_with_ui_policy`. Record the milestone with `jj describe -m "Extract pi client IO"`.
 
-15. Create `src/scherzo/agent/types.gleam`. Move `FinalClassification`, `WorkerSuccess`, `WorkerFailure`, and `PiUpdate` from `runner.gleam` into it. Update `runner.gleam` to import `agent/types` and either alias the types temporarily or use them directly. Since external code does not construct these through aliases in source except record constructors may exist in tests, search before choosing aliases.
+14. Create `src/scherzo/agent/types.gleam`. Move `FinalClassification`, `WorkerSuccess`, `WorkerFailure`, and `PiUpdate` from `runner.gleam` into it. Import `scherzo/agent/pi_event`, `scherzo/domain`, `scherzo/error`, and `scherzo/session/event as session_event` as needed. In `runner.gleam`, import `scherzo/agent/types` and update internal unqualified constructors to the qualified names `types.WorkerSuccess`, `types.WorkerFailure`, `types.PiUpdate`, `types.FinalActive`, `types.FinalTerminal`, and `types.FinalNonActive`.
 
-16. Run searches:
+15. Run searches and migrate constructor call sites rather than relying on type aliases:
 
     grep -R "runner\.WorkerSuccess\|runner\.WorkerFailure\|runner\.PiUpdate\|runner\.Final" -n src test --include='*.gleam'
-    grep -R "WorkerSuccess(" -n src test --include='*.gleam'
+    grep -R "WorkerSuccess(\|WorkerFailure(\|PiUpdate(" -n src test --include='*.gleam'
 
-    Update imports in production modules that only need types to `import scherzo/agent/types as agent_types`. If many tests construct `runner.WorkerSuccess(...)`, leave `runner.gleam` constructors in place until a focused test migration commit, or update those tests in the same green slice.
+    Update production modules that use result/update types to `import scherzo/agent/types as agent_types` and replace qualified constructor and variant references. At review time the production files to check were `src/scherzo/step_artifact.gleam`, `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/orchestrator/event_publisher.gleam`, `src/scherzo/orchestrator/effect_runner.gleam`, `src/scherzo/handoff_format.gleam`, `src/scherzo/handoff.gleam`, and `src/scherzo/workflow_run.gleam`. Update tests in the same green slice when they construct `runner.WorkerSuccess(...)`, `runner.WorkerFailure(...)`, or `runner.PiUpdate(...)`.
 
-17. Run format and tests. Record the milestone with `jj describe -m "Move shared agent result types"`.
+16. Keep `runner.gleam` function signatures returning `types.WorkerSuccess` and `types.WorkerFailure`. If a temporary runner facade remains later, it should forward functions only; do not count on it to preserve `runner.WorkerSuccess(...)` constructors after the type move.
 
-18. Create `src/scherzo/agent/operator_control.gleam`. Move or recreate these concepts from `runner.gleam`: `PendingUi`, prompt queue max length, operator prompt max-size guard, UI response max-size guard, queue prompt decision, stop-after-turn decision, pending UI response decision, abort decision result shape, and helper functions for replying with `worker_command.Reply`.
+17. Run `direnv exec . gleam format --check src test` and `direnv exec . gleam test`. Record the milestone with `jj describe -m "Move shared agent result types"`.
 
-19. Design the operator-control API to be mostly pure. A concrete shape is:
+18. Create `src/scherzo/agent/operator_control.gleam`. Move or recreate these concepts from `runner.gleam`: `PendingUi`, prompt queue max length, operator prompt max-size guard, UI response max-size guard, queue prompt decision, stop-after-turn decision, pending UI response decision, abort decision result shape, and worker-command reply decisions.
+
+19. Design the operator-control API to be pure with explicit caller-executed effects. It must distinguish active-turn and between-turn behavior because the current replies differ. A concrete shape is:
+
+    pub type Mode {
+      BetweenTurns
+      ActiveTurn
+    }
 
     pub type State {
       State(
@@ -236,85 +265,113 @@ Each milestone should be behavior-preserving. When a function moves, copy it fir
       )
     }
 
-    pub type Decision {
-      Continue(State)
-      AbortRequested
-      SendUiCancel(request_id: String)
-      SendUiValue(request_id: String, value: String)
+    pub type Effect {
+      Reply(process.Subject(worker_command.Reply), worker_command.Reply)
+      EmitPromptQueued(message: String)
+      AbortRequested(reply: process.Subject(worker_command.Reply))
+      StopBeforeNextTurn(reply: process.Subject(worker_command.Reply))
+      SendUiCancel(reply: process.Subject(worker_command.Reply), request_id: String)
+      SendUiValue(reply: process.Subject(worker_command.Reply), request_id: String, value: String)
     }
 
-    pub fn handle_command(state: State, command: worker_command.Command) -> #(State, Decision)
+    pub fn handle_command(mode: Mode, state: State, command: worker_command.Command) -> #(State, List(Effect))
 
-    If direct reply sending is simpler, keep reply sending in this module but do not let it know about pi sessions, tracker clients, workspace cleanup, or final classification.
+    The exact names may differ, but the API must make all side effects explicit. This module may carry reply subjects as data in effects, but it must not send process messages, call pi, emit updates, touch tracker clients, run workspace cleanup, or classify final issues.
 
-20. Add `test/agent_operator_control_test.gleam`. Test prompt too large, prompt queue full, prompt queued, stop-after-current-turn, UI response with no pending request, UI response wrong request id, UI cancel decision, UI value decision, and abort decision. These tests should not start fake pi.
+20. Add `test/agent_operator_control_test.gleam`. Test exact effects and exact reply values for prompt too large, prompt queue full, prompt queued between turns (`Applied("prompt accepted for next turn")`), prompt queued during active turn (`Queued("prompt queued for next turn")`), stop before next turn, stop after current turn, UI response with no pending request, UI response wrong request id, UI cancel decision, UI value decision, and abort decision. These tests should not start fake pi.
 
-21. Update `runner.gleam` active command handling to call `operator_control` for queue/UI/reply decisions while preserving existing emitted updates and cleanup behavior. Keep side effects such as `pi_client.send_extension_ui_cancel` in runner for this milestone if moving them immediately would be too large.
+21. Update `runner.gleam` active and between-turn command handling to call `operator_control`, then interpret returned effects in the old locations. Preserve existing emitted updates, pi sends, cleanup behavior, and reply timing. Keep side effects such as `client.send_extension_ui_cancel` in runner for this milestone if moving them immediately would make the slice too large.
 
-22. Run format and tests. Record the milestone.
+22. Run format and tests. Record the milestone with `jj describe -m "Extract operator control decisions"`.
 
-23. Create `src/scherzo/agent/turn_loop.gleam`. Move `ActiveCommandState`, `ActiveTurn`, `active_turn_loop`, `handle_active_command`, `handle_turn_record`, `handle_extension_ui_record`, `handle_blocking_ui_policy`, `handle_ui_response_command`, `handle_operator_ui_timeout`, `handle_abort_command`, `emit_records`, `is_blocking_ui_method`, `try_active`, and update-construction helpers only if they are turn-loop-specific. The module should import `scherzo/pi/client`, `scherzo/pi/protocol`, `scherzo/agent/operator_control`, `scherzo/agent/types`, `scherzo/agent/worker_command`, `scherzo/control/command`, and config/domain modules.
+23. Create `src/scherzo/agent/turn_loop.gleam`. Move `ActiveCommandState`, `ActiveTurn`, `active_turn_loop`, `handle_active_command`, `handle_turn_record`, `handle_extension_ui_record`, `handle_blocking_ui_policy`, `handle_ui_response_command`, `handle_operator_ui_timeout`, `emit_records`, `is_blocking_ui_method`, `try_active`, and update-construction helpers only if they are turn-loop-specific. Move the pi-abort send/update part of `handle_abort_command`, but do not move workspace cleanup, `workspace.after_run`, tracker refresh, final classification, or generic `WorkerFailure` construction. The module should import `scherzo/pi/client`, `scherzo/pi/protocol`, `scherzo/agent/pi_event`, `scherzo/agent/operator_control`, `scherzo/agent/types`, `scherzo/agent/worker_command`, `scherzo/control/command`, and config/domain modules.
 
-24. Define an explicit `turn_loop.Dependencies` or `Settings` record rather than passing the entire runner context as many arguments. Include session, issue id, turn number, current token totals, runtime config, update emitter, command subject, prompt queue/operator-control state, turn deadlines, stall deadlines, workspace path, and secrets. Keep it concrete and documented in the module.
+24. Define an explicit `turn_loop.Context` record rather than passing the entire runner context as many arguments. Include session, issue id, turn number, current token totals, runtime config or the specific pi timing values, update emitter, command subject, operator-control state, turn deadline, stall deadline, and redaction secrets. Include `workspace_path` only as data needed for returning a failure context; do not import `scherzo/workspace` in this module.
 
-25. Update `runner.gleam` so between-turn code calls `turn_loop.run_active_turn(...)`. The return value should contain the updated pi session, turn records, updated prompt queue/operator-control state, stop-after-turn flag, and token totals or a `WorkerFailure`.
+25. Define an explicit `turn_loop.TurnResult` that lets `run_attempt.gleam` remain the cleanup owner. A concrete shape is:
 
-26. Add or update tests. Existing `test/agent_worker_control_test.gleam` should remain the integration proof. Add one direct test in `test/agent_turn_loop_test.gleam` only if the module can be exercised without excessive fake setup; otherwise document that fake-pi integration tests cover it.
+    pub type TurnResult {
+      TurnCompleted(
+        session: client.Session,
+        records: List(protocol.RpcRecord),
+        operator_state: operator_control.State,
+        tokens: domain.TokenTotals,
+      )
+      TurnFailed(
+        session: client.Session,
+        reason: error.AgentRunnerError,
+        records: List(protocol.RpcRecord),
+        operator_state: operator_control.State,
+        tokens: domain.TokenTotals,
+      )
+    }
 
-27. Run:
+    The exact fields may differ, but the result must give `run_attempt` enough information to terminate pi, run workspace cleanup, emit dropped prompts, and build the same `types.WorkerFailure` as before.
 
-    grep -n "fn active_turn_loop\|fn handle_blocking_ui_policy\|fn handle_ui_response_command" src/scherzo/agent/runner.gleam
+26. Update `runner.gleam` or the emerging `run_attempt.gleam` so between-turn code calls `turn_loop.run_active_turn(context)`. Interpret `TurnCompleted` by continuing the existing between-turn refresh/classification flow. Interpret `TurnFailed` by running the same cleanup/failure path currently used in `runner.gleam`.
+
+27. Add or update tests. Existing `test/agent_worker_control_test.gleam` should remain the integration proof. Add `test/agent_turn_loop_test.gleam` if the module can be exercised without excessive fake setup; at minimum, test one direct turn-loop command ordering case or document in the plan that fake-pi integration tests cover the turn loop until further seams exist.
+
+28. Run:
+
+    ! grep -n "fn active_turn_loop\|fn handle_blocking_ui_policy\|fn handle_ui_response_command" src/scherzo/agent/runner.gleam
     direnv exec . gleam format --check src test
     direnv exec . gleam test
 
-    The grep should return no matches in `runner.gleam`. Record the milestone.
+    The grep check should produce no matches and exit zero because of the leading `!`. Record the milestone with `jj describe -m "Extract agent turn loop"`.
 
-28. Create `src/scherzo/agent/run_attempt.gleam`. Move high-level runner functions and helpers from `runner.gleam`: `run_attempt`, `run_attempt_with_commands`, `run_attempt_with_command_ready`, `run_prompt_in_workspace`, `run_prepared`, `run_pi_loop`, `loop_turns`, `finish_after_turn`, `decide_after_refresh`, `finish_success`, cleanup/failure helpers, final classification, token addition, workspace prep calls, template rendering, and compatibility probe integration.
+29. Create `src/scherzo/agent/run_attempt.gleam`. Move high-level runner functions and helpers from `runner.gleam`: `run_attempt`, `run_attempt_with_commands`, `run_attempt_with_command_ready`, `run_prompt_in_workspace`, `run_prepared`, `run_pi_loop`, `loop_turns`, `finish_after_turn`, `decide_after_refresh`, `finish_success`, cleanup/failure helpers, final classification, token addition, workspace prep calls, template rendering, compatibility probe integration, and conversion from turn-loop failures to `types.WorkerFailure`.
 
-29. Keep `runner.gleam` as a small facade that imports `agent/run_attempt.gleam` and `agent/types.gleam`, re-exposes the public functions, and preserves type names if needed during migration. The facade should not contain pi turn-loop logic, JSON decoding, port IO, workspace prep implementation, or UI policy implementation.
+30. Keep `runner.gleam` as a small function facade that imports `agent/run_attempt.gleam` and forwards the public functions. Because constructor and variant references were migrated in Milestone 3, the facade does not need to preserve type constructors. It should not contain pi turn-loop logic, JSON decoding, port IO, workspace prep implementation, cleanup implementation, or UI policy implementation.
 
-30. Update production callers where practical: `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/orchestrator/service.gleam`, and `src/scherzo/workflow_run.gleam` can import `scherzo/agent/run_attempt` for functions and `scherzo/agent/types` for result/update types. Keep test migration in the same or next green slice.
+31. Update production callers: `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/workflow_run.gleam`, and any other function callers should import `scherzo/agent/run_attempt` for run functions; `src/scherzo/step_artifact.gleam`, `src/scherzo/orchestrator/event_publisher.gleam`, `src/scherzo/orchestrator/effect_runner.gleam`, `src/scherzo/handoff_format.gleam`, `src/scherzo/handoff.gleam`, `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/workflow_run.gleam`, and tests should import `scherzo/agent/types` for result/update types.
 
-31. Run:
+32. Run:
 
-    grep -n "fn run_prepared\|fn run_pi_loop\|fn loop_turns\|fn finish_after_turn\|fn handle_between_turn_commands" src/scherzo/agent/runner.gleam
+    ! grep -n "fn run_prepared\|fn run_pi_loop\|fn loop_turns\|fn finish_after_turn\|fn handle_between_turn_commands" src/scherzo/agent/runner.gleam
     wc -l src/scherzo/agent/runner.gleam src/scherzo/agent/pi_rpc.gleam src/scherzo/pi/protocol.gleam src/scherzo/pi/client.gleam src/scherzo/agent/turn_loop.gleam src/scherzo/agent/run_attempt.gleam
     direnv exec . gleam format --check src test
     direnv exec . gleam test
 
-    `runner.gleam` should be a small facade. Record the milestone.
+    `runner.gleam` should be a small facade. Record the milestone with `jj describe -m "Extract agent run attempt composition"`.
 
-32. Migrate remaining imports away from `scherzo/agent/pi_rpc` and `scherzo/agent/runner` where possible. `src/scherzo/agent/probe.gleam` should import `scherzo/pi/client`; `src/scherzo/result_artifact.gleam` should import `scherzo/pi/protocol` if it only needs record decoding or types; tests should import `pi/protocol`, `pi/client`, `agent/types`, and `agent/run_attempt` directly.
+33. Migrate remaining imports away from `scherzo/agent/pi_rpc` and `scherzo/agent/runner` where possible. `src/scherzo/agent/probe.gleam` should import `scherzo/pi/client`; `src/scherzo/result_artifact.gleam` should import `scherzo/pi/protocol` if it only needs record decoding or types; tests should import `scherzo/pi/protocol`, `scherzo/pi/client`, `scherzo/agent/types`, and `scherzo/agent/run_attempt` directly.
 
-33. Decide whether to delete `src/scherzo/agent/pi_rpc.gleam` and `src/scherzo/agent/runner.gleam` or keep them as compatibility facades. If kept, each facade should be short, documented, and contain no implementation logic. If deleted, update all imports and record the decision in the Decision Log.
+34. Decide whether to delete `src/scherzo/agent/pi_rpc.gleam` and `src/scherzo/agent/runner.gleam` or keep them as compatibility facades. If kept, each facade should be short, documented, and contain no implementation logic. If deleted, update all imports and record the decision in the Decision Log.
 
-34. Run final structural checks:
+35. Run final structural checks from the repository root. These checks must fail if a forbidden match remains; do not append `|| true` to checks that are meant to enforce acceptance.
 
-    ! grep -R "^import scherzo/agent/pi_rpc" -n src --include='*.gleam'
-    grep -n "port\.\|decode\.\|json\." src/scherzo/agent/pi_rpc.gleam 2>/dev/null || true
-    grep -n "fn active_turn_loop\|fn handle_blocking_ui_policy\|fn record_decoder\|fn read_events_until_agent_end" src/scherzo/agent/runner.gleam src/scherzo/agent/pi_rpc.gleam 2>/dev/null || true
-    wc -l src/scherzo/agent/runner.gleam src/scherzo/agent/pi_rpc.gleam
+    sh -c 'if grep -R "^import scherzo/agent/pi_rpc" -n src --include="*.gleam"; then exit 1; fi'
+    sh -c 'if test -f src/scherzo/agent/pi_rpc.gleam; then if grep -n "import gleam/json\|import gleam/dynamic/decode\|import scherzo/port\|fn read_turn_line\|fn read_until_response\|fn read_events_until_agent_end\|fn record_decoder\|type MessageObject" src/scherzo/agent/pi_rpc.gleam; then exit 1; fi; fi'
+    sh -c 'if test -f src/scherzo/agent/runner.gleam; then if grep -n "fn active_turn_loop\|fn handle_blocking_ui_policy\|fn handle_ui_response_command\|fn run_prepared\|fn run_pi_loop" src/scherzo/agent/runner.gleam; then exit 1; fi; fi'
+    sh -c 'if test -f src/scherzo/pi/client.gleam; then if grep -n "prompt_with_ui_policy\|UiRequestPolicy\|import scherzo/agent/runner\|import scherzo/workspace\|import scherzo/tracker" src/scherzo/pi/client.gleam; then exit 1; fi; fi'
+    sh -c 'if test -f src/scherzo/agent/pi_rpc_legacy.gleam; then echo "remove temporary pi_rpc_legacy.gleam before final acceptance"; exit 1; fi'
+    wc -l src/scherzo/agent/runner.gleam src/scherzo/agent/pi_rpc.gleam 2>/dev/null || true
 
-    Production source should not import `agent/pi_rpc`. Facades, if present, should not contain direct JSON decoder, port IO, or turn-loop implementation details. The line counts for facade files should be dramatically lower than the original 2,039 and 1,242 lines.
+    Production source should not import `agent/pi_rpc`. Facades, if present, should not contain direct JSON decoder, port IO, or turn-loop implementation details. The line counts for facade files should be dramatically lower than the original 2,046 and 1,242 lines.
 
-35. Run final validation:
+36. Run final validation:
 
     direnv exec . gleam format --check src test
     direnv exec . gleam test
 
-    Update this plan's Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective. Record the final change with a message such as `Split pi protocol, client, and agent turn loop`.
+    Both commands must exit zero, and the test command must report `no failures`. Update this plan's Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective. Record the final change with a message such as `Split pi protocol, client, and agent turn loop`.
 
 ## Testing and Falsifiability
 
-The protocol extraction is falsified if decoding the same JSON line produces different `RpcRecord` fields. Tests must cover response ids, session ids, message deltas, extension UI request messages, assistant messages from `agent_end`, captured tool calls/results from `test/fixtures/pi_tool_events_captured.jsonl`, top-level and nested tool execution aliases, token totals, and raw JSON preservation.
+The protocol extraction is falsified if decoding the same JSON line produces different `RpcRecord` fields. Tests must cover response ids, session ids, message deltas, extension UI request messages, assistant messages from `agent_end`, captured tool calls/results from `test/fixtures/pi_tool_events_captured.jsonl`, top-level and nested tool execution aliases, token totals, and raw JSON preservation. It is also falsified if `src/scherzo/pi/protocol.gleam` imports `scherzo/agent/pi_event`; raw wire strings belong in protocol records, and typed pi events belong in the agent update layer.
 
-The client extraction is falsified if fake-pi process behavior changes. Tests must cover launch, set session name, auto retry, get state, prompt, interleaved response records, abort, extension UI cancel/value, get session stats, malformed JSON, read timeout, turn timeout, stall timeout, short read timeouts until events arrive, and diagnostics on process exit.
+The client extraction is falsified if fake-pi process behavior changes. Tests must cover launch, set session name, auto retry, get state, prompt send, interleaved response records, abort, extension UI cancel/value, get session stats, malformed JSON, read timeout, turn timeout, stall timeout, short read timeouts until events arrive, and diagnostics on process exit. It is also falsified if `src/scherzo/pi/client.gleam` exposes `prompt_with_ui_policy`, imports `domain.UiRequestPolicy`, or contains JSON decoder implementation details beyond calling protocol functions.
 
-The operator-control extraction is falsified if worker command behavior changes. Tests must cover abort during active turn, prompt queueing during active turn and sending next turn, prompt queue full, oversized prompt rejection, stop-after-current-turn, UI policy cancel/fail/ignore/operator, UI response with pending request, UI response with no pending request, UI response too large, UI timeout, and dropped prompts on abort/cleanup.
+The shared-types extraction is falsified if any production or test code still relies on `runner.WorkerSuccess(...)`, `runner.WorkerFailure(...)`, `runner.PiUpdate(...)`, or `runner.FinalTerminal` after the type definitions have moved. Run the constructor searches in the concrete steps and require them to be empty or intentionally limited to a temporary compatibility test that is deleted before final acceptance.
 
-The run-attempt extraction is falsified if existing `test/agent_runner_test.gleam`, `test/agent_worker_control_test.gleam`, daemon tests, workflow run tests, handoff tests, and result artifact tests fail or need weaker assertions. Do not weaken tests to make extraction pass.
+The operator-control extraction is falsified if worker command behavior changes. Tests must cover abort during active turn, prompt queueing during active turn and sending next turn, prompt queue full, oversized prompt rejection, stop-before-next-turn, stop-after-current-turn, UI response with pending request, UI response with no pending request, UI response wrong request id, UI response too large, UI timeout, and dropped prompts on abort/cleanup. Unit tests must assert the exact `worker_command.Reply` variant and message for active and between-turn modes.
 
-The structural claim is falsified if `pi/protocol.gleam` imports `scherzo/port`, if `pi/client.gleam` contains JSON decoder implementation details beyond calling protocol functions, if `runner.gleam` still contains `active_turn_loop` or blocking UI policy functions, or if `pi_rpc.gleam` still contains read loops and decoder internals.
+The turn-loop extraction is falsified if operator commands are processed in a different order relative to pi reads, if blocking UI policy emits different updates or sends different pi commands, if skipped interleaved records are no longer emitted, or if cleanup happens inside `turn_loop.gleam` instead of the run-attempt layer. Existing fake-pi integration tests plus any direct `test/agent_turn_loop_test.gleam` coverage must catch these differences.
+
+The run-attempt extraction is falsified if existing `test/agent_runner_test.gleam`, `test/agent_worker_control_test.gleam`, daemon tests, workflow run tests, handoff tests, event publisher tests, step artifact tests, and result artifact tests fail or need weaker assertions. Do not weaken tests to make extraction pass.
+
+The structural claim is falsified if `pi/protocol.gleam` imports `scherzo/port` or `scherzo/agent`, if `pi/client.gleam` imports agent, workspace, tracker, template, or UI-policy modules, if `runner.gleam` still contains `active_turn_loop` or high-level run composition, or if `pi_rpc.gleam` still contains read loops and decoder internals.
 
 ## Validation and Acceptance
 
@@ -323,32 +380,32 @@ Acceptance requires these commands from the repository root:
     direnv exec . gleam format --check src test
     direnv exec . gleam test
 
-Both must exit zero. The test command must report `no failures`. Expected fake-pi tests should still exercise real subprocess IO.
+Both must exit zero. The test command must report `no failures`; the 2026-05-02 baseline was `529 passed, no failures`. Expected fake-pi tests should still exercise real subprocess IO.
 
-Structural acceptance requires:
+Structural acceptance requires the final structural checks from Concrete Step 35. The checks must be written so they fail on forbidden matches and only tolerate missing facade files. In particular, do not use `grep ... || true` for a check that is supposed to prove a forbidden symbol is absent.
 
-    ! grep -R "^import scherzo/agent/pi_rpc" -n src --include='*.gleam'
-    ! grep -n "fn active_turn_loop\|fn handle_blocking_ui_policy" src/scherzo/agent/runner.gleam
-    ! grep -n "fn record_decoder\|type MessageObject\|fn read_events_until_agent_end" src/scherzo/agent/pi_rpc.gleam 2>/dev/null || true
+If `agent/pi_rpc.gleam` or `agent/runner.gleam` remain, they must be compatibility facades only. If the project owner prefers deletion, delete them and make the relevant checks pass because the files do not exist.
 
-If `agent/pi_rpc.gleam` or `agent/runner.gleam` remain, they must be compatibility facades only. If the project owner prefers deletion, delete them and make the first and third checks naturally pass because the files do not exist.
-
-Behavior acceptance requires no change to pi JSON command strings, decoded fake-pi events, token totals, tool extraction, workspace hook execution, operator command replies, UI policy behavior, final classification, or cleanup behavior.
+Behavior acceptance requires no change to pi JSON command strings, decoded fake-pi events, token totals, tool extraction, raw JSON redaction, workspace hook execution, operator command replies, UI policy behavior, final classification, or cleanup behavior.
 
 ## Rollout, Recovery, and Idempotence
 
 This is an internal refactor with no data migration. Roll out as a normal code change after tests pass. Each milestone should be green and separately described so it can be reverted independently.
 
-If the client extraction causes timeout regressions, revert the `pi/client.gleam` milestone and keep the protocol extraction if it is green. If the turn-loop extraction causes operator-control regressions, revert only that milestone and keep protocol/client/type extractions. Do not leave duplicated active turn implementations in production code across a commit.
+If the client extraction causes timeout regressions, revert the `pi/client.gleam` milestone and keep the protocol extraction if it is green. If legacy prompt/UI-policy tests are the only blocker, keep the low-level client pure and move or rewrite those tests rather than adding policy back to `pi/client.gleam`. If the turn-loop extraction causes operator-control regressions, revert only that milestone and keep protocol/client/type extractions. Do not leave duplicated active turn implementations in production code across a commit.
 
 The steps are safe to repeat. Running format, tests, and grep checks multiple times is safe. Test temporary files should stay under `test/tmp/...`, matching existing convention.
 
 ## Artifacts and Notes
 
-Current file sizes at plan authoring:
+Current file sizes at the 2026-05-02 plan review:
 
-    2039 src/scherzo/agent/runner.gleam
+    2046 src/scherzo/agent/runner.gleam
     1242 src/scherzo/agent/pi_rpc.gleam
+
+Current baseline test output at the same review:
+
+    529 passed, no failures
 
 Current `pi_rpc.gleam` public surface includes `Session`, `RpcRecord`, command encoders, `decode_record`, `launch`, `prompt`, `prompt_with_ui_policy`, `send_prompt`, `read_turn_record`, `send_abort`, UI response helpers, `get_session_stats`, and `terminate`.
 
@@ -373,7 +430,7 @@ In `src/scherzo/pi/protocol.gleam`, define or move:
     pub fn encode_extension_ui_value_response(id: String, value: String) -> String
     pub fn decode_record(line: String) -> Result(RpcRecord, error.PiRpcError)
 
-This module may import `gleam/json`, `gleam/dynamic/decode`, `gleam/list`, `gleam/option`, `gleam/string`, `scherzo/domain`, and `scherzo/error`. It must not import `scherzo/port`, `gleam/erlang/process`, `scherzo/agent/worker_command`, `scherzo/tracker`, `scherzo/template`, or workspace modules.
+This module may import `gleam/json`, `gleam/dynamic/decode`, `gleam/list`, `gleam/option`, `gleam/string`, `scherzo/domain`, and `scherzo/error`. It must not import `scherzo/port`, `gleam/erlang/process`, `scherzo/agent/pi_event`, `scherzo/agent/worker_command`, `scherzo/tracker`, `scherzo/template`, or workspace modules.
 
 In `src/scherzo/pi/client.gleam`, define or move:
 
@@ -388,17 +445,17 @@ In `src/scherzo/pi/client.gleam`, define or move:
     pub fn get_session_stats(session: Session, read_timeout_ms: Int) -> Result(#(Session, domain.TokenTotals), error.PiRpcError)
     pub fn terminate(session: Session) -> Result(Nil, error.PiRpcError)
 
-This module may import `scherzo/pi/protocol`, `scherzo/port`, `scherzo/error`, `scherzo/domain`, and stdlib modules. It must not import `scherzo/agent/runner`, `scherzo/agent/turn_loop`, `scherzo/template`, `scherzo/workspace`, or tracker modules.
+This module may import `scherzo/pi/protocol`, `scherzo/port`, `scherzo/error`, `scherzo/domain`, and stdlib modules. It must not import `scherzo/agent/runner`, `scherzo/agent/turn_loop`, `scherzo/agent/pi_event`, `scherzo/template`, `scherzo/workspace`, tracker modules, or `domain.UiRequestPolicy`-driven legacy prompt helpers. It must not expose `prompt` or `prompt_with_ui_policy`.
 
-In `src/scherzo/agent/types.gleam`, define the public agent result/update types currently in `runner.gleam`.
+In `src/scherzo/agent/types.gleam`, define the public agent result/update types currently in `runner.gleam`. `PiUpdate.event` should remain `pi_event.PiEvent`. After the move, production and test constructors should use `types.WorkerSuccess(...)`, `types.WorkerFailure(...)`, `types.PiUpdate(...)`, and `types.FinalTerminal` rather than `runner`-qualified constructors or variants.
 
-In `src/scherzo/agent/operator_control.gleam`, define pending UI and prompt queue state plus command-decision helpers. This module may import `scherzo/agent/worker_command` and `scherzo/control/command`; it should not import pi client, tracker, template, workspace, or handoff modules.
+In `src/scherzo/agent/operator_control.gleam`, define pending UI and prompt queue state plus command-decision helpers. This module may import `gleam/erlang/process`, `scherzo/agent/worker_command`, and `scherzo/control/command`; it should not import pi client, tracker, template, workspace, handoff, run-attempt, or runner modules. Its public API should return explicit effects for replies, queued-prompt update emission, abort, stop, and UI response sends.
 
 In `src/scherzo/agent/turn_loop.gleam`, expose a function such as:
 
-    pub fn run_active_turn(context: Context) -> Result(TurnResult, types.WorkerFailure)
+    pub fn run_active_turn(context: Context) -> TurnResult
 
-The exact context fields may be a record, but they must be explicit and should not require importing `runner.gleam`.
+The exact context fields may be a record, but they must be explicit and should not require importing `runner.gleam`. `TurnResult` should distinguish completed turns from turn-local failures and carry enough session, record, operator state, and token data for `run_attempt.gleam` to perform cleanup and construct `types.WorkerFailure`.
 
 In `src/scherzo/agent/run_attempt.gleam`, expose:
 
@@ -407,4 +464,8 @@ In `src/scherzo/agent/run_attempt.gleam`, expose:
     pub fn run_attempt_with_command_ready(...same arguments as current runner.run_attempt_with_command_ready...) -> Result(types.WorkerSuccess, types.WorkerFailure)
     pub fn run_prompt_in_workspace(...same arguments as current runner.run_prompt_in_workspace...) -> Result(types.WorkerSuccess, types.WorkerFailure)
 
-The old `src/scherzo/agent/runner.gleam` facade, if kept, should forward to these functions and re-expose types from `agent/types.gleam` only.
+The old `src/scherzo/agent/runner.gleam` facade, if kept, should forward to these functions. Do not rely on it to re-expose type constructors; constructor and variant call sites should already import `agent/types.gleam` directly.
+
+## Plan Revision Notes
+
+2026-05-02 review update: refreshed baseline facts, removed the prior-plan dependency around typed pi events, tightened module boundaries for `pi/client.gleam` and `turn_loop.gleam`, made the `agent/types.gleam` constructor migration explicit, and replaced non-failing structural greps with checks that fail on forbidden matches. These changes make the plan more self-contained, keep the low-level pi client free of UI policy, and reduce the risk of breaking callers that construct `runner`-qualified result/update types.
