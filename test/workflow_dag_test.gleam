@@ -31,6 +31,14 @@ pub fn parses_minimal_workflow_dag_test() {
   )) = step.kind
 }
 
+pub fn parses_optional_description_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\ndescription: Test description\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n",
+    )
+  assert dag.description == Some("Test description")
+}
+
 pub fn parses_per_step_model_settings_test() {
   let dag =
     parse_ok(
