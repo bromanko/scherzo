@@ -286,7 +286,11 @@ fn cap_optional(
   }
 }
 
-fn cap(value: String, secrets: List(String), max_chars: Int) -> #(String, Bool) {
+fn cap(
+  value: String,
+  secrets: List(String),
+  max_chars: Int,
+) -> #(String, Bool) {
   cap_with_truncation(value, secrets, max_chars, False)
 }
 

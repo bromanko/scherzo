@@ -216,7 +216,10 @@ pub fn effect_kind(effect: Effect) -> String {
   }
 }
 
-fn handle_message(state: State, message: Message) -> actor.Next(State, Message) {
+fn handle_message(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
   case message {
     Enqueue(effect) -> actor.continue(enqueue_effect(state, effect))
     WorkerFinished(id, result) ->

@@ -73,7 +73,10 @@ pub fn write(
   }
 }
 
-fn ensure_directory(dir: String, path: String) -> Result(Nil, ControlFileError) {
+fn ensure_directory(
+  dir: String,
+  path: String,
+) -> Result(Nil, ControlFileError) {
   case dir == "" {
     True -> Ok(Nil)
     False ->

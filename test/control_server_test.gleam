@@ -187,6 +187,10 @@ pub fn server_lists_sessions_with_good_token_test() {
   let assert Ok(sessions) = client.list_sessions(control_file)
   assert list.map(sessions, fn(summary) { summary.session_id })
     == ["session-list"]
+  let assert Ok(snapshot) = client.list_sessions_snapshot(control_file)
+  assert snapshot.now_ms == 100
+  assert list.map(snapshot.sessions, fn(summary) { summary.session_id })
+    == ["session-list"]
   let assert Ok(response) =
     client.request(control_file, protocol.ListSessions("request-1", ""))
   let assert Some(data) = response.data

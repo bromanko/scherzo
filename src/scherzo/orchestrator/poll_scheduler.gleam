@@ -44,7 +44,10 @@ pub fn schedule_next(
   )
 }
 
-pub fn cancel_all(state: State(timer), cancel: fn(timer) -> Nil) -> State(timer) {
+pub fn cancel_all(
+  state: State(timer),
+  cancel: fn(timer) -> Nil,
+) -> State(timer) {
   case state.timer {
     Some(timer) -> cancel(timer)
     None -> Nil

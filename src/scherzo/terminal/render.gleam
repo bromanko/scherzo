@@ -595,7 +595,10 @@ fn ensure_pass_heading(
   }
 }
 
-fn observe_pass(state: RenderState, payload: event.EventPayload) -> RenderState {
+fn observe_pass(
+  state: RenderState,
+  payload: event.EventPayload,
+) -> RenderState {
   case payload.turn {
     Some(pass) -> observe_visible_pass(state, pass)
     None -> state
@@ -616,14 +619,20 @@ fn observe_visible_pass(state: RenderState, pass: Int) -> RenderState {
   }
 }
 
-fn visible_pass(state: RenderState, payload: event.EventPayload) -> Option(Int) {
+fn visible_pass(
+  state: RenderState,
+  payload: event.EventPayload,
+) -> Option(Int) {
   case payload.turn {
     Some(pass) -> Some(pass)
     None -> state.current_pass
   }
 }
 
-fn assistant_must_close(state: RenderState, payload: event.EventPayload) -> Bool {
+fn assistant_must_close(
+  state: RenderState,
+  payload: event.EventPayload,
+) -> Bool {
   case state.assistant_active, visible_pass(state, payload) {
     True, Some(pass) -> state.displayed_pass != Some(pass)
     _, _ -> False

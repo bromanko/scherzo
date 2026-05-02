@@ -251,7 +251,10 @@ fn escape_markdown_link_label(filename: String) -> String {
   |> string.replace("]", "\\]")
 }
 
-fn result_try(result: Result(a, e), next: fn(a) -> Result(b, e)) -> Result(b, e) {
+fn result_try(
+  result: Result(a, e),
+  next: fn(a) -> Result(b, e),
+) -> Result(b, e) {
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)

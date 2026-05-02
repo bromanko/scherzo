@@ -132,7 +132,9 @@ pub fn real_contract_client(config: domain.TrackerConfig) -> ContractClient {
   contract_client(config, http_transport)
 }
 
-pub fn http_transport(request: Request) -> Result(Response, error.TrackerError) {
+pub fn http_transport(
+  request: Request,
+) -> Result(Response, error.TrackerError) {
   use http_req <- try_tracker(
     http_request.to(request.endpoint)
     |> result_map_error(fn(_) { error.LinearApiRequest("invalid endpoint") }),
@@ -706,7 +708,9 @@ fn data_decoder() -> decode.Decoder(Page) {
   decode.success(page)
 }
 
-fn mutation_decoder(root_field: String) -> decode.Decoder(Result(Bool, String)) {
+fn mutation_decoder(
+  root_field: String,
+) -> decode.Decoder(Result(Bool, String)) {
   use errors <- decode.optional_field(
     "errors",
     [],
