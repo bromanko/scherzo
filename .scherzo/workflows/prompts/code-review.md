@@ -1,45 +1,47 @@
-You are reviewing the implementation for Linear issue {{ issue.identifier }}: {{ issue.title }}.
+You are reviewing the implementation produced by Scherzo's `workflow:implementation` workflow for Linear issue {{ issue.identifier }}: {{ issue.title }}.
 
 Issue description:
 {{ issue.description }}
 
-Implementation step result:
+Ticket preparation output:
+{{ steps.prepare_context.stdout }}
+
+Implementation step response:
 {{ steps.implement.final_response }}
 
-Format check exit code: {{ steps.format_after_implement.exit_code }}
-
-Format check stdout:
-{{ steps.format_after_implement.stdout }}
-
-Format check stderr:
-{{ steps.format_after_implement.stderr }}
-
-Test exit code: {{ steps.test_after_implement.exit_code }}
-
-Test stdout:
-{{ steps.test_after_implement.stdout }}
-
-Test stderr:
-{{ steps.test_after_implement.stderr }}
+Change analysis output:
+{{ steps.analyze_changes.stdout }}
 
 Review contract:
 
 - You are in the same dedicated jj workspace as the implementation.
-- Do not edit files and do not commit.
-- Use `jj diff --color=never` and targeted file reads to inspect the actual change.
-- Focus on correctness, maintainability, tests, and fit with Scherzo/Gleam conventions.
-- Treat failing format or tests as blocking unless the output clearly shows an unrelated environment failure.
-- Avoid style nits unless they affect readability or future maintenance.
+- Do not create, forget, finish, switch, push, or otherwise manage jj workspaces.
+- Use `jj status --color=never` and `jj diff --from @- --to @ --color=never` only for orientation; the analysis output above is authoritative for changed files across the workflow run.
+- The workflow currently supports project-local Gleam review only. If `LANGUAGES=gleam`, use the vendored project-local review skill content under `.pi/skills/` and run the equivalent of `/review gleam --fix medium`.
+- If the local `/review` command is unavailable or does not accept `--fix medium`, read `.pi/skills/gleam-review/SKILL.md` and the related `.pi/skills/gleam-*-review/SKILL.md` files, perform the Gleam review manually against the changed files, and apply only safe medium-or-smaller fixes.
+- If `LANGUAGES=none`, do not invent a language review. Check the changed files briefly for obvious workflow breakage and report that no supported language review was required.
+- Treat unsupported review-relevant files listed in `UNSUPPORTED_REVIEW_FILES` as out of scope unless they are obviously broken by the current change.
+- Keep changes focused. Do not start unrelated cleanup.
+- Do not run final full validation; the workflow has a dedicated final validation step.
+
+Review process:
+
+1. Read the change analysis output and identify the review commands to run.
+2. Run the supported project-local review(s), currently Gleam.
+3. Apply safe and relevant medium-or-smaller fixes if the review tooling or your manual review identifies them.
+4. Leave risky, broad, or ambiguous findings for the feedback step with a clear explanation.
+5. Finish with a concise review report.
 
 Final response format:
 
-## Blocking findings
-- `path:line` — finding, impact, and suggested fix.
+## Review performed
+- Review commands run, or `No supported language review required`.
 
-If there are no blocking findings, write `None`.
+## Fixes applied
+- Bullet list of safe fixes made, or `None`.
 
-## Non-blocking observations
-- Optional notes that should not block completion.
+## Remaining findings
+- Bullet list of findings for the feedback step, or `None`.
 
-## Validation assessment
-- Summarize the format/test results and whether they are acceptable.
+## Notes
+Anything the final feedback or validation step should know.

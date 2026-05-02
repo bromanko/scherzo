@@ -1,36 +1,29 @@
 version: 1
 id: implementation
-description: Implement a focused Scherzo issue, validate it, review it, apply feedback, and produce a Linear-ready summary.
+description: Implement a focused Scherzo issue from ticket context, review it, validate it, publish a PR, and report the PR URL.
 max_parallel_steps: 1
 steps:
+  - id: prepare_context
+    kind: command
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-implementation" prepare --source ticket'
+    timeout_ms: 300000
+    workspace: main
+
   - id: implement
     kind: agent
+    depends_on: [prepare_context]
     prompt: prompts/implement.md
     workspace: main
 
-  - id: format_after_implement
+  - id: analyze_changes
     kind: command
     depends_on: [implement]
-    run: |
-      direnv allow .
-      direnv exec . gleam format --check src test
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-implementation" analyze'
     workspace: main
-    on_failure: continue
-
-  - id: test_after_implement
-    kind: command
-    depends_on: [implement]
-    run: |
-      direnv allow .
-      direnv exec . gleam test
-    workspace: main
-    on_failure: continue
 
   - id: code_review
     kind: agent
-    depends_on:
-      - format_after_implement
-      - test_after_implement
+    depends_on: [analyze_changes]
     prompt: prompts/code-review.md
     workspace: main
 
@@ -43,14 +36,13 @@ steps:
   - id: final_validate
     kind: command
     depends_on: [apply_feedback]
-    run: |
-      direnv allow .
-      direnv exec . gleam format --check src test
-      direnv exec . gleam test
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-implementation" validate'
+    timeout_ms: 1200000
     workspace: main
 
-  - id: final_report
-    kind: agent
+  - id: publish_pr
+    kind: command
     depends_on: [final_validate]
-    prompt: prompts/final-report.md
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-implementation" publish'
+    timeout_ms: 300000
     workspace: main

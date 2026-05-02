@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Helpers for Scherzo's workflow:execplan-implementation pipeline.
+"""Shared helpers for Scherzo implementation workflows.
 
-The workflow starts in a jj workspace created by Scherzo. This helper finds the
-single ExecPlan referenced by the Linear issue, records the starting jj parent,
-keeps failed workspaces from being deleted before publication, detects changed
-file languages across the full workspace history, runs final verification, and
-publishes the finished implementation branch as a GitHub PR.
+The checked-in dogfood workflows have two implementation contracts:
+
+* workflow:implementation implements directly from the Linear ticket context.
+* workflow:execplan-implementation implements a checked-in ExecPlan referenced by
+  the Linear issue.
+
+This helper keeps the common mechanics in one place: fetching source context,
+recording the starting jj parent, retaining failed run workspaces until a PR is
+published, detecting changed file languages across the full workflow history,
+running final validation, and publishing a GitHub PR.
 """
 
 from __future__ import annotations
@@ -20,11 +25,12 @@ from pathlib import Path
 from typing import Any, Iterable
 
 TMP_DIR = Path("tmp")
-METADATA_PATH = TMP_DIR / "execplan-implementation.json"
-ANALYSIS_PATH = TMP_DIR / "execplan-implementation-analysis.json"
-VALIDATION_PATH = TMP_DIR / "execplan-implementation-validation.json"
-PUBLISH_PATH = TMP_DIR / "execplan-implementation-publish.json"
-PR_BODY_PATH = TMP_DIR / "execplan-implementation-pr-body.md"
+METADATA_PATH = TMP_DIR / "scherzo-implementation.json"
+ANALYSIS_PATH = TMP_DIR / "scherzo-implementation-analysis.json"
+VALIDATION_PATH = TMP_DIR / "scherzo-implementation-validation.json"
+PUBLISH_PATH = TMP_DIR / "scherzo-implementation-publish.json"
+TICKET_BRIEF_PATH = TMP_DIR / "scherzo-implementation-brief.md"
+PR_BODY_PATH = TMP_DIR / "scherzo-implementation-pr-body.md"
 RETENTION_MARKER = ".scherzo-keep-workspace"
 PLAN_RE = re.compile(
     r"(?<![A-Za-z0-9_./-])(docs/plans/[A-Za-z0-9][A-Za-z0-9._-]*\.md)(?![A-Za-z0-9_/-])"
@@ -33,11 +39,16 @@ PLAN_RE = re.compile(
 
 def usage() -> None:
     print(
-        """Usage: scherzo-execplan-implementation <prepare|analyze|validate|publish|extract-plan|languages>
+        """Usage: scherzo-implementation <prepare|analyze|validate|publish|extract-plan|languages|ticket-brief>
 
 Run from a Scherzo jj workflow workspace root.
 
-prepare       Fetch the Linear issue, find exactly one docs/plans/*.md path,
+prepare --source execplan
+              Fetch the Linear issue, find exactly one docs/plans/*.md path,
+              record the starting jj parent, and mark the run for retention
+              until a PR is safely published.
+prepare --source ticket
+              Fetch the Linear issue, write a ticket-context brief under tmp/,
               record the starting jj parent, and mark the run for retention
               until a PR is safely published.
 analyze       Diff from the recorded starting parent to @, detect supported
@@ -52,13 +63,16 @@ extract-plan <text-file> [repo-root]
               is supplied, the path must exist under that root.
 languages <file-list>
               Detect supported review languages from a newline-separated list.
+ticket-brief <issue-json>
+              Render a ticket-context Markdown brief from a saved Linear issue
+              JSON object and print it to stdout.
 """,
         file=sys.stderr,
     )
 
 
 def fail(message: str) -> None:
-    print(f"scherzo-execplan-implementation: {message}", file=sys.stderr)
+    print(f"scherzo-implementation: {message}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -141,7 +155,7 @@ def infer_issue_identifier() -> str:
 def linear_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     token = os.environ.get("LINEAR_API_KEY", "").strip()
     if not token:
-        fail("LINEAR_API_KEY is required to locate the ExecPlan on the Linear issue")
+        fail("LINEAR_API_KEY is required to fetch Linear issue context")
     payload = json.dumps({"query": query, "variables": variables}).encode()
     req = urllib.request.Request(
         "https://api.linear.app/graphql",
@@ -173,6 +187,37 @@ def fetch_linear_issue(identifier: str) -> dict[str, Any]:
             body
             user { name }
           }
+        }
+      }
+    }
+    """
+    issue = linear_graphql(query, {"id": identifier}).get("issue")
+    if not issue:
+        fail(f"Linear issue not found: {identifier}")
+    return issue
+
+
+def fetch_linear_issue_context(identifier: str) -> dict[str, Any]:
+    query = """
+    query($id: String!) {
+      issue(id: $id) {
+        identifier
+        title
+        description
+        url
+        priority
+        state { name }
+        labels(first: 50) {
+          nodes { name }
+          pageInfo { hasNextPage }
+        }
+        comments(first: 100) {
+          nodes {
+            createdAt
+            body
+            user { name }
+          }
+          pageInfo { hasNextPage }
         }
       }
     }
@@ -293,12 +338,13 @@ def retention_marker_path() -> Path:
     return run_root_for_current_workspace() / RETENTION_MARKER
 
 
-def write_retention_marker(plan_path: str) -> None:
+def write_retention_marker(source_kind: str, source_ref: str) -> None:
     marker = retention_marker_path()
     marker.write_text(
-        "Scherzo retained this run because workflow:execplan-implementation "
+        "Scherzo retained this run because an implementation workflow "
         "has not published a PR yet.\n"
-        f"Plan: {plan_path}\n"
+        f"Source kind: {source_kind}\n"
+        f"Source: {source_ref}\n"
     )
 
 
@@ -360,23 +406,128 @@ def plan_title(plan_path: str) -> str:
     return f"Implement {plan_path}"
 
 
-def prepare_command() -> None:
+def label_names(issue: dict[str, Any]) -> list[str]:
+    labels = issue.get("labels", {}).get("nodes", [])
+    names = [label.get("name") or "" for label in labels]
+    return sorted([name for name in names if name])
+
+
+def comment_nodes(issue: dict[str, Any]) -> list[dict[str, Any]]:
+    comments = issue.get("comments", {}).get("nodes", [])
+    return sorted(comments, key=lambda c: c.get("createdAt") or "")
+
+
+def render_ticket_brief(issue: dict[str, Any]) -> str:
+    identifier = issue.get("identifier") or "unknown-issue"
+    title = issue.get("title") or "Untitled"
+    url = issue.get("url") or ""
+    state = (issue.get("state") or {}).get("name") or "Unknown"
+    priority = issue.get("priority")
+    description = issue.get("description") or "_No description provided._"
+    labels = label_names(issue)
+    comments = comment_nodes(issue)
+    labels_truncated = issue.get("labels", {}).get("pageInfo", {}).get("hasNextPage") is True
+    comments_truncated = issue.get("comments", {}).get("pageInfo", {}).get("hasNextPage") is True
+
+    lines = [
+        f"# Ticket context for {identifier}: {title}",
+        "",
+        "## Metadata",
+        "",
+        f"- Identifier: {identifier}",
+        f"- Title: {title}",
+        f"- URL: {url or 'None'}",
+        f"- State: {state}",
+        f"- Priority: {priority if priority is not None else 'None'}",
+        "- Labels: " + (", ".join(labels) if labels else "None"),
+        "",
+        "## Description",
+        "",
+        description,
+        "",
+        "## Comments",
+        "",
+    ]
+
+    if comments:
+        for index, comment in enumerate(comments, start=1):
+            created = comment.get("createdAt") or "unknown time"
+            user = (comment.get("user") or {}).get("name") or "unknown user"
+            body = comment.get("body") or ""
+            lines.extend([
+                f"### Comment {index} — {created} — {user}",
+                "",
+                body or "_No body._",
+                "",
+            ])
+    else:
+        lines.extend(["None.", ""])
+
+    if labels_truncated or comments_truncated:
+        lines.extend(["## Fetch notes", ""])
+        if labels_truncated:
+            lines.append("- Linear returned more than 50 labels; the label list above is truncated.")
+        if comments_truncated:
+            lines.append("- Linear returned more than 100 comments; the comment list above is truncated.")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_ticket_brief(issue: dict[str, Any]) -> Path:
+    TICKET_BRIEF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TICKET_BRIEF_PATH.write_text(render_ticket_brief(issue))
+    return TICKET_BRIEF_PATH
+
+
+def parse_prepare_source(args: list[str]) -> str:
+    if args == ["--source", "execplan"] or args == ["execplan"]:
+        return "execplan"
+    if args == ["--source", "ticket"] or args == ["ticket"]:
+        return "ticket"
+    usage()
+    sys.exit(2)
+
+
+def prepare_command(args: list[str]) -> None:
+    source_kind = parse_prepare_source(args)
     require_command("jj")
     issue_identifier = infer_issue_identifier()
-    issue = fetch_linear_issue(issue_identifier)
-    plan_path = extract_plan_path_from_texts(issue_texts(issue))
-    validate_plan_path(plan_path, Path.cwd())
     base_change_id = current_base_change_id()
-    write_retention_marker(plan_path)
-    metadata = {
-        "issue_identifier": issue.get("identifier") or issue_identifier,
-        "issue_title": issue.get("title") or "",
-        "issue_url": issue.get("url") or "",
-        "plan_path": plan_path,
-        "base_change_id": base_change_id,
-    }
-    write_json(METADATA_PATH, metadata)
-    print(f"PLAN_PATH={plan_path}")
+
+    if source_kind == "execplan":
+        issue = fetch_linear_issue(issue_identifier)
+        plan_path = extract_plan_path_from_texts(issue_texts(issue))
+        validate_plan_path(plan_path, Path.cwd())
+        write_retention_marker(source_kind, plan_path)
+        metadata = {
+            "source_kind": source_kind,
+            "issue_identifier": issue.get("identifier") or issue_identifier,
+            "issue_title": issue.get("title") or "",
+            "issue_url": issue.get("url") or "",
+            "plan_path": plan_path,
+            "base_change_id": base_change_id,
+        }
+        write_json(METADATA_PATH, metadata)
+        print(f"SOURCE_KIND={source_kind}")
+        print(f"PLAN_PATH={plan_path}")
+    else:
+        issue = fetch_linear_issue_context(issue_identifier)
+        brief_path = write_ticket_brief(issue)
+        issue_ref = issue.get("identifier") or issue_identifier
+        write_retention_marker(source_kind, issue_ref)
+        metadata = {
+            "source_kind": source_kind,
+            "issue_identifier": issue_ref,
+            "issue_title": issue.get("title") or "",
+            "issue_url": issue.get("url") or "",
+            "brief_path": str(brief_path),
+            "base_change_id": base_change_id,
+        }
+        write_json(METADATA_PATH, metadata)
+        print(f"SOURCE_KIND={source_kind}")
+        print(f"BRIEF_PATH={brief_path}")
+
     print(f"BASE_CHANGE_ID={base_change_id}")
     print(f"RETENTION_MARKER={retention_marker_path()}")
     print("VALIDATION=ok")
@@ -438,34 +589,21 @@ def ensure_validation_passed() -> None:
         fail("final validation did not pass; run validate before publish")
 
 
-def publish_command() -> None:
-    require_command("jj")
-    ensure_validation_passed()
-    require_command("gh")
-    metadata = load_json(METADATA_PATH)
+def ticket_slug(metadata: dict[str, Any]) -> str:
+    identifier = sanitize_ref_part(metadata.get("issue_identifier") or "")
+    title = sanitize_ref_part(metadata.get("issue_title") or "")
+    value = "-".join(part for part in [identifier, title] if part)
+    return value[:60].strip("-") or "ticket"
+
+
+def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]:
     plan_path = metadata["plan_path"]
-    files = changed_files_since(metadata["base_change_id"])
-    if not files:
-        fail("refusing to publish because no changed files were found")
-
-    base = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
-    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
-    repo = default_repo(remote)
-
     slug = sanitize_ref_part(Path(plan_path).stem)[:60] or "plan"
-    change_id = current_change_id_short()
-    if not change_id:
-        fail("could not determine current jj change id")
-    branch = f"scherzo/execplan-implementation/{slug}-{change_id}"
+    branch_prefix = "scherzo/execplan-implementation"
+    description = f"feat: implement {slug}"
     title = plan_title(plan_path)
     pr_title = title if title.lower().startswith("implement") else "Implement: " + title
-
-    run(["jj", "describe", "-m", f"feat: implement {slug}"])
-    run(["jj", "bookmark", "set", branch, "--revision", "@"])
-    run(["jj", "git", "push", "--remote", remote, "--bookmark", branch])
-
-    PR_BODY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PR_BODY_PATH.write_text(
+    body = (
         "Implements an ExecPlan through Scherzo's `workflow:execplan-implementation` dogfood workflow.\n\n"
         f"Plan: `{plan_path}`\n\n"
         "Validation completed before publication:\n\n"
@@ -473,6 +611,71 @@ def publish_command() -> None:
         "- `direnv exec . gleam test`\n\n"
         "This PR is ready for human acceptance.\n"
     )
+    return branch_prefix, description, pr_title, body
+
+
+def ticket_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]:
+    slug = ticket_slug(metadata)
+    issue_identifier = metadata.get("issue_identifier") or "Linear issue"
+    issue_title = metadata.get("issue_title") or "Untitled"
+    issue_url = metadata.get("issue_url") or ""
+    branch_prefix = "scherzo/implementation"
+    description = f"feat: implement {sanitize_ref_part(issue_identifier) or slug}"
+    pr_title = f"Implement {issue_identifier}: {issue_title}"
+    issue_line = f"Issue: [{issue_identifier}: {issue_title}]({issue_url})" if issue_url else f"Issue: {issue_identifier}: {issue_title}"
+    body = (
+        "Implements a Linear ticket through Scherzo's `workflow:implementation` dogfood workflow.\n\n"
+        f"{issue_line}\n\n"
+        "Source: Linear ticket title, description, labels, and recent comments. No ExecPlan is required for this workflow.\n\n"
+        "Validation completed before publication:\n\n"
+        "- `direnv exec . gleam format --check src test`\n"
+        "- `direnv exec . gleam test`\n\n"
+        "This PR is ready for human acceptance.\n"
+    )
+    return branch_prefix, description, pr_title, body
+
+
+def publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    source_kind = metadata.get("source_kind")
+    if not source_kind:
+        fail(f"missing source_kind in {METADATA_PATH}; run prepare first")
+    if source_kind == "ticket":
+        branch_prefix, description, pr_title, body = ticket_publish_values(metadata)
+        slug = ticket_slug(metadata)
+    elif source_kind == "execplan":
+        branch_prefix, description, pr_title, body = execplan_publish_values(metadata)
+        slug = sanitize_ref_part(Path(metadata["plan_path"]).stem)[:60] or "plan"
+    else:
+        fail(f"unknown source_kind in {METADATA_PATH}: {source_kind}")
+    return source_kind, branch_prefix, slug, description, pr_title, body
+
+
+def publish_command() -> None:
+    require_command("jj")
+    ensure_validation_passed()
+    require_command("gh")
+    metadata = load_json(METADATA_PATH)
+    files = changed_files_since(metadata["base_change_id"])
+    if not files:
+        fail("refusing to publish because no changed files were found")
+
+    source_kind, branch_prefix, slug, description, pr_title, body = publish_values(metadata)
+
+    base = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
+    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    repo = default_repo(remote)
+
+    change_id = current_change_id_short()
+    if not change_id:
+        fail("could not determine current jj change id")
+    branch = f"{branch_prefix}/{slug}-{change_id}"
+
+    run(["jj", "describe", "-m", description])
+    run(["jj", "bookmark", "set", branch, "--revision", "@"])
+    run(["jj", "git", "push", "--remote", remote, "--bookmark", branch])
+
+    PR_BODY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PR_BODY_PATH.write_text(body)
 
     pr_url = run(
         ["gh", "pr", "view", branch, "--repo", repo, "--json", "url", "--jq", ".url"],
@@ -498,10 +701,20 @@ def publish_command() -> None:
         fail(f"failed to create or locate PR for branch {branch}")
 
     clear_retention_marker()
-    publish = {"plan_path": plan_path, "branch": branch, "pr_url": pr_url, "changed_files": files}
+    publish = {"source_kind": source_kind, "branch": branch, "pr_url": pr_url, "changed_files": files}
+    if source_kind == "execplan":
+        publish["plan_path"] = metadata["plan_path"]
+    else:
+        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
     write_json(PUBLISH_PATH, publish)
+
     print("## Summary")
-    print(f"Implemented `{plan_path}` and published the result for human acceptance.")
+    if source_kind == "execplan":
+        print(f"Implemented `{metadata['plan_path']}` and published the result for human acceptance.")
+    else:
+        issue_identifier = metadata.get("issue_identifier") or "Linear issue"
+        issue_title = metadata.get("issue_title") or "Untitled"
+        print(f"Implemented Linear issue `{issue_identifier}: {issue_title}` and published the result for human acceptance.")
     print("")
     print("## Pull request")
     print(f"PR_URL={pr_url}")
@@ -540,11 +753,19 @@ def languages_command(args: list[str]) -> None:
     print_list("REVIEW_COMMANDS", review_commands(languages))
 
 
+def ticket_brief_command(args: list[str]) -> None:
+    if len(args) != 1:
+        usage()
+        sys.exit(2)
+    issue = json.loads(Path(args[0]).read_text())
+    print(render_ticket_brief(issue), end="")
+
+
 def main(argv: list[str]) -> None:
     command = argv[1] if len(argv) > 1 else ""
     args = argv[2:]
-    if command == "prepare" and not args:
-        prepare_command()
+    if command == "prepare":
+        prepare_command(args)
     elif command == "analyze" and not args:
         analyze_command()
     elif command == "validate" and not args:
@@ -555,6 +776,8 @@ def main(argv: list[str]) -> None:
         extract_plan_command(args)
     elif command == "languages":
         languages_command(args)
+    elif command == "ticket-brief":
+        ticket_brief_command(args)
     elif command in {"-h", "--help", "help"}:
         usage()
     else:
