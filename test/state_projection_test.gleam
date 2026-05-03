@@ -1,5 +1,5 @@
 import gleam/dict
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import scherzo/state/projection
 import scherzo/state/record
 
@@ -409,6 +409,194 @@ pub fn linear_command_status_transitions_replace_previous_status_test() {
     issue_id: "issue-command",
     acked_at_ms: 400,
   )) = dict.get(after_acked.commands, "comment-replace")
+}
+
+pub fn linear_command_receipt_projection_tracks_lifecycle_test() {
+  let records = [
+    record.with_id(
+      "receipt-1",
+      100,
+      record.LinearCommandSeen(
+        comment_id: "comment-receipt",
+        issue_id: "issue-command",
+        author_id: "user-1",
+        command_name: "park",
+        excerpt: "hold",
+      ),
+    ),
+    record.with_id(
+      "receipt-2",
+      200,
+      record.LinearCommandStarted(
+        comment_id: "comment-receipt",
+        issue_id: "issue-command",
+        command_name: "park",
+      ),
+    ),
+    record.with_id(
+      "receipt-3",
+      300,
+      record.LinearCommandCompleted(
+        comment_id: "comment-receipt",
+        issue_id: "issue-command",
+        status: "applied",
+        message_excerpt: "issue parked",
+      ),
+    ),
+  ]
+  let folded = projection.fold(records)
+
+  let assert projection.CommandReceiptCompleted(
+    issue_id: "issue-command",
+    author_id: "user-1",
+    command_name: "park",
+    excerpt: "hold",
+    result_status: "applied",
+    message_excerpt: "issue parked",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+    completed_at_ms: 300,
+    acked_at_ms: None,
+  ) = projection.command_receipt(folded, "comment-receipt")
+
+  let acked =
+    projection.apply(
+      folded,
+      record.with_id(
+        "receipt-4",
+        400,
+        record.LinearCommandAcked(
+          comment_id: "comment-receipt",
+          issue_id: "issue-command",
+        ),
+      ),
+    )
+  let assert projection.CommandReceiptCompleted(
+    issue_id: "issue-command",
+    author_id: "user-1",
+    command_name: "park",
+    excerpt: "hold",
+    result_status: "applied",
+    message_excerpt: "issue parked",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+    completed_at_ms: 300,
+    acked_at_ms: Some(400),
+  ) = projection.command_receipt(acked, "comment-receipt")
+}
+
+pub fn command_receipt_projection_does_not_reopen_completed_or_acked_receipts_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "receipt-monotonic-1",
+        100,
+        record.LinearCommandSeen(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          author_id: "user-1",
+          command_name: "park",
+          excerpt: "hold",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-2",
+        200,
+        record.LinearCommandStarted(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          command_name: "park",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-3",
+        300,
+        record.LinearCommandCompleted(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          status: "applied",
+          message_excerpt: "issue parked",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-4",
+        400,
+        record.LinearCommandAcked(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-5",
+        500,
+        record.LinearCommandSeen(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          author_id: "user-1",
+          command_name: "park",
+          excerpt: "duplicate",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-6",
+        600,
+        record.LinearCommandStarted(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          command_name: "park",
+        ),
+      ),
+    ])
+
+  let assert projection.CommandReceiptCompleted(
+    issue_id: "issue-command",
+    author_id: "user-1",
+    command_name: "park",
+    excerpt: "hold",
+    result_status: "applied",
+    message_excerpt: "issue parked",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+    completed_at_ms: 300,
+    acked_at_ms: Some(400),
+  ) = projection.command_receipt(folded, "comment-monotonic")
+}
+
+pub fn started_without_completed_receipt_survives_projection_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "receipt-started-1",
+        100,
+        record.LinearCommandSeen(
+          comment_id: "comment-started",
+          issue_id: "issue-command",
+          author_id: "user-1",
+          command_name: "retry",
+          excerpt: "",
+        ),
+      ),
+      record.with_id(
+        "receipt-started-2",
+        200,
+        record.LinearCommandStarted(
+          comment_id: "comment-started",
+          issue_id: "issue-command",
+          command_name: "retry",
+        ),
+      ),
+    ])
+
+  let assert projection.CommandReceiptStarted(
+    issue_id: "issue-command",
+    author_id: "user-1",
+    command_name: "retry",
+    excerpt: "",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+  ) = projection.command_receipt(folded, "comment-started")
+  let assert projection.CommandReceiptUnseen =
+    projection.command_receipt(folded, "missing-comment")
 }
 
 pub fn outbox_status_transitions_replace_previous_status_test() {

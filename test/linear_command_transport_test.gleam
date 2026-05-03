@@ -5,6 +5,7 @@ import scherzo/control/command
 import scherzo/control/linear_transport
 import scherzo/domain
 import scherzo/linear
+import scherzo/state/projection
 
 fn config() -> domain.LinearCommandConfig {
   domain.LinearCommandConfig(
@@ -130,13 +131,105 @@ pub fn edited_processed_comment_is_ignored_test() {
   assert edited_actions == []
 }
 
-pub fn old_comment_before_daemon_start_is_ignored_test() {
+pub fn unseen_old_comment_can_submit_test() {
   let state = linear_transport.new_state(1000)
   let c1 = comment("c1", "/scherzo retry", "user-1", None, 900)
   let #(next, actions) =
     linear_transport.process_comments(state, config(), [c1], sessions())
+  assert linear_transport.has_processed(next, "c1")
+  assert submit_count(actions) == 1
+}
+
+pub fn acked_receipt_skips_comment_test() {
+  let state =
+    linear_transport.new_state_with_receipts(
+      1000,
+      dict.from_list([
+        #(
+          "c1",
+          projection.CommandReceiptCompleted(
+            issue_id: "issue-1",
+            author_id: "user-1",
+            command_name: "park",
+            excerpt: "hold",
+            result_status: "applied",
+            message_excerpt: "issue parked",
+            seen_at_ms: 100,
+            started_at_ms: 110,
+            completed_at_ms: 120,
+            acked_at_ms: Some(130),
+          ),
+        ),
+      ]),
+    )
+  let c1 = comment("c1", "/scherzo park --reason hold", "user-1", None, 900)
+  let #(next, actions) =
+    linear_transport.process_comments(state, config(), [c1], sessions())
   assert !linear_transport.has_processed(next, "c1")
   assert actions == []
+}
+
+pub fn completed_unacked_receipt_posts_ack_without_submit_test() {
+  let state =
+    linear_transport.new_state_with_receipts(
+      1000,
+      dict.from_list([
+        #(
+          "c1",
+          projection.CommandReceiptCompleted(
+            issue_id: "issue-1",
+            author_id: "user-1",
+            command_name: "park",
+            excerpt: "hold",
+            result_status: "applied",
+            message_excerpt: "issue parked",
+            seen_at_ms: 100,
+            started_at_ms: 110,
+            completed_at_ms: 120,
+            acked_at_ms: None,
+          ),
+        ),
+      ]),
+    )
+  let c1 = comment("c1", "/scherzo park --reason hold", "user-1", None, 900)
+  let #(next, actions) =
+    linear_transport.process_comments(state, config(), [c1], sessions())
+  assert linear_transport.has_processed(next, "c1")
+  assert submit_count(actions) == 0
+  assert ack_count(actions) == 1
+  let assert Some(body) = first_ack(actions)
+  assert string.contains(body, "Command: park")
+  assert string.contains(body, "Status: applied")
+  assert string.contains(body, "Message: issue parked")
+}
+
+pub fn started_uncompleted_receipt_posts_unknown_ack_test() {
+  let state =
+    linear_transport.new_state_with_receipts(
+      1000,
+      dict.from_list([
+        #(
+          "c1",
+          projection.CommandReceiptStarted(
+            issue_id: "issue-1",
+            author_id: "user-1",
+            command_name: "park",
+            excerpt: "hold",
+            seen_at_ms: 100,
+            started_at_ms: 110,
+          ),
+        ),
+      ]),
+    )
+  let c1 = comment("c1", "/scherzo park --reason hold", "user-1", None, 900)
+  let #(next, actions) =
+    linear_transport.process_comments(state, config(), [c1], sessions())
+  assert linear_transport.has_processed(next, "c1")
+  assert submit_count(actions) == 0
+  assert ack_count(actions) == 1
+  let assert Some(body) = first_ack(actions)
+  assert string.contains(body, "Status: unknown_after_restart")
+  assert string.contains(body, "Command: park")
 }
 
 pub fn malformed_command_is_acknowledged_once_test() {
@@ -218,7 +311,7 @@ fn submit_count(actions: List(linear_transport.TransportAction)) -> Int {
 fn ack_count(actions: List(linear_transport.TransportAction)) -> Int {
   case actions {
     [] -> 0
-    [linear_transport.PostAck(_, _), ..rest] -> 1 + ack_count(rest)
+    [linear_transport.PostAck(_, _, _), ..rest] -> 1 + ack_count(rest)
     [_, ..rest] -> ack_count(rest)
   }
 }
@@ -228,7 +321,7 @@ fn first_ack(
 ) -> Option(String) {
   case actions {
     [] -> None
-    [linear_transport.PostAck(_, body), ..] -> Some(body)
+    [linear_transport.PostAck(_, _, body), ..] -> Some(body)
     [_, ..rest] -> first_ack(rest)
   }
 }

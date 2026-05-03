@@ -7,11 +7,13 @@ import scherzo/control/linear_parser
 import scherzo/domain
 import scherzo/linear
 import scherzo/log
+import scherzo/state/projection
 
 pub type TransportState {
   TransportState(
     daemon_started_at_ms: Int,
     processed_comment_ids: Dict(String, Bool),
+    command_receipts: Dict(String, projection.CommandReceiptState),
   )
 }
 
@@ -20,14 +22,32 @@ pub type TransportAction {
     comment: linear.LinearComment,
     parsed: linear_parser.ParsedLinearCommand,
   )
-  PostAck(issue_id: String, body: String)
+  PostAck(issue_id: String, source_comment_id: String, body: String)
   LogIgnored(reason: String, comment_id: String)
+}
+
+type ReceiptHandling {
+  ReceiptSkip
+  ReceiptAck(TransportState, TransportAction)
+  ReceiptProcessNormally
 }
 
 pub fn new_state(daemon_started_at_ms: Int) -> TransportState {
   TransportState(
     daemon_started_at_ms: daemon_started_at_ms,
     processed_comment_ids: dict.new(),
+    command_receipts: dict.new(),
+  )
+}
+
+pub fn new_state_with_receipts(
+  daemon_started_at_ms: Int,
+  command_receipts: Dict(String, projection.CommandReceiptState),
+) -> TransportState {
+  TransportState(
+    daemon_started_at_ms: daemon_started_at_ms,
+    processed_comment_ids: dict.new(),
+    command_receipts: command_receipts,
   )
 }
 
@@ -70,7 +90,7 @@ fn process_loop(
   case comments {
     [] -> #(state, list.reverse(actions))
     [comment, ..rest] ->
-      case should_skip_without_processing(state, config, comment) {
+      case has_processed(state, comment.id) {
         True ->
           process_loop(
             state,
@@ -81,40 +101,158 @@ fn process_loop(
             actions,
           )
         False ->
-          case processed_this_tick >= config.max_comments_per_tick {
-            True ->
+          case durable_receipt_handling(state, config, comment) {
+            ReceiptSkip ->
               process_loop(
                 state,
                 config,
                 rest,
                 issue_sessions,
                 processed_this_tick,
-                [LogIgnored("deferred_over_limit", comment.id), ..actions],
-              )
-            False ->
-              process_command_like_comment(
-                state,
-                config,
-                comment,
-                issue_sessions,
-                rest,
-                processed_this_tick,
                 actions,
               )
+            ReceiptAck(next_state, action) ->
+              case processed_this_tick >= config.max_comments_per_tick {
+                True ->
+                  process_loop(
+                    state,
+                    config,
+                    rest,
+                    issue_sessions,
+                    processed_this_tick,
+                    [LogIgnored("deferred_over_limit", comment.id), ..actions],
+                  )
+                False ->
+                  process_loop(
+                    next_state,
+                    config,
+                    rest,
+                    issue_sessions,
+                    processed_this_tick + 1,
+                    [action, ..actions],
+                  )
+              }
+            ReceiptProcessNormally ->
+              case
+                !linear_parser.contains_command_line(
+                  config.prefix,
+                  comment.body,
+                )
+              {
+                True ->
+                  process_loop(
+                    state,
+                    config,
+                    rest,
+                    issue_sessions,
+                    processed_this_tick,
+                    actions,
+                  )
+                False ->
+                  case processed_this_tick >= config.max_comments_per_tick {
+                    True ->
+                      process_loop(
+                        state,
+                        config,
+                        rest,
+                        issue_sessions,
+                        processed_this_tick,
+                        [
+                          LogIgnored("deferred_over_limit", comment.id),
+                          ..actions
+                        ],
+                      )
+                    False ->
+                      process_command_like_comment(
+                        state,
+                        config,
+                        comment,
+                        issue_sessions,
+                        rest,
+                        processed_this_tick,
+                        actions,
+                      )
+                  }
+              }
           }
       }
   }
 }
 
-fn should_skip_without_processing(
+fn durable_receipt_handling(
   state: TransportState,
   config: domain.LinearCommandConfig,
   comment: linear.LinearComment,
+) -> ReceiptHandling {
+  let TransportState(command_receipts: receipts, ..) = state
+  case dict.get(receipts, comment.id) {
+    Ok(projection.CommandReceiptAcked(_, _)) -> ReceiptSkip
+    Ok(projection.CommandReceiptCompleted(_, _, _, _, _, _, _, _, _, Some(_))) ->
+      ReceiptSkip
+    Ok(projection.CommandReceiptCompleted(
+      issue_id,
+      _,
+      command_name,
+      _,
+      result_status,
+      message_excerpt,
+      _,
+      _,
+      _,
+      None,
+    )) ->
+      case should_ack_receipt_status(config, result_status) {
+        True ->
+          ReceiptAck(
+            mark_processed(state, comment.id),
+            PostAck(
+              issue_id,
+              comment.id,
+              completed_receipt_ack_body(
+                comment.id,
+                command_name,
+                result_status,
+                message_excerpt,
+              ),
+            ),
+          )
+        False ->
+          ReceiptAck(
+            mark_processed(state, comment.id),
+            LogIgnored("ack_disabled", comment.id),
+          )
+      }
+    Ok(projection.CommandReceiptStarted(issue_id, _, command_name, _, _, _)) ->
+      case config.acknowledge_rejection {
+        True ->
+          ReceiptAck(
+            mark_processed(state, comment.id),
+            PostAck(
+              issue_id,
+              comment.id,
+              unknown_after_restart_ack_body(comment.id, command_name),
+            ),
+          )
+        False ->
+          ReceiptAck(
+            mark_processed(state, comment.id),
+            LogIgnored("ack_disabled", comment.id),
+          )
+      }
+    Ok(projection.CommandReceiptSeen(_, _, _, _, _))
+    | Ok(projection.CommandReceiptUnseen)
+    | Error(_) -> ReceiptProcessNormally
+  }
+}
+
+fn should_ack_receipt_status(
+  config: domain.LinearCommandConfig,
+  status: String,
 ) -> Bool {
-  let TransportState(daemon_started_at_ms: daemon_started_at_ms, ..) = state
-  comment.created_at_ms < daemon_started_at_ms
-  || has_processed(state, comment.id)
-  || !linear_parser.contains_command_line(config.prefix, comment.body)
+  case status {
+    "applied" | "queued" -> config.acknowledge_success
+    _ -> config.acknowledge_rejection
+  }
 }
 
 fn process_command_like_comment(
@@ -134,6 +272,7 @@ fn process_command_like_comment(
         maybe_rejection_ack(
           config,
           comment.issue_id,
+          comment.id,
           unauthorized_ack_body(comment.id, comment.author.id),
           actions,
         )
@@ -189,6 +328,7 @@ fn process_command_like_comment(
             maybe_rejection_ack(
               config,
               comment.issue_id,
+              comment.id,
               parse_error_ack_body(comment.id, err),
               actions,
             )
@@ -209,11 +349,12 @@ fn process_command_like_comment(
 fn maybe_rejection_ack(
   config: domain.LinearCommandConfig,
   issue_id: String,
+  source_comment_id: String,
   body: String,
   actions: List(TransportAction),
 ) -> List(TransportAction) {
   case config.acknowledge_rejection {
-    True -> [PostAck(issue_id, body), ..actions]
+    True -> [PostAck(issue_id, source_comment_id, body), ..actions]
     False -> actions
   }
 }
@@ -253,6 +394,38 @@ fn parse_error_ack_body(
         None,
       )
   }
+}
+
+pub fn completed_receipt_ack_body(
+  comment_id: String,
+  command_name: String,
+  status: String,
+  message_excerpt: String,
+) -> String {
+  common_ack_body(
+    comment_id,
+    command_name,
+    status,
+    None,
+    optional_non_empty(message_excerpt),
+    None,
+  )
+}
+
+pub fn unknown_after_restart_ack_body(
+  comment_id: String,
+  command_name: String,
+) -> String {
+  common_ack_body(
+    comment_id,
+    command_name,
+    "unknown_after_restart",
+    None,
+    Some(
+      "Scherzo restarted while this command was in progress. Inspect current issue/session state and post a new command if needed.",
+    ),
+    None,
+  )
 }
 
 pub fn result_ack_body(
@@ -356,6 +529,13 @@ fn redacted_truncated(
   max: Int,
 ) -> String {
   log.redact("linear_command", value, secrets) |> log.truncate(max)
+}
+
+fn optional_non_empty(value: String) -> Option(String) {
+  case string.trim(value) == "" {
+    True -> None
+    False -> Some(value)
+  }
 }
 
 fn result_to_option(result: Result(a, b)) -> Option(a) {
