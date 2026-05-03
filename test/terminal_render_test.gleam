@@ -9,6 +9,7 @@ import scherzo/terminal/style
 fn summary() -> event.SessionSummary {
   event.SessionSummary(
     session_id: "session-1",
+    display_name: "session-1",
     issue_id: "issue-1",
     issue_identifier: "ABC-1",
     issue_title: "Render attach",
