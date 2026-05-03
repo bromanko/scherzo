@@ -97,13 +97,14 @@ linear_contract:
     todo: Todo
     in_progress: In Progress
     done: Done
-    needs_workflow: Needs Workflow
+    triage: Triage
   handoff_state_bindings:
     claim: in_progress
     success: done
-    failure: needs_workflow
+    failure: triage
   enforce_issue_workflow_labels: true
-  comment_on_invalid_workflow: false
+  invalid_workflow_state_id: 83eb55af-4c17-443f-9501-8a581be7de20
+  comment_on_invalid_workflow: true
 linear_commands:
   # Keep Linear comment commands off for the first dogfood loop. Use the local
   # control API (`scripts/scherzoctl`) for supervision and follow-up prompts.
