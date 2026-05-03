@@ -9,6 +9,7 @@ import scherzo/control/command as control_command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/session/event
+import scherzo/session/reason as session_reason
 import scherzo/terminal/render
 import scherzo/terminal/style
 
@@ -779,7 +780,7 @@ const ps_session_width = 34
 
 const ps_issue_width = 10
 
-const ps_status_width = 10
+const ps_status_width = 14
 
 const ps_turn_width = 4
 
@@ -793,11 +794,29 @@ fn print_sessions_table(
     output.line(ps_table_row(
       ellipsize_middle(summary.session_id, ps_session_width),
       ellipsize_middle(summary.issue_identifier, ps_issue_width),
-      event.status_to_string(summary.status),
+      ps_status_to_string(summary.status),
       int.to_string(summary.current_turn),
       format_last_event_age(now_ms, summary.last_event_at_ms),
     ))
   })
+}
+
+fn ps_status_to_string(status: event.SessionStatus) -> String {
+  case status {
+    event.Exited(reason) -> ps_exit_reason_to_string(reason)
+    _ -> event.status_to_string(status)
+  }
+}
+
+fn ps_exit_reason_to_string(reason: session_reason.WorkerExitReason) -> String {
+  case reason {
+    session_reason.Normal -> "success"
+    session_reason.Failed -> "failed"
+    session_reason.WorkerDown -> "worker_down"
+    session_reason.OperatorAbort -> "operator_abort"
+    session_reason.OperatorStopAfterCurrentTurn -> "op_stop_after"
+    session_reason.Stopped -> "stopped"
+  }
 }
 
 fn ps_table_row(
