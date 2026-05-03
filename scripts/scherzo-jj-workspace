@@ -16,6 +16,8 @@ Usage: scherzo-jj-workspace <after-create|before-run|before-remove> <workflow-na
 
 Run from a Scherzo hook cwd. SCHERZO_REPO_ROOT may point at the coordinating
 jj repository; otherwise the script infers it from .scherzo/workspaces layout.
+Set SCHERZO_JJ_WORKSPACE_BASE to override the initial base revision; otherwise
+new root workspaces prefer main@origin, then main, then @.
 EOF
 }
 
@@ -69,6 +71,25 @@ require_jj_repo_root() {
 
 current_change_id() {
   jj log -r @ --no-graph -T 'change_id'
+}
+
+revision_exists() {
+  revision=$1
+  jj --repository "$repo_root" log -r "$revision" --no-graph -T 'commit_id' --color=never >/dev/null 2>&1
+}
+
+workspace_base_revision() {
+  if [ -n "${SCHERZO_JJ_WORKSPACE_BASE:-}" ]; then
+    revision_exists "$SCHERZO_JJ_WORKSPACE_BASE" || \
+      fail "SCHERZO_JJ_WORKSPACE_BASE does not resolve in repo: $SCHERZO_JJ_WORKSPACE_BASE"
+    printf '%s\n' "$SCHERZO_JJ_WORKSPACE_BASE"
+  elif revision_exists main@origin; then
+    printf '%s\n' main@origin
+  elif revision_exists main; then
+    printf '%s\n' main
+  else
+    printf '%s\n' @
+  fi
 }
 
 workspace_row_for_change() {
@@ -130,9 +151,10 @@ case "$command" in
         --sparse-patterns full \
         "$workspace_path"
     else
+      base_revision=$(workspace_base_revision)
       jj --repository "$repo_root" workspace add \
         --name "$workspace_name" \
-        --revision @ \
+        --revision "$base_revision" \
         --sparse-patterns full \
         "$workspace_path"
     fi
