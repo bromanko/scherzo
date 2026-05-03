@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/ctl
@@ -133,6 +134,9 @@ fn deps(
         Nil
       })
       Ok(Nil)
+    },
+    apply_command: fn(_, operator_command) {
+      Ok(command.applied(operator_command, None))
     },
     raw_request: fn(_, request) { Ok(protocol.request_to_string(request)) },
   )
@@ -311,6 +315,9 @@ pub fn events_pretty_uses_paginated_replay_helper_test() {
         }
       },
       stream_events: fn(_, _, _, _) { Ok(Nil) },
+      apply_command: fn(_, operator_command) {
+        Ok(command.applied(operator_command, None))
+      },
       raw_request: fn(_, request) { Ok(protocol.request_to_string(request)) },
     )
 

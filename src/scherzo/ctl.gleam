@@ -72,6 +72,8 @@ pub type ControlClient {
       Int,
       fn(event.SessionEvent) -> client.StreamAction,
     ) -> Result(Nil, client.ControlError),
+    apply_command: fn(file.ControlFile, control_command.OperatorCommand) ->
+      Result(control_command.CommandResult, client.ControlError),
     raw_request: fn(file.ControlFile, protocol.Request) ->
       Result(String, client.ControlError),
   )
@@ -144,7 +146,7 @@ fn default_flags() -> Flags {
 }
 
 pub fn usage() -> String {
-  "Usage: gleam run -- ctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-id>         Show one session summary.\n  events <session-id>          Replay recent compact event lines.\n  events --pretty <session-id> Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-id>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-id>          Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-id>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-id>    Replay and follow compact event lines.\n  attach --json <session-id>   Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-id>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-id> --yes     Abort a running session.\n  stop-after-turn <session-id> --yes\n                               Stop after the current turn.\n  prompt <session-id> <text>   Queue an operator prompt for a session.\n  ui respond <session-id> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --yes                        Confirm destructive commands.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: gleam run -- ctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --yes                        Confirm destructive commands.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -253,7 +255,7 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
     }
     "attach", _ ->
       Error(UsageError(
-        "attach usage: attach [--raw|--json|--pretty] <session-id>",
+        "attach usage: attach [--raw|--json|--pretty] <session-ref>",
       ))
     "pause", [] -> Ok(operator(flags, control_command.PauseDispatch))
     "resume", [] -> Ok(operator(flags, control_command.ResumeDispatch))
@@ -422,8 +424,13 @@ pub fn run_with_deps(
           }
       }
     }
-    Session(control_path, json, session_id) -> {
+    Session(control_path, json, session_ref) -> {
       use control_file <- try_ctl(load_control_file(control_path))
+      use session_id <- try_ctl(resolve_session_ref(
+        control_file,
+        deps,
+        session_ref,
+      ))
       case json {
         True ->
           print_raw_request(
@@ -472,16 +479,21 @@ pub fn run_with_deps(
     }
     Operator(control_path, json, operator_command) -> {
       use control_file <- try_ctl(load_control_file(control_path))
+      use resolved_command <- try_ctl(resolve_operator_command(
+        control_file,
+        deps,
+        operator_command,
+      ))
       case json {
         True ->
           print_raw_request(
             control_file,
-            protocol.command_request("1", "", operator_command),
+            protocol.command_request("1", "", resolved_command),
             deps,
             output,
           )
         False ->
-          case client.apply_command(control_file, operator_command) {
+          case deps.apply_command(control_file, resolved_command) {
             Ok(result) -> {
               print_command_result(result, output)
               Ok(Nil)
@@ -501,8 +513,9 @@ fn run_events(
   color: style.ColorMode,
   since_cursor: Int,
   verbose: Bool,
-  session_id: String,
+  session_ref: String,
 ) -> Result(Nil, Error) {
+  use session_id <- try_ctl(resolve_session_ref(control_file, deps, session_ref))
   case mode {
     Json ->
       print_raw_request(
@@ -554,8 +567,9 @@ fn run_attach(
   follow: FollowMode,
   since_cursor: Int,
   verbose: Bool,
-  session_id: String,
+  session_ref: String,
 ) -> Result(Nil, Error) {
+  use session_id <- try_ctl(resolve_session_ref(control_file, deps, session_ref))
   use summary <- try_ctl(require_session(control_file, deps, session_id))
   use replay <- try_ctl(
     fetch_replay_pages(deps, control_file, session_id, since_cursor, 200)
@@ -681,6 +695,97 @@ fn print_raw_or_json_event(
   case mode {
     Json -> output.line(protocol.stream_event_to_string("1", stored_event))
     Raw | Pretty -> output.line(client.compact_event_line(stored_event))
+  }
+}
+
+fn resolve_session_ref(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  session_ref: String,
+) -> Result(String, Error) {
+  case deps.list_sessions(control_file) {
+    Error(err) -> Error(client_error(err))
+    Ok(snapshot) ->
+      case exact_session_match(snapshot.sessions, session_ref) {
+        Some(session_id) -> Ok(session_id)
+        None -> resolve_display_name_match(snapshot.sessions, session_ref)
+      }
+  }
+}
+
+fn exact_session_match(
+  sessions: List(event.SessionSummary),
+  session_ref: String,
+) -> Option(String) {
+  case
+    list.filter(sessions, fn(summary) { summary.session_id == session_ref })
+  {
+    [summary, ..] -> Some(summary.session_id)
+    [] -> None
+  }
+}
+
+fn resolve_display_name_match(
+  sessions: List(event.SessionSummary),
+  session_ref: String,
+) -> Result(String, Error) {
+  case
+    list.filter(sessions, fn(summary) { summary.display_name == session_ref })
+  {
+    [] -> Ok(session_ref)
+    [summary] -> Ok(summary.session_id)
+    [_, ..] -> Error(ambiguous_session_ref(session_ref))
+  }
+}
+
+fn ambiguous_session_ref(session_ref: String) -> Error {
+  Failed(
+    "ambiguous_session_ref",
+    "session display name \""
+      <> session_ref
+      <> "\" is ambiguous; use the canonical session_id from scherzoctl ps --json or scherzoctl session <session-id>",
+  )
+}
+
+fn resolve_operator_command(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  operator_command: control_command.OperatorCommand,
+) -> Result(control_command.OperatorCommand, Error) {
+  case operator_command {
+    control_command.AbortSession(session_ref) -> {
+      use session_id <- try_ctl(resolve_session_ref(
+        control_file,
+        deps,
+        session_ref,
+      ))
+      Ok(control_command.AbortSession(session_id))
+    }
+    control_command.StopAfterCurrentTurn(session_ref) -> {
+      use session_id <- try_ctl(resolve_session_ref(
+        control_file,
+        deps,
+        session_ref,
+      ))
+      Ok(control_command.StopAfterCurrentTurn(session_id))
+    }
+    control_command.PromptSession(session_ref, message) -> {
+      use session_id <- try_ctl(resolve_session_ref(
+        control_file,
+        deps,
+        session_ref,
+      ))
+      Ok(control_command.PromptSession(session_id, message))
+    }
+    control_command.RespondUi(session_ref, request_id, response) -> {
+      use session_id <- try_ctl(resolve_session_ref(
+        control_file,
+        deps,
+        session_ref,
+      ))
+      Ok(control_command.RespondUi(session_id, request_id, response))
+    }
+    _ -> Ok(operator_command)
   }
 }
 
@@ -904,6 +1009,7 @@ fn pad_left(value: String, width: Int) -> String {
 }
 
 fn print_session(summary: event.SessionSummary, output: Output) -> Nil {
+  output.line("display_name: " <> summary.display_name)
   output.line("session_id: " <> summary.session_id)
   output.line(
     "issue: " <> summary.issue_identifier <> " " <> summary.issue_title,
@@ -974,6 +1080,7 @@ fn real_control_client() -> ControlClient {
     get_session: client.get_session,
     get_events: client.get_events,
     stream_events: client.stream_events,
+    apply_command: client.apply_command,
     raw_request: client.raw_request,
   )
 }

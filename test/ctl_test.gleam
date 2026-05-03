@@ -1,6 +1,6 @@
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/control/command
 import scherzo/control/file
@@ -75,6 +75,9 @@ fn ps_deps(
       Ok(event.EventPage(events: [], next_cursor: 0, truncated: False))
     },
     stream_events: fn(_, _, _, _) { Ok(Nil) },
+    apply_command: fn(_, operator_command) {
+      Ok(command.applied(operator_command, None))
+    },
     raw_request: fn(_, request) {
       case raw_response == "" {
         True -> Ok(protocol.request_to_string(request))
@@ -284,16 +287,16 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "ping")
   assert string.contains(usage, "ps")
   assert string.contains(usage, "LAST EVENT is daemon-relative age")
-  assert string.contains(usage, "session <session-id>")
-  assert string.contains(usage, "events <session-id>")
-  assert string.contains(usage, "events --pretty <session-id>")
-  assert string.contains(usage, "events --pretty --verbose <session-id>")
-  assert string.contains(usage, "attach <session-id>")
-  assert string.contains(usage, "attach --verbose <session-id>")
-  assert string.contains(usage, "attach --raw <session-id>")
-  assert string.contains(usage, "attach --raw --json <session-id>")
+  assert string.contains(usage, "session <session-ref>")
+  assert string.contains(usage, "events <session-ref>")
+  assert string.contains(usage, "events --pretty <session-ref>")
+  assert string.contains(usage, "events --pretty --verbose <session-ref>")
+  assert string.contains(usage, "attach <session-ref>")
+  assert string.contains(usage, "attach --verbose <session-ref>")
+  assert string.contains(usage, "attach --raw <session-ref>")
+  assert string.contains(usage, "attach --raw --json <session-ref>")
   assert string.contains(usage, "pause")
-  assert string.contains(usage, "abort <session-id> --yes")
+  assert string.contains(usage, "abort <session-ref> --yes")
   assert string.contains(usage, "ui respond")
   assert string.contains(usage, "--control-file <path>")
   assert string.contains(usage, "--json")
@@ -507,4 +510,209 @@ pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
   assert string.contains(transcript, "\"exit_reason\":\"failed\"")
   assert string.contains(transcript, "-576460690330")
   assert !string.contains(transcript, "…")
+}
+
+pub fn session_display_ref_resolves_to_canonical_and_prints_both_names_test() {
+  let path = "test/tmp/ctl-ps/session-ref-control.json"
+  write_control_file(path)
+  let canonical_session_id = "LIV-43--576460751551-1"
+  let display_name = "liv-43-fancy-narwhal-finger"
+  let summary =
+    event.SessionSummary(
+      ..session_summary(canonical_session_id, ps_now_ms - 1000),
+      display_name: display_name,
+      issue_identifier: "LIV-43",
+    )
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Session(Some(path), False, display_name),
+      session_ref_deps([summary]),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "display_name: " <> display_name)
+  assert string.contains(transcript, "session_id: " <> canonical_session_id)
+}
+
+pub fn events_json_ref_prefers_exact_session_id_over_display_name_test() {
+  let path = "test/tmp/ctl-ps/exact-ref-control.json"
+  write_control_file(path)
+  let canonical_session_id = "canonical-session-id"
+  let sessions = [
+    event.SessionSummary(
+      ..session_summary(canonical_session_id, ps_now_ms - 1000),
+      display_name: "readable-name",
+    ),
+    event.SessionSummary(
+      ..session_summary("other-session-id", ps_now_ms - 1000),
+      display_name: canonical_session_id,
+    ),
+  ]
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Events(
+        Some(path),
+        ctl.Json,
+        style.ColorNever,
+        0,
+        False,
+        canonical_session_id,
+      ),
+      session_ref_deps(sessions),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(
+    transcript,
+    "\"session_id\":\"" <> canonical_session_id <> "\"",
+  )
+  assert !string.contains(transcript, "other-session-id")
+}
+
+pub fn attach_display_ref_replays_canonical_session_events_test() {
+  let path = "test/tmp/ctl-ps/attach-ref-control.json"
+  write_control_file(path)
+  let canonical_session_id = "LIV-43--576460751551-1"
+  let display_name = "liv-43-fancy-narwhal-finger"
+  let summary =
+    event.SessionSummary(
+      ..session_summary(canonical_session_id, ps_now_ms - 1000),
+      display_name: display_name,
+    )
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Attach(
+        Some(path),
+        ctl.Raw,
+        style.ColorNever,
+        ctl.NoFollow,
+        0,
+        False,
+        display_name,
+      ),
+      session_ref_deps([summary]),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "1 10 " <> canonical_session_id)
+}
+
+pub fn operator_command_by_display_ref_routes_to_canonical_session_test() {
+  let path = "test/tmp/ctl-ps/operator-ref-control.json"
+  write_control_file(path)
+  let canonical_session_id = "LIV-43--576460751551-1"
+  let display_name = "liv-43-fancy-narwhal-finger"
+  let summary =
+    event.SessionSummary(
+      ..session_summary(canonical_session_id, ps_now_ms - 1000),
+      display_name: display_name,
+    )
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Operator(Some(path), False, command.AbortSession(display_name)),
+      session_ref_deps([summary]),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(
+    transcript,
+    "abort applied target=" <> canonical_session_id,
+  )
+  assert !string.contains(transcript, "target=" <> display_name)
+}
+
+pub fn ambiguous_display_ref_returns_clear_error_test() {
+  let path = "test/tmp/ctl-ps/ambiguous-ref-control.json"
+  write_control_file(path)
+  let display_name = "liv-43-fancy-narwhal-finger"
+  let sessions = [
+    event.SessionSummary(
+      ..session_summary("session-a", ps_now_ms - 1000),
+      display_name: display_name,
+    ),
+    event.SessionSummary(
+      ..session_summary("session-b", ps_now_ms - 1000),
+      display_name: display_name,
+    ),
+  ]
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Session(Some(path), False, display_name),
+      session_ref_deps(sessions),
+      output(subject),
+    )
+
+  let assert Error(err) = result
+  assert ctl.error_code(err) == "ambiguous_session_ref"
+  assert string.contains(ctl.error_message(err), "ambiguous")
+  assert string.contains(ctl.error_message(err), "canonical session_id")
+}
+
+fn session_ref_deps(sessions: List(event.SessionSummary)) -> ctl.ControlClient {
+  ctl.ControlClient(
+    list_sessions: fn(_) {
+      Ok(event.SessionList(sessions: sessions, now_ms: ps_now_ms))
+    },
+    get_session: fn(_, session_id) {
+      Ok(summary_by_session_id(sessions, session_id))
+    },
+    get_events: fn(_, session_id, cursor, _) {
+      case summary_by_session_id(sessions, session_id), cursor {
+        Some(_), 0 ->
+          Ok(event.EventPage(
+            events: [replay_event(session_id)],
+            next_cursor: 1,
+            truncated: False,
+          ))
+        _, _ ->
+          Ok(event.EventPage(events: [], next_cursor: cursor, truncated: False))
+      }
+    },
+    stream_events: fn(_, _, _, _) { Ok(Nil) },
+    apply_command: fn(_, operator_command) {
+      Ok(command.applied(operator_command, None))
+    },
+    raw_request: fn(_, request) { Ok(protocol.request_to_string(request)) },
+  )
+}
+
+fn summary_by_session_id(
+  sessions: List(event.SessionSummary),
+  session_id: String,
+) -> Option(event.SessionSummary) {
+  case list.filter(sessions, fn(summary) { summary.session_id == session_id }) {
+    [summary, ..] -> Some(summary)
+    [] -> None
+  }
+}
+
+fn replay_event(session_id: String) -> event.SessionEvent {
+  event.SessionEvent(
+    cursor: 1,
+    at_ms: 10,
+    session_id: session_id,
+    issue_id: "issue-1",
+    payload: event.empty_payload(
+      event.Lifecycle,
+      event.LifecycleName(event.WorkerStarted),
+    ),
+  )
 }

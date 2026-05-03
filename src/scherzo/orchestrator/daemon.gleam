@@ -31,6 +31,7 @@ import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/hub
+import scherzo/session/name as session_name
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
 import scherzo/state/outbox
@@ -2039,14 +2040,60 @@ fn apply_linear_transport_actions(
   }
 }
 
+fn command_result_with_display_target(
+  state: State,
+  operator_command: command.OperatorCommand,
+  result: command.CommandResult,
+) -> command.CommandResult {
+  case result.target, operator_command_targets_session(operator_command) {
+    Some(target), True ->
+      case worker_registry.worker_for_session(state.registry, target) {
+        Ok(handle) ->
+          command.CommandResult(
+            ..result,
+            target: Some(session_name.generate(
+              handle.issue.identifier,
+              handle.session_id,
+            )),
+          )
+        Error(_) -> result
+      }
+    _, _ -> result
+  }
+}
+
+fn operator_command_targets_session(
+  operator_command: command.OperatorCommand,
+) -> Bool {
+  case operator_command {
+    command.AbortSession(_)
+    | command.StopAfterCurrentTurn(_)
+    | command.PromptSession(_, _)
+    | command.RespondUi(_, _, _) -> True
+    command.PauseDispatch
+    | command.ResumeDispatch
+    | command.ReloadWorkflow
+    | command.RetryIssue(_)
+    | command.ParkIssue(_, _)
+    | command.UnparkIssue(_) -> False
+  }
+}
+
 fn apply_linear_transport_action(
   state: State,
   action: linear_transport.TransportAction,
 ) -> State {
   case action {
     linear_transport.SubmitCommand(comment, parsed) -> {
+      let state_before_command = state
       let #(state, result) =
         apply_operator_command_to_state(state, parsed.command, 1000)
+      let ack_result =
+        command_result_with_display_target(
+          state_before_command,
+          parsed.command,
+          result,
+        )
       log_state(state, "info", "linear_operator_command", [
         #("comment_id", comment.id),
         #("command", result.command),
@@ -2063,7 +2110,7 @@ fn apply_linear_transport_action(
             linear_transport.result_ack_body(
               comment.id,
               parsed,
-              result,
+              ack_result,
               state.workflow.secrets,
             )
           let _ =
@@ -2672,7 +2719,7 @@ fn spawn_worker(
     state.event_hub,
     session_event.SessionSummary(
       session_id: session_id,
-      display_name: session_id,
+      display_name: session_name.generate(issue.identifier, session_id),
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_title: issue.title,
@@ -2859,7 +2906,7 @@ fn register_yaml_step_session(
     event_hub,
     session_event.SessionSummary(
       session_id: session_id,
-      display_name: session_id,
+      display_name: session_name.generate(issue.identifier, session_id),
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_title: issue.title,
@@ -2955,7 +3002,7 @@ fn run_yaml_agent_step(
     event_hub,
     session_event.SessionSummary(
       session_id: session_id,
-      display_name: session_id,
+      display_name: session_name.generate(issue.identifier, session_id),
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_title: issue.title,
