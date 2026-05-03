@@ -113,7 +113,7 @@ direnv exec . devenv shell -P scherzo-agent scherzo-agent-run
 - `Done`
 - `Canceled`
 - `Duplicate`
-- `Needs Workflow`
+- `Triage`
 
 The project must also make these issue labels assignable:
 
@@ -159,4 +159,4 @@ scripts/scherzoctl attach <session-id>
 scripts/scherzoctl prompt <session-id> "Please produce a Linear-ready result summary."
 ```
 
-For the first run, create or select one Linear issue in an active state with exactly one workflow label such as `workflow:research`, `workflow:implementation`, `workflow:execplan`, `workflow:execplan-revision`, or `workflow:execplan-implementation`. Use `workflow:implementation` for focused tickets whose title, description, labels, and recent comments are enough to implement directly. For revision issues, reference the PR in the title, description, or a comment with text like `Revise PR #51`, `bromanko/scherzo#51`, or a full GitHub PR URL; bare `#51` is intentionally not enough. For ExecPlan implementation issues, reference exactly one checked-in plan path such as `docs/plans/LIV-123-example.md` in the title, description, or a comment. Handoff moves claimed issues to `In Progress`, successful issues to `Done`, and failed issues to `Needs Workflow` using checked Linear state IDs, and success comments include the workflow result inline rather than as a Markdown attachment. Keep `linear_commands.enabled: false`; use `scherzoctl` until the operator loop feels boring.
+For the first run, create or select one Linear issue in an active state with exactly one workflow label such as `workflow:research`, `workflow:implementation`, `workflow:execplan`, `workflow:execplan-revision`, or `workflow:execplan-implementation`. Use `workflow:implementation` for focused tickets whose title, description, labels, and recent comments are enough to implement directly. For revision issues, reference the PR in the title, description, or a comment with text like `Revise PR #51`, `bromanko/scherzo#51`, or a full GitHub PR URL; bare `#51` is intentionally not enough. For ExecPlan implementation issues, reference exactly one checked-in plan path such as `docs/plans/LIV-123-example.md` in the title, description, or a comment. Handoff moves claimed issues to `In Progress`, successful issues to `Done`, and failed issues to `Triage` using checked Linear state IDs, and success comments include the workflow result inline rather than as a Markdown attachment. Invalid workflow-label issues are also commented on and moved to `Triage`; adding exactly one configured `workflow:*` label and moving the issue back to `Todo` makes it eligible for dispatch. Keep `linear_commands.enabled: false`; use `scherzoctl` until the operator loop feels boring.

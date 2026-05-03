@@ -40,11 +40,11 @@ workspace:
       fi
     timeout_ms: 60000
 agent:
-  # First dogfood runs should be supervised and serial. Set to 0 to pause new
+  # Allow up to four dogfood agents to run in parallel. Set to 0 to pause new
   # dispatch while preserving workflow reload and running-worker reconciliation.
-  max_concurrent_agents: 1
-  # One pi turn is a full agent loop with tool calls. Keep dogfood workflow
-  # steps single-turn so active Linear issues do not repeat until max_turns.
+  max_concurrent_agents: 4
+  # One pi turn is a full agent loop with tool calls. Keep this at 1 unless a
+  # workflow explicitly needs same-session continuation turns before handoff.
   max_turns: 1
   max_retry_backoff_ms: 300000
   max_retry_attempts: 2
@@ -97,13 +97,14 @@ linear_contract:
     todo: Todo
     in_progress: In Progress
     done: Done
-    needs_workflow: Needs Workflow
+    triage: Triage
   handoff_state_bindings:
     claim: in_progress
     success: done
-    failure: needs_workflow
+    failure: triage
   enforce_issue_workflow_labels: true
-  comment_on_invalid_workflow: false
+  invalid_workflow_state_id: 83eb55af-4c17-443f-9501-8a581be7de20
+  comment_on_invalid_workflow: true
 linear_commands:
   # Keep Linear comment commands off for the first dogfood loop. Use the local
   # control API (`scripts/scherzoctl`) for supervision and follow-up prompts.
