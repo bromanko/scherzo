@@ -11,6 +11,7 @@ pub fn session_summary_serializes_exact_required_fields_test() {
   let summary =
     event.SessionSummary(
       session_id: "ABC-123-run-1",
+      display_name: "ABC-123-fancy-narwhal",
       issue_id: "issue-1",
       issue_identifier: "ABC-123",
       issue_title: "Fix tests",
@@ -33,6 +34,7 @@ pub fn session_summary_serializes_exact_required_fields_test() {
     json.parse(session_json.summary_to_string(summary), summary_decoder())
 
   assert decoded.session_id == "ABC-123-run-1"
+  assert decoded.display_name == "ABC-123-fancy-narwhal"
   assert decoded.issue_id == "issue-1"
   assert decoded.issue_identifier == "ABC-123"
   assert decoded.workspace_path == "test/tmp/workspaces/ABC-123"
@@ -108,6 +110,7 @@ pub fn event_payload_has_no_cursor_or_timestamp_test() {
 type SummaryJson {
   SummaryJson(
     session_id: String,
+    display_name: String,
     issue_id: String,
     issue_identifier: String,
     workspace_path: String,
@@ -119,6 +122,7 @@ type SummaryJson {
 
 fn summary_decoder() -> decode.Decoder(SummaryJson) {
   use session_id <- decode.field("session_id", decode.string)
+  use display_name <- decode.field("display_name", decode.string)
   use issue_id <- decode.field("issue_id", decode.string)
   use issue_identifier <- decode.field("issue_identifier", decode.string)
   use workspace_path <- decode.field("workspace_path", decode.string)
@@ -127,6 +131,7 @@ fn summary_decoder() -> decode.Decoder(SummaryJson) {
   use tokens_total <- decode.field("tokens", decode.at(["total"], decode.int))
   decode.success(SummaryJson(
     session_id: session_id,
+    display_name: display_name,
     issue_id: issue_id,
     issue_identifier: issue_identifier,
     workspace_path: workspace_path,

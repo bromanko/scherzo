@@ -8,6 +8,7 @@ import scherzo/control/protocol
 import scherzo/ctl
 import scherzo/domain
 import scherzo/session/event
+import scherzo/session/reason
 import scherzo/terminal/style
 
 const ps_now_ms = -576_460_678_330
@@ -36,14 +37,23 @@ fn session_summary(
   session_id: String,
   last_event_at_ms: Int,
 ) -> event.SessionSummary {
+  session_summary_with_status(session_id, last_event_at_ms, event.Running)
+}
+
+fn session_summary_with_status(
+  session_id: String,
+  last_event_at_ms: Int,
+  status: event.SessionStatus,
+) -> event.SessionSummary {
   event.SessionSummary(
     session_id: session_id,
+    display_name: session_id,
     issue_id: "issue-1",
     issue_identifier: "LIV-41",
     issue_title: "Improve ctl ps output readability",
     workspace_path: "/tmp/workspace",
     pi_session_id: None,
-    status: event.Running,
+    status: status,
     current_turn: 1,
     started_at_ms: last_event_at_ms - 1000,
     last_event_at_ms: last_event_at_ms,
@@ -97,6 +107,16 @@ fn drain_output_loop(subject: process.Subject(OutMsg), acc: String) -> String {
     Ok(OutInline(text)) -> drain_output_loop(subject, acc <> text)
     Error(Nil) -> acc
   }
+}
+
+fn output_lines(transcript: String) -> List(String) {
+  string.trim(transcript) |> string.split(on: "\n")
+}
+
+fn table_columns(row: String) -> List(String) {
+  row
+  |> string.split(on: " ")
+  |> list.filter(fn(value) { value != "" })
 }
 
 pub fn parse_ping_ps_session_events_and_attach_test() {
@@ -263,7 +283,7 @@ pub fn usage_mentions_commands_and_options_test() {
   let usage = ctl.usage()
   assert string.contains(usage, "ping")
   assert string.contains(usage, "ps")
-  assert string.contains(usage, "LAST_EVENT is daemon-relative age")
+  assert string.contains(usage, "LAST EVENT is daemon-relative age")
   assert string.contains(usage, "session <session-id>")
   assert string.contains(usage, "events <session-id>")
   assert string.contains(usage, "events --pretty <session-id>")
@@ -281,11 +301,11 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "--since-cursor <n>")
 }
 
-pub fn ps_human_table_shortens_long_session_ids_and_formats_last_event_age_test() {
-  let path = "test/tmp/ctl-ps/table-control.json"
+pub fn ps_human_table_uses_display_name_and_matches_header_order_test() {
+  let path = "test/tmp/ctl-ps/table-order-control.json"
   write_control_file(path)
-  let top_level_session_id = "LONGISSUE-12345--576460690849-123456789"
-  let step_session_id = "LONGISSUE-12345--576460690849-123456789-validate_draft"
+  let canonical_session_id = "canonical-session-id-should-stay-hidden"
+  let display_name = "LIV-43-fancy-narwhal-finger"
   let subject = process.new_subject()
 
   let result =
@@ -293,8 +313,54 @@ pub fn ps_human_table_shortens_long_session_ids_and_formats_last_event_age_test(
       ctl.Ps(Some(path), False),
       ps_deps(
         [
-          session_summary(top_level_session_id, -576_460_690_330),
-          session_summary(step_session_id, ps_now_ms - 180_000),
+          event.SessionSummary(
+            ..session_summary(canonical_session_id, ps_now_ms - 12_000),
+            display_name: display_name,
+            issue_identifier: "LIV-43",
+            current_turn: 7,
+          ),
+        ],
+        ps_now_ms,
+        "",
+      ),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  let assert [header, row] = output_lines(transcript)
+  assert table_columns(header)
+    == ["SESSION", "ISSUE", "TURN", "STATUS", "LAST", "EVENT"]
+  assert string.contains(header, "LAST EVENT")
+  assert !string.contains(transcript, "LAST_EVENT")
+  assert string.contains(transcript, display_name)
+  assert !string.contains(transcript, canonical_session_id)
+
+  let assert [session_col, issue_col, turn_col, status_col, age_value, age_unit] =
+    table_columns(row)
+  assert session_col == display_name
+  assert issue_col == "LIV-43"
+  assert turn_col == "7"
+  assert status_col == "running"
+  assert age_value == "12s"
+  assert age_unit == "ago"
+}
+
+pub fn ps_human_table_shortens_long_session_names_and_formats_last_event_age_test() {
+  let path = "test/tmp/ctl-ps/table-control.json"
+  write_control_file(path)
+  let top_level_session_name = "LONGISSUE-12345--576460690849-123456789"
+  let step_session_name =
+    "LONGISSUE-12345--576460690849-123456789-validate_draft"
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Ps(Some(path), False),
+      ps_deps(
+        [
+          session_summary(top_level_session_name, -576_460_690_330),
+          session_summary(step_session_name, ps_now_ms - 180_000),
         ],
         ps_now_ms,
         "",
@@ -305,18 +371,116 @@ pub fn ps_human_table_shortens_long_session_ids_and_formats_last_event_age_test(
   assert result == Ok(Nil)
   let transcript = drain_output(subject)
   assert string.contains(transcript, "SESSION")
-  assert string.contains(transcript, "LAST_EVENT")
+  assert string.contains(transcript, "LAST EVENT")
+  assert !string.contains(transcript, "LAST_EVENT")
   assert string.contains(transcript, "12s ago")
   assert string.contains(transcript, "3m ago")
   assert string.contains(transcript, "…")
   assert string.contains(transcript, "123456789")
   assert string.contains(transcript, "validate_draft")
-  assert !string.contains(transcript, top_level_session_id)
-  assert !string.contains(transcript, step_session_id)
+  assert !string.contains(transcript, top_level_session_name)
+  assert !string.contains(transcript, step_session_name)
   assert !string.contains(transcript, "-576460690330")
+
+  let rows = output_lines(transcript)
+  assert list.all(rows, fn(row) { string.length(row) <= 80 })
+}
+
+pub fn ps_human_table_shows_exit_outcomes_test() {
+  let path = "test/tmp/ctl-ps/exits-control.json"
+  write_control_file(path)
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Ps(Some(path), False),
+      ps_deps(
+        [
+          session_summary_with_status(
+            "sid-1",
+            ps_now_ms,
+            event.Exited(reason.Normal),
+          ),
+          session_summary_with_status(
+            "sid-2",
+            ps_now_ms,
+            event.Exited(reason.Failed),
+          ),
+          session_summary_with_status(
+            "sid-3",
+            ps_now_ms,
+            event.Exited(reason.WorkerDown),
+          ),
+          session_summary_with_status(
+            "sid-4",
+            ps_now_ms,
+            event.Exited(reason.OperatorAbort),
+          ),
+          session_summary_with_status(
+            "sid-5",
+            ps_now_ms,
+            event.Exited(reason.OperatorStopAfterCurrentTurn),
+          ),
+          session_summary_with_status("sid-6", ps_now_ms, event.WaitingUi),
+        ],
+        ps_now_ms,
+        "",
+      ),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "success")
+  assert string.contains(transcript, "failed")
+  assert string.contains(transcript, "worker_down")
+  assert string.contains(transcript, "operator_abort")
+  assert string.contains(transcript, "op_stop_after")
+  assert string.contains(transcript, "waiting_ui")
+  assert !string.contains(transcript, "exited")
 
   let rows = string.trim(transcript) |> string.split(on: "\n")
   assert list.all(rows, fn(row) { string.length(row) <= 80 })
+}
+
+pub fn ps_human_table_ellipsizes_long_display_name_without_shifting_columns_test() {
+  let path = "test/tmp/ctl-ps/table-long-name-control.json"
+  write_control_file(path)
+  let display_name =
+    "LIV-44-this-is-a-very-long-session-display-name-that-keeps-going"
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Ps(Some(path), False),
+      ps_deps(
+        [
+          event.SessionSummary(
+            ..session_summary("canonical-session-id", ps_now_ms - 180_000),
+            display_name: display_name,
+            issue_identifier: "LIV-44",
+            current_turn: 42,
+          ),
+        ],
+        ps_now_ms,
+        "",
+      ),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  let assert [_, row] = output_lines(transcript)
+  let assert [session_col, issue_col, turn_col, status_col, age_value, age_unit] =
+    table_columns(row)
+  assert string.contains(session_col, "…")
+  assert !string.contains(transcript, display_name)
+  assert issue_col == "LIV-44"
+  assert turn_col == "42"
+  assert status_col == "running"
+  assert age_value == "3m"
+  assert age_unit == "ago"
+  assert string.length(row) <= 80
 }
 
 pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
@@ -326,7 +490,7 @@ pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
   let raw_response =
     "{\"session_id\":\""
     <> session_id
-    <> "\",\"last_event_at_ms\":-576460690330}"
+    <> "\",\"status\":\"exited\",\"exit_reason\":\"failed\",\"last_event_at_ms\":-576460690330}"
   let subject = process.new_subject()
 
   let result =
@@ -339,6 +503,8 @@ pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
   assert result == Ok(Nil)
   let transcript = drain_output(subject)
   assert string.contains(transcript, session_id)
+  assert string.contains(transcript, "\"status\":\"exited\"")
+  assert string.contains(transcript, "\"exit_reason\":\"failed\"")
   assert string.contains(transcript, "-576460690330")
   assert !string.contains(transcript, "…")
 }

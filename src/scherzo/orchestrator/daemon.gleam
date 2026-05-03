@@ -2672,6 +2672,7 @@ fn spawn_worker(
     state.event_hub,
     session_event.SessionSummary(
       session_id: session_id,
+      display_name: session_id,
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_title: issue.title,
@@ -2858,6 +2859,7 @@ fn register_yaml_step_session(
     event_hub,
     session_event.SessionSummary(
       session_id: session_id,
+      display_name: session_id,
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_title: issue.title,
@@ -2953,6 +2955,7 @@ fn run_yaml_agent_step(
     event_hub,
     session_event.SessionSummary(
       session_id: session_id,
+      display_name: session_id,
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_title: issue.title,

@@ -266,6 +266,7 @@ pub fn decode_session_summary_maps_unknown_exit_reason_to_failed_test() {
     "{\"version\":1,\"id\":\"sessions-1\",\"ok\":true,\"data\":{\"sessions\":[{\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"exited\",\"exit_reason\":\"legacy_cancelled\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
 
   let assert Ok([summary]) = protocol.decode_list_sessions_response(line)
+  assert summary.display_name == "session-1"
   assert summary.status == event.Exited(session_reason.Failed)
   let assert Ok(snapshot) =
     protocol.decode_list_sessions_snapshot_response(line)
@@ -274,13 +275,15 @@ pub fn decode_session_summary_maps_unknown_exit_reason_to_failed_test() {
 
 pub fn decode_list_sessions_snapshot_reads_server_now_ms_test() {
   let line =
-    "{\"version\":1,\"id\":\"sessions-1\",\"ok\":true,\"data\":{\"now_ms\":250,\"sessions\":[{\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"running\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
+    "{\"version\":1,\"id\":\"sessions-1\",\"ok\":true,\"data\":{\"now_ms\":250,\"sessions\":[{\"session_id\":\"session-1\",\"display_name\":\"LIV-43-fancy-narwhal-finger\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"running\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
 
   let assert Ok(snapshot) =
     protocol.decode_list_sessions_snapshot_response(line)
   assert snapshot.now_ms == 250
   assert list.map(snapshot.sessions, fn(summary) { summary.session_id })
     == ["session-1"]
+  assert list.map(snapshot.sessions, fn(summary) { summary.display_name })
+    == ["LIV-43-fancy-narwhal-finger"]
 }
 
 pub fn encode_events_response_contains_cursor_and_session_test() {
