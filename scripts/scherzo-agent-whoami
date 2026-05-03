@@ -1,0 +1,26 @@
+#!/usr/bin/env sh
+set -e
+
+script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+. "$script_dir/scherzo-agent-common.sh"
+
+prepare_agent_env
+require_live_identity
+
+echo "Scherzo agent live identity check"
+require_github_identity
+echo "GitHub token login=$gh_login"
+
+require_github_repo_access
+echo "GitHub repository=$repo_full_name"
+
+require_linear_identity
+echo "Linear viewer=$linear_actor"
+
+remote_value=$(require_agent_remote)
+echo "SCHERZO_PR_REMOTE=$SCHERZO_PR_REMOTE"
+echo "remote url=$remote_value"
+show_identities
+
+require_ssh_identity
+echo "SSH authentication matched $SCHERZO_AGENT_GITHUB_LOGIN through $SCHERZO_AGENT_SSH_HOST"
