@@ -873,6 +873,15 @@ fn fallback_list_now_ms(sessions: List(event.SessionSummary)) -> Int {
 
 fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
   use session_id <- decode.field("session_id", decode.string)
+  use maybe_display_name <- decode.optional_field(
+    "display_name",
+    None,
+    decode.optional(decode.string),
+  )
+  let display_name = case maybe_display_name {
+    Some(value) -> value
+    None -> session_id
+  }
   use issue_id <- decode.field("issue_id", decode.string)
   use issue_identifier <- decode.field("issue_identifier", decode.string)
   use issue_title <- decode.optional_field("issue_title", "", decode.string)
@@ -896,6 +905,7 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
     Ok(status) ->
       decode.success(event.SessionSummary(
         session_id: session_id,
+        display_name: display_name,
         issue_id: issue_id,
         issue_identifier: issue_identifier,
         issue_title: issue_title,
@@ -911,6 +921,7 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
       decode.failure(
         event.SessionSummary(
           session_id: session_id,
+          display_name: display_name,
           issue_id: issue_id,
           issue_identifier: issue_identifier,
           issue_title: issue_title,

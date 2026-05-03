@@ -8,6 +8,7 @@ import scherzo/session/reason
 fn summary(session_id: String) -> event.SessionSummary {
   event.SessionSummary(
     session_id: session_id,
+    display_name: session_id,
     issue_id: "issue-1",
     issue_identifier: "ABC-123",
     issue_title: "Fix tests",

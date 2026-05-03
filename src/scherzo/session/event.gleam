@@ -65,6 +65,7 @@ pub type EventPayload {
 pub type SessionSummary {
   SessionSummary(
     session_id: String,
+    display_name: String,
     issue_id: String,
     issue_identifier: String,
     issue_title: String,

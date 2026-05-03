@@ -23,6 +23,7 @@ pub fn page_to_string(page: event.EventPage) -> String {
 pub fn summary_to_json(summary: event.SessionSummary) -> json.Json {
   json.object([
     #("session_id", json.string(summary.session_id)),
+    #("display_name", json.string(summary.display_name)),
     #("issue_id", json.string(summary.issue_id)),
     #("issue_identifier", json.string(summary.issue_identifier)),
     #("issue_title", json.string(summary.issue_title)),
