@@ -573,6 +573,7 @@ pub fn worker_failure_backoff_and_retry_cap_test() {
   assert core.backoff_delay(1, 40_000) == 10_000
   assert core.backoff_delay(2, 40_000) == 20_000
   assert core.backoff_delay(3, 40_000) == 40_000
+  assert core.backoff_delay(1000, 40_000) == 40_000
 
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let state =
@@ -692,13 +693,40 @@ pub fn retry_timer_handling_test() {
   assert poll_failed
     == [
       core.CancelRetry("a"),
-      core.ScheduleRetry("a", 1000, 2, reason.RetryPollFailed),
+      core.ScheduleRetry("a", 20_000, 2, reason.RetryPollFailed),
+    ]
+
+  let core.Transition(effects: poll_failed_again, state: kept_again) =
+    core.handle_retry_candidate(kept, config(), "a", Error("tracker"))
+  assert poll_failed_again
+    == [
+      core.CancelRetry("a"),
+      core.ScheduleRetry("a", 40_000, 3, reason.RetryPollFailed),
     ]
 
   let core.Transition(effects: absent, state: released) =
-    core.handle_retry_candidate(kept, config(), "a", Ok(None))
+    core.handle_retry_candidate(kept_again, config(), "a", Ok(None))
   assert absent == [core.ReleaseClaim("a")]
   assert !dict.has_key(released.claimed, "a")
+}
+
+pub fn retry_candidate_without_slots_uses_backoff_test() {
+  let retry_issue = issue("a", "ABC-1", "Todo", Some(1))
+  let occupying_issue = issue("b", "ABC-2", "Todo", Some(2))
+  let state =
+    core.apply_worker_start(core.new_state(config()), retry_issue, "/tmp/a")
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(state, config(), "a", retry_issue, 100)
+  let occupied = core.apply_worker_start(retry_state, occupying_issue, "/tmp/b")
+
+  let core.Transition(state: _, effects: effects) =
+    core.handle_retry_candidate(occupied, config(), "a", Ok(Some(retry_issue)))
+
+  assert effects
+    == [
+      core.CancelRetry("a"),
+      core.ScheduleRetry("a", 20_000, 2, reason.RetryNoSlots),
+    ]
 }
 
 pub fn explicit_park_blocks_even_when_issue_changes_test() {

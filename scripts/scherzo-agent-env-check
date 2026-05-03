@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -e
+
+script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+. "$script_dir/scherzo-agent-common.sh"
+
+prepare_agent_env
+require_local_commands
+print_local_environment
+require_git_email_for_identity_checks
+write_jj_config
+show_identities

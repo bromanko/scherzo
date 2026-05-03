@@ -2359,13 +2359,17 @@ fn handle_retry_tick(state: State, issue_id: String, generation: Int) -> State {
             )
           case
             state.operator_paused,
-            config.can_dispatch(state.workflow.reload_state)
+            config.can_dispatch(state.workflow.reload_state),
+            slots_remain(state)
           {
-            True, _ ->
+            True, _, _ ->
               defer_retry_until_dispatch_available(state, issue_id, generation)
-            _, False ->
+            _, False, _ ->
               defer_retry_until_dispatch_available(state, issue_id, generation)
-            False, True -> begin_retry_refresh(state, issue_id, generation)
+            False, True, False ->
+              defer_retry_until_dispatch_available(state, issue_id, generation)
+            False, True, True ->
+              begin_retry_refresh(state, issue_id, generation)
           }
         }
       }
@@ -2511,10 +2515,10 @@ fn handle_retry_candidate_with_slots(
   case retry_candidate_needs_slot_retry(state, candidate) {
     True -> {
       let transition =
-        core.schedule_retry(
+        core.schedule_retry_with_backoff(
           state.runtime,
+          state.workflow.effective,
           issue_id,
-          1000,
           orchestrator_reason.RetryNoSlots,
         )
       let state = State(..state, runtime: transition.state)
@@ -2694,10 +2698,10 @@ fn retry_dispatch_later_if_needed(state: State, issue: domain.Issue) -> State {
     False -> state
     True -> {
       let transition =
-        core.schedule_retry(
+        core.schedule_retry_with_backoff(
           state.runtime,
+          state.workflow.effective,
           issue.id,
-          1000,
           orchestrator_reason.RetryNoSlots,
         )
       let state = State(..state, runtime: transition.state)

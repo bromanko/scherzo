@@ -505,7 +505,13 @@ pub fn handle_retry_candidate(
   candidate: Result(Option(domain.Issue), String),
 ) -> Transition {
   case candidate {
-    Error(_) -> schedule_retry(state, issue_id, 1000, reason.RetryPollFailed)
+    Error(_) ->
+      schedule_retry_with_backoff(
+        state,
+        config,
+        issue_id,
+        reason.RetryPollFailed,
+      )
     Ok(None) ->
       Transition(
         state: release_claim(clear_retry(state, issue_id), issue_id),
@@ -521,10 +527,42 @@ pub fn handle_retry_candidate(
           Transition(state: clear_retry(state, issue_id), effects: [
             Dispatch(issue),
           ])
-        False -> schedule_retry(state, issue_id, 1000, reason.RetryNoSlots)
+        False ->
+          schedule_retry_with_backoff(
+            state,
+            config,
+            issue_id,
+            reason.RetryNoSlots,
+          )
       }
     }
   }
+}
+
+pub fn schedule_retry_with_backoff(
+  state: domain.RuntimeState,
+  config: domain.EffectiveConfig,
+  issue_id: String,
+  reason: reason.RetryReason,
+) -> Transition {
+  schedule_retry(
+    state,
+    issue_id,
+    retry_backoff_delay(state, config, issue_id),
+    reason,
+  )
+}
+
+fn retry_backoff_delay(
+  state: domain.RuntimeState,
+  config: domain.EffectiveConfig,
+  issue_id: String,
+) -> Int {
+  let attempt = case dict.get(state.retry_attempts, issue_id) {
+    Ok(entry) -> entry.timer_generation + 1
+    Error(_) -> 1
+  }
+  backoff_delay(attempt, config.agent.max_retry_backoff_ms)
 }
 
 pub fn reconcile_issue(
@@ -606,17 +644,21 @@ pub fn unpark_if_issue_changed(
 }
 
 pub fn backoff_delay(attempt: Int, max_ms: Int) -> Int {
-  let base = 10_000 * int_power(2, attempt - 1)
-  case base > max_ms {
-    True -> max_ms
-    False -> base
-  }
+  backoff_delay_loop(10_000, attempt - 1, max_ms)
 }
 
-fn int_power(base: Int, exponent: Int) -> Int {
-  case exponent <= 0 {
-    True -> 1
-    False -> base * int_power(base, exponent - 1)
+fn backoff_delay_loop(
+  delay_ms: Int,
+  remaining_doubles: Int,
+  max_ms: Int,
+) -> Int {
+  case delay_ms >= max_ms {
+    True -> max_ms
+    False ->
+      case remaining_doubles <= 0 {
+        True -> delay_ms
+        False -> backoff_delay_loop(delay_ms * 2, remaining_doubles - 1, max_ms)
+      }
   }
 }
 

@@ -19,8 +19,8 @@ LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check workflow-co
 # Run one eligible issue and exit
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.yaml
 
-# Run daemon mode
-LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- .scherzo/scherzo.yaml
+# Run daemon mode through the Ctrl-C-friendly devenv helper
+LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
 ```
 
 If no path is provided, Scherzo looks for the first existing default config in this order:
@@ -402,7 +402,7 @@ The deterministic test suite covers ledger record roundtrips for counters, known
 
 Scherzo is intended for trusted repositories and trusted workflow files. Hooks are arbitrary shell. pi tool execution follows the operator's `pi.command` and host OS environment. Scherzo enforces workspace cwd and root containment, but it does not provide a VM or container sandbox.
 
-Run only one Scherzo instance per Linear project and canonical workspace root. The local durable ledger supports single-instance restart recovery, not multi-host or multi-workspace exactly-once behavior. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. Ctrl-C/SIGINT, `kill -9`, host power loss, or BEAM VM crashes may leave a stale `workspace.root/.scherzo-state/instance.lock`; operators must remove it only after checking no Scherzo process remains active. Live pi sessions, EventHub history, and Linear command comments posted while Scherzo was down are still not recovered in this phase.
+Run only one Scherzo instance per Linear project and canonical workspace root. The local durable ledger supports single-instance restart recovery, not multi-host or multi-workspace exactly-once behavior. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. For interactive daemon runs, prefer `direnv exec . scherzo-start .scherzo/scherzo.yaml`; that devenv helper wraps `gleam run -- ...` and translates Ctrl-C/SIGINT into SIGTERM so the graceful shutdown path runs. Direct `gleam run` Ctrl-C, `kill -9`, host power loss, or BEAM VM crashes may leave a stale `workspace.root/.scherzo-state/instance.lock`; operators must remove it only after checking no Scherzo process remains active. Live pi sessions, EventHub history, and Linear command comments posted while Scherzo was down are still not recovered in this phase.
 
 ## Legacy Markdown removal
 
@@ -413,8 +413,9 @@ gleam run -- WORKFLOW.md
 gleam run -- .scherzo/workflows/research.md
 ```
 
-Use a YAML orchestrator config instead:
+Use a YAML orchestrator config instead. For short-lived modes, direct `gleam run` is fine; for long-running interactive daemon mode, prefer the `scherzo-start` devenv helper so Ctrl-C becomes graceful SIGTERM:
 
 ```sh
 gleam run -- .scherzo/scherzo.yaml
+direnv exec . scherzo-start .scherzo/scherzo.yaml
 ```
