@@ -1044,6 +1044,46 @@ pub fn daemon_side_effect_crash_does_not_stall_future_polls_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test() {
+  let workflow_path = write_workflow("test/tmp/daemon-retry-terminal", 1)
+  let retried = issue("retry-id", "ABC-2", "Todo")
+  let done =
+    domain.Issue(..retried, state: issue_state.from_string_unchecked("Done"))
+  let log_subject = process.new_subject()
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([retried]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([done]) },
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..fake_workflow_run_dependencies(log_subject),
+        agent_step: fn(issue: domain.Issue, _, _, _, _, workspace_path, _, _) {
+          let _ = issue
+          Error(agent_types.WorkerFailure(
+            reason: error.PiFailed(error.PiProtocolError("boom")),
+            workspace_path: Some(workspace_path),
+            tokens: domain.zero_token_totals(),
+            final_issue: None,
+          ))
+        },
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_event(log_subject, "retry_scheduled", 20)
+
+  process.send(started.data, daemon.RetryTick("retry-id", 1))
+  assert wait_for_event(log_subject, "claim_released", 20)
+  process.send(started.data, daemon.RetryTick("retry-id", 2))
+  assert wait_for_event(log_subject, "retry_timer_stale", 10)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
   let workflow_path = write_workflow("test/tmp/daemon-retry", 1)
   let first = issue("retry-id", "ABC-2", "Todo")

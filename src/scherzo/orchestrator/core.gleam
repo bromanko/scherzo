@@ -519,21 +519,35 @@ pub fn handle_retry_candidate(
       )
     Ok(Some(issue)) -> {
       let state = unpark_if_issue_changed(state, issue)
-      case
-        retry_candidate_preconditions_satisfied(state, config, issue_id, issue)
+      let dispatchable_without_slot_capacity =
+        retry_candidate_preconditions_satisfied_without_slot_capacity(
+          state,
+          config,
+          issue_id,
+          issue,
+        )
         && workflow_policy_satisfied(config, issue)
-      {
-        True ->
-          Transition(state: clear_retry(state, issue_id), effects: [
-            Dispatch(issue),
-          ])
+
+      case dispatchable_without_slot_capacity {
         False ->
-          schedule_retry_with_backoff(
-            state,
-            config,
-            issue_id,
-            reason.RetryNoSlots,
+          Transition(
+            state: release_claim(clear_retry(state, issue_id), issue_id),
+            effects: [ReleaseClaim(issue_id)],
           )
+        True ->
+          case slots_available(state, config, issue.state) {
+            True ->
+              Transition(state: clear_retry(state, issue_id), effects: [
+                Dispatch(issue),
+              ])
+            False ->
+              schedule_retry_with_backoff(
+                state,
+                config,
+                issue_id,
+                reason.RetryNoSlots,
+              )
+          }
       }
     }
   }
