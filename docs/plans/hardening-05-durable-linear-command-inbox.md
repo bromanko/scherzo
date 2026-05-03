@@ -62,6 +62,7 @@ The main privacy risk is persisting full command text. Countermeasure: durable r
 ## Progress
 
 - [x] (2026-04-29 04:20Z) Drafted this plan as the fifth hardening step after graceful lifecycle, durable ledger, single-instance crash recovery, and pi session continuation.
+- [x] (2026-05-03 00:00Z) Normalized this plan after removing the obsolete pre-DAG pi session continuation plan. Durable Linear command receipts remain useful without pi session continuation; future workflow checkpoint/resumption work should be handled separately.
 - [ ] Initialize Linear command transport state from durable ledger receipts.
 - [ ] Persist seen/started/completed/acked command records.
 - [ ] Replay completed-but-unacked acknowledgements without reapplying commands.
@@ -71,7 +72,10 @@ The main privacy risk is persisting full command text. Countermeasure: durable r
 
 ## Surprises & Discoveries
 
-(To be filled during implementation. Record whether existing ack outbox records were sufficient or needed command-specific fields.)
+- Observation: The prior pi session continuation plan was removed because it assumed one issue-level pi session, but this command-inbox plan does not depend on that assumption.
+  Evidence: Durable command receipts operate on Linear comment ids, command results, and acknowledgement state. They can be implemented against the current Linear command transport and local ledger without knowing how future workflow checkpoints resume agent steps.
+
+During implementation, record whether existing ack outbox records were sufficient or needed command-specific fields.
 
 ## Decision Log
 
@@ -86,6 +90,10 @@ The main privacy risk is persisting full command text. Countermeasure: durable r
 - Decision: Keep webhooks out of this phase.
   Rationale: Durable receipts are needed even with webhooks; implementing receipts first makes a later webhook transport smaller.
   Date: 2026-04-29
+
+- Decision: Do not require pi session continuation before durable Linear command receipts.
+  Rationale: The old issue-level pi session continuation plan was superseded by the need for workflow DAG checkpoints and step-scoped continuation. Linear command receipts harden remote operator command processing and can proceed independently of that future workflow recovery design.
+  Date: 2026-05-03
 
 ## Outcomes & Retrospective
 
@@ -106,7 +114,7 @@ Before implementing this plan:
 - `docs/plans/hardening-01-graceful-daemon-lifecycle.md` is complete.
 - `docs/plans/hardening-02-local-durable-state-ledger.md` is complete.
 - `docs/plans/hardening-03-single-instance-crash-recovery.md` is complete.
-- `docs/plans/hardening-04-pi-session-continuation.md` is complete or consciously deferred; this plan does not require pi session continuation directly, but it should preserve any recovered/resumed issue-session mapping that hardening 04 adds.
+- The obsolete issue-level pi session continuation plan has been removed. Future workflow checkpoint/resumption work is separate and is not a prerequisite for durable Linear command receipts.
 - `docs/plans/linear-command-transport.md` is complete.
 - The daemon initializes recovery before candidate dispatch.
 - The ledger projection can expose command receipt states by Linear comment id.

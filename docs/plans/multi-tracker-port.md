@@ -60,6 +60,7 @@ The largest naming risk is creating another god interface. Countermeasure: group
 - [x] (2026-04-30 10:47Z) Verified the current test baseline earlier in this work session with `direnv exec . gleam test`; it passed with `377 passed, no failures`.
 - [x] (2026-04-30 12:40Z) Fact-checked the current tracker/Linear boundary: `src/scherzo/tracker.gleam` has only a three-method issue-read client; Linear commands, triage, handoff, contract checks, comments, mutations, and smoke checks live in separate Linear-specific modules.
 - [x] (2026-04-30 13:05Z) Revised the previous Linear-only plan after stakeholder clarification: Scherzo needs real multi-tracker support, so the design must build a capability-aware tracker port instead of renaming to Linear-only.
+- [x] (2026-05-03 00:00Z) Deferred execution until after DAG-era workflow checkpoint/resumption design stabilizes. The tracker capability boundary should be revised before implementation so it accounts for the finalized run, workflow execution, step, session, command, and durable recovery terminology.
 - [ ] Milestone 0: document current Linear surfaces and add capability-validation characterization tests.
 - [ ] Milestone 1: define the tracker port and capability records without changing production behavior.
 - [ ] Milestone 2: wrap the existing Linear implementation as a `tracker.Adapter`.
@@ -98,6 +99,10 @@ The largest naming risk is creating another god interface. Countermeasure: group
 - Decision: Preserve legacy Linear config and behavior throughout the migration.
   Rationale: Existing users and tests rely on `tracker.kind: linear`, Linear smoke checks, Linear command comments, Linear contract checks, and handoff behavior. Multi-tracker support should be additive and architectural first.
   Date: 2026-04-30
+
+- Decision: Defer implementation until workflow checkpoint/resumption terminology stabilizes.
+  Rationale: A real tracker port will need to represent or cooperate with durable run, workflow execution, step, pi session, command, handoff, and recovery facts. Implementing the port before the DAG-era workflow recovery model is settled risks designing the boundary around transient terminology and causing avoidable churn.
+  Date: 2026-05-03
 
 ## Outcomes & Retrospective
 

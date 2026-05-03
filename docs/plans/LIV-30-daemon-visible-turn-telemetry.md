@@ -60,7 +60,8 @@ The main correctness risk is reporting a turn as running forever after a timeout
 - [x] (2026-05-02 00:00Z) Inspected the current runner, event publisher, session hub, session JSON, control protocol, and CLI usage surfaces needed to draft this plan.
 - [x] (2026-05-02 00:00Z) Drafted this ExecPlan for review. No source code, tests, configuration, or existing documentation were changed.
 - [x] (2026-05-02 00:00Z) Incorporated adversarial review findings for compile-safe turn representation, token-delta ordering, turn-payload privacy tests, explicit protocol decoding, and bridge-level event publisher/hub validation.
-- [ ] Implementation has not started.
+- [x] (2026-05-03 00:00Z) Created implementation ticket `LIV-53` because `LIV-30` tracked plan authoring only and is already complete.
+- [ ] Implementation has not started; implement this plan under `LIV-53`.
 - [ ] Add turn telemetry schema and serialization tests.
 - [ ] Add runner and event publisher lifecycle emission tests.
 - [ ] Add control protocol and `scherzoctl` rendering tests.
@@ -108,9 +109,13 @@ The main correctness risk is reporting a turn as running forever after a timeout
   Rationale: The current operator need is turn lifecycle and token visibility. Result artifacts can contain sensitive model output and require a separate safe-reference policy. A future plan may add an explicit bounded artifact reference if there is a concrete operator workflow requiring it.
   Date: 2026-05-02
 
+- Decision: Track implementation separately as `LIV-53`.
+  Rationale: `LIV-30` was the plan-writing issue and is complete. Keeping a separate implementation issue prevents this checked-in, unimplemented plan from looking completed in the backlog.
+  Date: 2026-05-03
+
 ## Outcomes & Retrospective
 
-This section is intentionally empty until implementation begins. At completion, record whether operators can see turn lifecycle in `scherzoctl ps`, `scherzoctl session --json`, `scherzoctl events`, and `scherzoctl attach`; whether tests prevented sensitive payload centralization; and whether any planned lifecycle statuses were deferred.
+Implementation is tracked by `LIV-53`. At completion, record whether operators can see turn lifecycle in `scherzoctl ps`, `scherzoctl session --json`, `scherzoctl events`, and `scherzoctl attach`; whether tests prevented sensitive payload centralization; and whether any planned lifecycle statuses were deferred.
 
 ## Context and Orientation
 
