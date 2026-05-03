@@ -243,6 +243,22 @@ scripts/scherzoctl ui respond <session-id> ui-1 --value ok
 
 When YAML DAG agent steps run, Scherzo creates concrete step sessions such as `ABC-123-42-1-implement`. Operator prompts sent to the top-level issue session are routed to the active agent step when that step exposes a command subject.
 
+## Using pi as an operator UI
+
+The repository includes a project pi skill at `.pi/skills/scherzo-operator` for supervising a running daemon through `scripts/scherzoctl` with `--json`. Start Scherzo daemon mode in one terminal, then copy the control file path from the `control_server_started` log line or export the repository default when that file exists:
+
+```sh
+export SCHERZO_CONTROL_FILE=.scherzo/workspaces/.scherzo-state/control.json
+```
+
+In a second terminal from the repository root, start pi and load the skill with `/skill:scherzo-operator`. If slash skill commands are disabled, start pi with the skill explicitly loaded:
+
+```sh
+pi --skill .pi/skills/scherzo-operator
+```
+
+Ask pi for read-only summaries first, for example `summarize current Scherzo sessions`. The skill should begin with `scripts/scherzoctl ps --json`, then use `session --json` or bounded `events --json` calls for detail. Before `pause`, `resume`, `reload`, `retry`, `park`, `unpark`, `abort`, `stop-after-turn`, `prompt`, `ui respond`, or any command using `--yes`, pi must ask you to confirm the exact target and action.
+
 ## Doctor readiness checks
 
 Run `doctor` before cautious real-board operation. The command loads the YAML orchestrator config, routed workflow DAGs, and prompt templates, then prints a human-readable readiness report inspired by tools such as `flutter doctor`: each selected check is marked with `✓`, `!`, `✗`, or `-`, followed by a readable summary and remediation hints for failures. The default check set runs in this order: `workflow-config`, `linear-contract`, `linear-smoke`, `instance-lock`, `workspace-hooks`, and `pi-probe`. Use `--logfmt` when you need the previous machine-readable `doctor_check_*` events and `doctor_summary` fields.
