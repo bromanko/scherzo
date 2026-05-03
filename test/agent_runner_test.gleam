@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/pi_event
 import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/path
 import scherzo/tracker
@@ -132,14 +133,14 @@ fn tracker_returning(final_issue: domain.Issue) -> tracker.Client {
   )
 }
 
-fn emit(_issue_id: String, _update: runner.PiUpdate) -> Nil {
+fn emit(_issue_id: String, _update: agent_types.PiUpdate) -> Nil {
   Nil
 }
 
 fn drain_updates(
-  subject: process.Subject(runner.PiUpdate),
-  acc: List(runner.PiUpdate),
-) -> List(runner.PiUpdate) {
+  subject: process.Subject(agent_types.PiUpdate),
+  acc: List(agent_types.PiUpdate),
+) -> List(agent_types.PiUpdate) {
   case process.receive(subject, within: 10) {
     Ok(update) -> drain_updates(subject, [update, ..acc])
     Error(_) -> list.reverse(acc)
@@ -147,9 +148,9 @@ fn drain_updates(
 }
 
 fn find_update(
-  updates: List(runner.PiUpdate),
+  updates: List(agent_types.PiUpdate),
   name: String,
-) -> Option(runner.PiUpdate) {
+) -> Option(agent_types.PiUpdate) {
   case updates {
     [] -> None
     [update, ..rest] ->
@@ -161,8 +162,8 @@ fn find_update(
 }
 
 fn find_update_with_tool_input(
-  updates: List(runner.PiUpdate),
-) -> Option(runner.PiUpdate) {
+  updates: List(agent_types.PiUpdate),
+) -> Option(agent_types.PiUpdate) {
   case updates {
     [] -> None
     [update, ..rest] ->
@@ -174,8 +175,8 @@ fn find_update_with_tool_input(
 }
 
 fn find_update_with_tool_output(
-  updates: List(runner.PiUpdate),
-) -> Option(runner.PiUpdate) {
+  updates: List(agent_types.PiUpdate),
+) -> Option(agent_types.PiUpdate) {
   case updates {
     [] -> None
     [update, ..rest] ->
@@ -187,10 +188,10 @@ fn find_update_with_tool_output(
 }
 
 fn receive_update_named(
-  subject: process.Subject(runner.PiUpdate),
+  subject: process.Subject(agent_types.PiUpdate),
   name: String,
   attempts: Int,
-) -> Result(runner.PiUpdate, Nil) {
+) -> Result(agent_types.PiUpdate, Nil) {
   case attempts <= 0 {
     True -> Error(Nil)
     False ->
@@ -221,7 +222,7 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
       tracker_returning(issue("Done")),
       emit,
     )
-  assert success.final_classification == runner.FinalTerminal
+  assert success.final_classification == agent_types.FinalTerminal
   assert success.tokens.total == 3
   assert success.result.final_response == Some("done")
   assert success.result.source == "agent_end_messages"
@@ -233,6 +234,36 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
     simplifile.is_file(success.workspace_path <> "/POPULATED")
   let assert Ok(True) =
     simplifile.is_file(success.workspace_path <> "/AFTER_RUN")
+}
+
+pub fn cancel_ui_policy_sends_extension_ui_cancel_test() {
+  let root = "test/tmp/runner-ui-cancel"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let command =
+    "FAKE_PI_UI_DIALOG=1 FAKE_PI_UI_DIALOG_WAITS=1 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let update_subject = process.new_subject()
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+  assert success.final_classification == agent_types.FinalTerminal
+  let updates = drain_updates(update_subject, [])
+  let assert Some(response_update) =
+    find_update(updates, "extension_ui_response")
+  assert response_update.message == Some("cancelled")
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert string.contains(contents, "extension_ui_response")
+  assert string.contains(contents, "cancelled")
 }
 
 pub fn worker_success_result_redacts_secret_output_test() {
@@ -281,7 +312,7 @@ pub fn prompt_render_failure_aborts_before_pi_launch_test() {
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
-  let assert Error(runner.WorkerFailure(
+  let assert Error(agent_types.WorkerFailure(
     reason: _,
     workspace_path: Some(_),
     tokens: _,
@@ -327,7 +358,7 @@ pub fn before_run_and_probe_failures_abort_before_prompt_test() {
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
     "FAKE_PI_MALFORMED=1 FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
-  let assert Error(runner.WorkerFailure(
+  let assert Error(agent_types.WorkerFailure(
     reason: _,
     workspace_path: Some(_),
     tokens: _,
@@ -359,7 +390,7 @@ pub fn runner_update_preserves_redacted_raw_pi_event_test() {
       tracker_returning(issue("Done")),
       fn(_, update) { process.send(update_subject, update) },
     )
-  assert success.final_classification == runner.FinalTerminal
+  assert success.final_classification == agent_types.FinalTerminal
 
   let updates = drain_updates(update_subject, [])
   let assert Some(update) = find_update(updates, "message_update")
@@ -384,7 +415,7 @@ pub fn runner_redacts_normalized_tool_fields_test() {
       tracker_returning(issue("Done")),
       fn(_, update) { process.send(update_subject, update) },
     )
-  assert success.final_classification == runner.FinalTerminal
+  assert success.final_classification == agent_types.FinalTerminal
 
   let updates = drain_updates(update_subject, [])
   let assert Some(start) = find_update_with_tool_input(updates)
@@ -439,7 +470,7 @@ pub fn active_issue_continues_in_same_worker_until_max_turns_test() {
       tracker_returning(issue("Todo")),
       emit,
     )
-  assert success.final_classification == runner.FinalActive
+  assert success.final_classification == agent_types.FinalActive
   assert success.turns == 2
   assert success.result.final_response == Some("done\n\ndone")
   assert success.result.source == "combined_turns"

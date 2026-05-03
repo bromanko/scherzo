@@ -4,7 +4,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/domain
 import scherzo/error
@@ -338,10 +338,10 @@ fn dependencies(
     String,
     domain.EffectiveConfig,
     tracker.Client,
-    fn(String, runner.PiUpdate) -> Nil,
+    fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     make_tracker: fn(_) { tracker_client },
@@ -390,10 +390,10 @@ fn workflow_deps_from_agent(
     String,
     domain.EffectiveConfig,
     tracker.Client,
-    fn(String, runner.PiUpdate) -> Nil,
+    fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> workflow_run.Dependencies {
   workflow_run.Dependencies(
     ..workflow_run.default_dependencies(),
@@ -428,11 +428,11 @@ fn unused_agent(
   _definition: String,
   _effective: domain.EffectiveConfig,
   _tracker_client: tracker.Client,
-  _emit_update: fn(String, runner.PiUpdate) -> Nil,
+  _emit_update: fn(String, agent_types.PiUpdate) -> Nil,
   _command_subject: process.Subject(worker_command.Command),
   _ready: fn() -> Nil,
-) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
-  Error(runner.WorkerFailure(
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
+  Error(agent_types.WorkerFailure(
     reason: error.PiFailed(error.PiProtocolError("not used")),
     workspace_path: None,
     tokens: domain.zero_token_totals(),
@@ -447,10 +447,10 @@ fn prompt_agent(log_subject: process.Subject(String)) {
     _definition: String,
     _effective: domain.EffectiveConfig,
     _tracker_client: tracker.Client,
-    _emit_update: fn(String, runner.PiUpdate) -> Nil,
+    _emit_update: fn(String, agent_types.PiUpdate) -> Nil,
     command_subject: process.Subject(worker_command.Command),
     ready: fn() -> Nil,
-  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
     ready()
     process.send(log_subject, "agent_running:" <> issue.id)
     case process.receive(command_subject, within: 5000) {
@@ -458,7 +458,7 @@ fn prompt_agent(log_subject: process.Subject(String)) {
         process.send(log_subject, "prompt:" <> message)
         process.send(reply, worker_command.Queued(Some("queued")))
         process.sleep(5000)
-        Error(runner.WorkerFailure(
+        Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("stopped")),
           workspace_path: None,
           tokens: domain.zero_token_totals(),
@@ -467,7 +467,7 @@ fn prompt_agent(log_subject: process.Subject(String)) {
       }
       Ok(worker_command.Abort(reply)) -> {
         process.send(reply, worker_command.Applied(Some("aborted")))
-        Error(runner.WorkerFailure(
+        Error(agent_types.WorkerFailure(
           reason: error.OperatorAbort,
           workspace_path: None,
           tokens: domain.zero_token_totals(),
@@ -475,7 +475,7 @@ fn prompt_agent(log_subject: process.Subject(String)) {
         ))
       }
       _ ->
-        Error(runner.WorkerFailure(
+        Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("no prompt")),
           workspace_path: None,
           tokens: domain.zero_token_totals(),

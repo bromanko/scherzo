@@ -3,7 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/string
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/error
 import scherzo/handoff_format
@@ -13,9 +13,9 @@ import scherzo/linear_attachment
 pub type Client {
   Client(
     claim_issue: fn(domain.Issue, String) -> Result(Nil, error.TrackerError),
-    report_success: fn(domain.Issue, runner.WorkerSuccess, String) ->
+    report_success: fn(domain.Issue, agent_types.WorkerSuccess, String) ->
       Result(Nil, error.TrackerError),
-    report_failure: fn(domain.Issue, runner.WorkerFailure, String) ->
+    report_failure: fn(domain.Issue, agent_types.WorkerFailure, String) ->
       Result(Nil, error.TrackerError),
   )
 }
@@ -109,7 +109,7 @@ fn report_success(
   handoff_config: domain.HandoffConfig,
   dependencies: linear_attachment.Dependencies,
   issue: domain.Issue,
-  success: runner.WorkerSuccess,
+  success: agent_types.WorkerSuccess,
   run_id: String,
 ) -> Result(Nil, error.TrackerError) {
   case handoff_config.attach_result_on_success {
@@ -168,7 +168,7 @@ fn report_failure(
   handoff_config: domain.HandoffConfig,
   transport: linear.Transport,
   issue: domain.Issue,
-  failure: runner.WorkerFailure,
+  failure: agent_types.WorkerFailure,
   run_id: String,
 ) -> Result(Nil, error.TrackerError) {
   use _ <- try_tracker(run_comment(
@@ -195,7 +195,7 @@ fn create_success_comment(
   tracker_config: domain.TrackerConfig,
   transport: linear.Transport,
   issue: domain.Issue,
-  success: runner.WorkerSuccess,
+  success: agent_types.WorkerSuccess,
   run_id: String,
   include_result: Bool,
   secrets: List(String),
@@ -220,7 +220,7 @@ fn maybe_attach_success_result(
   handoff_config: domain.HandoffConfig,
   dependencies: linear_attachment.Dependencies,
   issue: domain.Issue,
-  success: runner.WorkerSuccess,
+  success: agent_types.WorkerSuccess,
   run_id: String,
   comment_id: String,
 ) -> Result(Nil, error.TrackerError) {
@@ -260,16 +260,16 @@ fn maybe_attach_success_result(
 }
 
 fn limit_success_result_for_attachment(
-  success: runner.WorkerSuccess,
+  success: agent_types.WorkerSuccess,
   max_chars: Int,
-) -> runner.WorkerSuccess {
+) -> agent_types.WorkerSuccess {
   case success.result.final_response {
     None -> success
     Some(text) ->
       case string.length(text) > max_chars {
         False -> success
         True ->
-          runner.WorkerSuccess(
+          agent_types.WorkerSuccess(
             ..success,
             result: domain.ResultArtifact(
               ..success.result,

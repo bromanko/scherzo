@@ -1,7 +1,7 @@
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/error
 import scherzo/log
@@ -12,7 +12,7 @@ const failure_detail_truncated_suffix = "… [truncated]"
 
 pub fn success_comment(
   issue: domain.Issue,
-  success: runner.WorkerSuccess,
+  success: agent_types.WorkerSuccess,
   run_id: String,
   include_result: Bool,
   secrets: List(String),
@@ -29,7 +29,7 @@ pub fn success_comment(
 
 pub fn success_result_attachment_markdown(
   issue: domain.Issue,
-  success: runner.WorkerSuccess,
+  success: agent_types.WorkerSuccess,
   run_id: String,
   secrets: List(String),
 ) -> Option(String) {
@@ -52,7 +52,7 @@ pub fn success_result_attachment_markdown(
 
 pub fn failure_comment(
   issue: domain.Issue,
-  failure: runner.WorkerFailure,
+  failure: agent_types.WorkerFailure,
   run_id: String,
   secrets: List(String),
 ) -> String {
@@ -62,7 +62,7 @@ pub fn failure_comment(
   log.redact("failure_comment", body, secrets)
 }
 
-fn failure_diagnostics(failure: runner.WorkerFailure) -> String {
+fn failure_diagnostics(failure: agent_types.WorkerFailure) -> String {
   "Failure diagnostics:\n- error: "
   <> error.agent_code(failure.reason)
   <> underlying_error_line(failure.reason)
@@ -220,7 +220,7 @@ fn truncate_detail(detail: String) -> String {
   }
 }
 
-fn result_section(success: runner.WorkerSuccess) -> String {
+fn result_section(success: agent_types.WorkerSuccess) -> String {
   let result_text = case success.result.final_response {
     Some(text) -> text
     None -> "_No assistant result text was captured._"
@@ -232,7 +232,7 @@ fn result_section(success: runner.WorkerSuccess) -> String {
   "Result:\n" <> result_text <> truncation_note
 }
 
-fn metadata(success: runner.WorkerSuccess) -> String {
+fn metadata(success: agent_types.WorkerSuccess) -> String {
   "Metadata:\n"
   <> "- classification: "
   <> classification_to_string(success.final_classification)
@@ -251,11 +251,11 @@ fn metadata(success: runner.WorkerSuccess) -> String {
 }
 
 fn classification_to_string(
-  classification: runner.FinalClassification,
+  classification: agent_types.FinalClassification,
 ) -> String {
   case classification {
-    runner.FinalActive -> "active"
-    runner.FinalTerminal -> "terminal"
-    runner.FinalNonActive -> "non_active"
+    agent_types.FinalActive -> "active"
+    agent_types.FinalTerminal -> "terminal"
+    agent_types.FinalNonActive -> "non_active"
   }
 }

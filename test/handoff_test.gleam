@@ -4,7 +4,7 @@ import gleam/erlang/process
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/error
 import scherzo/handoff
@@ -57,12 +57,12 @@ fn issue() -> domain.Issue {
   )
 }
 
-fn success() -> runner.WorkerSuccess {
-  runner.WorkerSuccess(
+fn success() -> agent_types.WorkerSuccess {
+  agent_types.WorkerSuccess(
     final_issue: Some(
       domain.Issue(..issue(), state: issue_state.from_string_unchecked("Done")),
     ),
-    final_classification: runner.FinalTerminal,
+    final_classification: agent_types.FinalTerminal,
     workspace_path: "workspace",
     tokens: domain.TokenTotals(
       input: 1,
@@ -83,8 +83,8 @@ fn success() -> runner.WorkerSuccess {
 fn worker_failure(
   reason: error.AgentRunnerError,
   workspace_path: Option(String),
-) -> runner.WorkerFailure {
-  runner.WorkerFailure(
+) -> agent_types.WorkerFailure {
+  agent_types.WorkerFailure(
     reason: reason,
     workspace_path: workspace_path,
     tokens: domain.zero_token_totals(),
@@ -93,7 +93,7 @@ fn worker_failure(
 }
 
 fn capture_failure_comment(
-  failure: runner.WorkerFailure,
+  failure: agent_types.WorkerFailure,
   run_id: String,
 ) -> String {
   let subject = process.new_subject()
@@ -152,7 +152,7 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   assert !string.contains(success_comment, "secret-key")
 
   let failure =
-    runner.WorkerFailure(
+    agent_types.WorkerFailure(
       reason: error.PiFailed(error.PiProtocolError(
         "secret-key blocked UI request",
       )),

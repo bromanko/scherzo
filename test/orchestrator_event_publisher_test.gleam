@@ -1,6 +1,6 @@
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/orchestrator/event_publisher
 import scherzo/session/event
@@ -11,8 +11,8 @@ fn update(
   raw_json: Option(event.RedactedRawJson),
   tool_name: Option(String),
   tokens: domain.TokenTotals,
-) -> runner.PiUpdate {
-  runner.PiUpdate(
+) -> agent_types.PiUpdate {
+  agent_types.PiUpdate(
     event: pi_event.from_string(event_name),
     message: None,
     raw_json: raw_json,

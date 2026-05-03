@@ -2,7 +2,8 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import scherzo/agent/runner
+import scherzo/agent/run_attempt
+import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/command_step
 import scherzo/domain
@@ -18,7 +19,7 @@ import scherzo/workspace_run
 
 pub type WorkflowRunSuccess {
   WorkflowRunSuccess(
-    worker_success: runner.WorkerSuccess,
+    worker_success: agent_types.WorkerSuccess,
     artifacts: Dict(String, step_artifact.StepArtifact),
     run_root: String,
   )
@@ -66,9 +67,9 @@ pub type Dependencies {
       domain.EffectiveConfig,
       tracker.Client,
       String,
-      fn(runner.PiUpdate) -> Nil,
+      fn(agent_types.PiUpdate) -> Nil,
       fn(process.Subject(worker_command.Command)) -> Nil,
-    ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
+    ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
   )
 }
 
@@ -131,7 +132,7 @@ pub fn default_dependencies() -> Dependencies {
       command_ready,
     ) {
       let command_subject = process.new_subject()
-      runner.run_prompt_in_workspace(
+      run_attempt.run_prompt_in_workspace(
         issue,
         prompt,
         effective,
@@ -203,9 +204,9 @@ fn loop(
       case cleanup_result {
         Ok(Nil) ->
           Ok(WorkflowRunSuccess(
-            worker_success: runner.WorkerSuccess(
+            worker_success: agent_types.WorkerSuccess(
               final_issue: Some(final_issue),
-              final_classification: runner.FinalTerminal,
+              final_classification: agent_types.FinalTerminal,
               workspace_path: workspace_path,
               tokens: tokens,
               turns: turns,

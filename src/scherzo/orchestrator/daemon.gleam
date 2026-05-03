@@ -6,7 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/string
 import scherzo/agent/pi_event
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config
 import scherzo/control/command
@@ -54,12 +54,12 @@ pub type Message {
   WorkerFinished(
     String,
     String,
-    Result(runner.WorkerSuccess, runner.WorkerFailure),
+    Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
   )
-  WorkerUpdate(String, runner.PiUpdate)
+  WorkerUpdate(String, agent_types.PiUpdate)
   WorkerCommandReady(String, String, process.Subject(worker_command.Command))
   YamlStepStarted(String, String)
-  YamlStepUpdate(String, runner.PiUpdate)
+  YamlStepUpdate(String, agent_types.PiUpdate)
   YamlStepCommandReady(String, process.Subject(worker_command.Command))
   YamlStepFinished(String)
   AbortWorkerCommandTimedOut(
@@ -953,7 +953,7 @@ fn handle_registry_down_resolution(
         None,
       )
       let failure =
-        runner.WorkerFailure(
+        agent_types.WorkerFailure(
           reason: error.PiFailed(
             error.PiProtocolError(session_reason.to_string(
               session_reason.WorkerDown,
@@ -2803,7 +2803,7 @@ fn run_workflow_worker(
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
-) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   case runtime_bundle.select_workflow(bundle, issue) {
     Error(runtime_bundle.BundleError(code, _)) ->
       Error(yaml_worker_failure(code, None, issue))
@@ -2995,7 +2995,7 @@ fn run_yaml_agent_step(
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
-) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   let session_id = run_id <> "-" <> step_id
   let started_at_ms = now_ms()
   hub.register_session(
@@ -3075,8 +3075,8 @@ fn yaml_worker_failure(
   reason: String,
   workspace_path: Option(String),
   issue: domain.Issue,
-) -> runner.WorkerFailure {
-  runner.WorkerFailure(
+) -> agent_types.WorkerFailure {
+  agent_types.WorkerFailure(
     reason: error.PiFailed(error.PiProtocolError(reason)),
     workspace_path: workspace_path,
     tokens: domain.zero_token_totals(),
@@ -3104,7 +3104,7 @@ fn handle_worker_command_ready(
 fn handle_worker_update(
   state: State,
   issue_id: String,
-  update: runner.PiUpdate,
+  update: agent_types.PiUpdate,
 ) -> State {
   case worker_registry.worker_for_issue(state.registry, issue_id) {
     Ok(handle) ->
@@ -3132,7 +3132,7 @@ fn handle_worker_finished(
   state: State,
   issue_id: String,
   run_id: String,
-  result: Result(runner.WorkerSuccess, runner.WorkerFailure),
+  result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> State {
   case worker_registry.worker_for_issue(state.registry, issue_id) {
     Error(_) -> {
@@ -3175,7 +3175,7 @@ fn handle_worker_finished(
 fn finish_worker_success(
   state: State,
   handle: worker_registry.WorkerHandle,
-  success: runner.WorkerSuccess,
+  success: agent_types.WorkerSuccess,
 ) -> State {
   log_state(state, "info", "worker_exited", [
     #("issue_id", handle.issue_id),
@@ -3245,7 +3245,7 @@ fn finish_worker_success(
 }
 
 fn worker_failure_message(
-  failure: runner.WorkerFailure,
+  failure: agent_types.WorkerFailure,
   secrets: List(String),
 ) -> String {
   let code = error.agent_code(failure.reason)
@@ -3269,7 +3269,7 @@ fn worker_failure_message(
 fn finish_worker_failure(
   state: State,
   handle: worker_registry.WorkerHandle,
-  failure: runner.WorkerFailure,
+  failure: agent_types.WorkerFailure,
 ) -> State {
   case failure.reason {
     error.OperatorAbort ->
@@ -3366,7 +3366,7 @@ fn finish_worker_failure(
 fn finish_operator_worker_exit(
   state: State,
   handle: worker_registry.WorkerHandle,
-  failure: runner.WorkerFailure,
+  failure: agent_types.WorkerFailure,
   reason: session_reason.WorkerExitReason,
 ) -> State {
   let reason_text = session_reason.to_string(reason)
@@ -4133,12 +4133,12 @@ fn counter_record_for_state(
 }
 
 fn classification_to_string(
-  classification: runner.FinalClassification,
+  classification: agent_types.FinalClassification,
 ) -> String {
   case classification {
-    runner.FinalActive -> "active"
-    runner.FinalTerminal -> "terminal"
-    runner.FinalNonActive -> "non_active"
+    agent_types.FinalActive -> "active"
+    agent_types.FinalTerminal -> "terminal"
+    agent_types.FinalNonActive -> "non_active"
   }
 }
 
