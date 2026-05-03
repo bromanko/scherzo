@@ -96,6 +96,33 @@ pub fn stop(subject: process.Subject(Message)) -> Nil {
   process.send(subject, Stop)
 }
 
+pub fn stop_and_wait(
+  subject: process.Subject(Message),
+  timeout_ms: Int,
+) -> Result(Nil, Nil) {
+  case process.subject_owner(subject) {
+    Error(_) -> Ok(Nil)
+    Ok(pid) -> {
+      let monitor = process.monitor(pid)
+      case process.is_alive(pid) {
+        False -> {
+          process.demonitor_process(monitor)
+          Ok(Nil)
+        }
+        True -> {
+          process.send(subject, Stop)
+          let selector =
+            process.new_selector()
+            |> process.select_specific_monitor(monitor, fn(_) { Nil })
+          let result = process.selector_receive(selector, within: timeout_ms)
+          process.demonitor_process(monitor)
+          result
+        }
+      }
+    }
+  }
+}
+
 pub fn register_session(
   subject: process.Subject(Message),
   summary: event.SessionSummary,

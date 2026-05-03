@@ -149,7 +149,7 @@ pub fn main() -> Nil {
       }
     Ok(Run(mode, path)) ->
       case start_mode(mode, path) {
-        Ok(Nil) -> Nil
+        Ok(Nil) -> finish_successful_run(mode)
         Error(err) -> {
           io.println_error(
             log.error("startup_failed", [
@@ -177,6 +177,17 @@ fn start_mode(
     LinearSmoke -> service.start_linear_smoke(path)
     LinearContractCheck -> service.start_linear_contract_check(path)
     PiProbe -> service.start_pi_probe(path)
+  }
+}
+
+fn finish_successful_run(mode: RunMode) -> Nil {
+  case mode {
+    // Daemon mode only returns after graceful shutdown has completed. Halt the
+    // VM explicitly so long-lived Erlang runtime support processes, such as HTTP
+    // client or SSL supervisors started during polling, cannot keep the
+    // scherzo-start process-group wrapper alive after daemon_shutdown_complete.
+    Daemon -> halt(0)
+    _ -> Nil
   }
 }
 

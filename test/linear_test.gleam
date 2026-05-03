@@ -30,7 +30,7 @@ fn response_page(
   <> identifier
   <> "\",\"description\":\"Desc\",\"priority\":1,\"branchName\":\"branch\",\"url\":\"https://linear/"
   <> identifier
-  <> "\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[{\"name\":\"Bug\"}]},\"relations\":{\"nodes\":[{\"type\":\"blocks\",\"relatedIssue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Done\"}}}]}}],\"pageInfo\":{\"hasNextPage\":"
+  <> "\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[{\"name\":\"Bug\"}]},\"inverseRelations\":{\"nodes\":[{\"type\":\"blocks\",\"issue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Done\"}}}]}}],\"pageInfo\":{\"hasNextPage\":"
   <> has_next
   <> ",\"endCursor\":"
   <> cursor
@@ -87,6 +87,17 @@ pub fn normalizes_linear_payload_test() {
   assert blocker.identifier == Some("B-1")
   assert issue.created_at != None
   assert page.has_next_page == False
+}
+
+pub fn outgoing_blocks_relation_does_not_decode_as_blocker_test() {
+  let response =
+    linear.Response(
+      status: 200,
+      body: "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"ABC-123-id\",\"identifier\":\"ABC-123\",\"title\":\"Title ABC-123\",\"state\":{\"name\":\"Todo\"},\"relations\":{\"nodes\":[{\"type\":\"blocks\",\"relatedIssue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Backlog\"}}}]},\"inverseRelations\":{\"nodes\":[]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}",
+    )
+  let assert Ok(page) = linear.parse_page_response(response)
+  let assert [issue] = page.nodes
+  assert issue.blocked_by == []
 }
 
 pub fn pagination_preserves_order_test() {

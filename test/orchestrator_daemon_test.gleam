@@ -579,6 +579,87 @@ fn wait_for_event(
   }
 }
 
+fn wait_for_monitor_down(monitor: process.Monitor, timeout_ms: Int) -> Bool {
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { True })
+  case process.selector_receive(selector, within: timeout_ms) {
+    Ok(True) -> True
+    Ok(False) -> False
+    Error(_) -> False
+  }
+}
+
+fn start_stuck_event_hub() -> process.Subject(hub.Message) {
+  let ready = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let subject = process.new_subject()
+      process.send(ready, subject)
+      sleep_forever()
+    })
+  let assert Ok(subject) = process.receive(ready, within: 1000)
+  subject
+}
+
+fn sleep_forever() -> Nil {
+  process.sleep(60_000)
+  sleep_forever()
+}
+
+pub fn daemon_shutdown_stops_event_hub_test() {
+  let workflow_path = write_workflow("test/tmp/daemon-event-hub-shutdown", 1)
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let assert Ok(event_hub_pid) = process.subject_owner(event_hub)
+  let event_hub_monitor = process.monitor(event_hub_pid)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      start_event_hub: fn() { Ok(event_hub) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  let stopped = wait_for_monitor_down(event_hub_monitor, 1000)
+  case stopped {
+    True -> Nil
+    False -> hub.stop(event_hub)
+  }
+  process.demonitor_process(event_hub_monitor)
+  assert stopped
+}
+
+pub fn daemon_shutdown_logs_event_hub_timeout_test() {
+  let workflow_path =
+    write_workflow("test/tmp/daemon-event-hub-shutdown-timeout", 1)
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let event_hub = start_stuck_event_hub()
+  let assert Ok(event_hub_pid) = process.subject_owner(event_hub)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      start_event_hub: fn() { Ok(event_hub) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert daemon.shutdown(started.data, 3000) == Ok(Nil)
+  assert wait_for_event(log_subject, "event_hub_shutdown_timeout", 10)
+  process.kill(event_hub_pid)
+}
+
 pub fn daemon_skips_invalid_workflow_candidate_and_reports_once_test() {
   let workflow_path =
     write_enforcing_workflow("test/tmp/daemon-invalid-workflow", 1)

@@ -4198,6 +4198,14 @@ fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
     retry_scheduler.cancel_all(state.retry, state.dependencies.cancel_timer)
   worker_registry.worker_handles(state.registry)
   |> list.each(fn(handle) { stop_worker(handle) })
+  let event_hub_shutdown_timeout_ms = 1000
+  case hub.stop_and_wait(state.event_hub, event_hub_shutdown_timeout_ms) {
+    Ok(Nil) -> Nil
+    Error(Nil) ->
+      log_state(state, "warn", "event_hub_shutdown_timeout", [
+        #("timeout_ms", int.to_string(event_hub_shutdown_timeout_ms)),
+      ])
+  }
   let registry = worker_registry.remove_all(state.registry)
   State(
     ..state,

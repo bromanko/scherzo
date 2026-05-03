@@ -512,11 +512,11 @@ fn graphql_request(endpoint: String, api_key: String, body: String) -> Request {
 }
 
 pub fn candidate_query() -> String {
-  "query CandidateIssues($projectSlug: String!, $activeStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $activeStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } } pageInfo { hasNextPage endCursor } } }"
+  "query CandidateIssues($projectSlug: String!, $activeStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $activeStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations { nodes { type issue { id identifier state { name } } } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn state_refresh_query() -> String {
-  "query IssueStates($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } } pageInfo { hasNextPage endCursor } } }"
+  "query IssueStates($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations { nodes { type issue { id identifier state { name } } } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn issue_comments_query() -> String {
@@ -1264,7 +1264,11 @@ fn issue_decoder() -> decode.Decoder(domain.Issue) {
     decode.optional(decode.string),
   )
   use labels <- decode.optional_field("labels", [], labels_decoder())
-  use blockers <- decode.optional_field("relations", [], blockers_decoder())
+  use blockers <- decode.optional_field(
+    "inverseRelations",
+    [],
+    blockers_decoder(),
+  )
   decode.success(domain.Issue(
     id: id,
     identifier: identifier,
@@ -1322,7 +1326,7 @@ pub type RelatedIssue {
 
 fn relation_decoder() -> decode.Decoder(Relation) {
   use type_ <- decode.field("type", decode.string)
-  use related <- decode.field("relatedIssue", related_issue_decoder())
+  use related <- decode.field("issue", related_issue_decoder())
   decode.success(Relation(
     type_: type_,
     blocker: domain.BlockerRef(
