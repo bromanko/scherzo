@@ -323,9 +323,7 @@ Post-review validation also succeeded after checking the Gleam review feedback:
 
     direnv exec . gleam test
     ...
-    538 passed, no failures
-
-Example skill workflow:
+    538 passed, no failuresExample skill workflow:
 
     User: /skill:scherzo-operator
     User: summarize current workers
