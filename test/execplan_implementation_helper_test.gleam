@@ -147,10 +147,16 @@ pub fn ticket_brief_renders_linear_context_test() {
   )
 }
 
-pub fn jj_workspace_hook_prefers_remote_base_for_new_root_workspaces_test() {
+pub fn jj_workspace_hook_prefers_configured_remote_base_for_new_root_workspaces_test() {
   let assert Ok(script) = simplifile.read("scripts/scherzo-jj-workspace")
   assert string.contains(script, "SCHERZO_JJ_WORKSPACE_BASE")
-  assert string.contains(script, "elif revision_exists main@origin")
+  assert string.contains(script, "default_base=${SCHERZO_PR_BASE:-main}")
+  assert string.contains(script, "default_remote=${SCHERZO_PR_REMOTE:-origin}")
+  assert string.contains(
+    script,
+    "remote_base=\"${default_base}@${default_remote}\"",
+  )
+  assert string.contains(script, "elif revision_exists \"$remote_base\"")
   assert string.contains(script, "--revision \"$base_revision\"")
 }
 
@@ -200,6 +206,7 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
     "PR_URL=https://github.com/example/repo/pull/123",
   )
   let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(jj_log, "git fetch --remote origin --branch main")
   assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
   assert string.contains(jj_log, "diff --from main@origin --to @ --name-only")
   let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
@@ -212,6 +219,92 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   )
 }
 
+pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
+  let dir = "test/tmp/execplan-publish-normalize"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/example.md",
+      "# Example ExecPlan\n\n"
+        <> "## Progress\n\n"
+        <> "- [x] Drafted.\n\n"
+        <> "## Open Questions and Clarifications Needed\n\n"
+        <> "None.\n",
+    )
+  write_fake_execplan_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-pr",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "Publish base normalization")
+  assert string.contains(artifact.stdout, "PUBLISH_BASE=main@origin")
+  assert string.contains(
+    artifact.stdout,
+    "PR_URL=https://github.com/example/repo/pull/123",
+  )
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(jj_log, "git fetch --remote origin --branch main")
+  assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
+  assert string.contains(
+    jj_log,
+    "describe -m docs(plan): add execplan for example",
+  )
+  assert string.contains(
+    jj_log,
+    "git push --remote origin --bookmark scherzo/execplan/example-execchange",
+  )
+}
+
+fn write_fake_execplan_jj(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> jj.log\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then echo 'origin https://github.com/example/repo.git'; exit 0; fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = diff ]; then\n"
+        <> "  case \" $* \" in *\" --summary \"*) echo 'A docs/plans/example.md';; *) echo 'docs/plans/example.md';; esac\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = rebase ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = bookmark ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = status ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = log ]; then\n"
+        <> "  rev=\n"
+        <> "  template=\n"
+        <> "  prev=\n"
+        <> "  for arg in \"$@\"; do\n"
+        <> "    if [ \"$prev\" = -r ]; then rev=$arg; fi\n"
+        <> "    if [ \"$prev\" = -T ]; then template=$arg; fi\n"
+        <> "    prev=$arg\n"
+        <> "  done\n"
+        <> "  case \"$rev\" in\n"
+        <> "    main@origin) echo remotecommit; exit 0;;\n"
+        <> "    @-) echo localparentcommit; exit 0;;\n"
+        <> "    @) case \"$template\" in *change_id.short*) echo execchange;; *) echo currentcommit;; esac; exit 0;;\n"
+        <> "    conflicts*) exit 0;;\n"
+        <> "    remote_bookmarks*) exit 0;;\n"
+        <> "    *) exit 1;;\n"
+        <> "  esac\n"
+        <> "fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
 fn write_fake_jj(path: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
@@ -219,6 +312,7 @@ fn write_fake_jj(path: String) -> Nil {
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> jj.log\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then echo 'origin https://github.com/example/repo.git'; exit 0; fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then exit 0; fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
         <> "if [ \"$1\" = diff ]; then echo 'scripts/scherzo-implementation'; exit 0; fi\n"
         <> "if [ \"$1\" = rebase ]; then exit 0; fi\n"
@@ -239,6 +333,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "    @-) echo localparentcommit; exit 0;;\n"
         <> "    @) case \"$template\" in *change_id.short*) echo publishchange;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "    conflicts*) exit 0;;\n"
+        <> "    remote_bookmarks*) exit 0;;\n"
         <> "    *) exit 1;;\n"
         <> "  esac\n"
         <> "fi\n"

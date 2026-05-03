@@ -314,13 +314,32 @@ def current_parent_commit_ids() -> list[str]:
     return revision_commit_ids("@-")
 
 
+def fetch_publish_base(base: str, remote: str) -> None:
+    proc = subprocess.run(
+        ["jj", "git", "fetch", "--remote", remote, "--branch", base],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+    if proc.returncode != 0:
+        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        fail(
+            f"could not fetch PR base {base!r} from remote {remote!r}. "
+            f"Fetch or configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry.\n{details}"
+        )
+
+
 def publish_base_revision(base: str, remote: str) -> str:
     remote_base = f"{base}@{remote}"
     if revision_exists(remote_base):
         return remote_base
     if revision_exists(base):
         print(
-            f"warning: remote publish base {remote_base!r} was not found; "
+            f"warning: remote publish base {remote_base!r} was not found after fetch; "
             f"falling back to local revision {base!r}",
             file=sys.stderr,
         )
@@ -384,6 +403,38 @@ def normalize_publish_base(base_revision: str) -> bool:
             + ("\n" + status if status else "")
         )
     return True
+
+
+def empty_description_commits_to_push(remote: str) -> list[str]:
+    revset = f'remote_bookmarks(remote={remote})..@ & description(exact:"") & ~root()'
+    proc = subprocess.run(
+        [
+            "jj",
+            "log",
+            "-r",
+            revset,
+            "--no-graph",
+            "-T",
+            'change_id.short() ++ " " ++ commit_id.short() ++ " " ++ if(empty, "(empty) ", "") ++ if(description, description.first_line(), "(no description set)") ++ "\\n"',
+            "--color=never",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        fail(f"could not inspect commits that would be pushed to {remote!r}\n{details}")
+    return clean_lines(proc.stdout)
+
+
+def ensure_no_empty_descriptions_to_push(remote: str) -> None:
+    commits = empty_description_commits_to_push(remote)
+    if commits:
+        fail(
+            "refusing to push because these commits in the push range have empty descriptions:\n"
+            + "\n".join(commits)
+        )
 
 
 def clean_lines(value: str) -> list[str]:
@@ -761,6 +812,7 @@ def publish_command() -> None:
     base = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
     remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
     repo = default_repo(remote)
+    fetch_publish_base(base, remote)
     base_revision = publish_base_revision(base, remote)
     rebased = normalize_publish_base(base_revision)
     if rebased:
@@ -779,6 +831,7 @@ def publish_command() -> None:
     branch = f"{branch_prefix}/{slug}-{change_id}"
 
     run(["jj", "describe", "-m", description])
+    ensure_no_empty_descriptions_to_push(remote)
     run(["jj", "bookmark", "set", branch, "--revision", "@"])
     run(["jj", "git", "push", "--remote", remote, "--bookmark", branch])
 

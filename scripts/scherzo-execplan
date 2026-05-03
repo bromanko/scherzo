@@ -141,6 +141,91 @@ remote_url() {
   jj git remote list --color=never | awk -v remote="$remote" '$1 == remote { print $2; exit }'
 }
 
+revision_exists() {
+  revision=$1
+  jj log -r "$revision" --no-graph -T 'commit_id' --color=never >/dev/null 2>&1
+}
+
+revision_commit_ids() {
+  revision=$1
+  jj log -r "$revision" --no-graph -T 'commit_id ++ "\n"' --color=never | sed '/^[[:space:]]*$/d'
+}
+
+current_parent_commit_ids() {
+  revision_commit_ids @-
+}
+
+fetch_publish_base() {
+  base=$1
+  remote=$2
+  if ! output=$(jj git fetch --remote "$remote" --branch "$base" 2>&1); then
+    printf '%s\n' "$output" >&2
+    fail "could not fetch PR base $base from remote $remote; configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry"
+  fi
+  [ -z "$output" ] || printf '%s\n' "$output"
+}
+
+publish_base_revision() {
+  base=$1
+  remote=$2
+  remote_base="${base}@${remote}"
+  if revision_exists "$remote_base"; then
+    printf '%s\n' "$remote_base"
+  elif revision_exists "$base"; then
+    echo "scherzo-execplan: warning: remote publish base $remote_base was not found after fetch; falling back to local revision $base" >&2
+    printf '%s\n' "$base"
+  else
+    fail "could not find publish base revision $remote_base or $base"
+  fi
+}
+
+has_unresolved_conflicts() {
+  revision=$1
+  conflicts=$(jj log -r "conflicts() & ($revision)" --no-graph -T 'change_id.short()' --color=never 2>/dev/null || true)
+  [ -n "$conflicts" ]
+}
+
+normalize_publish_base() {
+  base_revision=$1
+  base_commit_ids=$(revision_commit_ids "$base_revision")
+  parent_commit_ids=$(current_parent_commit_ids)
+  base_count=$(printf '%s\n' "$base_commit_ids" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
+  if [ "$base_count" = "1" ] && [ "$parent_commit_ids" = "$base_commit_ids" ]; then
+    return 1
+  fi
+
+  echo "## Publish base normalization"
+  echo "Rebasing final ExecPlan change onto \`$base_revision\` before publishing so the PR branch does not push local workspace ancestors."
+  jj rebase -r @ -d "$base_revision" --color=never || \
+    fail "could not rebase the final ExecPlan change onto the PR base $base_revision; resolve the retained workspace manually, rerun validation, and publish again"
+  if has_unresolved_conflicts @; then
+    status=$(jj status --color=never 2>/dev/null || true)
+    fail "rebasing the final ExecPlan change onto the PR base left unresolved conflicts. Resolve the retained workspace manually, rerun validation, and publish again.${status:+\n$status}"
+  fi
+  return 0
+}
+
+empty_description_commits_to_push() {
+  remote=$1
+  revset='remote_bookmarks(remote='"$remote"')..@ & description(exact:"") & ~root()'
+  jj log -r "$revset" --no-graph \
+    -T 'change_id.short() ++ " " ++ commit_id.short() ++ " " ++ if(empty, "(empty) ", "") ++ if(description, description.first_line(), "(no description set)") ++ "\n"' \
+    --color=never
+}
+
+ensure_no_empty_descriptions_to_push() {
+  remote=$1
+  if ! undescribed=$(empty_description_commits_to_push "$remote" 2>&1); then
+    printf '%s\n' "$undescribed" >&2
+    fail "could not inspect commits that would be pushed to $remote"
+  fi
+  if [ -n "$undescribed" ]; then
+    echo "scherzo-execplan: refusing to push because these commits in the push range have empty descriptions:" >&2
+    printf '%s\n' "$undescribed" >&2
+    exit 1
+  fi
+}
+
 create_pr_command() {
   require_command jj
   require_command gh
@@ -155,6 +240,14 @@ create_pr_command() {
     url=$(remote_url "$remote")
     [ -n "$url" ] || fail "could not find jj git remote: $remote"
     repo=$(owner_repo_from_url "$url") || fail "could not infer GitHub owner/repo from remote URL: $url"
+  fi
+  fetch_publish_base "$base" "$remote"
+  base_revision=$(publish_base_revision "$base" "$remote")
+  if normalize_publish_base "$base_revision"; then
+    echo ""
+    echo "## Validation after publish-base normalization"
+    plan=$(find_plan_path)
+    validate_plan "$plan"
   fi
 
   title=$(sed -n 's/^# //p' "$plan" | sed -n '1p')
@@ -171,6 +264,7 @@ create_pr_command() {
   branch="scherzo/execplan/${slug}-${change_id}"
 
   jj describe -m "docs(plan): add execplan for $slug"
+  ensure_no_empty_descriptions_to_push "$remote"
   jj bookmark set "$branch" --revision @
   jj git push --remote "$remote" --bookmark "$branch"
 
@@ -198,6 +292,7 @@ EOF_BODY
 
   echo "PLAN_PATH=$plan"
   echo "BRANCH=$branch"
+  echo "PUBLISH_BASE=$base_revision"
   echo "PR_URL=$pr_url"
 }
 

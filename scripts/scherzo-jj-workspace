@@ -17,7 +17,8 @@ Usage: scherzo-jj-workspace <after-create|before-run|before-remove> <workflow-na
 Run from a Scherzo hook cwd. SCHERZO_REPO_ROOT may point at the coordinating
 jj repository; otherwise the script infers it from .scherzo/workspaces layout.
 Set SCHERZO_JJ_WORKSPACE_BASE to override the initial base revision; otherwise
-new root workspaces prefer main@origin, then main, then @.
+new root workspaces prefer ${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin},
+then ${SCHERZO_PR_BASE:-main}, then main@origin, then main, then @.
 EOF
 }
 
@@ -79,13 +80,21 @@ revision_exists() {
 }
 
 workspace_base_revision() {
+  default_base=${SCHERZO_PR_BASE:-main}
+  default_remote=${SCHERZO_PR_REMOTE:-origin}
+  remote_base="${default_base}@${default_remote}"
+
   if [ -n "${SCHERZO_JJ_WORKSPACE_BASE:-}" ]; then
     revision_exists "$SCHERZO_JJ_WORKSPACE_BASE" || \
       fail "SCHERZO_JJ_WORKSPACE_BASE does not resolve in repo: $SCHERZO_JJ_WORKSPACE_BASE"
     printf '%s\n' "$SCHERZO_JJ_WORKSPACE_BASE"
-  elif revision_exists main@origin; then
+  elif revision_exists "$remote_base"; then
+    printf '%s\n' "$remote_base"
+  elif revision_exists "$default_base"; then
+    printf '%s\n' "$default_base"
+  elif [ "$remote_base" != main@origin ] && revision_exists main@origin; then
     printf '%s\n' main@origin
-  elif revision_exists main; then
+  elif [ "$default_base" != main ] && revision_exists main; then
     printf '%s\n' main
   else
     printf '%s\n' @
