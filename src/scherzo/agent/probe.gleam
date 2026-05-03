@@ -1,5 +1,5 @@
-import scherzo/agent/pi_rpc
 import scherzo/error
+import scherzo/pi/client
 
 pub fn probe(
   command: String,
@@ -7,7 +7,7 @@ pub fn probe(
   read_timeout_ms: Int,
 ) -> Result(Nil, error.PiRpcError) {
   case
-    pi_rpc.launch(
+    client.launch(
       command,
       cwd,
       "scherzo compatibility probe",
@@ -16,13 +16,13 @@ pub fn probe(
     )
   {
     Ok(session) -> {
-      case pi_rpc.get_session_stats(session, read_timeout_ms) {
+      case client.get_session_stats(session, read_timeout_ms) {
         Ok(#(session, _)) -> {
-          let _ = pi_rpc.terminate(session)
+          let _ = client.terminate(session)
           Ok(Nil)
         }
         Error(err) -> {
-          let _ = pi_rpc.terminate(session)
+          let _ = client.terminate(session)
           Error(err)
         }
       }

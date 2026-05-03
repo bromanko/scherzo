@@ -1,7 +1,7 @@
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/session/event as session_event
 import scherzo/session/hub
@@ -9,7 +9,7 @@ import scherzo/session/hub
 pub fn worker_update(
   event_hub: process.Subject(hub.Message),
   session_id: String,
-  update: runner.PiUpdate,
+  update: agent_types.PiUpdate,
 ) -> Nil {
   case status_for_update(update) {
     Some(status) -> hub.update_status(event_hub, session_id, status)
@@ -54,7 +54,9 @@ pub fn lifecycle(
   )
 }
 
-pub fn update_payload(update: runner.PiUpdate) -> session_event.EventPayload {
+pub fn update_payload(
+  update: agent_types.PiUpdate,
+) -> session_event.EventPayload {
   session_event.EventPayload(
     kind: kind_for_update(update),
     name: session_event.PiName(update.event),
@@ -72,7 +74,9 @@ pub fn update_payload(update: runner.PiUpdate) -> session_event.EventPayload {
   )
 }
 
-pub fn kind_for_update(update: runner.PiUpdate) -> session_event.EventKind {
+pub fn kind_for_update(
+  update: agent_types.PiUpdate,
+) -> session_event.EventKind {
   case update.event {
     pi_event.ProbeStarted
     | pi_event.ProbeFinished
@@ -116,7 +120,7 @@ pub fn kind_for_update(update: runner.PiUpdate) -> session_event.EventKind {
   }
 }
 
-pub fn pi_type_for_update(update: runner.PiUpdate) -> Option(String) {
+pub fn pi_type_for_update(update: agent_types.PiUpdate) -> Option(String) {
   case update.raw_json {
     Some(_) -> Some(pi_event.to_string(update.event))
     None -> None
@@ -124,7 +128,7 @@ pub fn pi_type_for_update(update: runner.PiUpdate) -> Option(String) {
 }
 
 pub fn status_for_update(
-  update: runner.PiUpdate,
+  update: agent_types.PiUpdate,
 ) -> Option(session_event.SessionStatus) {
   case update.event {
     pi_event.ProbeStarted | pi_event.ProbeFinished ->

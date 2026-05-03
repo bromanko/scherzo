@@ -4,7 +4,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import scherzo/agent/pi_event
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/control/command
 import scherzo/domain
@@ -216,10 +216,10 @@ steps:
 fn success(
   final: domain.Issue,
   workspace_path: String,
-) -> runner.WorkerSuccess {
-  runner.WorkerSuccess(
+) -> agent_types.WorkerSuccess {
+  agent_types.WorkerSuccess(
     final_issue: Some(final),
-    final_classification: runner.FinalTerminal,
+    final_classification: agent_types.FinalTerminal,
     workspace_path: workspace_path,
     tokens: domain.zero_token_totals(),
     turns: 1,
@@ -332,7 +332,7 @@ fn fake_workflow_run_dependencies(
       _command_ready,
     ) {
       process.send(log_subject, "yaml_agent:" <> prompt)
-      emit_update(runner.PiUpdate(
+      emit_update(agent_types.PiUpdate(
         event: pi_event.TurnFinished,
         message: Some("hello"),
         raw_json: None,
@@ -346,9 +346,9 @@ fn fake_workflow_run_dependencies(
         tool_output: None,
         tool_status: None,
       ))
-      Ok(runner.WorkerSuccess(
+      Ok(agent_types.WorkerSuccess(
         final_issue: Some(issue),
-        final_classification: runner.FinalTerminal,
+        final_classification: agent_types.FinalTerminal,
         workspace_path: workspace_path,
         tokens: domain.zero_token_totals(),
         turns: 1,
@@ -382,7 +382,7 @@ fn blocking_command_ready_workflow_run_dependencies(
       command_ready(command_subject)
       process.send(log_subject, "agent_ready")
       process.sleep(5000)
-      Error(runner.WorkerFailure(
+      Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError("stopped:" <> step_id)),
         workspace_path: Some(workspace_path),
         tokens: domain.zero_token_totals(),
@@ -411,7 +411,7 @@ fn surviving_agent_workflow_run_dependencies(
       process.send(log_subject, "agent_started")
       process.sleep(500)
       process.send(log_subject, "agent_survived")
-      Error(runner.WorkerFailure(
+      Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError("survived_abort")),
         workspace_path: Some(workspace_path),
         tokens: domain.zero_token_totals(),
@@ -444,9 +444,9 @@ fn command_ready_workflow_run_dependencies(
         Ok(worker_command.QueuePrompt(message, reply)) -> {
           process.send(log_subject, "prompt:" <> message)
           process.send(reply, worker_command.Queued(Some("queued")))
-          Ok(runner.WorkerSuccess(
+          Ok(agent_types.WorkerSuccess(
             final_issue: Some(issue),
-            final_classification: runner.FinalTerminal,
+            final_classification: agent_types.FinalTerminal,
             workspace_path: workspace_path,
             tokens: domain.zero_token_totals(),
             turns: 1,
@@ -459,7 +459,7 @@ fn command_ready_workflow_run_dependencies(
         }
         Ok(other) -> {
           let _ = other
-          Error(runner.WorkerFailure(
+          Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("unexpected_command")),
             workspace_path: Some(workspace_path),
             tokens: domain.zero_token_totals(),
@@ -467,7 +467,7 @@ fn command_ready_workflow_run_dependencies(
           ))
         }
         Error(_) ->
-          Error(runner.WorkerFailure(
+          Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("command_timeout")),
             workspace_path: Some(workspace_path),
             tokens: domain.zero_token_totals(),
@@ -983,7 +983,7 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
           process.send(log_subject, "agent_run")
           case issue.title == "retry succeeds" {
             False ->
-              Error(runner.WorkerFailure(
+              Error(agent_types.WorkerFailure(
                 reason: error.PiFailed(error.PiProtocolError("boom")),
                 workspace_path: Some(workspace_path),
                 tokens: domain.zero_token_totals(),

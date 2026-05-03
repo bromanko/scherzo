@@ -2,7 +2,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/log
 import scherzo/template
@@ -52,7 +52,7 @@ pub fn succeeded(status: StepStatus) -> Bool {
 
 pub fn from_agent_success(
   step_id: String,
-  success: runner.WorkerSuccess,
+  success: agent_types.WorkerSuccess,
   secrets: List(String),
   limits: domain.ArtifactLimits,
 ) -> StepArtifact {

@@ -5,6 +5,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/pi_event
 import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/control/command
 import scherzo/domain
@@ -135,10 +136,10 @@ fn tracker_returning(final_issue: domain.Issue) -> tracker.Client {
 }
 
 fn receive_update_named(
-  subject: process.Subject(runner.PiUpdate),
+  subject: process.Subject(agent_types.PiUpdate),
   name: String,
   attempts: Int,
-) -> Result(runner.PiUpdate, Nil) {
+) -> Result(agent_types.PiUpdate, Nil) {
   case attempts <= 0 {
     True -> Error(Nil)
     False ->
@@ -195,7 +196,7 @@ pub fn abort_command_stops_fake_pi_worker_test() {
   process.send(command_subject, worker_command.Abort(reply))
   let assert Ok(worker_command.Applied(_)) =
     process.receive(reply, within: 1000)
-  let assert Ok(Error(runner.WorkerFailure(
+  let assert Ok(Error(agent_types.WorkerFailure(
     reason: error.OperatorAbort,
     workspace_path: Some(_),
     tokens: _,
@@ -298,7 +299,7 @@ pub fn operator_ui_request_timeout_cancels_before_read_timeout_test() {
     receive_update_named(updates, "operator_ui_timeout", 20)
   assert timeout_update.request_id == Some("ui-1")
   let assert Ok(Ok(success)) = process.receive(result_subject, within: 3000)
-  assert success.final_classification == runner.FinalTerminal
+  assert success.final_classification == agent_types.FinalTerminal
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "extension_ui_response")
   assert string.contains(contents, "cancelled")
@@ -347,7 +348,7 @@ pub fn operator_ui_request_cancel_response_test() {
   let assert Ok(worker_command.Applied(_)) =
     process.receive(reply, within: 1000)
   let assert Ok(Ok(success)) = process.receive(result_subject, within: 3000)
-  assert success.final_classification == runner.FinalTerminal
+  assert success.final_classification == agent_types.FinalTerminal
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "extension_ui_response")
   assert string.contains(contents, "cancelled")

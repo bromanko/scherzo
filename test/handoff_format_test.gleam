@@ -1,7 +1,7 @@
 import birl
 import gleam/option.{None, Some}
 import gleam/string
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/handoff_format
 import scherzo/tracker/state as issue_state
@@ -23,12 +23,12 @@ fn issue() -> domain.Issue {
   )
 }
 
-fn success(result: domain.ResultArtifact) -> runner.WorkerSuccess {
-  runner.WorkerSuccess(
+fn success(result: domain.ResultArtifact) -> agent_types.WorkerSuccess {
+  agent_types.WorkerSuccess(
     final_issue: Some(
       domain.Issue(..issue(), state: issue_state.from_string_unchecked("Done")),
     ),
-    final_classification: runner.FinalTerminal,
+    final_classification: agent_types.FinalTerminal,
     workspace_path: "workspace",
     tokens: domain.TokenTotals(
       input: 10,
