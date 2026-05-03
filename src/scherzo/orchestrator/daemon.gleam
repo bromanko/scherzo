@@ -2512,7 +2512,7 @@ fn handle_retry_candidate_with_slots(
   issue_id: String,
   candidate: Result(Option(domain.Issue), String),
 ) -> State {
-  case retry_candidate_needs_slot_retry(state, candidate) {
+  case retry_candidate_needs_slot_retry(state, issue_id, candidate) {
     True -> {
       let transition =
         core.schedule_retry_with_backoff(
@@ -2540,10 +2540,19 @@ fn handle_retry_candidate_with_slots(
 
 fn retry_candidate_needs_slot_retry(
   state: State,
+  issue_id: String,
   candidate: Result(Option(domain.Issue), String),
 ) -> Bool {
   case candidate {
-    Ok(Some(issue)) -> !can_reserve_dispatch_slot(state, issue)
+    Ok(Some(issue)) ->
+      core.retry_candidate_preconditions_satisfied_without_slot_capacity(
+        state.runtime,
+        state.workflow.effective,
+        issue_id,
+        issue,
+      )
+      && core.workflow_policy_satisfied(state.workflow.effective, issue)
+      && !can_reserve_dispatch_slot(state, issue)
     _ -> False
   }
 }

@@ -681,6 +681,75 @@ pub fn continuation_retry_can_dispatch_self_claimed_issue_test() {
   assert dict.has_key(next.claimed, "a")
 }
 
+pub fn retry_candidate_terminal_issue_clears_retry_without_no_slots_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let state =
+    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(state, config(), "a", issue, 100)
+  let done =
+    domain.Issue(..issue, state: issue_state.from_string_unchecked("Done"))
+
+  let core.Transition(state: next, effects: effects) =
+    core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(done)))
+
+  assert effects == [core.ReleaseClaim("a")]
+  assert !dict.has_key(next.retry_attempts, "a")
+  assert !dict.has_key(next.claimed, "a")
+}
+
+pub fn retry_candidate_non_active_issue_clears_retry_without_no_slots_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let state =
+    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(state, config(), "a", issue, 100)
+  let backlog =
+    domain.Issue(..issue, state: issue_state.from_string_unchecked("Backlog"))
+
+  let core.Transition(state: next, effects: effects) =
+    core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(backlog)))
+
+  assert effects == [core.ReleaseClaim("a")]
+  assert !dict.has_key(next.retry_attempts, "a")
+  assert !dict.has_key(next.claimed, "a")
+}
+
+pub fn retry_candidate_without_slot_capacity_retries_no_slots_test() {
+  let retry_issue = issue("a", "ABC-1", "Todo", Some(1))
+  let running_issue = issue("b", "ABC-2", "In Progress", Some(2))
+  let one_slot_config =
+    domain.EffectiveConfig(
+      ..config(),
+      agent: domain.AgentConfig(..config().agent, max_concurrent_agents: 1),
+    )
+  let state =
+    core.apply_worker_start(
+      core.new_state(one_slot_config),
+      retry_issue,
+      "/tmp/a",
+    )
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(state, one_slot_config, "a", retry_issue, 100)
+  let full_state = core.apply_worker_start(retry_state, running_issue, "/tmp/b")
+
+  let core.Transition(state: next, effects: effects) =
+    core.handle_retry_candidate(
+      full_state,
+      one_slot_config,
+      "a",
+      Ok(Some(retry_issue)),
+    )
+
+  assert effects
+    == [
+      core.CancelRetry("a"),
+      core.ScheduleRetry("a", 20_000, 2, reason.RetryNoSlots),
+    ]
+  assert dict.has_key(next.retry_attempts, "a")
+  assert dict.has_key(next.claimed, "a")
+}
+
 pub fn retry_timer_handling_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let state =
