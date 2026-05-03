@@ -95,21 +95,32 @@ pub fn render_header(
   summary: event.SessionSummary,
   options: RenderOptions,
 ) -> List(RenderChunk) {
+  list.flatten([
+    [
+      Line(style.heading(
+        options.color_mode,
+        sanitize.text(summary.issue_identifier <> " " <> summary.issue_title),
+      )),
+      Line(
+        style.meta_label(options.color_mode, "workspace:")
+        <> " "
+        <> sanitize.text(summary.workspace_path),
+      ),
+      Line(
+        style.meta_label(options.color_mode, "session:")
+        <> " "
+        <> sanitize.text(summary.display_name),
+      ),
+    ],
+    render_status_lines(summary, options),
+  ])
+}
+
+fn render_status_lines(
+  summary: event.SessionSummary,
+  options: RenderOptions,
+) -> List(RenderChunk) {
   [
-    Line(style.heading(
-      options.color_mode,
-      sanitize.text(summary.issue_identifier <> " " <> summary.issue_title),
-    )),
-    Line(
-      style.meta_label(options.color_mode, "workspace:")
-      <> " "
-      <> sanitize.text(summary.workspace_path),
-    ),
-    Line(
-      style.meta_label(options.color_mode, "session:")
-      <> " "
-      <> sanitize.text(summary.session_id),
-    ),
     Line(
       style.meta_label(options.color_mode, "status:")
       <> " "

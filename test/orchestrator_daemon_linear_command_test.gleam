@@ -13,6 +13,7 @@ import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/session/hub
+import scherzo/session/name as session_name
 import scherzo/tracker
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
@@ -592,6 +593,10 @@ pub fn linear_runtime_issue_commands_poll_when_candidate_dispatch_skipped_test()
   let assert Ok(ack) = process.receive(ack_subject, within: 1000)
   assert string.contains(ack, "Command: prompt")
   assert string.contains(ack, "Status: queued")
+  let canonical_session_id = "ABC-1-1000-1"
+  let display_name = session_name.generate("ABC-1", canonical_session_id)
+  assert string.contains(ack, "Target: " <> display_name)
+  assert !string.contains(ack, "Target: " <> canonical_session_id)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }

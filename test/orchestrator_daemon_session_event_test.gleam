@@ -14,6 +14,7 @@ import scherzo/orchestrator/daemon
 import scherzo/path
 import scherzo/session/event
 import scherzo/session/hub
+import scherzo/session/name as session_name
 import scherzo/session/reason
 import scherzo/tracker
 import scherzo/tracker/state as issue_state
@@ -275,9 +276,17 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
   let assert Ok(#(_, expected_workspace)) =
     workspace.workspace_path(root, "ABC-123")
   assert summary.issue_identifier == "ABC-123"
+  assert summary.display_name
+    == session_name.generate("ABC-123", "ABC-123-42-1")
   assert summary.workspace_path == expected_workspace
   assert summary.status == event.Exited(reason.Normal)
   assert summary.token_totals.total == 3
+
+  let assert Ok(step_summary) =
+    wait_for_session(hub_subject, "ABC-123-42-1-implement", 20)
+  assert step_summary.display_name
+    == session_name.generate("ABC-123", "ABC-123-42-1-implement")
+  assert step_summary.display_name != summary.display_name
 
   let assert Ok(page) =
     hub.events_after(hub_subject, "ABC-123-42-1", 0, 20, 1000)
