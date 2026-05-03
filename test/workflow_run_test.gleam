@@ -3,7 +3,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/config
 import scherzo/domain
 import scherzo/error
@@ -95,10 +95,10 @@ fn empty_tracker() -> tracker.Client {
   )
 }
 
-fn success_agent(prompt: String) -> runner.WorkerSuccess {
-  runner.WorkerSuccess(
+fn success_agent(prompt: String) -> agent_types.WorkerSuccess {
+  agent_types.WorkerSuccess(
     final_issue: Some(issue()),
-    final_classification: runner.FinalTerminal,
+    final_classification: agent_types.FinalTerminal,
     workspace_path: "workspace",
     tokens: domain.zero_token_totals(),
     turns: 1,

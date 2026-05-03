@@ -2,7 +2,7 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
 import gleam/otp/actor
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/error
 import scherzo/handoff
@@ -32,14 +32,14 @@ pub type Effect {
   ReportSuccess(
     issue_id: String,
     issue: domain.Issue,
-    success: runner.WorkerSuccess,
+    success: agent_types.WorkerSuccess,
     run_id: String,
     client: handoff.Client,
   )
   ReportFailure(
     issue_id: String,
     issue: domain.Issue,
-    failure: runner.WorkerFailure,
+    failure: agent_types.WorkerFailure,
     run_id: String,
     client: handoff.Client,
   )

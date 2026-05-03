@@ -1,16 +1,16 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/agent/pi_rpc
 import scherzo/domain
 import scherzo/log
+import scherzo/pi/protocol
 
 pub fn empty() -> domain.ResultArtifact {
   domain.ResultArtifact(final_response: None, truncated: False, source: "none")
 }
 
 pub fn from_records(
-  records: List(pi_rpc.RpcRecord),
+  records: List(protocol.RpcRecord),
   secrets: List(String),
   max_chars: Int,
 ) -> domain.ResultArtifact {
@@ -76,7 +76,7 @@ fn cap_existing(
   )
 }
 
-fn assistant_messages(records: List(pi_rpc.RpcRecord)) -> List(String) {
+fn assistant_messages(records: List(protocol.RpcRecord)) -> List(String) {
   case records {
     [] -> []
     [record, ..rest] ->
@@ -84,7 +84,7 @@ fn assistant_messages(records: List(pi_rpc.RpcRecord)) -> List(String) {
   }
 }
 
-fn concatenated_deltas(records: List(pi_rpc.RpcRecord)) -> Option(String) {
+fn concatenated_deltas(records: List(protocol.RpcRecord)) -> Option(String) {
   let values = delta_values(records)
   case list.is_empty(values) {
     True -> None
@@ -98,7 +98,7 @@ fn concatenated_deltas(records: List(pi_rpc.RpcRecord)) -> Option(String) {
   }
 }
 
-fn delta_values(records: List(pi_rpc.RpcRecord)) -> List(String) {
+fn delta_values(records: List(protocol.RpcRecord)) -> List(String) {
   case records {
     [] -> []
     [record, ..rest] -> {

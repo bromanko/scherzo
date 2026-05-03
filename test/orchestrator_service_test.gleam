@@ -3,7 +3,7 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/domain
 import scherzo/error
 import scherzo/linear
@@ -144,9 +144,9 @@ fn workflow_deps() -> workflow_run.Dependencies {
       _emit_update,
       _command_ready,
     ) {
-      Ok(runner.WorkerSuccess(
+      Ok(agent_types.WorkerSuccess(
         final_issue: Some(issue),
-        final_classification: runner.FinalTerminal,
+        final_classification: agent_types.FinalTerminal,
         workspace_path: workspace_path,
         tokens: domain.zero_token_totals(),
         turns: 1,

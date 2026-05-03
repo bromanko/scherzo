@@ -3,7 +3,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/domain
 import scherzo/error
@@ -110,10 +110,10 @@ steps:
 fn success(
   final: domain.Issue,
   workspace_path: String,
-) -> runner.WorkerSuccess {
-  runner.WorkerSuccess(
+) -> agent_types.WorkerSuccess {
+  agent_types.WorkerSuccess(
     final_issue: Some(final),
-    final_classification: runner.FinalTerminal,
+    final_classification: agent_types.FinalTerminal,
     workspace_path: workspace_path,
     tokens: domain.TokenTotals(
       input: 1,
@@ -131,8 +131,8 @@ fn success(
   )
 }
 
-fn update(name: String, message: Option(String)) -> runner.PiUpdate {
-  runner.PiUpdate(
+fn update(name: String, message: Option(String)) -> agent_types.PiUpdate {
+  agent_types.PiUpdate(
     event: pi_event.from_string(name),
     message: message,
     raw_json: None,
@@ -170,10 +170,10 @@ fn workflow_deps_from_agent(
     String,
     domain.EffectiveConfig,
     tracker.Client,
-    fn(String, runner.PiUpdate) -> Nil,
+    fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> workflow_run.Dependencies {
   workflow_run.Dependencies(
     ..workflow_run.default_dependencies(),
@@ -212,10 +212,10 @@ fn dependencies(
     String,
     domain.EffectiveConfig,
     tracker.Client,
-    fn(String, runner.PiUpdate) -> Nil,
+    fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     make_tracker: fn(_) { client },
@@ -318,7 +318,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
       fn(issue, _, _, _, _, emit_update, _, _) {
         emit_update(
           issue.id,
-          runner.PiUpdate(
+          agent_types.PiUpdate(
             event: pi_event.Message,
             message: None,
             raw_json: None,
@@ -436,7 +436,7 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
           workspace.workspace_path(root, issue.identifier)
         case issue.title == "retry succeeds" {
           False ->
-            Error(runner.WorkerFailure(
+            Error(agent_types.WorkerFailure(
               reason: error.PiFailed(error.PiProtocolError("boom")),
               workspace_path: Some(expected_workspace),
               tokens: domain.zero_token_totals(),
@@ -533,7 +533,7 @@ pub fn daemon_worker_down_does_not_publish_retry_to_exited_session_test() {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         process.kill(process.self())
-        Error(runner.WorkerFailure(
+        Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("worker_down")),
           workspace_path: Some(expected_workspace),
           tokens: domain.zero_token_totals(),
@@ -618,7 +618,7 @@ pub fn daemon_start_fails_when_event_hub_start_fails_test() {
         log_subject,
         process.new_subject(),
         fn(_, _, _, _, _, _, _, _) {
-          Error(runner.WorkerFailure(
+          Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("not used")),
             workspace_path: None,
             tokens: domain.zero_token_totals(),

@@ -2,7 +2,7 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/control/client
 import scherzo/control/command
@@ -183,10 +183,10 @@ fn in_process_dependencies(
     String,
     domain.EffectiveConfig,
     tracker.Client,
-    fn(String, runner.PiUpdate) -> Nil,
+    fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     ..dependencies_with_tracker(log_subject, tracker_client),
@@ -206,10 +206,10 @@ fn workflow_deps_from_agent(
     String,
     domain.EffectiveConfig,
     tracker.Client,
-    fn(String, runner.PiUpdate) -> Nil,
+    fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) -> Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> workflow_run.Dependencies {
   workflow_run.Dependencies(
     ..workflow_run.default_dependencies(),
@@ -262,14 +262,14 @@ fn long_running_agent(
   String,
   domain.EffectiveConfig,
   tracker.Client,
-  fn(String, runner.PiUpdate) -> Nil,
+  fn(String, agent_types.PiUpdate) -> Nil,
   process.Subject(worker_command.Command),
   fn() -> Nil,
-) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   fn(issue: domain.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.id)
     process.sleep(5000)
-    Error(runner.WorkerFailure(
+    Error(agent_types.WorkerFailure(
       reason: error.PiFailed(error.PiProtocolError("stopped")),
       workspace_path: None,
       tokens: domain.zero_token_totals(),
@@ -286,13 +286,13 @@ fn failing_agent(
   String,
   domain.EffectiveConfig,
   tracker.Client,
-  fn(String, runner.PiUpdate) -> Nil,
+  fn(String, agent_types.PiUpdate) -> Nil,
   process.Subject(worker_command.Command),
   fn() -> Nil,
-) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   fn(issue: domain.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.id)
-    Error(runner.WorkerFailure(
+    Error(agent_types.WorkerFailure(
       reason: error.PiFailed(error.PiProtocolError("boom")),
       workspace_path: Some("test/tmp/failed-workspace"),
       tokens: domain.zero_token_totals(),
@@ -309,17 +309,17 @@ fn fail_original_then_block_agent(
   String,
   domain.EffectiveConfig,
   tracker.Client,
-  fn(String, runner.PiUpdate) -> Nil,
+  fn(String, agent_types.PiUpdate) -> Nil,
   process.Subject(worker_command.Command),
   fn() -> Nil,
-) -> Result(runner.WorkerSuccess, runner.WorkerFailure) {
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   fn(issue: domain.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.title)
     case issue.title == "Changed title" {
       True -> process.sleep(5000)
       False -> Nil
     }
-    Error(runner.WorkerFailure(
+    Error(agent_types.WorkerFailure(
       reason: error.PiFailed(error.PiProtocolError("boom")),
       workspace_path: Some("test/tmp/failed-workspace"),
       tokens: domain.zero_token_totals(),
@@ -717,7 +717,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
         assert message == "status?"
         process.send(reply, worker_command.Applied(Some("prompt accepted")))
         process.sleep(1000)
-        Error(runner.WorkerFailure(
+        Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("stopped")),
           workspace_path: None,
           tokens: domain.zero_token_totals(),
