@@ -1,5 +1,18 @@
 { pkgs, ... }:
 
+let
+  linearctlPackage = "linearctl@0.1.10";
+
+  linearctlCommand = binName: pkgs.writeShellScriptBin binName ''
+    export NODE_NO_WARNINGS=1
+
+    if [ -z "''${LINEAR_API_KEY:-}" ] && [ -n "''${SCHERZO_AGENT_LINEAR_API_KEY:-}" ]; then
+      export LINEAR_API_KEY="$SCHERZO_AGENT_LINEAR_API_KEY"
+    fi
+
+    exec ${pkgs.nodejs_22}/bin/npx --yes --package ${linearctlPackage} ${binName} "$@"
+  '';
+in
 {
   packages = [
     pkgs.gleam
@@ -8,6 +21,8 @@
     pkgs.nodejs_22
     pkgs.git
     pkgs.jq
+    (linearctlCommand "lc")
+    (linearctlCommand "linearctl")
   ];
 
   scripts.check.exec = ''
