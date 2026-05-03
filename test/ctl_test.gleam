@@ -8,6 +8,7 @@ import scherzo/control/protocol
 import scherzo/ctl
 import scherzo/domain
 import scherzo/session/event
+import scherzo/session/reason
 import scherzo/terminal/style
 
 const ps_now_ms = -576_460_678_330
@@ -36,6 +37,14 @@ fn session_summary(
   session_id: String,
   last_event_at_ms: Int,
 ) -> event.SessionSummary {
+  session_summary_with_status(session_id, last_event_at_ms, event.Running)
+}
+
+fn session_summary_with_status(
+  session_id: String,
+  last_event_at_ms: Int,
+  status: event.SessionStatus,
+) -> event.SessionSummary {
   event.SessionSummary(
     session_id: session_id,
     issue_id: "issue-1",
@@ -43,7 +52,7 @@ fn session_summary(
     issue_title: "Improve ctl ps output readability",
     workspace_path: "/tmp/workspace",
     pi_session_id: None,
-    status: event.Running,
+    status: status,
     current_turn: 1,
     started_at_ms: last_event_at_ms - 1000,
     last_event_at_ms: last_event_at_ms,
@@ -319,6 +328,63 @@ pub fn ps_human_table_shortens_long_session_ids_and_formats_last_event_age_test(
   assert list.all(rows, fn(row) { string.length(row) <= 80 })
 }
 
+pub fn ps_human_table_shows_exit_outcomes_test() {
+  let path = "test/tmp/ctl-ps/exits-control.json"
+  write_control_file(path)
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Ps(Some(path), False),
+      ps_deps(
+        [
+          session_summary_with_status(
+            "sid-1",
+            ps_now_ms,
+            event.Exited(reason.Normal),
+          ),
+          session_summary_with_status(
+            "sid-2",
+            ps_now_ms,
+            event.Exited(reason.Failed),
+          ),
+          session_summary_with_status(
+            "sid-3",
+            ps_now_ms,
+            event.Exited(reason.WorkerDown),
+          ),
+          session_summary_with_status(
+            "sid-4",
+            ps_now_ms,
+            event.Exited(reason.OperatorAbort),
+          ),
+          session_summary_with_status(
+            "sid-5",
+            ps_now_ms,
+            event.Exited(reason.OperatorStopAfterCurrentTurn),
+          ),
+          session_summary_with_status("sid-6", ps_now_ms, event.WaitingUi),
+        ],
+        ps_now_ms,
+        "",
+      ),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "success")
+  assert string.contains(transcript, "failed")
+  assert string.contains(transcript, "worker_down")
+  assert string.contains(transcript, "operator_abort")
+  assert string.contains(transcript, "op_stop_after")
+  assert string.contains(transcript, "waiting_ui")
+  assert !string.contains(transcript, "exited")
+
+  let rows = string.trim(transcript) |> string.split(on: "\n")
+  assert list.all(rows, fn(row) { string.length(row) <= 80 })
+}
+
 pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
   let path = "test/tmp/ctl-ps/json-control.json"
   write_control_file(path)
@@ -326,7 +392,7 @@ pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
   let raw_response =
     "{\"session_id\":\""
     <> session_id
-    <> "\",\"last_event_at_ms\":-576460690330}"
+    <> "\",\"status\":\"exited\",\"exit_reason\":\"failed\",\"last_event_at_ms\":-576460690330}"
   let subject = process.new_subject()
 
   let result =
@@ -339,6 +405,8 @@ pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
   assert result == Ok(Nil)
   let transcript = drain_output(subject)
   assert string.contains(transcript, session_id)
+  assert string.contains(transcript, "\"status\":\"exited\"")
+  assert string.contains(transcript, "\"exit_reason\":\"failed\"")
   assert string.contains(transcript, "-576460690330")
   assert !string.contains(transcript, "…")
 }
