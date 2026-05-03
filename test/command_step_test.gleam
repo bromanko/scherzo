@@ -54,6 +54,23 @@ pub fn command_step_captures_stderr_and_nonzero_exit_test() {
   assert artifact.stderr == "bad\n"
 }
 
+pub fn command_step_captures_final_stdout_line_without_newline_test() {
+  let dir = "test/tmp/command-step-no-final-newline"
+  reset_dir(dir)
+  let artifact =
+    command_step.run(
+      "test_step",
+      "printf 'no final newline'",
+      dir,
+      1000,
+      [],
+      limits(),
+    )
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert artifact.stdout == "no final newline\n"
+}
+
 pub fn command_step_timeout_returns_failed_artifact_test() {
   let dir = "test/tmp/command-step-timeout"
   reset_dir(dir)

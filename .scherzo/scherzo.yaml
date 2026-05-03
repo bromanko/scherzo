@@ -61,9 +61,8 @@ pi:
   compatibility_probe: true
 handoff:
   # Move issues through the checked Linear states so successful daemon runs do
-  # not redispatch the same still-active issue on the next poll. Report the
-  # workflow result inline; keep full Markdown attachments off unless a workflow
-  # explicitly needs them later.
+  # not redispatch the same still-active issue on the next poll. Keep success
+  # comments short and upload the full Markdown result as a Linear comment file.
   enabled: true
   comment_on_claim: true
   comment_on_success: true
@@ -71,9 +70,9 @@ handoff:
   claim_state_id: 2e245854-2a96-4ebf-9b67-cbef92ca9a1f
   success_state_id: dbd4662f-635f-4a8d-acd7-cef0def44196
   failure_state_id: 83eb55af-4c17-443f-9501-8a581be7de20
-  include_result_on_success: true
-  attach_result_on_success: false
-  attachment_fallback_to_markdown_link: false
+  include_result_on_success: false
+  attach_result_on_success: true
+  attachment_fallback_to_markdown_link: true
   result_max_chars: 20000
 routing:
   workflow_label_prefix: "workflow:"

@@ -19,7 +19,6 @@ start_with_env(Command, Cwd, Env) ->
                     binary,
                     exit_status,
                     use_stdio,
-                    {line, ?MAX_LINE},
                     {args, ["-lc", Wrapper]},
                     {cd, Dir},
                     {env, normalize_env(Env)}
@@ -42,13 +41,136 @@ send_line({scherzo_process, Port, _ErrPath}, Line) ->
 
 read_stdout_line({scherzo_process, Port, _ErrPath}, TimeoutMs) ->
     Timeout = normalize_timeout(TimeoutMs),
+    Key = {scherzo_port_stdout_state, Port},
+    State = get_stdout_state(Key),
+    case pop_stdout_state(State) of
+        {line, Line, NextState} ->
+            put_stdout_state(Key, NextState),
+            {ok, Line};
+        line_too_long ->
+            erase_stdout_state(Key),
+            {error, <<"line_too_long">>};
+        {exit_status, Status} ->
+            erase_stdout_state(Key),
+            {error, <<"exit_status:", (integer_to_binary(Status))/binary>>};
+        closed ->
+            erase_stdout_state(Key),
+            {error, <<"closed">>};
+        wait ->
+            read_stdout_line_loop(Port, Key, State, Timeout)
+    end.
+
+read_stdout_line_loop(Port, Key, State, Timeout) ->
     receive
-        {Port, {data, {eol, Line}}} -> {ok, Line};
-        {Port, {data, {noeol, _Line}}} -> {error, <<"line_too_long">>};
-        {Port, {exit_status, Status}} -> {error, <<"exit_status:", (integer_to_binary(Status))/binary>>};
-        {'EXIT', Port, _Reason} -> {error, <<"closed">>}
+        {Port, {data, Bytes}} ->
+            Buffer = maps:get(buffer, State, <<>>),
+            NextState = State#{buffer => <<Buffer/binary, Bytes/binary>>},
+            case pop_stdout_state(NextState) of
+                {line, Line, RemainingState} ->
+                    put_stdout_state(Key, RemainingState),
+                    {ok, Line};
+                line_too_long ->
+                    erase_stdout_state(Key),
+                    {error, <<"line_too_long">>};
+                {exit_status, Status} ->
+                    erase_stdout_state(Key),
+                    {error, <<"exit_status:", (integer_to_binary(Status))/binary>>};
+                closed ->
+                    erase_stdout_state(Key),
+                    {error, <<"closed">>};
+                wait ->
+                    put_stdout_state(Key, NextState),
+                    read_stdout_line_loop(Port, Key, NextState, Timeout)
+            end;
+        {Port, {exit_status, Status}} ->
+            NextState = State#{status => {exit_status, Status}},
+            case pop_stdout_state(NextState) of
+                {line, Line, RemainingState} ->
+                    put_stdout_state(Key, RemainingState),
+                    {ok, Line};
+                line_too_long ->
+                    erase_stdout_state(Key),
+                    {error, <<"line_too_long">>};
+                {exit_status, ExitStatus} ->
+                    erase_stdout_state(Key),
+                    {error, <<"exit_status:", (integer_to_binary(ExitStatus))/binary>>};
+                closed ->
+                    erase_stdout_state(Key),
+                    {error, <<"closed">>};
+                wait ->
+                    put_stdout_state(Key, NextState),
+                    read_stdout_line_loop(Port, Key, NextState, Timeout)
+            end;
+        {'EXIT', Port, _Reason} ->
+            NextState = State#{status => closed},
+            case pop_stdout_state(NextState) of
+                {line, Line, RemainingState} ->
+                    put_stdout_state(Key, RemainingState),
+                    {ok, Line};
+                line_too_long ->
+                    erase_stdout_state(Key),
+                    {error, <<"line_too_long">>};
+                {exit_status, Status} ->
+                    erase_stdout_state(Key),
+                    {error, <<"exit_status:", (integer_to_binary(Status))/binary>>};
+                closed ->
+                    erase_stdout_state(Key),
+                    {error, <<"closed">>};
+                wait ->
+                    put_stdout_state(Key, NextState),
+                    read_stdout_line_loop(Port, Key, NextState, Timeout)
+            end
     after Timeout ->
+        put_stdout_state(Key, State),
         {error, <<"timeout">>}
+    end.
+
+get_stdout_state(Key) ->
+    case erlang:get(Key) of
+        undefined -> #{buffer => <<>>, status => running};
+        State -> State
+    end.
+
+put_stdout_state(Key, #{buffer := <<>>, status := running}) ->
+    erlang:erase(Key),
+    ok;
+put_stdout_state(Key, State) ->
+    erlang:put(Key, State),
+    ok.
+
+erase_stdout_state(Key) ->
+    erlang:erase(Key),
+    ok.
+
+pop_stdout_state(State) ->
+    Buffer = maps:get(buffer, State, <<>>),
+    case binary:match(Buffer, <<"\n">>) of
+        {Position, 1} when Position > ?MAX_LINE ->
+            line_too_long;
+        {Position, 1} ->
+            Line = binary:part(Buffer, 0, Position),
+            RestStart = Position + 1,
+            RestSize = byte_size(Buffer) - RestStart,
+            Rest = binary:part(Buffer, RestStart, RestSize),
+            {line, Line, State#{buffer => Rest}};
+        nomatch ->
+            case byte_size(Buffer) > ?MAX_LINE of
+                true -> line_too_long;
+                false -> pop_stdout_status(State, Buffer)
+            end
+    end.
+
+pop_stdout_status(State, <<>>) ->
+    case maps:get(status, State, running) of
+        {exit_status, Status} -> {exit_status, Status};
+        closed -> closed;
+        running -> wait
+    end;
+pop_stdout_status(State, Buffer) ->
+    case maps:get(status, State, running) of
+        {exit_status, _Status} -> {line, Buffer, State#{buffer => <<>>}};
+        closed -> {line, Buffer, State#{buffer => <<>>}};
+        running -> wait
     end.
 
 read_diagnostics({scherzo_process, _Port, ErrPath}) ->
