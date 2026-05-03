@@ -30,6 +30,7 @@ pub type WorkflowRunFailure {
     reason: String,
     artifacts: Dict(String, step_artifact.StepArtifact),
     run_root: Option(String),
+    failed_step_id: Option(String),
   )
 }
 
@@ -173,6 +174,21 @@ pub fn execute(
   )
 }
 
+pub fn failure_report(failure: WorkflowRunFailure) -> String {
+  case failure.failed_step_id {
+    Some(step_id) ->
+      case dict.get(failure.artifacts, step_id) {
+        Ok(artifact) ->
+          case step_artifact.command_failure_summary(artifact) {
+            Some(summary) -> failure.reason <> "\n" <> summary
+            None -> failure.reason
+          }
+        Error(_) -> failure.reason
+      }
+    None -> failure.reason
+  }
+}
+
 fn loop(
   issue: domain.Issue,
   dag: workflow_dag.WorkflowDag,
@@ -220,6 +236,7 @@ fn loop(
             reason: "cleanup_failed:" <> error.workspace_code(err),
             artifacts: artifacts,
             run_root: run_root,
+            failed_step_id: None,
           ))
       }
     }
@@ -229,6 +246,7 @@ fn loop(
         reason: "workflow_step_failed",
         artifacts: artifacts,
         run_root: run_root,
+        failed_step_id: None,
       ))
     }
     workflow_scheduler.WorkflowInProgress -> {
@@ -240,6 +258,7 @@ fn loop(
             reason: "workflow_deadlocked",
             artifacts: artifacts,
             run_root: run_root,
+            failed_step_id: None,
           ))
         }
         steps -> {
@@ -263,6 +282,7 @@ fn loop(
                 reason: reason,
                 artifacts: artifacts,
                 run_root: failure_run_root,
+                failed_step_id: None,
               ))
             }
             Ok(prepared) -> {
@@ -419,6 +439,7 @@ fn execute_prepared_steps(
             reason: reason,
             artifacts: artifacts,
             run_root: run_root,
+            failed_step_id: None,
           ))
         }
         Ok(StepBatchCompleted(results)) -> {
@@ -820,6 +841,7 @@ fn finish_fatal_batch_result(
     reason: reason,
     artifacts: artifacts,
     run_root: run_root,
+    failed_step_id: Some(result.step_id),
   ))
 }
 
@@ -898,6 +920,7 @@ fn apply_prepared_results(
             reason: reason,
             artifacts: artifacts,
             run_root: run_root,
+            failed_step_id: Some(step.id),
           ))
         }
         Ok(Nil) ->

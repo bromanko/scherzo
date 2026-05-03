@@ -2841,7 +2841,11 @@ fn run_workflow_worker(
       {
         Ok(success) -> Ok(success.worker_success)
         Error(failure) ->
-          Error(yaml_worker_failure(failure.reason, failure.run_root, issue))
+          Error(yaml_worker_failure(
+            workflow_run.failure_report(failure),
+            failure.run_root,
+            issue,
+          ))
       }
   }
 }
@@ -2987,6 +2991,10 @@ fn run_yaml_command_step(
       secrets,
       limits,
     )
+  case step_artifact.succeeded(artifact.status) {
+    True -> Nil
+    False -> publish_yaml_command_failure(event_hub, session_id, artifact)
+  }
   let reason = case step_artifact.succeeded(artifact.status) {
     True -> session_reason.Normal
     False -> session_reason.Failed
@@ -2994,6 +3002,36 @@ fn run_yaml_command_step(
   hub.finish_session(event_hub, session_id, reason)
   process.send(daemon_subject, YamlStepFinished(session_id))
   artifact
+}
+
+fn publish_yaml_command_failure(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  artifact: step_artifact.StepArtifact,
+) -> Nil {
+  let summary = case step_artifact.command_failure_summary(artifact) {
+    Some(summary) -> summary
+    None -> "command step failed: step=" <> artifact.step_id
+  }
+  hub.publish(
+    event_hub,
+    session_id,
+    session_event.EventPayload(
+      kind: session_event.Error,
+      name: session_event.PiName(pi_event.UnknownPiEvent("command_failed")),
+      turn: None,
+      pi_type: None,
+      message: Some(summary),
+      request_id: None,
+      method: None,
+      tool_name: Some("workflow command " <> artifact.step_id),
+      tool_input: artifact.command,
+      tool_output: Some(step_artifact.command_failure_details(artifact)),
+      tool_status: Some("failed"),
+      tokens: domain.zero_token_totals(),
+      raw_json: None,
+    ),
+  )
 }
 
 fn run_yaml_agent_step(

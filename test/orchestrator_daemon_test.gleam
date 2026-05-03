@@ -2,7 +2,8 @@ import birl
 import gleam/dict
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
@@ -10,6 +11,7 @@ import scherzo/control/command
 import scherzo/domain
 import scherzo/error
 import scherzo/handoff
+import scherzo/handoff_format
 import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/daemon
@@ -169,6 +171,37 @@ steps:
   - id: final_test
     kind: command
     run: sh -c 'exit 1'
+    workspace: main
+",
+    )
+  config_path
+}
+
+fn write_real_failing_command_workflow(dir: String) -> String {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let root = dir <> "/workspaces"
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      workflow_text(root, 1)
+        <> "artifact_limits:\n  command_stream_max_chars: 40\n  template_field_max_chars: 200\n  workflow_summary_max_chars: 200\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: final_test
+    kind: command
+    run: |
+      touch ../.scherzo-keep-workspace
+      printf 'stdout-abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\\n'
+      printf 'stderr-abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\\n' >&2
+      exit 9
     workspace: main
 ",
     )
@@ -556,6 +589,20 @@ fn wait_for_session_status(
           process.sleep(50)
           wait_for_session_status(subject, session_id, status, attempts - 1)
         }
+      }
+  }
+}
+
+fn find_event(
+  events: List(event.SessionEvent),
+  name: String,
+) -> Option(event.SessionEvent) {
+  case events {
+    [] -> None
+    [stored_event, ..rest] ->
+      case event.name_to_string(stored_event.payload.name) == name {
+        True -> Some(stored_event)
+        False -> find_event(rest, name)
       }
   }
 }
@@ -977,6 +1024,73 @@ pub fn daemon_yaml_poll_dispatches_command_workflow_test() {
   assert list.contains(session_ids, "ABC-1-42-1-final_test")
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.has_key(snapshot.completed, "issue-id")
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
+  let dir = "test/tmp/daemon-command-failure-diagnostics"
+  let workflow_path = write_real_failing_command_workflow(dir)
+  let candidate =
+    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let failure_report_subject = process.new_subject()
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: workflow_run.default_dependencies(),
+      make_handoff: fn(_, _) {
+        handoff.Client(
+          claim_issue: fn(_, _) { Ok(Nil) },
+          report_success: fn(_, _, _) { Ok(Nil) },
+          report_failure: fn(issue, failure, run_id) {
+            process.send(
+              failure_report_subject,
+              handoff_format.failure_comment(issue, failure, run_id, []),
+            )
+            Ok(Nil)
+          },
+        )
+      },
+      start_event_hub: fn() { Ok(event_hub) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(log_subject, "worker_exited", 20)
+  let step_session_id = "ABC-1-42-1-final_test"
+  let assert Ok(page) =
+    hub.events_after(event_hub, step_session_id, 0, 20, 1000)
+  let assert Some(command_event) = find_event(page.events, "command_failed")
+  assert command_event.payload.kind == event.Error
+  let assert Some(message) = command_event.payload.message
+  assert string.contains(message, "step=final_test")
+  assert string.contains(message, "exit_code=9")
+  assert string.contains(message, "stdout=")
+  assert string.contains(message, "stderr=")
+  assert string.contains(message, "[truncated]")
+  let assert Some(tool_output) = command_event.payload.tool_output
+  assert string.contains(tool_output, "full retained artifact:")
+  assert string.contains(tool_output, "stdout_truncated: true")
+  assert string.contains(tool_output, "stderr_truncated: true")
+
+  let assert Ok(failure_comment) =
+    process.receive(failure_report_subject, within: 1000)
+  assert string.contains(failure_comment, "workflow_step_failed")
+  assert string.contains(failure_comment, "step=final_test")
+  assert string.contains(failure_comment, "exit_code=9")
+  assert string.contains(failure_comment, "artifact=")
+  assert string.contains(failure_comment, "stdout=")
+  assert string.contains(failure_comment, "stderr=")
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 

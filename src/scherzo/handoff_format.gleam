@@ -6,7 +6,7 @@ import scherzo/domain
 import scherzo/error
 import scherzo/log
 
-const max_failure_detail_chars = 500
+const max_failure_detail_chars = 800
 
 const failure_detail_truncated_suffix = "… [truncated]"
 
