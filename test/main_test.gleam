@@ -113,6 +113,7 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "daemon mode")
   assert string.contains(usage, "SIGTERM gracefully")
   assert string.contains(usage, "Ctrl-C/SIGINT")
+  assert string.contains(usage, "scherzo-start helper")
   assert string.contains(usage, "kill -9")
   assert string.contains(usage, "only one Scherzo instance")
 }

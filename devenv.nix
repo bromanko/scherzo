@@ -38,6 +38,8 @@ in
     fi
   '';
 
+  scripts."scherzo-start".exec = projectScript "scherzo-start";
+
   profiles."scherzo-agent".module = { pkgs, ... }: {
     packages = [
       pkgs.gh
