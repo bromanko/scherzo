@@ -48,17 +48,21 @@ Another risk is breaking existing tests that intentionally asserted that arbitra
 - [x] (2026-05-02 00:00Z) Inspected the current failure handoff path and identified `src/scherzo/handoff.gleam`, `src/scherzo/handoff_format.gleam`, `src/scherzo/error.gleam`, `src/scherzo/agent/runner.gleam`, `src/scherzo/agent/pi_rpc.gleam`, `src/scherzo/port.gleam`, `test/handoff_test.gleam`, `gleam.toml`, and `README.md` as the relevant implementation surfaces.
 - [x] (2026-05-02 22:48Z) Revised the workspace-path test instructions to remove literal local absolute path examples while preserving the requirement to test slash-prefixed workspace values.
 - [x] (2026-05-02 22:49Z) Ran `scripts/scherzo-execplan validate`; validation passed with `PLAN_PATH=docs/plans/LIV-42-better-failure-diagnostics-reporting.md` and `VALIDATION=ok`.
-- [ ] Implement a failure comment formatter in `src/scherzo/handoff_format.gleam`.
-- [ ] Replace the inline failure comment string in `src/scherzo/handoff.gleam` with the formatter.
-- [ ] Add and update focused tests in `test/handoff_test.gleam`.
-- [ ] Run formatting and tests.
+- [x] (2026-05-02 21:45Z) Implemented `handoff_format.failure_comment` in `src/scherzo/handoff_format.gleam` with nested error codes, bounded details, token totals, redaction, and safe workspace display.
+- [x] (2026-05-02 21:45Z) Replaced the inline failure comment string in `src/scherzo/handoff.gleam` with the formatter.
+- [x] (2026-05-02 21:45Z) Added and updated focused failure handoff tests in `test/handoff_test.gleam` for pi, hook, redaction, truncation, and workspace path behavior.
+- [x] (2026-05-02 21:45Z) Ran formatting and tests with `direnv exec . gleam format --check src test`, `direnv exec . gleam test test/handoff_test.gleam`, and `direnv exec . gleam test`; all passed.
 
 ## Surprises & Discoveries
 
 - Observation: `src/scherzo/port.gleam` already redirects child stderr to a diagnostics file and exposes `read_diagnostics`, but the currently inspected `src/scherzo/agent/pi_rpc.gleam` failure mapping does not pass those diagnostics into `runner.WorkerFailure`.
   Evidence: the port module comment says stderr is kept out of the stdout JSONL stream and can be read through `read_diagnostics`, while `pi_rpc.map_port_error` maps `ProcessExited(status)` to `PiExited(status)` and other port failures to codes or short strings.
-- Observation: the success handoff path already has a formatter and redaction boundary, but the failure path constructs the comment inline.
-  Evidence: `src/scherzo/handoff_format.gleam` exports `success_comment`, while `src/scherzo/handoff.gleam` builds `"Scherzo failed run " <> run_id <> ... <> error.agent_code(failure.reason)` directly in `report_failure`.
+- Observation: the success handoff path already had a formatter and redaction boundary before implementation, but the failure path constructed the comment inline.
+  Evidence: `src/scherzo/handoff_format.gleam` exported `success_comment`, while `src/scherzo/handoff.gleam` built `"Scherzo failed run " <> run_id <> ... <> error.agent_code(failure.reason)` directly in `report_failure`.
+- Observation: the repository's `gleam test test/handoff_test.gleam` invocation runs the full test suite rather than only that single file.
+  Evidence: the command completed successfully with `545 passed, no failures`, matching the subsequent `direnv exec . gleam test` full-suite result.
+- Observation: `scripts/scherzo-execplan validate` is intended for newly added plan files and rejects this already-checked-in plan when it is modified.
+  Evidence: `direnv exec . scripts/scherzo-execplan validate` exited with `scherzo-execplan: plan file must be newly added, got status M: docs/plans/LIV-42-better-failure-diagnostics-reporting.md`.
 
 ## Decision Log
 
@@ -77,7 +81,7 @@ Another risk is breaking existing tests that intentionally asserted that arbitra
 
 ## Outcomes & Retrospective
 
-The plan-only workflow for LIV-42 produced a self-contained implementation plan at `docs/plans/LIV-42-better-failure-diagnostics-reporting.md`. A validation failure caused by local absolute path examples in workspace-path test instructions was corrected by switching to slash-prefixed synthetic values. `scripts/scherzo-execplan validate` now reports `VALIDATION=ok`, so the planning work is ready to hand off to review or to a later implementation ticket.
+The implementation now routes failure handoff comments through `handoff_format.failure_comment`. The generated Linear comment keeps the recognizable `Scherzo failed run` header and adds a `Failure diagnostics` section containing the top-level agent code, nested error code when present, a short redacted detail, safe workspace information, and token totals. Focused tests cover pi exit diagnostics, pi protocol redaction and truncation, hook diagnostics, and hiding slash-prefixed workspace paths. `direnv exec . gleam format --check src test`, `direnv exec . gleam test test/handoff_test.gleam`, and `direnv exec . gleam test` all pass.
 
 ## Context and Orientation
 
@@ -87,9 +91,9 @@ The failure report path begins with agent or workflow execution producing a `run
 
 `src/scherzo/error.gleam` currently provides stable code functions. `error.agent_code` maps an `AgentRunnerError` to broad strings such as `agent_pi_failed`, `agent_hook_failed`, and `agent_workspace_failed`. `error.pi_rpc_code` maps nested pi errors to strings such as `pi_launch_failed`, `pi_malformed_json`, `pi_read_timeout`, `pi_turn_timeout`, `pi_stall_timeout`, `pi_exited`, and `pi_protocol_error`. There are similar functions for workspace, hook, tracker, template, and subprocess errors.
 
-`src/scherzo/handoff.gleam` constructs a Linear handoff client. For success, it delegates comment text to `handoff_format.success_comment` in `src/scherzo/handoff_format.gleam`. For failure, the current `report_failure` function builds the whole comment inline as one sentence and includes only `error.agent_code(failure.reason)`. That is the behavior described in the Linear ticket.
+`src/scherzo/handoff.gleam` constructs a Linear handoff client. For success, it delegates comment text to `handoff_format.success_comment` in `src/scherzo/handoff_format.gleam`. For failure, the initial implementation built the whole comment inline as one sentence and included only `error.agent_code(failure.reason)`. The completed implementation delegates failure comment text to `handoff_format.failure_comment` so the comment includes structured diagnostics.
 
-`test/handoff_test.gleam` already exercises the comments-only handoff path. It creates a fake Linear transport, calls `client.report_failure`, receives the generated GraphQL request body, and asserts that the body contains the run id and `agent_pi_failed`. That test is the natural place to add assertions for the richer failure comment.
+`test/handoff_test.gleam` exercises the comments-only handoff path. It creates a fake Linear transport, calls `client.report_failure`, receives the generated GraphQL request body, and asserts that the body contains the run id, `agent_pi_failed`, `Failure diagnostics`, nested error codes, redacted details, bounded long details, and safe workspace behavior.
 
 ## Preconditions and Verified Facts
 
@@ -99,8 +103,8 @@ The current working tree was clean before this plan file was created, as shown b
 
 The relevant current files exist with these responsibilities:
 
-- `src/scherzo/handoff.gleam` owns Linear handoff actions and currently builds the failure comment inline in `report_failure`.
-- `src/scherzo/handoff_format.gleam` owns success comment and success attachment Markdown formatting and imports `scherzo/log` for redaction.
+- `src/scherzo/handoff.gleam` owns Linear handoff actions and delegates failure comment text to `handoff_format.failure_comment` in `report_failure`.
+- `src/scherzo/handoff_format.gleam` owns success comment, success attachment Markdown formatting, and failure comment Markdown formatting, and imports `scherzo/log` for redaction.
 - `src/scherzo/error.gleam` defines the error types and code functions that should remain the source of stable diagnostic codes.
 - `src/scherzo/agent/runner.gleam` defines `WorkerFailure` and creates failures with the top-level `AgentRunnerError` reason, optional workspace path, token totals, and optional final issue.
 - `src/scherzo/agent/pi_rpc.gleam` maps pi process and protocol failures into `PiRpcError` variants.

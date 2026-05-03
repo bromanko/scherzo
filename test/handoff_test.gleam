@@ -2,7 +2,7 @@ import birl
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/json
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/runner
 import scherzo/domain
@@ -80,6 +80,38 @@ fn success() -> runner.WorkerSuccess {
   )
 }
 
+fn worker_failure(
+  reason: error.AgentRunnerError,
+  workspace_path: Option(String),
+) -> runner.WorkerFailure {
+  runner.WorkerFailure(
+    reason: reason,
+    workspace_path: workspace_path,
+    tokens: domain.zero_token_totals(),
+    final_issue: None,
+  )
+}
+
+fn capture_failure_comment(
+  failure: runner.WorkerFailure,
+  run_id: String,
+) -> String {
+  let subject = process.new_subject()
+  let transport = fn(request: linear.Request) {
+    process.send(subject, request.body)
+    Ok(linear.Response(
+      status: 200,
+      body: "{\"data\":{\"commentCreate\":{\"success\":true}}}",
+    ))
+  }
+  let client =
+    handoff.linear_client(tracker_config(), handoff_config(), transport)
+
+  assert client.report_failure(issue(), failure, run_id) == Ok(Nil)
+  let assert Ok(failure_comment) = process.receive(subject, within: 100)
+  failure_comment
+}
+
 pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   let subject = process.new_subject()
   let transport = fn(request: linear.Request) {
@@ -121,7 +153,9 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
 
   let failure =
     runner.WorkerFailure(
-      reason: error.PiFailed(error.PiProtocolError("secret details")),
+      reason: error.PiFailed(error.PiProtocolError(
+        "secret-key blocked UI request",
+      )),
       workspace_path: None,
       tokens: domain.zero_token_totals(),
       final_issue: None,
@@ -129,8 +163,72 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   assert client.report_failure(issue(), failure, "run-3") == Ok(Nil)
   let assert Ok(failure_comment) = process.receive(subject, within: 100)
   assert string.contains(failure_comment, "run-3")
+  assert string.contains(failure_comment, "Failure diagnostics")
   assert string.contains(failure_comment, "agent_pi_failed")
-  assert !string.contains(failure_comment, "secret details")
+  assert string.contains(failure_comment, "pi_protocol_error")
+  assert string.contains(failure_comment, "blocked UI request")
+  assert !string.contains(failure_comment, "secret-key")
+}
+
+pub fn failure_handoff_includes_nested_pi_diagnostics_test() {
+  let failure = worker_failure(error.PiFailed(error.PiExited(2)), None)
+  let failure_comment = capture_failure_comment(failure, "run-pi-exit")
+
+  assert string.contains(failure_comment, "Failure diagnostics")
+  assert string.contains(failure_comment, "agent_pi_failed")
+  assert string.contains(failure_comment, "pi_exited")
+  assert string.contains(failure_comment, "status 2")
+}
+
+pub fn failure_handoff_includes_hook_diagnostics_test() {
+  let failure =
+    worker_failure(
+      error.HookFailedError(error.HookFailed(
+        "scripts/jj-workspace-after-create",
+        17,
+        "hook output",
+      )),
+      None,
+    )
+  let failure_comment = capture_failure_comment(failure, "run-hook")
+
+  assert string.contains(failure_comment, "agent_hook_failed")
+  assert string.contains(failure_comment, "hook_failed")
+  assert string.contains(failure_comment, "scripts/jj-workspace-after-create")
+  assert string.contains(failure_comment, "17")
+  assert string.contains(failure_comment, "hook output")
+}
+
+pub fn failure_handoff_truncates_long_details_test() {
+  let long_message = string.repeat("x", times: 800) <> "SHOULD_NOT_APPEAR"
+  let failure =
+    worker_failure(error.PiFailed(error.PiProtocolError(long_message)), None)
+  let failure_comment = capture_failure_comment(failure, "run-long")
+
+  assert string.contains(failure_comment, "pi_protocol_error")
+  assert string.contains(failure_comment, "truncated")
+  assert !string.contains(failure_comment, "SHOULD_NOT_APPEAR")
+}
+
+pub fn failure_handoff_handles_workspace_path_safely_test() {
+  let relative_workspace =
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  let relative_failure =
+    worker_failure(error.PiFailed(error.PiExited(1)), Some(relative_workspace))
+  let relative_comment =
+    capture_failure_comment(relative_failure, "run-relative-workspace")
+  assert string.contains(relative_comment, relative_workspace)
+
+  let absolute_workspace = "/" <> "operator-home/redacted-workspace"
+  let absolute_failure =
+    worker_failure(error.PiFailed(error.PiExited(1)), Some(absolute_workspace))
+  let absolute_comment =
+    capture_failure_comment(absolute_failure, "run-absolute-workspace")
+  assert !string.contains(absolute_comment, "operator-home")
+  assert string.contains(
+    absolute_comment,
+    "not shown because Scherzo recorded an absolute path",
+  )
 }
 
 pub fn success_handoff_posts_single_structured_result_comment_test() {

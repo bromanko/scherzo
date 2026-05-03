@@ -176,13 +176,12 @@ fn report_failure(
     tracker_config,
     transport,
     issue.id,
-    "Scherzo failed run "
-      <> run_id
-      <> " for "
-      <> issue.identifier
-      <> " with error "
-      <> error.agent_code(failure.reason)
-      <> ".",
+    handoff_format.failure_comment(
+      issue,
+      failure,
+      run_id,
+      tracker_secrets(tracker_config),
+    ),
   ))
   run_state_update(
     tracker_config,
