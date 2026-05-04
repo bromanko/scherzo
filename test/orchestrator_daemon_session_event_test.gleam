@@ -134,8 +134,8 @@ fn success(
   )
 }
 
-fn update(name: String, message: Option(String)) -> agent_types.PiUpdate {
-  agent_types.PiUpdate(
+fn update(name: String, message: Option(String)) -> agent_types.RunnerUpdate {
+  agent_types.RunnerPiUpdate(agent_types.PiUpdate(
     event: pi_event.from_string(name),
     message: message,
     raw_json: None,
@@ -148,7 +148,7 @@ fn update(name: String, message: Option(String)) -> agent_types.PiUpdate {
     tool_input: None,
     tool_output: None,
     tool_status: None,
-  )
+  ))
 }
 
 fn client_with(candidate: tracker_issue.Issue) -> tracker.Client {
@@ -173,7 +173,7 @@ fn workflow_deps_from_agent(
     String,
     config_types.EffectiveConfig,
     tracker.Client,
-    fn(String, agent_types.PiUpdate) -> Nil,
+    fn(String, agent_types.RunnerUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
   ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
@@ -215,7 +215,7 @@ fn dependencies(
     String,
     config_types.EffectiveConfig,
     tracker.Client,
-    fn(String, agent_types.PiUpdate) -> Nil,
+    fn(String, agent_types.RunnerUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
   ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
@@ -321,7 +321,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
       fn(issue, _, _, _, _, emit_update, _, _) {
         emit_update(
           issue.id,
-          agent_types.PiUpdate(
+          agent_types.RunnerPiUpdate(agent_types.PiUpdate(
             event: pi_event.Message,
             message: None,
             raw_json: None,
@@ -334,7 +334,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
             tool_input: Some("gleam test"),
             tool_output: None,
             tool_status: None,
-          ),
+          )),
         )
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)

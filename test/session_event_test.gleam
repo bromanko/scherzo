@@ -6,6 +6,7 @@ import scherzo/agent/pi_event
 import scherzo/session/event
 import scherzo/session/json as session_json
 import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub fn session_summary_serializes_exact_required_fields_test() {
   let summary =
@@ -19,6 +20,12 @@ pub fn session_summary_serializes_exact_required_fields_test() {
       pi_session_id: None,
       status: event.Preparing,
       current_turn: 0,
+      current_turn_status: None,
+      current_turn_started_at_ms: None,
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
       started_at_ms: 10,
       last_event_at_ms: 10,
       token_totals: session_tokens.TokenTotals(
@@ -85,26 +92,78 @@ pub fn event_page_serializes_cursor_and_truncation_test() {
 pub fn event_payload_has_no_cursor_or_timestamp_test() {
   let payload =
     event.EventPayload(
-      kind: event.Pi,
-      name: event.PiName(pi_event.MessageUpdate),
+      ..event.empty_payload(event.Pi, event.PiName(pi_event.MessageUpdate)),
       turn: Some(1),
       pi_type: Some("message_update"),
       message: Some("hello"),
-      request_id: None,
-      method: None,
-      tool_name: None,
-      tool_input: None,
-      tool_output: None,
-      tool_status: None,
-      tokens: session_tokens.zero_token_totals(),
-      raw_json: None,
     )
 
   let encoded = session_json.payload_to_string(payload)
 
   assert !string.contains(encoded, "cursor")
-  assert !string.contains(encoded, "at_ms")
+  assert !string.contains(encoded, "\"at_ms\":")
   assert string.contains(encoded, "message_update")
+}
+
+pub fn summary_json_includes_bounded_turn_fields_test() {
+  let summary =
+    event.SessionSummary(
+      session_id: "session-1",
+      display_name: "session-1",
+      issue_id: "issue-1",
+      issue_identifier: "ABC-1",
+      issue_title: "Turn telemetry",
+      workspace_path: "test/tmp/workspaces/ABC-1",
+      pi_session_id: None,
+      status: event.Running,
+      current_turn: 2,
+      current_turn_status: Some(turn_telemetry.StatusRunning),
+      current_turn_started_at_ms: Some(1000),
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
+      started_at_ms: 900,
+      last_event_at_ms: 1000,
+      token_totals: session_tokens.zero_token_totals(),
+    )
+
+  let encoded = session_json.summary_to_string(summary)
+
+  assert string.contains(encoded, "\"current_turn\":2")
+  assert string.contains(encoded, "\"current_turn_status\":\"running\"")
+  assert string.contains(encoded, "\"current_turn_started_at_ms\":1000")
+  assert !string.contains(encoded, "raw_json")
+}
+
+pub fn turn_event_json_strips_sensitive_generic_fields_test() {
+  let payload =
+    event.EventPayload(
+      ..event.empty_payload(
+        event.Turn,
+        event.TurnName(turn_telemetry.EventStarted),
+      ),
+      turn: Some(2),
+      message: Some("SECRET_PROMPT"),
+      tool_input: Some("tool_input_value"),
+      tool_output: Some("full transcript"),
+      tool_status: Some("secret status"),
+      raw_json: Some(event.RedactedRawJson(
+        value: "{\"secret\":true}",
+        truncated: False,
+      )),
+    )
+
+  let encoded = session_json.payload_to_string(payload)
+
+  assert string.contains(encoded, "\"kind\":\"turn\"")
+  assert string.contains(encoded, "\"name\":\"turn_started\"")
+  assert string.contains(encoded, "\"turn\":2")
+  assert !string.contains(encoded, "SECRET_PROMPT")
+  assert !string.contains(encoded, "full transcript")
+  assert !string.contains(encoded, "tool_input_value")
+  assert !string.contains(encoded, "secret status")
+  assert !string.contains(encoded, "{\"secret\":true}")
 }
 
 type SummaryJson {

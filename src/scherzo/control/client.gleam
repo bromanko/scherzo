@@ -5,6 +5,7 @@ import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/session/event
+import scherzo/turn_telemetry
 
 pub type StreamAction {
   Continue
@@ -270,16 +271,74 @@ pub fn error_message(error: ControlError) -> String {
 }
 
 pub fn compact_event_line(stored_event: event.SessionEvent) -> String {
-  int.to_string(stored_event.cursor)
-  <> " "
+  case stored_event.payload.kind {
+    event.Turn -> compact_turn_event_line(stored_event)
+    _ ->
+      int.to_string(stored_event.cursor)
+      <> " "
+      <> int.to_string(stored_event.at_ms)
+      <> " "
+      <> stored_event.session_id
+      <> " "
+      <> event.kind_to_string(stored_event.payload.kind)
+      <> " "
+      <> event.name_to_string(stored_event.payload.name)
+      <> compact_message(stored_event.payload.message)
+  }
+}
+
+fn compact_turn_event_line(stored_event: event.SessionEvent) -> String {
+  let payload = stored_event.payload
+  "cursor="
+  <> int.to_string(stored_event.cursor)
+  <> " at_ms="
   <> int.to_string(stored_event.at_ms)
-  <> " "
+  <> " session="
   <> stored_event.session_id
-  <> " "
-  <> event.kind_to_string(stored_event.payload.kind)
-  <> " "
-  <> event.name_to_string(stored_event.payload.name)
-  <> compact_message(stored_event.payload.message)
+  <> " kind=turn name="
+  <> event.name_to_string(payload.name)
+  <> compact_turn_field(payload.turn)
+  <> compact_turn_status_field(payload.turn_status)
+  <> compact_duration_field(payload.turn_duration_ms)
+  <> compact_token_delta_field(payload.token_delta.total)
+  <> compact_reason_field(payload.reason)
+}
+
+fn compact_turn_field(turn: Option(Int)) -> String {
+  case turn {
+    Some(turn) -> " turn=" <> int.to_string(turn)
+    None -> ""
+  }
+}
+
+fn compact_turn_status_field(
+  status: Option(turn_telemetry.TurnStatus),
+) -> String {
+  case status {
+    Some(status) -> " turn_status=" <> turn_telemetry.status_to_string(status)
+    None -> ""
+  }
+}
+
+fn compact_duration_field(duration: Option(Int)) -> String {
+  case duration {
+    Some(duration) -> " duration_ms=" <> int.to_string(duration)
+    None -> ""
+  }
+}
+
+fn compact_token_delta_field(total: Int) -> String {
+  case total > 0 {
+    True -> " token_delta_total=" <> int.to_string(total)
+    False -> ""
+  }
+}
+
+fn compact_reason_field(reason: Option(turn_telemetry.TurnReason)) -> String {
+  case reason {
+    Some(reason) -> " reason=" <> turn_telemetry.reason_to_string(reason)
+    None -> ""
+  }
 }
 
 fn compact_message(message: Option(String)) -> String {

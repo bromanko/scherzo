@@ -367,20 +367,22 @@ fn fake_workflow_run_dependencies(
       _command_ready,
     ) {
       process.send(log_subject, "yaml_agent:" <> prompt)
-      emit_update(agent_types.PiUpdate(
-        event: pi_event.TurnFinished,
-        message: Some("hello"),
-        raw_json: None,
-        turn: Some(1),
-        request_id: None,
-        method: None,
-        pi_session_id: None,
-        tokens: session_tokens.zero_token_totals(),
-        tool_name: None,
-        tool_input: None,
-        tool_output: None,
-        tool_status: None,
-      ))
+      emit_update(
+        agent_types.RunnerPiUpdate(agent_types.PiUpdate(
+          event: pi_event.TurnFinished,
+          message: Some("hello"),
+          raw_json: None,
+          turn: Some(1),
+          request_id: None,
+          method: None,
+          pi_session_id: None,
+          tokens: session_tokens.zero_token_totals(),
+          tool_name: None,
+          tool_input: None,
+          tool_output: None,
+          tool_status: None,
+        )),
+      )
       Ok(agent_types.WorkerSuccess(
         final_issue: Some(issue),
         final_classification: agent_types.FinalTerminal,

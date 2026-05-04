@@ -7,6 +7,7 @@ import scherzo/session/event
 import scherzo/session/tokens as session_tokens
 import scherzo/terminal/sanitize
 import scherzo/terminal/style
+import scherzo/turn_telemetry
 
 const default_max_body_lines = 40
 
@@ -126,8 +127,33 @@ fn render_status_lines(
       <> " "
       <> event.status_to_string(summary.status),
     ),
+    Line(
+      style.meta_label(options.color_mode, "turn:")
+      <> " "
+      <> summary_turn_line(summary),
+    ),
     Line(""),
   ]
+}
+
+fn summary_turn_line(summary: event.SessionSummary) -> String {
+  let base = "turn " <> int.to_string(summary.current_turn)
+  let with_status = case summary.current_turn_status {
+    Some(status) -> base <> " " <> turn_telemetry.status_to_string(status)
+    None -> base
+  }
+  let with_duration = case summary.last_turn_duration_ms {
+    Some(duration) -> with_status <> " " <> format_duration(duration)
+    None -> with_status
+  }
+  case summary.last_turn_token_delta.total > 0 {
+    True ->
+      with_duration
+      <> " +"
+      <> int.to_string(summary.last_turn_token_delta.total)
+      <> " tok"
+    False -> with_duration
+  }
 }
 
 pub fn render_truncation_warning(options: RenderOptions) -> List(RenderChunk) {
@@ -199,6 +225,7 @@ fn render_fresh_event(
         event.UiRequest -> render_ui_request(state, payload, options)
         event.UiResponse -> render_ui_response(state, payload, options)
         event.TokenStats -> render_tokens(state, payload, options)
+        event.Turn -> render_turn(state, payload, options)
         event.PiRaw -> render_pi_raw(state, payload, options)
         event.Error -> render_error_event(state, payload, options)
         event.Lifecycle | event.Pi ->
@@ -461,6 +488,77 @@ fn render_ui_response(
       [Line(style.dim(options.color_mode, "UI response: " <> method)), Line("")],
     ]),
   )
+}
+
+fn render_turn(
+  state: RenderState,
+  payload: event.EventPayload,
+  options: RenderOptions,
+) -> #(RenderState, List(RenderChunk)) {
+  let #(state, close_chunks) = close_assistant(state, options.color_mode)
+  let #(state, tool_close_chunks) =
+    close_tool_with_gap(state, options.color_mode)
+  let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
+  #(
+    RenderState(..state, assistant_active: False, assistant_line_open: False),
+    list.flatten([
+      close_chunks,
+      tool_close_chunks,
+      heading_chunks,
+      [Line(style.dim(options.color_mode, turn_event_line(payload))), Line("")],
+    ]),
+  )
+}
+
+fn turn_event_line(payload: event.EventPayload) -> String {
+  let turn = case payload.turn {
+    Some(turn) -> int.to_string(turn)
+    None -> "?"
+  }
+  let status = case payload.turn_status {
+    Some(status) -> turn_telemetry.status_to_string(status)
+    None -> event.name_to_string(payload.name)
+  }
+  "turn "
+  <> turn
+  <> " "
+  <> status
+  <> turn_duration_suffix(payload.turn_duration_ms)
+  <> turn_token_delta_suffix(payload.token_delta.total)
+  <> turn_reason_suffix(payload.reason)
+}
+
+fn turn_duration_suffix(duration_ms: Option(Int)) -> String {
+  case duration_ms {
+    Some(duration_ms) -> " " <> format_duration(duration_ms)
+    None -> ""
+  }
+}
+
+fn turn_token_delta_suffix(total: Int) -> String {
+  case total > 0 {
+    True -> " +" <> int.to_string(total) <> " tok"
+    False -> ""
+  }
+}
+
+fn turn_reason_suffix(reason: Option(turn_telemetry.TurnReason)) -> String {
+  case reason {
+    Some(reason) -> " reason=" <> turn_telemetry.reason_to_string(reason)
+    None -> ""
+  }
+}
+
+fn format_duration(duration_ms: Int) -> String {
+  case duration_ms < 1000 {
+    True -> int.to_string(duration_ms) <> "ms"
+    False -> {
+      let tenths = duration_ms / 100
+      let whole = tenths / 10
+      let decimal = tenths - whole * 10
+      int.to_string(whole) <> "." <> int.to_string(decimal) <> "s"
+    }
+  }
 }
 
 fn render_tokens(

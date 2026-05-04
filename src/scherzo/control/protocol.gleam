@@ -10,6 +10,7 @@ import scherzo/session/event
 import scherzo/session/json as session_json
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub const version = 1
 
@@ -898,6 +899,39 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
     decode.optional(decode.string),
   )
   use current_turn <- decode.field("current_turn", decode.int)
+  use current_turn_status_name <- decode.optional_field(
+    "current_turn_status",
+    None,
+    decode.optional(decode.string),
+  )
+  use current_turn_started_at_ms <- decode.optional_field(
+    "current_turn_started_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use last_turn_finished_at_ms <- decode.optional_field(
+    "last_turn_finished_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use last_turn_duration_ms <- decode.optional_field(
+    "last_turn_duration_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use last_turn_token_delta <- decode.optional_field(
+    "last_turn_token_delta",
+    session_tokens.zero_token_totals(),
+    token_totals_decoder(),
+  )
+  use last_turn_reason_name <- decode.optional_field(
+    "last_turn_reason",
+    None,
+    decode.optional(decode.string),
+  )
+  let current_turn_status =
+    turn_status_from_optional_string(current_turn_status_name)
+  let last_turn_reason = turn_reason_from_optional_string(last_turn_reason_name)
   use started_at_ms <- decode.field("started_at_ms", decode.int)
   use last_event_at_ms <- decode.field("last_event_at_ms", decode.int)
   use token_totals <- decode.field("tokens", token_totals_decoder())
@@ -913,6 +947,12 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
         pi_session_id: pi_session_id,
         status: status,
         current_turn: current_turn,
+        current_turn_status: current_turn_status,
+        current_turn_started_at_ms: current_turn_started_at_ms,
+        last_turn_finished_at_ms: last_turn_finished_at_ms,
+        last_turn_duration_ms: last_turn_duration_ms,
+        last_turn_token_delta: last_turn_token_delta,
+        last_turn_reason: last_turn_reason,
         started_at_ms: started_at_ms,
         last_event_at_ms: last_event_at_ms,
         token_totals: token_totals,
@@ -929,6 +969,12 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
           pi_session_id: pi_session_id,
           status: event.Exited(session_reason.Failed),
           current_turn: current_turn,
+          current_turn_status: current_turn_status,
+          current_turn_started_at_ms: current_turn_started_at_ms,
+          last_turn_finished_at_ms: last_turn_finished_at_ms,
+          last_turn_duration_ms: last_turn_duration_ms,
+          last_turn_token_delta: last_turn_token_delta,
+          last_turn_reason: last_turn_reason,
           started_at_ms: started_at_ms,
           last_event_at_ms: last_event_at_ms,
           token_totals: token_totals,
@@ -1018,26 +1064,85 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
     session_tokens.zero_token_totals(),
     token_totals_decoder(),
   )
+  use turn_status_name <- decode.optional_field(
+    "turn_status",
+    None,
+    decode.optional(decode.string),
+  )
+  use turn_started_at_ms <- decode.optional_field(
+    "turn_started_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use turn_finished_at_ms <- decode.optional_field(
+    "turn_finished_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use turn_duration_ms <- decode.optional_field(
+    "turn_duration_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use token_delta <- decode.optional_field(
+    "token_delta",
+    session_tokens.zero_token_totals(),
+    token_totals_decoder(),
+  )
+  use reason_name <- decode.optional_field(
+    "reason",
+    None,
+    decode.optional(decode.string),
+  )
   use raw_json <- decode.optional_field(
     "raw_json",
     None,
     decode.optional(redacted_raw_json_decoder()),
   )
-  decode.success(event.EventPayload(
-    kind: kind,
-    name: event_name_decoder(kind, name_string),
-    turn: turn,
-    pi_type: pi_type,
-    message: message,
-    request_id: request_id,
-    method: method,
-    tool_name: tool_name,
-    tool_input: tool_input,
-    tool_output: tool_output,
-    tool_status: tool_status,
-    tokens: tokens,
-    raw_json: raw_json,
-  ))
+  let payload =
+    event.EventPayload(
+      kind: kind,
+      name: event_name_decoder(kind, name_string),
+      turn: turn,
+      pi_type: pi_type,
+      message: message,
+      request_id: request_id,
+      method: method,
+      tool_name: tool_name,
+      tool_input: tool_input,
+      tool_output: tool_output,
+      tool_status: tool_status,
+      tokens: tokens,
+      turn_status: turn_status_from_optional_string(turn_status_name),
+      turn_started_at_ms: turn_started_at_ms,
+      turn_finished_at_ms: turn_finished_at_ms,
+      turn_duration_ms: turn_duration_ms,
+      token_delta: token_delta,
+      reason: turn_reason_from_optional_string(reason_name),
+      raw_json: raw_json,
+    )
+  decode.success(sanitize_decoded_turn_payload(payload))
+}
+
+fn sanitize_decoded_turn_payload(
+  payload: event.EventPayload,
+) -> event.EventPayload {
+  case payload.kind {
+    event.Turn ->
+      event.EventPayload(
+        ..payload,
+        pi_type: None,
+        message: None,
+        request_id: None,
+        method: None,
+        tool_name: None,
+        tool_input: None,
+        tool_output: None,
+        tool_status: None,
+        raw_json: None,
+      )
+    _ -> payload
+  }
 }
 
 fn event_name_decoder(
@@ -1049,6 +1154,11 @@ fn event_name_decoder(
       case event.lifecycle_name_from_string(name_string) {
         Some(name) -> event.LifecycleName(name)
         None -> event.PiName(pi_event.UnknownPiEvent(name_string))
+      }
+    event.Turn ->
+      case turn_telemetry.event_name_from_string(name_string) {
+        Some(name) -> event.TurnName(name)
+        None -> event.TurnName(turn_telemetry.EventUnknown(name_string))
       }
     _ -> event.PiName(pi_event.from_string(name_string))
   }
@@ -1091,7 +1201,26 @@ fn kind_from_string(name: String) -> event.EventKind {
     "token_stats" -> event.TokenStats
     "error" -> event.Error
     "pi_raw" -> event.PiRaw
+    "turn" -> event.Turn
     _ -> event.PiRaw
+  }
+}
+
+fn turn_status_from_optional_string(
+  value: Option(String),
+) -> Option(turn_telemetry.TurnStatus) {
+  case value {
+    Some(value) -> turn_telemetry.status_from_string(value)
+    None -> None
+  }
+}
+
+fn turn_reason_from_optional_string(
+  value: Option(String),
+) -> Option(turn_telemetry.TurnReason) {
+  case value {
+    Some(value) -> turn_telemetry.reason_from_string(value)
+    None -> None
   }
 }
 

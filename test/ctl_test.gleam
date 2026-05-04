@@ -10,6 +10,7 @@ import scherzo/session/event
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/terminal/style
+import scherzo/turn_telemetry
 
 const ps_now_ms = -576_460_678_330
 
@@ -55,6 +56,12 @@ fn session_summary_with_status(
     pi_session_id: None,
     status: status,
     current_turn: 1,
+    current_turn_status: None,
+    current_turn_started_at_ms: None,
+    last_turn_finished_at_ms: None,
+    last_turn_duration_ms: None,
+    last_turn_token_delta: session_tokens.zero_token_totals(),
+    last_turn_reason: None,
     started_at_ms: last_event_at_ms - 1000,
     last_event_at_ms: last_event_at_ms,
     token_totals: session_tokens.zero_token_totals(),
@@ -336,13 +343,22 @@ pub fn ps_human_table_uses_display_name_and_matches_header_order_test() {
     == ["SESSION", "ISSUE", "TURN", "STATUS", "LAST", "EVENT"]
   assert string.contains(header, "LAST EVENT")
   assert !string.contains(transcript, "LAST_EVENT")
-  assert string.contains(transcript, display_name)
+  assert string.contains(transcript, "LIV-43")
+  assert string.contains(transcript, "…")
   assert !string.contains(transcript, canonical_session_id)
 
-  let assert [session_col, issue_col, turn_col, status_col, age_value, age_unit] =
-    table_columns(row)
-  assert session_col == display_name
+  let assert [
+    session_col,
+    issue_col,
+    turn_label,
+    turn_col,
+    status_col,
+    age_value,
+    age_unit,
+  ] = table_columns(row)
+  assert string.contains(session_col, "…")
   assert issue_col == "LIV-43"
+  assert turn_label == "turn"
   assert turn_col == "7"
   assert status_col == "running"
   assert age_value == "12s"
@@ -380,7 +396,7 @@ pub fn ps_human_table_shortens_long_session_names_and_formats_last_event_age_tes
   assert string.contains(transcript, "3m ago")
   assert string.contains(transcript, "…")
   assert string.contains(transcript, "123456789")
-  assert string.contains(transcript, "validate_draft")
+  assert string.contains(transcript, "date_draft")
   assert !string.contains(transcript, top_level_session_name)
   assert !string.contains(transcript, step_session_name)
   assert !string.contains(transcript, "-576460690330")
@@ -474,16 +490,93 @@ pub fn ps_human_table_ellipsizes_long_display_name_without_shifting_columns_test
   assert result == Ok(Nil)
   let transcript = drain_output(subject)
   let assert [_, row] = output_lines(transcript)
-  let assert [session_col, issue_col, turn_col, status_col, age_value, age_unit] =
-    table_columns(row)
+  let assert [
+    session_col,
+    issue_col,
+    turn_label,
+    turn_col,
+    status_col,
+    age_value,
+    age_unit,
+  ] = table_columns(row)
   assert string.contains(session_col, "…")
   assert !string.contains(transcript, display_name)
   assert issue_col == "LIV-44"
+  assert turn_label == "turn"
   assert turn_col == "42"
   assert status_col == "running"
   assert age_value == "3m"
   assert age_unit == "ago"
   assert string.length(row) <= 80
+}
+
+pub fn ctl_turn_telemetry_human_and_raw_outputs_test() {
+  let path = "test/tmp/ctl-ps/turn-control.json"
+  write_control_file(path)
+  let summary =
+    event.SessionSummary(
+      ..session_summary("session-turn", ps_now_ms - 1000),
+      current_turn: 3,
+      current_turn_status: Some(turn_telemetry.StatusRunning),
+      current_turn_started_at_ms: Some(ps_now_ms - 2000),
+    )
+  let deps = turn_deps(summary)
+
+  let ps_subject = process.new_subject()
+  assert ctl.run_with_deps(ctl.Ps(Some(path), False), deps, output(ps_subject))
+    == Ok(Nil)
+  let ps_transcript = drain_output(ps_subject)
+  assert string.contains(ps_transcript, "turn 3 running")
+
+  let session_subject = process.new_subject()
+  assert ctl.run_with_deps(
+      ctl.Session(Some(path), False, "session-turn"),
+      deps,
+      output(session_subject),
+    )
+    == Ok(Nil)
+  let session_transcript = drain_output(session_subject)
+  assert string.contains(session_transcript, "turn: turn 3 running")
+  assert string.contains(session_transcript, "turn_started_at_ms:")
+
+  let events_subject = process.new_subject()
+  assert ctl.run_with_deps(
+      ctl.Events(
+        Some(path),
+        ctl.Pretty,
+        style.ColorNever,
+        0,
+        False,
+        "session-turn",
+      ),
+      deps,
+      output(events_subject),
+    )
+    == Ok(Nil)
+  let events_transcript = drain_output(events_subject)
+  assert string.contains(events_transcript, "turn 3 finished")
+  assert string.contains(events_transcript, "+15 tok")
+
+  let attach_subject = process.new_subject()
+  assert ctl.run_with_deps(
+      ctl.Attach(
+        Some(path),
+        ctl.Raw,
+        style.ColorNever,
+        ctl.NoFollow,
+        0,
+        False,
+        "session-turn",
+      ),
+      deps,
+      output(attach_subject),
+    )
+    == Ok(Nil)
+  let attach_transcript = drain_output(attach_subject)
+  assert string.contains(attach_transcript, "kind=turn")
+  assert string.contains(attach_transcript, "name=turn_finished")
+  assert string.contains(attach_transcript, "turn=3")
+  assert string.contains(attach_transcript, "turn_status=finished")
 }
 
 pub fn ps_json_preserves_full_session_ids_and_raw_fields_test() {
@@ -664,6 +757,62 @@ pub fn ambiguous_display_ref_returns_clear_error_test() {
   assert ctl.error_code(err) == "ambiguous_session_ref"
   assert string.contains(ctl.error_message(err), "ambiguous")
   assert string.contains(ctl.error_message(err), "canonical session_id")
+}
+
+fn turn_deps(summary: event.SessionSummary) -> ctl.ControlClient {
+  ctl.ControlClient(
+    list_sessions: fn(_) {
+      Ok(event.SessionList(sessions: [summary], now_ms: ps_now_ms))
+    },
+    get_session: fn(_, session_id) {
+      case session_id == summary.session_id {
+        True -> Ok(Some(summary))
+        False -> Ok(None)
+      }
+    },
+    get_events: fn(_, _, cursor, _) {
+      case cursor {
+        0 ->
+          Ok(event.EventPage(
+            events: [turn_finished_event(summary.session_id)],
+            next_cursor: 1,
+            truncated: False,
+          ))
+        _ ->
+          Ok(event.EventPage(events: [], next_cursor: cursor, truncated: False))
+      }
+    },
+    stream_events: fn(_, _, _, _) { Ok(Nil) },
+    apply_command: fn(_, operator_command) {
+      Ok(command.applied(operator_command, None))
+    },
+    raw_request: fn(_, request) { Ok(protocol.request_to_string(request)) },
+  )
+}
+
+fn turn_finished_event(session_id: String) -> event.SessionEvent {
+  event.SessionEvent(
+    cursor: 1,
+    at_ms: 10,
+    session_id: session_id,
+    issue_id: "issue-1",
+    payload: event.EventPayload(
+      ..event.empty_payload(
+        event.Turn,
+        event.TurnName(turn_telemetry.EventFinished),
+      ),
+      turn: Some(3),
+      turn_status: Some(turn_telemetry.StatusFinished),
+      turn_duration_ms: Some(1500),
+      token_delta: session_tokens.TokenTotals(
+        input: 10,
+        output: 5,
+        cache_read: 0,
+        cache_write: 0,
+        total: 15,
+      ),
+    ),
+  )
 }
 
 fn session_ref_deps(sessions: List(event.SessionSummary)) -> ctl.ControlClient {

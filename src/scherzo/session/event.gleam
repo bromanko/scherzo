@@ -2,6 +2,7 @@ import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub type SessionStatus {
   Preparing
@@ -22,6 +23,7 @@ pub type EventKind {
   TokenStats
   Error
   PiRaw
+  Turn
 }
 
 pub type LifecycleEventName {
@@ -38,6 +40,7 @@ pub type LifecycleEventName {
 pub type EventName {
   LifecycleName(LifecycleEventName)
   PiName(pi_event.PiEvent)
+  TurnName(turn_telemetry.TurnEventName)
 }
 
 pub type RedactedRawJson {
@@ -58,6 +61,12 @@ pub type EventPayload {
     tool_output: Option(String),
     tool_status: Option(String),
     tokens: session_tokens.TokenTotals,
+    turn_status: Option(turn_telemetry.TurnStatus),
+    turn_started_at_ms: Option(Int),
+    turn_finished_at_ms: Option(Int),
+    turn_duration_ms: Option(Int),
+    token_delta: session_tokens.TokenTotals,
+    reason: Option(turn_telemetry.TurnReason),
     raw_json: Option(RedactedRawJson),
   )
 }
@@ -73,6 +82,12 @@ pub type SessionSummary {
     pi_session_id: Option(String),
     status: SessionStatus,
     current_turn: Int,
+    current_turn_status: Option(turn_telemetry.TurnStatus),
+    current_turn_started_at_ms: Option(Int),
+    last_turn_finished_at_ms: Option(Int),
+    last_turn_duration_ms: Option(Int),
+    last_turn_token_delta: session_tokens.TokenTotals,
+    last_turn_reason: Option(turn_telemetry.TurnReason),
     started_at_ms: Int,
     last_event_at_ms: Int,
     token_totals: session_tokens.TokenTotals,
@@ -111,6 +126,12 @@ pub fn empty_payload(kind: EventKind, name: EventName) -> EventPayload {
     tool_output: None,
     tool_status: None,
     tokens: session_tokens.zero_token_totals(),
+    turn_status: None,
+    turn_started_at_ms: None,
+    turn_finished_at_ms: None,
+    turn_duration_ms: None,
+    token_delta: session_tokens.zero_token_totals(),
+    reason: None,
     raw_json: None,
   )
 }
@@ -150,6 +171,7 @@ pub fn name_to_string(name: EventName) -> String {
   case name {
     LifecycleName(name) -> lifecycle_name_to_string(name)
     PiName(name) -> pi_event.to_string(name)
+    TurnName(name) -> turn_telemetry.event_name_to_string(name)
   }
 }
 
@@ -185,5 +207,6 @@ pub fn kind_to_string(kind: EventKind) -> String {
     TokenStats -> "token_stats"
     Error -> "error"
     PiRaw -> "pi_raw"
+    Turn -> "turn"
   }
 }

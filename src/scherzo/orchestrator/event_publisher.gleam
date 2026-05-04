@@ -5,8 +5,22 @@ import scherzo/agent/types as agent_types
 import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub fn worker_update(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  update: agent_types.RunnerUpdate,
+) -> Nil {
+  case update {
+    agent_types.RunnerPiUpdate(update) ->
+      worker_pi_update(event_hub, session_id, update)
+    agent_types.RunnerTurnUpdate(update) ->
+      worker_turn_update(event_hub, session_id, update)
+  }
+}
+
+fn worker_pi_update(
   event_hub: process.Subject(hub.Message),
   session_id: String,
   update: agent_types.PiUpdate,
@@ -27,39 +41,45 @@ pub fn worker_update(
   hub.publish(event_hub, session_id, update_payload(update))
 }
 
+fn worker_turn_update(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  update: turn_telemetry.TurnLifecycleUpdate,
+) -> Nil {
+  case update.name {
+    turn_telemetry.EventStarted | turn_telemetry.EventFinished ->
+      hub.update_status(event_hub, session_id, session_event.Running)
+    _ -> Nil
+  }
+  hub.publish(event_hub, session_id, turn_update_payload(update))
+}
+
 pub fn lifecycle(
   event_hub: process.Subject(hub.Message),
   session_id: String,
   name: session_event.LifecycleEventName,
   message: Option(String),
 ) -> Nil {
-  hub.publish(
-    event_hub,
-    session_id,
+  let payload =
     session_event.EventPayload(
-      kind: session_event.Lifecycle,
-      name: session_event.LifecycleName(name),
-      turn: None,
-      pi_type: None,
+      ..session_event.empty_payload(
+        session_event.Lifecycle,
+        session_event.LifecycleName(name),
+      ),
       message: message,
-      request_id: None,
-      method: None,
-      tool_name: None,
-      tool_input: None,
-      tool_output: None,
-      tool_status: None,
       tokens: session_tokens.zero_token_totals(),
-      raw_json: None,
-    ),
-  )
+    )
+  hub.publish(event_hub, session_id, payload)
 }
 
 pub fn update_payload(
   update: agent_types.PiUpdate,
 ) -> session_event.EventPayload {
   session_event.EventPayload(
-    kind: kind_for_update(update),
-    name: session_event.PiName(update.event),
+    ..session_event.empty_payload(
+      kind_for_update(update),
+      session_event.PiName(update.event),
+    ),
     turn: update.turn,
     pi_type: pi_type_for_update(update),
     message: update.message,
@@ -71,6 +91,21 @@ pub fn update_payload(
     tool_status: update.tool_status,
     tokens: update.tokens,
     raw_json: update.raw_json,
+  )
+}
+
+pub fn turn_update_payload(
+  update: turn_telemetry.TurnLifecycleUpdate,
+) -> session_event.EventPayload {
+  session_event.EventPayload(
+    ..session_event.empty_payload(
+      session_event.Turn,
+      session_event.TurnName(update.name),
+    ),
+    turn: Some(update.turn),
+    turn_status: turn_telemetry.status_for_event_name(update.name),
+    tokens: update.tokens,
+    reason: update.reason,
   )
 }
 

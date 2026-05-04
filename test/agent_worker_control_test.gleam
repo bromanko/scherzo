@@ -137,7 +137,7 @@ fn tracker_returning(final_issue: tracker_issue.Issue) -> tracker.Client {
 }
 
 fn receive_update_named(
-  subject: process.Subject(agent_types.PiUpdate),
+  subject: process.Subject(agent_types.RunnerUpdate),
   name: String,
   attempts: Int,
 ) -> Result(agent_types.PiUpdate, Nil) {
@@ -145,11 +145,12 @@ fn receive_update_named(
     True -> Error(Nil)
     False ->
       case process.receive(subject, within: 200) {
-        Ok(update) ->
+        Ok(agent_types.RunnerPiUpdate(update)) ->
           case pi_event.to_string(update.event) == name {
             True -> Ok(update)
             False -> receive_update_named(subject, name, attempts - 1)
           }
+        Ok(_) -> receive_update_named(subject, name, attempts - 1)
         Error(_) -> receive_update_named(subject, name, attempts - 1)
       }
   }

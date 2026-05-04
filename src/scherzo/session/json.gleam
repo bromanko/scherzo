@@ -3,6 +3,7 @@ import gleam/option.{type Option, None, Some}
 import scherzo/session/event
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub fn summary_to_string(summary: event.SessionSummary) -> String {
   summary_to_json(summary) |> json.to_string
@@ -32,6 +33,18 @@ pub fn summary_to_json(summary: event.SessionSummary) -> json.Json {
     #("status", json.string(event.status_to_string(summary.status))),
     #("exit_reason", optional_exit_reason(event.exit_reason(summary.status))),
     #("current_turn", json.int(summary.current_turn)),
+    #("current_turn_status", optional_turn_status(summary.current_turn_status)),
+    #(
+      "current_turn_started_at_ms",
+      optional_int(summary.current_turn_started_at_ms),
+    ),
+    #(
+      "last_turn_finished_at_ms",
+      optional_int(summary.last_turn_finished_at_ms),
+    ),
+    #("last_turn_duration_ms", optional_int(summary.last_turn_duration_ms)),
+    #("last_turn_token_delta", tokens_to_json(summary.last_turn_token_delta)),
+    #("last_turn_reason", optional_turn_reason(summary.last_turn_reason)),
     #("started_at_ms", json.int(summary.started_at_ms)),
     #("last_event_at_ms", json.int(summary.last_event_at_ms)),
     #("tokens", tokens_to_json(summary.token_totals)),
@@ -61,6 +74,7 @@ pub fn page_to_json(page: event.EventPage) -> json.Json {
 }
 
 fn payload_entries(payload: event.EventPayload) -> List(#(String, json.Json)) {
+  let payload = sanitize_turn_payload_for_json(payload)
   [
     #("kind", json.string(event.kind_to_string(payload.kind))),
     #("name", json.string(event.name_to_string(payload.name))),
@@ -74,8 +88,35 @@ fn payload_entries(payload: event.EventPayload) -> List(#(String, json.Json)) {
     #("tool_output", optional_string(payload.tool_output)),
     #("tool_status", optional_string(payload.tool_status)),
     #("tokens", tokens_to_json(payload.tokens)),
+    #("turn_status", optional_turn_status(payload.turn_status)),
+    #("turn_started_at_ms", optional_int(payload.turn_started_at_ms)),
+    #("turn_finished_at_ms", optional_int(payload.turn_finished_at_ms)),
+    #("turn_duration_ms", optional_int(payload.turn_duration_ms)),
+    #("token_delta", tokens_to_json(payload.token_delta)),
+    #("reason", optional_turn_reason(payload.reason)),
     #("raw_json", optional_raw_json(payload.raw_json)),
   ]
+}
+
+fn sanitize_turn_payload_for_json(
+  payload: event.EventPayload,
+) -> event.EventPayload {
+  case payload.kind {
+    event.Turn ->
+      event.EventPayload(
+        ..payload,
+        pi_type: None,
+        message: None,
+        request_id: None,
+        method: None,
+        tool_name: None,
+        tool_input: None,
+        tool_output: None,
+        tool_status: None,
+        raw_json: None,
+      )
+    _ -> payload
+  }
 }
 
 fn tokens_to_json(tokens: session_tokens.TokenTotals) -> json.Json {
@@ -98,6 +139,20 @@ fn optional_string(value: Option(String)) -> json.Json {
 fn optional_exit_reason(value: Option(reason.WorkerExitReason)) -> json.Json {
   case value {
     Some(value) -> json.string(reason.to_string(value))
+    None -> json.null()
+  }
+}
+
+fn optional_turn_status(value: Option(turn_telemetry.TurnStatus)) -> json.Json {
+  case value {
+    Some(value) -> json.string(turn_telemetry.status_to_string(value))
+    None -> json.null()
+  }
+}
+
+fn optional_turn_reason(value: Option(turn_telemetry.TurnReason)) -> json.Json {
+  case value {
+    Some(value) -> json.string(turn_telemetry.reason_to_string(value))
     None -> json.null()
   }
 }
