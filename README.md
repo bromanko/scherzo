@@ -368,11 +368,11 @@ Supported comments include:
 /scherzo ui respond ui-17 --value approved
 ```
 
-Authorization is by explicit Linear user id allowlist only. The transport is runtime-only; commands posted while Scherzo is down are not replayed on startup. Local `scherzoctl` remains the fallback control path.
+Authorization is by explicit Linear user id allowlist only. Scherzo persists command receipts in the local ledger as comments are seen, started, completed, and acknowledged. After restart, acked commands are skipped, completed-but-unacked commands are acknowledged from their recorded result without reapplying the command, and commands that were started but not durably completed are acknowledged with `unknown_after_restart` so an operator can inspect state before issuing a new command. If an acknowledgement post fails while the daemon remains running, Scherzo keeps it pending and retries it on later polls without reapplying the source command. Commands posted while Scherzo was down are processed when they are on currently observed issues and still appear in the bounded `poll_limit_per_issue` comment results. Local `scherzoctl` remains the fallback control path.
 
 ## Local durable ledger
 
-Scherzo includes a local durable state ledger under `workspace.root/.scherzo-state/ledger/`. Daemon startup now replays this ledger before the first poll tick and uses it for single-instance restart recovery for the same canonical workspace root. Recovery restores durable retry counters, worker-session counters, parked issues, retry timers, known workspace paths, and replayable pending Linear outbox entries that include bounded v2 payloads. Started runs that lack a finish record are marked interrupted because live pi sessions and Erlang ports cannot survive a BEAM restart.
+Scherzo includes a local durable state ledger under `workspace.root/.scherzo-state/ledger/`. Daemon startup now replays this ledger before the first poll tick and uses it for single-instance restart recovery for the same canonical workspace root. Recovery restores durable retry counters, worker-session counters, parked issues, retry timers, known workspace paths, Linear command receipt state, and replayable pending Linear outbox entries that include bounded v2 payloads. Started runs that lack a finish record are marked interrupted because live pi sessions and Erlang ports cannot survive a BEAM restart.
 
 The ledger layout is:
 
@@ -396,13 +396,13 @@ This recovery is at-least-once rather than exactly-once. A crash after a real Li
 
 ## Implemented coverage
 
-The deterministic test suite covers ledger record roundtrips for counters, known workspaces, v2 parking, and v2 outbox payloads; projection helpers for retry due time and pending outbox replay; pure recovery for interrupted, parked, terminal, overdue-retry, future-retry, and payload-less outbox cases; and daemon startup ordering through the existing actor tests. Real Linear and real pi are not required for these recovery tests.
+The deterministic test suite covers ledger record roundtrips for counters, known workspaces, v2 parking, Linear command receipts, and v2 outbox payloads; projection helpers for retry due time, command receipt state, and pending outbox replay; pure recovery for interrupted, parked, terminal, overdue-retry, future-retry, and payload-less outbox cases; durable Linear command behavior for completed-unacked replay, started-unknown acknowledgements, same-process acknowledgement retry, and old bounded observed comments; and daemon startup ordering through the existing actor tests. Real Linear and real pi are not required for these recovery tests.
 
 ## Safety posture
 
 Scherzo is intended for trusted repositories and trusted workflow files. Hooks are arbitrary shell. pi tool execution follows the operator's `pi.command` and host OS environment. Scherzo enforces workspace cwd and root containment, but it does not provide a VM or container sandbox.
 
-Run only one Scherzo instance per Linear project and canonical workspace root. The local durable ledger supports single-instance restart recovery, not multi-host or multi-workspace exactly-once behavior. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. For interactive daemon runs, prefer `direnv exec . scherzo-start .scherzo/scherzo.yaml`; that devenv helper wraps `gleam run -- ...` and translates Ctrl-C/SIGINT into SIGTERM so the graceful shutdown path runs. Direct `gleam run` Ctrl-C, `kill -9`, host power loss, or BEAM VM crashes may leave a stale `workspace.root/.scherzo-state/instance.lock`; operators must remove it only after checking no Scherzo process remains active. Live pi sessions, EventHub history, and Linear command comments posted while Scherzo was down are still not recovered in this phase.
+Run only one Scherzo instance per Linear project and canonical workspace root. The local durable ledger supports single-instance restart recovery, not multi-host or multi-workspace exactly-once behavior. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. For interactive daemon runs, prefer `direnv exec . scherzo-start .scherzo/scherzo.yaml`; that devenv helper wraps `gleam run -- ...` and translates Ctrl-C/SIGINT into SIGTERM so the graceful shutdown path runs. Direct `gleam run` Ctrl-C, `kill -9`, host power loss, or BEAM VM crashes may leave a stale `workspace.root/.scherzo-state/instance.lock`; operators must remove it only after checking no Scherzo process remains active. Live pi sessions and EventHub history are still not recovered in this phase. Linear command recovery remains bounded to observed issues and the configured comment poll limit; webhooks and Linear-side idempotency are future work.
 
 ## Legacy Markdown removal
 

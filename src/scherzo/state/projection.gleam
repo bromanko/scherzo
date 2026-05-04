@@ -3,8 +3,9 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq}
+import gleam/result
 import gleam/string
 import scherzo/domain
 import scherzo/state/record
@@ -15,6 +16,7 @@ pub type Projection {
     retries: Dict(String, RetryStatus),
     parked_issues: Dict(String, ParkedIssue),
     commands: Dict(String, CommandStatus),
+    command_receipts: Dict(String, CommandReceiptState),
     outbox: Dict(String, OutboxStatus),
     issue_counters: Dict(String, IssueCounterStatus),
     known_workspaces: Dict(String, KnownWorkspace),
@@ -97,6 +99,38 @@ pub type CommandStatus {
   CommandAcked(issue_id: String, acked_at_ms: Int)
 }
 
+pub type CommandReceiptState {
+  CommandReceiptUnseen
+  CommandReceiptSeen(
+    issue_id: String,
+    author_id: String,
+    command_name: String,
+    excerpt: String,
+    seen_at_ms: Int,
+  )
+  CommandReceiptStarted(
+    issue_id: String,
+    author_id: String,
+    command_name: String,
+    excerpt: String,
+    seen_at_ms: Int,
+    started_at_ms: Int,
+  )
+  CommandReceiptCompleted(
+    issue_id: String,
+    author_id: String,
+    command_name: String,
+    excerpt: String,
+    result_status: String,
+    message_excerpt: String,
+    seen_at_ms: Int,
+    started_at_ms: Int,
+    completed_at_ms: Int,
+    acked_at_ms: Option(Int),
+  )
+  CommandReceiptAcked(issue_id: String, acked_at_ms: Int)
+}
+
 pub type OutboxStatus {
   OutboxPending(
     issue_id: String,
@@ -150,6 +184,10 @@ type CommandSnapshot {
   CommandSnapshot(comment_id: String, status: CommandStatus)
 }
 
+type CommandReceiptSnapshot {
+  CommandReceiptSnapshot(comment_id: String, receipt: CommandReceiptState)
+}
+
 type OutboxSnapshot {
   OutboxSnapshot(outbox_id: String, status: OutboxStatus)
 }
@@ -168,6 +206,7 @@ type SnapshotFields {
     retries: List(RetrySnapshot),
     parked_issues: List(ParkedSnapshot),
     commands: List(CommandSnapshot),
+    command_receipts: List(CommandReceiptSnapshot),
     outbox: List(OutboxSnapshot),
     issue_counters: List(IssueCounterSnapshot),
     known_workspaces: List(KnownWorkspaceSnapshot),
@@ -180,6 +219,7 @@ pub fn new() -> Projection {
     retries: dict.new(),
     parked_issues: dict.new(),
     commands: dict.new(),
+    command_receipts: dict.new(),
     outbox: dict.new(),
     issue_counters: dict.new(),
     known_workspaces: dict.new(),
@@ -352,7 +392,17 @@ pub fn apply(
       author_id,
       command_name,
       excerpt,
-    ) ->
+    ) -> {
+      let receipt =
+        seen_receipt(
+          projection.command_receipts,
+          comment_id,
+          issue_id,
+          author_id,
+          command_name,
+          excerpt,
+          at_ms,
+        )
       Projection(
         ..projection,
         commands: dict.insert(
@@ -360,8 +410,22 @@ pub fn apply(
           comment_id,
           CommandSeen(issue_id, author_id, command_name, excerpt, at_ms),
         ),
+        command_receipts: dict.insert(
+          projection.command_receipts,
+          comment_id,
+          receipt,
+        ),
       )
-    record.LinearCommandStarted(comment_id, issue_id, command_name) ->
+    }
+    record.LinearCommandStarted(comment_id, issue_id, command_name) -> {
+      let receipt =
+        started_receipt(
+          projection.command_receipts,
+          comment_id,
+          issue_id,
+          command_name,
+          at_ms,
+        )
       Projection(
         ..projection,
         commands: dict.insert(
@@ -369,8 +433,23 @@ pub fn apply(
           comment_id,
           CommandStarted(issue_id, command_name, at_ms),
         ),
+        command_receipts: dict.insert(
+          projection.command_receipts,
+          comment_id,
+          receipt,
+        ),
       )
-    record.LinearCommandCompleted(comment_id, issue_id, status, message_excerpt) ->
+    }
+    record.LinearCommandCompleted(comment_id, issue_id, status, message_excerpt) -> {
+      let receipt =
+        completed_receipt(
+          projection.command_receipts,
+          comment_id,
+          issue_id,
+          status,
+          message_excerpt,
+          at_ms,
+        )
       Projection(
         ..projection,
         commands: dict.insert(
@@ -378,8 +457,16 @@ pub fn apply(
           comment_id,
           CommandCompleted(issue_id, status, message_excerpt, at_ms),
         ),
+        command_receipts: dict.insert(
+          projection.command_receipts,
+          comment_id,
+          receipt,
+        ),
       )
-    record.LinearCommandAcked(comment_id, issue_id) ->
+    }
+    record.LinearCommandAcked(comment_id, issue_id) -> {
+      let receipt =
+        acked_receipt(projection.command_receipts, comment_id, issue_id, at_ms)
       Projection(
         ..projection,
         commands: dict.insert(
@@ -387,7 +474,13 @@ pub fn apply(
           comment_id,
           CommandAcked(issue_id, at_ms),
         ),
+        command_receipts: dict.insert(
+          projection.command_receipts,
+          comment_id,
+          receipt,
+        ),
       )
+    }
     record.OutboxPending(outbox_id, issue_id, outbox_kind, dedupe_key) ->
       Projection(
         ..projection,
@@ -439,6 +532,196 @@ pub fn apply(
   }
 }
 
+fn seen_receipt(
+  receipts: Dict(String, CommandReceiptState),
+  comment_id: String,
+  issue_id: String,
+  author_id: String,
+  command_name: String,
+  excerpt: String,
+  seen_at_ms: Int,
+) -> CommandReceiptState {
+  case dict.get(receipts, comment_id) {
+    Ok(CommandReceiptUnseen) | Error(_) ->
+      CommandReceiptSeen(issue_id, author_id, command_name, excerpt, seen_at_ms)
+    Ok(receipt) -> receipt
+  }
+}
+
+fn started_receipt(
+  receipts: Dict(String, CommandReceiptState),
+  comment_id: String,
+  issue_id: String,
+  command_name: String,
+  started_at_ms: Int,
+) -> CommandReceiptState {
+  case dict.get(receipts, comment_id) {
+    Ok(receipt) ->
+      case receipt {
+        CommandReceiptSeen(_, author_id, _, excerpt, seen_at_ms) ->
+          CommandReceiptStarted(
+            issue_id,
+            author_id,
+            command_name,
+            excerpt,
+            seen_at_ms,
+            started_at_ms,
+          )
+        CommandReceiptStarted(_, author_id, _, excerpt, seen_at_ms, _) ->
+          CommandReceiptStarted(
+            issue_id,
+            author_id,
+            command_name,
+            excerpt,
+            seen_at_ms,
+            started_at_ms,
+          )
+        CommandReceiptCompleted(..) | CommandReceiptAcked(..) -> receipt
+        CommandReceiptUnseen ->
+          CommandReceiptStarted(
+            issue_id,
+            "",
+            command_name,
+            "",
+            0,
+            started_at_ms,
+          )
+      }
+    Error(_) ->
+      CommandReceiptStarted(issue_id, "", command_name, "", 0, started_at_ms)
+  }
+}
+
+fn completed_receipt(
+  receipts: Dict(String, CommandReceiptState),
+  comment_id: String,
+  issue_id: String,
+  result_status: String,
+  message_excerpt: String,
+  completed_at_ms: Int,
+) -> CommandReceiptState {
+  case dict.get(receipts, comment_id) {
+    Ok(CommandReceiptStarted(
+      _,
+      author_id,
+      command_name,
+      excerpt,
+      seen_at_ms,
+      started_at_ms,
+    )) ->
+      CommandReceiptCompleted(
+        issue_id,
+        author_id,
+        command_name,
+        excerpt,
+        result_status,
+        message_excerpt,
+        seen_at_ms,
+        started_at_ms,
+        completed_at_ms,
+        None,
+      )
+    Ok(CommandReceiptSeen(_, author_id, command_name, excerpt, seen_at_ms)) ->
+      CommandReceiptCompleted(
+        issue_id,
+        author_id,
+        command_name,
+        excerpt,
+        result_status,
+        message_excerpt,
+        seen_at_ms,
+        0,
+        completed_at_ms,
+        None,
+      )
+    Ok(CommandReceiptCompleted(
+      _,
+      author_id,
+      command_name,
+      excerpt,
+      _,
+      _,
+      seen_at_ms,
+      started_at_ms,
+      _,
+      acked_at_ms,
+    )) ->
+      CommandReceiptCompleted(
+        issue_id,
+        author_id,
+        command_name,
+        excerpt,
+        result_status,
+        message_excerpt,
+        seen_at_ms,
+        started_at_ms,
+        completed_at_ms,
+        acked_at_ms,
+      )
+    Ok(CommandReceiptAcked(_, acked_at_ms)) ->
+      CommandReceiptCompleted(
+        issue_id,
+        "",
+        "unknown",
+        "",
+        result_status,
+        message_excerpt,
+        0,
+        0,
+        completed_at_ms,
+        Some(acked_at_ms),
+      )
+    _ ->
+      CommandReceiptCompleted(
+        issue_id,
+        "",
+        "unknown",
+        "",
+        result_status,
+        message_excerpt,
+        0,
+        0,
+        completed_at_ms,
+        None,
+      )
+  }
+}
+
+fn acked_receipt(
+  receipts: Dict(String, CommandReceiptState),
+  comment_id: String,
+  issue_id: String,
+  acked_at_ms: Int,
+) -> CommandReceiptState {
+  case dict.get(receipts, comment_id) {
+    Ok(CommandReceiptCompleted(
+      _,
+      author_id,
+      command_name,
+      excerpt,
+      result_status,
+      message_excerpt,
+      seen_at_ms,
+      started_at_ms,
+      completed_at_ms,
+      _,
+    )) ->
+      CommandReceiptCompleted(
+        issue_id,
+        author_id,
+        command_name,
+        excerpt,
+        result_status,
+        message_excerpt,
+        seen_at_ms,
+        started_at_ms,
+        completed_at_ms,
+        Some(acked_at_ms),
+      )
+    _ -> CommandReceiptAcked(issue_id, acked_at_ms)
+  }
+}
+
 pub fn known_issue_ids(projection: Projection) -> List(String) {
   []
   |> append_unique_strings(run_issue_ids(projection.runs))
@@ -482,6 +765,14 @@ pub fn counter_has_source_run(
   }
 }
 
+pub fn command_receipt(
+  projection: Projection,
+  comment_id: String,
+) -> CommandReceiptState {
+  dict.get(projection.command_receipts, comment_id)
+  |> result.unwrap(CommandReceiptUnseen)
+}
+
 pub fn retry_due_at_ms(status: RetryStatus) -> Result(Int, Nil) {
   case status {
     RetryScheduled(_, delay_ms, _, _, scheduled_at_ms) ->
@@ -519,6 +810,13 @@ pub fn to_json(projection: Projection) -> json.Json {
     #(
       "commands",
       json.array(dict.to_list(projection.commands), of: command_entry_to_json),
+    ),
+    #(
+      "command_receipts",
+      json.array(
+        dict.to_list(projection.command_receipts),
+        of: command_receipt_entry_to_json,
+      ),
     ),
     #(
       "outbox",
@@ -571,6 +869,12 @@ pub fn decode_string(contents: String) -> Result(Projection, String) {
           |> list.map(fn(entry) {
             let CommandSnapshot(comment_id, status) = entry
             #(comment_id, status)
+          })
+          |> dict.from_list,
+        command_receipts: fields.command_receipts
+          |> list.map(fn(entry) {
+            let CommandReceiptSnapshot(comment_id, receipt) = entry
+            #(comment_id, receipt)
           })
           |> dict.from_list,
         outbox: fields.outbox
@@ -720,6 +1024,87 @@ fn command_entry_to_json(entry: #(String, CommandStatus)) -> json.Json {
   }
 }
 
+fn option_int_to_json(value: Option(Int)) -> json.Json {
+  case value {
+    Some(value) -> json.int(value)
+    None -> json.null()
+  }
+}
+
+fn command_receipt_entry_to_json(
+  entry: #(String, CommandReceiptState),
+) -> json.Json {
+  let #(comment_id, receipt) = entry
+  case receipt {
+    CommandReceiptUnseen ->
+      json.object([
+        #("comment_id", json.string(comment_id)),
+        #("status", json.string("unseen")),
+      ])
+    CommandReceiptSeen(issue_id, author_id, command_name, excerpt, seen_at_ms) ->
+      json.object([
+        #("comment_id", json.string(comment_id)),
+        #("status", json.string("seen")),
+        #("issue_id", json.string(issue_id)),
+        #("author_id", json.string(author_id)),
+        #("command_name", json.string(command_name)),
+        #("excerpt", json.string(excerpt)),
+        #("seen_at_ms", json.int(seen_at_ms)),
+      ])
+    CommandReceiptStarted(
+      issue_id,
+      author_id,
+      command_name,
+      excerpt,
+      seen_at_ms,
+      started_at_ms,
+    ) ->
+      json.object([
+        #("comment_id", json.string(comment_id)),
+        #("status", json.string("started")),
+        #("issue_id", json.string(issue_id)),
+        #("author_id", json.string(author_id)),
+        #("command_name", json.string(command_name)),
+        #("excerpt", json.string(excerpt)),
+        #("seen_at_ms", json.int(seen_at_ms)),
+        #("started_at_ms", json.int(started_at_ms)),
+      ])
+    CommandReceiptCompleted(
+      issue_id,
+      author_id,
+      command_name,
+      excerpt,
+      result_status,
+      message_excerpt,
+      seen_at_ms,
+      started_at_ms,
+      completed_at_ms,
+      acked_at_ms,
+    ) ->
+      json.object([
+        #("comment_id", json.string(comment_id)),
+        #("status", json.string("completed")),
+        #("issue_id", json.string(issue_id)),
+        #("author_id", json.string(author_id)),
+        #("command_name", json.string(command_name)),
+        #("excerpt", json.string(excerpt)),
+        #("result_status", json.string(result_status)),
+        #("message_excerpt", json.string(message_excerpt)),
+        #("seen_at_ms", json.int(seen_at_ms)),
+        #("started_at_ms", json.int(started_at_ms)),
+        #("completed_at_ms", json.int(completed_at_ms)),
+        #("acked_at_ms", option_int_to_json(acked_at_ms)),
+      ])
+    CommandReceiptAcked(issue_id, acked_at_ms) ->
+      json.object([
+        #("comment_id", json.string(comment_id)),
+        #("status", json.string("acked")),
+        #("issue_id", json.string(issue_id)),
+        #("acked_at_ms", json.int(acked_at_ms)),
+      ])
+  }
+}
+
 fn outbox_entry_to_json(entry: #(String, OutboxStatus)) -> json.Json {
   let #(outbox_id, status) = entry
   case status {
@@ -811,6 +1196,11 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     "commands",
     decode.list(of: command_snapshot_decoder()),
   )
+  use command_receipts <- decode.optional_field(
+    "command_receipts",
+    [],
+    decode.list(of: command_receipt_snapshot_decoder()),
+  )
   use outbox <- decode.field(
     "outbox",
     decode.list(of: outbox_snapshot_decoder()),
@@ -834,13 +1224,14 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         retries,
         parked_issues,
         commands,
+        command_receipts,
         outbox,
         issue_counters,
         known_workspaces,
       ))
     False ->
       decode.failure(
-        SnapshotFields([], [], [], [], [], [], []),
+        SnapshotFields([], [], [], [], [], [], [], []),
         expected: "SnapshotFields",
       )
   }
@@ -1015,6 +1406,95 @@ fn command_snapshot_decoder() -> decode.Decoder(CommandSnapshot) {
       decode.failure(
         CommandSnapshot("", CommandAcked("", 0)),
         expected: "CommandSnapshot",
+      )
+  }
+}
+
+fn command_receipt_snapshot_decoder() -> decode.Decoder(CommandReceiptSnapshot) {
+  use comment_id <- decode.field("comment_id", decode.string)
+  use status <- decode.field("status", decode.string)
+  case status {
+    "unseen" ->
+      decode.success(CommandReceiptSnapshot(comment_id, CommandReceiptUnseen))
+    "seen" -> {
+      use issue_id <- decode.field("issue_id", decode.string)
+      use author_id <- decode.field("author_id", decode.string)
+      use command_name <- decode.field("command_name", decode.string)
+      use excerpt <- decode.field("excerpt", decode.string)
+      use seen_at_ms <- decode.field("seen_at_ms", decode.int)
+      decode.success(CommandReceiptSnapshot(
+        comment_id,
+        CommandReceiptSeen(
+          issue_id,
+          author_id,
+          command_name,
+          excerpt,
+          seen_at_ms,
+        ),
+      ))
+    }
+    "started" -> {
+      use issue_id <- decode.field("issue_id", decode.string)
+      use author_id <- decode.field("author_id", decode.string)
+      use command_name <- decode.field("command_name", decode.string)
+      use excerpt <- decode.field("excerpt", decode.string)
+      use seen_at_ms <- decode.field("seen_at_ms", decode.int)
+      use started_at_ms <- decode.field("started_at_ms", decode.int)
+      decode.success(CommandReceiptSnapshot(
+        comment_id,
+        CommandReceiptStarted(
+          issue_id,
+          author_id,
+          command_name,
+          excerpt,
+          seen_at_ms,
+          started_at_ms,
+        ),
+      ))
+    }
+    "completed" -> {
+      use issue_id <- decode.field("issue_id", decode.string)
+      use author_id <- decode.field("author_id", decode.string)
+      use command_name <- decode.field("command_name", decode.string)
+      use excerpt <- decode.field("excerpt", decode.string)
+      use result_status <- decode.field("result_status", decode.string)
+      use message_excerpt <- decode.field("message_excerpt", decode.string)
+      use seen_at_ms <- decode.field("seen_at_ms", decode.int)
+      use started_at_ms <- decode.field("started_at_ms", decode.int)
+      use completed_at_ms <- decode.field("completed_at_ms", decode.int)
+      use acked_at_ms <- decode.optional_field(
+        "acked_at_ms",
+        None,
+        decode.optional(decode.int),
+      )
+      decode.success(CommandReceiptSnapshot(
+        comment_id,
+        CommandReceiptCompleted(
+          issue_id,
+          author_id,
+          command_name,
+          excerpt,
+          result_status,
+          message_excerpt,
+          seen_at_ms,
+          started_at_ms,
+          completed_at_ms,
+          acked_at_ms,
+        ),
+      ))
+    }
+    "acked" -> {
+      use issue_id <- decode.field("issue_id", decode.string)
+      use acked_at_ms <- decode.field("acked_at_ms", decode.int)
+      decode.success(CommandReceiptSnapshot(
+        comment_id,
+        CommandReceiptAcked(issue_id, acked_at_ms),
+      ))
+    }
+    _ ->
+      decode.failure(
+        CommandReceiptSnapshot("", CommandReceiptUnseen),
+        expected: "CommandReceiptSnapshot",
       )
   }
 }

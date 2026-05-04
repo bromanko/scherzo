@@ -12,7 +12,7 @@ This phase hardens the existing Linear comment transport. It does not add webhoo
 
 ## Problem Framing and Constraints
 
-The current Linear command transport is intentionally runtime-only. It keeps processed comment ids in memory, ignores comments older than daemon startup, and misses commands posted while Scherzo is down. That was safe for the first polling version, but it is not good enough for restart resilience. Operators expect a command they posted during a short restart to be acknowledged or rejected, and Scherzo must not accidentally execute the same command twice after a process crash.
+Before this change, the Linear command transport was intentionally runtime-only. It kept processed comment ids in memory, ignored comments older than daemon startup, and missed commands posted while Scherzo was down. That was safe for the first polling version, but it was not good enough for restart resilience. Operators expect a command they posted during a short restart to be acknowledged or rejected, and Scherzo must not accidentally execute the same command twice after a process crash.
 
 The previous hardening plans add a local durable ledger and single-instance crash recovery. This plan uses that ledger for Linear command receipts. It must preserve the same safety model as the current transport: explicit `/scherzo` prefix, author allowlist by Linear user id, bounded polling of observed issues only, and command execution through the shared daemon command handler.
 
@@ -63,19 +63,33 @@ The main privacy risk is persisting full command text. Countermeasure: durable r
 
 - [x] (2026-04-29 04:20Z) Drafted this plan as the fifth hardening step after graceful lifecycle, durable ledger, single-instance crash recovery, and pi session continuation.
 - [x] (2026-05-03 00:00Z) Normalized this plan after removing the obsolete pre-DAG pi session continuation plan. Durable Linear command receipts remain useful without pi session continuation; future workflow checkpoint/resumption work should be handled separately.
-- [ ] Initialize Linear command transport state from durable ledger receipts.
-- [ ] Persist seen/started/completed/acked command records.
-- [ ] Replay completed-but-unacked acknowledgements without reapplying commands.
-- [ ] Report started-without-completed commands as `unknown_after_restart`.
-- [ ] Process bounded commands posted while Scherzo was down for observed issues.
-- [ ] Update README and TODO with remaining webhook limitations.
+- [x] (2026-05-03 23:13Z) Initialized Linear command transport state from durable ledger command receipts during daemon startup.
+- [x] (2026-05-03 23:13Z) Persisted seen, started, completed, and acked command records around authorized command execution and acknowledgement posting.
+- [x] (2026-05-03 23:13Z) Replayed completed-but-unacked acknowledgements from stored receipt results without submitting commands again when the source comment is returned by the bounded observed-issue poll.
+- [x] (2026-05-03 23:13Z) Reported started-without-completed commands as `unknown_after_restart` without reapplying them.
+- [x] (2026-05-03 23:13Z) Processed bounded old unseen comments posted while Scherzo was down when they are on observed issues and still returned by polling.
+- [x] (2026-05-03 23:13Z) Updated README and TODO with durable receipt behavior and remaining webhook limitations.
+- [x] (2026-05-03 23:13Z) Ran implementation validation during the agent loop; an intermediate full-suite run was incorrectly recorded as having pre-existing helper-test failures.
+- [x] (2026-05-03 23:36Z) Applied review feedback by keeping failed Linear command acknowledgements pending in daemon memory and retrying them on later poll completions without reapplying the source command.
+- [x] (2026-05-03 23:53Z) Rechecked the workflow's recorded base change; `direnv exec . gleam test` passed there with 556 tests, so the run started from a green baseline.
+- [x] (2026-05-04 00:05Z) Reran final validation in the retained implementation workspace after conflict resolution; `direnv exec . gleam format --check src test` and `direnv exec . gleam test` passed, with the full test suite reporting 585 passed and no failures.
 
 ## Surprises & Discoveries
 
 - Observation: The prior pi session continuation plan was removed because it assumed one issue-level pi session, but this command-inbox plan does not depend on that assumption.
   Evidence: Durable command receipts operate on Linear comment ids, command results, and acknowledgement state. They can be implemented against the current Linear command transport and local ledger without knowing how future workflow checkpoints resume agent steps.
 
-During implementation, record whether existing ack outbox records were sufficient or needed command-specific fields.
+- Observation: The existing ledger record schema already had `LinearCommandSeen`, `LinearCommandStarted`, `LinearCommandCompleted`, and `LinearCommandAcked`, but the projection only kept the latest command status and therefore lost the completed result once `acked` was appended.
+  Evidence: `src/scherzo/state/projection.gleam` now keeps the prior latest-status view and adds a cumulative `command_receipts` view so completed result data survives through acked projection snapshots.
+
+- Observation: Existing v2 outbox payloads were sufficient for acknowledgement retry after normal command completion, but acknowledgement completion needed to append `LinearCommandAcked` using the original source comment id, not a synthetic issue-level outbox id.
+  Evidence: `src/scherzo/orchestrator/daemon.gleam` now writes command ack outbox entries keyed by source comment id and reuses `payload.source_comment_id` during startup outbox replay.
+
+- Observation: The original agent notes misclassified an intermediate red test run as a pre-existing baseline failure.
+  Evidence: The workflow metadata recorded base change `xyuzqlrvkwmtrxzsvrttmqypmmkyqxvr`; checking that revision after the failed workflow showed `direnv exec . gleam test` passing with 556 tests. After rebasing onto current `main`, the retained implementation workspace passed `direnv exec . gleam format --check src test` and `direnv exec . gleam test`, with 585 tests and no failures.
+
+- Observation: Review found that failed acknowledgement posts were durable for restart recovery but were not retried again by the same daemon process.
+  Evidence: `src/scherzo/orchestrator/daemon.gleam` now tracks pending and in-flight Linear command acknowledgements in memory; `test/orchestrator_daemon_linear_command_test.gleam` covers failure followed by later-poll retry without a second command application.
 
 ## Decision Log
 
@@ -95,15 +109,29 @@ During implementation, record whether existing ack outbox records were sufficien
   Rationale: The old issue-level pi session continuation plan was superseded by the need for workflow DAG checkpoints and step-scoped continuation. Linear command receipts harden remote operator command processing and can proceed independently of that future workflow recovery design.
   Date: 2026-05-03
 
+- Decision: Replay completed-unacked and started-unknown command acknowledgements from the next bounded observed-issue comment poll instead of adding a separate startup scanner.
+  Rationale: The polling transport already enforces the safe boundary of observed issue ids and `poll_limit_per_issue`; using it avoids expanding Scherzo into an unbounded historical comment scanner.
+  Date: 2026-05-03
+
+- Decision: Keep the old latest `commands` projection for compatibility and add a cumulative `command_receipts` projection for durable inbox semantics.
+  Rationale: Existing recovery and snapshot tests expect latest command status replacement, while durable acknowledgement replay needs prior command name and completion result after later ack records.
+  Date: 2026-05-03
+
+- Decision: Retry failed Linear command acknowledgements from daemon memory on later poll completions, while tracking in-flight comment ids to avoid concurrent duplicate posts.
+  Rationale: The durable outbox already protects restart recovery, but same-process retry closes a review gap for transient Linear failures without adding an unbounded scheduler or reprocessing the source command comment.
+  Date: 2026-05-03
+
 ## Outcomes & Retrospective
 
-(To be filled at completion. Include final receipt states, final restart behavior, final test count, and any remaining duplicate ack windows.)
+Implemented durable Linear command inbox receipts. Startup initializes `linear_transport.TransportState` from the ledger projection. Authorized commands append `LinearCommandSeen` and `LinearCommandStarted` before execution, append `LinearCommandCompleted` after the operator command returns, persist a v2 ack outbox record before posting, and append `LinearCommandAcked` after Linear accepts the acknowledgement. After restart, acked commands are skipped, completed-unacked commands produce an acknowledgement from the stored status/message without a new submit action when their source comment is returned by the bounded poll, and started-uncompleted commands produce `unknown_after_restart` without reapplying.
+
+Manual recovery after the opaque workflow failure verified that the recorded starting revision was green and that the retained implementation workspace now validates cleanly after rebasing onto current `main`. `direnv exec . gleam format --check src test` passes, and `direnv exec . gleam test` reports 585 passed and no failures. Remaining limitations are the documented duplicate-ack window if Linear accepts an ack but Scherzo crashes before `LinearCommandAcked`, the bounded polling window for comments posted while down, lack of Linear webhooks, and lack of Linear-side idempotency.
 
 ## Context and Orientation
 
-Linear command comments are implemented by `src/scherzo/control/linear_parser.gleam`, `src/scherzo/control/linear_transport.gleam`, Linear comment query helpers in `src/scherzo/linear.gleam`, and daemon integration in `src/scherzo/orchestrator/daemon.gleam`. The transport currently keeps `processed_comment_ids` in memory and filters comments older than `daemon_started_at_ms`.
+Linear command comments are implemented by `src/scherzo/control/linear_parser.gleam`, `src/scherzo/control/linear_transport.gleam`, Linear comment query helpers in `src/scherzo/linear.gleam`, and daemon integration in `src/scherzo/orchestrator/daemon.gleam`. The transport still keeps a runtime `processed_comment_ids` set to avoid duplicate work within one daemon process, but startup now also initializes it with durable command receipt facts from the ledger projection and no longer rejects unseen comments solely because they predate daemon startup.
 
-The durable ledger from `hardening-02` and startup recovery from `hardening-03` provide local persistent state and a replay projection. The ledger schema includes or can be extended to include `LinearCommandSeen`, `LinearCommandStarted`, `LinearCommandCompleted`, and `LinearCommandAcked` records.
+The durable ledger from `hardening-02` and startup recovery from `hardening-03` provide local persistent state and a replay projection. The ledger schema already includes `LinearCommandSeen`, `LinearCommandStarted`, `LinearCommandCompleted`, and `LinearCommandAcked` records. `src/scherzo/state/projection.gleam` now preserves both the legacy latest `commands` status and a cumulative `command_receipts` view keyed by Linear comment id.
 
 A Linear command receipt is local to one canonical workspace root. It does not coordinate multiple Scherzo daemons. It is not a Linear webhook delivery receipt.
 
@@ -142,7 +170,7 @@ Milestone 5 documents limitations and validates. At the end, README explains dur
 
 ## Plan of Work
 
-Extend the ledger projection with a `CommandReceipt` view. It should answer, for a comment id, whether the command is unseen, seen, started, completed with a stored `CommandResult`, acked, or unknown/corrupt. Store command name, issue id, author id, source comment id, status string, target, and message excerpt.
+Extend the ledger projection with a `CommandReceipt` view. It should answer, for a comment id, whether the command is unseen, seen, started, completed with stored status/message, or acked. Store command name, issue id, author id, source comment id, result status string, message excerpt, and lifecycle timestamps. The current implementation does not persist the command target separately; replayed acknowledgement bodies omit target for completed-unacked commands and keep the source comment id, command name, status, and message.
 
 Change `linear_transport.TransportState` so `processed_comment_ids` is replaced or supplemented by a durable receipt view plus a runtime set for comments processed during the current tick but not yet flushed. The transport should no longer skip comments solely because `created_at_ms < daemon_started_at_ms`. Instead, it uses durable receipts and bounded issue polling.
 
@@ -157,7 +185,7 @@ Modify daemon Linear command processing. When a parsed authorized command is abo
 
 Modify ack side effects. Before posting an ack, ensure there is a durable outbox pending record or enough command receipt data to retry. After `client.post_ack` succeeds, append `LinearCommandAcked`. If ack fails transiently, leave it completed-unacked so recovery retries later. If ack fails permanently, record `OutboxFailed` but keep command completed.
 
-Modify startup recovery. After replaying the ledger, initialize Linear command transport state with the command receipt projection. Also enqueue ack replay for completed-unacked receipts whose issue ids are still in the observed durable set, or let the next poll produce those ack actions. Prefer explicit startup ack replay if it can be bounded and tested.
+Modify startup recovery. After replaying the ledger, initialize Linear command transport state with the command receipt projection. The implemented acknowledgement replay path uses the next bounded observed-issue comment poll to produce completed-unacked and started-unknown ack actions, keeping recovery within the same observed issue ids and `poll_limit_per_issue` boundary as normal command polling.
 
 Update README. Replace the current statement that commands posted while down are missed with the new rule: commands posted while down are processed if they are on observed issues and still returned by bounded polling; already-applied comments are not re-executed after restart; commands with unknown in-flight outcome are acknowledged as unknown and require a new command if needed.
 
@@ -165,37 +193,37 @@ Update README. Replace the current statement that commands posted while down are
 
 1. From the repository root, run `direnv exec . gleam test` and record the current pass count.
 
-2. Add `test/linear_command_receipt_projection_test.gleam`. Construct ledger records for seen, started, completed, and acked commands and assert the projection returns the expected receipt state.
+2. Add focused command receipt projection tests. The implementation added them to `test/state_projection_test.gleam`, constructing ledger records for seen, started, completed, and acked commands and asserting the projection returns the expected receipt state.
 
-3. Implement or extend `src/scherzo/state/projection.gleam` to expose command receipts by comment id.
+3. Implement or extend `src/scherzo/state/projection.gleam` to expose command receipts by comment id while preserving the existing latest command status projection.
 
 4. Update `test/linear_command_transport_test.gleam`. Add `acked_receipt_skips_comment_test`, `completed_unacked_receipt_posts_ack_without_submit_test`, `started_uncompleted_receipt_posts_unknown_ack_test`, and `unseen_old_comment_can_submit_test`.
 
 5. Modify `src/scherzo/control/linear_transport.gleam` to use receipt state instead of startup-time filtering. Preserve existing parser, authorization, code-fence, max-comments-per-tick, and dedupe behavior.
 
-6. Add daemon ledger tests in `test/orchestrator_daemon_linear_command_receipt_test.gleam`. Process one `/scherzo park` comment and assert records are appended in order: seen, started, completed, acked.
+6. Add daemon ledger tests. The implementation added them to `test/orchestrator_daemon_linear_command_test.gleam`; one test processes a `/scherzo park` comment and asserts records are appended in order: seen, started, completed, acked.
 
 7. Implement daemon receipt appends around command execution.
 
-8. Add `command_not_executed_if_started_receipt_append_fails_test`: fake the ledger writer to fail on `LinearCommandStarted`; assert the command handler is not called and a rejection/error is logged.
+8. The planned fake-ledger-writer failure test was not added because the daemon currently writes the ledger through repository-local functions rather than dependency-injected writer seams. The implemented guard still checks `append_ledger_bodies` before command execution; adding a fake writer seam remains possible future test hardening.
 
-9. Add `completed_unacked_command_replays_ack_after_restart_test`: prewrite completed command receipt without ack, start daemon, and assert fake Linear command client receives an ack body without command handler invocation.
+9. Add `completed_unacked_command_replays_ack_after_restart_test`: prewrite completed command receipt without ack, start daemon, and assert fake Linear command client receives an ack body without command handler invocation. The implementation names this test `completed_unacked_command_replays_ack_without_reapplying_test`.
 
 10. Add `started_uncompleted_command_gets_unknown_ack_after_restart_test`: prewrite started without completed, start daemon, and assert an unknown-outcome ack is posted and the command handler is not invoked.
 
-11. Add `comment_posted_while_down_is_processed_when_observed_test`: prewrite recovered observed issue state, feed a Linear comment created before daemon startup but absent from receipts, and assert it submits once.
+11. Add `comment_posted_while_down_is_processed_when_observed_test`: feed a Linear comment created before daemon startup but absent from receipts for an observed issue and assert it submits once. The implementation names this test `old_unseen_comment_posted_while_down_is_processed_when_observed_test`.
 
-12. Add `comment_outside_bounded_poll_is_not_scanned_test`: prove the transport only processes comments returned by the bounded fake client and logs when page size equals `poll_limit_per_issue` if that warning is implemented.
+12. The bounded-poll negative test was covered by keeping command processing restricted to the fake client results returned for observed issue ids; no additional page-full warning was implemented in this phase.
 
-13. Implement ack replay using either startup side effects or next-poll processing. Keep it bounded to observed issue ids.
+13. Implement ack replay using next-poll processing. Keep it bounded to observed issue ids.
 
-14. Update README `Linear command comments` and `Implemented coverage/current limits` sections.
+14. Update README `Linear command comments`, `Local durable ledger`, `Implemented coverage`, and `Safety posture`; update `docs/TODO.md` so webhook wake-up remains as the follow-up.
 
-15. Run `direnv exec . gleam format`, `direnv exec . gleam format --check src test`, and `direnv exec . gleam test`. Record final pass count.
+15. Run `direnv exec . gleam format --check src test` and `direnv exec . gleam test`. Both commands must pass; the final retained-workspace validation after rebase reported 585 passed and no failures.
 
-16. Optional credential-gated validation: start daemon with fake pi and Linear commands enabled, post a command, kill/restart between command application and ack by using a test seam or manual interruption, and verify no duplicate application occurs. If manual crash timing is impractical, record deterministic test coverage instead.
+16. Optional credential-gated validation was not run; deterministic fake Linear and fake pi actor tests cover the restart and no-reapply behavior.
 
-17. Commit the phase with a message such as `Persist Linear command receipts`.
+17. Do not commit in Scherzo implementation workspaces; the publish workflow creates the final jj description/bookmark after validation.
 
 ## Testing and Falsifiability
 
@@ -206,7 +234,7 @@ Run from the repository root:
     direnv exec . gleam format --check src test
     direnv exec . gleam test
 
-No deterministic test may require real Linear or real pi. Use fake Linear comment clients and fake ledger writers.
+No deterministic test may require real Linear or real pi. Use fake Linear comment clients and ledger records written to test workspace roots.
 
 ## Validation and Acceptance
 
@@ -219,7 +247,7 @@ Accept this phase when:
 - Unseen commands created while down can process when observed and returned by bounded polling.
 - Existing parser/authorization behavior is unchanged.
 - README documents remaining bounded-polling and no-webhook limitations.
-- The full deterministic suite passes.
+- The full deterministic suite passes with no failures.
 
 ## Rollout, Recovery, and Idempotence
 
@@ -247,13 +275,14 @@ Example unknown ack:
 
 ## Interfaces and Dependencies
 
-Extend the command receipt projection with types equivalent to:
+The implemented command receipt projection exposes types equivalent to:
 
     pub type CommandReceiptState {
-      CommandUnseen
-      CommandSeen
-      CommandStarted(command_name: String, issue_id: String)
-      CommandCompleted(result: command.CommandResult, acked: Bool)
+      CommandReceiptUnseen
+      CommandReceiptSeen(issue_id: String, author_id: String, command_name: String, excerpt: String, seen_at_ms: Int)
+      CommandReceiptStarted(issue_id: String, author_id: String, command_name: String, excerpt: String, seen_at_ms: Int, started_at_ms: Int)
+      CommandReceiptCompleted(issue_id: String, author_id: String, command_name: String, excerpt: String, result_status: String, message_excerpt: String, seen_at_ms: Int, started_at_ms: Int, completed_at_ms: Int, acked_at_ms: Option(Int))
+      CommandReceiptAcked(issue_id: String, acked_at_ms: Int)
     }
 
     pub fn command_receipt(
@@ -261,14 +290,15 @@ Extend the command receipt projection with types equivalent to:
       comment_id: String,
     ) -> CommandReceiptState
 
-Update `linear_transport.process_comments` to accept the receipt projection or a lookup function:
+`linear_transport.TransportState` now carries a durable receipt dictionary. Daemon startup calls:
 
-    pub fn process_comments(
-      state: TransportState,
-      config: domain.LinearCommandConfig,
-      comments: List(linear.LinearComment),
-      issue_sessions: Dict(String, String),
-      receipt_for: fn(String) -> projection.CommandReceiptState,
-    ) -> #(TransportState, List(TransportAction))
+    pub fn new_state_with_receipts(
+      daemon_started_at_ms: Int,
+      command_receipts: Dict(String, projection.CommandReceiptState),
+    ) -> TransportState
 
-No new package dependency should be required. This plan depends on the ledger and recovery APIs from hardening plans 02 and 03.
+`linear_transport.process_comments` keeps its existing call shape and reads durable receipts from `TransportState`. `PostAck` actions now include the source comment id so the daemon can persist `LinearCommandAcked(comment_id, issue_id)` after Linear accepts the acknowledgement:
+
+    PostAck(issue_id: String, source_comment_id: String, body: String)
+
+No new package dependency was required. This plan depends on the ledger and recovery APIs from hardening plans 02 and 03.

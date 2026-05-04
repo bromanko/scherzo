@@ -11,6 +11,7 @@ import scherzo/agent/worker_command
 import scherzo/config
 import scherzo/control/command
 import scherzo/control/file as control_file
+import scherzo/control/linear_parser
 import scherzo/control/linear_transport
 import scherzo/control/server as control_server
 import scherzo/domain
@@ -35,6 +36,7 @@ import scherzo/session/name as session_name
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
 import scherzo/state/outbox
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/step_artifact
@@ -103,12 +105,17 @@ type PendingClaim {
   )
 }
 
+type PendingLinearCommandAck {
+  PendingLinearCommandAck(issue_id: String, body: String)
+}
+
 type StartupRecovery {
   StartupRecovery(
     runtime: domain.RuntimeState,
     retry_timers: List(recovery.RecoveredRetry),
     cleanup_workspaces: List(recovery.CleanupRequest),
     outbox_to_replay: List(recovery.OutboxReplay),
+    command_receipts: Dict(String, projection.CommandReceiptState),
     warnings: List(String),
   )
 }
@@ -146,6 +153,8 @@ type State {
     linear_command_client: linear.CommandClient,
     triage_client: linear_triage.TriageClient,
     linear_command_state: linear_transport.TransportState,
+    pending_linear_command_acks: Dict(String, PendingLinearCommandAck),
+    in_flight_linear_command_acks: Dict(String, Bool),
     runtime: domain.RuntimeState,
     poll: poll_scheduler.State(TimerHandle),
     retry: retry_scheduler.State(TimerHandle),
@@ -330,7 +339,6 @@ pub fn start(
     dependencies.make_linear_commands(effective.tracker)
   let triage_client =
     dependencies.make_triage(effective.tracker, effective.linear_contract)
-  let linear_command_state = linear_transport.new_state(dependencies.now_ms())
   let secrets = config.resolved_secrets(effective)
   use startup_recovery <- try_startup(load_startup_recovery(
     effective,
@@ -338,6 +346,11 @@ pub fn start(
     dependencies,
     secrets,
   ))
+  let linear_command_state =
+    linear_transport.new_state_with_receipts(
+      dependencies.now_ms(),
+      startup_recovery.command_receipts,
+    )
   let runtime = startup_recovery.runtime
   use event_hub <- try_startup(dependencies.start_event_hub() |> map_hub_error)
   let builder =
@@ -400,6 +413,8 @@ pub fn start(
                       linear_command_client: linear_command_client,
                       triage_client: triage_client,
                       linear_command_state: linear_command_state,
+                      pending_linear_command_acks: dict.new(),
+                      in_flight_linear_command_acks: dict.new(),
                       runtime: runtime,
                       poll: poll,
                       retry: retry_scheduler.new(),
@@ -520,6 +535,7 @@ fn load_startup_recovery(
     retry_timers: recovery_plan.retry_timers,
     cleanup_workspaces: recovery_plan.cleanup_workspaces,
     outbox_to_replay: recovery_plan.outbox_to_replay,
+    command_receipts: replayed.projection.command_receipts,
     warnings: recovery_plan.warnings,
   ))
 }
@@ -655,14 +671,28 @@ fn enqueue_startup_recovery_outbox(
               #("issue_id", issue_id),
               #("kind", outbox_kind),
             ])
-            enqueue_side_effect(
-              state,
-              effect_runner.PostLinearCommandAck(
-                issue_id: issue_id,
-                source_comment_id: outbox_id,
-                body: payload.body,
-                client: state.linear_command_client,
-              ),
+            let source_comment_id = case payload.source_comment_id {
+              Some(source_comment_id) -> source_comment_id
+              None -> outbox_id
+            }
+            let state =
+              State(
+                ..state,
+                linear_command_state: linear_transport.mark_processed(
+                  state.linear_command_state,
+                  source_comment_id,
+                ),
+              )
+            state
+            |> remember_pending_linear_command_ack(
+              issue_id,
+              source_comment_id,
+              payload.body,
+            )
+            |> enqueue_pending_linear_command_ack_effect(
+              issue_id,
+              source_comment_id,
+              payload.body,
             )
           }
         }
@@ -2004,6 +2034,7 @@ fn finish_linear_command_phase(
   candidates: List(domain.Issue),
   dispatch_after: Bool,
 ) -> State {
+  let state = retry_pending_linear_command_acks(state)
   let state = case dispatch_after {
     True -> dispatch_candidates(candidates, state)
     False -> state
@@ -2084,7 +2115,44 @@ fn apply_linear_transport_action(
   action: linear_transport.TransportAction,
 ) -> State {
   case action {
-    linear_transport.SubmitCommand(comment, parsed) -> {
+    linear_transport.SubmitCommand(comment, parsed) ->
+      apply_linear_submit_command(state, comment, parsed)
+    linear_transport.PostAck(issue_id, source_comment_id, body) ->
+      enqueue_linear_command_ack(state, issue_id, source_comment_id, body)
+    linear_transport.LogIgnored(reason, comment_id) -> {
+      log_state(state, "info", "linear_command_ignored", [
+        #("comment_id", comment_id),
+        #("reason", reason),
+      ])
+      state
+    }
+  }
+}
+
+fn apply_linear_submit_command(
+  state: State,
+  comment: linear.LinearComment,
+  parsed: linear_parser.ParsedLinearCommand,
+) -> State {
+  let command_name = command.command_name(parsed.command)
+  case
+    append_ledger_bodies(
+      state,
+      [
+        record.LinearCommandSeen(
+          comment.id,
+          comment.issue_id,
+          comment.author.id,
+          command_name,
+          safe_linear_command_excerpt(parsed.excerpt, state.workflow.secrets),
+        ),
+        record.LinearCommandStarted(comment.id, comment.issue_id, command_name),
+      ],
+      "linear_command_start_record_failed",
+    )
+  {
+    False -> state
+    True -> {
       let state_before_command = state
       let #(state, result) =
         apply_operator_command_to_state(state, parsed.command, 1000)
@@ -2100,87 +2168,169 @@ fn apply_linear_transport_action(
         #("status", command.status_to_string(result.status)),
       ])
       case
-        linear_transport.should_ack_result(
-          state.workflow.effective.linear_commands,
-          result,
-        )
-      {
-        True -> {
-          let body =
-            linear_transport.result_ack_body(
-              comment.id,
-              parsed,
-              ack_result,
-              state.workflow.secrets,
-            )
-          let _ =
-            append_ledger_bodies(
-              state,
-              [
-                record.OutboxPendingV2(
-                  comment.id,
-                  comment.issue_id,
-                  "linear_command_ack",
-                  "linear_command_ack:" <> comment.id,
-                  outbox.linear_command_ack_payload(
-                    comment.id,
-                    body,
-                    state.workflow.secrets,
-                  ),
-                ),
-              ],
-              "ledger_append_failed",
-            )
-          enqueue_side_effect(
-            state,
-            effect_runner.PostLinearCommandAck(
-              issue_id: comment.issue_id,
-              source_comment_id: comment.id,
-              body: body,
-              client: state.linear_command_client,
-            ),
-          )
-        }
-        False -> state
-      }
-    }
-    linear_transport.PostAck(issue_id, body) -> {
-      let outbox_id = "linear-command-ack-" <> issue_id
-      let _ =
         append_ledger_bodies(
           state,
           [
-            record.OutboxPendingV2(
-              outbox_id,
-              issue_id,
-              "linear_command_ack",
-              "linear_command_ack:" <> issue_id,
-              outbox.linear_command_ack_payload(
-                outbox_id,
-                body,
-                state.workflow.secrets,
-              ),
+            record.LinearCommandCompleted(
+              comment.id,
+              comment.issue_id,
+              command.status_to_string(result.status),
+              result_message_excerpt(ack_result, state.workflow.secrets),
             ),
           ],
-          "ledger_append_failed",
+          "linear_command_completion_record_failed",
+        )
+      {
+        False -> state
+        True ->
+          case
+            linear_transport.should_ack_result(
+              state.workflow.effective.linear_commands,
+              result,
+            )
+          {
+            True -> {
+              let body =
+                linear_transport.result_ack_body(
+                  comment.id,
+                  parsed,
+                  ack_result,
+                  state.workflow.secrets,
+                )
+              enqueue_linear_command_ack(
+                state,
+                comment.issue_id,
+                comment.id,
+                body,
+              )
+            }
+            False -> state
+          }
+      }
+    }
+  }
+}
+
+fn enqueue_linear_command_ack(
+  state: State,
+  issue_id: String,
+  source_comment_id: String,
+  body: String,
+) -> State {
+  case
+    append_ledger_bodies(
+      state,
+      [
+        record.OutboxPendingV2(
+          source_comment_id,
+          issue_id,
+          "linear_command_ack",
+          "linear_command_ack:" <> source_comment_id,
+          outbox.linear_command_ack_payload(
+            source_comment_id,
+            body,
+            state.workflow.secrets,
+          ),
+        ),
+      ],
+      "linear_command_ack_outbox_record_failed",
+    )
+  {
+    False -> state
+    True ->
+      state
+      |> remember_pending_linear_command_ack(issue_id, source_comment_id, body)
+      |> enqueue_pending_linear_command_ack_effect(
+        issue_id,
+        source_comment_id,
+        body,
+      )
+  }
+}
+
+fn remember_pending_linear_command_ack(
+  state: State,
+  issue_id: String,
+  source_comment_id: String,
+  body: String,
+) -> State {
+  State(
+    ..state,
+    pending_linear_command_acks: dict.insert(
+      state.pending_linear_command_acks,
+      source_comment_id,
+      PendingLinearCommandAck(issue_id, body),
+    ),
+  )
+}
+
+fn enqueue_pending_linear_command_ack_effect(
+  state: State,
+  issue_id: String,
+  source_comment_id: String,
+  body: String,
+) -> State {
+  case dict.has_key(state.in_flight_linear_command_acks, source_comment_id) {
+    True -> state
+    False -> {
+      let state =
+        State(
+          ..state,
+          in_flight_linear_command_acks: dict.insert(
+            state.in_flight_linear_command_acks,
+            source_comment_id,
+            True,
+          ),
         )
       enqueue_side_effect(
         state,
         effect_runner.PostLinearCommandAck(
           issue_id: issue_id,
-          source_comment_id: outbox_id,
+          source_comment_id: source_comment_id,
           body: body,
           client: state.linear_command_client,
         ),
       )
     }
-    linear_transport.LogIgnored(reason, comment_id) -> {
-      log_state(state, "info", "linear_command_ignored", [
-        #("comment_id", comment_id),
-        #("reason", reason),
-      ])
-      state
+  }
+}
+
+fn retry_pending_linear_command_acks(state: State) -> State {
+  state.pending_linear_command_acks
+  |> dict.to_list
+  |> list.fold(state, fn(state, entry) {
+    let #(source_comment_id, pending) = entry
+    let PendingLinearCommandAck(issue_id, body) = pending
+    case dict.has_key(state.in_flight_linear_command_acks, source_comment_id) {
+      True -> state
+      False -> {
+        log_state(state, "info", "linear_command_ack_retry_enqueued", [
+          #("issue_id", issue_id),
+          #("comment_id", source_comment_id),
+        ])
+        enqueue_pending_linear_command_ack_effect(
+          state,
+          issue_id,
+          source_comment_id,
+          body,
+        )
+      }
     }
+  })
+}
+
+fn safe_linear_command_excerpt(value: String, secrets: List(String)) -> String {
+  log.redact("linear_command_receipt", value, secrets)
+  |> log.truncate(record.max_excerpt_chars)
+}
+
+fn result_message_excerpt(
+  result: command.CommandResult,
+  secrets: List(String),
+) -> String {
+  case result.message {
+    Some(message) -> safe_linear_command_excerpt(message, secrets)
+    None -> ""
   }
 }
 
@@ -2841,7 +2991,11 @@ fn run_workflow_worker(
       {
         Ok(success) -> Ok(success.worker_success)
         Error(failure) ->
-          Error(yaml_worker_failure(failure.reason, failure.run_root, issue))
+          Error(yaml_worker_failure(
+            workflow_run.failure_report(failure),
+            failure.run_root,
+            issue,
+          ))
       }
   }
 }
@@ -2987,6 +3141,10 @@ fn run_yaml_command_step(
       secrets,
       limits,
     )
+  case step_artifact.succeeded(artifact.status) {
+    True -> Nil
+    False -> publish_yaml_command_failure(event_hub, session_id, artifact)
+  }
   let reason = case step_artifact.succeeded(artifact.status) {
     True -> session_reason.Normal
     False -> session_reason.Failed
@@ -2994,6 +3152,36 @@ fn run_yaml_command_step(
   hub.finish_session(event_hub, session_id, reason)
   process.send(daemon_subject, YamlStepFinished(session_id))
   artifact
+}
+
+fn publish_yaml_command_failure(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  artifact: step_artifact.StepArtifact,
+) -> Nil {
+  let summary = case step_artifact.command_failure_summary(artifact) {
+    Some(summary) -> summary
+    None -> "command step failed: step=" <> artifact.step_id
+  }
+  hub.publish(
+    event_hub,
+    session_id,
+    session_event.EventPayload(
+      kind: session_event.Error,
+      name: session_event.PiName(pi_event.UnknownPiEvent("command_failed")),
+      turn: None,
+      pi_type: None,
+      message: Some(summary),
+      request_id: None,
+      method: None,
+      tool_name: Some("workflow command " <> artifact.step_id),
+      tool_input: artifact.command,
+      tool_output: Some(step_artifact.command_failure_details(artifact)),
+      tool_status: Some("failed"),
+      tokens: domain.zero_token_totals(),
+      raw_json: None,
+    ),
+  )
 }
 
 fn run_yaml_agent_step(
@@ -3745,6 +3933,14 @@ fn handle_linear_command_ack_finished(
   comment_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
+  let state =
+    State(
+      ..state,
+      in_flight_linear_command_acks: dict.delete(
+        state.in_flight_linear_command_acks,
+        comment_id,
+      ),
+    )
   case result {
     Ok(Nil) -> {
       let _ =
@@ -3752,10 +3948,17 @@ fn handle_linear_command_ack_finished(
           state,
           [
             record.OutboxCompleted(comment_id, issue_id, "linear_command_ack"),
+            record.LinearCommandAcked(comment_id, issue_id),
           ],
           "ledger_append_failed",
         )
-      state
+      State(
+        ..state,
+        pending_linear_command_acks: dict.delete(
+          state.pending_linear_command_acks,
+          comment_id,
+        ),
+      )
     }
     Error(err) -> {
       log_state(state, "warn", "linear_command_ack_failed", [

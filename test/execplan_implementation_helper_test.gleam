@@ -191,7 +191,7 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -241,7 +241,7 @@ pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-pr",
+      "SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-pr",
     )
 
   assert artifact.status == step_artifact.StepSucceeded

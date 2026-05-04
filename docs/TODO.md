@@ -8,7 +8,7 @@ This file tracks follow-up improvements that are intentionally outside the initi
 
   Scherzo currently posts operational handoff comments such as claim, success, and failure, but it does not post the actual task result from pi. A future plan should define the higher-level protocol for what Scherzo writes back to Linear and how humans communicate back to Scherzo.
 
-  The Scherzo-to-Linear result-comment half is now planned in `docs/plans/linear-session-results.md`. The first runtime-only Linear-to-Scherzo command/comment transport was implemented from `docs/plans/linear-command-transport.md`; durable receipts and webhook wake-up remain separate follow-up work below.
+  The Scherzo-to-Linear result-comment half is now planned in `docs/plans/linear-session-results.md`. The first Linear-to-Scherzo command/comment transport was implemented from `docs/plans/linear-command-transport.md`, and durable command receipts were added in `docs/plans/hardening-05-durable-linear-command-inbox.md`; webhook wake-up remains separate follow-up work below.
 
   Initial design notes to preserve for future plans:
 
@@ -21,11 +21,11 @@ This file tracks follow-up improvements that are intentionally outside the initi
   - Define how comment polling, edited issue descriptions, labels, and state changes interact with parked issues and running workers.
   - Add deterministic tests for final-response capture, result-comment formatting, redaction/truncation, and duplicate/retry behavior.
 
-- [ ] Add durable Linear command receipts or webhook wake-up.
+- [ ] Add Linear webhook wake-up.
 
-  The first Linear command transport intentionally keeps processed comment ids in memory and ignores comments older than daemon startup. That is acceptable for the initial safe polling version, but it means commands posted while Scherzo is down are missed and processed-comment dedupe resets on daemon restart.
+  Linear command receipts are now durable in the local ledger, so restart dedupe and completed-unacked acknowledgement replay no longer depend only on process memory. The remaining transport limitation is wake-up and discovery: Scherzo still polls only observed issues and only the bounded `poll_limit_per_issue` comments returned by Linear.
 
-  A future plan should add either durable command receipts, webhook delivery with signature verification, or both. It should define storage format, migration/cleanup behavior, replay rules after restart, duplicate acknowledgement behavior, and how old comments are bounded so Scherzo does not scan unbounded issue history.
+  A future plan should add webhook delivery with signature verification, retry semantics, bounded coexistence with polling, and clear Linear-side idempotency rules. It should preserve the durable receipt replay rules and define how webhook deliveries interact with edited comments and old comments outside the polling window.
 
 - [ ] Add tmux-backed live pi session access.
 
