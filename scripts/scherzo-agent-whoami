@@ -14,6 +14,9 @@ echo "GitHub token login=$gh_login"
 require_github_repo_access
 echo "GitHub repository=$repo_full_name"
 
+require_github_pr_create_permission
+echo "GitHub pull request creation=available"
+
 require_linear_identity
 echo "Linear viewer=$linear_actor"
 

@@ -8,6 +8,7 @@ prepare_agent_env
 require_live_identity
 require_github_identity
 require_github_repo_access
+require_github_pr_create_permission
 require_linear_identity
 require_ssh_identity
 

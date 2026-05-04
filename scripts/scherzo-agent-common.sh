@@ -241,6 +241,73 @@ require_github_repo_access() {
   fi
 }
 
+require_github_pr_create_permission() {
+  require_var "GH_TOKEN" "$GH_TOKEN"
+  require_command jq
+
+  probe_branch="scherzo-agent-pr-permission-probe-$(date +%s)-$$"
+  body_file=$(mktemp "${TMPDIR:-/tmp}/scherzo-agent-pr-probe-body.XXXXXX") || \
+    fail "could not create temporary file for GitHub PR permission probe"
+  headers_file=$(mktemp "${TMPDIR:-/tmp}/scherzo-agent-pr-probe-headers.XXXXXX") || {
+    rm -f "$body_file"
+    fail "could not create temporary headers file for GitHub PR permission probe"
+  }
+
+  request_body=$(cat <<EOF_REQUEST
+{"title":"Scherzo agent PR permission probe","head":"$probe_branch","base":"main","body":"Temporary permission probe. If this PR is created unexpectedly, it should be closed automatically."}
+EOF_REQUEST
+)
+
+  status=$(curl -sS \
+    -o "$body_file" \
+    -D "$headers_file" \
+    -w "%{http_code}" \
+    -X POST "https://api.github.com/repos/$SCHERZO_PR_REPO/pulls" \
+    -H "Authorization: Bearer $GH_TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -H "Content-Type: application/json" \
+    --data "$request_body" 2>/dev/null || true)
+
+  case "$status" in
+    422)
+      # Expected success path: GitHub accepted the token for the createPullRequest
+      # endpoint and only rejected the intentionally non-existent probe branch.
+      rm -f "$body_file" "$headers_file"
+      return 0
+      ;;
+    200|201)
+      # This should be impossible because the probe branch should not exist. Close
+      # the PR if GitHub nevertheless created one, then fail loudly.
+      pr_number=$(jq -r '.number // empty' "$body_file" 2>/dev/null || true)
+      pr_url=$(jq -r '.html_url // empty' "$body_file" 2>/dev/null || true)
+      if [ -n "$pr_number" ]; then
+        curl -fsS \
+          -X PATCH "https://api.github.com/repos/$SCHERZO_PR_REPO/pulls/$pr_number" \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Content-Type: application/json" \
+          --data '{"state":"closed"}' >/dev/null 2>&1 || true
+      fi
+      rm -f "$body_file" "$headers_file"
+      fail "GitHub PR permission probe unexpectedly created a pull request${pr_url:+: $pr_url}; probe branch collision should be investigated"
+      ;;
+    *)
+      message=$(jq -r '.message // empty' "$body_file" 2>/dev/null || true)
+      accepted=$(awk 'BEGIN { IGNORECASE=1 } /^x-accepted-github-permissions:/ { sub(/\r$/, ""); print; exit }' "$headers_file" 2>/dev/null || true)
+      rm -f "$body_file" "$headers_file"
+      if [ -n "$accepted" ]; then
+        echo "scherzo-agent: GitHub PR permission probe header: $accepted" >&2
+      fi
+      if [ -n "$message" ]; then
+        fail "GitHub token cannot create pull requests for '$SCHERZO_PR_REPO' (HTTP ${status:-unknown}): $message"
+      fi
+      fail "GitHub token cannot create pull requests for '$SCHERZO_PR_REPO' (HTTP ${status:-unknown})"
+      ;;
+  esac
+}
+
 require_linear_identity() {
   linear_response=$(curl -fsS -X POST https://api.linear.app/graphql \
     -H "Authorization: $LINEAR_API_KEY" \
