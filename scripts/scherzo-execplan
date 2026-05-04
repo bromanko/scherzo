@@ -5,11 +5,13 @@ set -eu
 
 usage() {
   cat >&2 <<'EOF'
-Usage: scherzo-execplan <validate|create-pr>
+Usage: scherzo-execplan <validate|create-pr|create-implementation-issue>
 
 Run from the Scherzo jj workspace root. The workflow must leave exactly one
 changed ExecPlan file under docs/plans/. create-pr validates, pushes a jj
 bookmark to origin, and opens a ready GitHub PR against main.
+create-implementation-issue creates or finds the follow-up Linear issue that
+will run workflow:execplan-implementation after the plan PR is merged.
 EOF
 }
 
@@ -155,6 +157,46 @@ current_parent_commit_ids() {
   revision_commit_ids @-
 }
 
+current_change_id_short() {
+  jj log -r @ --no-graph -T 'change_id.short()' --color=never | tr -d '[:space:]'
+}
+
+execplan_branch_name() {
+  plan=$1
+  slug=$(sanitize_ref_part "$(basename "$plan" .md)" | cut -c 1-60)
+  [ -n "$slug" ] || slug=plan
+  change_id=$(current_change_id_short)
+  [ -n "$change_id" ] || fail "could not determine jj change id"
+  printf '%s\n' "scherzo/execplan/${slug}-${change_id}"
+}
+
+infer_source_issue_identifier() {
+  plan=$1
+
+  if [ -n "${SCHERZO_ISSUE_IDENTIFIER:-}" ]; then
+    printf '%s\n' "$SCHERZO_ISSUE_IDENTIFIER"
+    return
+  fi
+
+  cwd=$(pwd -P)
+  case "$cwd" in
+    */.scherzo/workspaces/*)
+      tail=${cwd#*/.scherzo/workspaces/}
+      rest=${tail#*/}
+      issue=${rest%%/*}
+      if [ -n "$issue" ] && [ "$issue" != "$rest" ]; then
+        printf '%s\n' "$issue"
+        return
+      fi
+      ;;
+  esac
+
+  stem=$(basename "$plan" .md)
+  issue=$(printf '%s\n' "$stem" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p')
+  [ -n "$issue" ] || fail "could not infer source Linear issue identifier from cwd or plan filename: $plan"
+  printf '%s\n' "$issue"
+}
+
 fetch_publish_base() {
   base=$1
   remote=$2
@@ -259,9 +301,7 @@ create_pr_command() {
 
   slug=$(sanitize_ref_part "$(basename "$plan" .md)" | cut -c 1-60)
   [ -n "$slug" ] || slug=plan
-  change_id=$(jj log -r @ --no-graph -T 'change_id.short()' --color=never | tr -d '[:space:]')
-  [ -n "$change_id" ] || fail "could not determine jj change id"
-  branch="scherzo/execplan/${slug}-${change_id}"
+  branch=$(execplan_branch_name "$plan")
 
   jj describe -m "docs(plan): add execplan for $slug"
   ensure_no_empty_descriptions_to_push "$remote"
@@ -296,12 +336,350 @@ EOF_BODY
   echo "PR_URL=$pr_url"
 }
 
+create_implementation_issue_command() {
+  require_command jj
+  require_command gh
+  require_command lc
+  require_command python3
+
+  plan=$(find_plan_path)
+  validate_plan "$plan"
+
+  remote=${SCHERZO_PR_REMOTE:-origin}
+  repo=${SCHERZO_PR_REPO:-}
+  if [ -z "$repo" ]; then
+    url=$(remote_url "$remote")
+    [ -n "$url" ] || fail "could not find jj git remote: $remote"
+    repo=$(owner_repo_from_url "$url") || fail "could not infer GitHub owner/repo from remote URL: $url"
+  fi
+  branch=$(execplan_branch_name "$plan")
+  pr_url=$(gh pr view "$branch" --repo "$repo" --json url --jq .url 2>/dev/null) || \
+    fail "could not find ExecPlan PR for branch $branch; run create-pr before create-implementation-issue"
+  [ -n "$pr_url" ] || fail "ExecPlan PR URL was empty for branch $branch"
+
+  source_issue=$(infer_source_issue_identifier "$plan")
+  implementation_state=${SCHERZO_EXECPLAN_IMPLEMENTATION_STATE:-Backlog}
+
+  python3 - "$plan" "$pr_url" "$source_issue" "$implementation_state" <<'PY'
+import json
+import os
+import pathlib
+import subprocess
+import sys
+from typing import Any
+
+plan_path, pr_url, source_identifier, implementation_state = sys.argv[1:5]
+workflow_label = os.environ.get(
+    "SCHERZO_EXECPLAN_IMPLEMENTATION_LABEL",
+    "workflow:execplan-implementation",
+).strip() or "workflow:execplan-implementation"
+support_labels = {"needs-workflow", "needs-clarification"}
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-execplan: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if check and proc.returncode != 0:
+        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        fail(f"command failed: {' '.join(args)}\n{details}")
+    return proc
+
+
+def load_json_from_command(args: list[str]) -> Any:
+    out = run(args).stdout.strip()
+    if not out:
+        fail(f"command produced empty JSON: {' '.join(args)}")
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError as exc:
+        fail(f"could not parse JSON from {' '.join(args)}: {exc}")
+
+
+def normalize_issue(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        if isinstance(value.get("issue"), dict):
+            return value["issue"]
+        if isinstance(value.get("data"), dict) and isinstance(value["data"].get("issue"), dict):
+            return value["data"]["issue"]
+        return value
+    fail("Linear issue payload was not an object")
+
+
+def label_names(issue: dict[str, Any]) -> list[str]:
+    labels = issue.get("labels") or []
+    if isinstance(labels, dict):
+        labels = labels.get("nodes") or []
+    names: list[str] = []
+    if isinstance(labels, list):
+        for label in labels:
+            if isinstance(label, dict):
+                name = label.get("name")
+            else:
+                name = str(label)
+            if name:
+                names.append(str(name))
+    return names
+
+
+def domain_labels_for_followup(issue: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for name in label_names(issue):
+        normalized = name.strip().lower()
+        if not normalized:
+            continue
+        if normalized.startswith("workflow:"):
+            continue
+        if normalized in support_labels:
+            continue
+        names.append(name.strip())
+    if workflow_label.lower() not in {name.lower() for name in names}:
+        names.append(workflow_label)
+    return names
+
+
+def first_heading(path: str) -> str:
+    try:
+        for line in pathlib.Path(path).read_text().splitlines():
+            if line.startswith("# "):
+                title = line.removeprefix("# ").strip()
+                if title:
+                    return title
+    except OSError as exc:
+        fail(f"could not read plan title from {path}: {exc}")
+    return f"ExecPlan {path}"
+
+
+def implementation_title(plan_title: str) -> str:
+    if plan_title.lower().startswith("implement"):
+        title = plan_title
+    else:
+        title = "Implement: " + plan_title
+    return title[:240]
+
+
+def nested_name(issue: dict[str, Any], key: str) -> str:
+    value = issue.get(key) or {}
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("key") or value.get("id") or "")
+    return ""
+
+
+def issue_labels_lower(issue: dict[str, Any]) -> set[str]:
+    return {name.lower() for name in label_names(issue)}
+
+
+def issue_contains_plan(issue: dict[str, Any]) -> bool:
+    text = "\n".join([
+        str(issue.get("title") or ""),
+        str(issue.get("description") or ""),
+    ])
+    return plan_path in text and workflow_label.lower() in issue_labels_lower(issue)
+
+
+def find_existing(team_key: str, project_name: str) -> dict[str, Any] | None:
+    args = [
+        "lc",
+        "issue",
+        "list",
+        "--team",
+        team_key,
+        "--search",
+        plan_path,
+        "--limit",
+        "250",
+        "--json",
+    ]
+    if project_name:
+        args.extend(["--project", project_name])
+    issues = load_json_from_command(args)
+    if not isinstance(issues, list):
+        fail("Linear issue list payload was not a list")
+    for issue in issues:
+        if isinstance(issue, dict) and issue_contains_plan(issue):
+            return issue
+    return None
+
+
+def readiness_note(state: str) -> str:
+    if state.strip().lower() in {"todo", "in progress"}:
+        return (
+            "This issue was created in an active Scherzo state, so it may dispatch "
+            "immediately. Use this only when the ExecPlan file already exists on "
+            "the workflow base branch."
+        )
+    return (
+        f"This issue was created in `{state}` so Scherzo will not dispatch it yet. "
+        f"After the ExecPlan PR is merged and `{plan_path}` exists on the workflow "
+        "base branch, move this issue to `Todo`."
+    )
+
+
+def source_line(issue: dict[str, Any]) -> str:
+    identifier = issue.get("identifier") or source_identifier
+    title = issue.get("title") or "Untitled"
+    url = issue.get("url") or ""
+    if url:
+        return f"[{identifier}: {title}]({url})"
+    return f"{identifier}: {title}"
+
+
+def render_description(source_issue: dict[str, Any]) -> str:
+    return "\n".join([
+        f"Implements the ExecPlan produced from {source_line(source_issue)}.",
+        "",
+        f"Plan path: `{plan_path}`",
+        f"ExecPlan PR: {pr_url}",
+        "Implementation workflow: `workflow:execplan-implementation`",
+        "",
+        "## Readiness",
+        "",
+        readiness_note(implementation_state),
+        "",
+        "## Operator handoff",
+        "",
+        "1. Review and merge the ExecPlan PR.",
+        f"2. Confirm `{plan_path}` exists on the workflow base branch.",
+        "3. Move this issue to `Todo` to let Scherzo implement the plan.",
+        "",
+    ])
+
+
+def issue_ref(issue: dict[str, Any]) -> str:
+    return str(issue.get("identifier") or issue.get("id") or "")
+
+
+def issue_url(issue: dict[str, Any]) -> str:
+    return str(issue.get("url") or "")
+
+
+def resolve_label_id(team_key: str, label_name: str) -> str:
+    labels = load_json_from_command([
+        "lc",
+        "label",
+        "list",
+        "--team",
+        team_key,
+        "--json",
+        "--limit",
+        "250",
+    ])
+    if not isinstance(labels, list):
+        fail("Linear label list payload was not a list")
+    for label in labels:
+        if not isinstance(label, dict):
+            continue
+        name = str(label.get("name") or "")
+        if name.lower() == label_name.lower():
+            value = str(label.get("id") or "")
+            if value:
+                return value
+    fail(f"could not find Linear label {label_name!r} for team {team_key}")
+
+
+source_issue = normalize_issue(load_json_from_command([
+    "lc",
+    "issue",
+    "get",
+    source_identifier,
+    "--json",
+]))
+team = source_issue.get("team") or {}
+team_key = str(team.get("key") or team.get("name") or team.get("id") or "") if isinstance(team, dict) else ""
+if not team_key:
+    fail(f"source issue {source_identifier} did not include a team")
+project_name = nested_name(source_issue, "project")
+source_issue_id = str(source_issue.get("id") or source_identifier)
+priority = source_issue.get("priority")
+plan_title = first_heading(plan_path)
+title = implementation_title(plan_title)
+labels = domain_labels_for_followup(source_issue)
+workflow_label_id = resolve_label_id(team_key, workflow_label)
+labels_for_create = [
+    label for label in labels if label.lower() != workflow_label.lower()
+] + [workflow_label_id]
+description = render_description(source_issue)
+
+existing = find_existing(team_key, project_name)
+if existing is not None:
+    print("IMPLEMENTATION_ISSUE_STATUS=existing")
+    print(f"IMPLEMENTATION_ISSUE={issue_ref(existing)}")
+    if issue_url(existing):
+        print(f"IMPLEMENTATION_ISSUE_URL={issue_url(existing)}")
+    print(f"PLAN_PATH={plan_path}")
+    print(f"PR_URL={pr_url}")
+    sys.exit(0)
+
+create_args = [
+    "lc",
+    "issue",
+    "create",
+    "--team",
+    team_key,
+    "--title",
+    title,
+    "--description",
+    description,
+    "--labels",
+    ",".join(labels_for_create),
+    "--state",
+    implementation_state,
+    "--json",
+]
+if project_name:
+    create_args.extend(["--project", project_name])
+if priority is not None:
+    create_args.extend(["--priority", str(priority)])
+if source_issue_id:
+    create_args.extend(["--parent", source_issue_id])
+created = normalize_issue(load_json_from_command(create_args))
+created_ref = issue_ref(created)
+created_url = issue_url(created)
+
+if created_ref and pr_url:
+    attach = run([
+        "lc",
+        "attachment",
+        "add",
+        "--issue",
+        created_ref,
+        "--url",
+        pr_url,
+        "--title",
+        "ExecPlan PR",
+        "--subtitle",
+        plan_path,
+        "--json",
+    ], check=False)
+    if attach.returncode != 0:
+        details = attach.stderr.strip() or attach.stdout.strip() or f"exit code {attach.returncode}"
+        print(
+            f"scherzo-execplan: warning: created issue but could not attach PR URL: {details}",
+            file=sys.stderr,
+        )
+
+print("IMPLEMENTATION_ISSUE_STATUS=created")
+print(f"IMPLEMENTATION_ISSUE={created_ref}")
+if created_url:
+    print(f"IMPLEMENTATION_ISSUE_URL={created_url}")
+print(f"IMPLEMENTATION_ISSUE_STATE={implementation_state}")
+print(f"PLAN_PATH={plan_path}")
+print(f"PR_URL={pr_url}")
+PY
+}
+
 case "${1:-}" in
   validate)
     validate_command
     ;;
   create-pr)
     create_pr_command
+    ;;
+  create-implementation-issue)
+    create_implementation_issue_command
     ;;
   -h|--help|help)
     usage

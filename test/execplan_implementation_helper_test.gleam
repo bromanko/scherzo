@@ -265,6 +265,201 @@ pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
   )
 }
 
+pub fn execplan_workflow_creates_followup_issue_after_pr_test() {
+  let assert Ok(workflow) = simplifile.read(".scherzo/workflows/execplan.yaml")
+
+  assert string.contains(workflow, "- id: create_implementation_issue")
+  assert string.contains(workflow, "depends_on: [create_pr]")
+  assert string.contains(
+    workflow,
+    "scripts/scherzo-execplan create-implementation-issue",
+  )
+}
+
+pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
+  let dir = "test/tmp/execplan-create-implementation-issue"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  write_followup_plan(dir)
+  write_source_issue(dir)
+  write_created_issue(dir)
+  write_fake_execplan_handoff_jj(dir <> "/bin/jj")
+  write_fake_execplan_handoff_gh(dir <> "/bin/gh")
+  write_fake_execplan_handoff_lc(dir <> "/bin/lc", "[]")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/lc")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE_STATUS=created")
+  assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE=LIV-124")
+  assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE_STATE=Backlog")
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_PATH=docs/plans/LIV-123-example.md",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "PR_URL=https://github.com/example/repo/pull/123",
+  )
+
+  let assert Ok(lc_log) = simplifile.read(dir <> "/lc.log")
+  assert string.contains(lc_log, "ARG=issue\nARG=create")
+  assert string.contains(lc_log, "ARG=Backlog")
+  assert string.contains(lc_log, "ARG=Improvement,workflow-label-uuid")
+  assert string.contains(lc_log, "ARG=source-uuid")
+  assert string.contains(lc_log, "docs/plans/LIV-123-example.md")
+  assert string.contains(lc_log, "ARG=ExecPlan PR")
+}
+
+pub fn create_implementation_issue_reuses_existing_ticket_test() {
+  let dir = "test/tmp/execplan-create-implementation-issue-existing"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  write_followup_plan(dir)
+  write_source_issue(dir)
+  write_created_issue(dir)
+  write_fake_execplan_handoff_jj(dir <> "/bin/jj")
+  write_fake_execplan_handoff_gh(dir <> "/bin/gh")
+  write_fake_execplan_handoff_lc(
+    dir <> "/bin/lc",
+    "[{\"identifier\":\"LIV-200\",\"url\":\"https://linear.example/LIV-200\",\"title\":\"Implement: Add queued plan\",\"description\":\"Plan path: `docs/plans/LIV-123-example.md`\",\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan-implementation\"}]}}]",
+  )
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/lc")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_ISSUE_STATUS=existing",
+  )
+  assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE=LIV-200")
+  let assert Ok(lc_log) = simplifile.read(dir <> "/lc.log")
+  assert !string.contains(lc_log, "ARG=create")
+}
+
+fn write_followup_plan(dir: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/LIV-123-example.md",
+      "# Add queued plan\n\n"
+        <> "## Progress\n\n"
+        <> "- [x] Drafted.\n\n"
+        <> "## Open Questions and Clarifications Needed\n\n"
+        <> "None.\n",
+    )
+  Nil
+}
+
+fn write_source_issue(dir: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/source-issue.json",
+      "{\n"
+        <> "  \"id\": \"source-uuid\",\n"
+        <> "  \"identifier\": \"LIV-123\",\n"
+        <> "  \"title\": \"Write ExecPlan for queued plan\",\n"
+        <> "  \"url\": \"https://linear.example/LIV-123\",\n"
+        <> "  \"priority\": 3,\n"
+        <> "  \"team\": {\"id\": \"team-uuid\", \"key\": \"LIV\", \"name\": \"Living systems\"},\n"
+        <> "  \"project\": {\"id\": \"project-uuid\", \"name\": \"Scherzo\"},\n"
+        <> "  \"labels\": [\n"
+        <> "    {\"name\": \"Improvement\"},\n"
+        <> "    {\"name\": \"workflow:execplan\"}\n"
+        <> "  ]\n"
+        <> "}\n",
+    )
+  Nil
+}
+
+fn write_created_issue(dir: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/created-issue.json",
+      "{\"id\":\"created-uuid\",\"identifier\":\"LIV-124\",\"url\":\"https://linear.example/LIV-124\"}\n",
+    )
+  Nil
+}
+
+fn write_fake_execplan_handoff_jj(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> jj.log\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then echo 'origin https://github.com/example/repo.git'; exit 0; fi\n"
+        <> "if [ \"$1\" = diff ]; then\n"
+        <> "  case \" $* \" in *\" --summary \"*) echo 'A docs/plans/LIV-123-example.md';; *) echo 'docs/plans/LIV-123-example.md';; esac\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = log ]; then\n"
+        <> "  rev=\n"
+        <> "  template=\n"
+        <> "  prev=\n"
+        <> "  for arg in \"$@\"; do\n"
+        <> "    if [ \"$prev\" = -r ]; then rev=$arg; fi\n"
+        <> "    if [ \"$prev\" = -T ]; then template=$arg; fi\n"
+        <> "    prev=$arg\n"
+        <> "  done\n"
+        <> "  case \"$rev\" in\n"
+        <> "    @) case \"$template\" in *change_id.short*) echo execchange;; *) echo currentcommit;; esac; exit 0;;\n"
+        <> "    @-) echo localparentcommit; exit 0;;\n"
+        <> "    *) exit 0;;\n"
+        <> "  esac\n"
+        <> "fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_fake_execplan_handoff_gh(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> gh.log\n"
+        <> "if [ \"$1 $2\" = 'pr view' ]; then echo 'https://github.com/example/repo/pull/123'; exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_fake_execplan_handoff_lc(path: String, existing_json: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\"; done >> lc.log\n"
+        <> "printf '%s\\n' '---' >> lc.log\n"
+        <> "if [ \"$1 $2\" = 'issue get' ]; then cat source-issue.json; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'issue list' ]; then printf '%s\\n' '"
+        <> existing_json
+        <> "'; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'label list' ]; then echo '[{\"id\":\"workflow-label-uuid\",\"name\":\"workflow:execplan-implementation\"}]'; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'issue create' ]; then cat created-issue.json; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'attachment add' ]; then echo '{\"id\":\"attachment-uuid\"}'; exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
 fn write_fake_execplan_jj(path: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(

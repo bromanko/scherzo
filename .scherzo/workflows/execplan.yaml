@@ -1,6 +1,6 @@
 version: 1
 id: execplan
-description: Turn a Linear ticket into a reviewed ExecPlan under docs/plans and open a ready PR for review.
+description: Turn a Linear ticket into a reviewed ExecPlan under docs/plans, open a ready PR for review, and create the follow-up implementation issue.
 max_parallel_steps: 1
 steps:
   - id: draft_plan
@@ -49,5 +49,12 @@ steps:
     kind: command
     depends_on: [final_validate]
     run: scripts/scherzo-execplan create-pr
+    timeout_ms: 300000
+    workspace: main
+
+  - id: create_implementation_issue
+    kind: command
+    depends_on: [create_pr]
+    run: scripts/scherzo-execplan create-implementation-issue
     timeout_ms: 300000
     workspace: main
