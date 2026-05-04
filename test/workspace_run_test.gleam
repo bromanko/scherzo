@@ -157,6 +157,20 @@ pub fn hook_receives_step_environment_and_config_cwd_test() {
   assert copied == "copied"
   let assert Ok(before_cwd) = simplifile.read(review.path <> "/before-cwd")
   assert string.trim(before_cwd) == orchestrator.config_dir
+
+  let assert Ok(next_main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-1",
+      "test_after_implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      known,
+    )
+  assert next_main.path == main.path
+  assert next_main.source_workspace_name == Some("main")
+  assert next_main.source_workspace_path == Some(main.path)
 }
 
 pub fn cleanup_rejects_paths_outside_workspace_root_test() {

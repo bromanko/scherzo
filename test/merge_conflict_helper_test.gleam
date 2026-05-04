@@ -169,6 +169,7 @@ pub fn checked_in_merge_conflict_workflow_is_routed_and_guarded_test() {
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" prepare")
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" validate")
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" publish")
+  assert string.contains(workflow, "from: main")
   assert string.contains(prompt, "tmp/scherzo-merge-conflict-failure.md")
   assert string.contains(
     prompt,

@@ -64,6 +64,82 @@ pub fn extract_plan_requires_exactly_one_existing_plan_path_test() {
   )
 }
 
+pub fn extract_plan_prefers_explicit_plan_field_over_liv59_context_references_test() {
+  let dir = "test/tmp/execplan-helper-explicit-plan"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/LIV-59-implementation.md",
+      "# Implementation\n",
+    )
+  let text_path = dir <> "/issue.txt"
+  let assert Ok(Nil) =
+    simplifile.write(
+      text_path,
+      "Umbrella: `docs/plans/LIV-59-umbrella.md`\n"
+        <> "Plan path: `docs/plans/LIV-59-implementation.md`\n"
+        <> "Supersedes: `docs/plans/LIV-59-old.md`\n",
+    )
+
+  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_PATH=docs/plans/LIV-59-implementation.md",
+  )
+}
+
+pub fn extract_plan_fallback_ignores_contextual_plan_references_test() {
+  let dir = "test/tmp/execplan-helper-contextual-fallback"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/docs/plans/implementation.md", "# Impl\n")
+  let text_path = dir <> "/issue.txt"
+  let assert Ok(Nil) =
+    simplifile.write(
+      text_path,
+      "Please implement docs/plans/implementation.md.\n"
+        <> "Umbrella: `docs/plans/umbrella.md`\n"
+        <> "Supersedes: `docs/plans/old.md`\n",
+    )
+
+  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_PATH=docs/plans/implementation.md",
+  )
+}
+
+pub fn extract_plan_rejects_multiple_explicit_plan_fields_test() {
+  let dir = "test/tmp/execplan-helper-multiple-explicit"
+  reset_dir(dir)
+  let text_path = dir <> "/issue.txt"
+  let assert Ok(Nil) =
+    simplifile.write(
+      text_path,
+      "Plan: `docs/plans/one.md`\n" <> "Plan path: `docs/plans/two.md`\n",
+    )
+
+  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(
+    artifact.stderr,
+    "found multiple explicit ExecPlan fields",
+  )
+  assert string.contains(artifact.stderr, "- `docs/plans/one.md`")
+  assert string.contains(artifact.stderr, "- `docs/plans/two.md`")
+  assert string.contains(artifact.stderr, "Suggested fix")
+}
+
 pub fn extract_plan_rejects_ambiguous_plan_paths_test() {
   let dir = "test/tmp/execplan-helper-ambiguous"
   reset_dir(dir)
@@ -81,7 +157,56 @@ pub fn extract_plan_rejects_ambiguous_plan_paths_test() {
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
-  assert string.contains(artifact.stderr, "expected exactly one ExecPlan path")
+  assert string.contains(
+    artifact.stderr,
+    "found multiple ExecPlan path candidates",
+  )
+  assert string.contains(artifact.stderr, "Suggested fix")
+}
+
+pub fn prepare_execplan_failure_writes_retention_marker_before_fetch_test() {
+  let dir = "test/tmp/implementation-helper-prepare-retention"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/main")
+  write_fake_prepare_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir <> "/main",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../scripts/scherzo-implementation prepare --source execplan",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stderr, "LINEAR_API_KEY is required")
+  let assert Ok(marker) = simplifile.read(dir <> "/.scherzo-keep-workspace")
+  assert string.contains(marker, "Source kind: execplan")
+  assert string.contains(marker, "Source: LIV-71")
+}
+
+pub fn prepare_command_failure_reports_bounded_diagnostic_excerpt_test() {
+  let dir = "test/tmp/implementation-helper-bounded-diagnostics"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/main")
+  write_noisy_failing_prepare_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir <> "/main",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../scripts/scherzo-implementation prepare --source execplan",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stderr, "exit_code: 2")
+  assert string.contains(artifact.stderr, "truncated")
+  assert string.length(artifact.stderr) < 4000
+  let assert Ok(marker) = simplifile.read(dir <> "/.scherzo-keep-workspace")
+  assert string.contains(marker, "Source: LIV-71")
 }
 
 pub fn languages_detects_gleam_and_reports_unsupported_files_test() {
@@ -530,6 +655,35 @@ fn write_fake_execplan_handoff_lc(path: String, existing_json: String) -> Nil {
         <> "if [ \"$1 $2\" = 'label list' ]; then echo '[{\"id\":\"workflow-label-uuid\",\"name\":\"workflow:execplan-implementation\"}]'; exit 0; fi\n"
         <> "if [ \"$1 $2\" = 'issue create' ]; then cat created-issue.json; exit 0; fi\n"
         <> "if [ \"$1 $2\" = 'attachment add' ]; then echo '{\"id\":\"attachment-uuid\"}'; exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_fake_prepare_jj(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> ../jj.log\n"
+        <> "if [ \"$1\" = log ]; then echo basechange; exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_noisy_failing_prepare_jj(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> ../jj.log\n"
+        <> "if [ \"$1\" = log ]; then\n"
+        <> "  i=0\n"
+        <> "  while [ $i -lt 9000 ]; do printf x >&2; i=$((i + 1)); done\n"
+        <> "  printf '\\n' >&2\n"
+        <> "  exit 2\n"
+        <> "fi\n"
         <> "exit 1\n",
     )
   Nil

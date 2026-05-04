@@ -62,38 +62,50 @@ pub fn prepare_step_attempt(
   orchestrator: config_types.OrchestratorConfig,
   known_workspaces: Dict(String, PreparedStepWorkspace),
 ) -> Result(PreparedStepWorkspace, PrepareError) {
-  use paths <- try_prepare(workspace_paths(
-    issue,
-    workflow_id,
-    run_id,
-    step_id,
-    attempt_index,
-    workspace_ref.name,
-    orchestrator,
-  ))
-  let #(run_root, workspace_path) = paths
-  use source <- try_prepare(source_workspace(
-    workspace_ref.from,
-    known_workspaces,
-  ))
-  let #(source_name, source_path) = source
-  use _ <- try_prepare(create_directory(run_root))
-  let prepared =
-    PreparedStepWorkspace(
-      workflow_id: workflow_id,
-      run_id: run_id,
-      run_root: run_root,
-      attempt_index: attempt_index,
-      workspace_name: workspace_ref.name,
-      path: workspace_path,
-      source_workspace_name: source_name,
-      source_workspace_path: source_path,
-    )
-  case finish_prepare_step(issue, step_id, prepared, orchestrator) {
-    Ok(prepared) -> Ok(prepared)
-    Error(err) -> {
-      let _ = cleanup_run(run_root, orchestrator)
-      Error(err)
+  case reusable_workspace(workspace_ref, known_workspaces) {
+    Some(prepared) ->
+      reuse_prepared_workspace(
+        issue,
+        step_id,
+        prepared,
+        attempt_index,
+        orchestrator,
+      )
+    None -> {
+      use paths <- try_prepare(workspace_paths(
+        issue,
+        workflow_id,
+        run_id,
+        step_id,
+        attempt_index,
+        workspace_ref.name,
+        orchestrator,
+      ))
+      let #(run_root, workspace_path) = paths
+      use source <- try_prepare(source_workspace(
+        workspace_ref.from,
+        known_workspaces,
+      ))
+      let #(source_name, source_path) = source
+      use _ <- try_prepare(create_directory(run_root))
+      let prepared =
+        PreparedStepWorkspace(
+          workflow_id: workflow_id,
+          run_id: run_id,
+          run_root: run_root,
+          attempt_index: attempt_index,
+          workspace_name: workspace_ref.name,
+          path: workspace_path,
+          source_workspace_name: source_name,
+          source_workspace_path: source_path,
+        )
+      case finish_prepare_step(issue, step_id, prepared, orchestrator) {
+        Ok(prepared) -> Ok(prepared)
+        Error(err) -> {
+          let _ = cleanup_run(run_root, orchestrator)
+          Error(err)
+        }
+      }
     }
   }
 }
@@ -315,6 +327,48 @@ fn retain_cleanup(run_root: String) -> Bool {
     Ok(True) -> True
     _ -> False
   }
+}
+
+fn reusable_workspace(
+  workspace_ref: workflow_dag.WorkspaceRef,
+  known_workspaces: Dict(String, PreparedStepWorkspace),
+) -> Option(PreparedStepWorkspace) {
+  let should_reuse = case workspace_ref.from {
+    None -> True
+    Some(source) -> source == workspace_ref.name
+  }
+  case should_reuse {
+    False -> None
+    True ->
+      case dict.get(known_workspaces, workspace_ref.name) {
+        Ok(prepared) -> Some(prepared)
+        Error(_) -> None
+      }
+  }
+}
+
+fn reuse_prepared_workspace(
+  issue: tracker_issue.Issue,
+  step_id: String,
+  prepared: PreparedStepWorkspace,
+  attempt_index: Int,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(PreparedStepWorkspace, PrepareError) {
+  let prepared =
+    PreparedStepWorkspace(
+      ..prepared,
+      attempt_index: attempt_index,
+      source_workspace_name: Some(prepared.workspace_name),
+      source_workspace_path: Some(prepared.path),
+    )
+  use _ <- try_prepare(ensure_directory_after_create(prepared.path))
+  use _ <- result_try(run_before_step_hook(
+    issue,
+    step_id,
+    prepared,
+    orchestrator,
+  ))
+  Ok(prepared)
 }
 
 fn source_workspace(

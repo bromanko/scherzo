@@ -13,18 +13,24 @@ steps:
     kind: agent
     depends_on: [prepare_target]
     prompt: prompts/resolve-merge-conflicts.md
-    workspace: main
+    workspace:
+      name: main
+      from: main
 
   - id: validate_resolution
     kind: command
     depends_on: [resolve_conflicts]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-merge-conflict" validate'
     timeout_ms: 1200000
-    workspace: main
+    workspace:
+      name: main
+      from: main
 
   - id: publish_resolution
     kind: command
     depends_on: [validate_resolution]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-merge-conflict" publish'
     timeout_ms: 300000
-    workspace: main
+    workspace:
+      name: main
+      from: main

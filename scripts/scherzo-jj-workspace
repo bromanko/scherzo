@@ -101,10 +101,10 @@ workspace_base_revision() {
   fi
 }
 
-workspace_row_for_change() {
-  change=$1
-  jj workspace list --color=never -T 'name ++ ":" ++ self.target().change_id() ++ "\n"' \
-    | awk -F: -v change="$change" '$2 == change { print $0; exit }'
+workspace_row_for_root() {
+  root=$1
+  jj workspace list --color=never -T 'name ++ ":" ++ root ++ ":" ++ self.target().change_id() ++ "\n"' \
+    | awk -F: -v root="$root" '$2 == root { print $0; exit }'
 }
 
 prepare_destination_for_workspace_add() {
@@ -123,10 +123,9 @@ verify_current_workspace() {
   test -e .jj || fail "workspace is missing .jj: $workspace_path"
   test "$(jj root)" = "$workspace_path" || fail "jj root does not match workspace path"
 
-  change=$(current_change_id)
-  row=$(workspace_row_for_change "$change")
-  test "$row" = "${workspace_name}:${change}" || \
-    fail "expected workspace ${workspace_name} for change ${change}, got: ${row:-<none>}"
+  current_root=$(jj root)
+  test "$current_root" = "$workspace_path" || \
+    fail "jj root does not match workspace path: expected $workspace_path, got $current_root"
 
   jj status --color=never
 }
@@ -140,6 +139,46 @@ allow_trusted_envrc_after_create() {
       printf '%s\n' "$output" >&2
       fail "direnv allow failed for workspace: $workspace_path"
     fi
+  fi
+}
+
+forget_workspace_at() {
+  target=$1
+  [ -d "$target" ] || return 0
+  (
+    cd "$target"
+    if jj root >/dev/null 2>&1; then
+      jj workspace forget
+    fi
+  )
+}
+
+forget_workspace_children() {
+  base=$1
+  [ -d "$base" ] || return 0
+  for target in "$base"/*; do
+    [ -d "$target" ] || continue
+    if [ -d "$target/.jj" ]; then
+      forget_workspace_at "$target"
+    fi
+  done
+  return 0
+}
+
+forget_run_workspaces() {
+  if [ -n "$run_root" ]; then
+    forget_workspace_children "$run_root/workspaces"
+    return 0
+  fi
+
+  if [ -d "$workspace_path/workspaces" ]; then
+    forget_workspace_children "$workspace_path/workspaces"
+    return 0
+  fi
+
+  if [ -d "$workspace_path/.jj" ]; then
+    forget_workspace_at "$workspace_path"
+    return 0
   fi
 }
 
@@ -176,16 +215,8 @@ case "$command" in
     ;;
 
   before-remove)
-    if [ -d "$workspace_path" ]; then
-      cd "$workspace_path"
-    fi
-    if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then
-      change=$(current_change_id)
-      row=$(workspace_row_for_change "$change")
-      name=${row%%:*}
-      if [ -n "$name" ]; then
-        jj workspace forget "$name"
-      fi
+    if command -v jj >/dev/null 2>&1; then
+      forget_run_workspaces
     fi
     ;;
 
