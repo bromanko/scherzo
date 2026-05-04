@@ -71,12 +71,14 @@ ticket-brief <issue-json>
     )
 
 
-def fail(message: str) -> None:
+def fail(message: str, *, failure_code: str | None = None) -> None:
+    if failure_code:
+        print(f"SCHERZO_FAILURE_CODE={failure_code}", file=sys.stderr)
     print(f"scherzo-implementation: {message}", file=sys.stderr)
     sys.exit(1)
 
 
-def run(args: list[str], *, check: bool = True) -> str:
+def run(args: list[str], *, check: bool = True, failure_code: str | None = None) -> str:
     proc = subprocess.run(
         args,
         text=True,
@@ -85,11 +87,11 @@ def run(args: list[str], *, check: bool = True) -> str:
     )
     if check and proc.returncode != 0:
         details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
-        fail(f"command failed: {' '.join(args)}\n{details}")
+        fail(f"command failed: {' '.join(args)}\n{details}", failure_code=failure_code)
     return proc.stdout
 
 
-def run_and_print(args: list[str]) -> None:
+def run_and_print(args: list[str], *, failure_code: str | None = None) -> None:
     print("$ " + " ".join(shell_display(arg) for arg in args), flush=True)
     proc = subprocess.run(
         args,
@@ -102,7 +104,10 @@ def run_and_print(args: list[str]) -> None:
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
     if proc.returncode != 0:
-        fail(f"command failed with exit code {proc.returncode}: {' '.join(args)}")
+        fail(
+            f"command failed with exit code {proc.returncode}: {' '.join(args)}",
+            failure_code=failure_code,
+        )
 
 
 def shell_display(value: str) -> str:
@@ -249,19 +254,31 @@ def extract_plan_path_from_texts(texts: Iterable[tuple[str, str]]) -> str:
         for match in PLAN_RE.finditer(text or ""):
             found.setdefault(match.group(1), []).append(source)
     if not found:
-        fail("expected exactly one ExecPlan path like docs/plans/example.md; found none")
+        fail(
+            "expected exactly one ExecPlan path like docs/plans/example.md; found none",
+            failure_code="prepare_plan_ambiguous",
+        )
     if len(found) > 1:
         details = "; ".join(f"{path} in {', '.join(sources)}" for path, sources in found.items())
-        fail("expected exactly one ExecPlan path, found multiple: " + details)
+        fail(
+            "expected exactly one ExecPlan path, found multiple: " + details,
+            failure_code="prepare_plan_ambiguous",
+        )
     return next(iter(found.keys()))
 
 
 def validate_plan_path(plan_path: str, repo_root: Path) -> None:
     if not PLAN_RE.fullmatch(plan_path):
-        fail(f"invalid ExecPlan path: {plan_path}; expected docs/plans/<file>.md")
+        fail(
+            f"invalid ExecPlan path: {plan_path}; expected docs/plans/<file>.md",
+            failure_code="prepare_plan_ambiguous",
+        )
     full_path = repo_root / plan_path
     if not full_path.is_file():
-        fail(f"ExecPlan file does not exist: {plan_path}")
+        fail(
+            f"ExecPlan file does not exist: {plan_path}",
+            failure_code="prepare_plan_ambiguous",
+        )
 
 
 def current_base_change_id() -> str:
@@ -329,7 +346,8 @@ def fetch_publish_base(base: str, remote: str) -> None:
         details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
         fail(
             f"could not fetch PR base {base!r} from remote {remote!r}. "
-            f"Fetch or configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry.\n{details}"
+            f"Fetch or configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry.\n{details}",
+            failure_code="base_refresh_conflict",
         )
 
 
@@ -344,7 +362,10 @@ def publish_base_revision(base: str, remote: str) -> str:
             file=sys.stderr,
         )
         return base
-    fail(f"could not find publish base revision {remote_base!r} or {base!r}")
+    fail(
+        f"could not find publish base revision {remote_base!r} or {base!r}",
+        failure_code="base_refresh_conflict",
+    )
 
 
 def has_unresolved_conflicts(revision: str) -> bool:
@@ -392,7 +413,8 @@ def normalize_publish_base(base_revision: str) -> bool:
         fail(
             "could not rebase the final implementation change onto the PR base "
             f"{base_revision!r}. Resolve the retained workspace manually, rerun "
-            f"validation, and publish again.\n{details}"
+            f"validation, and publish again.\n{details}",
+            failure_code="publish_rebase_conflict",
         )
     if has_unresolved_conflicts("@"):
         status = run(["jj", "status", "--color=never"], check=False).strip()
@@ -400,7 +422,8 @@ def normalize_publish_base(base_revision: str) -> bool:
             "rebasing the final implementation change onto the PR base left "
             "unresolved conflicts. Resolve the conflicts in the retained "
             "workspace, rerun validation, and publish again."
-            + ("\n" + status if status else "")
+            + ("\n" + status if status else ""),
+            failure_code="publish_rebase_conflict",
         )
     return True
 
@@ -719,7 +742,7 @@ def comma_join(values: list[str]) -> str:
     return ",".join(values) if values else "none"
 
 
-def validate_command() -> None:
+def validate_command(*, failure_code: str | None = None) -> None:
     require_command("direnv")
     commands = [
         ["direnv", "allow", "."],
@@ -728,7 +751,7 @@ def validate_command() -> None:
         ["direnv", "exec", ".", "gleam", "test"],
     ]
     for command in commands:
-        run_and_print(command)
+        run_and_print(command, failure_code=failure_code)
     write_json(VALIDATION_PATH, {"commands": [" ".join(c) for c in commands], "status": "passed"})
     print("FINAL_VALIDATION=passed")
 
@@ -819,7 +842,7 @@ def publish_command() -> None:
     if rebased:
         print("")
         print("## Revalidation after publish-base normalization")
-        validate_command()
+        validate_command(failure_code="publish_revalidation_failed")
         ensure_validation_passed()
 
     files = changed_files_since(base_revision)

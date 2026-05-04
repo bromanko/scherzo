@@ -63,6 +63,28 @@ pub fn command_step_captures_stderr_and_nonzero_exit_test() {
   assert artifact.stderr == "bad\n"
 }
 
+pub fn command_step_promotes_stable_failure_code_test() {
+  let dir = "test/tmp/command-step-failure-code"
+  reset_dir(dir)
+  let artifact =
+    command_step.run(
+      "publish_pr",
+      "echo SCHERZO_FAILURE_CODE=publish_rebase_conflict >&2; exit 1",
+      dir,
+      1000,
+      [],
+      limits(),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("publish_rebase_conflict")
+  let assert Some(summary) = step_artifact.command_failure_summary(artifact)
+  assert string.contains(summary, "failure_code=publish_rebase_conflict")
+  let assert Some(diagnostic_path) = artifact.diagnostic_path
+  let assert Ok(body) = simplifile.read(diagnostic_path)
+  assert string.contains(body, "failure_code: publish_rebase_conflict")
+}
+
 pub fn command_step_captures_final_stdout_line_without_newline_test() {
   let dir = "test/tmp/command-step-no-final-newline"
   reset_dir(dir)
