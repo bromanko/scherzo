@@ -35,6 +35,15 @@ RETENTION_MARKER = ".scherzo-keep-workspace"
 PLAN_RE = re.compile(
     r"(?<![A-Za-z0-9_./-])(docs/plans/[A-Za-z0-9][A-Za-z0-9._-]*\.md)(?![A-Za-z0-9_/-])"
 )
+PLAN_FIELD_RE = re.compile(
+    r"^\s*(?:(?:[-*+]|\d+\.)\s+)?(?:\*\*)?"
+    r"(?P<label>Plan(?:\s+path)?|Umbrella|Supersedes)"
+    r"(?:\*\*)?\s*:\s*(?:\*\*)?\s*(?P<value>.*)$",
+    re.IGNORECASE,
+)
+EXPLICIT_PLAN_FIELD_LABELS = {"plan", "plan path"}
+CONTEXTUAL_PLAN_FIELD_LABELS = {"umbrella", "supersedes"}
+COMMAND_DIAGNOSTIC_MAX_CHARS = 3500
 
 
 def usage() -> None:
@@ -44,9 +53,10 @@ def usage() -> None:
 Run from a Scherzo jj workflow workspace root.
 
 prepare --source execplan
-              Fetch the Linear issue, find exactly one docs/plans/*.md path,
-              record the starting jj parent, and mark the run for retention
-              until a PR is safely published.
+              Fetch the Linear issue, prefer an explicit Plan/Plan path field,
+              otherwise find exactly one docs/plans/*.md path, record the
+              starting jj parent, and mark the run for retention until a PR is
+              safely published.
 prepare --source ticket
               Fetch the Linear issue, write a ticket-context brief under tmp/,
               record the starting jj parent, and mark the run for retention
@@ -59,8 +69,10 @@ publish       Describe the final jj change, push a bookmark, create/find a PR,
 
 Test helpers:
 extract-plan <text-file> [repo-root]
-              Extract exactly one docs/plans/*.md path from text. If repo-root
-              is supplied, the path must exist under that root.
+              Extract the implementation docs/plans/*.md path from text,
+              preferring explicit Plan/Plan path fields over contextual
+              references. If repo-root is supplied, the path must exist under
+              that root.
 languages <file-list>
               Detect supported review languages from a newline-separated list.
 ticket-brief <issue-json>
@@ -76,6 +88,29 @@ def fail(message: str) -> None:
     sys.exit(1)
 
 
+def diagnostic_excerpt(value: str, max_chars: int = COMMAND_DIAGNOSTIC_MAX_CHARS) -> str:
+    value = value.strip()
+    if len(value) <= max_chars:
+        return value
+    marker = "\n... truncated ...\n"
+    available = max(0, max_chars - len(marker))
+    omitted = len(value) - available
+    marker = f"\n... truncated {omitted} chars ...\n"
+    available = max(0, max_chars - len(marker))
+    head_chars = available // 2
+    tail_chars = available - head_chars
+    return value[:head_chars] + marker + value[-tail_chars:]
+
+
+def subprocess_failure_details(stdout: str, stderr: str, returncode: int) -> str:
+    parts = [f"exit_code: {returncode}"]
+    if stderr.strip():
+        parts.append("stderr:\n" + diagnostic_excerpt(stderr))
+    if stdout.strip():
+        parts.append("stdout:\n" + diagnostic_excerpt(stdout))
+    return "\n\n".join(parts)
+
+
 def run(args: list[str], *, check: bool = True) -> str:
     proc = subprocess.run(
         args,
@@ -84,7 +119,7 @@ def run(args: list[str], *, check: bool = True) -> str:
         stderr=subprocess.PIPE,
     )
     if check and proc.returncode != 0:
-        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
         fail(f"command failed: {' '.join(args)}\n{details}")
     return proc.stdout
 
@@ -169,7 +204,10 @@ def linear_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - defensive CLI boundary
         fail(f"Linear GraphQL request failed: {exc}")
     if response.get("errors"):
-        fail("Linear GraphQL returned errors: " + json.dumps(response["errors"]))
+        fail(
+            "Linear GraphQL returned errors:\n"
+            + diagnostic_excerpt(json.dumps(response["errors"], indent=2))
+        )
     return response["data"]
 
 
@@ -243,17 +281,89 @@ def issue_texts(issue: dict[str, Any]) -> list[tuple[str, str]]:
     return texts
 
 
+def normalize_plan_field_label(label: str) -> str:
+    return re.sub(r"\s+", " ", label.strip().lower())
+
+
+def add_plan_candidate(found: dict[str, list[str]], plan_path: str, source: str) -> None:
+    sources = found.setdefault(plan_path, [])
+    if source not in sources:
+        sources.append(source)
+
+
+def plan_paths_in(text: str) -> list[str]:
+    return [match.group(1) for match in PLAN_RE.finditer(text or "")]
+
+
+def plan_candidate_lines(found: dict[str, list[str]]) -> str:
+    return "\n".join(
+        f"- `{path}` ({', '.join(sources)})" for path, sources in found.items()
+    )
+
+
+def fail_ambiguous_plan_paths(reason: str, found: dict[str, list[str]]) -> None:
+    fail(
+        reason
+        + "\nCandidates:\n"
+        + plan_candidate_lines(found)
+        + "\nSuggested fix: keep exactly one implementation ExecPlan in an "
+        "explicit `Plan:` or `Plan path:` field. Put contextual references in "
+        "fields such as `Umbrella:` or `Supersedes:`."
+    )
+
+
 def extract_plan_path_from_texts(texts: Iterable[tuple[str, str]]) -> str:
-    found: dict[str, list[str]] = {}
+    explicit: dict[str, list[str]] = {}
+    fallback: dict[str, list[str]] = {}
+    saw_explicit_field = False
+
     for source, text in texts:
-        for match in PLAN_RE.finditer(text or ""):
-            found.setdefault(match.group(1), []).append(source)
-    if not found:
-        fail("expected exactly one ExecPlan path like docs/plans/example.md; found none")
-    if len(found) > 1:
-        details = "; ".join(f"{path} in {', '.join(sources)}" for path, sources in found.items())
-        fail("expected exactly one ExecPlan path, found multiple: " + details)
-    return next(iter(found.keys()))
+        for line_number, line in enumerate((text or "").splitlines() or [""], start=1):
+            location = f"{source} line {line_number}"
+            field_match = PLAN_FIELD_RE.match(line)
+            if field_match:
+                label = normalize_plan_field_label(field_match.group("label"))
+                value = field_match.group("value")
+                if label in EXPLICIT_PLAN_FIELD_LABELS:
+                    saw_explicit_field = True
+                    for plan_path in plan_paths_in(value):
+                        add_plan_candidate(explicit, plan_path, location)
+                    continue
+                if label in CONTEXTUAL_PLAN_FIELD_LABELS:
+                    continue
+
+            for plan_path in plan_paths_in(line):
+                add_plan_candidate(fallback, plan_path, location)
+
+    if explicit:
+        if len(explicit) > 1:
+            fail_ambiguous_plan_paths(
+                "found multiple explicit ExecPlan fields while selecting the implementation plan.",
+                explicit,
+            )
+        return next(iter(explicit.keys()))
+
+    if saw_explicit_field:
+        fail(
+            "found an explicit `Plan:`/`Plan path:` field, but it did not contain "
+            "a valid ExecPlan path like `docs/plans/example.md`. Suggested fix: "
+            "set exactly one explicit field, for example: "
+            "Plan path: `docs/plans/example.md`."
+        )
+
+    if not fallback:
+        fail(
+            "expected exactly one implementation ExecPlan path like "
+            "`docs/plans/example.md`; found none. Contextual references in "
+            "`Umbrella:` and `Supersedes:` fields are ignored. Suggested fix: "
+            "add a field such as Plan path: `docs/plans/example.md` to the Linear issue."
+        )
+    if len(fallback) > 1:
+        fail_ambiguous_plan_paths(
+            "found multiple ExecPlan path candidates and no explicit `Plan:`/`Plan path:` field.",
+            fallback,
+        )
+    return next(iter(fallback.keys()))
 
 
 def validate_plan_path(plan_path: str, repo_root: Path) -> None:
@@ -326,7 +436,7 @@ def fetch_publish_base(base: str, remote: str) -> None:
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
     if proc.returncode != 0:
-        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
         fail(
             f"could not fetch PR base {base!r} from remote {remote!r}. "
             f"Fetch or configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry.\n{details}"
@@ -388,7 +498,7 @@ def normalize_publish_base(base_revision: str) -> bool:
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
     if proc.returncode != 0:
-        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
         fail(
             "could not rebase the final implementation change onto the PR base "
             f"{base_revision!r}. Resolve the retained workspace manually, rerun "
@@ -423,7 +533,7 @@ def empty_description_commits_to_push(remote: str) -> list[str]:
         stderr=subprocess.PIPE,
     )
     if proc.returncode != 0:
-        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
         fail(f"could not inspect commits that would be pushed to {remote!r}\n{details}")
     return clean_lines(proc.stdout)
 
@@ -642,8 +752,11 @@ def parse_prepare_source(args: list[str]) -> str:
 
 def prepare_command(args: list[str]) -> None:
     source_kind = parse_prepare_source(args)
-    require_command("jj")
     issue_identifier = infer_issue_identifier()
+    # Create the retention marker before any fetch, extraction, or jj inspection can
+    # fail so prepare-step diagnostics remain available for triage.
+    write_retention_marker(source_kind, issue_identifier)
+    require_command("jj")
     base_change_id = current_base_change_id()
 
     if source_kind == "execplan":
