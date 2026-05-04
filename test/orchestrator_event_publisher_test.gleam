@@ -221,6 +221,7 @@ fn summary(session_id: String) -> event.SessionSummary {
     workspace_path: "test/tmp/workspaces/ABC-1",
     pi_session_id: None,
     status: event.Running,
+    recovery: None,
     current_turn: 0,
     current_turn_status: None,
     current_turn_started_at_ms: None,

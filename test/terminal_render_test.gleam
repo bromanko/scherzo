@@ -17,6 +17,7 @@ fn summary() -> event.SessionSummary {
     workspace_path: "/tmp/workspace",
     pi_session_id: None,
     status: event.Running,
+    recovery: None,
     current_turn: 1,
     current_turn_status: None,
     current_turn_started_at_ms: None,

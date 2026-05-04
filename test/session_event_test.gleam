@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/agent/pi_event
 import scherzo/session/event
 import scherzo/session/json as session_json
+import scherzo/session/recovery as session_recovery
 import scherzo/session/tokens as session_tokens
 import scherzo/turn_telemetry
 
@@ -19,6 +20,7 @@ pub fn session_summary_serializes_exact_required_fields_test() {
       workspace_path: "test/tmp/workspaces/ABC-123",
       pi_session_id: None,
       status: event.Preparing,
+      recovery: None,
       current_turn: 0,
       current_turn_status: None,
       current_turn_started_at_ms: None,
@@ -48,6 +50,70 @@ pub fn session_summary_serializes_exact_required_fields_test() {
   assert decoded.status == "preparing"
   assert decoded.current_turn == 0
   assert decoded.tokens_total == 10
+}
+
+pub fn recovery_status_strings_roundtrip_and_reserve_future_names_test() {
+  assert event.recovery_status_to_string(event.Recovered) == "recovered"
+  assert event.recovery_status_to_string(event.Interrupted) == "interrupted"
+  assert event.recovery_status_to_string(event.Resumed) == "resumed"
+  assert event.recovery_status_to_string(event.InspectionNeeded)
+    == "inspection_needed"
+  assert event.recovery_status_to_string(event.Blocked) == "blocked"
+  assert event.recovery_status_to_string(event.Parked) == "parked"
+  assert event.recovery_status_to_string(event.Cleanup) == "cleanup"
+  assert event.recovery_status_to_string(event.DriftDetected)
+    == "drift_detected"
+  assert event.recovery_status_to_string(event.OldStateResetRequired)
+    == "old_state_reset_required"
+  assert event.recovery_status_from_string("interrupted")
+    == Some(event.Interrupted)
+  assert event.recovery_status_from_string("drift_detected")
+    == Some(event.DriftDetected)
+  assert event.recovery_status_from_string("unknown") == None
+}
+
+pub fn recovery_cleanup_phase_and_action_strings_roundtrip_test() {
+  assert event.cleanup_phase_to_string(event.Retained) == "retained"
+  assert event.cleanup_phase_to_string(event.Eligible) == "eligible"
+  assert event.cleanup_phase_to_string(event.Deleting) == "deleting"
+  assert event.cleanup_phase_to_string(event.Deleted) == "deleted"
+  assert event.cleanup_phase_from_string("eligible") == Some(event.Eligible)
+  assert event.cleanup_phase_from_string("wat") == None
+
+  assert event.recovery_action_to_string(event.Inspect) == "inspect"
+  assert event.recovery_action_to_string(event.ViewEvents) == "view_events"
+  assert event.recovery_action_to_string(event.CleanupDryRunAction)
+    == "cleanup_dry_run"
+  assert event.recovery_action_to_string(event.ArchiveOldState)
+    == "archive_old_state"
+  assert event.recovery_action_from_string("cleanup_dry_run")
+    == Some(event.CleanupDryRunAction)
+  assert event.recovery_action_from_string("unknown") == None
+}
+
+pub fn lifecycle_recovery_event_names_roundtrip_test() {
+  assert event.lifecycle_name_to_string(event.RecoveryDetected)
+    == "recovery_detected"
+  assert event.lifecycle_name_to_string(event.RecoveryInterrupted)
+    == "recovery_interrupted"
+  assert event.lifecycle_name_to_string(event.RecoveryParked)
+    == "recovery_parked"
+  assert event.lifecycle_name_to_string(event.RecoveryCleanup)
+    == "recovery_cleanup"
+  assert event.lifecycle_name_to_string(event.OldStateResetRequiredEvent)
+    == "old_state_reset_required"
+  assert event.lifecycle_name_to_string(event.CleanupDryRun)
+    == "cleanup_dry_run"
+  assert event.lifecycle_name_from_string("cleanup_completed")
+    == Some(event.CleanupCompleted)
+}
+
+pub fn recovery_safe_text_redacts_and_bounds_messages_test() {
+  let long = "secret-value " <> string.repeat("a", times: 250)
+  let safe = session_recovery.recovery_safe_text(long, ["secret-value"])
+  assert !string.contains(safe, "secret-value")
+  assert string.contains(safe, "[REDACTED]")
+  assert string.length(safe) <= 203
 }
 
 pub fn event_page_serializes_cursor_and_truncation_test() {
@@ -116,6 +182,7 @@ pub fn summary_json_includes_bounded_turn_fields_test() {
       workspace_path: "test/tmp/workspaces/ABC-1",
       pi_session_id: None,
       status: event.Running,
+      recovery: None,
       current_turn: 2,
       current_turn_status: Some(turn_telemetry.StatusRunning),
       current_turn_started_at_ms: Some(1000),

@@ -18,6 +18,7 @@ fn summary(session_id: String) -> event.SessionSummary {
     workspace_path: "test/tmp/workspaces/ABC-123",
     pi_session_id: None,
     status: event.Preparing,
+    recovery: None,
     current_turn: 0,
     current_turn_status: None,
     current_turn_started_at_ms: None,
@@ -34,6 +35,26 @@ fn summary(session_id: String) -> event.SessionSummary {
 fn payload(name: String) -> event.EventPayload {
   let assert Ok(event_name) = event.name_from_string(name)
   event.empty_payload(event.Lifecycle, event_name)
+}
+
+fn interrupted_recovery(run_id: String) -> event.RecoveryInfo {
+  event.RecoveryInfo(
+    status: event.Interrupted,
+    source: "projection.run_interrupted",
+    message: Some("daemon_restart"),
+    safe_actions: [event.Inspect, event.ViewEvents, event.Retry, event.Park],
+    workflow_run_id: Some(run_id),
+    workflow_step_id: None,
+    current_pi_session_id: None,
+    previous_pi_session_id: None,
+    park_reason: None,
+    park_release_policy: None,
+    parked_at_ms: None,
+    drift_kind: None,
+    retention_until_ms: None,
+    cleanup_eligible_at_ms: None,
+    cleanup_phase: None,
+  )
 }
 
 pub fn hub_registers_lists_and_finishes_session_test() {
@@ -63,6 +84,33 @@ pub fn hub_assigns_monotonic_cursors_and_timestamps_test() {
   let assert Ok(page) = hub.events_after(subject, "session-1", 0, 10, 1000)
   assert event_cursors(page.events) == [1, 2, 3]
   assert event_timestamps(page.events) == [456, 456, 456]
+  hub.stop(subject)
+}
+
+pub fn hub_updates_summary_recovery_from_payload_test() {
+  let assert Ok(subject) = hub.start(10, fn() { 789 })
+  hub.register_session(subject, summary("session-1"))
+  let recovery = interrupted_recovery("run-1")
+  hub.publish(
+    subject,
+    "session-1",
+    event.EventPayload(
+      ..payload("recovery_interrupted"),
+      recovery: Some(recovery),
+      message: Some("daemon_restart"),
+    ),
+  )
+
+  let assert Ok(Some(updated)) = hub.get_session(subject, "session-1", 1000)
+  let assert Some(summary_recovery) = updated.recovery
+  assert summary_recovery.status == event.Interrupted
+  assert summary_recovery.workflow_run_id == Some("run-1")
+  assert updated.last_event_at_ms == 789
+
+  let assert Ok(page) = hub.events_after(subject, "session-1", 0, 10, 1000)
+  let assert [stored_event] = page.events
+  let assert Some(event_recovery) = stored_event.payload.recovery
+  assert event_recovery.source == "projection.run_interrupted"
   hub.stop(subject)
 }
 

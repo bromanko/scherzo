@@ -304,6 +304,74 @@ pub fn decode_unknown_future_turn_name_stays_turn_event_test() {
     == event.TurnName(turn_telemetry.EventUnknown("turn_paused"))
 }
 
+pub fn session_summary_recovery_json_preserves_live_status_and_decodes_missing_test() {
+  let recovery =
+    event.RecoveryInfo(
+      status: event.Interrupted,
+      source: "projection.run_interrupted",
+      message: Some("daemon_restart"),
+      safe_actions: [event.Inspect, event.ViewEvents, event.Retry, event.Park],
+      workflow_run_id: Some("run-1"),
+      workflow_step_id: None,
+      current_pi_session_id: Some("pi-current"),
+      previous_pi_session_id: None,
+      park_reason: None,
+      park_release_policy: None,
+      parked_at_ms: None,
+      drift_kind: None,
+      retention_until_ms: None,
+      cleanup_eligible_at_ms: None,
+      cleanup_phase: None,
+    )
+  let summary =
+    event.SessionSummary(
+      session_id: "session-1",
+      display_name: "session-1",
+      issue_id: "issue-1",
+      issue_identifier: "SCH-1",
+      issue_title: "Fix",
+      workspace_path: "work",
+      pi_session_id: Some("pi-current"),
+      status: event.Running,
+      recovery: Some(recovery),
+      current_turn: 1,
+      current_turn_status: None,
+      current_turn_started_at_ms: None,
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
+      started_at_ms: 100,
+      last_event_at_ms: 200,
+      token_totals: session_tokens.zero_token_totals(),
+    )
+  let encoded =
+    protocol.success_response(
+      "sessions-1",
+      protocol.list_sessions_data(event.SessionList([summary], 250)),
+    )
+    |> protocol.response_to_string
+
+  assert string.contains(encoded, "\"status\":\"running\"")
+  assert string.contains(encoded, "\"recovery\":{")
+  assert string.contains(encoded, "\"status\":\"interrupted\"")
+  assert string.contains(encoded, "\"workflow_run_id\":\"run-1\"")
+
+  let assert Ok(snapshot) =
+    protocol.decode_list_sessions_snapshot_response(encoded)
+  let assert [decoded] = snapshot.sessions
+  assert decoded.status == event.Running
+  let assert Some(decoded_recovery) = decoded.recovery
+  assert decoded_recovery.status == event.Interrupted
+  assert decoded_recovery.workflow_run_id == Some("run-1")
+
+  let missing_recovery_json =
+    "{\"version\":1,\"id\":\"sessions-2\",\"ok\":true,\"data\":{\"sessions\":[{\"session_id\":\"session-2\",\"issue_id\":\"issue-2\",\"issue_identifier\":\"SCH-2\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"running\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
+  let assert Ok([missing]) =
+    protocol.decode_list_sessions_response(missing_recovery_json)
+  assert missing.recovery == None
+}
+
 pub fn decode_session_summary_maps_unknown_exit_reason_to_failed_test() {
   let line =
     "{\"version\":1,\"id\":\"sessions-1\",\"ok\":true,\"data\":{\"sessions\":[{\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"exited\",\"exit_reason\":\"legacy_cancelled\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
@@ -366,4 +434,60 @@ pub fn encode_events_response_contains_cursor_and_session_test() {
   let assert Ok(decoded) = protocol.decode_get_events_response(encoded)
   assert decoded.next_cursor == 7
   assert decoded.truncated == False
+}
+
+pub fn lifecycle_event_response_carries_nullable_recovery_test() {
+  let recovery =
+    event.RecoveryInfo(
+      status: event.Interrupted,
+      source: "projection.run_interrupted",
+      message: Some("daemon_restart"),
+      safe_actions: [event.Inspect, event.ViewEvents, event.Retry, event.Park],
+      workflow_run_id: Some("run-1"),
+      workflow_step_id: None,
+      current_pi_session_id: None,
+      previous_pi_session_id: None,
+      park_reason: None,
+      park_release_policy: None,
+      parked_at_ms: None,
+      drift_kind: None,
+      retention_until_ms: None,
+      cleanup_eligible_at_ms: None,
+      cleanup_phase: None,
+    )
+  let page =
+    event.EventPage(
+      events: [
+        event.SessionEvent(
+          cursor: 8,
+          at_ms: 101,
+          session_id: "session-1",
+          issue_id: "issue-1",
+          payload: event.EventPayload(
+            ..event.empty_payload(
+              event.Lifecycle,
+              event.LifecycleName(event.RecoveryInterrupted),
+            ),
+            recovery: Some(recovery),
+            message: Some("daemon_restart"),
+          ),
+        ),
+      ],
+      next_cursor: 8,
+      truncated: False,
+    )
+
+  let encoded =
+    protocol.success_response("events-2", protocol.event_page_data(page))
+    |> protocol.response_to_string
+
+  assert string.contains(encoded, "\"name\":\"recovery_interrupted\"")
+  assert string.contains(encoded, "\"recovery\":{")
+  assert string.contains(encoded, "\"workflow_run_id\":\"run-1\"")
+
+  let assert Ok(decoded) = protocol.decode_get_events_response(encoded)
+  let assert [stored_event] = decoded.events
+  let assert Some(decoded_recovery) = stored_event.payload.recovery
+  assert decoded_recovery.status == event.Interrupted
+  assert decoded_recovery.workflow_run_id == Some("run-1")
 }

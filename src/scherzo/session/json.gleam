@@ -32,6 +32,7 @@ pub fn summary_to_json(summary: event.SessionSummary) -> json.Json {
     #("pi_session_id", optional_string(summary.pi_session_id)),
     #("status", json.string(event.status_to_string(summary.status))),
     #("exit_reason", optional_exit_reason(event.exit_reason(summary.status))),
+    #("recovery", optional_recovery(summary.recovery)),
     #("current_turn", json.int(summary.current_turn)),
     #("current_turn_status", optional_turn_status(summary.current_turn_status)),
     #(
@@ -81,6 +82,7 @@ fn payload_entries(payload: event.EventPayload) -> List(#(String, json.Json)) {
     #("turn", optional_int(payload.turn)),
     #("pi_type", optional_string(payload.pi_type)),
     #("message", optional_string(payload.message)),
+    #("recovery", optional_recovery(payload.recovery)),
     #("request_id", optional_string(payload.request_id)),
     #("method", optional_string(payload.method)),
     #("tool_name", optional_string(payload.tool_name)),
@@ -136,6 +138,41 @@ fn optional_string(value: Option(String)) -> json.Json {
   }
 }
 
+pub fn recovery_to_json(recovery: event.RecoveryInfo) -> json.Json {
+  json.object([
+    #("status", json.string(event.recovery_status_to_string(recovery.status))),
+    #("source", json.string(recovery.source)),
+    #("message", optional_string(recovery.message)),
+    #(
+      "safe_actions",
+      json.array(recovery.safe_actions, of: fn(action) {
+        json.string(event.recovery_action_to_string(action))
+      }),
+    ),
+    #("workflow_run_id", optional_string(recovery.workflow_run_id)),
+    #("workflow_step_id", optional_string(recovery.workflow_step_id)),
+    #("current_pi_session_id", optional_string(recovery.current_pi_session_id)),
+    #(
+      "previous_pi_session_id",
+      optional_string(recovery.previous_pi_session_id),
+    ),
+    #("park_reason", optional_string(recovery.park_reason)),
+    #("park_release_policy", optional_string(recovery.park_release_policy)),
+    #("parked_at_ms", optional_int(recovery.parked_at_ms)),
+    #("drift_kind", optional_string(recovery.drift_kind)),
+    #("retention_until_ms", optional_int(recovery.retention_until_ms)),
+    #("cleanup_eligible_at_ms", optional_int(recovery.cleanup_eligible_at_ms)),
+    #("cleanup_phase", optional_cleanup_phase(recovery.cleanup_phase)),
+  ])
+}
+
+fn optional_recovery(value: Option(event.RecoveryInfo)) -> json.Json {
+  case value {
+    Some(recovery) -> recovery_to_json(recovery)
+    None -> json.null()
+  }
+}
+
 fn optional_exit_reason(value: Option(reason.WorkerExitReason)) -> json.Json {
   case value {
     Some(value) -> json.string(reason.to_string(value))
@@ -153,6 +190,13 @@ fn optional_turn_status(value: Option(turn_telemetry.TurnStatus)) -> json.Json {
 fn optional_turn_reason(value: Option(turn_telemetry.TurnReason)) -> json.Json {
   case value {
     Some(value) -> json.string(turn_telemetry.reason_to_string(value))
+    None -> json.null()
+  }
+}
+
+fn optional_cleanup_phase(value: Option(event.CleanupPhase)) -> json.Json {
+  case value {
+    Some(value) -> json.string(event.cleanup_phase_to_string(value))
     None -> json.null()
   }
 }

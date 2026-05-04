@@ -22,6 +22,7 @@ pub type HubError {
 pub type Message {
   RegisterSession(event.SessionSummary)
   UpdateStatus(String, event.SessionStatus)
+  UpdateRecovery(String, Option(event.RecoveryInfo))
   UpdatePiSession(String, String)
   UpdateTokens(String, session_tokens.TokenTotals)
   Publish(String, event.EventPayload)
@@ -139,6 +140,14 @@ pub fn update_status(
   process.send(subject, UpdateStatus(session_id, status))
 }
 
+pub fn update_recovery(
+  subject: process.Subject(Message),
+  session_id: String,
+  recovery: Option(event.RecoveryInfo),
+) -> Nil {
+  process.send(subject, UpdateRecovery(session_id, recovery))
+}
+
 pub fn update_pi_session(
   subject: process.Subject(Message),
   session_id: String,
@@ -229,6 +238,8 @@ fn handle_message(
     RegisterSession(summary) -> actor.continue(register_summary(state, summary))
     UpdateStatus(session_id, status) ->
       actor.continue(update_summary_status(state, session_id, status))
+    UpdateRecovery(session_id, recovery) ->
+      actor.continue(update_summary_recovery(state, session_id, recovery))
     UpdatePiSession(session_id, pi_session_id) ->
       actor.continue(update_summary_pi_session(state, session_id, pi_session_id))
     UpdateTokens(session_id, tokens) ->
@@ -333,15 +344,40 @@ fn update_summary_status(
   })
 }
 
+fn update_summary_recovery(
+  state: State,
+  session_id: String,
+  recovery: Option(event.RecoveryInfo),
+) -> State {
+  update_summary(state, session_id, fn(summary) {
+    event.SessionSummary(
+      ..summary,
+      recovery: recovery,
+      last_event_at_ms: state.now_ms(),
+    )
+  })
+}
+
 fn update_summary_pi_session(
   state: State,
   session_id: String,
   pi_session_id: String,
 ) -> State {
   update_summary(state, session_id, fn(summary) {
+    let recovery = case summary.recovery {
+      Some(recovery) ->
+        Some(
+          event.RecoveryInfo(
+            ..recovery,
+            current_pi_session_id: Some(pi_session_id),
+          ),
+        )
+      None -> None
+    }
     event.SessionSummary(
       ..summary,
       pi_session_id: Some(pi_session_id),
+      recovery: recovery,
       last_event_at_ms: state.now_ms(),
     )
   })
@@ -447,8 +483,13 @@ fn update_summary_after_payload(
     True -> payload.tokens
     False -> summary.token_totals
   }
+  let recovery = case payload.recovery {
+    Some(recovery) -> Some(recovery)
+    None -> summary.recovery
+  }
   event.SessionSummary(
     ..summary,
+    recovery: recovery,
     current_turn: current_turn,
     token_totals: token_totals,
     last_event_at_ms: now,
