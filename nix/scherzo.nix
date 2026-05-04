@@ -28,7 +28,7 @@ let
     # recursive hash.
     outputHashAlgo = "sha256";
     outputHashMode = "recursive";
-    outputHash = "sha256-bo5IqZZ2dJI124LknMz4MsG8/TQ5T99vnF0YB01BCpY=";
+    outputHash = "sha256-2v58C0llK5X9H/Xdoz8vgJjkkcML5HlFfrKc12OWkKk=";
 
     dontConfigure = true;
 
