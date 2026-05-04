@@ -266,7 +266,7 @@ create_pr_command() {
   jj describe -m "docs(plan): add execplan for $slug"
   ensure_no_empty_descriptions_to_push "$remote"
   jj bookmark set "$branch" --revision @
-  jj git push --remote "$remote" --bookmark "$branch"
+  jj git push --remote "$remote" --bookmark "$branch" --allow-new
 
   mkdir -p tmp
   body_file=tmp/execplan-pr-body.md

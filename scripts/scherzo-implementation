@@ -834,7 +834,7 @@ def publish_command() -> None:
     run(["jj", "describe", "-m", description])
     ensure_no_empty_descriptions_to_push(remote)
     run(["jj", "bookmark", "set", branch, "--revision", "@"])
-    run(["jj", "git", "push", "--remote", remote, "--bookmark", branch])
+    run(["jj", "git", "push", "--remote", remote, "--bookmark", branch, "--allow-new"])
 
     PR_BODY_PATH.parent.mkdir(parents=True, exist_ok=True)
     PR_BODY_PATH.write_text(body)
