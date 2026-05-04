@@ -64,13 +64,14 @@ A sixth risk is breaking existing JSON consumers. The countermeasure is to leave
 
 - [x] (2026-05-03) Drafted this ExecPlan from the Linear issue and a bounded inspection of the current repository surfaces.
 - [x] (2026-05-03) Incorporated adversarial review by narrowing emitted statuses to current durable facts, deferring unsupported statuses, gating destructive cleanup, removing outside-plan dependencies, and adding source inventory, path-safety, redaction, and edge-case testing requirements.
-- [ ] Verify source-fact inventory in the implementation workspace before adding new code; update this plan if the current tree has drifted.
-- [ ] Add the canonical recovery status model and serialize nullable recovery metadata without changing live worker `status` semantics.
-- [ ] Project currently backed recovery facts into session summaries, control JSON, CLI output, and structured logs.
-- [ ] Add read-only retention and old-state inventory with path, schema, metadata, and symlink safety checks.
-- [ ] Add deletion-capable cleanup and old-state mutation only after read-only inventory tests pass.
-- [ ] Update README and add the operator runbook for workflow recovery and retention.
-- [ ] Run formatting, tests, plan validation, and documentation path checks; update this plan with outcomes.
+- [x] (2026-05-04 10:10Z) Verified the source-fact inventory in the implementation workspace by reading the session, control, daemon, projection, record, ledger, and recovery modules; no durable facts for previous pi sessions, workflow step checkpoints, inspection holds, unsafe replay blocks, or drift rejection were found.
+- [x] (2026-05-04 10:25Z) Added the canonical recovery status model, cleanup phases, safe actions, nullable `RecoveryInfo`, JSON serialization, and tolerant control decoding without changing live worker `status` or `exit_reason` semantics.
+- [x] (2026-05-04 10:32Z) Added pure mappers for backed projection facts, `scripts/scherzoctl ps` recovery column, human `session` recovery detail, EventHub recovery update support, and structured redacted daemon recovery/cleanup logs for startup recovery and workspace cleanup completion.
+- [x] (2026-05-04 10:38Z) Added read-only retention and old-state inventory in `src/scherzo/state/local_artifacts.gleam`, including path containment, parent traversal, schema, metadata, and symlink safety checks.
+- [x] (2026-05-04 10:39Z) Added deletion-capable cleanup and offline old-state archive, discard, and reinitialize controls gated by dry-run classification, verified `.scherzo-state` roots, unsupported schema detection, and `--yes` for mutations.
+- [x] (2026-05-04 10:42Z) Updated `README.md` and added `docs/runbooks/workflow-recovery.md` with status vocabulary, reserved statuses, cleanup, old-state reset, sensitive-data handling, and irreversible deletion guidance.
+- [x] (2026-05-04 10:45Z) Ran validation: `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, the documentation path check, and `scripts/scherzo-execplan validate docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md` all passed.
+- [x] (2026-05-04 11:15Z) Applied post-review fixes so EventHub lifecycle payloads carry nullable recovery metadata, recovery lifecycle events update summaries, and recovered retry dispatches inherit backed startup recovery facts until their first live session registers.
 
 ## Surprises & Discoveries
 
@@ -84,6 +85,12 @@ A sixth risk is breaking existing JSON consumers. The countermeasure is to leave
   Evidence: `src/scherzo/state/recovery.gleam`, `src/scherzo/state/projection.gleam`, and `src/scherzo/state/record.gleam` define the current recovery plan and record vocabulary.
 - Observation: The current ledger path helper knows `.scherzo-state/ledger/current.jsonl`, `.scherzo-state/ledger/snapshot.json`, and `.scherzo-state/ledger/archive/`, but the bounded review did not find a concrete pi transcript root in the current source tree.
   Evidence: `src/scherzo/state/ledger.gleam` defines `LedgerPath`; `src/scherzo/session/event.gleam` and `src/scherzo/session/json.gleam` expose only `pi_session_id` metadata.
+- Observation: `scripts/scherzoctl cleanup` can safely run as a local maintenance command using the control file workspace root or `--root` rather than requiring a daemon control request.
+  Evidence: `src/scherzo/ctl.gleam` now resolves cleanup roots locally and calls `src/scherzo/state/local_artifacts.gleam`; `test/state_local_artifacts_test.gleam` exercises dry-run and apply behavior without a running daemon.
+- Observation: `simplifile` already exposes `is_symlink`, `link_info`, recursive delete, directory listing, and file metadata, so a new broad filesystem dependency was unnecessary.
+  Evidence: `src/scherzo/state/local_artifacts.gleam` uses `simplifile.is_symlink`, `read_directory`, `file_info`, `delete`, `rename`, and `create_directory_all`; `gleam test` compiled without new package dependencies.
+- Observation: The first implementation exposed recovery on summaries and logs but lifecycle event payloads still had no recovery field, and daemon startup recovery facts were not connected to the first recovered live session.
+  Evidence: Post-review changes add `EventPayload.recovery`, `event_publisher.lifecycle_with_recovery`, EventHub summary updates from recovery payloads, and `test/orchestrator_daemon_session_event_test.gleam` coverage for a ledger-backed interrupted run dispatched by a recovered retry.
 
 ## Decision Log
 
@@ -108,10 +115,23 @@ A sixth risk is breaking existing JSON consumers. The countermeasure is to leave
 - Decision: Remove references to outside child plans and inline the old-state command, schema-detection, and safety rules here.
   Rationale: A later implementer must be able to execute this plan from the current working tree and this file alone.
   Date: 2026-05-03
+- Decision: Implement cleanup as a local `scripts/scherzoctl` maintenance path that uses the workspace root from the control file or `--root`, instead of adding cleanup to the daemon control protocol in this ticket.
+  Rationale: Cleanup mutates local `.scherzo-state` artifacts and remains useful when the daemon is down; keeping it local matches offline old-state maintenance and avoids making cleanup availability depend on a running control server. The session/control JSON acceptance for `ps` and `session` is still satisfied by the additive recovery field.
+  Date: 2026-05-04
+- Decision: Keep transcript cleanup unavailable in code and documentation until a concrete transcript root is verified.
+  Rationale: The implementation confirmed only pi session identifiers, not transcript ownership roots. Reporting `transcript_root_status: unavailable` avoids guessing at sensitive transcript locations or deleting arbitrary files.
+  Date: 2026-05-04
+- Decision: Carry recovery metadata on lifecycle `EventPayload`s and keep a startup `recovery_by_issue` projection in daemon state until the first recovered dispatch registers its live session.
+  Rationale: Review found that a summary-only helper was insufficient because production startup recovery was only logged. Payload-level metadata makes event streams machine-readable, updates EventHub summaries through normal publish flow, and avoids inventing new worker status values or reserved recovery semantics.
+  Date: 2026-05-04
 
 ## Outcomes & Retrospective
 
-Implementation has not started. Fill this section after each milestone with what changed, what was validated, what remains risky, and whether operators can distinguish the recovery states backed by current source facts.
+Implementation delivered the operator-visible recovery model, nullable recovery JSON, human `ps` and `session` recovery output, backed-fact mappers, lifecycle-event recovery metadata, recovered retry dispatch projection into live session summaries, conservative local retention inventory, confirmed cleanup apply, offline old-state maintenance, structured redacted recovery logs, README guidance, and a workflow recovery runbook. Operators can now distinguish live worker state from backed recovery meaning in session summaries and can inspect cleanup and unsupported old-state state without inventing runtime resumption semantics.
+
+The main intentional gap is that reserved statuses remain string/documentation vocabulary only. The code does not emit `resumed`, `inspection_needed`, `blocked`, or `drift_detected` from real projection because the implementation workspace still lacks durable source facts for those meanings. Another intentional gap is pi transcript deletion: the cleanup inventory reports transcript root unavailable until a later change verifies a concrete root and ownership model.
+
+Validation passed `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, the documentation path check, and `scripts/scherzo-execplan validate docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`. Post-review validation reran `direnv exec . gleam test` and `direnv exec . gleam format --check src test` after adding lifecycle payload and recovered-dispatch coverage. The plan validator required an explicit plan path during implementation because the workflow legitimately modifies code and an existing plan; `scripts/scherzo-execplan` now preserves the original no-argument ExecPlan-authoring validation and also validates an explicit plan file when provided.
 
 ## Context and Orientation
 

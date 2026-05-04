@@ -18,6 +18,8 @@ import scherzo/session/hub
 import scherzo/session/name as session_name
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
+import scherzo/state/ledger
+import scherzo/state/record
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
@@ -478,6 +480,77 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
     hub.events_after(hub_subject, "ABC-RETRY-42-1", 0, 20, 1000)
   let assert Ok(_) =
     hub.events_after(hub_subject, "ABC-RETRY-42-2", 0, 20, 1000)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn daemon_startup_recovery_attaches_interrupted_metadata_to_retry_session_test() {
+  let #(workflow_path, root) =
+    write_workflow("test/tmp/daemon-startup-recovery-session")
+  let recovered = issue("recovered-id", "ABC-REC", "Todo")
+  let assert Ok(#(_, known_workspace)) =
+    workspace.workspace_path(root, recovered.identifier)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "old-run-started",
+          1000,
+          record.RunStarted(
+            run_id: "old-run",
+            issue_id: recovered.id,
+            issue_identifier: recovered.identifier,
+            workspace_path: known_workspace,
+          ),
+        ),
+      ],
+      False,
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([recovered]) },
+    )
+  let deps =
+    dependencies(
+      client,
+      log_subject,
+      hub_subject,
+      fn(issue, _, _, _, _, _, _, _) {
+        Ok(success(
+          tracker_issue.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+          known_workspace,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.RetryTick("recovered-id", 1))
+  assert wait_for_log(log_subject, "worker_exited", 20)
+
+  let assert Ok(summary) = wait_for_session(hub_subject, "ABC-REC-42-1", 20)
+  let assert Some(recovery) = summary.recovery
+  assert recovery.status == event.Interrupted
+  assert recovery.source == "projection.run_running"
+  assert recovery.workflow_run_id == Some("old-run")
+  assert summary.status == event.Exited(reason.Normal)
+
+  let assert Ok(page) =
+    hub.events_after(hub_subject, "ABC-REC-42-1", 0, 20, 1000)
+  let assert Some(recovery_event) =
+    find_event(page.events, "recovery_interrupted")
+  let assert Some(event_recovery) = recovery_event.payload.recovery
+  assert event_recovery.status == event.Interrupted
+  assert event_recovery.workflow_run_id == Some("old-run")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)

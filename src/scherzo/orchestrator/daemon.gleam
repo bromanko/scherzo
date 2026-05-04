@@ -35,6 +35,7 @@ import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/name as session_name
 import scherzo/session/reason as session_reason
+import scherzo/session/recovery as session_recovery
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/outbox
@@ -104,6 +105,7 @@ type PendingClaim {
     workspace_path: String,
     run_id: String,
     session_sequence: Int,
+    recovery: Option(session_event.RecoveryInfo),
     remaining_candidates: List(tracker_issue.Issue),
   )
 }
@@ -119,6 +121,7 @@ type StartupRecovery {
     cleanup_workspaces: List(recovery.CleanupRequest),
     outbox_to_replay: List(recovery.OutboxReplay),
     command_receipts: Dict(String, projection.CommandReceiptState),
+    recovery_by_issue: Dict(String, session_event.RecoveryInfo),
     warnings: List(String),
   )
 }
@@ -165,6 +168,7 @@ type State {
     retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
     pending_claims: Dict(String, PendingClaim),
+    recovery_by_issue: Dict(String, session_event.RecoveryInfo),
     effect_runner: effect_runner.Handle,
     effect_runner_monitor: process.Monitor,
     event_hub: process.Subject(hub.Message),
@@ -425,6 +429,7 @@ pub fn start(
                       retry: retry_scheduler.new(),
                       registry: worker_registry.new(),
                       pending_claims: dict.new(),
+                      recovery_by_issue: startup_recovery.recovery_by_issue,
                       effect_runner: effect_runner_handle,
                       effect_runner_monitor: effect_runner_monitor,
                       event_hub: event_hub,
@@ -541,6 +546,10 @@ fn load_startup_recovery(
     cleanup_workspaces: recovery_plan.cleanup_workspaces,
     outbox_to_replay: recovery_plan.outbox_to_replay,
     command_receipts: replayed.projection.command_receipts,
+    recovery_by_issue: startup_recovery_by_issue(
+      replayed.projection,
+      recovery_plan,
+    ),
     warnings: recovery_plan.warnings,
   ))
 }
@@ -591,18 +600,118 @@ fn chunk_strings(values: List(String), size: Int) -> List(List(String)) {
   }
 }
 
+fn startup_recovery_by_issue(
+  projection: projection.Projection,
+  recovery_plan: recovery.RecoveryPlan,
+) -> Dict(String, session_event.RecoveryInfo) {
+  dict.new()
+  |> insert_interrupted_recovery(projection)
+  |> insert_recovered_retry_recovery(recovery_plan.retry_timers)
+  |> insert_parked_recovery(projection)
+  |> insert_cleanup_recovery(recovery_plan.cleanup_workspaces)
+}
+
+fn insert_interrupted_recovery(
+  acc: Dict(String, session_event.RecoveryInfo),
+  projection: projection.Projection,
+) -> Dict(String, session_event.RecoveryInfo) {
+  projection.runs
+  |> dict.to_list
+  |> list.fold(acc, fn(acc, entry) {
+    let #(run_id, status) = entry
+    case session_recovery.interrupted_run(run_id, status, None) {
+      Some(info) -> dict.insert(acc, issue_id_for_run_status(status), info)
+      None -> acc
+    }
+  })
+}
+
+fn insert_recovered_retry_recovery(
+  acc: Dict(String, session_event.RecoveryInfo),
+  retries: List(recovery.RecoveredRetry),
+) -> Dict(String, session_event.RecoveryInfo) {
+  list.fold(retries, acc, fn(acc, retry) {
+    let recovery.RecoveredRetry(issue_id, _, _, _, reason) = retry
+    insert_if_missing(
+      acc,
+      issue_id,
+      session_recovery.recovered("recovery.recovered_retry", Some(reason)),
+    )
+  })
+}
+
+fn insert_parked_recovery(
+  acc: Dict(String, session_event.RecoveryInfo),
+  projection: projection.Projection,
+) -> Dict(String, session_event.RecoveryInfo) {
+  projection.parked_issues
+  |> dict.to_list
+  |> list.fold(acc, fn(acc, entry) {
+    let #(issue_id, parked) = entry
+    dict.insert(acc, issue_id, session_recovery.parked_issue(parked))
+  })
+}
+
+fn insert_cleanup_recovery(
+  acc: Dict(String, session_event.RecoveryInfo),
+  cleanups: List(recovery.CleanupRequest),
+) -> Dict(String, session_event.RecoveryInfo) {
+  list.fold(cleanups, acc, fn(acc, cleanup) {
+    let recovery.CleanupRequest(issue_id, _, _) = cleanup
+    dict.insert(acc, issue_id, session_recovery.cleanup_request(cleanup))
+  })
+}
+
+fn insert_if_missing(
+  acc: Dict(String, session_event.RecoveryInfo),
+  issue_id: String,
+  info: session_event.RecoveryInfo,
+) -> Dict(String, session_event.RecoveryInfo) {
+  case dict.has_key(acc, issue_id) {
+    True -> acc
+    False -> dict.insert(acc, issue_id, info)
+  }
+}
+
+fn issue_id_for_run_status(status: projection.RunStatus) -> String {
+  case status {
+    projection.RunRunning(issue_id, ..)
+    | projection.RunInterrupted(issue_id, ..)
+    | projection.RunFinished(issue_id, ..) -> issue_id
+  }
+}
+
 fn schedule_recovered_retry_timers(
   state: State,
   retries: List(recovery.RecoveredRetry),
 ) -> State {
   list.fold(retries, state, fn(state, retry) {
-    let recovery.RecoveredRetry(issue_id, _, delay_ms, generation, reason_text) =
-      retry
+    let recovery.RecoveredRetry(
+      issue_id,
+      issue_identifier,
+      delay_ms,
+      generation,
+      reason_text,
+    ) = retry
+    let safe_reason =
+      log.truncate(
+        log.redact("recovery_reason", reason_text, state.workflow.secrets),
+        200,
+      )
+    log_state(state, "info", "workflow_recovery_status", [
+      #("issue_id", issue_id),
+      #("issue_identifier", issue_identifier),
+      #("status", "recovered"),
+      #("source", "recovery.recovered_retry"),
+      #("delay_ms", int.to_string(delay_ms)),
+      #("generation", int.to_string(generation)),
+      #("reason", safe_reason),
+    ])
     log_state(state, "info", "recovered_retry_scheduled", [
       #("issue_id", issue_id),
       #("delay_ms", int.to_string(delay_ms)),
       #("generation", int.to_string(generation)),
-      #("reason", reason_text),
+      #("reason", safe_reason),
     ])
     let timer =
       state.dependencies.send_after(
@@ -627,7 +736,15 @@ fn enqueue_recovered_cleanups(
   cleanups: List(recovery.CleanupRequest),
 ) -> State {
   list.fold(cleanups, state, fn(state, cleanup) {
-    let recovery.CleanupRequest(issue_id, _, workspace_path) = cleanup
+    let recovery.CleanupRequest(issue_id, issue_identifier, workspace_path) =
+      cleanup
+    log_state(state, "info", "workflow_recovery_status", [
+      #("issue_id", issue_id),
+      #("issue_identifier", issue_identifier),
+      #("status", "cleanup"),
+      #("source", "recovery.cleanup_request"),
+      #("reason", "terminal interrupted run cleanup queued"),
+    ])
     log_state(state, "info", "recovered_workspace_cleanup", [
       #("issue_id", issue_id),
       #("workspace_path", workspace_path),
@@ -732,7 +849,19 @@ fn log_startup_recovery_warnings(
   warnings: List(String),
 ) -> State {
   list.each(warnings, fn(warning) {
-    log_state(state, "warn", "startup_recovery_warning", [#("warning", warning)])
+    let safe_warning =
+      log.truncate(
+        log.redact("recovery_warning", warning, state.workflow.secrets),
+        200,
+      )
+    log_state(state, "warn", "workflow_recovery_status", [
+      #("status", "recovered"),
+      #("source", "recovery.warning"),
+      #("reason", safe_warning),
+    ])
+    log_state(state, "warn", "startup_recovery_warning", [
+      #("warning", safe_warning),
+    ])
   })
   state
 }
@@ -1135,7 +1264,13 @@ fn retry_resolved_issue(
       retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
       issue_counters: dict.delete(state.runtime.issue_counters, issue.id),
     )
-  let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue.id)
+  let state =
+    State(
+      ..state,
+      runtime: runtime,
+      recovery_by_issue: dict.delete(state.recovery_by_issue, issue.id),
+    )
+    |> cancel_retry_timer(issue.id)
   case
     config.can_dispatch(state.workflow.reload_state)
     && core.should_dispatch(state.runtime, state.workflow.effective, issue)
@@ -1740,7 +1875,13 @@ fn unpark_issue_state(state: State, issue_id: String) -> State {
       retry_attempts: dict.delete(state.runtime.retry_attempts, issue_id),
       issue_counters: dict.delete(state.runtime.issue_counters, issue_id),
     )
-  let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue_id)
+  let state =
+    State(
+      ..state,
+      runtime: runtime,
+      recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
+    )
+    |> cancel_retry_timer(issue_id)
   let _ =
     append_ledger_bodies(
       state,
@@ -1768,7 +1909,15 @@ fn unpark_if_issue_changed_state(
   let had_retry = dict.has_key(state.runtime.retry_attempts, issue.id)
   let was_parked = dict.has_key(state.runtime.parked, issue.id)
   let runtime = core.unpark_if_issue_changed(state.runtime, issue)
-  let state = State(..state, runtime: runtime)
+  let state = case was_parked && !dict.has_key(runtime.parked, issue.id) {
+    True ->
+      State(
+        ..state,
+        runtime: runtime,
+        recovery_by_issue: dict.delete(state.recovery_by_issue, issue.id),
+      )
+    False -> State(..state, runtime: runtime)
+  }
   let state = case was_parked && !dict.has_key(runtime.parked, issue.id) {
     True -> {
       let _ =
@@ -1792,7 +1941,12 @@ fn unpark_if_issue_changed_state(
     False -> state
   }
   case had_retry && !dict.has_key(runtime.retry_attempts, issue.id) {
-    True -> cancel_retry_timer(state, issue.id)
+    True ->
+      State(
+        ..state,
+        recovery_by_issue: dict.delete(state.recovery_by_issue, issue.id),
+      )
+      |> cancel_retry_timer(issue.id)
     False -> state
   }
 }
@@ -2810,6 +2964,7 @@ fn dispatch_issue_with_continuation(
                   workspace_path: workspace_path,
                   run_id: run_id,
                   session_sequence: session_sequence,
+                  recovery: recovery_for_issue(state, issue.id),
                   remaining_candidates: remaining_candidates,
                 )
               let state =
@@ -2873,12 +3028,58 @@ fn retry_dispatch_later_if_needed(
   }
 }
 
+fn recovery_for_issue(
+  state: State,
+  issue_id: String,
+) -> Option(session_event.RecoveryInfo) {
+  case dict.get(state.recovery_by_issue, issue_id) {
+    Ok(recovery) -> Some(recovery)
+    Error(_) -> None
+  }
+}
+
+fn publish_recovery_lifecycle(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  recovery: Option(session_event.RecoveryInfo),
+) -> Nil {
+  case recovery {
+    None -> Nil
+    Some(info) ->
+      event_publisher.lifecycle_with_recovery(
+        event_hub,
+        session_id,
+        lifecycle_name_for_recovery(info.status),
+        info.message,
+        Some(info),
+      )
+  }
+}
+
+fn lifecycle_name_for_recovery(
+  status: session_event.RecoveryStatus,
+) -> session_event.LifecycleEventName {
+  case status {
+    session_event.Interrupted -> session_event.RecoveryInterrupted
+    session_event.Parked -> session_event.RecoveryParked
+    session_event.Cleanup -> session_event.RecoveryCleanup
+    session_event.OldStateResetRequired ->
+      session_event.OldStateResetRequiredEvent
+    session_event.Recovered
+    | session_event.Resumed
+    | session_event.InspectionNeeded
+    | session_event.Blocked
+    | session_event.DriftDetected -> session_event.RecoveryDetected
+  }
+}
+
 fn spawn_worker(
   state: State,
   issue: tracker_issue.Issue,
   workspace_path: String,
   run_id: String,
   session_sequence: Int,
+  recovery: Option(session_event.RecoveryInfo),
 ) -> State {
   let session_id = make_session_id(issue.identifier, run_id, session_sequence)
   let started_at_ms = state.dependencies.now_ms()
@@ -2893,6 +3094,7 @@ fn spawn_worker(
       workspace_path: workspace_path,
       pi_session_id: None,
       status: session_event.Preparing,
+      recovery: recovery,
       current_turn: 0,
       current_turn_status: None,
       current_turn_started_at_ms: None,
@@ -2905,6 +3107,7 @@ fn spawn_worker(
       token_totals: session_tokens.zero_token_totals(),
     ),
   )
+  publish_recovery_lifecycle(state.event_hub, session_id, recovery)
   event_publisher.lifecycle(
     state.event_hub,
     session_id,
@@ -2963,6 +3166,7 @@ fn spawn_worker(
     ..state,
     runtime: runtime,
     registry: worker_registry.register_worker(state.registry, handle),
+    recovery_by_issue: dict.delete(state.recovery_by_issue, issue.id),
   )
 }
 
@@ -3090,6 +3294,7 @@ fn register_yaml_step_session(
       workspace_path: workspace_path,
       pi_session_id: None,
       status: session_event.Preparing,
+      recovery: None,
       current_turn: 0,
       current_turn_status: None,
       current_turn_started_at_ms: None,
@@ -3214,6 +3419,7 @@ fn run_yaml_agent_step(
       workspace_path: workspace_path,
       pi_session_id: None,
       status: session_event.Preparing,
+      recovery: None,
       current_turn: 0,
       current_turn_status: None,
       current_turn_started_at_ms: None,
@@ -3926,6 +4132,7 @@ fn handle_handoff_claim_finished(
                       pending.workspace_path,
                       pending.run_id,
                       pending.session_sequence,
+                      pending.recovery,
                     )
                   dispatch_candidates(pending.remaining_candidates, state)
                 }
@@ -4091,12 +4298,21 @@ fn handle_cleanup_finished(
 ) -> State {
   case result {
     Ok(Nil) -> {
+      log_state(state, "info", "workflow_cleanup_completed", [
+        #("workspace_path", workspace_path),
+        #("status", "deleted"),
+      ])
       log_state(state, "info", "workspace_cleaned", [
         #("workspace_path", workspace_path),
       ])
       state
     }
     Error(err) -> {
+      log_state(state, "warn", "workflow_cleanup_completed", [
+        #("workspace_path", workspace_path),
+        #("status", "failed"),
+        #("error", error.workspace_code(err)),
+      ])
       log_state(state, "warn", "workspace_cleanup_failed", [
         #("workspace_path", workspace_path),
         #("error", error.workspace_code(err)),

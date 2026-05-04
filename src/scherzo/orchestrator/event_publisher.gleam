@@ -60,6 +60,16 @@ pub fn lifecycle(
   name: session_event.LifecycleEventName,
   message: Option(String),
 ) -> Nil {
+  lifecycle_with_recovery(event_hub, session_id, name, message, None)
+}
+
+pub fn lifecycle_with_recovery(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  name: session_event.LifecycleEventName,
+  message: Option(String),
+  recovery: Option(session_event.RecoveryInfo),
+) -> Nil {
   let payload =
     session_event.EventPayload(
       ..session_event.empty_payload(
@@ -67,6 +77,7 @@ pub fn lifecycle(
         session_event.LifecycleName(name),
       ),
       message: message,
+      recovery: recovery,
       tokens: session_tokens.zero_token_totals(),
     )
   hub.publish(event_hub, session_id, payload)
@@ -83,6 +94,7 @@ pub fn update_payload(
     turn: update.turn,
     pi_type: pi_type_for_update(update),
     message: update.message,
+    recovery: None,
     request_id: update.request_id,
     method: update.method,
     tool_name: update.tool_name,

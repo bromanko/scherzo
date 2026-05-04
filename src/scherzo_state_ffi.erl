@@ -1,5 +1,5 @@
 -module(scherzo_state_ffi).
--export([append_line/3, append_lines/3, fold_lines/3, with_ledger_lock/2]).
+-export([append_line/3, append_lines/3, fold_lines/3, with_ledger_lock/2, system_time_millisecond/0]).
 
 append_line(Path, Line, Fsync) ->
     LineBin = to_binary(Line),
@@ -47,6 +47,9 @@ fold_lines(Path, Initial, Step) ->
 
 with_ledger_lock(Key, Operation) ->
     global:trans({scherzo_ledger, to_binary(Key)}, Operation).
+
+system_time_millisecond() ->
+    erlang:system_time(millisecond).
 
 write_and_maybe_sync(IoDevice, ContentsBin, Fsync) ->
     case file:write(IoDevice, ContentsBin) of

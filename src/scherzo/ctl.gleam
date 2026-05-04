@@ -1,6 +1,7 @@
 import gleam/dynamic
 import gleam/int
 import gleam/io
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -10,6 +11,7 @@ import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/session/event
 import scherzo/session/reason as session_reason
+import scherzo/state/local_artifacts
 import scherzo/terminal/render
 import scherzo/terminal/style
 import scherzo/turn_telemetry
@@ -52,6 +54,17 @@ pub type Command {
     json: Bool,
     command: control_command.OperatorCommand,
   )
+  Cleanup(
+    control_file: Option(String),
+    root: Option(String),
+    json: Bool,
+    dry_run: Bool,
+    yes: Bool,
+  )
+  StateStatus(root: String, json: Bool)
+  StateArchiveOld(root: String, json: Bool, yes: Bool)
+  StateDiscardOld(root: String, json: Bool, yes: Bool)
+  StateReinitialize(root: String, json: Bool, yes: Bool)
 }
 
 pub type Error {
@@ -95,6 +108,8 @@ type Flags {
     raw: Bool,
     pretty: Bool,
     yes: Bool,
+    dry_run: Bool,
+    root: Option(String),
     reason: Option(String),
     cancel: Bool,
     value: Option(String),
@@ -135,6 +150,8 @@ fn default_flags() -> Flags {
     raw: False,
     pretty: False,
     yes: False,
+    dry_run: False,
+    root: None,
     reason: None,
     cancel: False,
     value: None,
@@ -147,7 +164,7 @@ fn default_flags() -> Flags {
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --yes                        Confirm destructive commands.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -156,7 +173,11 @@ fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
     ["--control-file", path, ..rest] ->
       parse_flags(rest, Flags(..flags, control_file: Some(path)))
     ["--control-file"] -> Error(UsageError("--control-file requires a path"))
+    ["--root", root, ..rest] ->
+      parse_flags(rest, Flags(..flags, root: Some(root)))
+    ["--root"] -> Error(UsageError("--root requires a workspace root"))
     ["--json", ..rest] -> parse_flags(rest, Flags(..flags, json: True))
+    ["--dry-run", ..rest] -> parse_flags(rest, Flags(..flags, dry_run: True))
     ["--raw", ..rest] -> parse_flags(rest, Flags(..flags, raw: True))
     ["--pretty", ..rest] -> parse_flags(rest, Flags(..flags, pretty: True))
     ["--verbose", ..rest] -> parse_flags(rest, Flags(..flags, verbose: True))
@@ -315,7 +336,43 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
         False, None ->
           Error(UsageError("ui respond requires --cancel or --value <text>"))
       }
+    "cleanup", [] ->
+      case flags.yes, flags.dry_run {
+        True, True ->
+          Error(UsageError("cleanup --yes cannot be combined with --dry-run"))
+        True, False ->
+          Ok(Cleanup(flags.control_file, flags.root, flags.json, False, True))
+        False, _ ->
+          Ok(Cleanup(flags.control_file, flags.root, flags.json, True, False))
+      }
+    "state", ["status"] -> {
+      use root <- try_ctl(required_root(flags))
+      Ok(StateStatus(root, flags.json))
+    }
+    "state", ["archive-old"] -> {
+      use root <- try_ctl(required_root(flags))
+      Ok(StateArchiveOld(root, flags.json, flags.yes))
+    }
+    "state", ["discard-old"] -> {
+      use root <- try_ctl(required_root(flags))
+      Ok(StateDiscardOld(root, flags.json, flags.yes))
+    }
+    "state", ["reinitialize"] -> {
+      use root <- try_ctl(required_root(flags))
+      Ok(StateReinitialize(root, flags.json, flags.yes))
+    }
+    "state", _ ->
+      Error(UsageError(
+        "state usage: state status|archive-old|discard-old|reinitialize --root <workspace-root>",
+      ))
     _, _ -> Error(UsageError("unknown or invalid ctl command: " <> name))
+  }
+}
+
+fn required_root(flags: Flags) -> Result(String, Error) {
+  case flags.root {
+    Some(root) -> Ok(root)
+    None -> Error(UsageError("state commands require --root <workspace-root>"))
   }
 }
 
@@ -501,6 +558,197 @@ pub fn run_with_deps(
             }
             Error(err) -> Error(client_error(err))
           }
+      }
+    }
+    Cleanup(control_path, root, json, dry_run, yes) ->
+      run_cleanup(control_path, root, json, dry_run, yes, output)
+    StateStatus(root, json) -> run_state_status(root, json, output)
+    StateArchiveOld(root, json, yes) ->
+      run_state_archive_old(root, json, yes, output)
+    StateDiscardOld(root, json, yes) ->
+      run_state_discard_old(root, json, yes, output)
+    StateReinitialize(root, json, yes) ->
+      run_state_reinitialize(root, json, yes, output)
+  }
+}
+
+fn run_cleanup(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  json_output: Bool,
+  dry_run: Bool,
+  yes: Bool,
+  output: Output,
+) -> Result(Nil, Error) {
+  use workspace_root <- try_ctl(cleanup_workspace_root(
+    control_path,
+    explicit_root,
+  ))
+  let now_ms = local_artifacts.now_ms()
+  let result = case dry_run || !yes {
+    True -> local_artifacts.inventory(workspace_root, now_ms, True)
+    False -> local_artifacts.apply_cleanup(workspace_root, now_ms)
+  }
+  case json_output {
+    True ->
+      output.line(
+        result |> local_artifacts.cleanup_result_to_json |> json.to_string,
+      )
+    False -> print_cleanup_result(result, output)
+  }
+  Ok(Nil)
+}
+
+fn cleanup_workspace_root(
+  control_path: Option(String),
+  explicit_root: Option(String),
+) -> Result(String, Error) {
+  case explicit_root {
+    Some(root) -> Ok(root)
+    None -> {
+      use control_file <- try_ctl(load_control_file(control_path))
+      Ok(control_file.workspace_root)
+    }
+  }
+}
+
+fn print_cleanup_result(
+  result: local_artifacts.CleanupResult,
+  output: Output,
+) -> Nil {
+  output.line(local_artifacts.cleanup_summary(result))
+  output.line("transcript_root_status: " <> result.transcript_root_status)
+  output.line("roots:")
+  list.each(result.roots, fn(root) { output.line("  " <> root) })
+  print_decision_group("would_delete", result.would_delete, output)
+  print_decision_group("deleted", result.deleted, output)
+  print_decision_group("retained", result.retained, output)
+  case result.warnings {
+    [] -> Nil
+    _ -> {
+      output.line("warnings:")
+      list.each(result.warnings, fn(warning) { output.line("  " <> warning) })
+    }
+  }
+}
+
+fn print_decision_group(
+  name: String,
+  decisions: List(local_artifacts.LocalArtifactDecision),
+  output: Output,
+) -> Nil {
+  output.line(name <> ":")
+  case decisions {
+    [] -> output.line("  -")
+    _ ->
+      list.each(decisions, fn(decision) {
+        output.line(
+          "  "
+          <> decision.id
+          <> " "
+          <> event.cleanup_phase_to_string(decision.cleanup_phase)
+          <> " "
+          <> decision.display_path,
+        )
+        output.line("    reason: " <> decision.reason)
+      })
+  }
+}
+
+fn run_state_status(
+  root: String,
+  json_output: Bool,
+  output: Output,
+) -> Result(Nil, Error) {
+  let status = local_artifacts.inspect_state(root)
+  case json_output {
+    True ->
+      output.line(
+        status |> local_artifacts.state_status_to_json |> json.to_string,
+      )
+    False -> print_state_status(status, output)
+  }
+  Ok(Nil)
+}
+
+fn run_state_archive_old(
+  root: String,
+  json_output: Bool,
+  yes: Bool,
+  output: Output,
+) -> Result(Nil, Error) {
+  let result =
+    local_artifacts.archive_old_state(root, yes, local_artifacts.now_ms())
+  print_state_mutation(result, json_output, output)
+  Ok(Nil)
+}
+
+fn run_state_discard_old(
+  root: String,
+  json_output: Bool,
+  yes: Bool,
+  output: Output,
+) -> Result(Nil, Error) {
+  let result =
+    local_artifacts.discard_old_state(root, yes, local_artifacts.now_ms())
+  print_state_mutation(result, json_output, output)
+  Ok(Nil)
+}
+
+fn run_state_reinitialize(
+  root: String,
+  json_output: Bool,
+  yes: Bool,
+  output: Output,
+) -> Result(Nil, Error) {
+  let result = local_artifacts.reinitialize_state(root, yes)
+  print_state_mutation(result, json_output, output)
+  Ok(Nil)
+}
+
+fn print_state_status(
+  status: local_artifacts.StateStatusResult,
+  output: Output,
+) -> Nil {
+  output.line("state: " <> state_status_name(status.status))
+  output.line("message: " <> status.message)
+  output.line("workspace_root: " <> status.workspace_root)
+  output.line("ledger_dir: " <> status.ledger_dir)
+  case status.status {
+    local_artifacts.StateUnsupported(_, _) -> {
+      output.line("recovery: old_state_reset_required")
+      output.line("safe actions: archive-old, discard-old, reinitialize")
+    }
+    _ -> output.line("recovery: -")
+  }
+}
+
+fn state_status_name(status: local_artifacts.StateStatus) -> String {
+  case status {
+    local_artifacts.StateCurrent -> "current"
+    local_artifacts.StateUnsupported(_, _) -> "unsupported"
+    local_artifacts.StateCorrupt(_) -> "corrupt"
+    local_artifacts.StateMissing -> "missing"
+    local_artifacts.StateArchived -> "archived"
+  }
+}
+
+fn print_state_mutation(
+  result: local_artifacts.StateMutationResult,
+  json_output: Bool,
+  output: Output,
+) -> Nil {
+  case json_output {
+    True ->
+      output.line(
+        result |> local_artifacts.state_mutation_to_json |> json.to_string,
+      )
+    False -> {
+      output.line(result.action <> " " <> result.status)
+      output.line("message: " <> result.message)
+      case result.archive_path {
+        Some(path) -> output.line("archive_path: " <> path)
+        None -> Nil
       }
     }
   }
@@ -884,24 +1132,34 @@ fn print_raw_request(
 
 const ps_session_width = 20
 
-const ps_issue_width = 8
+const ps_issue_width = 6
 
-const ps_turn_width = 15
+const ps_turn_width = 14
 
-const ps_status_width = 14
+const ps_status_width = 11
+
+const ps_recovery_width = 8
 
 fn print_sessions_table(
   sessions: List(event.SessionSummary),
   now_ms: Int,
   output: Output,
 ) -> Nil {
-  output.line(ps_table_row("SESSION", "ISSUE", "TURN", "STATUS", "LAST EVENT"))
+  output.line(ps_table_row(
+    "SESSION",
+    "ISSUE",
+    "TURN",
+    "STATUS",
+    "RECOVERY",
+    "LAST EVENT",
+  ))
   list.each(sessions, fn(summary) {
     output.line(ps_table_row(
       ellipsize_middle(summary.display_name, ps_session_width),
       ellipsize_middle(summary.issue_identifier, ps_issue_width),
       ellipsize_middle(turn_summary_text(summary), ps_turn_width),
       ps_status_to_string(summary.status),
+      ps_recovery_to_string(summary.recovery),
       format_last_event_age(now_ms, summary.last_event_at_ms),
     ))
   })
@@ -981,6 +1239,13 @@ fn ps_status_to_string(status: event.SessionStatus) -> String {
   }
 }
 
+fn ps_recovery_to_string(recovery: Option(event.RecoveryInfo)) -> String {
+  case recovery {
+    Some(recovery) -> event.recovery_status_to_string(recovery.status)
+    None -> "-"
+  }
+}
+
 fn ps_exit_reason_to_string(reason: session_reason.WorkerExitReason) -> String {
   case reason {
     session_reason.Normal -> "success"
@@ -997,6 +1262,7 @@ fn ps_table_row(
   issue: String,
   turn: String,
   status: String,
+  recovery: String,
   last_event: String,
 ) -> String {
   pad_right(session_name, ps_session_width)
@@ -1006,6 +1272,8 @@ fn ps_table_row(
   <> pad_left(turn, ps_turn_width)
   <> "  "
   <> pad_right(status, ps_status_width)
+  <> "  "
+  <> pad_right(recovery, ps_recovery_width)
   <> "  "
   <> last_event
 }
@@ -1103,6 +1371,76 @@ fn print_session(summary: event.SessionSummary, output: Output) -> Nil {
   print_optional_reason(summary.last_turn_reason, output)
   output.line("workspace: " <> summary.workspace_path)
   output.line("last_event_at_ms: " <> int.to_string(summary.last_event_at_ms))
+  print_recovery_section(summary.recovery, output)
+}
+
+fn print_recovery_section(
+  recovery: Option(event.RecoveryInfo),
+  output: Output,
+) -> Nil {
+  case recovery {
+    None -> output.line("recovery: -")
+    Some(recovery) -> {
+      output.line("recovery:")
+      output.line(
+        "  status: " <> event.recovery_status_to_string(recovery.status),
+      )
+      output.line("  source: " <> recovery.source)
+      case recovery.message {
+        Some(message) -> output.line("  reason: " <> message)
+        None -> Nil
+      }
+      let actions =
+        recovery.safe_actions
+        |> list.map(event.recovery_action_to_string)
+        |> string.join(with: ", ")
+      output.line("  safe_actions: " <> actions)
+      print_optional(
+        "  current_pi_session_id",
+        recovery.current_pi_session_id,
+        output,
+      )
+      print_optional("  workflow_run_id", recovery.workflow_run_id, output)
+      print_optional("  workflow_step_id", recovery.workflow_step_id, output)
+      print_optional(
+        "  previous_pi_session_id",
+        recovery.previous_pi_session_id,
+        output,
+      )
+      print_optional("  park_reason", recovery.park_reason, output)
+      print_optional(
+        "  park_release_policy",
+        recovery.park_release_policy,
+        output,
+      )
+      print_optional_int("  parked_at_ms", recovery.parked_at_ms, output)
+      print_optional("  drift_kind", recovery.drift_kind, output)
+      print_optional_int(
+        "  retention_until_ms",
+        recovery.retention_until_ms,
+        output,
+      )
+      print_optional_int(
+        "  cleanup_eligible_at_ms",
+        recovery.cleanup_eligible_at_ms,
+        output,
+      )
+      case recovery.cleanup_phase {
+        Some(phase) ->
+          output.line(
+            "  cleanup_phase: " <> event.cleanup_phase_to_string(phase),
+          )
+        None -> Nil
+      }
+    }
+  }
+}
+
+fn print_optional(label: String, value: Option(String), output: Output) -> Nil {
+  case value {
+    Some(value) -> output.line(label <> ": " <> value)
+    None -> Nil
+  }
 }
 
 fn print_command_result(

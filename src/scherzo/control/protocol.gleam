@@ -898,6 +898,11 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
     None,
     decode.optional(decode.string),
   )
+  use recovery <- decode.optional_field(
+    "recovery",
+    None,
+    decode.optional(recovery_info_decoder()),
+  )
   use current_turn <- decode.field("current_turn", decode.int)
   use current_turn_status_name <- decode.optional_field(
     "current_turn_status",
@@ -946,6 +951,7 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
         workspace_path: workspace_path,
         pi_session_id: pi_session_id,
         status: status,
+        recovery: recovery,
         current_turn: current_turn,
         current_turn_status: current_turn_status,
         current_turn_started_at_ms: current_turn_started_at_ms,
@@ -968,6 +974,7 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
           workspace_path: workspace_path,
           pi_session_id: pi_session_id,
           status: event.Exited(session_reason.Failed),
+          recovery: recovery,
           current_turn: current_turn,
           current_turn_status: current_turn_status,
           current_turn_started_at_ms: current_turn_started_at_ms,
@@ -981,6 +988,133 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
         ),
         expected: "SessionSummary",
       )
+  }
+}
+
+fn recovery_info_decoder() -> decode.Decoder(event.RecoveryInfo) {
+  use status_name <- decode.field("status", decode.string)
+  use source <- decode.optional_field("source", "unknown", decode.string)
+  use message <- decode.optional_field(
+    "message",
+    None,
+    decode.optional(decode.string),
+  )
+  use safe_actions <- decode.optional_field(
+    "safe_actions",
+    [],
+    decode.list(of: recovery_action_decoder()),
+  )
+  use workflow_run_id <- decode.optional_field(
+    "workflow_run_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use workflow_step_id <- decode.optional_field(
+    "workflow_step_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use current_pi_session_id <- decode.optional_field(
+    "current_pi_session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use previous_pi_session_id <- decode.optional_field(
+    "previous_pi_session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use park_reason <- decode.optional_field(
+    "park_reason",
+    None,
+    decode.optional(decode.string),
+  )
+  use park_release_policy <- decode.optional_field(
+    "park_release_policy",
+    None,
+    decode.optional(decode.string),
+  )
+  use parked_at_ms <- decode.optional_field(
+    "parked_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use drift_kind <- decode.optional_field(
+    "drift_kind",
+    None,
+    decode.optional(decode.string),
+  )
+  use retention_until_ms <- decode.optional_field(
+    "retention_until_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use cleanup_eligible_at_ms <- decode.optional_field(
+    "cleanup_eligible_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use cleanup_phase <- decode.optional_field(
+    "cleanup_phase",
+    None,
+    decode.optional(cleanup_phase_decoder()),
+  )
+  case event.recovery_status_from_string(status_name) {
+    Some(status) ->
+      decode.success(event.RecoveryInfo(
+        status: status,
+        source: source,
+        message: message,
+        safe_actions: safe_actions,
+        workflow_run_id: workflow_run_id,
+        workflow_step_id: workflow_step_id,
+        current_pi_session_id: current_pi_session_id,
+        previous_pi_session_id: previous_pi_session_id,
+        park_reason: park_reason,
+        park_release_policy: park_release_policy,
+        parked_at_ms: parked_at_ms,
+        drift_kind: drift_kind,
+        retention_until_ms: retention_until_ms,
+        cleanup_eligible_at_ms: cleanup_eligible_at_ms,
+        cleanup_phase: cleanup_phase,
+      ))
+    None ->
+      decode.failure(
+        event.RecoveryInfo(
+          status: event.Recovered,
+          source: source,
+          message: message,
+          safe_actions: safe_actions,
+          workflow_run_id: workflow_run_id,
+          workflow_step_id: workflow_step_id,
+          current_pi_session_id: current_pi_session_id,
+          previous_pi_session_id: previous_pi_session_id,
+          park_reason: park_reason,
+          park_release_policy: park_release_policy,
+          parked_at_ms: parked_at_ms,
+          drift_kind: drift_kind,
+          retention_until_ms: retention_until_ms,
+          cleanup_eligible_at_ms: cleanup_eligible_at_ms,
+          cleanup_phase: cleanup_phase,
+        ),
+        expected: "RecoveryInfo",
+      )
+  }
+}
+
+fn recovery_action_decoder() -> decode.Decoder(event.RecoveryAction) {
+  use value <- decode.then(decode.string)
+  case event.recovery_action_from_string(value) {
+    Some(action) -> decode.success(action)
+    None -> decode.failure(event.Inspect, expected: "RecoveryAction")
+  }
+}
+
+fn cleanup_phase_decoder() -> decode.Decoder(event.CleanupPhase) {
+  use value <- decode.then(decode.string)
+  case event.cleanup_phase_from_string(value) {
+    Some(phase) -> decode.success(phase)
+    None -> decode.failure(event.Retained, expected: "CleanupPhase")
   }
 }
 
@@ -1028,6 +1162,11 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
     "message",
     None,
     decode.optional(decode.string),
+  )
+  use recovery <- decode.optional_field(
+    "recovery",
+    None,
+    decode.optional(recovery_info_decoder()),
   )
   use request_id <- decode.optional_field(
     "request_id",
@@ -1106,6 +1245,7 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
       turn: turn,
       pi_type: pi_type,
       message: message,
+      recovery: recovery,
       request_id: request_id,
       method: method,
       tool_name: tool_name,

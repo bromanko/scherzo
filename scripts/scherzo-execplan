@@ -108,7 +108,13 @@ validate_plan() {
 
 validate_command() {
   require_command jj
-  plan=$(find_plan_path)
+  explicit_plan=${1:-}
+  if [ -n "$explicit_plan" ]; then
+    [ -f "$explicit_plan" ] || fail "plan file does not exist: $explicit_plan"
+    plan=$explicit_plan
+  else
+    plan=$(find_plan_path)
+  fi
   validate_plan "$plan"
   echo "PLAN_PATH=$plan"
   echo "VALIDATION=ok"
@@ -673,7 +679,7 @@ PY
 
 case "${1:-}" in
   validate)
-    validate_command
+    validate_command "${2:-}"
     ;;
   create-pr)
     create_pr_command

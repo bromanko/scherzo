@@ -55,6 +55,7 @@ fn session_summary_with_status(
     workspace_path: "/tmp/workspace",
     pi_session_id: None,
     status: status,
+    recovery: None,
     current_turn: 1,
     current_turn_status: None,
     current_turn_started_at_ms: None,
@@ -222,6 +223,16 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       False,
       "ABC-1",
     ))
+  assert ctl.parse(["cleanup"])
+    == Ok(ctl.Cleanup(None, None, False, True, False))
+  assert ctl.parse(["cleanup", "--dry-run", "--json", "--root", "work"])
+    == Ok(ctl.Cleanup(None, Some("work"), True, True, False))
+  assert ctl.parse(["cleanup", "--yes", "--root", "work"])
+    == Ok(ctl.Cleanup(None, Some("work"), False, False, True))
+  assert ctl.parse(["state", "status", "--root", "work", "--json"])
+    == Ok(ctl.StateStatus("work", True))
+  assert ctl.parse(["state", "archive-old", "--root", "work", "--yes"])
+    == Ok(ctl.StateArchiveOld("work", False, True))
 }
 
 pub fn parse_operator_commands_test() {
@@ -305,10 +316,14 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "pause")
   assert string.contains(usage, "abort <session-ref> --yes")
   assert string.contains(usage, "ui respond")
+  assert string.contains(usage, "cleanup")
+  assert string.contains(usage, "state status")
   assert string.contains(usage, "--control-file <path>")
+  assert string.contains(usage, "--root <workspace-root>")
   assert string.contains(usage, "--json")
   assert string.contains(usage, "--verbose")
   assert string.contains(usage, "--since-cursor <n>")
+  assert string.contains(usage, "--dry-run")
 }
 
 pub fn ps_human_table_uses_display_name_and_matches_header_order_test() {
@@ -340,7 +355,7 @@ pub fn ps_human_table_uses_display_name_and_matches_header_order_test() {
   let transcript = drain_output(subject)
   let assert [header, row] = output_lines(transcript)
   assert table_columns(header)
-    == ["SESSION", "ISSUE", "TURN", "STATUS", "LAST", "EVENT"]
+    == ["SESSION", "ISSUE", "TURN", "STATUS", "RECOVERY", "LAST", "EVENT"]
   assert string.contains(header, "LAST EVENT")
   assert !string.contains(transcript, "LAST_EVENT")
   assert string.contains(transcript, "LIV-43")
@@ -353,6 +368,7 @@ pub fn ps_human_table_uses_display_name_and_matches_header_order_test() {
     turn_label,
     turn_col,
     status_col,
+    recovery_col,
     age_value,
     age_unit,
   ] = table_columns(row)
@@ -361,6 +377,7 @@ pub fn ps_human_table_uses_display_name_and_matches_header_order_test() {
   assert turn_label == "turn"
   assert turn_col == "7"
   assert status_col == "running"
+  assert recovery_col == "-"
   assert age_value == "12s"
   assert age_unit == "ago"
 }
@@ -403,6 +420,104 @@ pub fn ps_human_table_shortens_long_session_names_and_formats_last_event_age_tes
 
   let rows = output_lines(transcript)
   assert list.all(rows, fn(row) { string.length(row) <= 80 })
+}
+
+pub fn ps_and_session_human_output_show_recovery_metadata_test() {
+  let path = "test/tmp/ctl-ps/recovery-control.json"
+  write_control_file(path)
+  let interrupted =
+    event.RecoveryInfo(
+      status: event.Interrupted,
+      source: "projection.run_interrupted",
+      message: Some("daemon_restart"),
+      safe_actions: [event.Inspect, event.ViewEvents, event.Retry, event.Park],
+      workflow_run_id: Some("run-1"),
+      workflow_step_id: None,
+      current_pi_session_id: Some("pi-current"),
+      previous_pi_session_id: None,
+      park_reason: None,
+      park_release_policy: None,
+      parked_at_ms: None,
+      drift_kind: None,
+      retention_until_ms: None,
+      cleanup_eligible_at_ms: None,
+      cleanup_phase: None,
+    )
+  let parked =
+    event.RecoveryInfo(
+      ..interrupted,
+      status: event.Parked,
+      source: "projection.parked_issue",
+      message: Some("operator hold"),
+      safe_actions: [event.Inspect, event.ViewEvents, event.Unpark],
+      workflow_run_id: None,
+      current_pi_session_id: None,
+      park_reason: Some("operator hold"),
+      park_release_policy: Some("explicit_unpark_only"),
+      parked_at_ms: Some(1234),
+    )
+  let cleanup =
+    event.RecoveryInfo(
+      ..interrupted,
+      status: event.Cleanup,
+      source: "retention.classifier",
+      message: Some("retention expired"),
+      safe_actions: [event.Inspect, event.CleanupDryRunAction],
+      cleanup_phase: Some(event.Eligible),
+      retention_until_ms: Some(2000),
+      cleanup_eligible_at_ms: Some(2000),
+    )
+  let sessions = [
+    event.SessionSummary(
+      ..session_summary("session-1", ps_now_ms - 1000),
+      recovery: Some(interrupted),
+    ),
+    event.SessionSummary(
+      ..session_summary("session-2", ps_now_ms - 1000),
+      recovery: Some(parked),
+    ),
+    event.SessionSummary(
+      ..session_summary("session-3", ps_now_ms - 1000),
+      recovery: Some(cleanup),
+    ),
+    session_summary("session-4", ps_now_ms - 1000),
+  ]
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Ps(Some(path), False),
+      ps_deps(sessions, ps_now_ms, ""),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "RECOVERY")
+  assert string.contains(transcript, "interrupted")
+  assert string.contains(transcript, "parked")
+  assert string.contains(transcript, "cleanup")
+  assert string.contains(transcript, "-")
+
+  let subject = process.new_subject()
+  let result =
+    ctl.run_with_deps(
+      ctl.Session(Some(path), False, "session-1"),
+      session_ref_deps(sessions),
+      output(subject),
+    )
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "recovery:")
+  assert string.contains(transcript, "status: interrupted")
+  assert string.contains(transcript, "source: projection.run_interrupted")
+  assert string.contains(transcript, "reason: daemon_restart")
+  assert string.contains(
+    transcript,
+    "safe_actions: inspect, view_events, retry, park",
+  )
+  assert string.contains(transcript, "current_pi_session_id: pi-current")
+  assert string.contains(transcript, "workflow_run_id: run-1")
 }
 
 pub fn ps_human_table_shows_exit_outcomes_test() {
@@ -496,6 +611,7 @@ pub fn ps_human_table_ellipsizes_long_display_name_without_shifting_columns_test
     turn_label,
     turn_col,
     status_col,
+    recovery_col,
     age_value,
     age_unit,
   ] = table_columns(row)
@@ -505,6 +621,7 @@ pub fn ps_human_table_ellipsizes_long_display_name_without_shifting_columns_test
   assert turn_label == "turn"
   assert turn_col == "42"
   assert status_col == "running"
+  assert recovery_col == "-"
   assert age_value == "3m"
   assert age_unit == "ago"
   assert string.length(row) <= 80

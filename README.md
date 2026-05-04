@@ -292,6 +292,78 @@ scripts/scherzoctl ui respond <session-id> ui-1 --value ok
 
 When YAML DAG agent steps run, Scherzo creates concrete step sessions such as `ABC-123-42-1-implement`. Operator prompts sent to the top-level issue session are routed to the active agent step when that step exposes a command subject.
 
+## Workflow recovery operator status
+
+Session summaries expose live worker status and recovery meaning separately. The existing `status` and `exit_reason` fields still describe the current or final worker process state. The additive `recovery` field is `null` when no recovery fact is known, and is an object when Scherzo can project a backed durable fact into operator guidance. Human `scripts/scherzoctl ps` includes a `RECOVERY` column; JSON output includes the same nullable object.
+
+Backed statuses in this release are `recovered`, `interrupted`, `parked`, `cleanup`, and offline `old_state_reset_required`. `interrupted` means a run was active without a durable finish record; live Erlang ports and live pi processes do not survive a daemon restart. `parked` means dispatch is suppressed until the issue is unparked or its configured release policy fires. `cleanup` means local artifacts are in a retention phase, not that the workflow itself succeeded. `old_state_reset_required` is reported by offline state commands when local ledger or snapshot schema markers are unsupported by this tree.
+
+The reserved strings `resumed`, `inspection_needed`, `blocked`, and `drift_detected` are documented vocabulary only. Scherzo does not emit them from real recovery projection until durable source facts exist for workflow checkpoints or previous pi sessions, operator inspection holds, unsafe side-effecting step holds, or drift rejection. Automation must not treat those reserved strings as observable in this release.
+
+Example JSON shape:
+
+```json
+{
+  "session_id": "ABC-123-1000-1",
+  "status": "running",
+  "exit_reason": null,
+  "pi_session_id": "pi-current",
+  "recovery": {
+    "status": "interrupted",
+    "source": "projection.run_interrupted",
+    "message": "daemon_restart",
+    "safe_actions": ["inspect", "view_events", "retry", "park"],
+    "workflow_run_id": "ABC-123-1000-1",
+    "workflow_step_id": null,
+    "current_pi_session_id": "pi-current",
+    "previous_pi_session_id": null,
+    "park_reason": null,
+    "park_release_policy": null,
+    "parked_at_ms": null,
+    "drift_kind": null,
+    "retention_until_ms": null,
+    "cleanup_eligible_at_ms": null,
+    "cleanup_phase": null
+  }
+}
+```
+
+## Local retention and cleanup
+
+Local cleanup is conservative and starts as a dry run. Run:
+
+```sh
+scripts/scherzoctl cleanup
+scripts/scherzoctl cleanup --dry-run
+scripts/scherzoctl cleanup --json --dry-run
+```
+
+Dry run classifies verified artifacts under `<workspace-root>/.scherzo-state/`, reports `would_delete`, `retained`, `warnings`, `roots`, and `transcript_root_status`, and deletes nothing. Unknown, malformed, unsupported, missing-owner, missing-terminal-time, interrupted, parked, old-state-reset-required, path-unsafe, or symlink-unsafe artifacts are retained with warnings. Pi transcript deletion is unavailable unless a concrete transcript root is verified; transcript data may contain prompts, tool inputs, tool outputs, and Linear excerpts.
+
+Apply requires confirmation:
+
+```sh
+scripts/scherzoctl cleanup --yes
+scripts/scherzoctl cleanup --json --yes
+```
+
+Apply first performs the same inventory, aborts on root containment or symlink safety failures, writes redacted tombstones under `<workspace-root>/.scherzo-state/cleanup/tombstones/`, and deletes only artifacts classified eligible under verified `.scherzo-state` roots. Deletion is irreversible unless you have an external backup; tombstones record identifiers, display paths, reasons, and results, not artifact content. Default retention is 30 days for terminal workflow artifacts, 14 days for pi transcripts when a transcript root is available, and 30 days for cleanup tombstones.
+
+Recovery and cleanup logs use structured events such as `workflow_recovery_status` and `workflow_cleanup_completed`. Recovery messages, cleanup warnings, and state reasons are redacted and truncated before display or logging; do not put API keys, raw pi JSON, full prompts, full Linear comment bodies, or unredacted tool payloads in the ledger or cleanup metadata.
+
+## Unsupported old local state
+
+Unsupported local durable state may prevent the daemon from starting, so state maintenance is available offline and does not require Linear, pi, or a running control server:
+
+```sh
+scripts/scherzoctl state status --root <workspace-root> --json
+scripts/scherzoctl state archive-old --root <workspace-root> --yes
+scripts/scherzoctl state discard-old --root <workspace-root> --yes
+scripts/scherzoctl state reinitialize --root <workspace-root> --yes
+```
+
+`state status` is read-only and reports `current`, `unsupported`, `corrupt`, `missing`, or `archived`. `archive-old` moves only state classified as unsupported into `<workspace-root>/.scherzo-state/archive/old-state/<id>/ledger/`. `discard-old` deletes only unsupported active ledger state and is irreversible. Corrupt or malformed state is retained for manual inspection. `reinitialize` creates the current empty layout after old state has been archived or discarded; it does not synthesize recovered runs or fake snapshots.
+
 ## Using pi as an operator UI
 
 The repository includes a project pi skill at `.pi/skills/scherzo-operator` for supervising a running daemon through `scripts/scherzoctl` with `--json`. Start Scherzo daemon mode in one terminal, then copy the control file path from the `control_server_started` log line or export the repository default when that file exists:

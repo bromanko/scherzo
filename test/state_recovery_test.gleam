@@ -5,12 +5,87 @@ import gleam/option.{None, Some}
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
 import scherzo/orchestrator/state as orchestrator_state
+import scherzo/session/event as session_event
+import scherzo/session/recovery as session_recovery
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+
+pub fn current_projection_sources_emit_only_backed_recovery_metadata_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "run-started",
+        1000,
+        record.RunStarted(
+          run_id: "run-1",
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          workspace_path: ".scherzo/workspaces/ABC-1",
+        ),
+      ),
+      record.with_id(
+        "run-interrupted",
+        2000,
+        record.RunInterrupted(
+          run_id: "run-2",
+          issue_id: "issue-2",
+          reason: "daemon_restart",
+        ),
+      ),
+      record.with_id(
+        "park",
+        3000,
+        record.IssueParkedV2(
+          issue_id: "issue-3",
+          issue_identifier: "ABC-3",
+          reason: "operator hold",
+          release_policy: "explicit_unpark_only",
+          issue_fingerprint: "fingerprint",
+          observed_updated_at_ms: 2900,
+        ),
+      ),
+      record.with_id(
+        "run-finished",
+        4000,
+        record.RunFinished(
+          run_id: "run-4",
+          issue_id: "issue-4",
+          classification: "success",
+          token_total: 10,
+          turns: 1,
+        ),
+      ),
+    ])
+
+  let assert Ok(running) = dict.get(projection.runs, "run-1")
+  let assert Some(running_info) =
+    session_recovery.interrupted_run("run-1", running, None)
+  assert running_info.status == session_event.Interrupted
+  assert running_info.workflow_run_id == Some("run-1")
+  assert running_info.workflow_step_id == None
+  assert running_info.previous_pi_session_id == None
+  assert running_info.source == "projection.run_running"
+
+  let assert Ok(interrupted) = dict.get(projection.runs, "run-2")
+  let assert Some(interrupted_info) =
+    session_recovery.interrupted_run("run-2", interrupted, Some("pi-current"))
+  assert interrupted_info.status == session_event.Interrupted
+  assert interrupted_info.current_pi_session_id == Some("pi-current")
+  assert interrupted_info.previous_pi_session_id == None
+
+  let assert Ok(parked) = dict.get(projection.parked_issues, "issue-3")
+  let parked_info = session_recovery.parked_issue(parked)
+  assert parked_info.status == session_event.Parked
+  assert parked_info.park_reason == Some("operator hold")
+  assert parked_info.park_release_policy == Some("explicit_unpark_only")
+
+  let assert Ok(finished) = dict.get(projection.runs, "run-4")
+  assert session_recovery.interrupted_run("run-4", finished, None) == None
+}
 
 pub fn unfinished_run_becomes_interrupted_retry_test() {
   let projection =
