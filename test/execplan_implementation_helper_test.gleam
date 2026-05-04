@@ -219,6 +219,81 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   )
 }
 
+pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test() {
+  let dir = "test/tmp/execplan-implementation-publish-linking"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md",
+      "# Make workflow recovery visible and safe for operators\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation.json",
+      "{\n"
+        <> "  \"source_kind\": \"execplan\",\n"
+        <> "  \"issue_identifier\": \"LIV-65\",\n"
+        <> "  \"issue_title\": \"Implement plan: workflow recovery operator UX and retention\",\n"
+        <> "  \"issue_url\": \"https://linear.example/LIV-65\",\n"
+        <> "  \"plan_path\": \"docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md\",\n"
+        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-validation.json",
+      "{\"status\": \"passed\", \"commands\": []}\n",
+    )
+  write_fake_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(jj_log, "describe -m feat: implement liv-65")
+  assert string.contains(
+    jj_log,
+    "bookmark set scherzo/execplan-implementation/liv-65-implement-plan",
+  )
+  assert !string.contains(jj_log, "scherzo/execplan-implementation/liv-58")
+  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
+  assert string.contains(
+    gh_log,
+    "--head scherzo/execplan-implementation/liv-65-implement-plan",
+  )
+  assert string.contains(
+    gh_log,
+    "--title Implement LIV-65: workflow recovery operator UX and retention",
+  )
+  assert !string.contains(gh_log, "liv-58-workflow-recovery")
+  let assert Ok(body) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-pr-body.md")
+  assert string.contains(
+    body,
+    "Issue: [LIV-65: Implement plan: workflow recovery operator UX and retention](https://linear.example/LIV-65)",
+  )
+  assert string.contains(
+    body,
+    "Source ExecPlan: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
+  )
+  let assert Ok(publish_json) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
+  assert string.contains(publish_json, "\"issue_identifier\": \"LIV-65\"")
+}
+
 pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
   let dir = "test/tmp/execplan-publish-normalize"
   reset_dir(dir)

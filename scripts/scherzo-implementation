@@ -748,16 +748,58 @@ def ticket_slug(metadata: dict[str, Any]) -> str:
     return value[:60].strip("-") or "ticket"
 
 
+def execplan_implementation_slug(metadata: dict[str, Any]) -> str:
+    # Linear's GitHub integration is most reliable when the implementation
+    # issue key appears in the branch name. Avoid deriving execplan-
+    # implementation branches from the source plan filename because those
+    # filenames often contain the planning ticket key instead.
+    identifier = sanitize_ref_part(metadata.get("issue_identifier") or "")
+    title = sanitize_ref_part(metadata.get("issue_title") or "")
+    value = "-".join(part for part in [identifier, title] if part)
+    if value:
+        return value[:60].strip("-") or "execplan-implementation"
+    plan_path = metadata["plan_path"]
+    return sanitize_ref_part(Path(plan_path).stem)[:60] or "plan"
+
+
+def implementation_subject(title: str, fallback: str) -> str:
+    value = (title or fallback).strip()
+    for pattern in [r"(?i)^implement\s+plan\s*:\s*", r"(?i)^implement\s*:\s*"]:
+        stripped = re.sub(pattern, "", value, count=1).strip()
+        if stripped != value:
+            return stripped or value
+    return value or fallback
+
+
+def format_issue_line(issue_identifier: str, issue_title: str, issue_url: str) -> str:
+    if issue_identifier and issue_title and issue_url:
+        return f"Issue: [{issue_identifier}: {issue_title}]({issue_url})"
+    if issue_identifier and issue_title:
+        return f"Issue: {issue_identifier}: {issue_title}"
+    if issue_identifier:
+        return f"Issue: {issue_identifier}"
+    return "Issue: Linear issue"
+
+
 def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]:
     plan_path = metadata["plan_path"]
-    slug = sanitize_ref_part(Path(plan_path).stem)[:60] or "plan"
+    issue_identifier = metadata.get("issue_identifier") or ""
+    issue_title = metadata.get("issue_title") or plan_title(plan_path)
+    issue_url = metadata.get("issue_url") or ""
+    slug = execplan_implementation_slug(metadata)
     branch_prefix = "scherzo/execplan-implementation"
-    description = f"feat: implement {slug}"
-    title = plan_title(plan_path)
-    pr_title = title if title.lower().startswith("implement") else "Implement: " + title
+    description = f"feat: implement {sanitize_ref_part(issue_identifier) or slug}"
+    subject = implementation_subject(issue_title, plan_title(plan_path))
+    pr_title = (
+        f"Implement {issue_identifier}: {subject}"
+        if issue_identifier
+        else subject if subject.lower().startswith("implement")
+        else "Implement: " + subject
+    )
     body = (
-        "Implements an ExecPlan through Scherzo's `workflow:execplan-implementation` dogfood workflow.\n\n"
-        f"Plan: `{plan_path}`\n\n"
+        "Implements a Linear issue through Scherzo's `workflow:execplan-implementation` dogfood workflow.\n\n"
+        f"{format_issue_line(issue_identifier, issue_title, issue_url)}\n\n"
+        f"Source ExecPlan: `{plan_path}`\n\n"
         "Validation completed before publication:\n\n"
         "- `direnv exec . gleam format --check src test`\n"
         "- `direnv exec . gleam test`\n\n"
@@ -774,10 +816,10 @@ def ticket_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]
     branch_prefix = "scherzo/implementation"
     description = f"feat: implement {sanitize_ref_part(issue_identifier) or slug}"
     pr_title = f"Implement {issue_identifier}: {issue_title}"
-    issue_line = f"Issue: [{issue_identifier}: {issue_title}]({issue_url})" if issue_url else f"Issue: {issue_identifier}: {issue_title}"
+    linear_issue_line = format_issue_line(issue_identifier, issue_title, issue_url)
     body = (
         "Implements a Linear ticket through Scherzo's `workflow:implementation` dogfood workflow.\n\n"
-        f"{issue_line}\n\n"
+        f"{linear_issue_line}\n\n"
         "Source: Linear ticket title, description, labels, and recent comments. No ExecPlan is required for this workflow.\n\n"
         "Validation completed before publication:\n\n"
         "- `direnv exec . gleam format --check src test`\n"
@@ -796,7 +838,7 @@ def publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str, str, s
         slug = ticket_slug(metadata)
     elif source_kind == "execplan":
         branch_prefix, description, pr_title, body = execplan_publish_values(metadata)
-        slug = sanitize_ref_part(Path(metadata["plan_path"]).stem)[:60] or "plan"
+        slug = execplan_implementation_slug(metadata)
     else:
         fail(f"unknown source_kind in {METADATA_PATH}: {source_kind}")
     return source_kind, branch_prefix, slug, description, pr_title, body
@@ -872,6 +914,7 @@ def publish_command() -> None:
     }
     if source_kind == "execplan":
         publish["plan_path"] = metadata["plan_path"]
+        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
     else:
         publish["issue_identifier"] = metadata.get("issue_identifier") or ""
     write_json(PUBLISH_PATH, publish)
