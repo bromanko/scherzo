@@ -6,6 +6,7 @@ import gleam/otp/actor
 import scherzo/session/event
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub const default_max_events_per_session = 2000
 
@@ -385,6 +386,7 @@ fn publish_payload(
     Error(_) -> state
     Ok(summary) -> {
       let now = state.now_ms()
+      let #(summary, payload) = apply_publish_payload(summary, payload, now)
       let stored_event =
         event.SessionEvent(
           cursor: state.next_cursor,
@@ -405,7 +407,6 @@ fn publish_payload(
         Ok(value) -> value
         Error(_) -> False
       }
-      let summary = update_summary_after_payload(summary, payload, now)
       State(
         ..state,
         summaries: dict.insert(state.summaries, session_id, summary),
@@ -422,6 +423,17 @@ fn publish_payload(
   }
 }
 
+fn apply_publish_payload(
+  summary: event.SessionSummary,
+  payload: event.EventPayload,
+  now: Int,
+) -> #(event.SessionSummary, event.EventPayload) {
+  case payload.kind {
+    event.Turn -> apply_turn_payload(summary, payload, now)
+    _ -> #(update_summary_after_payload(summary, payload, now), payload)
+  }
+}
+
 fn update_summary_after_payload(
   summary: event.SessionSummary,
   payload: event.EventPayload,
@@ -431,7 +443,7 @@ fn update_summary_after_payload(
     Some(turn) -> turn
     None -> summary.current_turn
   }
-  let token_totals = case payload.tokens.total > 0 {
+  let token_totals = case token_totals_are_nonzero(payload.tokens) {
     True -> payload.tokens
     False -> summary.token_totals
   }
@@ -441,6 +453,168 @@ fn update_summary_after_payload(
     token_totals: token_totals,
     last_event_at_ms: now,
   )
+}
+
+fn apply_turn_payload(
+  summary: event.SessionSummary,
+  payload: event.EventPayload,
+  now: Int,
+) -> #(event.SessionSummary, event.EventPayload) {
+  let payload = sanitize_turn_payload(payload)
+  case payload.name {
+    event.TurnName(turn_telemetry.EventStarted) ->
+      apply_turn_started(summary, payload, now)
+    event.TurnName(turn_telemetry.EventFinished)
+    | event.TurnName(turn_telemetry.EventFailed)
+    | event.TurnName(turn_telemetry.EventStopped)
+    | event.TurnName(turn_telemetry.EventTimedOut) ->
+      apply_turn_terminal(summary, payload, now)
+    event.TurnName(turn_telemetry.EventUnknown(_)) | _ -> #(
+      event.SessionSummary(..summary, last_event_at_ms: now),
+      payload,
+    )
+  }
+}
+
+fn apply_turn_started(
+  summary: event.SessionSummary,
+  payload: event.EventPayload,
+  now: Int,
+) -> #(event.SessionSummary, event.EventPayload) {
+  let turn = turn_or_current(payload.turn, summary.current_turn)
+  let status = turn_status_for_payload(payload)
+  let payload =
+    event.EventPayload(
+      ..payload,
+      turn: Some(turn),
+      turn_status: status,
+      turn_started_at_ms: Some(now),
+      turn_finished_at_ms: None,
+      turn_duration_ms: None,
+      token_delta: session_tokens.zero_token_totals(),
+    )
+  let summary =
+    event.SessionSummary(
+      ..summary,
+      current_turn: turn,
+      current_turn_status: status,
+      current_turn_started_at_ms: Some(now),
+      last_turn_reason: None,
+      last_event_at_ms: now,
+    )
+  #(summary, payload)
+}
+
+fn apply_turn_terminal(
+  summary: event.SessionSummary,
+  payload: event.EventPayload,
+  now: Int,
+) -> #(event.SessionSummary, event.EventPayload) {
+  let turn = turn_or_current(payload.turn, summary.current_turn)
+  let status = turn_status_for_payload(payload)
+  let delta = clamped_token_delta(payload.tokens, summary.token_totals)
+  let token_totals = case token_totals_are_nonzero(payload.tokens) {
+    True -> payload.tokens
+    False -> summary.token_totals
+  }
+  let duration = turn_duration(summary, turn, now)
+  let payload =
+    event.EventPayload(
+      ..payload,
+      turn: Some(turn),
+      turn_status: status,
+      turn_finished_at_ms: Some(now),
+      turn_duration_ms: duration,
+      token_delta: delta,
+    )
+  let summary =
+    event.SessionSummary(
+      ..summary,
+      current_turn: turn,
+      current_turn_status: status,
+      last_turn_finished_at_ms: Some(now),
+      last_turn_duration_ms: duration,
+      last_turn_token_delta: delta,
+      last_turn_reason: payload.reason,
+      token_totals: token_totals,
+      last_event_at_ms: now,
+    )
+  #(summary, payload)
+}
+
+fn sanitize_turn_payload(payload: event.EventPayload) -> event.EventPayload {
+  event.EventPayload(
+    ..payload,
+    pi_type: None,
+    message: None,
+    request_id: None,
+    method: None,
+    tool_name: None,
+    tool_input: None,
+    tool_output: None,
+    tool_status: None,
+    turn_status: turn_status_for_payload(payload),
+    raw_json: None,
+  )
+}
+
+fn turn_status_for_payload(
+  payload: event.EventPayload,
+) -> Option(turn_telemetry.TurnStatus) {
+  case payload.name {
+    event.TurnName(name) ->
+      case turn_telemetry.status_for_event_name(name) {
+        Some(status) -> Some(status)
+        None -> payload.turn_status
+      }
+    _ -> payload.turn_status
+  }
+}
+
+fn turn_duration(
+  summary: event.SessionSummary,
+  turn: Int,
+  now: Int,
+) -> Option(Int) {
+  case summary.current_turn == turn, summary.current_turn_started_at_ms {
+    True, Some(started_at_ms) -> Some(clamp_nonnegative(now - started_at_ms))
+    _, _ -> None
+  }
+}
+
+fn turn_or_current(turn: Option(Int), current_turn: Int) -> Int {
+  case turn {
+    Some(turn) -> turn
+    None -> current_turn
+  }
+}
+
+pub fn clamped_token_delta(
+  incoming: session_tokens.TokenTotals,
+  previous: session_tokens.TokenTotals,
+) -> session_tokens.TokenTotals {
+  session_tokens.TokenTotals(
+    input: clamp_nonnegative(incoming.input - previous.input),
+    output: clamp_nonnegative(incoming.output - previous.output),
+    cache_read: clamp_nonnegative(incoming.cache_read - previous.cache_read),
+    cache_write: clamp_nonnegative(incoming.cache_write - previous.cache_write),
+    total: clamp_nonnegative(incoming.total - previous.total),
+  )
+}
+
+fn token_totals_are_nonzero(tokens: session_tokens.TokenTotals) -> Bool {
+  tokens.input > 0
+  || tokens.output > 0
+  || tokens.cache_read > 0
+  || tokens.cache_write > 0
+  || tokens.total > 0
+}
+
+fn clamp_nonnegative(value: Int) -> Int {
+  case value < 0 {
+    True -> 0
+    False -> value
+  }
 }
 
 fn retain_latest(

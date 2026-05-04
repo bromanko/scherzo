@@ -5,6 +5,7 @@ import scherzo/session/tokens as session_tokens
 import scherzo/terminal/render
 import scherzo/terminal/sanitize
 import scherzo/terminal/style
+import scherzo/turn_telemetry
 
 fn summary() -> event.SessionSummary {
   event.SessionSummary(
@@ -17,6 +18,12 @@ fn summary() -> event.SessionSummary {
     pi_session_id: None,
     status: event.Running,
     current_turn: 1,
+    current_turn_status: None,
+    current_turn_started_at_ms: None,
+    last_turn_finished_at_ms: None,
+    last_turn_duration_ms: None,
+    last_turn_token_delta: session_tokens.zero_token_totals(),
+    last_turn_reason: None,
     started_at_ms: 10,
     last_event_at_ms: 20,
     token_totals: session_tokens.zero_token_totals(),
@@ -288,6 +295,37 @@ pub fn render_defaults_to_scherzo_pass_and_hides_pi_cycles_test() {
   assert !string.contains(transcript, "turn 1 started")
   assert !string.contains(transcript, "turn 1 ended")
   assert !string.contains(transcript, "pi cycle")
+}
+
+pub fn render_turn_events_are_visible_by_default_test() {
+  let events = [
+    evt(
+      1,
+      event.EventPayload(
+        ..event.empty_payload(
+          event.Turn,
+          event.TurnName(turn_telemetry.EventFinished),
+        ),
+        turn: Some(3),
+        turn_status: Some(turn_telemetry.StatusFinished),
+        turn_duration_ms: Some(1500),
+        token_delta: session_tokens.TokenTotals(
+          input: 10,
+          output: 5,
+          cache_read: 0,
+          cache_write: 0,
+          total: 15,
+        ),
+      ),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+  let transcript = render.chunks_to_string(chunks)
+
+  assert string.contains(transcript, "Scherzo pass 3")
+  assert string.contains(transcript, "turn 3 finished 1.5s +15 tok")
 }
 
 pub fn render_verbose_shows_pi_cycle_labels_test() {

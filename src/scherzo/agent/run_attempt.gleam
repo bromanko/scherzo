@@ -21,6 +21,7 @@ import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/turn_telemetry
 import scherzo/workspace
 
 pub type RunAttempt {
@@ -46,7 +47,7 @@ pub fn run_attempt(
   prompt_template: String,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   let command_subject = process.new_subject()
   run_attempt_with_commands(
@@ -66,7 +67,7 @@ pub fn run_attempt_with_commands(
   prompt_template: String,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   run_attempt_with_command_ready(
@@ -87,7 +88,7 @@ pub fn run_attempt_with_command_ready(
   prompt_template: String,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   on_command_ready: fn() -> Nil,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
@@ -116,7 +117,7 @@ pub fn run_prompt_in_workspace(
   prompt: String,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   on_command_ready: fn() -> Nil,
   workspace_path: String,
@@ -170,7 +171,7 @@ fn run_prepared(
   prompt_template: String,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   on_command_ready: fn() -> Nil,
   prepared: workspace.PreparedWorkspace,
@@ -230,7 +231,7 @@ fn run_pi_loop(
   first_prompt: String,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   on_command_ready: fn() -> Nil,
   workspace_path: String,
@@ -279,7 +280,7 @@ fn loop_turns(
   result: result_artifact.ResultArtifact,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   prompt_queue: List(String),
   stop_after_turn: Bool,
@@ -295,6 +296,7 @@ fn loop_turns(
         emit_update,
         prompt_queue,
         totals,
+        None,
         None,
       )
     False ->
@@ -339,6 +341,7 @@ fn loop_turns(
                 prompt_queue,
                 err,
                 totals,
+                None,
               )
             Ok(#(session, skipped)) -> {
               emit_records(
@@ -348,6 +351,7 @@ fn loop_turns(
                 config_module.resolved_secrets(config),
                 emit_update,
               )
+              emit_update(issue.id, turn_started_update(turn))
               let now = monotonic_ms()
               let turn_deadline_ms = now + config.pi.turn_timeout_ms
               let stall_deadline_ms = now + config.pi.stall_timeout_ms
@@ -378,6 +382,7 @@ fn loop_turns(
                       reason,
                       tokens,
                       final_issue,
+                      Some(turn),
                     )
                   },
                   handle_abort: fn(
@@ -396,6 +401,7 @@ fn loop_turns(
                       prompt_queue,
                       totals,
                       reply,
+                      Some(turn),
                     )
                   },
                 )
@@ -460,7 +466,7 @@ fn finish_after_turn(
   result: result_artifact.ResultArtifact,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   prompt_queue: List(String),
   stop_after_turn: Bool,
@@ -477,27 +483,24 @@ fn finish_after_turn(
         prompt_queue,
         err,
         prior_totals,
+        Some(turn),
       )
     Ok(#(session, turn_tokens)) -> {
       let totals = add_tokens(prior_totals, turn_tokens)
-      emit_update(issue.id, token_update(pi_event.TurnFinished, turn, totals))
       case tracker_client.fetch_issue_states_by_ids([issue.id]) {
-        Error(err) -> {
-          let _ = client.terminate(session)
-          let _ = workspace.after_run(workspace_path, config.hooks)
-          emit_dropped_prompts(
+        Error(err) ->
+          Error(cleanup_failure(
+            session,
             issue.id,
-            prompt_queue,
-            config_module.resolved_secrets(config),
+            workspace_path,
+            config,
             emit_update,
-          )
-          Error(worker_failure_with(
+            prompt_queue,
             error.StateRefreshFailed(err),
-            Some(workspace_path),
             totals,
             None,
+            Some(turn),
           ))
-        }
         Ok([final_issue]) ->
           decide_after_refresh(
             session,
@@ -541,7 +544,7 @@ fn decide_after_refresh(
   result: result_artifact.ResultArtifact,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   prompt_queue: List(String),
   stop_after_turn: Bool,
@@ -557,9 +560,11 @@ fn decide_after_refresh(
         emit_update,
         prompt_queue,
         totals,
+        Some(turn),
         Some(issue),
       )
     False -> {
+      emit_update(issue.id, turn_finished_update(turn, totals))
       let classification = classify(config, issue.state)
       case classification {
         types.FinalTerminal | types.FinalNonActive ->
@@ -623,7 +628,7 @@ fn finish_success(
   turns: Int,
   result: result_artifact.ResultArtifact,
   config: config_types.EffectiveConfig,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   prompt_queue: List(String),
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   let _ = client.terminate(session)
@@ -649,7 +654,7 @@ fn handle_between_turn_commands(
   issue_id: String,
   workspace_path: String,
   config: config_types.EffectiveConfig,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   prompt_queue: List(String),
   totals: session_tokens.TokenTotals,
@@ -684,7 +689,7 @@ fn interpret_between_turn_effects(
   issue_id: String,
   workspace_path: String,
   config: config_types.EffectiveConfig,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   state: operator_control.State,
   effects: List(operator_control.Effect),
@@ -743,6 +748,7 @@ fn interpret_between_turn_effects(
               state.prompt_queue,
               totals,
               reply,
+              None,
             )
           ExitBeforeTurn(failure)
         }
@@ -756,6 +762,7 @@ fn interpret_between_turn_effects(
               emit_update,
               state.prompt_queue,
               totals,
+              None,
               None,
             )
           ExitBeforeTurn(failure)
@@ -809,17 +816,18 @@ fn handle_abort_command(
   issue_id: String,
   workspace_path: String,
   config: config_types.EffectiveConfig,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   prompt_queue: List(String),
   totals: session_tokens.TokenTotals,
   reply: process.Subject(worker_command.Reply),
+  turn: Option(Int),
 ) -> types.WorkerFailure {
   case client.send_abort(session, config.pi.read_timeout_ms) {
     Ok(#(_session, skipped)) -> {
       emit_records(
         issue_id,
         skipped,
-        0,
+        active_turn_or_zero(turn),
         config_module.resolved_secrets(config),
         emit_update,
       )
@@ -837,6 +845,7 @@ fn handle_abort_command(
       process.send(reply, worker_command.Applied(Some("abort requested")))
     }
   }
+  emit_turn_stop_if_active(issue_id, emit_update, turn, totals)
   let _ = client.terminate(session)
   let _ = workspace.after_run(workspace_path, config.hooks)
   emit_dropped_prompts(
@@ -853,11 +862,13 @@ fn stop_failure(
   issue_id: String,
   workspace_path: String,
   config: config_types.EffectiveConfig,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   prompt_queue: List(String),
   totals: session_tokens.TokenTotals,
+  turn: Option(Int),
   final_issue: Option(tracker_issue.Issue),
 ) -> types.WorkerFailure {
+  emit_turn_stop_after_turn_if_active(issue_id, emit_update, turn, totals)
   let _ = client.terminate(session)
   let _ = workspace.after_run(workspace_path, config.hooks)
   emit_dropped_prompts(
@@ -879,9 +890,10 @@ fn finish_operator_stop(
   issue_id: String,
   workspace_path: String,
   config: config_types.EffectiveConfig,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   prompt_queue: List(String),
   totals: session_tokens.TokenTotals,
+  turn: Option(Int),
   final_issue: Option(tracker_issue.Issue),
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   Error(stop_failure(
@@ -892,6 +904,7 @@ fn finish_operator_stop(
     emit_update,
     prompt_queue,
     totals,
+    turn,
     final_issue,
   ))
 }
@@ -901,12 +914,14 @@ fn cleanup_failure(
   issue_id: String,
   workspace_path: String,
   config: config_types.EffectiveConfig,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   prompt_queue: List(String),
   reason: error.AgentRunnerError,
   tokens: session_tokens.TokenTotals,
   final_issue: Option(tracker_issue.Issue),
+  turn: Option(Int),
 ) -> types.WorkerFailure {
+  emit_turn_failure_if_active(issue_id, emit_update, turn, reason, tokens)
   let _ = client.terminate(session)
   let _ = workspace.after_run(workspace_path, config.hooks)
   emit_dropped_prompts(
@@ -923,10 +938,11 @@ fn fail_pi(
   issue_id: String,
   workspace_path: String,
   config: config_types.EffectiveConfig,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
   prompt_queue: List(String),
   err: error.PiRpcError,
   tokens: session_tokens.TokenTotals,
+  turn: Option(Int),
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   Error(cleanup_failure(
     session,
@@ -938,7 +954,99 @@ fn fail_pi(
     error.PiFailed(err),
     tokens,
     None,
+    turn,
   ))
+}
+
+fn active_turn_or_zero(turn: Option(Int)) -> Int {
+  case turn {
+    Some(turn) -> turn
+    None -> 0
+  }
+}
+
+fn emit_turn_stop_if_active(
+  issue_id: String,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  turn: Option(Int),
+  totals: session_tokens.TokenTotals,
+) -> Nil {
+  case turn {
+    Some(turn) ->
+      emit_update(
+        issue_id,
+        turn_stopped_update(turn, turn_telemetry.ReasonOperatorAbort, totals),
+      )
+    None -> Nil
+  }
+}
+
+fn emit_turn_stop_after_turn_if_active(
+  issue_id: String,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  turn: Option(Int),
+  totals: session_tokens.TokenTotals,
+) -> Nil {
+  case turn {
+    Some(turn) ->
+      emit_update(
+        issue_id,
+        turn_stopped_update(
+          turn,
+          turn_telemetry.ReasonOperatorStopAfterCurrentTurn,
+          totals,
+        ),
+      )
+    None -> Nil
+  }
+}
+
+fn emit_turn_failure_if_active(
+  issue_id: String,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  turn: Option(Int),
+  reason: error.AgentRunnerError,
+  totals: session_tokens.TokenTotals,
+) -> Nil {
+  case turn {
+    None -> Nil
+    Some(turn) ->
+      case reason {
+        error.PiFailed(error.PiStallTimeout) ->
+          emit_update(
+            issue_id,
+            turn_timed_out_update(
+              turn,
+              turn_telemetry.ReasonPiStallTimeout,
+              totals,
+            ),
+          )
+        error.PiFailed(error.PiTurnTimeout) ->
+          emit_update(
+            issue_id,
+            turn_timed_out_update(
+              turn,
+              turn_telemetry.ReasonPiTurnTimeout,
+              totals,
+            ),
+          )
+        error.PiFailed(_) ->
+          emit_update(
+            issue_id,
+            turn_failed_update(turn, turn_telemetry.ReasonPiError, totals),
+          )
+        error.StateRefreshFailed(_) ->
+          emit_update(
+            issue_id,
+            turn_failed_update(
+              turn,
+              turn_telemetry.ReasonStateRefreshFailed,
+              totals,
+            ),
+          )
+        _ -> Nil
+      }
+  }
 }
 
 fn worker_failure(
@@ -981,7 +1089,7 @@ fn emit_operator_prompt_queued(
   issue_id: String,
   message: String,
   config: config_types.EffectiveConfig,
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
 ) -> Nil {
   emit_update(
     issue_id,
@@ -999,7 +1107,7 @@ fn emit_dropped_prompts(
   issue_id: String,
   prompt_queue: List(String),
   secrets: List(String),
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
 ) -> Nil {
   case prompt_queue {
     [] -> Nil
@@ -1025,7 +1133,7 @@ fn emit_records(
   records: List(protocol.RpcRecord),
   turn: Int,
   secrets: List(String),
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
 ) -> Nil {
   case records {
     [] -> Nil
@@ -1036,15 +1144,69 @@ fn emit_records(
   }
 }
 
-fn lifecycle_update(name: pi_event.PiEvent) -> types.PiUpdate {
+pub fn turn_started_update(turn: Int) -> types.RunnerUpdate {
+  turn_update(
+    turn_telemetry.EventStarted,
+    turn,
+    session_tokens.zero_token_totals(),
+    None,
+  )
+}
+
+pub fn turn_finished_update(
+  turn: Int,
+  totals: session_tokens.TokenTotals,
+) -> types.RunnerUpdate {
+  turn_update(turn_telemetry.EventFinished, turn, totals, None)
+}
+
+pub fn turn_stopped_update(
+  turn: Int,
+  reason: turn_telemetry.TurnReason,
+  totals: session_tokens.TokenTotals,
+) -> types.RunnerUpdate {
+  turn_update(turn_telemetry.EventStopped, turn, totals, Some(reason))
+}
+
+pub fn turn_failed_update(
+  turn: Int,
+  reason: turn_telemetry.TurnReason,
+  totals: session_tokens.TokenTotals,
+) -> types.RunnerUpdate {
+  turn_update(turn_telemetry.EventFailed, turn, totals, Some(reason))
+}
+
+pub fn turn_timed_out_update(
+  turn: Int,
+  reason: turn_telemetry.TurnReason,
+  totals: session_tokens.TokenTotals,
+) -> types.RunnerUpdate {
+  turn_update(turn_telemetry.EventTimedOut, turn, totals, Some(reason))
+}
+
+fn turn_update(
+  name: turn_telemetry.TurnEventName,
+  turn: Int,
+  tokens: session_tokens.TokenTotals,
+  reason: Option(turn_telemetry.TurnReason),
+) -> types.RunnerUpdate {
+  types.RunnerTurnUpdate(turn_telemetry.TurnLifecycleUpdate(
+    name: name,
+    turn: turn,
+    tokens: tokens,
+    reason: reason,
+  ))
+}
+
+fn lifecycle_update(name: pi_event.PiEvent) -> types.RunnerUpdate {
   lifecycle_update_with_message(name, None)
 }
 
 fn lifecycle_update_with_message(
   name: pi_event.PiEvent,
   message: Option(String),
-) -> types.PiUpdate {
-  types.PiUpdate(
+) -> types.RunnerUpdate {
+  pi_runner_update(types.PiUpdate(
     event: name,
     message: message,
     raw_json: None,
@@ -1057,11 +1219,13 @@ fn lifecycle_update_with_message(
     tool_input: None,
     tool_output: None,
     tool_status: None,
-  )
+  ))
 }
 
-fn pi_session_started_update(pi_session_id: Option(String)) -> types.PiUpdate {
-  types.PiUpdate(
+fn pi_session_started_update(
+  pi_session_id: Option(String),
+) -> types.RunnerUpdate {
+  pi_runner_update(types.PiUpdate(
     event: pi_event.PiSessionStarted,
     message: None,
     raw_json: None,
@@ -1074,41 +1238,20 @@ fn pi_session_started_update(pi_session_id: Option(String)) -> types.PiUpdate {
     tool_input: None,
     tool_output: None,
     tool_status: None,
-  )
-}
-
-fn token_update(
-  name: pi_event.PiEvent,
-  turn: Int,
-  tokens: session_tokens.TokenTotals,
-) -> types.PiUpdate {
-  types.PiUpdate(
-    event: name,
-    message: None,
-    raw_json: None,
-    turn: Some(turn),
-    request_id: None,
-    method: None,
-    pi_session_id: None,
-    tokens: tokens,
-    tool_name: None,
-    tool_input: None,
-    tool_output: None,
-    tool_status: None,
-  )
+  ))
 }
 
 fn update_from_record(
   record: protocol.RpcRecord,
   turn: Int,
   secrets: List(String),
-) -> types.PiUpdate {
+) -> types.RunnerUpdate {
   let event = pi_event.from_string(record.type_)
   let message = case event {
     pi_event.ExtensionUiRequest -> record.message
     _ -> record.delta
   }
-  types.PiUpdate(
+  pi_runner_update(types.PiUpdate(
     event: event,
     message: redact_message(message, secrets),
     raw_json: Some(redaction.redact_raw_json(record.raw_json, secrets)),
@@ -1121,7 +1264,11 @@ fn update_from_record(
     tool_input: normalize_tool_text(record.tool_input, secrets),
     tool_output: normalize_tool_text(record.tool_output, secrets),
     tool_status: normalize_tool_text(record.tool_status, secrets),
-  )
+  ))
+}
+
+fn pi_runner_update(update: types.PiUpdate) -> types.RunnerUpdate {
+  types.RunnerPiUpdate(update)
 }
 
 fn redact_message(

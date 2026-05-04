@@ -70,7 +70,7 @@ pub type Dependencies {
       config_types.EffectiveConfig,
       tracker.Client,
       String,
-      fn(agent_types.PiUpdate) -> Nil,
+      fn(agent_types.RunnerUpdate) -> Nil,
       fn(process.Subject(worker_command.Command)) -> Nil,
     ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
   )

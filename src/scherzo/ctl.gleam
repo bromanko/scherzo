@@ -12,6 +12,7 @@ import scherzo/session/event
 import scherzo/session/reason as session_reason
 import scherzo/terminal/render
 import scherzo/terminal/style
+import scherzo/turn_telemetry
 
 pub type OutputMode {
   Pretty
@@ -881,11 +882,11 @@ fn print_raw_request(
   }
 }
 
-const ps_session_width = 34
+const ps_session_width = 20
 
-const ps_issue_width = 10
+const ps_issue_width = 8
 
-const ps_turn_width = 4
+const ps_turn_width = 15
 
 const ps_status_width = 14
 
@@ -899,11 +900,78 @@ fn print_sessions_table(
     output.line(ps_table_row(
       ellipsize_middle(summary.display_name, ps_session_width),
       ellipsize_middle(summary.issue_identifier, ps_issue_width),
-      int.to_string(summary.current_turn),
+      ellipsize_middle(turn_summary_text(summary), ps_turn_width),
       ps_status_to_string(summary.status),
       format_last_event_age(now_ms, summary.last_event_at_ms),
     ))
   })
+}
+
+fn turn_summary_text(summary: event.SessionSummary) -> String {
+  let base = "turn " <> int.to_string(summary.current_turn)
+  let with_status = case summary.current_turn_status {
+    Some(status) -> base <> " " <> turn_telemetry.status_to_string(status)
+    None -> base
+  }
+  let with_duration = case summary.last_turn_duration_ms {
+    Some(duration) -> with_status <> " " <> format_duration(duration)
+    None -> with_status
+  }
+  case summary.last_turn_token_delta.total > 0 {
+    True ->
+      with_duration
+      <> " +"
+      <> int.to_string(summary.last_turn_token_delta.total)
+      <> " tok"
+    False -> with_duration
+  }
+}
+
+fn format_duration(duration_ms: Int) -> String {
+  case duration_ms < 1000 {
+    True -> int.to_string(duration_ms) <> "ms"
+    False -> {
+      let tenths = duration_ms / 100
+      let whole = tenths / 10
+      let decimal = tenths - whole * 10
+      int.to_string(whole) <> "." <> int.to_string(decimal) <> "s"
+    }
+  }
+}
+
+fn print_optional_int(
+  label: String,
+  value: Option(Int),
+  output: Output,
+) -> Nil {
+  case value {
+    Some(value) -> output.line(label <> ": " <> int.to_string(value))
+    None -> Nil
+  }
+}
+
+fn print_token_delta(summary: event.SessionSummary, output: Output) -> Nil {
+  case summary.last_turn_token_delta.total > 0 {
+    True ->
+      output.line(
+        "last_turn_token_delta: "
+        <> int.to_string(summary.last_turn_token_delta.total),
+      )
+    False -> Nil
+  }
+}
+
+fn print_optional_reason(
+  reason: Option(turn_telemetry.TurnReason),
+  output: Output,
+) -> Nil {
+  case reason {
+    Some(reason) ->
+      output.line(
+        "last_turn_reason: " <> turn_telemetry.reason_to_string(reason),
+      )
+    None -> Nil
+  }
 }
 
 fn ps_status_to_string(status: event.SessionStatus) -> String {
@@ -1015,7 +1083,24 @@ fn print_session(summary: event.SessionSummary, output: Output) -> Nil {
     "issue: " <> summary.issue_identifier <> " " <> summary.issue_title,
   )
   output.line("status: " <> event.status_to_string(summary.status))
-  output.line("turn: " <> int.to_string(summary.current_turn))
+  output.line("turn: " <> turn_summary_text(summary))
+  print_optional_int(
+    "turn_started_at_ms",
+    summary.current_turn_started_at_ms,
+    output,
+  )
+  print_optional_int(
+    "last_turn_finished_at_ms",
+    summary.last_turn_finished_at_ms,
+    output,
+  )
+  print_optional_int(
+    "last_turn_duration_ms",
+    summary.last_turn_duration_ms,
+    output,
+  )
+  print_token_delta(summary, output)
+  print_optional_reason(summary.last_turn_reason, output)
   output.line("workspace: " <> summary.workspace_path)
   output.line("last_event_at_ms: " <> int.to_string(summary.last_event_at_ms))
 }

@@ -8,11 +8,16 @@ import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
+import scherzo/error
+import scherzo/orchestrator/event_publisher
 import scherzo/path
+import scherzo/session/event
+import scherzo/session/tokens as session_tokens
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/turn_telemetry
 import simplifile
 
 fn reset_dir(dir: String) -> Nil {
@@ -134,14 +139,24 @@ fn tracker_returning(final_issue: tracker_issue.Issue) -> tracker.Client {
   )
 }
 
-fn emit(_issue_id: String, _update: agent_types.PiUpdate) -> Nil {
+fn tracker_failing_state_refresh() -> tracker.Client {
+  tracker.Client(
+    fetch_candidate_issues: fn() { Ok([]) },
+    fetch_issues_by_states: fn(_) { Ok([]) },
+    fetch_issue_states_by_ids: fn(_) {
+      Error(error.LinearApiRequest("state refresh failed"))
+    },
+  )
+}
+
+fn emit(_issue_id: String, _update: agent_types.RunnerUpdate) -> Nil {
   Nil
 }
 
 fn drain_updates(
-  subject: process.Subject(agent_types.PiUpdate),
-  acc: List(agent_types.PiUpdate),
-) -> List(agent_types.PiUpdate) {
+  subject: process.Subject(agent_types.RunnerUpdate),
+  acc: List(agent_types.RunnerUpdate),
+) -> List(agent_types.RunnerUpdate) {
   case process.receive(subject, within: 10) {
     Ok(update) -> drain_updates(subject, [update, ..acc])
     Error(_) -> list.reverse(acc)
@@ -149,47 +164,61 @@ fn drain_updates(
 }
 
 fn find_update(
-  updates: List(agent_types.PiUpdate),
+  updates: List(agent_types.RunnerUpdate),
   name: String,
 ) -> Option(agent_types.PiUpdate) {
   case updates {
     [] -> None
-    [update, ..rest] ->
+    [agent_types.RunnerPiUpdate(update), ..rest] ->
       case pi_event.to_string(update.event) == name {
         True -> Some(update)
         False -> find_update(rest, name)
       }
+    [_, ..rest] -> find_update(rest, name)
   }
 }
 
 fn find_update_with_tool_input(
-  updates: List(agent_types.PiUpdate),
+  updates: List(agent_types.RunnerUpdate),
 ) -> Option(agent_types.PiUpdate) {
   case updates {
     [] -> None
-    [update, ..rest] ->
+    [agent_types.RunnerPiUpdate(update), ..rest] ->
       case update.tool_input {
         Some(_) -> Some(update)
         None -> find_update_with_tool_input(rest)
       }
+    [_, ..rest] -> find_update_with_tool_input(rest)
   }
 }
 
 fn find_update_with_tool_output(
-  updates: List(agent_types.PiUpdate),
+  updates: List(agent_types.RunnerUpdate),
 ) -> Option(agent_types.PiUpdate) {
   case updates {
     [] -> None
-    [update, ..rest] ->
+    [agent_types.RunnerPiUpdate(update), ..rest] ->
       case update.tool_output {
         Some(_) -> Some(update)
         None -> find_update_with_tool_output(rest)
       }
+    [_, ..rest] -> find_update_with_tool_output(rest)
   }
 }
 
+fn turn_event_names(updates: List(agent_types.RunnerUpdate)) -> List(String) {
+  updates
+  |> list.filter_map(fn(update) {
+    case update {
+      agent_types.RunnerTurnUpdate(update) ->
+        Ok(turn_telemetry.event_name_to_string(update.name))
+      agent_types.RunnerPiUpdate(_) -> Error(Nil)
+    }
+  })
+}
+
 fn receive_update_named(
-  subject: process.Subject(agent_types.PiUpdate),
+  subject: process.Subject(agent_types.RunnerUpdate),
   name: String,
   attempts: Int,
 ) -> Result(agent_types.PiUpdate, Nil) {
@@ -197,14 +226,78 @@ fn receive_update_named(
     True -> Error(Nil)
     False ->
       case process.receive(subject, within: 500) {
-        Ok(update) ->
+        Ok(agent_types.RunnerPiUpdate(update)) ->
           case pi_event.to_string(update.event) == name {
             True -> Ok(update)
             False -> receive_update_named(subject, name, attempts - 1)
           }
+        Ok(_) -> receive_update_named(subject, name, attempts - 1)
         Error(_) -> Error(Nil)
       }
   }
+}
+
+pub fn turn_update_helpers_emit_sanitized_runner_updates_test() {
+  let started = runner.turn_started_update(3)
+  let assert agent_types.RunnerTurnUpdate(started_update) = started
+  assert started_update.name == turn_telemetry.EventStarted
+  assert started_update.turn == 3
+  assert started_update.tokens == session_tokens.zero_token_totals()
+  let started_payload = event_publisher.turn_update_payload(started_update)
+  assert started_payload.kind == event.Turn
+  assert started_payload.message == None
+  assert started_payload.raw_json == None
+  assert started_payload.tool_input == None
+
+  let totals =
+    session_tokens.TokenTotals(
+      input: 10,
+      output: 5,
+      cache_read: 0,
+      cache_write: 0,
+      total: 15,
+    )
+  let assert agent_types.RunnerTurnUpdate(finished_update) =
+    runner.turn_finished_update(3, totals)
+  assert finished_update.name == turn_telemetry.EventFinished
+  assert finished_update.tokens == totals
+
+  let assert agent_types.RunnerTurnUpdate(stopped_update) =
+    runner.turn_stopped_update(
+      3,
+      turn_telemetry.ReasonOperatorStopAfterCurrentTurn,
+      totals,
+    )
+  assert stopped_update.reason
+    == Some(turn_telemetry.ReasonOperatorStopAfterCurrentTurn)
+  let assert agent_types.RunnerTurnUpdate(timeout_update) =
+    runner.turn_timed_out_update(3, turn_telemetry.ReasonPiStallTimeout, totals)
+  assert timeout_update.reason == Some(turn_telemetry.ReasonPiStallTimeout)
+  let assert agent_types.RunnerTurnUpdate(failed_update) =
+    runner.turn_failed_update(3, turn_telemetry.ReasonPiError, totals)
+  assert failed_update.reason == Some(turn_telemetry.ReasonPiError)
+}
+
+pub fn state_refresh_failure_emits_failed_turn_without_finished_first_test() {
+  let root = "test/tmp/runner-state-refresh-failure"
+  reset_dir(root)
+  let command = fake_pi()
+  let cfg = config(root, command, False, 1)
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Work on {{ issue.identifier }} {{ issue.title }}"),
+      cfg,
+      tracker_failing_state_refresh(),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert failure.tokens.total == 3
+  assert turn_event_names(drain_updates(update_subject, []))
+    == ["turn_started", "turn_failed"]
 }
 
 pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
@@ -214,6 +307,7 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command = "FAKE_PI_TRANSCRIPT=" <> transcript <> " " <> fake_pi()
   let cfg = config(root, command, True, 3)
+  let update_subject = process.new_subject()
   let assert Ok(success) =
     runner.run_attempt(
       issue("Todo"),
@@ -221,12 +315,14 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
       workflow("Work on {{ issue.identifier }} {{ issue.title }}"),
       cfg,
       tracker_returning(issue("Done")),
-      emit,
+      fn(_, update) { process.send(update_subject, update) },
     )
   assert success.final_classification == agent_types.FinalTerminal
   assert success.tokens.total == 3
   assert success.result.final_response == Some("done")
   assert success.result.source == "agent_end_messages"
+  assert turn_event_names(drain_updates(update_subject, []))
+    == ["turn_started", "turn_finished"]
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "set_session_name")
   assert string.contains(contents, "get_state")

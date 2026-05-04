@@ -61,10 +61,10 @@ pub type Message {
     String,
     Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
   )
-  WorkerUpdate(String, agent_types.PiUpdate)
+  WorkerUpdate(String, agent_types.RunnerUpdate)
   WorkerCommandReady(String, String, process.Subject(worker_command.Command))
   YamlStepStarted(String, String)
-  YamlStepUpdate(String, agent_types.PiUpdate)
+  YamlStepUpdate(String, agent_types.RunnerUpdate)
   YamlStepCommandReady(String, process.Subject(worker_command.Command))
   YamlStepFinished(String)
   AbortWorkerCommandTimedOut(
@@ -793,20 +793,7 @@ fn handle_message(
       actor.continue(handle_yaml_step_started(state, session_id, run_id))
     YamlStepUpdate(session_id, update) -> {
       event_publisher.worker_update(state.event_hub, session_id, update)
-      case pi_event.is_message_update(update.event) {
-        True -> Nil
-        False -> {
-          let message = case update.message {
-            Some(message) -> log.truncate(message, 200)
-            None -> ""
-          }
-          log_state(state, "info", "pi_event", [
-            #("session_id", session_id),
-            #("event_name", pi_event.to_string(update.event)),
-            #("message", message),
-          ])
-        }
-      }
+      log_yaml_step_update(state, session_id, update)
       actor.continue(state)
     }
     YamlStepCommandReady(session_id, command_subject) ->
@@ -2907,6 +2894,12 @@ fn spawn_worker(
       pi_session_id: None,
       status: session_event.Preparing,
       current_turn: 0,
+      current_turn_status: None,
+      current_turn_started_at_ms: None,
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
       started_at_ms: started_at_ms,
       last_event_at_ms: started_at_ms,
       token_totals: session_tokens.zero_token_totals(),
@@ -3098,6 +3091,12 @@ fn register_yaml_step_session(
       pi_session_id: None,
       status: session_event.Preparing,
       current_turn: 0,
+      current_turn_status: None,
+      current_turn_started_at_ms: None,
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
       started_at_ms: started_at_ms,
       last_event_at_ms: started_at_ms,
       token_totals: session_tokens.zero_token_totals(),
@@ -3108,19 +3107,11 @@ fn register_yaml_step_session(
     event_hub,
     session_id,
     session_event.EventPayload(
-      kind: session_event.Lifecycle,
-      name: session_event.LifecycleName(session_event.StepStarted),
-      turn: None,
-      pi_type: None,
+      ..session_event.empty_payload(
+        session_event.Lifecycle,
+        session_event.LifecycleName(session_event.StepStarted),
+      ),
       message: Some(step_id),
-      request_id: None,
-      method: None,
-      tool_name: None,
-      tool_input: None,
-      tool_output: None,
-      tool_status: None,
-      tokens: session_tokens.zero_token_totals(),
-      raw_json: None,
     ),
   )
 }
@@ -3184,19 +3175,15 @@ fn publish_yaml_command_failure(
     event_hub,
     session_id,
     session_event.EventPayload(
-      kind: session_event.Error,
-      name: session_event.PiName(pi_event.UnknownPiEvent("command_failed")),
-      turn: None,
-      pi_type: None,
+      ..session_event.empty_payload(
+        session_event.Error,
+        session_event.PiName(pi_event.UnknownPiEvent("command_failed")),
+      ),
       message: Some(summary),
-      request_id: None,
-      method: None,
       tool_name: Some("workflow command " <> artifact.step_id),
       tool_input: artifact.command,
       tool_output: Some(step_artifact.command_failure_details(artifact)),
       tool_status: Some("failed"),
-      tokens: session_tokens.zero_token_totals(),
-      raw_json: None,
     ),
   )
 }
@@ -3228,6 +3215,12 @@ fn run_yaml_agent_step(
       pi_session_id: None,
       status: session_event.Preparing,
       current_turn: 0,
+      current_turn_status: None,
+      current_turn_started_at_ms: None,
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
       started_at_ms: started_at_ms,
       last_event_at_ms: started_at_ms,
       token_totals: session_tokens.zero_token_totals(),
@@ -3238,19 +3231,11 @@ fn run_yaml_agent_step(
     event_hub,
     session_id,
     session_event.EventPayload(
-      kind: session_event.Lifecycle,
-      name: session_event.LifecycleName(session_event.StepStarted),
-      turn: None,
-      pi_type: None,
+      ..session_event.empty_payload(
+        session_event.Lifecycle,
+        session_event.LifecycleName(session_event.StepStarted),
+      ),
       message: Some(step_id),
-      request_id: None,
-      method: None,
-      tool_name: None,
-      tool_input: None,
-      tool_output: None,
-      tool_status: None,
-      tokens: session_tokens.zero_token_totals(),
-      raw_json: None,
     ),
   )
   process.send(daemon_subject, YamlStepStarted(session_id, run_id))
@@ -3319,31 +3304,73 @@ fn handle_worker_command_ready(
   )
 }
 
+fn log_yaml_step_update(
+  state: State,
+  session_id: String,
+  update: agent_types.RunnerUpdate,
+) -> Nil {
+  case update {
+    agent_types.RunnerPiUpdate(update) ->
+      log_pi_update(state, Some(session_id), None, update)
+    agent_types.RunnerTurnUpdate(_) -> Nil
+  }
+}
+
+fn log_worker_update(
+  state: State,
+  issue_id: String,
+  update: agent_types.RunnerUpdate,
+) -> State {
+  case update {
+    agent_types.RunnerPiUpdate(update) ->
+      case log_pi_update(state, None, Some(issue_id), update) {
+        Nil -> state
+      }
+    agent_types.RunnerTurnUpdate(_) -> state
+  }
+}
+
+fn log_pi_update(
+  state: State,
+  session_id: Option(String),
+  issue_id: Option(String),
+  update: agent_types.PiUpdate,
+) -> Nil {
+  case pi_event.is_message_update(update.event) {
+    True -> Nil
+    False -> {
+      let message = case update.message {
+        Some(message) -> log.truncate(message, 200)
+        None -> ""
+      }
+      let base = [
+        #("event_name", pi_event.to_string(update.event)),
+        #("message", message),
+      ]
+      let fields = case session_id {
+        Some(session_id) -> [#("session_id", session_id), ..base]
+        None -> base
+      }
+      let fields = case issue_id {
+        Some(issue_id) -> [#("issue_id", issue_id), ..fields]
+        None -> fields
+      }
+      log_state(state, "info", "pi_event", fields)
+    }
+  }
+}
+
 fn handle_worker_update(
   state: State,
   issue_id: String,
-  update: agent_types.PiUpdate,
+  update: agent_types.RunnerUpdate,
 ) -> State {
   case worker_registry.worker_for_issue(state.registry, issue_id) {
     Ok(handle) ->
       event_publisher.worker_update(state.event_hub, handle.session_id, update)
     Error(_) -> Nil
   }
-  case pi_event.is_message_update(update.event) {
-    True -> state
-    False -> {
-      let message = case update.message {
-        Some(message) -> log.truncate(message, 200)
-        None -> ""
-      }
-      log_state(state, "info", "pi_event", [
-        #("issue_id", issue_id),
-        #("event_name", pi_event.to_string(update.event)),
-        #("message", message),
-      ])
-      state
-    }
-  }
+  log_worker_update(state, issue_id, update)
 }
 
 fn handle_worker_finished(

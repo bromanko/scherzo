@@ -5,6 +5,7 @@ import scherzo/result_artifact
 import scherzo/session/event as session_event
 import scherzo/session/tokens as session_tokens
 import scherzo/tracker/issue as tracker_issue
+import scherzo/turn_telemetry
 
 pub type FinalClassification {
   FinalActive
@@ -47,4 +48,9 @@ pub type PiUpdate {
     tool_output: Option(String),
     tool_status: Option(String),
   )
+}
+
+pub type RunnerUpdate {
+  RunnerPiUpdate(PiUpdate)
+  RunnerTurnUpdate(turn_telemetry.TurnLifecycleUpdate)
 }

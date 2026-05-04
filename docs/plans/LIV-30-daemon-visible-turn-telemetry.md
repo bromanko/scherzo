@@ -61,11 +61,15 @@ The main correctness risk is reporting a turn as running forever after a timeout
 - [x] (2026-05-02 00:00Z) Drafted this ExecPlan for review. No source code, tests, configuration, or existing documentation were changed.
 - [x] (2026-05-02 00:00Z) Incorporated adversarial review findings for compile-safe turn representation, token-delta ordering, turn-payload privacy tests, explicit protocol decoding, and bridge-level event publisher/hub validation.
 - [x] (2026-05-03 00:00Z) Created implementation ticket `LIV-53` because `LIV-30` tracked plan authoring only and is already complete.
-- [ ] Implementation has not started; implement this plan under `LIV-53`.
-- [ ] Add turn telemetry schema and serialization tests.
-- [ ] Add runner and event publisher lifecycle emission tests.
-- [ ] Add control protocol and `scherzoctl` rendering tests.
-- [ ] Run formatting and full test validation.
+- [x] (2026-05-04 09:20Z) Implemented the shared turn telemetry schema, added turn fields to session summaries and payloads, and added JSON privacy tests for sanitized turn payloads.
+- [x] (2026-05-04 09:35Z) Implemented hub-owned turn summary transitions, token-delta computation, and turn-payload sanitization with hub tests for started, finished, failed, stopped, and timed-out turns.
+- [x] (2026-05-04 09:45Z) Added `RunnerUpdate`, routed turn updates through `event_publisher.worker_update` without pre-updating tokens, and updated daemon/workflow callback types.
+- [x] (2026-05-04 09:55Z) Emitted runner turn lifecycle updates for prompt-accepted starts, token-stats finishes, operator stop/abort, pi failures, pi timeouts, and state-refresh failures.
+- [x] (2026-05-04 10:00Z) Added protocol decoding and `scherzoctl`/attach rendering for turn summary fields, turn event lines, compact raw turn fields, unknown future turn names, and non-whitelisted reason rejection.
+- [x] (2026-05-04 09:59Z) Ran `direnv exec . gleam test`; 606 tests passed.
+- [x] (2026-05-04 10:02Z) Ran `direnv exec . gleam format src test`, `direnv exec . gleam format --check src test`, and `direnv exec . gleam test`; formatting passed and 606 tests passed.
+- [x] (2026-05-04 10:10Z) Applied review feedback for runner turn lifecycle ordering: state-refresh failure now emits `turn_started` then `turn_failed` without an intermediate `turn_finished`, and abort skipped-record emission uses the active turn number.
+- [x] (2026-05-04 10:15Z) Re-ran final post-review validation with `direnv exec . gleam format --check src test` and `direnv exec . gleam test`; formatting passed and 607 tests passed.
 
 ## Surprises & Discoveries
 
@@ -77,6 +81,12 @@ The main correctness risk is reporting a turn as running forever after a timeout
 
 - Observation: The runner already has Scherzo-owned control states for prompt queues, stop-after-turn, UI requests, timeouts, and token stats, so turn lifecycle telemetry can be emitted from the runner without asking the daemon to inspect pi internals.
   Evidence: `src/scherzo/agent/runner.gleam` defines `ActiveCommandState`, `ActiveTurn`, `loop_turns`, `active_turn_loop`, `finish_after_turn`, `handle_active_command`, `handle_operator_ui_timeout`, `stop_failure`, and `token_update`.
+
+- Observation: Runner implementation is split across `src/scherzo/agent/types.gleam`, `src/scherzo/agent/run_attempt.gleam`, `src/scherzo/agent/turn_loop.gleam`, and the re-exporting `src/scherzo/agent/runner.gleam`, so the concrete `RunnerUpdate` union belongs in `agent/types.gleam` and is re-exported by `agent/runner.gleam`.
+  Evidence: `src/scherzo/agent/runner.gleam` already re-exported `PiUpdate`, `WorkerSuccess`, and `WorkerFailure` from `src/scherzo/agent/types.gleam`; placing `RunnerUpdate` beside `PiUpdate` avoided an import cycle while preserving the public runner API.
+
+- Observation: Hub tests cannot drive `now_ms` with a normal `process.Subject` owned by the test process because the hub actor calls `now_ms` from the actor process, and Gleam panics if a different process receives from that subject.
+  Evidence: An early bridge test using a subject-backed clock crashed with `Cannot receive with a subject owned by another process`; the final tests use constant hub clocks and pre-seeded `current_turn_started_at_ms` summaries when they need deterministic durations.
 
 ## Decision Log
 
@@ -113,9 +123,17 @@ The main correctness risk is reporting a turn as running forever after a timeout
   Rationale: `LIV-30` was the plan-writing issue and is complete. Keeping a separate implementation issue prevents this checked-in, unimplemented plan from looking completed in the backlog.
   Date: 2026-05-03
 
+- Decision: Define `RunnerUpdate` in `src/scherzo/agent/types.gleam` and re-export it from `src/scherzo/agent/runner.gleam` rather than defining the union directly in `runner.gleam`.
+  Rationale: This repository stores shared runner data types in `agent/types.gleam`, while `runner.gleam` is a thin public facade over `agent/run_attempt.gleam`. Defining the union next to `PiUpdate` avoids an import cycle and keeps all callback signatures consistent.
+  Date: 2026-05-04
+
+- Decision: Do not create the intermediate commits named in this plan while running under Scherzo's `workflow:execplan-implementation` contract.
+  Rationale: The workflow contract explicitly says not to create jj/git commits because the publish step creates the final logical jj commit after review and validation. The implementation still followed the same milestone boundaries in the working tree and tests.
+  Date: 2026-05-04
+
 ## Outcomes & Retrospective
 
-Implementation is tracked by `LIV-53`. At completion, record whether operators can see turn lifecycle in `scherzoctl ps`, `scherzoctl session --json`, `scherzoctl events`, and `scherzoctl attach`; whether tests prevented sensitive payload centralization; and whether any planned lifecycle statuses were deferred.
+Implementation is tracked by `LIV-53`. The implementation now exposes bounded turn status, timing, reason, cumulative tokens, and token deltas through session summaries, event replay, control decoding, `scherzoctl ps`, `scherzoctl session`, `scherzoctl events`, and `scherzoctl attach`. Tests cover sanitized JSON serialization, hub sanitization, event-publisher token-delta ordering, runner helper and successful-run emission, state-refresh failure telemetry ordering, protocol compatibility, non-whitelisted reason rejection, raw compact turn lines, and pretty turn rendering. No lifecycle statuses from the plan were deferred. Final post-review validation passed on 2026-05-04 with `direnv exec . gleam format --check src test` and `direnv exec . gleam test` reporting 607 passing tests.
 
 ## Context and Orientation
 

@@ -1,3 +1,4 @@
+import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -7,6 +8,7 @@ import scherzo/control/protocol
 import scherzo/session/event
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub fn decode_ping_request_requires_token_test() {
   let assert Ok(protocol.Ping("1", "secret")) =
@@ -234,6 +236,8 @@ pub fn decode_events_response_accepts_missing_and_new_tool_fields_test() {
   assert old_event.payload.tool_input == None
   assert old_event.payload.tool_output == None
   assert old_event.payload.tool_status == None
+  assert old_event.payload.token_delta == session_tokens.zero_token_totals()
+  assert old_event.payload.turn_status == None
 
   let new_json =
     "{\"version\":1,\"id\":\"events-2\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":2,\"at_ms\":101,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"tool\",\"name\":\"tool_execution_end\",\"turn\":1,\"pi_type\":null,\"message\":null,\"request_id\":null,\"method\":null,\"tool_name\":\"bash\",\"tool_input\":\"gleam test\",\"tool_output\":\"ok\",\"tool_status\":\"success\",\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0},\"raw_json\":null}],\"next_cursor\":2,\"truncated\":false}}"
@@ -261,6 +265,45 @@ pub fn decode_events_response_uses_kind_when_decoding_event_name_test() {
     == event.LifecycleName(event.WorkerStarted)
 }
 
+pub fn decode_turn_event_response_with_token_delta_and_reason_test() {
+  let line =
+    "{\"version\":1,\"id\":\"events-turn\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":3,\"at_ms\":2500,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"turn\",\"name\":\"turn_finished\",\"turn\":1,\"turn_status\":\"finished\",\"turn_duration_ms\":1500,\"tokens\":{\"input\":10,\"output\":5,\"cache_read\":0,\"cache_write\":0,\"total\":15},\"token_delta\":{\"input\":10,\"output\":5,\"cache_read\":0,\"cache_write\":0,\"total\":15},\"reason\":\"operator_stop_after_current_turn\"}],\"next_cursor\":3,\"truncated\":false}}"
+
+  let assert Ok(page) = protocol.decode_get_events_response(line)
+  let assert [stored_event] = page.events
+  assert stored_event.payload.kind == event.Turn
+  assert stored_event.payload.name
+    == event.TurnName(turn_telemetry.EventFinished)
+  assert stored_event.payload.turn_status == Some(turn_telemetry.StatusFinished)
+  assert stored_event.payload.token_delta.total == 15
+  assert stored_event.payload.reason
+    == Some(turn_telemetry.ReasonOperatorStopAfterCurrentTurn)
+}
+
+pub fn decode_turn_event_rejects_free_form_secret_reason_test() {
+  let line =
+    "{\"version\":1,\"id\":\"events-turn\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":1,\"at_ms\":100,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"turn\",\"name\":\"turn_failed\",\"turn\":1,\"reason\":\"SECRET_PROMPT in reason\",\"message\":\"SECRET_PROMPT\",\"raw_json\":{\"value\":\"SECRET_PROMPT\",\"truncated\":false}}],\"next_cursor\":1,\"truncated\":false}}"
+
+  let assert Ok(page) = protocol.decode_get_events_response(line)
+  let assert [stored_event] = page.events
+  assert stored_event.payload.reason == None
+  assert stored_event.payload.message == None
+  assert stored_event.payload.raw_json == None
+  let encoded = protocol.event_page_data(page) |> json.to_string
+  assert !string.contains(encoded, "SECRET_PROMPT")
+}
+
+pub fn decode_unknown_future_turn_name_stays_turn_event_test() {
+  let line =
+    "{\"version\":1,\"id\":\"events-turn\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":1,\"at_ms\":100,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"turn\",\"name\":\"turn_paused\",\"turn\":1}],\"next_cursor\":1,\"truncated\":false}}"
+
+  let assert Ok(page) = protocol.decode_get_events_response(line)
+  let assert [stored_event] = page.events
+  assert stored_event.payload.kind == event.Turn
+  assert stored_event.payload.name
+    == event.TurnName(turn_telemetry.EventUnknown("turn_paused"))
+}
+
 pub fn decode_session_summary_maps_unknown_exit_reason_to_failed_test() {
   let line =
     "{\"version\":1,\"id\":\"sessions-1\",\"ok\":true,\"data\":{\"sessions\":[{\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"exited\",\"exit_reason\":\"legacy_cancelled\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
@@ -268,6 +311,10 @@ pub fn decode_session_summary_maps_unknown_exit_reason_to_failed_test() {
   let assert Ok([summary]) = protocol.decode_list_sessions_response(line)
   assert summary.display_name == "session-1"
   assert summary.status == event.Exited(session_reason.Failed)
+  assert summary.current_turn_status == None
+  assert summary.current_turn_started_at_ms == None
+  assert summary.last_turn_token_delta == session_tokens.zero_token_totals()
+  assert summary.last_turn_reason == None
   let assert Ok(snapshot) =
     protocol.decode_list_sessions_snapshot_response(line)
   assert snapshot.now_ms == 200
@@ -295,20 +342,9 @@ pub fn encode_events_response_contains_cursor_and_session_test() {
           at_ms: 100,
           session_id: "session-1",
           issue_id: "issue-1",
-          payload: event.EventPayload(
-            kind: event.Lifecycle,
-            name: event.LifecycleName(event.WorkerStarted),
-            turn: None,
-            pi_type: None,
-            message: None,
-            request_id: None,
-            method: None,
-            tool_name: None,
-            tool_input: None,
-            tool_output: None,
-            tool_status: None,
-            tokens: session_tokens.zero_token_totals(),
-            raw_json: None,
+          payload: event.empty_payload(
+            event.Lifecycle,
+            event.LifecycleName(event.WorkerStarted),
           ),
         ),
       ],

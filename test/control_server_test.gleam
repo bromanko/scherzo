@@ -25,6 +25,12 @@ fn summary(session_id: String) -> event.SessionSummary {
     pi_session_id: None,
     status: event.Running,
     current_turn: 1,
+    current_turn_status: None,
+    current_turn_started_at_ms: None,
+    last_turn_finished_at_ms: None,
+    last_turn_duration_ms: None,
+    last_turn_token_delta: session_tokens.zero_token_totals(),
+    last_turn_reason: None,
     started_at_ms: 10,
     last_event_at_ms: 10,
     token_totals: session_tokens.zero_token_totals(),
@@ -32,20 +38,9 @@ fn summary(session_id: String) -> event.SessionSummary {
 }
 
 fn payload(name: String) -> event.EventPayload {
-  event.EventPayload(
-    kind: event.Lifecycle,
-    name: event.PiName(pi_event.UnknownPiEvent(name)),
-    turn: None,
-    pi_type: None,
-    message: None,
-    request_id: None,
-    method: None,
-    tool_name: None,
-    tool_input: None,
-    tool_output: None,
-    tool_status: None,
-    tokens: session_tokens.zero_token_totals(),
-    raw_json: None,
+  event.empty_payload(
+    event.Lifecycle,
+    event.PiName(pi_event.UnknownPiEvent(name)),
   )
 }
 

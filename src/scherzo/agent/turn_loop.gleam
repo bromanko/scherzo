@@ -27,7 +27,7 @@ pub type Context {
     turn: Int,
     totals: session_tokens.TokenTotals,
     config: config_types.EffectiveConfig,
-    emit_update: fn(String, types.PiUpdate) -> Nil,
+    emit_update: fn(String, types.RunnerUpdate) -> Nil,
     command_subject: process.Subject(worker_command.Command),
     turn_deadline_ms: Int,
     cleanup_failure: fn(
@@ -738,7 +738,7 @@ fn emit_records(
   records: List(protocol.RpcRecord),
   turn: Int,
   secrets: List(String),
-  emit_update: fn(String, types.PiUpdate) -> Nil,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
 ) -> Nil {
   case records {
     [] -> Nil
@@ -769,8 +769,8 @@ fn try_active(
 fn lifecycle_update_with_message(
   name: pi_event.PiEvent,
   message: Option(String),
-) -> types.PiUpdate {
-  types.PiUpdate(
+) -> types.RunnerUpdate {
+  pi_runner_update(types.PiUpdate(
     event: name,
     message: message,
     raw_json: None,
@@ -783,7 +783,7 @@ fn lifecycle_update_with_message(
     tool_input: None,
     tool_output: None,
     tool_status: None,
-  )
+  ))
 }
 
 fn lifecycle_update_with_request(
@@ -792,8 +792,8 @@ fn lifecycle_update_with_request(
   request_id: String,
   method: String,
   turn: Int,
-) -> types.PiUpdate {
-  types.PiUpdate(
+) -> types.RunnerUpdate {
+  pi_runner_update(types.PiUpdate(
     event: name,
     message: message,
     raw_json: None,
@@ -806,20 +806,20 @@ fn lifecycle_update_with_request(
     tool_input: None,
     tool_output: None,
     tool_status: None,
-  )
+  ))
 }
 
 fn update_from_record(
   record: protocol.RpcRecord,
   turn: Int,
   secrets: List(String),
-) -> types.PiUpdate {
+) -> types.RunnerUpdate {
   let event = pi_event.from_string(record.type_)
   let message = case event {
     pi_event.ExtensionUiRequest -> record.message
     _ -> record.delta
   }
-  types.PiUpdate(
+  pi_runner_update(types.PiUpdate(
     event: event,
     message: redact_message(message, secrets),
     raw_json: Some(redaction.redact_raw_json(record.raw_json, secrets)),
@@ -832,7 +832,11 @@ fn update_from_record(
     tool_input: normalize_tool_text(record.tool_input, secrets),
     tool_output: normalize_tool_text(record.tool_output, secrets),
     tool_status: normalize_tool_text(record.tool_status, secrets),
-  )
+  ))
+}
+
+fn pi_runner_update(update: types.PiUpdate) -> types.RunnerUpdate {
+  types.RunnerPiUpdate(update)
 }
 
 fn redact_operator_message(message: String, secrets: List(String)) -> String {
