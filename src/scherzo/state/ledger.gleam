@@ -308,10 +308,26 @@ fn read_snapshot(
     Ok(contents) ->
       case projection.decode_string(contents) {
         Ok(snapshot_projection) -> Ok(snapshot_projection)
-        Error(reason) -> Error(CorruptRecord(0, reason))
+        Error(reason) ->
+          case unsupported_snapshot_version(reason) {
+            Some(version) -> Error(UnsupportedVersion(version))
+            None -> Error(CorruptRecord(0, reason))
+          }
       }
     Error(simplifile.Enoent) -> Ok(projection.new())
     Error(error) -> Error(Io(file_error("read ledger snapshot", error)))
+  }
+}
+
+fn unsupported_snapshot_version(reason: String) -> Option(Int) {
+  case string.starts_with(reason, "unsupported schema version ") {
+    True ->
+      reason
+      |> string.drop_start(string.length("unsupported schema version "))
+      |> int.parse
+      |> result.map(Some)
+      |> result.unwrap(None)
+    False -> None
   }
 }
 

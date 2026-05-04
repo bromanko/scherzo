@@ -5,7 +5,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/log
 
-pub const schema_version = 1
+pub const schema_version = 2
 
 pub const max_excerpt_chars = 500
 
@@ -28,6 +28,84 @@ pub type RecordBody {
     turns: Int,
   )
   RunInterrupted(run_id: String, issue_id: String, reason: String)
+  WorkflowRunStarted(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    issue_id: String,
+    issue_identifier: String,
+    issue_fingerprint: String,
+    observed_updated_at_ms: Int,
+    run_root: String,
+  )
+  WorkflowRunFinished(
+    run_id: String,
+    workflow_id: String,
+    issue_id: String,
+    outcome: String,
+    token_total: Int,
+    turns: Int,
+  )
+  WorkflowRunInterrupted(
+    run_id: String,
+    workflow_id: String,
+    issue_id: String,
+    reason: String,
+  )
+  WorkflowRunSuperseded(
+    run_id: String,
+    workflow_id: String,
+    issue_id: String,
+    superseded_by_run_id: String,
+    reason: String,
+  )
+  StepAttemptPrepared(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    workspace_name: String,
+    workspace_path: String,
+    run_root: String,
+    source_workspace_name: Option(String),
+    source_workspace_path: Option(String),
+  )
+  StepAttemptStarted(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    operator_session_id: String,
+    external_session_ref: Option(String),
+  )
+  StepAttemptFinished(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    outcome: String,
+    artifact_ref: String,
+    artifact_sha256: String,
+    workspace_name: String,
+    workspace_path: String,
+    token_total: Int,
+    turns: Int,
+  )
+  StepAttemptInterrupted(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    reason: String,
+  )
+  StepAttemptSuperseded(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    superseded_by_attempt_index: Int,
+    reason: String,
+  )
   RetryScheduled(
     issue_id: String,
     issue_identifier: String,
@@ -119,9 +197,24 @@ type RecordFields {
     at_ms: Int,
     kind: String,
     run_id: Option(String),
+    workflow_id: Option(String),
+    workflow_fingerprint: Option(String),
     issue_id: Option(String),
     issue_identifier: Option(String),
     workspace_path: Option(String),
+    workspace_name: Option(String),
+    run_root: Option(String),
+    source_workspace_name: Option(String),
+    source_workspace_path: Option(String),
+    step_id: Option(String),
+    attempt_index: Option(Int),
+    operator_session_id: Option(String),
+    external_session_ref: Option(String),
+    outcome: Option(String),
+    artifact_ref: Option(String),
+    artifact_sha256: Option(String),
+    superseded_by_run_id: Option(String),
+    superseded_by_attempt_index: Option(Int),
     classification: Option(String),
     token_total: Option(Int),
     turns: Option(Int),
@@ -173,6 +266,15 @@ pub fn kind(body: RecordBody) -> String {
     RunStarted(..) -> "run_started"
     RunFinished(..) -> "run_finished"
     RunInterrupted(..) -> "run_interrupted"
+    WorkflowRunStarted(..) -> "workflow_run_started"
+    WorkflowRunFinished(..) -> "workflow_run_finished"
+    WorkflowRunInterrupted(..) -> "workflow_run_interrupted"
+    WorkflowRunSuperseded(..) -> "workflow_run_superseded"
+    StepAttemptPrepared(..) -> "step_attempt_prepared"
+    StepAttemptStarted(..) -> "step_attempt_started"
+    StepAttemptFinished(..) -> "step_attempt_finished"
+    StepAttemptInterrupted(..) -> "step_attempt_interrupted"
+    StepAttemptSuperseded(..) -> "step_attempt_superseded"
     RetryScheduled(..) -> "retry_scheduled"
     RetryCancelled(..) -> "retry_cancelled"
     IssueCounterUpdated(..) -> "issue_counter_updated"
@@ -252,6 +354,142 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
     RunInterrupted(run_id, issue_id, reason) -> [
       #("run_id", json.string(run_id)),
       #("issue_id", json.string(issue_id)),
+      #("reason", json.string(reason)),
+    ]
+    WorkflowRunStarted(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      issue_id,
+      issue_identifier,
+      issue_fingerprint,
+      observed_updated_at_ms,
+      run_root,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("workflow_fingerprint", json.string(workflow_fingerprint)),
+      #("issue_id", json.string(issue_id)),
+      #("issue_identifier", json.string(issue_identifier)),
+      #("issue_fingerprint", json.string(issue_fingerprint)),
+      #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
+      #("run_root", json.string(run_root)),
+    ]
+    WorkflowRunFinished(
+      run_id,
+      workflow_id,
+      issue_id,
+      outcome,
+      token_total,
+      turns,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("issue_id", json.string(issue_id)),
+      #("outcome", json.string(outcome)),
+      #("token_total", json.int(token_total)),
+      #("turns", json.int(turns)),
+    ]
+    WorkflowRunInterrupted(run_id, workflow_id, issue_id, reason) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("issue_id", json.string(issue_id)),
+      #("reason", json.string(reason)),
+    ]
+    WorkflowRunSuperseded(
+      run_id,
+      workflow_id,
+      issue_id,
+      superseded_by_run_id,
+      reason,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("issue_id", json.string(issue_id)),
+      #("superseded_by_run_id", json.string(superseded_by_run_id)),
+      #("reason", json.string(reason)),
+    ]
+    StepAttemptPrepared(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      workspace_name,
+      workspace_path,
+      run_root,
+      source_workspace_name,
+      source_workspace_path,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("step_id", json.string(step_id)),
+      #("attempt_index", json.int(attempt_index)),
+      #("workspace_name", json.string(workspace_name)),
+      #("workspace_path", json.string(workspace_path)),
+      #("run_root", json.string(run_root)),
+      #("source_workspace_name", option_string_to_json(source_workspace_name)),
+      #("source_workspace_path", option_string_to_json(source_workspace_path)),
+    ]
+    StepAttemptStarted(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      operator_session_id,
+      external_session_ref,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("step_id", json.string(step_id)),
+      #("attempt_index", json.int(attempt_index)),
+      #("operator_session_id", json.string(operator_session_id)),
+      #("external_session_ref", option_string_to_json(external_session_ref)),
+    ]
+    StepAttemptFinished(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      outcome,
+      artifact_ref,
+      artifact_sha256,
+      workspace_name,
+      workspace_path,
+      token_total,
+      turns,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("step_id", json.string(step_id)),
+      #("attempt_index", json.int(attempt_index)),
+      #("outcome", json.string(outcome)),
+      #("artifact_ref", json.string(artifact_ref)),
+      #("artifact_sha256", json.string(artifact_sha256)),
+      #("workspace_name", json.string(workspace_name)),
+      #("workspace_path", json.string(workspace_path)),
+      #("token_total", json.int(token_total)),
+      #("turns", json.int(turns)),
+    ]
+    StepAttemptInterrupted(run_id, workflow_id, step_id, attempt_index, reason) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("step_id", json.string(step_id)),
+      #("attempt_index", json.int(attempt_index)),
+      #("reason", json.string(reason)),
+    ]
+    StepAttemptSuperseded(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      superseded_by_attempt_index,
+      reason,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("step_id", json.string(step_id)),
+      #("attempt_index", json.int(attempt_index)),
+      #("superseded_by_attempt_index", json.int(superseded_by_attempt_index)),
       #("reason", json.string(reason)),
     ]
     RetryScheduled(issue_id, issue_identifier, delay_ms, generation, reason) -> [
@@ -416,6 +654,241 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
       use reason <- result.try(required_string(fields.reason, "reason"))
       Ok(RunInterrupted(run_id, issue_id, reason))
+    }
+    "workflow_run_started" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use workflow_fingerprint <- result.try(required_string(
+        fields.workflow_fingerprint,
+        "workflow_fingerprint",
+      ))
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use issue_identifier <- result.try(required_string(
+        fields.issue_identifier,
+        "issue_identifier",
+      ))
+      use issue_fingerprint <- result.try(required_string(
+        fields.issue_fingerprint,
+        "issue_fingerprint",
+      ))
+      use observed_updated_at_ms <- result.try(required_int(
+        fields.observed_updated_at_ms,
+        "observed_updated_at_ms",
+      ))
+      use run_root <- result.try(required_string(fields.run_root, "run_root"))
+      Ok(WorkflowRunStarted(
+        run_id,
+        workflow_id,
+        workflow_fingerprint,
+        issue_id,
+        issue_identifier,
+        issue_fingerprint,
+        observed_updated_at_ms,
+        run_root,
+      ))
+    }
+    "workflow_run_finished" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use outcome <- result.try(required_string(fields.outcome, "outcome"))
+      use token_total <- result.try(required_int(
+        fields.token_total,
+        "token_total",
+      ))
+      use turns <- result.try(required_int(fields.turns, "turns"))
+      Ok(WorkflowRunFinished(
+        run_id,
+        workflow_id,
+        issue_id,
+        outcome,
+        token_total,
+        turns,
+      ))
+    }
+    "workflow_run_interrupted" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(WorkflowRunInterrupted(run_id, workflow_id, issue_id, reason))
+    }
+    "workflow_run_superseded" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use superseded_by_run_id <- result.try(required_string(
+        fields.superseded_by_run_id,
+        "superseded_by_run_id",
+      ))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(WorkflowRunSuperseded(
+        run_id,
+        workflow_id,
+        issue_id,
+        superseded_by_run_id,
+        reason,
+      ))
+    }
+    "step_attempt_prepared" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use step_id <- result.try(required_string(fields.step_id, "step_id"))
+      use attempt_index <- result.try(required_int(
+        fields.attempt_index,
+        "attempt_index",
+      ))
+      use workspace_name <- result.try(required_string(
+        fields.workspace_name,
+        "workspace_name",
+      ))
+      use workspace_path <- result.try(required_string(
+        fields.workspace_path,
+        "workspace_path",
+      ))
+      use run_root <- result.try(required_string(fields.run_root, "run_root"))
+      Ok(StepAttemptPrepared(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        workspace_name,
+        workspace_path,
+        run_root,
+        fields.source_workspace_name,
+        fields.source_workspace_path,
+      ))
+    }
+    "step_attempt_started" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use step_id <- result.try(required_string(fields.step_id, "step_id"))
+      use attempt_index <- result.try(required_int(
+        fields.attempt_index,
+        "attempt_index",
+      ))
+      use operator_session_id <- result.try(required_string(
+        fields.operator_session_id,
+        "operator_session_id",
+      ))
+      Ok(StepAttemptStarted(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        operator_session_id,
+        fields.external_session_ref,
+      ))
+    }
+    "step_attempt_finished" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use step_id <- result.try(required_string(fields.step_id, "step_id"))
+      use attempt_index <- result.try(required_int(
+        fields.attempt_index,
+        "attempt_index",
+      ))
+      use outcome <- result.try(required_string(fields.outcome, "outcome"))
+      use artifact_ref <- result.try(required_string(
+        fields.artifact_ref,
+        "artifact_ref",
+      ))
+      use artifact_sha256 <- result.try(required_string(
+        fields.artifact_sha256,
+        "artifact_sha256",
+      ))
+      use workspace_name <- result.try(required_string(
+        fields.workspace_name,
+        "workspace_name",
+      ))
+      use workspace_path <- result.try(required_string(
+        fields.workspace_path,
+        "workspace_path",
+      ))
+      use token_total <- result.try(required_int(
+        fields.token_total,
+        "token_total",
+      ))
+      use turns <- result.try(required_int(fields.turns, "turns"))
+      Ok(StepAttemptFinished(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        outcome,
+        artifact_ref,
+        artifact_sha256,
+        workspace_name,
+        workspace_path,
+        token_total,
+        turns,
+      ))
+    }
+    "step_attempt_interrupted" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use step_id <- result.try(required_string(fields.step_id, "step_id"))
+      use attempt_index <- result.try(required_int(
+        fields.attempt_index,
+        "attempt_index",
+      ))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(StepAttemptInterrupted(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        reason,
+      ))
+    }
+    "step_attempt_superseded" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use step_id <- result.try(required_string(fields.step_id, "step_id"))
+      use attempt_index <- result.try(required_int(
+        fields.attempt_index,
+        "attempt_index",
+      ))
+      use superseded_by_attempt_index <- result.try(required_int(
+        fields.superseded_by_attempt_index,
+        "superseded_by_attempt_index",
+      ))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(StepAttemptSuperseded(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        superseded_by_attempt_index,
+        reason,
+      ))
     }
     "retry_scheduled" -> {
       use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
@@ -654,6 +1127,16 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use workflow_id <- decode.optional_field(
+    "workflow_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use workflow_fingerprint <- decode.optional_field(
+    "workflow_fingerprint",
+    None,
+    decode.optional(decode.string),
+  )
   use issue_id <- decode.optional_field(
     "issue_id",
     None,
@@ -668,6 +1151,71 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     "workspace_path",
     None,
     decode.optional(decode.string),
+  )
+  use workspace_name <- decode.optional_field(
+    "workspace_name",
+    None,
+    decode.optional(decode.string),
+  )
+  use run_root <- decode.optional_field(
+    "run_root",
+    None,
+    decode.optional(decode.string),
+  )
+  use source_workspace_name <- decode.optional_field(
+    "source_workspace_name",
+    None,
+    decode.optional(decode.string),
+  )
+  use source_workspace_path <- decode.optional_field(
+    "source_workspace_path",
+    None,
+    decode.optional(decode.string),
+  )
+  use step_id <- decode.optional_field(
+    "step_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use attempt_index <- decode.optional_field(
+    "attempt_index",
+    None,
+    decode.optional(decode.int),
+  )
+  use operator_session_id <- decode.optional_field(
+    "operator_session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use external_session_ref <- decode.optional_field(
+    "external_session_ref",
+    None,
+    decode.optional(decode.string),
+  )
+  use outcome <- decode.optional_field(
+    "outcome",
+    None,
+    decode.optional(decode.string),
+  )
+  use artifact_ref <- decode.optional_field(
+    "artifact_ref",
+    None,
+    decode.optional(decode.string),
+  )
+  use artifact_sha256 <- decode.optional_field(
+    "artifact_sha256",
+    None,
+    decode.optional(decode.string),
+  )
+  use superseded_by_run_id <- decode.optional_field(
+    "superseded_by_run_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use superseded_by_attempt_index <- decode.optional_field(
+    "superseded_by_attempt_index",
+    None,
+    decode.optional(decode.int),
   )
   use classification <- decode.optional_field(
     "classification",
@@ -786,9 +1334,24 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     at_ms: at_ms,
     kind: kind,
     run_id: run_id,
+    workflow_id: workflow_id,
+    workflow_fingerprint: workflow_fingerprint,
     issue_id: issue_id,
     issue_identifier: issue_identifier,
     workspace_path: workspace_path,
+    workspace_name: workspace_name,
+    run_root: run_root,
+    source_workspace_name: source_workspace_name,
+    source_workspace_path: source_workspace_path,
+    step_id: step_id,
+    attempt_index: attempt_index,
+    operator_session_id: operator_session_id,
+    external_session_ref: external_session_ref,
+    outcome: outcome,
+    artifact_ref: artifact_ref,
+    artifact_sha256: artifact_sha256,
+    superseded_by_run_id: superseded_by_run_id,
+    superseded_by_attempt_index: superseded_by_attempt_index,
     classification: classification,
     token_total: token_total,
     turns: turns,

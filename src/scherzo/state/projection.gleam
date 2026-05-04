@@ -13,6 +13,8 @@ import scherzo/state/record
 pub type Projection {
   Projection(
     runs: Dict(String, RunStatus),
+    workflow_runs: Dict(String, WorkflowRunStatus),
+    step_attempts: Dict(String, StepAttemptStatus),
     retries: Dict(String, RetryStatus),
     parked_issues: Dict(String, ParkedIssue),
     commands: Dict(String, CommandStatus),
@@ -38,6 +40,119 @@ pub type RunStatus {
     finished_at_ms: Int,
   )
   RunInterrupted(issue_id: String, reason: String, interrupted_at_ms: Int)
+}
+
+pub type WorkflowRunStatus {
+  WorkflowRunActive(
+    workflow_id: String,
+    workflow_fingerprint: String,
+    issue_id: String,
+    issue_identifier: String,
+    issue_fingerprint: String,
+    observed_updated_at_ms: Int,
+    run_root: String,
+    started_at_ms: Int,
+  )
+  WorkflowRunFinished(
+    workflow_id: String,
+    issue_id: String,
+    outcome: String,
+    token_total: Int,
+    turns: Int,
+    finished_at_ms: Int,
+    run_root: String,
+  )
+  WorkflowRunInterrupted(
+    workflow_id: String,
+    issue_id: String,
+    reason: String,
+    interrupted_at_ms: Int,
+    run_root: String,
+  )
+  WorkflowRunSuperseded(
+    workflow_id: String,
+    issue_id: String,
+    superseded_by_run_id: String,
+    reason: String,
+    superseded_at_ms: Int,
+    run_root: String,
+  )
+}
+
+pub type StepAttemptStatus {
+  StepAttemptPending(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    workspace_name: String,
+    workspace_path: String,
+    run_root: String,
+    source_workspace_name: Option(String),
+    source_workspace_path: Option(String),
+    prepared_at_ms: Int,
+  )
+  StepAttemptRunning(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    workspace_name: String,
+    workspace_path: String,
+    run_root: String,
+    source_workspace_name: Option(String),
+    source_workspace_path: Option(String),
+    operator_session_id: String,
+    external_session_ref: Option(String),
+    started_at_ms: Int,
+  )
+  StepAttemptFinishedStatus(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    outcome: String,
+    artifact_ref: String,
+    artifact_sha256: String,
+    workspace_name: String,
+    workspace_path: String,
+    run_root: String,
+    source_workspace_name: Option(String),
+    source_workspace_path: Option(String),
+    token_total: Int,
+    turns: Int,
+    finished_at_ms: Int,
+  )
+  StepAttemptInterruptedStatus(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    reason: String,
+    interrupted_at_ms: Int,
+  )
+  StepAttemptSupersededStatus(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    superseded_by_attempt_index: Int,
+    reason: String,
+    superseded_at_ms: Int,
+  )
+}
+
+pub type CompletedWorkspace {
+  CompletedWorkspace(
+    workflow_id: String,
+    run_id: String,
+    run_root: String,
+    workspace_name: String,
+    path: String,
+    source_workspace_name: Option(String),
+    source_workspace_path: Option(String),
+    attempt_index: Int,
+  )
 }
 
 pub type RetryStatus {
@@ -172,6 +287,14 @@ type RunSnapshot {
   RunSnapshot(run_id: String, status: RunStatus)
 }
 
+type WorkflowRunSnapshot {
+  WorkflowRunSnapshot(run_id: String, status: WorkflowRunStatus)
+}
+
+type StepAttemptSnapshot {
+  StepAttemptSnapshot(key: String, status: StepAttemptStatus)
+}
+
 type RetrySnapshot {
   RetrySnapshot(issue_id: String, status: RetryStatus)
 }
@@ -203,6 +326,8 @@ type KnownWorkspaceSnapshot {
 type SnapshotFields {
   SnapshotFields(
     runs: List(RunSnapshot),
+    workflow_runs: List(WorkflowRunSnapshot),
+    step_attempts: List(StepAttemptSnapshot),
     retries: List(RetrySnapshot),
     parked_issues: List(ParkedSnapshot),
     commands: List(CommandSnapshot),
@@ -216,6 +341,8 @@ type SnapshotFields {
 pub fn new() -> Projection {
   Projection(
     runs: dict.new(),
+    workflow_runs: dict.new(),
+    step_attempts: dict.new(),
     retries: dict.new(),
     parked_issues: dict.new(),
     commands: dict.new(),
@@ -270,6 +397,268 @@ pub fn apply(
           projection.runs,
           run_id,
           RunInterrupted(issue_id, reason, at_ms),
+        ),
+      )
+    record.WorkflowRunStarted(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      issue_id,
+      issue_identifier,
+      issue_fingerprint,
+      observed_updated_at_ms,
+      run_root,
+    ) ->
+      Projection(
+        ..projection,
+        workflow_runs: dict.insert(
+          projection.workflow_runs,
+          run_id,
+          WorkflowRunActive(
+            workflow_id,
+            workflow_fingerprint,
+            issue_id,
+            issue_identifier,
+            issue_fingerprint,
+            observed_updated_at_ms,
+            run_root,
+            at_ms,
+          ),
+        ),
+      )
+    record.WorkflowRunFinished(
+      run_id,
+      workflow_id,
+      issue_id,
+      outcome,
+      token_total,
+      turns,
+    ) -> {
+      let run_root = workflow_run_root(projection, run_id)
+      Projection(
+        ..projection,
+        workflow_runs: dict.insert(
+          projection.workflow_runs,
+          run_id,
+          WorkflowRunFinished(
+            workflow_id,
+            issue_id,
+            outcome,
+            token_total,
+            turns,
+            at_ms,
+            run_root,
+          ),
+        ),
+      )
+    }
+    record.WorkflowRunInterrupted(run_id, workflow_id, issue_id, reason) -> {
+      let run_root = workflow_run_root(projection, run_id)
+      Projection(
+        ..projection,
+        workflow_runs: dict.insert(
+          projection.workflow_runs,
+          run_id,
+          WorkflowRunInterrupted(workflow_id, issue_id, reason, at_ms, run_root),
+        ),
+      )
+    }
+    record.WorkflowRunSuperseded(
+      run_id,
+      workflow_id,
+      issue_id,
+      superseded_by_run_id,
+      reason,
+    ) -> {
+      let run_root = workflow_run_root(projection, run_id)
+      Projection(
+        ..projection,
+        workflow_runs: dict.insert(
+          projection.workflow_runs,
+          run_id,
+          WorkflowRunSuperseded(
+            workflow_id,
+            issue_id,
+            superseded_by_run_id,
+            reason,
+            at_ms,
+            run_root,
+          ),
+        ),
+      )
+    }
+    record.StepAttemptPrepared(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      workspace_name,
+      workspace_path,
+      run_root,
+      source_workspace_name,
+      source_workspace_path,
+    ) ->
+      Projection(
+        ..projection,
+        step_attempts: dict.insert(
+          projection.step_attempts,
+          step_attempt_key(run_id, step_id, attempt_index),
+          StepAttemptPending(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            workspace_name,
+            workspace_path,
+            run_root,
+            source_workspace_name,
+            source_workspace_path,
+            at_ms,
+          ),
+        ),
+      )
+    record.StepAttemptStarted(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      operator_session_id,
+      external_session_ref,
+    ) -> {
+      let key = step_attempt_key(run_id, step_id, attempt_index)
+      let status = case dict.get(projection.step_attempts, key) {
+        Ok(StepAttemptPending(
+          _,
+          _,
+          _,
+          _,
+          workspace_name,
+          workspace_path,
+          run_root,
+          source_workspace_name,
+          source_workspace_path,
+          _,
+        )) ->
+          StepAttemptRunning(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            workspace_name,
+            workspace_path,
+            run_root,
+            source_workspace_name,
+            source_workspace_path,
+            operator_session_id,
+            external_session_ref,
+            at_ms,
+          )
+        _ ->
+          StepAttemptRunning(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            "",
+            "",
+            "",
+            None,
+            None,
+            operator_session_id,
+            external_session_ref,
+            at_ms,
+          )
+      }
+      Projection(
+        ..projection,
+        step_attempts: dict.insert(projection.step_attempts, key, status),
+      )
+    }
+    record.StepAttemptFinished(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      outcome,
+      artifact_ref,
+      artifact_sha256,
+      workspace_name,
+      workspace_path,
+      token_total,
+      turns,
+    ) -> {
+      let key = step_attempt_key(run_id, step_id, attempt_index)
+      let #(run_root, source_workspace_name, source_workspace_path) =
+        finished_workspace_metadata(projection.step_attempts, key)
+      Projection(
+        ..projection,
+        step_attempts: dict.insert(
+          projection.step_attempts,
+          key,
+          StepAttemptFinishedStatus(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            outcome,
+            artifact_ref,
+            artifact_sha256,
+            workspace_name,
+            workspace_path,
+            run_root,
+            source_workspace_name,
+            source_workspace_path,
+            token_total,
+            turns,
+            at_ms,
+          ),
+        ),
+      )
+    }
+    record.StepAttemptInterrupted(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      reason,
+    ) ->
+      Projection(
+        ..projection,
+        step_attempts: dict.insert(
+          projection.step_attempts,
+          step_attempt_key(run_id, step_id, attempt_index),
+          StepAttemptInterruptedStatus(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            reason,
+            at_ms,
+          ),
+        ),
+      )
+    record.StepAttemptSuperseded(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      superseded_by_attempt_index,
+      reason,
+    ) ->
+      Projection(
+        ..projection,
+        step_attempts: dict.insert(
+          projection.step_attempts,
+          step_attempt_key(run_id, step_id, attempt_index),
+          StepAttemptSupersededStatus(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            superseded_by_attempt_index,
+            reason,
+            at_ms,
+          ),
         ),
       )
     record.RetryScheduled(
@@ -722,9 +1111,236 @@ fn acked_receipt(
   }
 }
 
+pub fn step_attempt_key(
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+) -> String {
+  run_id <> "\u{001f}" <> step_id <> "\u{001f}" <> int.to_string(attempt_index)
+}
+
+pub fn next_attempt_index(
+  projection: Projection,
+  run_id: String,
+  step_id: String,
+) -> Int {
+  projection.step_attempts
+  |> dict.values
+  |> list.fold(0, fn(max_index, status) {
+    case attempt_identity(status) {
+      #(status_run_id, status_step_id, attempt_index) ->
+        case
+          status_run_id == run_id
+          && status_step_id == step_id
+          && attempt_index > max_index
+        {
+          True -> attempt_index
+          False -> max_index
+        }
+    }
+  })
+  |> add_one
+}
+
+pub fn dependency_satisfying_attempt(status: StepAttemptStatus) -> Bool {
+  case status {
+    StepAttemptFinishedStatus(outcome: outcome, ..) ->
+      outcome == "completed" || outcome == "failed_continued"
+    _ -> False
+  }
+}
+
+fn finished_workspace_metadata(
+  attempts: Dict(String, StepAttemptStatus),
+  key: String,
+) -> #(String, Option(String), Option(String)) {
+  case dict.get(attempts, key) {
+    Ok(StepAttemptPending(
+      run_root: run_root,
+      source_workspace_name: source_workspace_name,
+      source_workspace_path: source_workspace_path,
+      ..,
+    )) -> #(run_root, source_workspace_name, source_workspace_path)
+    Ok(StepAttemptRunning(
+      run_root: run_root,
+      source_workspace_name: source_workspace_name,
+      source_workspace_path: source_workspace_path,
+      ..,
+    )) -> #(run_root, source_workspace_name, source_workspace_path)
+    Ok(StepAttemptFinishedStatus(
+      run_root: run_root,
+      source_workspace_name: source_workspace_name,
+      source_workspace_path: source_workspace_path,
+      ..,
+    )) -> #(run_root, source_workspace_name, source_workspace_path)
+    _ -> #("", None, None)
+  }
+}
+
+pub fn latest_completed_workspace(
+  projection: Projection,
+  run_id: String,
+  workspace_name: String,
+) -> Result(CompletedWorkspace, Nil) {
+  projection.step_attempts
+  |> dict.values
+  |> list.filter(fn(status) {
+    case status {
+      StepAttemptFinishedStatus(
+        run_id: status_run_id,
+        workspace_name: status_workspace_name,
+        outcome: outcome,
+        ..,
+      ) ->
+        status_run_id == run_id
+        && status_workspace_name == workspace_name
+        && { outcome == "completed" || outcome == "failed_continued" }
+      _ -> False
+    }
+  })
+  |> latest_finished_workspace(None)
+}
+
+pub fn active_workflow_runs(
+  projection: Projection,
+) -> List(#(String, WorkflowRunStatus)) {
+  projection.workflow_runs
+  |> dict.to_list
+  |> list.filter(fn(entry) {
+    let #(_, status) = entry
+    case status {
+      WorkflowRunActive(..) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn has_workflow_run(projection: Projection, run_id: String) -> Bool {
+  dict.has_key(projection.workflow_runs, run_id)
+}
+
+fn latest_finished_workspace(
+  statuses: List(StepAttemptStatus),
+  best: Option(StepAttemptStatus),
+) -> Result(CompletedWorkspace, Nil) {
+  case statuses {
+    [] ->
+      case best {
+        Some(status) -> completed_workspace_from_status(status)
+        None -> Error(Nil)
+      }
+    [status, ..rest] -> {
+      let best = case best {
+        None -> Some(status)
+        Some(existing) ->
+          case attempt_index_of(status) > attempt_index_of(existing) {
+            True -> Some(status)
+            False -> best
+          }
+      }
+      latest_finished_workspace(rest, best)
+    }
+  }
+}
+
+fn completed_workspace_from_status(
+  status: StepAttemptStatus,
+) -> Result(CompletedWorkspace, Nil) {
+  case status {
+    StepAttemptFinishedStatus(
+      run_id,
+      workflow_id,
+      _,
+      attempt_index,
+      _,
+      _,
+      _,
+      workspace_name,
+      workspace_path,
+      run_root,
+      source_workspace_name,
+      source_workspace_path,
+      _,
+      _,
+      _,
+    ) ->
+      Ok(CompletedWorkspace(
+        workflow_id: workflow_id,
+        run_id: run_id,
+        run_root: run_root,
+        workspace_name: workspace_name,
+        path: workspace_path,
+        source_workspace_name: source_workspace_name,
+        source_workspace_path: source_workspace_path,
+        attempt_index: attempt_index,
+      ))
+    _ -> Error(Nil)
+  }
+}
+
+fn attempt_identity(status: StepAttemptStatus) -> #(String, String, Int) {
+  case status {
+    StepAttemptPending(run_id, _, step_id, attempt_index, _, _, _, _, _, _) -> #(
+      run_id,
+      step_id,
+      attempt_index,
+    )
+    StepAttemptRunning(
+      run_id,
+      _,
+      step_id,
+      attempt_index,
+      _,
+      _,
+      _,
+      _,
+      _,
+      _,
+      _,
+      _,
+    ) -> #(run_id, step_id, attempt_index)
+    StepAttemptFinishedStatus(
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
+    ) -> #(run_id, step_id, attempt_index)
+    StepAttemptInterruptedStatus(run_id, _, step_id, attempt_index, _, _) -> #(
+      run_id,
+      step_id,
+      attempt_index,
+    )
+    StepAttemptSupersededStatus(run_id, _, step_id, attempt_index, _, _, _) -> #(
+      run_id,
+      step_id,
+      attempt_index,
+    )
+  }
+}
+
+fn attempt_index_of(status: StepAttemptStatus) -> Int {
+  let #(_, _, attempt_index) = attempt_identity(status)
+  attempt_index
+}
+
+fn add_one(value: Int) -> Int {
+  value + 1
+}
+
+fn workflow_run_root(projection: Projection, run_id: String) -> String {
+  case dict.get(projection.workflow_runs, run_id) {
+    Ok(WorkflowRunActive(run_root: run_root, ..)) -> run_root
+    Ok(WorkflowRunFinished(run_root: run_root, ..)) -> run_root
+    Ok(WorkflowRunInterrupted(run_root: run_root, ..)) -> run_root
+    Ok(WorkflowRunSuperseded(run_root: run_root, ..)) -> run_root
+    Error(_) -> ""
+  }
+}
+
 pub fn known_issue_ids(projection: Projection) -> List(String) {
   []
   |> append_unique_strings(run_issue_ids(projection.runs))
+  |> append_unique_strings(workflow_run_issue_ids(projection.workflow_runs))
   |> append_unique_strings(dict.keys(projection.retries))
   |> append_unique_strings(dict.keys(projection.parked_issues))
   |> append_unique_strings(command_issue_ids(projection.commands))
@@ -800,6 +1416,20 @@ pub fn to_json(projection: Projection) -> json.Json {
     #("kind", json.string("projection_snapshot")),
     #("runs", json.array(dict.to_list(projection.runs), of: run_entry_to_json)),
     #(
+      "workflow_runs",
+      json.array(
+        dict.to_list(projection.workflow_runs),
+        of: workflow_run_entry_to_json,
+      ),
+    ),
+    #(
+      "step_attempts",
+      json.array(
+        dict.to_list(projection.step_attempts),
+        of: step_attempt_entry_to_json,
+      ),
+    ),
+    #(
       "retries",
       json.array(dict.to_list(projection.retries), of: retry_entry_to_json),
     ),
@@ -847,6 +1477,14 @@ pub fn to_string(projection: Projection) -> String {
 }
 
 pub fn decode_string(contents: String) -> Result(Projection, String) {
+  case json.parse(contents, snapshot_header_decoder()) {
+    Ok(#(version, _)) if version != record.schema_version ->
+      Error("unsupported schema version " <> int.to_string(version))
+    _ -> decode_current_snapshot(contents)
+  }
+}
+
+fn decode_current_snapshot(contents: String) -> Result(Projection, String) {
   case json.parse(contents, snapshot_decoder()) {
     Ok(fields) ->
       Ok(Projection(
@@ -854,6 +1492,18 @@ pub fn decode_string(contents: String) -> Result(Projection, String) {
           |> list.map(fn(entry) {
             let RunSnapshot(run_id, status) = entry
             #(run_id, status)
+          })
+          |> dict.from_list,
+        workflow_runs: fields.workflow_runs
+          |> list.map(fn(entry) {
+            let WorkflowRunSnapshot(run_id, status) = entry
+            #(run_id, status)
+          })
+          |> dict.from_list,
+        step_attempts: fields.step_attempts
+          |> list.map(fn(entry) {
+            let StepAttemptSnapshot(key, status) = entry
+            #(key, status)
           })
           |> dict.from_list,
         retries: fields.retries
@@ -903,6 +1553,12 @@ pub fn decode_string(contents: String) -> Result(Projection, String) {
   }
 }
 
+fn snapshot_header_decoder() -> decode.Decoder(#(Int, String)) {
+  use schema_version <- decode.field("schema_version", decode.int)
+  use kind <- decode.field("kind", decode.string)
+  decode.success(#(schema_version, kind))
+}
+
 fn run_entry_to_json(entry: #(String, RunStatus)) -> json.Json {
   let #(run_id, status) = entry
   case status {
@@ -933,6 +1589,235 @@ fn run_entry_to_json(entry: #(String, RunStatus)) -> json.Json {
         #("reason", json.string(reason)),
         #("interrupted_at_ms", json.int(interrupted_at_ms)),
       ])
+  }
+}
+
+fn workflow_run_entry_to_json(
+  entry: #(String, WorkflowRunStatus),
+) -> json.Json {
+  let #(run_id, status) = entry
+  case status {
+    WorkflowRunActive(
+      workflow_id,
+      workflow_fingerprint,
+      issue_id,
+      issue_identifier,
+      issue_fingerprint,
+      observed_updated_at_ms,
+      run_root,
+      started_at_ms,
+    ) ->
+      json.object([
+        #("run_id", json.string(run_id)),
+        #("status", json.string("active")),
+        #("workflow_id", json.string(workflow_id)),
+        #("workflow_fingerprint", json.string(workflow_fingerprint)),
+        #("issue_id", json.string(issue_id)),
+        #("issue_identifier", json.string(issue_identifier)),
+        #("issue_fingerprint", json.string(issue_fingerprint)),
+        #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
+        #("run_root", json.string(run_root)),
+        #("started_at_ms", json.int(started_at_ms)),
+      ])
+    WorkflowRunFinished(
+      workflow_id,
+      issue_id,
+      outcome,
+      token_total,
+      turns,
+      finished_at_ms,
+      run_root,
+    ) ->
+      json.object([
+        #("run_id", json.string(run_id)),
+        #("status", json.string("finished")),
+        #("workflow_id", json.string(workflow_id)),
+        #("issue_id", json.string(issue_id)),
+        #("outcome", json.string(outcome)),
+        #("token_total", json.int(token_total)),
+        #("turns", json.int(turns)),
+        #("finished_at_ms", json.int(finished_at_ms)),
+        #("run_root", json.string(run_root)),
+      ])
+    WorkflowRunInterrupted(
+      workflow_id,
+      issue_id,
+      reason,
+      interrupted_at_ms,
+      run_root,
+    ) ->
+      json.object([
+        #("run_id", json.string(run_id)),
+        #("status", json.string("interrupted")),
+        #("workflow_id", json.string(workflow_id)),
+        #("issue_id", json.string(issue_id)),
+        #("reason", json.string(reason)),
+        #("interrupted_at_ms", json.int(interrupted_at_ms)),
+        #("run_root", json.string(run_root)),
+      ])
+    WorkflowRunSuperseded(
+      workflow_id,
+      issue_id,
+      superseded_by_run_id,
+      reason,
+      superseded_at_ms,
+      run_root,
+    ) ->
+      json.object([
+        #("run_id", json.string(run_id)),
+        #("status", json.string("superseded")),
+        #("workflow_id", json.string(workflow_id)),
+        #("issue_id", json.string(issue_id)),
+        #("superseded_by_run_id", json.string(superseded_by_run_id)),
+        #("reason", json.string(reason)),
+        #("superseded_at_ms", json.int(superseded_at_ms)),
+        #("run_root", json.string(run_root)),
+      ])
+  }
+}
+
+fn step_attempt_entry_to_json(
+  entry: #(String, StepAttemptStatus),
+) -> json.Json {
+  let #(key, status) = entry
+  case status {
+    StepAttemptPending(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      workspace_name,
+      workspace_path,
+      run_root,
+      source_workspace_name,
+      source_workspace_path,
+      prepared_at_ms,
+    ) ->
+      json.object([
+        #("key", json.string(key)),
+        #("status", json.string("pending")),
+        #("run_id", json.string(run_id)),
+        #("workflow_id", json.string(workflow_id)),
+        #("step_id", json.string(step_id)),
+        #("attempt_index", json.int(attempt_index)),
+        #("workspace_name", json.string(workspace_name)),
+        #("workspace_path", json.string(workspace_path)),
+        #("run_root", json.string(run_root)),
+        #("source_workspace_name", option_string_to_json(source_workspace_name)),
+        #("source_workspace_path", option_string_to_json(source_workspace_path)),
+        #("prepared_at_ms", json.int(prepared_at_ms)),
+      ])
+    StepAttemptRunning(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      workspace_name,
+      workspace_path,
+      run_root,
+      source_workspace_name,
+      source_workspace_path,
+      operator_session_id,
+      external_session_ref,
+      started_at_ms,
+    ) ->
+      json.object([
+        #("key", json.string(key)),
+        #("status", json.string("running")),
+        #("run_id", json.string(run_id)),
+        #("workflow_id", json.string(workflow_id)),
+        #("step_id", json.string(step_id)),
+        #("attempt_index", json.int(attempt_index)),
+        #("workspace_name", json.string(workspace_name)),
+        #("workspace_path", json.string(workspace_path)),
+        #("run_root", json.string(run_root)),
+        #("source_workspace_name", option_string_to_json(source_workspace_name)),
+        #("source_workspace_path", option_string_to_json(source_workspace_path)),
+        #("operator_session_id", json.string(operator_session_id)),
+        #("external_session_ref", option_string_to_json(external_session_ref)),
+        #("started_at_ms", json.int(started_at_ms)),
+      ])
+    StepAttemptFinishedStatus(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      outcome,
+      artifact_ref,
+      artifact_sha256,
+      workspace_name,
+      workspace_path,
+      run_root,
+      source_workspace_name,
+      source_workspace_path,
+      token_total,
+      turns,
+      finished_at_ms,
+    ) ->
+      json.object([
+        #("key", json.string(key)),
+        #("status", json.string("finished")),
+        #("run_id", json.string(run_id)),
+        #("workflow_id", json.string(workflow_id)),
+        #("step_id", json.string(step_id)),
+        #("attempt_index", json.int(attempt_index)),
+        #("outcome", json.string(outcome)),
+        #("artifact_ref", json.string(artifact_ref)),
+        #("artifact_sha256", json.string(artifact_sha256)),
+        #("workspace_name", json.string(workspace_name)),
+        #("workspace_path", json.string(workspace_path)),
+        #("run_root", json.string(run_root)),
+        #("source_workspace_name", option_string_to_json(source_workspace_name)),
+        #("source_workspace_path", option_string_to_json(source_workspace_path)),
+        #("token_total", json.int(token_total)),
+        #("turns", json.int(turns)),
+        #("finished_at_ms", json.int(finished_at_ms)),
+      ])
+    StepAttemptInterruptedStatus(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      reason,
+      interrupted_at_ms,
+    ) ->
+      json.object([
+        #("key", json.string(key)),
+        #("status", json.string("interrupted")),
+        #("run_id", json.string(run_id)),
+        #("workflow_id", json.string(workflow_id)),
+        #("step_id", json.string(step_id)),
+        #("attempt_index", json.int(attempt_index)),
+        #("reason", json.string(reason)),
+        #("interrupted_at_ms", json.int(interrupted_at_ms)),
+      ])
+    StepAttemptSupersededStatus(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      superseded_by_attempt_index,
+      reason,
+      superseded_at_ms,
+    ) ->
+      json.object([
+        #("key", json.string(key)),
+        #("status", json.string("superseded")),
+        #("run_id", json.string(run_id)),
+        #("workflow_id", json.string(workflow_id)),
+        #("step_id", json.string(step_id)),
+        #("attempt_index", json.int(attempt_index)),
+        #("superseded_by_attempt_index", json.int(superseded_by_attempt_index)),
+        #("reason", json.string(reason)),
+        #("superseded_at_ms", json.int(superseded_at_ms)),
+      ])
+  }
+}
+
+fn option_string_to_json(value: Option(String)) -> json.Json {
+  case value {
+    Some(value) -> json.string(value)
+    None -> json.null()
   }
 }
 
@@ -1187,6 +2072,16 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
   use schema_version <- decode.field("schema_version", decode.int)
   use kind <- decode.field("kind", decode.string)
   use runs <- decode.field("runs", decode.list(of: run_snapshot_decoder()))
+  use workflow_runs <- decode.optional_field(
+    "workflow_runs",
+    [],
+    decode.list(of: workflow_run_snapshot_decoder()),
+  )
+  use step_attempts <- decode.optional_field(
+    "step_attempts",
+    [],
+    decode.list(of: step_attempt_snapshot_decoder()),
+  )
   use retries <- decode.field(
     "retries",
     decode.list(of: retry_snapshot_decoder()),
@@ -1224,6 +2119,8 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     True ->
       decode.success(SnapshotFields(
         runs,
+        workflow_runs,
+        step_attempts,
         retries,
         parked_issues,
         commands,
@@ -1234,7 +2131,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
       ))
     False ->
       decode.failure(
-        SnapshotFields([], [], [], [], [], [], [], []),
+        SnapshotFields([], [], [], [], [], [], [], [], [], []),
         expected: "SnapshotFields",
       )
   }
@@ -1284,6 +2181,266 @@ fn run_snapshot_decoder() -> decode.Decoder(RunSnapshot) {
       decode.failure(
         RunSnapshot("", RunInterrupted("", "", 0)),
         expected: "RunSnapshot",
+      )
+  }
+}
+
+fn workflow_run_snapshot_decoder() -> decode.Decoder(WorkflowRunSnapshot) {
+  use run_id <- decode.field("run_id", decode.string)
+  use status <- decode.field("status", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use issue_id <- decode.field("issue_id", decode.string)
+  use run_root <- decode.optional_field("run_root", "", decode.string)
+  case status {
+    "active" -> {
+      use workflow_fingerprint <- decode.field(
+        "workflow_fingerprint",
+        decode.string,
+      )
+      use issue_identifier <- decode.field("issue_identifier", decode.string)
+      use issue_fingerprint <- decode.field("issue_fingerprint", decode.string)
+      use observed_updated_at_ms <- decode.field(
+        "observed_updated_at_ms",
+        decode.int,
+      )
+      use started_at_ms <- decode.field("started_at_ms", decode.int)
+      decode.success(WorkflowRunSnapshot(
+        run_id,
+        WorkflowRunActive(
+          workflow_id,
+          workflow_fingerprint,
+          issue_id,
+          issue_identifier,
+          issue_fingerprint,
+          observed_updated_at_ms,
+          run_root,
+          started_at_ms,
+        ),
+      ))
+    }
+    "finished" -> {
+      use outcome <- decode.field("outcome", decode.string)
+      use token_total <- decode.field("token_total", decode.int)
+      use turns <- decode.field("turns", decode.int)
+      use finished_at_ms <- decode.field("finished_at_ms", decode.int)
+      decode.success(WorkflowRunSnapshot(
+        run_id,
+        WorkflowRunFinished(
+          workflow_id,
+          issue_id,
+          outcome,
+          token_total,
+          turns,
+          finished_at_ms,
+          run_root,
+        ),
+      ))
+    }
+    "interrupted" -> {
+      use reason <- decode.field("reason", decode.string)
+      use interrupted_at_ms <- decode.field("interrupted_at_ms", decode.int)
+      decode.success(WorkflowRunSnapshot(
+        run_id,
+        WorkflowRunInterrupted(
+          workflow_id,
+          issue_id,
+          reason,
+          interrupted_at_ms,
+          run_root,
+        ),
+      ))
+    }
+    "superseded" -> {
+      use superseded_by_run_id <- decode.field(
+        "superseded_by_run_id",
+        decode.string,
+      )
+      use reason <- decode.field("reason", decode.string)
+      use superseded_at_ms <- decode.field("superseded_at_ms", decode.int)
+      decode.success(WorkflowRunSnapshot(
+        run_id,
+        WorkflowRunSuperseded(
+          workflow_id,
+          issue_id,
+          superseded_by_run_id,
+          reason,
+          superseded_at_ms,
+          run_root,
+        ),
+      ))
+    }
+    _ ->
+      decode.failure(
+        WorkflowRunSnapshot("", WorkflowRunInterrupted("", "", "", 0, "")),
+        expected: "WorkflowRunSnapshot",
+      )
+  }
+}
+
+fn step_attempt_snapshot_decoder() -> decode.Decoder(StepAttemptSnapshot) {
+  use key <- decode.field("key", decode.string)
+  use status <- decode.field("status", decode.string)
+  use run_id <- decode.field("run_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use step_id <- decode.field("step_id", decode.string)
+  use attempt_index <- decode.field("attempt_index", decode.int)
+  case status {
+    "pending" -> {
+      use workspace_name <- decode.field("workspace_name", decode.string)
+      use workspace_path <- decode.field("workspace_path", decode.string)
+      use run_root <- decode.field("run_root", decode.string)
+      use source_workspace_name <- decode.optional_field(
+        "source_workspace_name",
+        None,
+        decode.optional(decode.string),
+      )
+      use source_workspace_path <- decode.optional_field(
+        "source_workspace_path",
+        None,
+        decode.optional(decode.string),
+      )
+      use prepared_at_ms <- decode.field("prepared_at_ms", decode.int)
+      decode.success(StepAttemptSnapshot(
+        key,
+        StepAttemptPending(
+          run_id,
+          workflow_id,
+          step_id,
+          attempt_index,
+          workspace_name,
+          workspace_path,
+          run_root,
+          source_workspace_name,
+          source_workspace_path,
+          prepared_at_ms,
+        ),
+      ))
+    }
+    "running" -> {
+      use workspace_name <- decode.field("workspace_name", decode.string)
+      use workspace_path <- decode.field("workspace_path", decode.string)
+      use run_root <- decode.field("run_root", decode.string)
+      use source_workspace_name <- decode.optional_field(
+        "source_workspace_name",
+        None,
+        decode.optional(decode.string),
+      )
+      use source_workspace_path <- decode.optional_field(
+        "source_workspace_path",
+        None,
+        decode.optional(decode.string),
+      )
+      use operator_session_id <- decode.field(
+        "operator_session_id",
+        decode.string,
+      )
+      use external_session_ref <- decode.optional_field(
+        "external_session_ref",
+        None,
+        decode.optional(decode.string),
+      )
+      use started_at_ms <- decode.field("started_at_ms", decode.int)
+      decode.success(StepAttemptSnapshot(
+        key,
+        StepAttemptRunning(
+          run_id,
+          workflow_id,
+          step_id,
+          attempt_index,
+          workspace_name,
+          workspace_path,
+          run_root,
+          source_workspace_name,
+          source_workspace_path,
+          operator_session_id,
+          external_session_ref,
+          started_at_ms,
+        ),
+      ))
+    }
+    "finished" -> {
+      use outcome <- decode.field("outcome", decode.string)
+      use artifact_ref <- decode.field("artifact_ref", decode.string)
+      use artifact_sha256 <- decode.field("artifact_sha256", decode.string)
+      use workspace_name <- decode.field("workspace_name", decode.string)
+      use workspace_path <- decode.field("workspace_path", decode.string)
+      use run_root <- decode.optional_field("run_root", "", decode.string)
+      use source_workspace_name <- decode.optional_field(
+        "source_workspace_name",
+        None,
+        decode.optional(decode.string),
+      )
+      use source_workspace_path <- decode.optional_field(
+        "source_workspace_path",
+        None,
+        decode.optional(decode.string),
+      )
+      use token_total <- decode.field("token_total", decode.int)
+      use turns <- decode.field("turns", decode.int)
+      use finished_at_ms <- decode.field("finished_at_ms", decode.int)
+      decode.success(StepAttemptSnapshot(
+        key,
+        StepAttemptFinishedStatus(
+          run_id,
+          workflow_id,
+          step_id,
+          attempt_index,
+          outcome,
+          artifact_ref,
+          artifact_sha256,
+          workspace_name,
+          workspace_path,
+          run_root,
+          source_workspace_name,
+          source_workspace_path,
+          token_total,
+          turns,
+          finished_at_ms,
+        ),
+      ))
+    }
+    "interrupted" -> {
+      use reason <- decode.field("reason", decode.string)
+      use interrupted_at_ms <- decode.field("interrupted_at_ms", decode.int)
+      decode.success(StepAttemptSnapshot(
+        key,
+        StepAttemptInterruptedStatus(
+          run_id,
+          workflow_id,
+          step_id,
+          attempt_index,
+          reason,
+          interrupted_at_ms,
+        ),
+      ))
+    }
+    "superseded" -> {
+      use superseded_by_attempt_index <- decode.field(
+        "superseded_by_attempt_index",
+        decode.int,
+      )
+      use reason <- decode.field("reason", decode.string)
+      use superseded_at_ms <- decode.field("superseded_at_ms", decode.int)
+      decode.success(StepAttemptSnapshot(
+        key,
+        StepAttemptSupersededStatus(
+          run_id,
+          workflow_id,
+          step_id,
+          attempt_index,
+          superseded_by_attempt_index,
+          reason,
+          superseded_at_ms,
+        ),
+      ))
+    }
+    _ ->
+      decode.failure(
+        StepAttemptSnapshot(
+          "",
+          StepAttemptInterruptedStatus("", "", "", 0, "", 0),
+        ),
+        expected: "StepAttemptSnapshot",
       )
   }
 }
@@ -1608,6 +2765,22 @@ fn run_issue_ids(runs: Dict(String, RunStatus)) -> List(String) {
       RunRunning(issue_id, _, _, _) -> issue_id
       RunFinished(issue_id, _, _, _, _) -> issue_id
       RunInterrupted(issue_id, _, _) -> issue_id
+    }
+  })
+}
+
+fn workflow_run_issue_ids(
+  runs: Dict(String, WorkflowRunStatus),
+) -> List(String) {
+  runs
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(_, status) = entry
+    case status {
+      WorkflowRunActive(issue_id: issue_id, ..) -> issue_id
+      WorkflowRunFinished(issue_id: issue_id, ..) -> issue_id
+      WorkflowRunInterrupted(issue_id: issue_id, ..) -> issue_id
+      WorkflowRunSuperseded(issue_id: issue_id, ..) -> issue_id
     }
   })
 }

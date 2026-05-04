@@ -15,6 +15,7 @@ import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_run
 import scherzo/workspace_run
@@ -128,6 +129,7 @@ fn deps(
       workflow_id,
       run_id,
       step_id,
+      attempt_index,
       workspace_ref,
       _orchestrator,
       known,
@@ -149,6 +151,7 @@ fn deps(
           workflow_id: workflow_id,
           run_id: run_id,
           run_root: "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+          attempt_index: attempt_index,
           workspace_name: workspace_ref.name,
           path: "test/tmp/workflow-run/workspaces/implementation/ABC-123/"
             <> workspace_ref.name,
@@ -200,6 +203,7 @@ fn deps(
       process.send(subject, "agent:" <> workspace_path <> ":" <> prompt)
       Ok(success_agent(prompt))
     },
+    checkpoint: workflow_checkpoint.noop_writer(),
   )
 }
 
@@ -622,6 +626,7 @@ fn deps_with_prepare_failure(
       workflow_id,
       run_id,
       step_id,
+      attempt_index,
       workspace_ref,
       orchestrator,
       known,
@@ -637,6 +642,7 @@ fn deps_with_prepare_failure(
             workflow_id,
             run_id,
             step_id,
+            attempt_index,
             workspace_ref,
             orchestrator,
             known,

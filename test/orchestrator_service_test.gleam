@@ -15,6 +15,7 @@ import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_checkpoint
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
@@ -101,6 +102,7 @@ fn workflow_deps() -> workflow_run.Dependencies {
       workflow_id,
       run_id,
       _step_id,
+      attempt_index,
       workspace_ref,
       orchestrator,
       _known,
@@ -117,6 +119,7 @@ fn workflow_deps() -> workflow_run.Dependencies {
         workflow_id: workflow_id,
         run_id: run_id,
         run_root: run_root,
+        attempt_index: attempt_index,
         workspace_name: workspace_ref.name,
         path: run_root <> "/" <> workspace_ref.name,
         source_workspace_name: workspace_ref.from,
@@ -159,6 +162,7 @@ fn workflow_deps() -> workflow_run.Dependencies {
         ),
       ))
     },
+    checkpoint: workflow_checkpoint.noop_writer(),
   )
 }
 
