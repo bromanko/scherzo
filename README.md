@@ -23,6 +23,55 @@ LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.ya
 LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
 ```
 
+## Using Scherzo from another devenv
+
+This repository is also a Nix flake. The default package builds a precompiled Erlang shipment and exposes these commands:
+
+- `scherzo` — daemon, one-shot, doctor, and control subcommands.
+- `scherzo-start` — Ctrl-C-friendly daemon wrapper that translates SIGINT to Scherzo's graceful SIGTERM shutdown path. The packaged command and local devenv helper share `scripts/scherzo-start-runner` so shutdown behavior is dogfooded locally.
+- `scherzoctl` — shorthand for `scherzo ctl`.
+
+In a consuming devenv project, add the flake input and package:
+
+```yaml
+# devenv.yaml
+inputs:
+  nixpkgs:
+    url: github:NixOS/nixpkgs/nixos-25.11
+  scherzo:
+    url: github:bromanko/scherzo
+```
+
+```nix
+# devenv.nix
+{ pkgs, inputs, ... }:
+
+let
+  system = pkgs.stdenv.hostPlatform.system;
+in
+{
+  packages = [
+    inputs.scherzo.packages.${system}.default
+    # Add pi and any tools used by your workspace hooks/workflows separately.
+  ];
+}
+```
+
+Then run it from the consuming repository so relative config and workflow paths resolve there:
+
+```sh
+LINEAR_API_KEY=lin_api_... direnv exec . scherzo doctor .scherzo/scherzo.yaml
+LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
+direnv exec . scherzoctl ps
+```
+
+You can also run the flake directly while developing this repository:
+
+```sh
+nix run .#scherzo -- --help
+nix run .#scherzo-start -- .scherzo/scherzo.yaml
+```
+
 If no path is provided, Scherzo looks for the first existing default config in this order:
 
 1. `.scherzo/scherzo.yaml`
