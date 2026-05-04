@@ -1,5 +1,7 @@
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -52,6 +54,122 @@ pub fn succeeded(status: StepStatus) -> Bool {
   case status {
     StepSucceeded -> True
     StepFailed -> False
+  }
+}
+
+pub fn to_json(artifact: StepArtifact) -> json.Json {
+  json.object([
+    #("step_id", json.string(artifact.step_id)),
+    #("status", json.string(status_to_string(artifact.status))),
+    #("final_response", option_string_to_json(artifact.final_response)),
+    #("exit_code", option_int_to_json(artifact.exit_code)),
+    #("command", option_string_to_json(artifact.command)),
+    #("duration_ms", option_int_to_json(artifact.duration_ms)),
+    #("diagnostic_path", option_string_to_json(artifact.diagnostic_path)),
+    #("stdout", json.string(artifact.stdout)),
+    #("stderr", json.string(artifact.stderr)),
+    #("timed_out", json.bool(artifact.timed_out)),
+    #("final_response_truncated", json.bool(artifact.final_response_truncated)),
+    #("stdout_truncated", json.bool(artifact.stdout_truncated)),
+    #("stderr_truncated", json.bool(artifact.stderr_truncated)),
+    #("summary_text", json.string(artifact.summary_text)),
+  ])
+}
+
+pub fn to_string(artifact: StepArtifact) -> String {
+  artifact |> to_json |> json.to_string
+}
+
+pub fn decode_string(contents: String) -> Result(StepArtifact, String) {
+  case json.parse(contents, decoder()) {
+    Ok(artifact) -> Ok(artifact)
+    Error(_) -> Error("invalid_step_artifact_json")
+  }
+}
+
+pub fn status_from_string(status: String) -> Result(StepStatus, String) {
+  case status {
+    "success" -> Ok(StepSucceeded)
+    "failure" -> Ok(StepFailed)
+    _ -> Error("unknown_step_status:" <> status)
+  }
+}
+
+pub fn decoder() -> decode.Decoder(StepArtifact) {
+  use step_id <- decode.field("step_id", decode.string)
+  use status <- decode.field("status", status_decoder())
+  use final_response <- decode.optional_field(
+    "final_response",
+    None,
+    decode.optional(decode.string),
+  )
+  use exit_code <- decode.optional_field(
+    "exit_code",
+    None,
+    decode.optional(decode.int),
+  )
+  use command <- decode.optional_field(
+    "command",
+    None,
+    decode.optional(decode.string),
+  )
+  use duration_ms <- decode.optional_field(
+    "duration_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use diagnostic_path <- decode.optional_field(
+    "diagnostic_path",
+    None,
+    decode.optional(decode.string),
+  )
+  use stdout <- decode.field("stdout", decode.string)
+  use stderr <- decode.field("stderr", decode.string)
+  use timed_out <- decode.field("timed_out", decode.bool)
+  use final_response_truncated <- decode.field(
+    "final_response_truncated",
+    decode.bool,
+  )
+  use stdout_truncated <- decode.field("stdout_truncated", decode.bool)
+  use stderr_truncated <- decode.field("stderr_truncated", decode.bool)
+  use summary_text <- decode.field("summary_text", decode.string)
+  decode.success(StepArtifact(
+    step_id: step_id,
+    status: status,
+    final_response: final_response,
+    exit_code: exit_code,
+    command: command,
+    duration_ms: duration_ms,
+    diagnostic_path: diagnostic_path,
+    stdout: stdout,
+    stderr: stderr,
+    timed_out: timed_out,
+    final_response_truncated: final_response_truncated,
+    stdout_truncated: stdout_truncated,
+    stderr_truncated: stderr_truncated,
+    summary_text: summary_text,
+  ))
+}
+
+fn status_decoder() -> decode.Decoder(StepStatus) {
+  use status_text <- decode.then(decode.string)
+  case status_from_string(status_text) {
+    Ok(status) -> decode.success(status)
+    Error(_) -> decode.failure(StepFailed, expected: "StepStatus")
+  }
+}
+
+fn option_string_to_json(value: Option(String)) -> json.Json {
+  case value {
+    Some(value) -> json.string(value)
+    None -> json.null()
+  }
+}
+
+fn option_int_to_json(value: Option(Int)) -> json.Json {
+  case value {
+    Some(value) -> json.int(value)
+    None -> json.null()
   }
 }
 

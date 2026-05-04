@@ -57,12 +57,14 @@ A seventh risk is leaving top-level workflow runs active forever because only st
 - [x] (2026-05-03 00:00Z) Checked source-control state with `jj status --color=never`; the working copy was clean before drafting.
 - [x] (2026-05-03 00:00Z) Verified the requested plan filename did not already exist under `docs/plans`.
 - [x] (2026-05-03 00:00Z) Read the current workflow and durable-state implementation files named in the Linear issue before drafting this plan.
-- [ ] Implement schema version 2 workflow checkpoint records and artifact serialization.
-- [ ] Implement projection and snapshot behavior for workflow runs and step attempts.
-- [ ] Implement artifact store and write-ordering guarantees.
-- [ ] Wire checkpoint writing into daemon dispatch, workflow execution, workspace preparation, and recovery.
-- [ ] Add tests for replay, parallel steps, attempt indexes, session ids, artifact ordering, and old-state rejection.
-- [ ] Run formatting and test validation, then update this plan's Outcomes & Retrospective.
+- [x] (2026-05-04 10:00Z) Implemented schema version 2 workflow checkpoint records and artifact serialization.
+- [x] (2026-05-04 10:00Z) Implemented projection and snapshot behavior for workflow runs and step attempts.
+- [x] (2026-05-04 10:00Z) Implemented artifact store and write-ordering guarantees.
+- [x] (2026-05-04 10:00Z) Wired checkpoint writing into daemon dispatch, workflow execution, workspace preparation, and recovery.
+- [x] (2026-05-04 10:00Z) Added tests for replay, parallel steps, attempt indexes, session ids, artifact ordering, and old-state rejection.
+- [x] (2026-05-04 10:40Z) Applied review feedback: daemon startup now finalizes workflow candidates, validates current issue/workflow observations, appends normalization records, and spawns `workflow_run.execute_with_resume`; finished attempts retain source workspace metadata; failed-fatal finished artifacts are hash-validated; operator stop and worker-down paths write workflow terminal records; daemon shutdown marks pending/running step attempts interrupted without closing the resumable workflow run.
+- [x] (2026-05-04 10:50Z) Added daemon startup recovery coverage proving a matching workflow checkpoint resumes the remaining DAG step without rerunning the completed step.
+- [x] (2026-05-04 10:50Z) Ran targeted formatting and test validation after review feedback.
 
 ## Surprises & Discoveries
 
@@ -74,6 +76,10 @@ A seventh risk is leaving top-level workflow runs active forever because only st
   Evidence: `src/scherzo/workspace_run.gleam` deletes `run_root` in `cleanup_run` unless `cleanup_retention_marker(run_root)` exists.
 - Observation: Current ledger and projection schema version is `1`, and the projection snapshot uses the same version.
   Evidence: `src/scherzo/state/record.gleam` defines `schema_version = 1`; `src/scherzo/state/projection.gleam` writes that value in `to_json` and rejects mismatched snapshots in `snapshot_decoder`.
+- Observation: Review found that durable candidate extraction existed before daemon startup actually consumed it, so active workflow runs would still only get the legacy startup recovery path.
+  Evidence: `src/scherzo/orchestrator/daemon.gleam` now builds `CurrentWorkflowObservation` values from fetched issues and the loaded runtime bundle, calls `recovery.finalize_workflow_candidates`, appends the resulting normalization records, and spawns recovered workers with `workflow_run.execute_with_resume`.
+- Observation: A finished fatal step still needs its artifact validated even though its workspace must not satisfy downstream dependencies.
+  Evidence: `test/recovery_workflow_checkpoint_test.gleam` now asserts a `failed_fatal` attempt is hash-read into `completed_artifacts`, is not promoted into `completed_workspaces`, and advances the next attempt index.
 
 ## Decision Log
 
@@ -104,10 +110,18 @@ A seventh risk is leaving top-level workflow runs active forever because only st
 - Decision: Make top-level workflow terminal records mandatory in normal, fatal, operator-stop, worker-down, restart, and supersession paths.
   Rationale: Step-attempt facts alone cannot tell startup that a whole workflow run is done or intentionally abandoned. Missing terminal run facts would cause repeated normalization on later restarts.
   Date: 2026-05-03
+- Decision: Preserve prepared workspace metadata inside finished attempt projection state rather than expanding the `step_attempt_finished` ledger record shape after the initial implementation.
+  Rationale: The durable ledger already records `run_root`, `source_workspace_name`, and `source_workspace_path` in `StepAttemptPrepared`, and every valid finished attempt is preceded by preparation. Carrying those fields forward in projection and snapshots restores logical workspace sources without changing the landed record model again.
+  Date: 2026-05-04
+- Decision: Treat active workflow runs as owning recovery for matching legacy generic run records.
+  Rationale: During the staged implementation the daemon still appends schema-2 generic `RunStarted` records for compatibility. Startup recovery now skips generic interrupted-run retry normalization when the same `run_id` has a workflow-run record, so workflow checkpoint resumption is not preempted by issue-level retry recovery.
+  Date: 2026-05-04
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+As of 2026-05-04, the implementation has moved from helper-level checkpoint replay to daemon-owned startup resumption. Startup recovery now fetches current issue observations, recomputes workflow fingerprints through the loaded runtime bundle, finalizes workflow recovery candidates, appends interruption or supersession records when validation fails, and spawns recovered workflow workers with durable artifacts, logical workspace sources, next attempt indexes, and the original `run_id`. Review feedback also closed the artifact and workspace recovery gaps by carrying source workspace metadata through finished attempt projection snapshots and validating `failed_fatal` artifacts instead of ignoring them.
+
+Validation after the review-feedback pass included `direnv exec . gleam test`, which passed with 599 tests. The implementation still intentionally does not resume or attach old pi sessions after daemon restart; it only resumes at durable workflow step boundaries.
 
 ## Context and Orientation
 

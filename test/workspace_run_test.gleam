@@ -105,15 +105,15 @@ pub fn prepares_logical_workspace_paths_under_run_root_test() {
     )
   assert string.ends_with(
     main.path,
-    "/workspaces/implementation/ABC-123/run-1/main",
+    "/workspaces/implementation/ABC-123/run-1/workspaces/main/steps/implement-f9bb818d8483/attempt-1",
   )
   assert string.ends_with(
     code_review_path,
-    "/workspaces/implementation/ABC-123/run-1/code-review",
+    "/workspaces/implementation/ABC-123/run-1/workspaces/code-review/steps/step-3e64cc41cf8e/attempt-1",
   )
   assert string.ends_with(
     other_run.path,
-    "/workspaces/implementation/ABC-123/run-2/main",
+    "/workspaces/implementation/ABC-123/run-2/workspaces/main/steps/implement-f9bb818d8483/attempt-1",
   )
   assert main.path != code_review_path
   assert main.path != other_run.path

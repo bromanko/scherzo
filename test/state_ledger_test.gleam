@@ -75,7 +75,7 @@ pub fn replay_rejects_invalid_trailing_record_shape_test() {
   let assert Ok(Nil) =
     simplifile.write(
       path.current_path,
-      "{\"schema_version\":1,\"record_id\":\"bad\",\"at_ms\":1,\"kind\":\"run_started\"}\n",
+      "{\"schema_version\":2,\"record_id\":\"bad\",\"at_ms\":1,\"kind\":\"run_started\"}\n",
     )
 
   let assert Error(ledger.CorruptRecord(line: 1, reason: _)) =
@@ -127,10 +127,10 @@ pub fn replay_rejects_unsupported_schema_version_test() {
   let assert Ok(Nil) =
     simplifile.write(
       path.current_path,
-      "{\"schema_version\":2,\"record_id\":\"future\",\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}\n",
+      "{\"schema_version\":3,\"record_id\":\"future\",\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}\n",
     )
 
-  let assert Error(ledger.UnsupportedVersion(2)) = ledger.replay(path)
+  let assert Error(ledger.UnsupportedVersion(3)) = ledger.replay(path)
 }
 
 pub fn read_records_missing_current_returns_empty_test() {

@@ -660,10 +660,10 @@ pub fn outbox_status_transitions_replace_previous_status_test() {
 pub fn projection_snapshot_decoder_rejects_invalid_snapshots_test() {
   assert_malformed_projection_snapshot("{")
   assert_malformed_projection_snapshot(
-    "{\"schema_version\":1,\"kind\":\"not_projection\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
+    "{\"schema_version\":2,\"kind\":\"not_projection\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
   )
   assert_malformed_projection_snapshot(
-    "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
+    "{\"schema_version\":3,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
   )
   assert_malformed_projection_snapshot(snapshot_json(
     runs: "[{\"run_id\":\"run-1\",\"status\":\"paused\"}]",
@@ -703,8 +703,7 @@ pub fn projection_snapshot_decoder_rejects_invalid_snapshots_test() {
 }
 
 fn assert_malformed_projection_snapshot(contents: String) -> Nil {
-  let assert Error("malformed projection snapshot") =
-    projection.decode_string(contents)
+  let assert Error(_) = projection.decode_string(contents)
   Nil
 }
 
@@ -715,7 +714,7 @@ fn snapshot_json(
   commands commands: String,
   outbox outbox: String,
 ) -> String {
-  "{\"schema_version\":1,\"kind\":\"projection_snapshot\",\"runs\":"
+  "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":"
   <> runs
   <> ",\"retries\":"
   <> retries

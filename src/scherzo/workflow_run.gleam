@@ -2,6 +2,7 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import scherzo/agent/run_attempt
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
@@ -15,7 +16,9 @@ import scherzo/step_artifact
 import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
+import scherzo/workflow_identity
 import scherzo/workflow_scheduler
 import scherzo/workspace_run
 
@@ -43,6 +46,7 @@ pub type Dependencies {
       String,
       String,
       String,
+      Int,
       workflow_dag.WorkspaceRef,
       config_types.OrchestratorConfig,
       Dict(String, workspace_run.PreparedStepWorkspace),
@@ -73,6 +77,16 @@ pub type Dependencies {
       fn(agent_types.RunnerUpdate) -> Nil,
       fn(process.Subject(worker_command.Command)) -> Nil,
     ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
+    checkpoint: workflow_checkpoint.Writer,
+  )
+}
+
+pub type ResumeState {
+  ResumeState(
+    artifacts: Dict(String, step_artifact.StepArtifact),
+    workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
+    next_attempt_indexes: Dict(String, Int),
+    run_root: Option(String),
   )
 }
 
@@ -120,7 +134,7 @@ type PrepareReadyFailure {
 
 pub fn default_dependencies() -> Dependencies {
   Dependencies(
-    prepare_step: workspace_run.prepare_step,
+    prepare_step: workspace_run.prepare_step_attempt,
     after_step: workspace_run.after_step,
     cleanup_run: workspace_run.cleanup_run,
     command_step: command_step.run,
@@ -146,6 +160,7 @@ pub fn default_dependencies() -> Dependencies {
         workspace_path,
       )
     },
+    checkpoint: workflow_checkpoint.noop_writer(),
   )
 }
 
@@ -158,6 +173,31 @@ pub fn execute(
   run_id: String,
   dependencies: Dependencies,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  execute_with_resume(
+    issue,
+    dag,
+    orchestrator,
+    tracker_client,
+    secrets,
+    run_id,
+    dependencies,
+    ResumeState(dict.new(), dict.new(), dict.new(), None),
+  )
+}
+
+pub fn execute_with_resume(
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  run_id: String,
+  dependencies: Dependencies,
+  resume: ResumeState,
+) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  let scheduler_state =
+    scheduler_with_artifacts(workflow_scheduler.init(dag), resume.artifacts)
+  let run_root = option_or(first_run_root(resume.workspaces), resume.run_root)
   loop(
     issue,
     dag,
@@ -166,10 +206,11 @@ pub fn execute(
     secrets,
     run_id,
     dependencies,
-    workflow_scheduler.init(dag),
-    dict.new(),
-    dict.new(),
-    None,
+    scheduler_state,
+    resume.artifacts,
+    resume.workspaces,
+    run_root,
+    resume.next_attempt_indexes,
     session_tokens.zero_token_totals(),
     None,
     0,
@@ -203,6 +244,7 @@ fn loop(
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   run_root: Option(String),
+  attempt_indexes: Dict(String, Int),
   tokens: session_tokens.TokenTotals,
   final_issue: Option(tracker_issue.Issue),
   turns: Int,
@@ -217,10 +259,25 @@ fn loop(
         )
       let final_issue = option_unwrap(final_issue, issue)
       let workspace_path = option_unwrap(run_root, "")
+      use Nil <- result_try_checkpoint(
+        dependencies.checkpoint.workflow_finished(
+          workflow_checkpoint.WorkflowFinished(
+            run_id: run_id,
+            workflow_id: dag.id,
+            issue_id: issue.id,
+            outcome: "completed",
+            token_total: tokens.total,
+            turns: turns,
+          ),
+        ),
+        artifacts,
+        run_root,
+        None,
+      )
       let cleanup_result =
         cleanup_if_needed(run_root, orchestrator, dependencies)
       case cleanup_result {
-        Ok(Nil) ->
+        Ok(Nil) -> {
           Ok(WorkflowRunSuccess(
             worker_success: agent_types.WorkerSuccess(
               final_issue: Some(final_issue),
@@ -233,6 +290,7 @@ fn loop(
             artifacts: artifacts,
             run_root: workspace_path,
           ))
+        }
         Error(err) ->
           Error(WorkflowRunFailure(
             reason: "cleanup_failed:" <> error.workspace_code(err),
@@ -244,6 +302,21 @@ fn loop(
     }
     workflow_scheduler.WorkflowFailed -> {
       let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
+      use Nil <- result_try_checkpoint(
+        dependencies.checkpoint.workflow_finished(
+          workflow_checkpoint.WorkflowFinished(
+            run_id: run_id,
+            workflow_id: dag.id,
+            issue_id: issue.id,
+            outcome: "failed_fatal",
+            token_total: tokens.total,
+            turns: turns,
+          ),
+        ),
+        artifacts,
+        run_root,
+        None,
+      )
       Error(WorkflowRunFailure(
         reason: "workflow_step_failed",
         artifacts: artifacts,
@@ -255,6 +328,14 @@ fn loop(
       let ready = workflow_scheduler.ready_steps(dag, scheduler_state)
       case ready {
         [] -> {
+          mark_workflow_failed_terminal(
+            dependencies,
+            run_id,
+            dag.id,
+            issue.id,
+            tokens.total,
+            turns,
+          )
           let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
           Error(WorkflowRunFailure(
             reason: "workflow_deadlocked",
@@ -273,11 +354,20 @@ fn loop(
               orchestrator,
               dependencies,
               prepared_workspaces,
+              attempt_indexes,
               [],
             )
           {
             Error(PrepareReadyFailure(reason, prepared_run_root)) -> {
               let failure_run_root = option_or(prepared_run_root, run_root)
+              mark_workflow_failed_terminal(
+                dependencies,
+                run_id,
+                dag.id,
+                issue.id,
+                tokens.total,
+                turns,
+              )
               let _ =
                 cleanup_if_needed(failure_run_root, orchestrator, dependencies)
               Error(WorkflowRunFailure(
@@ -288,7 +378,12 @@ fn loop(
               ))
             }
             Ok(prepared) -> {
-              let #(prepared_starts, prepared_workspaces, run_root) = prepared
+              let #(
+                prepared_starts,
+                prepared_workspaces,
+                run_root,
+                attempt_indexes,
+              ) = prepared
               let scheduler_state =
                 mark_all_running(scheduler_state, prepared_starts)
               execute_prepared_steps(
@@ -304,6 +399,7 @@ fn loop(
                 artifacts,
                 prepared_workspaces,
                 run_root,
+                attempt_indexes,
                 tokens,
                 final_issue,
                 turns,
@@ -324,12 +420,14 @@ fn prepare_ready_steps(
   orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
+  attempt_indexes: Dict(String, Int),
   acc: List(PreparedStart),
 ) -> Result(
   #(
     List(PreparedStart),
     Dict(String, workspace_run.PreparedStepWorkspace),
     Option(String),
+    Dict(String, Int),
   ),
   PrepareReadyFailure,
 ) {
@@ -340,15 +438,21 @@ fn prepare_ready_steps(
           Some(workspace.run_root)
         [] -> None
       }
-      Ok(#(list.reverse(acc), prepared_workspaces, run_root))
+      Ok(#(list.reverse(acc), prepared_workspaces, run_root, attempt_indexes))
     }
     [step, ..rest] -> {
+      let attempt_index =
+        dict.get(attempt_indexes, step.id)
+        |> result.unwrap(1)
+      let next_attempt_indexes =
+        dict.insert(attempt_indexes, step.id, attempt_index + 1)
       case
         dependencies.prepare_step(
           issue,
           workflow_id,
           run_id,
           step.id,
+          attempt_index,
           step.workspace,
           orchestrator,
           prepared_workspaces,
@@ -365,18 +469,39 @@ fn prepare_ready_steps(
             prepared_run_root(acc),
           ))
         Ok(prepared) -> {
-          let prepared_workspaces =
-            dict.insert(prepared_workspaces, step.workspace.name, prepared)
-          prepare_ready_steps(
-            rest,
-            issue,
-            workflow_id,
-            run_id,
-            orchestrator,
-            dependencies,
-            prepared_workspaces,
-            [PreparedStart(step: step, workspace: prepared), ..acc],
-          )
+          case
+            dependencies.checkpoint.step_prepared(
+              run_id,
+              workflow_id,
+              step.id,
+              prepared,
+            )
+          {
+            Error(error) ->
+              Error(PrepareReadyFailure(
+                "checkpoint_failed:"
+                  <> workflow_checkpoint.describe_error(error),
+                prepared_run_root([
+                  PreparedStart(step: step, workspace: prepared),
+                  ..acc
+                ]),
+              ))
+            Ok(Nil) -> {
+              let prepared_workspaces =
+                dict.insert(prepared_workspaces, step.workspace.name, prepared)
+              prepare_ready_steps(
+                rest,
+                issue,
+                workflow_id,
+                run_id,
+                orchestrator,
+                dependencies,
+                prepared_workspaces,
+                next_attempt_indexes,
+                [PreparedStart(step: step, workspace: prepared), ..acc],
+              )
+            }
+          }
         }
       }
     }
@@ -401,6 +526,7 @@ fn execute_prepared_steps(
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   run_root: Option(String),
+  attempt_indexes: Dict(String, Int),
   tokens: session_tokens.TokenTotals,
   final_issue: Option(tracker_issue.Issue),
   turns: Int,
@@ -419,6 +545,7 @@ fn execute_prepared_steps(
         artifacts,
         prepared_workspaces,
         run_root,
+        attempt_indexes,
         tokens,
         final_issue,
         turns,
@@ -436,6 +563,14 @@ fn execute_prepared_steps(
         )
       {
         Error(reason) -> {
+          mark_workflow_failed_terminal(
+            dependencies,
+            run_id,
+            dag.id,
+            issue.id,
+            tokens.total,
+            turns,
+          )
           let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
           Error(WorkflowRunFailure(
             reason: reason,
@@ -463,6 +598,7 @@ fn execute_prepared_steps(
             artifacts,
             prepared_workspaces,
             run_root,
+            attempt_indexes,
             tokens,
             final_issue,
             turns,
@@ -473,6 +609,8 @@ fn execute_prepared_steps(
             starts,
             result,
             issue,
+            dag,
+            run_id,
             orchestrator,
             dependencies,
             artifacts,
@@ -494,7 +632,7 @@ fn run_prepared_batch(
 ) -> Result(StepBatchOutcome, String) {
   let was_trapping_exits = process_ext.trap_exits(True)
   let subject = process.new_subject()
-  let workers =
+  let spawned =
     spawn_prepared_steps(
       starts,
       subject,
@@ -505,23 +643,31 @@ fn run_prepared_batch(
       dependencies,
       artifacts,
     )
-  let selector =
-    process.new_selector()
-    |> process.select_map(subject, StepBatchResult)
-    |> process.select_monitors(StepBatchDown)
-    |> process.select_trapped_exits(fn(_) { StepBatchLinkedExit })
-  let result =
-    collect_step_results(
-      count_prepared(starts),
-      selector,
-      monitor_to_step(workers, dict.new()),
-      step_to_monitor(workers, dict.new()),
-      monitor_to_pid(workers, dict.new()),
-      failure_policy_by_step(starts, dict.new()),
-      [],
-    )
-  let _ = process_ext.trap_exits(was_trapping_exits)
-  result
+  case spawned {
+    Error(reason) -> {
+      let _ = process_ext.trap_exits(was_trapping_exits)
+      Error(reason)
+    }
+    Ok(workers) -> {
+      let selector =
+        process.new_selector()
+        |> process.select_map(subject, StepBatchResult)
+        |> process.select_monitors(StepBatchDown)
+        |> process.select_trapped_exits(fn(_) { StepBatchLinkedExit })
+      let result =
+        collect_step_results(
+          count_prepared(starts),
+          selector,
+          monitor_to_step(workers, dict.new()),
+          step_to_monitor(workers, dict.new()),
+          monitor_to_pid(workers, dict.new()),
+          failure_policy_by_step(starts, dict.new()),
+          [],
+        )
+      let _ = process_ext.trap_exits(was_trapping_exits)
+      result
+    }
+  }
 }
 
 fn spawn_prepared_steps(
@@ -533,7 +679,7 @@ fn spawn_prepared_steps(
   secrets: List(String),
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
-) -> List(SpawnedStepWorker) {
+) -> Result(List(SpawnedStepWorker), String) {
   spawn_prepared_steps_loop(
     starts,
     subject,
@@ -557,46 +703,74 @@ fn spawn_prepared_steps_loop(
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
   acc: List(SpawnedStepWorker),
-) -> List(SpawnedStepWorker) {
+) -> Result(List(SpawnedStepWorker), String) {
   case starts {
-    [] -> list.reverse(acc)
+    [] -> Ok(list.reverse(acc))
     [PreparedStart(step, workspace), ..rest] -> {
-      let pid =
-        process.spawn(fn() {
-          let #(artifact, tokens, final_issue, turns) =
-            run_step(
-              step,
-              workspace,
-              issue,
-              orchestrator,
-              tracker_client,
-              secrets,
-              dependencies,
-              artifacts,
-            )
-          process.send(
-            subject,
-            StepExecutionResult(
-              step_id: step.id,
-              artifact: artifact,
-              tokens: tokens,
-              final_issue: final_issue,
-              turns: turns,
-            ),
+      let session_id =
+        workflow_identity.step_session_id(
+          workspace.run_id,
+          step.id,
+          workspace.attempt_index,
+        )
+      case
+        dependencies.checkpoint.step_started(
+          workspace.run_id,
+          workspace.workflow_id,
+          step.id,
+          workspace.attempt_index,
+          session_id,
+          None,
+        )
+      {
+        Error(error) -> {
+          terminate_step_workers(monitor_to_pid(acc, dict.new()))
+          Error(
+            "checkpoint_failed:" <> workflow_checkpoint.describe_error(error),
           )
-        })
-      let monitor = process.monitor(pid)
-      spawn_prepared_steps_loop(
-        rest,
-        subject,
-        issue,
-        orchestrator,
-        tracker_client,
-        secrets,
-        dependencies,
-        artifacts,
-        [SpawnedStepWorker(step_id: step.id, pid: pid, monitor: monitor), ..acc],
-      )
+        }
+        Ok(Nil) -> {
+          let pid =
+            process.spawn(fn() {
+              let #(artifact, tokens, final_issue, turns) =
+                run_step(
+                  step,
+                  workspace,
+                  issue,
+                  orchestrator,
+                  tracker_client,
+                  secrets,
+                  dependencies,
+                  artifacts,
+                )
+              process.send(
+                subject,
+                StepExecutionResult(
+                  step_id: step.id,
+                  artifact: artifact,
+                  tokens: tokens,
+                  final_issue: final_issue,
+                  turns: turns,
+                ),
+              )
+            })
+          let monitor = process.monitor(pid)
+          spawn_prepared_steps_loop(
+            rest,
+            subject,
+            issue,
+            orchestrator,
+            tracker_client,
+            secrets,
+            dependencies,
+            artifacts,
+            [
+              SpawnedStepWorker(step_id: step.id, pid: pid, monitor: monitor),
+              ..acc
+            ],
+          )
+        }
+      }
     }
   }
 }
@@ -823,21 +997,74 @@ fn finish_fatal_batch_result(
   starts: List(PreparedStart),
   result: StepExecutionResult,
   issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  run_id: String,
   orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
   run_root: Option(String),
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   let artifacts = dict.insert(artifacts, result.step_id, result.artifact)
-  let after_step_result = case prepared_start_by_step(starts, result.step_id) {
+  let checkpoint_result = case prepared_start_by_step(starts, result.step_id) {
     Error(_) -> Ok(Nil)
-    Ok(PreparedStart(step, workspace)) ->
-      run_after_step(dependencies, issue, step.id, workspace, orchestrator)
+    Ok(PreparedStart(step, workspace)) -> {
+      let finished =
+        workflow_checkpoint.StepFinished(
+          run_id: run_id,
+          workflow_id: dag.id,
+          step_id: step.id,
+          attempt_index: workspace.attempt_index,
+          outcome: "failed_fatal",
+          workspace_name: workspace.workspace_name,
+          workspace_path: workspace.path,
+          token_total: result.tokens.total,
+          turns: result.turns,
+        )
+      case
+        dependencies.checkpoint.write_step_artifact(finished, result.artifact)
+      {
+        Error(error) -> Error(error)
+        Ok(artifact_ref) ->
+          case
+            run_after_step(
+              dependencies,
+              issue,
+              step.id,
+              workspace,
+              orchestrator,
+            )
+          {
+            Error(reason) ->
+              Error(workflow_checkpoint.CheckpointAppendFailed(reason))
+            Ok(Nil) ->
+              dependencies.checkpoint.step_finished(finished, artifact_ref)
+          }
+      }
+    }
   }
-  let reason = case after_step_result {
+  let reason = case checkpoint_result {
     Ok(Nil) -> "workflow_step_failed"
-    Error(reason) -> reason
+    Error(error) ->
+      "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
   }
+  let _ =
+    mark_unfinished_siblings_interrupted(
+      starts,
+      result.step_id,
+      dependencies,
+      dag.id,
+    )
+  let _ =
+    dependencies.checkpoint.workflow_finished(
+      workflow_checkpoint.WorkflowFinished(
+        run_id: run_id,
+        workflow_id: dag.id,
+        issue_id: issue.id,
+        outcome: "failed_fatal",
+        token_total: result.tokens.total,
+        turns: result.turns,
+      ),
+    )
   let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
   Error(WorkflowRunFailure(
     reason: reason,
@@ -845,6 +1072,39 @@ fn finish_fatal_batch_result(
     run_root: run_root,
     failed_step_id: Some(result.step_id),
   ))
+}
+
+fn mark_unfinished_siblings_interrupted(
+  starts: List(PreparedStart),
+  finished_step_id: String,
+  dependencies: Dependencies,
+  workflow_id: String,
+) -> Nil {
+  case starts {
+    [] -> Nil
+    [PreparedStart(step: step, workspace: workspace), ..rest] -> {
+      case step.id == finished_step_id {
+        True -> Nil
+        False -> {
+          let _ =
+            dependencies.checkpoint.step_interrupted(
+              workspace.run_id,
+              workflow_id,
+              step.id,
+              workspace.attempt_index,
+              "fatal_sibling_finished",
+            )
+          Nil
+        }
+      }
+      mark_unfinished_siblings_interrupted(
+        rest,
+        finished_step_id,
+        dependencies,
+        workflow_id,
+      )
+    }
+  }
 }
 
 fn prepared_start_by_step(
@@ -877,6 +1137,7 @@ fn apply_prepared_results(
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   run_root: Option(String),
+  attempt_indexes: Dict(String, Int),
   tokens: session_tokens.TokenTotals,
   final_issue: Option(tracker_issue.Issue),
   turns: Int,
@@ -895,55 +1156,137 @@ fn apply_prepared_results(
         artifacts,
         prepared_workspaces,
         run_root,
+        attempt_indexes,
         tokens,
         final_issue,
         turns,
       )
     [PreparedStart(step: step, workspace: workspace), ..rest] -> {
       let assert Ok(result) = dict.get(result_by_step, step.id)
-      let artifacts = dict.insert(artifacts, step.id, result.artifact)
-      let scheduler_state =
-        workflow_scheduler.mark_finished(
-          scheduler_state,
-          step.id,
+      let outcome =
+        workflow_checkpoint.step_outcome(
           result.artifact,
+          step.on_failure == workflow_dag.ContinueWorkflow,
         )
-      let tokens = add_tokens(tokens, result.tokens)
-      let final_issue = case result.final_issue {
-        Some(_) -> result.final_issue
-        None -> final_issue
-      }
+      let finished =
+        workflow_checkpoint.StepFinished(
+          run_id: run_id,
+          workflow_id: dag.id,
+          step_id: step.id,
+          attempt_index: workspace.attempt_index,
+          outcome: outcome,
+          workspace_name: workspace.workspace_name,
+          workspace_path: workspace.path,
+          token_total: result.tokens.total,
+          turns: result.turns,
+        )
       case
-        run_after_step(dependencies, issue, step.id, workspace, orchestrator)
+        dependencies.checkpoint.write_step_artifact(finished, result.artifact)
       {
-        Error(reason) -> {
+        Error(error) -> {
+          mark_workflow_failed_terminal(
+            dependencies,
+            run_id,
+            dag.id,
+            issue.id,
+            tokens.total + result.tokens.total,
+            turns + result.turns,
+          )
           let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
           Error(WorkflowRunFailure(
-            reason: reason,
+            reason: "checkpoint_failed:"
+              <> workflow_checkpoint.describe_error(error),
             artifacts: artifacts,
             run_root: run_root,
             failed_step_id: Some(step.id),
           ))
         }
-        Ok(Nil) ->
-          apply_prepared_results(
-            rest,
-            result_by_step,
-            issue,
-            dag,
-            orchestrator,
-            tracker_client,
-            secrets,
-            run_id,
-            dependencies,
-            scheduler_state,
-            artifacts,
-            prepared_workspaces,
-            run_root,
-            tokens,
-            final_issue,
-            turns + result.turns,
-          )
+        Ok(artifact_ref) ->
+          case
+            run_after_step(
+              dependencies,
+              issue,
+              step.id,
+              workspace,
+              orchestrator,
+            )
+          {
+            Error(reason) -> {
+              mark_workflow_failed_terminal(
+                dependencies,
+                run_id,
+                dag.id,
+                issue.id,
+                tokens.total + result.tokens.total,
+                turns + result.turns,
+              )
+              let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
+              Error(WorkflowRunFailure(
+                reason: reason,
+                artifacts: artifacts,
+                run_root: run_root,
+                failed_step_id: Some(step.id),
+              ))
+            }
+            Ok(Nil) ->
+              case
+                dependencies.checkpoint.step_finished(finished, artifact_ref)
+              {
+                Error(error) -> {
+                  mark_workflow_failed_terminal(
+                    dependencies,
+                    run_id,
+                    dag.id,
+                    issue.id,
+                    tokens.total + result.tokens.total,
+                    turns + result.turns,
+                  )
+                  let _ =
+                    cleanup_if_needed(run_root, orchestrator, dependencies)
+                  Error(WorkflowRunFailure(
+                    reason: "checkpoint_failed:"
+                      <> workflow_checkpoint.describe_error(error),
+                    artifacts: artifacts,
+                    run_root: run_root,
+                    failed_step_id: Some(step.id),
+                  ))
+                }
+                Ok(Nil) -> {
+                  let artifacts =
+                    dict.insert(artifacts, step.id, result.artifact)
+                  let scheduler_state =
+                    workflow_scheduler.mark_finished(
+                      scheduler_state,
+                      step.id,
+                      result.artifact,
+                    )
+                  let tokens = add_tokens(tokens, result.tokens)
+                  let final_issue = case result.final_issue {
+                    Some(_) -> result.final_issue
+                    None -> final_issue
+                  }
+                  apply_prepared_results(
+                    rest,
+                    result_by_step,
+                    issue,
+                    dag,
+                    orchestrator,
+                    tracker_client,
+                    secrets,
+                    run_id,
+                    dependencies,
+                    scheduler_state,
+                    artifacts,
+                    prepared_workspaces,
+                    run_root,
+                    attempt_indexes,
+                    tokens,
+                    final_issue,
+                    turns + result.turns,
+                  )
+                }
+              }
+          }
       }
     }
   }
@@ -1153,6 +1496,28 @@ fn cleanup_if_needed(
   }
 }
 
+fn mark_workflow_failed_terminal(
+  dependencies: Dependencies,
+  run_id: String,
+  workflow_id: String,
+  issue_id: String,
+  token_total: Int,
+  turns: Int,
+) -> Nil {
+  let _ =
+    dependencies.checkpoint.workflow_finished(
+      workflow_checkpoint.WorkflowFinished(
+        run_id: run_id,
+        workflow_id: workflow_id,
+        issue_id: issue_id,
+        outcome: "failed_fatal",
+        token_total: token_total,
+        turns: turns,
+      ),
+    )
+  Nil
+}
+
 fn add_tokens(
   left: session_tokens.TokenTotals,
   right: session_tokens.TokenTotals,
@@ -1164,6 +1529,47 @@ fn add_tokens(
     cache_write: left.cache_write + right.cache_write,
     total: left.total + right.total,
   )
+}
+
+fn scheduler_with_artifacts(
+  state: workflow_scheduler.SchedulerState,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+) -> workflow_scheduler.SchedulerState {
+  artifacts
+  |> dict.to_list
+  |> list.fold(state, fn(state, entry) {
+    let #(step_id, artifact) = entry
+    workflow_scheduler.mark_finished(state, step_id, artifact)
+  })
+}
+
+fn first_run_root(
+  workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
+) -> Option(String) {
+  case dict.values(workspaces) {
+    [workspace, ..] -> Some(workspace.run_root)
+    [] -> None
+  }
+}
+
+fn result_try_checkpoint(
+  result: Result(Nil, workflow_checkpoint.CheckpointError),
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  run_root: Option(String),
+  failed_step_id: Option(String),
+  next: fn(Nil) -> Result(WorkflowRunSuccess, WorkflowRunFailure),
+) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  case result {
+    Ok(Nil) -> next(Nil)
+    Error(error) ->
+      Error(WorkflowRunFailure(
+        reason: "checkpoint_failed:"
+          <> workflow_checkpoint.describe_error(error),
+        artifacts: artifacts,
+        run_root: run_root,
+        failed_step_id: failed_step_id,
+      ))
+  }
 }
 
 fn option_unwrap(value: Option(a), default: a) -> a {

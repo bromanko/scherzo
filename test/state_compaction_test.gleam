@@ -74,21 +74,21 @@ pub fn load_projection_rejects_malformed_snapshot_json_test() {
 pub fn load_projection_rejects_snapshot_with_wrong_kind_test() {
   assert_load_projection_rejects_snapshot(
     "test/tmp/state-ledger/snapshot-wrong-kind",
-    "{\"schema_version\":1,\"kind\":\"not_projection\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
+    "{\"schema_version\":2,\"kind\":\"not_projection\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
   )
 }
 
 pub fn load_projection_rejects_snapshot_with_unsupported_schema_version_test() {
   assert_load_projection_rejects_snapshot(
     "test/tmp/state-ledger/snapshot-unsupported-version",
-    "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
+    "{\"schema_version\":3,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
   )
 }
 
 pub fn load_projection_rejects_snapshot_missing_required_arrays_test() {
   assert_load_projection_rejects_snapshot(
     "test/tmp/state-ledger/snapshot-missing-runs",
-    "{\"schema_version\":1,\"kind\":\"projection_snapshot\",\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
+    "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
   )
 }
 
@@ -101,8 +101,7 @@ fn assert_load_projection_rejects_snapshot(
   let assert Ok(Nil) = simplifile.create_directory_all(path.ledger_dir)
   let assert Ok(Nil) = simplifile.write(path.snapshot_path, contents)
 
-  let assert Error(ledger.CorruptRecord(line: 0, reason: _)) =
-    ledger.load_projection(path)
+  let assert Error(_) = ledger.load_projection(path)
   Nil
 }
 

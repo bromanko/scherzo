@@ -158,7 +158,7 @@ pub fn outbox_pending_v2_payload_is_redacted_and_bounded_test() {
 
 pub fn retry_scheduled_requires_delay_ms_test() {
   let missing_delay_line =
-    "{\"schema_version\":1,\"record_id\":\"retry-missing-delay\",\"at_ms\":4000,\"kind\":\"retry_scheduled\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"generation\":2,\"reason\":\"backoff\"}"
+    "{\"schema_version\":2,\"record_id\":\"retry-missing-delay\",\"at_ms\":4000,\"kind\":\"retry_scheduled\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"generation\":2,\"reason\":\"backoff\"}"
 
   let assert Error(_) = record.decode_string(missing_delay_line)
 }
@@ -232,8 +232,8 @@ pub fn encodes_and_decodes_linear_command_records_test() {
 
 pub fn unsupported_schema_version_is_rejected_test() {
   let line =
-    "{\"schema_version\":2,\"record_id\":\"future\",\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
-  let assert Error(record.UnsupportedVersion(2)) = record.decode_string(line)
+    "{\"schema_version\":3,\"record_id\":\"future\",\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
+  let assert Error(record.UnsupportedVersion(3)) = record.decode_string(line)
 }
 
 pub fn redacts_record_excerpts_test() {
@@ -264,25 +264,25 @@ pub fn malformed_json_is_rejected_test() {
 
 pub fn unknown_record_kind_is_rejected_test() {
   let line =
-    "{\"schema_version\":1,\"record_id\":\"unknown-1\",\"at_ms\":1,\"kind\":\"unknown\"}"
+    "{\"schema_version\":2,\"record_id\":\"unknown-1\",\"at_ms\":1,\"kind\":\"unknown\"}"
   let assert Error(record.UnknownKind("unknown")) = record.decode_string(line)
 }
 
 pub fn missing_required_body_field_is_rejected_test() {
   let line =
-    "{\"schema_version\":1,\"record_id\":\"run-started-missing\",\"at_ms\":1,\"kind\":\"run_started\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
+    "{\"schema_version\":2,\"record_id\":\"run-started-missing\",\"at_ms\":1,\"kind\":\"run_started\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
   let assert Error(record.InvalidRecord("missing run_id")) =
     record.decode_string(line)
 }
 
 pub fn invalid_top_level_record_shape_is_rejected_test() {
   let missing_record_id =
-    "{\"schema_version\":1,\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
+    "{\"schema_version\":2,\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
   let assert Error(record.InvalidRecord("invalid ledger record shape")) =
     record.decode_string(missing_record_id)
 
   let wrong_at_ms_type =
-    "{\"schema_version\":1,\"record_id\":\"bad-at\",\"at_ms\":\"soon\",\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
+    "{\"schema_version\":2,\"record_id\":\"bad-at\",\"at_ms\":\"soon\",\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
   let assert Error(record.InvalidRecord("invalid ledger record shape")) =
     record.decode_string(wrong_at_ms_type)
 }
