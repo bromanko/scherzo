@@ -555,13 +555,17 @@ fn render_error_event(
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let message =
     safe_option_string(payload.message, event.name_to_string(payload.name))
+  let #(_, detail_chunks) =
+    tool_detail_chunks(None, payload, options.color_mode)
   #(
     RenderState(..state, assistant_active: False, assistant_line_open: False),
     list.flatten([
       close_chunks,
       tool_close_chunks,
       heading_chunks,
-      [Line(style.error(options.color_mode, "error: " <> message)), Line("")],
+      [Line(style.error(options.color_mode, "error: " <> message))],
+      detail_chunks,
+      [Line("")],
     ]),
   )
 }

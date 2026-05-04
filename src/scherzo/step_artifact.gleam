@@ -1,4 +1,5 @@
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -19,6 +20,9 @@ pub type StepArtifact {
     status: StepStatus,
     final_response: Option(String),
     exit_code: Option(Int),
+    command: Option(String),
+    duration_ms: Option(Int),
+    diagnostic_path: Option(String),
     stdout: String,
     stderr: String,
     timed_out: Bool,
@@ -68,6 +72,9 @@ pub fn from_agent_success(
     status: StepSucceeded,
     final_response: final_response,
     exit_code: None,
+    command: None,
+    duration_ms: None,
+    diagnostic_path: None,
     stdout: "",
     stderr: "",
     timed_out: False,
@@ -87,9 +94,12 @@ pub fn from_command_result(
   secrets: List(String),
   limits: domain.ArtifactLimits,
 ) -> StepArtifact {
-  from_command_result_with_truncation(
+  from_command_result_with_metadata(
     step_id,
+    None,
     exit_code,
+    None,
+    None,
     stdout,
     stderr,
     timed_out,
@@ -103,6 +113,36 @@ pub fn from_command_result(
 pub fn from_command_result_with_truncation(
   step_id: String,
   exit_code: Int,
+  stdout: String,
+  stderr: String,
+  timed_out: Bool,
+  secrets: List(String),
+  limits: domain.ArtifactLimits,
+  stdout_already_truncated: Bool,
+  stderr_already_truncated: Bool,
+) -> StepArtifact {
+  from_command_result_with_metadata(
+    step_id,
+    None,
+    exit_code,
+    None,
+    None,
+    stdout,
+    stderr,
+    timed_out,
+    secrets,
+    limits,
+    stdout_already_truncated,
+    stderr_already_truncated,
+  )
+}
+
+pub fn from_command_result_with_metadata(
+  step_id: String,
+  command: Option(String),
+  exit_code: Int,
+  duration_ms: Option(Int),
+  diagnostic_path: Option(String),
   stdout: String,
   stderr: String,
   timed_out: Bool,
@@ -125,6 +165,8 @@ pub fn from_command_result_with_truncation(
       limits.command_stream_max_chars,
       stderr_already_truncated,
     )
+  let #(command, _) =
+    cap_optional(command, secrets, limits.template_field_max_chars)
   let status = status_from_exit(exit_code, timed_out)
   let status_text = status_to_string(status)
   let summary =
@@ -142,6 +184,9 @@ pub fn from_command_result_with_truncation(
     status: status,
     final_response: None,
     exit_code: Some(exit_code),
+    command: command,
+    duration_ms: duration_ms,
+    diagnostic_path: diagnostic_path,
     stdout: stdout,
     stderr: stderr,
     timed_out: timed_out,
@@ -150,6 +195,171 @@ pub fn from_command_result_with_truncation(
     stderr_truncated: stderr_truncated,
     summary_text: summary,
   )
+}
+
+pub fn command_failure_summary(artifact: StepArtifact) -> Option(String) {
+  case artifact.status {
+    StepSucceeded -> None
+    StepFailed -> {
+      let head =
+        "command step failed: step="
+        <> artifact.step_id
+        <> command_inline(artifact.command)
+        <> exit_inline(artifact.exit_code)
+        <> duration_inline(artifact.duration_ms)
+        <> timeout_inline(artifact.timed_out)
+      Some(
+        head
+        <> stream_inline("stdout", artifact.stdout, artifact.stdout_truncated)
+        <> stream_inline("stderr", artifact.stderr, artifact.stderr_truncated)
+        <> artifact_inline(artifact.diagnostic_path),
+      )
+    }
+  }
+}
+
+pub fn command_failure_details(artifact: StepArtifact) -> String {
+  let metadata =
+    "step: "
+    <> artifact.step_id
+    <> "\ncommand: "
+    <> option_string(artifact.command, "<not recorded>")
+    <> "\n"
+    <> exit_detail(artifact.exit_code)
+    <> "\n"
+    <> duration_detail(artifact.duration_ms)
+    <> timeout_detail(artifact.timed_out)
+    <> truncation_detail(artifact)
+  let stdout = stream_detail("stdout", artifact.stdout)
+  let stderr = stream_detail("stderr", artifact.stderr)
+  metadata <> stdout <> stderr
+}
+
+fn command_inline(command: Option(String)) -> String {
+  case command {
+    Some(command) -> " command=\"" <> inline(command, 80) <> "\""
+    None -> " command=<not recorded>"
+  }
+}
+
+fn exit_inline(exit_code: Option(Int)) -> String {
+  case exit_code {
+    Some(exit_code) -> " exit_code=" <> int.to_string(exit_code)
+    None -> " exit_status=<not recorded>"
+  }
+}
+
+fn duration_inline(duration_ms: Option(Int)) -> String {
+  case duration_ms {
+    Some(duration_ms) -> " duration_ms=" <> int.to_string(duration_ms)
+    None -> ""
+  }
+}
+
+fn timeout_inline(timed_out: Bool) -> String {
+  case timed_out {
+    True -> " timed_out=true"
+    False -> ""
+  }
+}
+
+fn stream_inline(label: String, value: String, truncated: Bool) -> String {
+  case value == "" {
+    True ->
+      case truncated {
+        True -> " " <> label <> "=<truncated empty excerpt>"
+        False -> ""
+      }
+    False -> {
+      let suffix = case truncated {
+        True -> " [truncated]"
+        False -> ""
+      }
+      " " <> label <> "=\"" <> inline(value, 60) <> suffix <> "\""
+    }
+  }
+}
+
+fn artifact_inline(path: Option(String)) -> String {
+  case path {
+    Some(path) -> " artifact=" <> path
+    None -> ""
+  }
+}
+
+fn inline(value: String, max_chars: Int) -> String {
+  let compact =
+    value
+    |> string.replace(each: "\r\n", with: "\n")
+    |> string.replace(each: "\n", with: " ⏎ ")
+  case string.length(compact) > max_chars {
+    True -> string.slice(compact, 0, max_chars) <> "…"
+    False -> compact
+  }
+}
+
+fn exit_detail(exit_code: Option(Int)) -> String {
+  "exit_code: "
+  <> case exit_code {
+    Some(exit_code) -> int.to_string(exit_code)
+    None -> "<not recorded>"
+  }
+}
+
+fn duration_detail(duration_ms: Option(Int)) -> String {
+  "duration_ms: "
+  <> case duration_ms {
+    Some(duration_ms) -> int.to_string(duration_ms)
+    None -> "<not recorded>"
+  }
+}
+
+fn timeout_detail(timed_out: Bool) -> String {
+  case timed_out {
+    True -> "\ntimed_out: true"
+    False -> ""
+  }
+}
+
+fn truncation_detail(artifact: StepArtifact) -> String {
+  let stdout =
+    stream_truncation_detail(
+      "stdout",
+      artifact.stdout_truncated,
+      artifact.diagnostic_path,
+    )
+  let stderr =
+    stream_truncation_detail(
+      "stderr",
+      artifact.stderr_truncated,
+      artifact.diagnostic_path,
+    )
+  stdout <> stderr
+}
+
+fn stream_truncation_detail(
+  label: String,
+  truncated: Bool,
+  diagnostic_path: Option(String),
+) -> String {
+  case truncated {
+    False -> ""
+    True ->
+      "\n"
+      <> label
+      <> "_truncated: true"
+      <> case diagnostic_path {
+        Some(path) -> " (full retained artifact: " <> path <> ")"
+        None -> " (full retained artifact unavailable)"
+      }
+  }
+}
+
+fn stream_detail(label: String, value: String) -> String {
+  case value == "" {
+    True -> "\n" <> label <> ": <empty>"
+    False -> "\n" <> label <> ":\n" <> value
+  }
 }
 
 pub fn to_template_locals(
@@ -206,6 +416,12 @@ fn artifact_locals(
     #(prefix <> "status", template.VString(status_to_string(artifact.status))),
     #(prefix <> "final_response", option_string_value(artifact.final_response)),
     #(prefix <> "exit_code", option_int_value(artifact.exit_code)),
+    #(prefix <> "command", option_string_value(artifact.command)),
+    #(prefix <> "duration_ms", option_int_value(artifact.duration_ms)),
+    #(
+      prefix <> "diagnostic_path",
+      option_string_value(artifact.diagnostic_path),
+    ),
     #(prefix <> "stdout", template.VString(artifact.stdout)),
     #(prefix <> "stderr", template.VString(artifact.stderr)),
     #(prefix <> "timed_out", template.VBool(artifact.timed_out)),
@@ -305,6 +521,13 @@ fn cap_with_truncation(
   case truncated {
     True -> #(string.slice(redacted, 0, max_chars) <> "...", True)
     False -> #(redacted, False)
+  }
+}
+
+fn option_string(value: Option(String), default: String) -> String {
+  case value {
+    Some(value) -> value
+    None -> default
   }
 }
 

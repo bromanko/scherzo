@@ -723,6 +723,7 @@ def validate_command() -> None:
     require_command("direnv")
     commands = [
         ["direnv", "allow", "."],
+        ["rm", "-rf", "test/tmp"],
         ["direnv", "exec", ".", "gleam", "format", "--check", "src", "test"],
         ["direnv", "exec", ".", "gleam", "test"],
     ]
