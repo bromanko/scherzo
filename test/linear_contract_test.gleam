@@ -3,7 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/linear_contract
 import scherzo/tracker/state as issue_state
 
@@ -47,8 +47,8 @@ fn handoff_config(
   claim: Option(String),
   success: Option(String),
   failure: Option(String),
-) -> domain.HandoffConfig {
-  domain.HandoffConfig(
+) -> config_types.HandoffConfig {
+  config_types.HandoffConfig(
     enabled: enabled,
     comment_on_claim: enabled,
     comment_on_success: enabled,
@@ -63,8 +63,8 @@ fn handoff_config(
   )
 }
 
-fn contract_config(enabled: Bool) -> domain.LinearContractConfig {
-  domain.LinearContractConfig(
+fn contract_config(enabled: Bool) -> config_types.LinearContractConfig {
+  config_types.LinearContractConfig(
     enabled: enabled,
     workflow_label_prefix: "workflow:",
     workflow_labels: ["bugfix", "feature"],
@@ -86,13 +86,13 @@ fn contract_config(enabled: Bool) -> domain.LinearContractConfig {
 }
 
 fn effective(
-  contract: domain.LinearContractConfig,
-  handoff: domain.HandoffConfig,
+  contract: config_types.LinearContractConfig,
+  handoff: config_types.HandoffConfig,
   active_states: List(String),
   terminal_states: List(String),
-) -> domain.EffectiveConfig {
-  domain.EffectiveConfig(
-    tracker: domain.TrackerConfig(
+) -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: config_types.TrackerConfig(
       ..config.default_tracker_config(),
       api_key: Some("secret"),
       project_slug: Some("PROJ"),
@@ -174,7 +174,7 @@ pub fn reports_missing_state_for_project_team_test() {
 
 pub fn reports_missing_required_label_for_project_team_test() {
   let contract =
-    domain.LinearContractConfig(
+    config_types.LinearContractConfig(
       ..contract_config(True),
       workflow_labels: ["research"],
       support_labels: [],
@@ -211,7 +211,7 @@ pub fn reports_missing_required_label_for_project_team_test() {
 
 pub fn workspace_label_is_assignable_to_every_team_test() {
   let contract =
-    domain.LinearContractConfig(
+    config_types.LinearContractConfig(
       ..contract_config(True),
       workflow_labels: ["research"],
       support_labels: [],
@@ -239,7 +239,7 @@ pub fn workspace_label_is_assignable_to_every_team_test() {
 
 pub fn enforcement_requires_workflow_labels_without_support_labels_test() {
   let contract =
-    domain.LinearContractConfig(
+    config_types.LinearContractConfig(
       ..contract_config(False),
       workflow_labels: ["bugfix"],
       support_labels: ["needs-workflow"],
@@ -267,7 +267,7 @@ pub fn enforcement_requires_workflow_labels_without_support_labels_test() {
 
 pub fn invalid_workflow_state_id_diagnostics_test() {
   let missing_contract =
-    domain.LinearContractConfig(
+    config_types.LinearContractConfig(
       ..contract_config(False),
       invalid_workflow_state_id: Some("state-needs-workflow"),
     )
@@ -285,7 +285,7 @@ pub fn invalid_workflow_state_id_diagnostics_test() {
     == [linear_contract.MissingInvalidWorkflowStateId("state-needs-workflow")]
 
   let matching_contract =
-    domain.LinearContractConfig(
+    config_types.LinearContractConfig(
       ..missing_contract,
       required_states: dict.from_list([#("needs_workflow", "Needs Workflow")]),
     )
@@ -345,7 +345,7 @@ pub fn invalid_workflow_state_id_diagnostics_test() {
 
 pub fn multi_team_invalid_workflow_state_fails_closed_test() {
   let contract =
-    domain.LinearContractConfig(
+    config_types.LinearContractConfig(
       ..contract_config(False),
       invalid_workflow_state_id: Some("state-needs-workflow"),
     )

@@ -3,7 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
 import scherzo/tracker/kind as tracker_kind
@@ -17,7 +17,7 @@ pub type ReloadStatus {
 
 pub type ReloadState {
   ReloadState(
-    last_known_good: Option(domain.EffectiveConfig),
+    last_known_good: Option(config_types.EffectiveConfig),
     current_status: ReloadStatus,
   )
 }
@@ -29,8 +29,8 @@ pub type ReloadResult {
 pub type Env =
   fn(String) -> Option(String)
 
-pub fn default_tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+pub fn default_tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: None,
@@ -46,19 +46,19 @@ pub fn default_tracker_config() -> domain.TrackerConfig {
   )
 }
 
-pub fn default_polling_config() -> domain.PollingConfig {
-  domain.PollingConfig(interval_ms: 30_000)
+pub fn default_polling_config() -> config_types.PollingConfig {
+  config_types.PollingConfig(interval_ms: 30_000)
 }
 
 pub fn default_workspace_config(
   workflow_path: String,
-) -> domain.WorkspaceConfig {
+) -> config_types.WorkspaceConfig {
   let root = default_workspace_root(workflow_path)
-  domain.WorkspaceConfig(root: root)
+  config_types.WorkspaceConfig(root: root)
 }
 
-pub fn default_hooks_config() -> domain.HooksConfig {
-  domain.HooksConfig(
+pub fn default_hooks_config() -> config_types.HooksConfig {
+  config_types.HooksConfig(
     after_create: None,
     before_run: None,
     after_run: None,
@@ -67,8 +67,8 @@ pub fn default_hooks_config() -> domain.HooksConfig {
   )
 }
 
-pub fn default_agent_config() -> domain.AgentConfig {
-  domain.AgentConfig(
+pub fn default_agent_config() -> config_types.AgentConfig {
+  config_types.AgentConfig(
     max_concurrent_agents: 10,
     max_turns: 20,
     max_retry_backoff_ms: 300_000,
@@ -78,22 +78,22 @@ pub fn default_agent_config() -> domain.AgentConfig {
   )
 }
 
-pub fn default_pi_config() -> domain.PiConfig {
-  domain.PiConfig(
+pub fn default_pi_config() -> config_types.PiConfig {
+  config_types.PiConfig(
     command: "pi --mode rpc --no-session",
     turn_timeout_ms: 3_600_000,
     read_timeout_ms: 5000,
     stall_timeout_ms: 300_000,
     auto_retry: True,
-    ui_request_policy: domain.Cancel,
+    ui_request_policy: config_types.Cancel,
     ui_request_timeout_ms: 300_000,
     compatibility_probe: True,
     rate_limit_payload: None,
   )
 }
 
-pub fn default_handoff_config() -> domain.HandoffConfig {
-  domain.HandoffConfig(
+pub fn default_handoff_config() -> config_types.HandoffConfig {
+  config_types.HandoffConfig(
     enabled: False,
     comment_on_claim: False,
     comment_on_success: False,
@@ -108,8 +108,8 @@ pub fn default_handoff_config() -> domain.HandoffConfig {
   )
 }
 
-pub fn default_linear_contract_config() -> domain.LinearContractConfig {
-  domain.LinearContractConfig(
+pub fn default_linear_contract_config() -> config_types.LinearContractConfig {
+  config_types.LinearContractConfig(
     enabled: False,
     workflow_label_prefix: "workflow:",
     workflow_labels: [],
@@ -122,8 +122,8 @@ pub fn default_linear_contract_config() -> domain.LinearContractConfig {
   )
 }
 
-pub fn default_linear_command_config() -> domain.LinearCommandConfig {
-  domain.LinearCommandConfig(
+pub fn default_linear_command_config() -> config_types.LinearCommandConfig {
+  config_types.LinearCommandConfig(
     enabled: False,
     prefix: "/scherzo",
     authorized_user_ids: [],
@@ -138,7 +138,7 @@ pub fn resolve_with_env(
   root: yay.Node,
   config_path: String,
   env: Env,
-) -> Result(domain.EffectiveConfig, error.ConfigError) {
+) -> Result(config_types.EffectiveConfig, error.ConfigError) {
   resolve_root(root, config_path, env)
 }
 
@@ -146,7 +146,7 @@ pub fn resolve_root(
   root: yay.Node,
   config_path: String,
   env: Env,
-) -> Result(domain.EffectiveConfig, error.ConfigError) {
+) -> Result(config_types.EffectiveConfig, error.ConfigError) {
   use tracker <- result_try(resolve_tracker(root, env))
   use polling <- result_try(resolve_polling(root))
   use workspace <- result_try(resolve_workspace(root, config_path, env))
@@ -156,7 +156,7 @@ pub fn resolve_root(
   use handoff <- result_try(resolve_handoff(root))
   use linear_contract <- result_try(resolve_linear_contract(root))
   use linear_commands <- result_try(resolve_linear_commands(root))
-  Ok(domain.EffectiveConfig(
+  Ok(config_types.EffectiveConfig(
     tracker:,
     polling:,
     workspace:,
@@ -173,7 +173,7 @@ pub fn resolve_orchestrator_root(
   root: yay.Node,
   config_path: String,
   env: Env,
-) -> Result(domain.OrchestratorConfig, error.ConfigError) {
+) -> Result(config_types.OrchestratorConfig, error.ConfigError) {
   use effective <- result_try(resolve_root(root, config_path, env))
   use routing <- result_try(resolve_routing(root, config_path))
   use dag_hooks <- result_try(resolve_dag_hooks(root))
@@ -184,8 +184,8 @@ pub fn resolve_orchestrator_root(
     effective.linear_contract,
     routing,
   ))
-  let effective = domain.EffectiveConfig(..effective, linear_contract:)
-  Ok(domain.OrchestratorConfig(
+  let effective = config_types.EffectiveConfig(..effective, linear_contract:)
+  Ok(config_types.OrchestratorConfig(
     effective: effective,
     config_dir: dirname(config_path)
       |> result_unwrap(".")
@@ -199,7 +199,7 @@ pub fn resolve_orchestrator_root(
 }
 
 pub fn validate_dispatch(
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
 ) -> Result(Nil, error.ConfigError) {
   case
     non_empty_option(config.hooks.after_create)
@@ -255,7 +255,7 @@ pub fn apply_reload(
   }
 }
 
-pub fn resolved_secrets(config: domain.EffectiveConfig) -> List(String) {
+pub fn resolved_secrets(config: config_types.EffectiveConfig) -> List(String) {
   case config.tracker.api_key {
     Some(value) -> [value]
     None -> []
@@ -265,7 +265,7 @@ pub fn resolved_secrets(config: domain.EffectiveConfig) -> List(String) {
 fn resolve_tracker(
   root: yay.Node,
   env: Env,
-) -> Result(domain.TrackerConfig, error.ConfigError) {
+) -> Result(config_types.TrackerConfig, error.ConfigError) {
   let tracker_node = get_map(root, "tracker")
   let kind =
     get_required_string(
@@ -302,7 +302,7 @@ fn resolve_tracker(
         api_key,
         error.MissingTrackerApiKey,
       ))
-      Ok(domain.TrackerConfig(
+      Ok(config_types.TrackerConfig(
         kind: kind,
         endpoint: endpoint,
         api_key: Some(api_key),
@@ -327,11 +327,11 @@ fn validate_https_endpoint(
 
 fn resolve_polling(
   root: yay.Node,
-) -> Result(domain.PollingConfig, error.ConfigError) {
+) -> Result(config_types.PollingConfig, error.ConfigError) {
   let polling = get_map(root, "polling")
   let interval = get_int(polling, "interval_ms") |> int_default(30_000)
   case interval > 0 {
-    True -> Ok(domain.PollingConfig(interval_ms: interval))
+    True -> Ok(config_types.PollingConfig(interval_ms: interval))
     False -> Error(error.InvalidConfig("polling.interval_ms must be positive"))
   }
 }
@@ -340,25 +340,25 @@ fn resolve_workspace(
   root: yay.Node,
   workflow_path: String,
   env: Env,
-) -> Result(domain.WorkspaceConfig, error.ConfigError) {
+) -> Result(config_types.WorkspaceConfig, error.ConfigError) {
   let workspace = get_map(root, "workspace")
   let raw = get_string(workspace, "root")
   let root =
     raw
     |> resolve_optional_env(env)
     |> option_unwrap(default_workspace_root(workflow_path))
-  Ok(domain.WorkspaceConfig(root: resolve_path(root, workflow_path)))
+  Ok(config_types.WorkspaceConfig(root: resolve_path(root, workflow_path)))
 }
 
 fn resolve_hooks(
   root: yay.Node,
-) -> Result(domain.HooksConfig, error.ConfigError) {
+) -> Result(config_types.HooksConfig, error.ConfigError) {
   let hooks = get_map(root, "hooks")
   let timeout = get_int(hooks, "timeout_ms") |> int_default(60_000)
   case timeout > 0 {
     False -> Error(error.InvalidConfig("hooks.timeout_ms must be positive"))
     True -> {
-      Ok(domain.HooksConfig(
+      Ok(config_types.HooksConfig(
         after_create: get_non_empty_string(hooks, "after_create"),
         before_run: get_non_empty_string(hooks, "before_run"),
         after_run: get_non_empty_string(hooks, "after_run"),
@@ -371,7 +371,7 @@ fn resolve_hooks(
 
 fn resolve_agent(
   root: yay.Node,
-) -> Result(domain.AgentConfig, error.ConfigError) {
+) -> Result(config_types.AgentConfig, error.ConfigError) {
   let agent = get_map(root, "agent")
   let max_concurrent_agents =
     get_int(agent, "max_concurrent_agents") |> int_default(10)
@@ -397,7 +397,7 @@ fn resolve_agent(
       {
         True -> Error(error.InvalidConfig("agent limits must be positive"))
         False ->
-          Ok(domain.AgentConfig(
+          Ok(config_types.AgentConfig(
             max_concurrent_agents: max_concurrent_agents,
             max_turns: max_turns,
             max_retry_backoff_ms: max_retry_backoff_ms,
@@ -412,7 +412,9 @@ fn resolve_agent(
   }
 }
 
-fn resolve_pi(root: yay.Node) -> Result(domain.PiConfig, error.ConfigError) {
+fn resolve_pi(
+  root: yay.Node,
+) -> Result(config_types.PiConfig, error.ConfigError) {
   let pi = get_map(root, "pi")
   let command =
     get_string(pi, "command") |> option_unwrap("pi --mode rpc --no-session")
@@ -433,7 +435,7 @@ fn resolve_pi(root: yay.Node) -> Result(domain.PiConfig, error.ConfigError) {
       use ui_request_policy <- result_try(
         ui_policy(get_string(pi, "ui_request_policy")),
       )
-      Ok(domain.PiConfig(
+      Ok(config_types.PiConfig(
         command: command,
         turn_timeout_ms: turn_timeout_ms,
         read_timeout_ms: read_timeout_ms,
@@ -451,7 +453,7 @@ fn resolve_pi(root: yay.Node) -> Result(domain.PiConfig, error.ConfigError) {
 
 fn resolve_handoff(
   root: yay.Node,
-) -> Result(domain.HandoffConfig, error.ConfigError) {
+) -> Result(config_types.HandoffConfig, error.ConfigError) {
   let handoff = get_map(root, "handoff")
   let enabled = get_bool(handoff, "enabled") |> bool_default(False)
   let default_comment = enabled
@@ -471,7 +473,7 @@ fn resolve_handoff(
             "handoff.attach_result_on_success requires handoff.comment_on_success to be true",
           ))
         False ->
-          Ok(domain.HandoffConfig(
+          Ok(config_types.HandoffConfig(
             enabled: enabled,
             comment_on_claim: get_bool(handoff, "comment_on_claim")
               |> bool_default(default_comment),
@@ -500,7 +502,7 @@ fn resolve_handoff(
 
 fn resolve_linear_contract(
   root: yay.Node,
-) -> Result(domain.LinearContractConfig, error.ConfigError) {
+) -> Result(config_types.LinearContractConfig, error.ConfigError) {
   let defaults = default_linear_contract_config()
   case get_node(root, "linear_contract") {
     None -> Ok(defaults)
@@ -601,7 +603,7 @@ fn resolve_linear_contract(
           {
             Error(err) -> Error(err)
             Ok(Nil) ->
-              Ok(domain.LinearContractConfig(
+              Ok(config_types.LinearContractConfig(
                 enabled: enabled,
                 workflow_label_prefix: workflow_label_prefix,
                 workflow_labels: workflow_labels,
@@ -622,7 +624,7 @@ fn resolve_linear_contract(
 
 fn resolve_linear_commands(
   root: yay.Node,
-) -> Result(domain.LinearCommandConfig, error.ConfigError) {
+) -> Result(config_types.LinearCommandConfig, error.ConfigError) {
   let node = get_map(root, "linear_commands")
   let defaults = default_linear_command_config()
   let enabled = get_bool(node, "enabled") |> bool_default(defaults.enabled)
@@ -660,7 +662,7 @@ fn resolve_linear_commands(
                 "linear_commands.authorized_user_ids is required when enabled",
               ))
             False ->
-              Ok(domain.LinearCommandConfig(
+              Ok(config_types.LinearCommandConfig(
                 enabled: enabled,
                 prefix: prefix,
                 authorized_user_ids: authorized_user_ids,
@@ -677,7 +679,7 @@ fn resolve_linear_commands(
 fn resolve_routing(
   root: yay.Node,
   config_path: String,
-) -> Result(domain.RoutingConfig, error.ConfigError) {
+) -> Result(config_types.RoutingConfig, error.ConfigError) {
   let routing = get_map(root, "routing")
   let prefix =
     get_string(routing, "workflow_label_prefix")
@@ -691,7 +693,7 @@ fn resolve_routing(
     |> option_map(normalize_label)
   use workflows <- result_try(read_routing_workflows(routing, config_path))
   use _ <- result_try(validate_default_workflow(default_workflow, workflows))
-  Ok(domain.RoutingConfig(
+  Ok(config_types.RoutingConfig(
     workflow_label_prefix: prefix,
     require_exactly_one_workflow_label: require_exactly_one,
     default_workflow: default_workflow,
@@ -772,7 +774,7 @@ fn read_routing_workflow_entries(
 
 fn resolve_dag_hooks(
   root: yay.Node,
-) -> Result(domain.DagHooksConfig, error.ConfigError) {
+) -> Result(config_types.DagHooksConfig, error.ConfigError) {
   let workspace = get_map(root, "workspace")
   let hooks = get_map(workspace, "hooks")
   let timeout = get_int(hooks, "timeout_ms") |> int_default(60_000)
@@ -780,7 +782,7 @@ fn resolve_dag_hooks(
     False ->
       Error(error.InvalidConfig("workspace.hooks.timeout_ms must be positive"))
     True ->
-      Ok(domain.DagHooksConfig(
+      Ok(config_types.DagHooksConfig(
         create: get_non_empty_string(hooks, "create"),
         before_step: get_non_empty_string(hooks, "before_step"),
         after_step: get_non_empty_string(hooks, "after_step"),
@@ -792,7 +794,7 @@ fn resolve_dag_hooks(
 
 fn resolve_artifact_limits(
   root: yay.Node,
-) -> Result(domain.ArtifactLimits, error.ConfigError) {
+) -> Result(config_types.ArtifactLimits, error.ConfigError) {
   let limits = get_map(root, "artifact_limits")
   let command_stream_max_chars =
     get_int(limits, "command_stream_max_chars") |> int_default(20_000)
@@ -808,7 +810,7 @@ fn resolve_artifact_limits(
     True ->
       Error(error.InvalidConfig("artifact_limits values must be positive"))
     False ->
-      Ok(domain.ArtifactLimits(
+      Ok(config_types.ArtifactLimits(
         command_stream_max_chars: command_stream_max_chars,
         template_field_max_chars: template_field_max_chars,
         workflow_summary_max_chars: workflow_summary_max_chars,
@@ -834,9 +836,9 @@ fn resolve_workflow_model_settings(
 
 fn resolve_orchestrator_linear_contract(
   root: yay.Node,
-  contract: domain.LinearContractConfig,
-  routing: domain.RoutingConfig,
-) -> Result(domain.LinearContractConfig, error.ConfigError) {
+  contract: config_types.LinearContractConfig,
+  routing: config_types.RoutingConfig,
+) -> Result(config_types.LinearContractConfig, error.ConfigError) {
   let workflow_names =
     dict.keys(routing.workflows)
     |> normalize_label_list
@@ -863,7 +865,7 @@ fn resolve_orchestrator_linear_contract(
       case routing.require_exactly_one_workflow_label, has_labels {
         True, False ->
           Ok(
-            domain.LinearContractConfig(
+            config_types.LinearContractConfig(
               ..contract,
               workflow_label_prefix: contract_prefix,
               workflow_labels: workflow_names,
@@ -873,7 +875,7 @@ fn resolve_orchestrator_linear_contract(
           case contract_names == workflow_names {
             True ->
               Ok(
-                domain.LinearContractConfig(
+                config_types.LinearContractConfig(
                   ..contract,
                   workflow_label_prefix: contract_prefix,
                   workflow_labels: workflow_names,
@@ -886,7 +888,7 @@ fn resolve_orchestrator_linear_contract(
           }
         _, _ ->
           Ok(
-            domain.LinearContractConfig(
+            config_types.LinearContractConfig(
               ..contract,
               workflow_label_prefix: contract_prefix,
             ),
@@ -1050,18 +1052,18 @@ fn validate_handoff_binding_entries(
 
 fn ui_policy(
   value: Option(String),
-) -> Result(domain.UiRequestPolicy, error.ConfigError) {
+) -> Result(config_types.UiRequestPolicy, error.ConfigError) {
   case value {
     Some(value) ->
       case string.lowercase(string.trim(value)) {
-        "cancel" -> Ok(domain.Cancel)
-        "fail" -> Ok(domain.Fail)
-        "ignore" -> Ok(domain.Ignore)
-        "operator" -> Ok(domain.Operator)
+        "cancel" -> Ok(config_types.Cancel)
+        "fail" -> Ok(config_types.Fail)
+        "ignore" -> Ok(config_types.Ignore)
+        "operator" -> Ok(config_types.Operator)
         other ->
           Error(error.InvalidConfig("invalid pi.ui_request_policy: " <> other))
       }
-    None -> Ok(domain.Cancel)
+    None -> Ok(config_types.Cancel)
   }
 }
 

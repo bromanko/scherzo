@@ -3,8 +3,9 @@ import gleam/option.{type Option}
 import scherzo/agent/run_attempt
 import scherzo/agent/types
 import scherzo/agent/worker_command
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 
 pub type FinalClassification =
   types.FinalClassification
@@ -19,10 +20,10 @@ pub type PiUpdate =
   types.PiUpdate
 
 pub fn run_attempt(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   attempt: Option(Int),
   prompt_template: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
@@ -37,10 +38,10 @@ pub fn run_attempt(
 }
 
 pub fn run_attempt_with_commands(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   attempt: Option(Int),
   prompt_template: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -57,10 +58,10 @@ pub fn run_attempt_with_commands(
 }
 
 pub fn run_attempt_with_command_ready(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   attempt: Option(Int),
   prompt_template: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -79,9 +80,9 @@ pub fn run_attempt_with_command_ready(
 }
 
 pub fn run_prompt_in_workspace(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   prompt: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),

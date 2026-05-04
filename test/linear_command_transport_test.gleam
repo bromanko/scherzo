@@ -1,14 +1,14 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/linear_transport
-import scherzo/domain
 import scherzo/linear
 import scherzo/state/projection
 
-fn config() -> domain.LinearCommandConfig {
-  domain.LinearCommandConfig(
+fn config() -> config_types.LinearCommandConfig {
+  config_types.LinearCommandConfig(
     enabled: True,
     prefix: "/scherzo",
     authorized_user_ids: ["user-1"],
@@ -19,8 +19,11 @@ fn config() -> domain.LinearCommandConfig {
   )
 }
 
-fn config_with_cap(max_comments: Int) -> domain.LinearCommandConfig {
-  domain.LinearCommandConfig(..config(), max_comments_per_tick: max_comments)
+fn config_with_cap(max_comments: Int) -> config_types.LinearCommandConfig {
+  config_types.LinearCommandConfig(
+    ..config(),
+    max_comments_per_tick: max_comments,
+  )
 }
 
 fn author(id: String, email: Option(String)) -> linear.LinearCommentAuthor {

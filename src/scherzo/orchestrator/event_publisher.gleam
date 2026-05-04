@@ -2,9 +2,9 @@ import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
-import scherzo/domain
 import scherzo/session/event as session_event
 import scherzo/session/hub
+import scherzo/session/tokens as session_tokens
 
 pub fn worker_update(
   event_hub: process.Subject(hub.Message),
@@ -48,7 +48,7 @@ pub fn lifecycle(
       tool_input: None,
       tool_output: None,
       tool_status: None,
-      tokens: domain.zero_token_totals(),
+      tokens: session_tokens.zero_token_totals(),
       raw_json: None,
     ),
   )
@@ -156,7 +156,7 @@ pub fn is_blocking_ui_method(method: Option(String)) -> Bool {
   }
 }
 
-pub fn tokens_are_nonzero(tokens: domain.TokenTotals) -> Bool {
+pub fn tokens_are_nonzero(tokens: session_tokens.TokenTotals) -> Bool {
   tokens.input > 0
   || tokens.output > 0
   || tokens.cache_read > 0

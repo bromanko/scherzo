@@ -8,11 +8,12 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear_body_data
 import scherzo/linear_contract
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
 pub type Request {
@@ -85,7 +86,7 @@ pub type Transport =
   fn(Request) -> Result(Response, error.TrackerError)
 
 pub fn client(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
 ) -> tracker.Client {
   tracker.Client(
@@ -99,12 +100,12 @@ pub fn client(
   )
 }
 
-pub fn real_client(config: domain.TrackerConfig) -> tracker.Client {
+pub fn real_client(config: config_types.TrackerConfig) -> tracker.Client {
   client(config, http_transport)
 }
 
 pub fn command_client(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
 ) -> CommandClient {
   CommandClient(
@@ -115,12 +116,14 @@ pub fn command_client(
   )
 }
 
-pub fn real_command_client(config: domain.TrackerConfig) -> CommandClient {
+pub fn real_command_client(
+  config: config_types.TrackerConfig,
+) -> CommandClient {
   command_client(config, http_transport)
 }
 
 pub fn contract_client(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
 ) -> ContractClient {
   ContractClient(fetch_remote_contract: fn() {
@@ -128,7 +131,9 @@ pub fn contract_client(
   })
 }
 
-pub fn real_contract_client(config: domain.TrackerConfig) -> ContractClient {
+pub fn real_contract_client(
+  config: config_types.TrackerConfig,
+) -> ContractClient {
   contract_client(config, http_transport)
 }
 
@@ -175,24 +180,24 @@ fn set_headers(
 
 pub type Page {
   Page(
-    nodes: List(domain.Issue),
+    nodes: List(tracker_issue.Issue),
     has_next_page: Bool,
     end_cursor: Option(String),
   )
 }
 
 pub fn fetch_candidate_issues(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
-) -> Result(List(domain.Issue), error.TrackerError) {
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   fetch_pages(config, config.active_states, None, transport, [])
 }
 
 pub fn fetch_issues_by_states(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   states: List(issue_state.IssueState),
   transport: Transport,
-) -> Result(List(domain.Issue), error.TrackerError) {
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   case states {
     [] -> Ok([])
     _ -> fetch_pages(config, states, None, transport, [])
@@ -200,10 +205,10 @@ pub fn fetch_issues_by_states(
 }
 
 pub fn fetch_issue_states_by_ids(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   ids: List(String),
   transport: Transport,
-) -> Result(List(domain.Issue), error.TrackerError) {
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   case ids {
     [] -> Ok([])
     _ -> {
@@ -215,7 +220,7 @@ pub fn fetch_issue_states_by_ids(
 }
 
 pub fn fetch_remote_contract(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
 ) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
   use request <- try_tracker(build_contract_request(config))
@@ -224,7 +229,7 @@ pub fn fetch_remote_contract(
 }
 
 pub fn fetch_issue_comments(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_ids: List(String),
   limit_per_issue: Int,
   transport: Transport,
@@ -245,7 +250,7 @@ pub fn fetch_issue_comments(
 }
 
 pub fn post_ack(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_id: String,
   body: String,
   transport: Transport,
@@ -264,12 +269,12 @@ fn compare_comments(a: LinearComment, b: LinearComment) {
 }
 
 fn fetch_pages(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   states: List(issue_state.IssueState),
   after: Option(String),
   transport: Transport,
-  acc: List(domain.Issue),
-) -> Result(List(domain.Issue), error.TrackerError) {
+  acc: List(tracker_issue.Issue),
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   use request <- try_tracker(build_candidate_request(config, states, after))
   use response <- try_tracker(transport(request))
   use page <- try_tracker(parse_page_response(response))
@@ -286,7 +291,7 @@ fn fetch_pages(
 }
 
 pub fn build_candidate_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   states: List(issue_state.IssueState),
   after: Option(String),
 ) -> Result(Request, error.TrackerError) {
@@ -313,7 +318,7 @@ pub fn build_candidate_request(
 }
 
 pub fn build_state_refresh_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   ids: List(String),
 ) -> Result(Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
@@ -328,7 +333,7 @@ pub fn build_state_refresh_request(
 }
 
 pub fn build_contract_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
 ) -> Result(Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
@@ -343,7 +348,7 @@ pub fn build_contract_request(
 }
 
 pub fn build_issue_comments_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_ids: List(String),
   limit_per_issue: Int,
 ) -> Result(Request, error.TrackerError) {
@@ -371,7 +376,7 @@ pub fn build_issue_comments_request(
 }
 
 pub fn build_comment_create_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_id: String,
   body: String,
 ) -> Result(Request, error.TrackerError) {
@@ -393,7 +398,7 @@ pub fn build_comment_create_request(
 }
 
 pub fn build_comment_fetch_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
 ) -> Result(Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
@@ -408,7 +413,7 @@ pub fn build_comment_fetch_request(
 }
 
 pub fn build_file_upload_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   filename: String,
   content_type: String,
   size: Int,
@@ -434,7 +439,7 @@ pub fn build_file_upload_request(
 }
 
 pub fn build_comment_update_body_data_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   body_data: json.Json,
 ) -> Result(Request, error.TrackerError) {
@@ -456,7 +461,7 @@ pub fn build_comment_update_body_data_request(
 }
 
 pub fn build_comment_update_body_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   body: String,
 ) -> Result(Request, error.TrackerError) {
@@ -478,7 +483,7 @@ pub fn build_comment_update_body_request(
 }
 
 pub fn build_issue_update_state_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_id: String,
   state_id: String,
 ) -> Result(Request, error.TrackerError) {
@@ -553,7 +558,7 @@ pub fn contract_query() -> String {
 
 pub fn parse_response(
   response: Response,
-) -> Result(List(domain.Issue), error.TrackerError) {
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   use page <- try_tracker(parse_page_response(response))
   Ok(page.nodes)
 }
@@ -1232,7 +1237,7 @@ fn page_info_decoder() -> decode.Decoder(PageInfo) {
   decode.success(PageInfo(has_next_page: has_next_page, end_cursor: end_cursor))
 }
 
-fn issue_decoder() -> decode.Decoder(domain.Issue) {
+fn issue_decoder() -> decode.Decoder(tracker_issue.Issue) {
   use id <- decode.field("id", decode.string)
   use identifier <- decode.field("identifier", decode.string)
   use title <- decode.field("title", decode.string)
@@ -1269,7 +1274,7 @@ fn issue_decoder() -> decode.Decoder(domain.Issue) {
     [],
     blockers_decoder(),
   )
-  decode.success(domain.Issue(
+  decode.success(tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: title,
@@ -1300,7 +1305,7 @@ fn label_decoder() -> decode.Decoder(String) {
   decode.success(name)
 }
 
-fn blockers_decoder() -> decode.Decoder(List(domain.BlockerRef)) {
+fn blockers_decoder() -> decode.Decoder(List(tracker_issue.BlockerRef)) {
   use nodes <- decode.field("nodes", decode.list(relation_decoder()))
   decode.success(
     list.filter_map(nodes, fn(rel) {
@@ -1313,7 +1318,7 @@ fn blockers_decoder() -> decode.Decoder(List(domain.BlockerRef)) {
 }
 
 pub type Relation {
-  Relation(type_: String, blocker: domain.BlockerRef)
+  Relation(type_: String, blocker: tracker_issue.BlockerRef)
 }
 
 pub type RelatedIssue {
@@ -1329,7 +1334,7 @@ fn relation_decoder() -> decode.Decoder(Relation) {
   use related <- decode.field("issue", related_issue_decoder())
   decode.success(Relation(
     type_: type_,
-    blocker: domain.BlockerRef(
+    blocker: tracker_issue.BlockerRef(
       id: related.id,
       identifier: related.identifier,
       state: related.state,
@@ -1376,7 +1381,7 @@ fn require_https_endpoint(
 }
 
 fn require_api_key(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
 ) -> Result(String, error.TrackerError) {
   case config.api_key {
     Some(value) -> Ok(value)
@@ -1385,7 +1390,7 @@ fn require_api_key(
 }
 
 fn require_project_slug(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
 ) -> Result(String, error.TrackerError) {
   case config.project_slug {
     Some(value) -> Ok(value)

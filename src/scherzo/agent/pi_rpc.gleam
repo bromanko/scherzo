@@ -1,8 +1,8 @@
 import gleam/option.{type Option}
-import scherzo/domain
 import scherzo/error
 import scherzo/pi/client
 import scherzo/pi/protocol
+import scherzo/session/tokens as session_tokens
 
 pub type Session =
   client.Session
@@ -110,7 +110,7 @@ pub fn send_extension_ui_value(
 pub fn get_session_stats(
   session: client.Session,
   read_timeout_ms: Int,
-) -> Result(#(client.Session, domain.TokenTotals), error.PiRpcError) {
+) -> Result(#(client.Session, session_tokens.TokenTotals), error.PiRpcError) {
   client.get_session_stats(session, read_timeout_ms)
 }
 

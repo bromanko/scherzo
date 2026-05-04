@@ -5,18 +5,21 @@ import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/path
+import scherzo/result_artifact
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/name as session_name
 import scherzo/session/reason
+import scherzo/session/tokens as session_tokens
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_run
 import scherzo/workspace
@@ -28,8 +31,8 @@ fn reset_dir(dir: String) -> Nil {
   Nil
 }
 
-fn issue(id: String, identifier: String, state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: "Title " <> identifier,
@@ -108,14 +111,14 @@ steps:
 }
 
 fn success(
-  final: domain.Issue,
+  final: tracker_issue.Issue,
   workspace_path: String,
 ) -> agent_types.WorkerSuccess {
   agent_types.WorkerSuccess(
     final_issue: Some(final),
     final_classification: agent_types.FinalTerminal,
     workspace_path: workspace_path,
-    tokens: domain.TokenTotals(
+    tokens: session_tokens.TokenTotals(
       input: 1,
       output: 2,
       cache_read: 0,
@@ -123,7 +126,7 @@ fn success(
       total: 3,
     ),
     turns: 1,
-    result: domain.ResultArtifact(
+    result: result_artifact.ResultArtifact(
       final_response: None,
       truncated: False,
       source: "none",
@@ -140,7 +143,7 @@ fn update(name: String, message: Option(String)) -> agent_types.PiUpdate {
     request_id: None,
     method: None,
     pi_session_id: None,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     tool_name: None,
     tool_input: None,
     tool_output: None,
@@ -148,13 +151,13 @@ fn update(name: String, message: Option(String)) -> agent_types.PiUpdate {
   )
 }
 
-fn client_with(candidate: domain.Issue) -> tracker.Client {
+fn client_with(candidate: tracker_issue.Issue) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([candidate]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
     fetch_issue_states_by_ids: fn(_) {
       Ok([
-        domain.Issue(
+        tracker_issue.Issue(
           ..candidate,
           state: issue_state.from_string_unchecked("Done"),
         ),
@@ -165,10 +168,10 @@ fn client_with(candidate: domain.Issue) -> tracker.Client {
 
 fn workflow_deps_from_agent(
   agent_runner: fn(
-    domain.Issue,
+    tracker_issue.Issue,
     Option(Int),
     String,
-    domain.EffectiveConfig,
+    config_types.EffectiveConfig,
     tracker.Client,
     fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
@@ -207,10 +210,10 @@ fn dependencies(
   log_subject: process.Subject(String),
   hub_subject: process.Subject(hub.Message),
   agent_runner: fn(
-    domain.Issue,
+    tracker_issue.Issue,
     Option(Int),
     String,
-    domain.EffectiveConfig,
+    config_types.EffectiveConfig,
     tracker.Client,
     fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
@@ -259,7 +262,7 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -326,7 +329,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
             request_id: None,
             method: None,
             pi_session_id: None,
-            tokens: domain.zero_token_totals(),
+            tokens: session_tokens.zero_token_totals(),
             tool_name: Some("bash"),
             tool_input: Some("gleam test"),
             tool_output: None,
@@ -336,7 +339,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -377,7 +380,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -417,7 +420,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
 pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
   let #(workflow_path, root) = write_workflow("test/tmp/daemon-retry-sessions")
   let first = issue("retry-id", "ABC-RETRY", "Todo")
-  let second = domain.Issue(..first, title: "retry succeeds")
+  let second = tracker_issue.Issue(..first, title: "retry succeeds")
   let log_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
   let client =
@@ -439,12 +442,12 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
             Error(agent_types.WorkerFailure(
               reason: error.PiFailed(error.PiProtocolError("boom")),
               workspace_path: Some(expected_workspace),
-              tokens: domain.zero_token_totals(),
+              tokens: session_tokens.zero_token_totals(),
               final_issue: None,
             ))
           True ->
             Ok(success(
-              domain.Issue(
+              tracker_issue.Issue(
                 ..issue,
                 state: issue_state.from_string_unchecked("Done"),
               ),
@@ -495,7 +498,7 @@ pub fn daemon_success_continuation_does_not_publish_retry_to_exited_session_test
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Todo"),
           ),
@@ -536,7 +539,7 @@ pub fn daemon_worker_down_does_not_publish_retry_to_exited_session_test() {
         Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("worker_down")),
           workspace_path: Some(expected_workspace),
-          tokens: domain.zero_token_totals(),
+          tokens: session_tokens.zero_token_totals(),
           final_issue: None,
         ))
       },
@@ -562,7 +565,10 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
     write_workflow("test/tmp/daemon-stop-session-cleanup")
   let candidate = issue("stop-id", "ABC-STOP", "Todo")
   let terminal =
-    domain.Issue(..candidate, state: issue_state.from_string_unchecked("Done"))
+    tracker_issue.Issue(
+      ..candidate,
+      state: issue_state.from_string_unchecked("Done"),
+    )
   let log_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
   let client =
@@ -581,7 +587,7 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
           workspace.workspace_path(root, issue.identifier)
         process.sleep(2000)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -621,7 +627,7 @@ pub fn daemon_start_fails_when_event_hub_start_fails_test() {
           Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("not used")),
             workspace_path: None,
-            tokens: domain.zero_token_totals(),
+            tokens: session_tokens.zero_token_totals(),
             final_issue: None,
           ))
         },

@@ -5,12 +5,14 @@ import gleam/option.{None, Some}
 import gleam/order.{type Order, Eq}
 import gleam/result
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/orchestrator/core
 import scherzo/orchestrator/reason
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/state/outbox
 import scherzo/state/projection
 import scherzo/state/record
+import scherzo/tracker/issue as tracker_issue
 
 pub type RecoveredRetry {
   RecoveredRetry(
@@ -42,7 +44,7 @@ pub type OutboxReplay {
 
 pub type RecoveryPlan {
   RecoveryPlan(
-    runtime: domain.RuntimeState,
+    runtime: orchestrator_state.RuntimeState,
     retry_timers: List(RecoveredRetry),
     records_to_append: List(record.LedgerRecord),
     cleanup_workspaces: List(CleanupRequest),
@@ -58,7 +60,7 @@ pub type RecoveryError {
 
 type Build {
   Build(
-    runtime: domain.RuntimeState,
+    runtime: orchestrator_state.RuntimeState,
     retry_timers: List(RecoveredRetry),
     record_bodies: List(record.RecordBody),
     cleanup_workspaces: List(CleanupRequest),
@@ -81,8 +83,8 @@ pub fn known_issue_ids(projection: projection.Projection) -> List(String) {
 
 pub fn plan(
   projection: projection.Projection,
-  config: domain.EffectiveConfig,
-  refreshed_issues: List(domain.Issue),
+  config: config_types.EffectiveConfig,
+  refreshed_issues: List(tracker_issue.Issue),
   now_ms: Int,
 ) -> Result(RecoveryPlan, RecoveryError) {
   let outbox_recovery = replayable_outbox(projection)
@@ -239,9 +241,9 @@ fn outbox_status_time(status: projection.OutboxStatus) -> Int {
 }
 
 fn restore_counters(
-  runtime: domain.RuntimeState,
+  runtime: orchestrator_state.RuntimeState,
   projection: projection.Projection,
-) -> domain.RuntimeState {
+) -> orchestrator_state.RuntimeState {
   let counters =
     projection.issue_counters
     |> dict.to_list
@@ -249,17 +251,20 @@ fn restore_counters(
       let #(issue_id, counter) = entry
       #(
         issue_id,
-        domain.IssueCounter(counter.failure_attempts, counter.worker_sessions),
+        orchestrator_state.IssueCounter(
+          counter.failure_attempts,
+          counter.worker_sessions,
+        ),
       )
     })
     |> dict.from_list
-  domain.RuntimeState(..runtime, issue_counters: counters)
+  orchestrator_state.RuntimeState(..runtime, issue_counters: counters)
 }
 
 fn restore_parked(
   build: Build,
   projection: projection.Projection,
-  issue_by_id: Dict(String, domain.Issue),
+  issue_by_id: Dict(String, tracker_issue.Issue),
 ) -> Build {
   projection.parked_issues
   |> dict.to_list
@@ -268,7 +273,7 @@ fn restore_parked(
     case parked_should_survive(parked, issue_id, issue_by_id) {
       True -> {
         let parked_entry =
-          domain.ParkedEntry(
+          orchestrator_state.ParkedEntry(
             issue_id: issue_id,
             identifier: parked.issue_identifier,
             reason: park_reason_from_string(parked.reason),
@@ -277,7 +282,7 @@ fn restore_parked(
           )
         Build(
           ..build,
-          runtime: domain.RuntimeState(
+          runtime: orchestrator_state.RuntimeState(
             ..build.runtime,
             parked: dict.insert(build.runtime.parked, issue_id, parked_entry),
             claimed: dict.delete(build.runtime.claimed, issue_id),
@@ -287,7 +292,7 @@ fn restore_parked(
       False ->
         Build(
           ..build,
-          runtime: domain.RuntimeState(
+          runtime: orchestrator_state.RuntimeState(
             ..build.runtime,
             parked: dict.delete(build.runtime.parked, issue_id),
             retry_attempts: dict.delete(build.runtime.retry_attempts, issue_id),
@@ -319,8 +324,8 @@ fn restore_parked(
 fn restore_retries(
   build: Build,
   projection: projection.Projection,
-  config: domain.EffectiveConfig,
-  issue_by_id: Dict(String, domain.Issue),
+  config: config_types.EffectiveConfig,
+  issue_by_id: Dict(String, tracker_issue.Issue),
   now_ms: Int,
 ) -> Build {
   projection.retries
@@ -347,8 +352,8 @@ fn restore_retries(
 
 fn restore_scheduled_retry(
   build: Build,
-  config: domain.EffectiveConfig,
-  issue_by_id: Dict(String, domain.Issue),
+  config: config_types.EffectiveConfig,
+  issue_by_id: Dict(String, tracker_issue.Issue),
   issue_id: String,
   issue_identifier: String,
   generation: Int,
@@ -374,10 +379,14 @@ fn restore_scheduled_retry(
                     True -> {
                       let remaining = remaining_retry_delay(status, now_ms)
                       let retry =
-                        domain.RetryEntry(issue_id, remaining, generation)
+                        orchestrator_state.RetryEntry(
+                          issue_id,
+                          remaining,
+                          generation,
+                        )
                       Build(
                         ..build,
-                        runtime: domain.RuntimeState(
+                        runtime: orchestrator_state.RuntimeState(
                           ..build.runtime,
                           retry_attempts: dict.insert(
                             build.runtime.retry_attempts,
@@ -412,8 +421,8 @@ fn restore_scheduled_retry(
 fn recover_interrupted_runs(
   build: Build,
   projection: projection.Projection,
-  config: domain.EffectiveConfig,
-  issue_by_id: Dict(String, domain.Issue),
+  config: config_types.EffectiveConfig,
+  issue_by_id: Dict(String, tracker_issue.Issue),
   now_ms: Int,
 ) -> Build {
   projection.runs
@@ -455,8 +464,8 @@ fn recover_interrupted_runs(
 fn recover_one_interrupted_run(
   build: Build,
   projection: projection.Projection,
-  config: domain.EffectiveConfig,
-  issue_by_id: Dict(String, domain.Issue),
+  config: config_types.EffectiveConfig,
+  issue_by_id: Dict(String, tracker_issue.Issue),
   run_id: String,
   issue_id: String,
   issue_identifier: String,
@@ -506,7 +515,7 @@ fn recover_one_interrupted_run(
 fn recover_terminal_interrupted(
   build: Build,
   projection: projection.Projection,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   issue_id: String,
   issue_identifier: String,
   workspace_path: String,
@@ -524,7 +533,7 @@ fn recover_terminal_interrupted(
   }
   Build(
     ..build,
-    runtime: domain.RuntimeState(
+    runtime: orchestrator_state.RuntimeState(
       ..build.runtime,
       completed: dict.insert(build.runtime.completed, issue_id, issue),
       claimed: dict.delete(build.runtime.claimed, issue_id),
@@ -537,8 +546,8 @@ fn recover_terminal_interrupted(
 fn recover_active_interrupted(
   build: Build,
   projection: projection.Projection,
-  config: domain.EffectiveConfig,
-  issue: domain.Issue,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
   run_id: String,
   issue_identifier: String,
   now_ms: Int,
@@ -556,11 +565,12 @@ fn recover_active_interrupted(
     False -> {
       let counter = counter_for_runtime(build.runtime, issue_id)
       let failures = counter.failure_attempts + 1
-      let counter = domain.IssueCounter(..counter, failure_attempts: failures)
+      let counter =
+        orchestrator_state.IssueCounter(..counter, failure_attempts: failures)
       let build =
         Build(
           ..build,
-          runtime: domain.RuntimeState(
+          runtime: orchestrator_state.RuntimeState(
             ..build.runtime,
             issue_counters: dict.insert(
               build.runtime.issue_counters,
@@ -593,8 +603,8 @@ fn recover_active_interrupted(
 
 fn ensure_retry_or_park_for_counter(
   build: Build,
-  config: domain.EffectiveConfig,
-  issue: domain.Issue,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
   issue_identifier: String,
   now_ms: Int,
 ) -> Build {
@@ -607,16 +617,18 @@ fn ensure_retry_or_park_for_counter(
         False -> {
           let fingerprint = core.issue_fingerprint(issue)
           let parked =
-            domain.ParkedEntry(
+            orchestrator_state.ParkedEntry(
               issue_id: issue_id,
               identifier: issue_identifier,
               reason: reason.ParkMaxRetryAttempts,
-              release_policy: domain.AutoUnparkOnIssueChange(fingerprint),
+              release_policy: orchestrator_state.AutoUnparkOnIssueChange(
+                fingerprint,
+              ),
               parked_at_ms: now_ms,
             )
           Build(
             ..build,
-            runtime: domain.RuntimeState(
+            runtime: orchestrator_state.RuntimeState(
               ..build.runtime,
               parked: dict.insert(build.runtime.parked, issue_id, parked),
               retry_attempts: dict.delete(
@@ -649,10 +661,11 @@ fn ensure_retry_or_park_for_counter(
               config.agent.max_retry_backoff_ms,
             )
           let generation = 1
-          let retry = domain.RetryEntry(issue_id, delay_ms, generation)
+          let retry =
+            orchestrator_state.RetryEntry(issue_id, delay_ms, generation)
           Build(
             ..build,
-            runtime: domain.RuntimeState(
+            runtime: orchestrator_state.RuntimeState(
               ..build.runtime,
               retry_attempts: dict.insert(
                 build.runtime.retry_attempts,
@@ -694,7 +707,7 @@ fn ensure_retry_or_park_for_counter(
 fn parked_should_survive(
   parked: projection.ParkedIssue,
   issue_id: String,
-  issue_by_id: Dict(String, domain.Issue),
+  issue_by_id: Dict(String, tracker_issue.Issue),
 ) -> Bool {
   case parked.release_policy {
     "auto_unpark_on_issue_change" ->
@@ -708,11 +721,11 @@ fn parked_should_survive(
 
 fn release_policy_from_projection(
   parked: projection.ParkedIssue,
-) -> domain.ParkReleasePolicy {
+) -> orchestrator_state.ParkReleasePolicy {
   case parked.release_policy {
     "auto_unpark_on_issue_change" ->
-      domain.AutoUnparkOnIssueChange(parked.issue_fingerprint)
-    _ -> domain.ExplicitUnparkOnly
+      orchestrator_state.AutoUnparkOnIssueChange(parked.issue_fingerprint)
+    _ -> orchestrator_state.ExplicitUnparkOnly
   }
 }
 
@@ -730,7 +743,9 @@ fn max_int(a: Int, b: Int) -> Int {
   }
 }
 
-fn issues_by_id(issues: List(domain.Issue)) -> Dict(String, domain.Issue) {
+fn issues_by_id(
+  issues: List(tracker_issue.Issue),
+) -> Dict(String, tracker_issue.Issue) {
   issues
   |> list.map(fn(issue) { #(issue.id, issue) })
   |> dict.from_list
@@ -760,11 +775,11 @@ fn ledger_records_loop(
 }
 
 fn counter_for_runtime(
-  runtime: domain.RuntimeState,
+  runtime: orchestrator_state.RuntimeState,
   issue_id: String,
-) -> domain.IssueCounter {
+) -> orchestrator_state.IssueCounter {
   dict.get(runtime.issue_counters, issue_id)
-  |> result.unwrap(domain.new_issue_counter())
+  |> result.unwrap(orchestrator_state.new_issue_counter())
 }
 
 fn park_reason_from_string(text: String) -> reason.ParkReason {
@@ -777,7 +792,7 @@ fn park_reason_from_string(text: String) -> reason.ParkReason {
 
 fn identifier_for_issue(
   projection: projection.Projection,
-  issue_by_id: Dict(String, domain.Issue),
+  issue_by_id: Dict(String, tracker_issue.Issue),
   issue_id: String,
 ) -> String {
   case dict.get(issue_by_id, issue_id) {

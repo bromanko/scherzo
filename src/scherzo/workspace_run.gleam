@@ -1,10 +1,11 @@
 import gleam/dict.{type Dict}
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/hooks
 import scherzo/path
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workspace
@@ -28,12 +29,12 @@ pub type PrepareError {
 }
 
 pub fn prepare_step(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   workflow_id: String,
   run_id: String,
   step_id: String,
   workspace_ref: workflow_dag.WorkspaceRef,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   known_workspaces: Dict(String, PreparedStepWorkspace),
 ) -> Result(PreparedStepWorkspace, PrepareError) {
   use paths <- try_prepare(workspace_paths(
@@ -70,10 +71,10 @@ pub fn prepare_step(
 }
 
 fn finish_prepare_step(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   step_id: String,
   prepared: PreparedStepWorkspace,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> Result(PreparedStepWorkspace, PrepareError) {
   use _ <- result_try(run_create_hook(issue, step_id, prepared, orchestrator))
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
@@ -87,10 +88,10 @@ fn finish_prepare_step(
 }
 
 pub fn after_step(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   step_id: String,
   prepared: PreparedStepWorkspace,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> Nil {
   case orchestrator.dag_hooks.after_step {
     None -> Nil
@@ -110,7 +111,7 @@ pub fn after_step(
 
 pub fn cleanup_run(
   run_root: String,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   let root_abs =
     path.absolute(orchestrator.effective.workspace.root)
@@ -130,7 +131,7 @@ pub fn cleanup_run(
             None -> Nil
             Some(script) -> {
               let dummy_issue =
-                domain.Issue(
+                tracker_issue.Issue(
                   id: "",
                   identifier: "",
                   title: "",
@@ -181,11 +182,11 @@ pub fn cleanup_retention_marker(run_root: String) -> String {
 }
 
 pub fn workspace_path_for(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   workflow_id: String,
   run_id: String,
   workspace_name: String,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> Result(String, error.WorkspaceError) {
   use paths <- try_workspace(workspace_paths(
     issue,
@@ -199,11 +200,11 @@ pub fn workspace_path_for(
 }
 
 fn workspace_paths(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   workflow_id: String,
   run_id: String,
   workspace_name: String,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> Result(#(String, String), error.WorkspaceError) {
   use issue_key <- try_workspace(workspace.sanitize(issue.identifier))
   use workflow_key <- try_workspace(workspace.sanitize(workflow_id))
@@ -250,10 +251,10 @@ fn source_workspace(
 }
 
 fn run_create_hook(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   step_id: String,
   prepared: PreparedStepWorkspace,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> Result(Nil, PrepareError) {
   case orchestrator.dag_hooks.create {
     None ->
@@ -271,10 +272,10 @@ fn run_create_hook(
 }
 
 fn run_before_step_hook(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   step_id: String,
   prepared: PreparedStepWorkspace,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> Result(Nil, PrepareError) {
   case orchestrator.dag_hooks.before_step {
     None -> Ok(Nil)
@@ -291,10 +292,10 @@ fn run_before_step_hook(
 }
 
 fn hook_env(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   step_id: String,
   prepared: PreparedStepWorkspace,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> List(#(String, String)) {
   [
     #("SCHERZO_CONFIG_DIR", orchestrator.config_dir),

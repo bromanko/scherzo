@@ -1,5 +1,5 @@
 import gleam/list
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/step_artifact
 import scherzo/workflow_dag
 import scherzo/workflow_scheduler
@@ -15,7 +15,7 @@ fn command_artifact(
     "",
     False,
     [],
-    domain.ArtifactLimits(
+    config_types.ArtifactLimits(
       command_stream_max_chars: 100,
       template_field_max_chars: 100,
       workflow_summary_max_chars: 100,

@@ -7,11 +7,12 @@ import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
+import scherzo/config/types as config_types
 import scherzo/control/command
-import scherzo/domain
 import scherzo/error
 import scherzo/path
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import simplifile
@@ -27,8 +28,8 @@ fn fake_pi() -> String {
   abs
 }
 
-fn issue(state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "worker-control-issue",
     identifier: "ABC-WORKER",
     title: "Worker controls",
@@ -48,10 +49,10 @@ fn config(
   root: String,
   command: String,
   max_turns: Int,
-  ui_policy: domain.UiRequestPolicy,
-) -> domain.EffectiveConfig {
-  domain.EffectiveConfig(
-    tracker: domain.TrackerConfig(
+  ui_policy: config_types.UiRequestPolicy,
+) -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: config_types.TrackerConfig(
       kind: tracker_kind.LinearTracker,
       endpoint: "endpoint",
       api_key: Some("key"),
@@ -59,16 +60,16 @@ fn config(
       active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
       terminal_states: issue_state.list_from_strings(["Done"]),
     ),
-    polling: domain.PollingConfig(interval_ms: 30_000),
-    workspace: domain.WorkspaceConfig(root: root),
-    hooks: domain.HooksConfig(
+    polling: config_types.PollingConfig(interval_ms: 30_000),
+    workspace: config_types.WorkspaceConfig(root: root),
+    hooks: config_types.HooksConfig(
       after_create: Some("printf populated > POPULATED"),
       before_run: Some("test -f POPULATED"),
       after_run: Some("printf after > AFTER_RUN"),
       before_remove: None,
       timeout_ms: 2000,
     ),
-    agent: domain.AgentConfig(
+    agent: config_types.AgentConfig(
       max_concurrent_agents: 1,
       max_turns: max_turns,
       max_retry_backoff_ms: 300_000,
@@ -76,7 +77,7 @@ fn config(
       max_sessions_per_issue: 3,
       max_concurrent_agents_by_state: dict.new(),
     ),
-    pi: domain.PiConfig(
+    pi: config_types.PiConfig(
       command: command,
       turn_timeout_ms: 5000,
       read_timeout_ms: 100,
@@ -87,7 +88,7 @@ fn config(
       compatibility_probe: False,
       rate_limit_payload: None,
     ),
-    handoff: domain.HandoffConfig(
+    handoff: config_types.HandoffConfig(
       enabled: False,
       comment_on_claim: False,
       comment_on_success: False,
@@ -100,7 +101,7 @@ fn config(
       attachment_fallback_to_markdown_link: True,
       result_max_chars: 8000,
     ),
-    linear_contract: domain.LinearContractConfig(
+    linear_contract: config_types.LinearContractConfig(
       enabled: False,
       workflow_label_prefix: "workflow:",
       workflow_labels: [],
@@ -111,7 +112,7 @@ fn config(
       invalid_workflow_state_id: None,
       comment_on_invalid_workflow: False,
     ),
-    linear_commands: domain.LinearCommandConfig(
+    linear_commands: config_types.LinearCommandConfig(
       enabled: False,
       prefix: "/scherzo",
       authorized_user_ids: [],
@@ -127,7 +128,7 @@ fn workflow(prompt: String) -> String {
   prompt
 }
 
-fn tracker_returning(final_issue: domain.Issue) -> tracker.Client {
+fn tracker_returning(final_issue: tracker_issue.Issue) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
@@ -171,11 +172,11 @@ pub fn abort_command_stops_fake_pi_worker_test() {
     process.spawn_unlinked(fn() {
       let command_subject = process.new_subject()
       process.send(ready_subject, command_subject)
-      let cfg = config(root, pi_command, 1, domain.Cancel)
+      let cfg = config(root, pi_command, 1, config_types.Cancel)
       let cfg =
-        domain.EffectiveConfig(
+        config_types.EffectiveConfig(
           ..cfg,
-          pi: domain.PiConfig(..cfg.pi, read_timeout_ms: 200),
+          pi: config_types.PiConfig(..cfg.pi, read_timeout_ms: 200),
         )
       let result =
         runner.run_attempt_with_commands(
@@ -228,7 +229,7 @@ pub fn operator_prompt_queued_during_turn_and_sent_next_turn_test() {
           issue("Todo"),
           None,
           workflow("Original task"),
-          config(root, pi_command, 2, domain.Cancel),
+          config(root, pi_command, 2, config_types.Cancel),
           tracker_returning(issue("Todo")),
           fn(_, update) { process.send(updates, update) },
           command_subject,
@@ -269,11 +270,11 @@ pub fn operator_ui_request_timeout_cancels_before_read_timeout_test() {
     process.spawn_unlinked(fn() {
       let command_subject = process.new_subject()
       process.send(ready_subject, command_subject)
-      let cfg = config(root, pi_command, 1, domain.Operator)
+      let cfg = config(root, pi_command, 1, config_types.Operator)
       let cfg =
-        domain.EffectiveConfig(
+        config_types.EffectiveConfig(
           ..cfg,
-          pi: domain.PiConfig(
+          pi: config_types.PiConfig(
             ..cfg.pi,
             read_timeout_ms: 1000,
             stall_timeout_ms: 10,
@@ -327,7 +328,7 @@ pub fn operator_ui_request_cancel_response_test() {
           issue("Todo"),
           None,
           workflow("Original task"),
-          config(root, pi_command, 1, domain.Operator),
+          config(root, pi_command, 1, config_types.Operator),
           tracker_returning(issue("Done")),
           fn(_, update) { process.send(updates, update) },
           command_subject,
