@@ -2,7 +2,6 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, Some}
-import gleam/string
 import scherzo/agent/worker_command
 import scherzo/session/reason as session_reason
 import scherzo/tracker/issue as tracker_issue
@@ -334,7 +333,7 @@ pub fn clear_yaml_step_command_routes_for_run(
   registry.step_command_subjects
   |> dict.keys
   |> list.filter(fn(session_id) {
-    string.starts_with(session_id, run_id <> "-")
+    dict.get(registry.yaml_step_runs, session_id) == Ok(run_id)
   })
   |> list.fold(registry, fn(acc, session_id) {
     clear_yaml_step_command_route(acc, session_id)
@@ -366,7 +365,7 @@ pub fn step_command_subject_for_run(
   |> dict.to_list
   |> list.filter(fn(entry) {
     let #(session_id, _) = entry
-    string.starts_with(session_id, run_id <> "-")
+    dict.get(registry.yaml_step_runs, session_id) == Ok(run_id)
   })
   |> single_step_command_subject
 }

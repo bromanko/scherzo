@@ -286,9 +286,16 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
   assert summary.token_totals.total == 3
 
   let assert Ok(step_summary) =
-    wait_for_session(hub_subject, "ABC-123-42-1-implement", 20)
+    wait_for_session(
+      hub_subject,
+      "workflow-step-ABC-123-42-1-implement-a1-f9bb818d8483",
+      20,
+    )
   assert step_summary.display_name
-    == session_name.generate("ABC-123", "ABC-123-42-1-implement")
+    == session_name.generate(
+      "ABC-123",
+      "workflow-step-ABC-123-42-1-implement-a1-f9bb818d8483",
+    )
   assert step_summary.display_name != summary.display_name
 
   let assert Ok(page) =
@@ -298,7 +305,13 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
   assert event_cursors(page.events) == [1, 2, 5]
 
   let assert Ok(step_page) =
-    hub.events_after(hub_subject, "ABC-123-42-1-implement", 0, 20, 1000)
+    hub.events_after(
+      hub_subject,
+      "workflow-step-ABC-123-42-1-implement-a1-f9bb818d8483",
+      0,
+      20,
+      1000,
+    )
   assert event_names(step_page.events) == ["step_started", "message_update"]
   let assert Some(message_event) =
     find_event(step_page.events, "message_update")
@@ -353,7 +366,13 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
 
   assert wait_for_log(log_subject, "worker_exited", 20)
   let assert Ok(page) =
-    hub.events_after(hub_subject, "ABC-TOOL-42-1-implement", 0, 20, 1000)
+    hub.events_after(
+      hub_subject,
+      "workflow-step-ABC-TOOL-42-1-implement-a1-f9bb818d8483",
+      0,
+      20,
+      1000,
+    )
   let assert Some(tool_event) = find_event(page.events, "message")
   assert tool_event.payload.kind == event.Tool
   assert tool_event.payload.tool_name == Some("bash")
@@ -395,7 +414,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
   let assert Ok(page_before_exit) =
     wait_for_event_name(
       hub_subject,
-      "ABC-123-42-1-implement",
+      "workflow-step-ABC-123-42-1-implement-a1-f9bb818d8483",
       "message_update",
       20,
     )

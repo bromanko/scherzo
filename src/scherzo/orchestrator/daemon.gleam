@@ -1,3 +1,4 @@
+import birl
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/int
@@ -36,6 +37,7 @@ import scherzo/session/hub
 import scherzo/session/name as session_name
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
+import scherzo/state/artifact_store
 import scherzo/state/ledger
 import scherzo/state/outbox
 import scherzo/state/projection
@@ -45,9 +47,13 @@ import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_checkpoint
+import scherzo/workflow_fingerprint
+import scherzo/workflow_identity
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace
+import scherzo/workspace_run
 
 pub type StartupError {
   StartupError(code: String, message: String)
@@ -120,6 +126,7 @@ type StartupRecovery {
     outbox_to_replay: List(recovery.OutboxReplay),
     command_receipts: Dict(String, projection.CommandReceiptState),
     warnings: List(String),
+    workflow_resumptions: List(recovery.RecoveredWorkflowRun),
   )
 }
 
@@ -346,7 +353,7 @@ pub fn start(
     dependencies.make_triage(effective.tracker, effective.linear_contract)
   let secrets = config.resolved_secrets(effective)
   use startup_recovery <- try_startup(load_startup_recovery(
-    effective,
+    bundle,
     tracker_client,
     dependencies,
     secrets,
@@ -442,6 +449,9 @@ pub fn start(
                     |> enqueue_startup_recovery_outbox(
                       startup_recovery.outbox_to_replay,
                     )
+                    |> spawn_recovered_workflow_resumptions(
+                      startup_recovery.workflow_resumptions,
+                    )
                     |> log_startup_recovery_warnings(startup_recovery.warnings)
                   let selector =
                     process.new_selector()
@@ -499,11 +509,12 @@ pub fn get_snapshot(
 }
 
 fn load_startup_recovery(
-  effective: config_types.EffectiveConfig,
+  bundle: runtime_bundle.RuntimeBundle,
   tracker_client: tracker.Client,
   dependencies: RuntimeDependencies,
   secrets: List(String),
 ) -> Result(StartupRecovery, StartupError) {
+  let effective = bundle.effective
   use ledger_path <- try_startup(
     ledger.path_for_workspace_root(effective.workspace.root)
     |> map_ledger_error("ledger_path_failed"),
@@ -531,8 +542,30 @@ fn load_startup_recovery(
     )
     |> map_recovery_error,
   )
+  let workflow_candidates = recovery.workflow_candidates(replayed.projection)
+  let observations =
+    workflow_recovery_observations(
+      bundle,
+      workflow_candidates,
+      refreshed_issues,
+    )
+  use workflow_finalization <- try_startup(
+    recovery.finalize_workflow_candidates(
+      replayed.projection,
+      workflow_candidates,
+      observations,
+      artifact_store.new(effective.workspace.root),
+      dependencies.now_ms(),
+    )
+    |> map_recovery_error,
+  )
+  let records_to_append =
+    list.append(
+      recovery_plan.records_to_append,
+      workflow_finalization.records_to_append,
+    )
   use Nil <- try_startup(
-    ledger.append_many(ledger_path, recovery_plan.records_to_append, True)
+    ledger.append_many(ledger_path, records_to_append, True)
     |> map_ledger_error("ledger_recovery_append_failed"),
   )
   Ok(StartupRecovery(
@@ -541,8 +574,53 @@ fn load_startup_recovery(
     cleanup_workspaces: recovery_plan.cleanup_workspaces,
     outbox_to_replay: recovery_plan.outbox_to_replay,
     command_receipts: replayed.projection.command_receipts,
-    warnings: recovery_plan.warnings,
+    warnings: list.append(
+      recovery_plan.warnings,
+      workflow_finalization.warnings,
+    ),
+    workflow_resumptions: workflow_finalization.resumptions,
   ))
+}
+
+fn workflow_recovery_observations(
+  bundle: runtime_bundle.RuntimeBundle,
+  candidates: List(recovery.WorkflowRecoveryCandidate),
+  refreshed_issues: List(tracker_issue.Issue),
+) -> Dict(String, recovery.CurrentWorkflowObservation) {
+  let issue_by_id =
+    refreshed_issues
+    |> list.map(fn(issue) { #(issue.id, issue) })
+    |> dict.from_list
+  candidates
+  |> list.map(fn(candidate) {
+    let observation = case dict.get(issue_by_id, candidate.issue_id) {
+      Error(_) -> recovery.IssueUnavailable
+      Ok(issue) -> current_workflow_observation(bundle, issue)
+    }
+    #(candidate.run_id, observation)
+  })
+  |> dict.from_list
+}
+
+fn current_workflow_observation(
+  bundle: runtime_bundle.RuntimeBundle,
+  issue: tracker_issue.Issue,
+) -> recovery.CurrentWorkflowObservation {
+  case runtime_bundle.select_workflow(bundle, issue) {
+    Error(runtime_bundle.BundleError(code, message)) ->
+      recovery.WorkflowUnavailable(code <> ":" <> message)
+    Ok(#(_, dag)) ->
+      case workflow_fingerprint.fingerprint(dag) {
+        Error(_) -> recovery.WorkflowUnavailable("workflow_fingerprint_failed")
+        Ok(fingerprint) ->
+          recovery.CurrentWorkflow(
+            issue,
+            dag.id,
+            fingerprint,
+            core.issue_fingerprint(issue),
+          )
+      }
+  }
 }
 
 fn fetch_recovery_issue_states(
@@ -735,6 +813,222 @@ fn log_startup_recovery_warnings(
     log_state(state, "warn", "startup_recovery_warning", [#("warning", warning)])
   })
   state
+}
+
+fn spawn_recovered_workflow_resumptions(
+  state: State,
+  resumptions: List(recovery.RecoveredWorkflowRun),
+) -> State {
+  list.fold(resumptions, state, fn(state, resumption) {
+    spawn_recovered_workflow_resumption(state, resumption)
+  })
+}
+
+fn spawn_recovered_workflow_resumption(
+  state: State,
+  recovered: recovery.RecoveredWorkflowRun,
+) -> State {
+  case has_active_run(state, recovered.issue.id) {
+    True -> state
+    False -> {
+      let #(registry, session_sequence) =
+        worker_registry.reserve_session_sequence(state.registry)
+      let state = State(..state, registry: registry)
+      let session_id =
+        make_session_id(
+          recovered.issue.identifier,
+          recovered.run_id,
+          session_sequence,
+        )
+      let started_at_ms = state.dependencies.now_ms()
+      hub.register_session(
+        state.event_hub,
+        session_event.SessionSummary(
+          session_id: session_id,
+          display_name: session_name.generate(
+            recovered.issue.identifier,
+            session_id,
+          ),
+          issue_id: recovered.issue.id,
+          issue_identifier: recovered.issue.identifier,
+          issue_title: recovered.issue.title,
+          workspace_path: recovered.run_root,
+          pi_session_id: None,
+          status: session_event.Preparing,
+          current_turn: 0,
+          current_turn_status: None,
+          current_turn_started_at_ms: None,
+          last_turn_finished_at_ms: None,
+          last_turn_duration_ms: None,
+          last_turn_token_delta: session_tokens.zero_token_totals(),
+          last_turn_reason: None,
+          started_at_ms: started_at_ms,
+          last_event_at_ms: started_at_ms,
+          token_totals: session_tokens.zero_token_totals(),
+        ),
+      )
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.DispatchStarted,
+        Some("recovered_workflow"),
+      )
+      log_state(state, "info", "workflow_recovery_resumed", [
+        #("issue_id", recovered.issue.id),
+        #("run_id", recovered.run_id),
+        #("workflow_id", recovered.workflow_id),
+      ])
+      let runtime =
+        core.apply_worker_start(
+          state.runtime,
+          recovered.issue,
+          recovered.run_root,
+        )
+      let subject = state.subject
+      let dependencies = state.dependencies
+      let tracker_client = state.tracker_client
+      let bundle = state.workflow.bundle
+      let secrets = state.workflow.secrets
+      let event_hub = state.event_hub
+      let pid =
+        process.spawn_unlinked(fn() {
+          let result =
+            run_recovered_workflow_worker(
+              recovered,
+              bundle,
+              tracker_client,
+              secrets,
+              dependencies.workflow_run_dependencies,
+              subject,
+              event_hub,
+              dependencies.now_ms,
+            )
+          process.send(
+            subject,
+            WorkerFinished(recovered.issue.id, recovered.run_id, result),
+          )
+        })
+      let monitor = process.monitor(pid)
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.WorkerStarted,
+        Some("recovered_workflow"),
+      )
+      hub.update_status(state.event_hub, session_id, session_event.Running)
+      let handle =
+        worker_registry.WorkerHandle(
+          issue_id: recovered.issue.id,
+          issue: recovered.issue,
+          run_id: recovered.run_id,
+          pid: pid,
+          monitor: monitor,
+          workspace_path: recovered.run_root,
+          session_id: session_id,
+          command_subject: None,
+        )
+      State(
+        ..state,
+        runtime: runtime,
+        registry: worker_registry.register_worker(state.registry, handle),
+      )
+    }
+  }
+}
+
+fn run_recovered_workflow_worker(
+  recovered: recovery.RecoveredWorkflowRun,
+  bundle: runtime_bundle.RuntimeBundle,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  workflow_dependencies: workflow_run.Dependencies,
+  daemon_subject: process.Subject(Message),
+  event_hub: process.Subject(hub.Message),
+  now_ms: fn() -> Int,
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
+  case runtime_bundle.select_workflow(bundle, recovered.issue) {
+    Error(runtime_bundle.BundleError(code, _)) ->
+      Error(yaml_worker_failure(code, Some(recovered.run_root), recovered.issue))
+    Ok(#(_, dag)) ->
+      case dag.id == recovered.workflow_id {
+        False ->
+          Error(yaml_worker_failure(
+            "workflow_recovery_identity_mismatch",
+            Some(recovered.run_root),
+            recovered.issue,
+          ))
+        True -> {
+          let workflow_dependencies =
+            workflow_run.Dependencies(
+              ..workflow_dependencies,
+              checkpoint: workflow_checkpoint.ledger_writer(
+                bundle.effective.workspace.root,
+                now_ms,
+              ),
+            )
+          let resume =
+            workflow_run.ResumeState(
+              artifacts: recovered.completed_artifacts,
+              workspaces: recovered_workspaces_to_prepared(
+                recovered.completed_workspaces,
+              ),
+              next_attempt_indexes: recovered.next_attempt_indexes,
+              run_root: Some(recovered.run_root),
+            )
+          case
+            workflow_run.execute_with_resume(
+              recovered.issue,
+              dag,
+              bundle.orchestrator,
+              tracker_client,
+              secrets,
+              recovered.run_id,
+              yaml_workflow_dependencies(
+                workflow_dependencies,
+                recovered.issue,
+                recovered.run_id,
+                daemon_subject,
+                event_hub,
+                now_ms,
+              ),
+              resume,
+            )
+          {
+            Ok(success) -> Ok(success.worker_success)
+            Error(failure) ->
+              Error(yaml_worker_failure(
+                workflow_run.failure_report(failure),
+                failure.run_root,
+                recovered.issue,
+              ))
+          }
+        }
+      }
+  }
+}
+
+fn recovered_workspaces_to_prepared(
+  workspaces: Dict(String, recovery.RecoveredWorkspaceSummary),
+) -> Dict(String, workspace_run.PreparedStepWorkspace) {
+  workspaces
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(workspace_name, workspace) = entry
+    #(
+      workspace_name,
+      workspace_run.PreparedStepWorkspace(
+        workflow_id: workspace.workflow_id,
+        run_id: workspace.run_id,
+        run_root: workspace.run_root,
+        attempt_index: workspace.attempt_index,
+        workspace_name: workspace.workspace_name,
+        path: workspace.path,
+        source_workspace_name: workspace.source_workspace_name,
+        source_workspace_path: workspace.source_workspace_path,
+      ),
+    )
+  })
+  |> dict.from_list
 }
 
 fn map_ledger_error(
@@ -968,6 +1262,7 @@ fn handle_registry_down_resolution(
     worker_registry.WorkerDown(registry, issue_id, handle) -> {
       let state = State(..state, registry: registry)
       log_state(state, "warn", "worker_down", [#("issue_id", issue_id)])
+      append_workflow_interrupted_terminal(state, handle, "worker_down")
       event_publisher.lifecycle(
         state.event_hub,
         handle.session_id,
@@ -1471,6 +1766,7 @@ fn stop_session_for_operator(
     )
     Ok(handle) -> {
       let reason_text = session_reason.to_string(reason)
+      append_workflow_cancelled_terminal(state, handle, reason_text, 0, 0)
       process.demonitor_process(handle.monitor)
       hub.update_status(
         state.event_hub,
@@ -2836,6 +3132,41 @@ fn dispatch_issue_with_continuation(
   }
 }
 
+fn workflow_run_started_body_for_claim(
+  state: State,
+  pending: PendingClaim,
+) -> Result(record.RecordBody, String) {
+  case runtime_bundle.select_workflow(state.workflow.bundle, pending.issue) {
+    Error(runtime_bundle.BundleError(code, message)) ->
+      Error(code <> ":" <> message)
+    Ok(#(_, dag)) -> {
+      use fingerprint <- result_try_string(
+        workflow_fingerprint.fingerprint(dag)
+        |> result_map_error(fn(_) { "workflow_fingerprint_failed" }),
+      )
+      use run_root <- result_try_string(
+        workspace_run.run_root_for(
+          pending.issue,
+          dag.id,
+          pending.run_id,
+          state.workflow.bundle.orchestrator,
+        )
+        |> result_map_error(fn(err) { error.workspace_code(err) }),
+      )
+      Ok(record.WorkflowRunStarted(
+        pending.run_id,
+        dag.id,
+        fingerprint,
+        pending.issue.id,
+        pending.issue.identifier,
+        core.issue_fingerprint(pending.issue),
+        observed_updated_at_ms(pending.issue),
+        run_root,
+      ))
+    }
+  }
+}
+
 fn can_route_issue_for_dispatch(
   state: State,
   issue: tracker_issue.Issue,
@@ -2980,7 +3311,15 @@ fn run_workflow_worker(
   case runtime_bundle.select_workflow(bundle, issue) {
     Error(runtime_bundle.BundleError(code, _)) ->
       Error(yaml_worker_failure(code, None, issue))
-    Ok(#(_, dag)) ->
+    Ok(#(_, dag)) -> {
+      let workflow_dependencies =
+        workflow_run.Dependencies(
+          ..workflow_dependencies,
+          checkpoint: workflow_checkpoint.ledger_writer(
+            bundle.effective.workspace.root,
+            now_ms,
+          ),
+        )
       case
         workflow_run.execute(
           issue,
@@ -3007,6 +3346,7 @@ fn run_workflow_worker(
             issue,
           ))
       }
+    }
   }
 }
 
@@ -3130,7 +3470,11 @@ fn run_yaml_command_step(
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
 ) -> step_artifact.StepArtifact {
-  let session_id = run_id <> "-" <> step_id
+  let attempt_index =
+    workflow_identity.attempt_index_from_path(workspace_path)
+    |> result_unwrap(1)
+  let session_id =
+    workflow_identity.step_session_id(run_id, step_id, attempt_index)
   register_yaml_step_session(
     event_hub,
     session_id,
@@ -3201,7 +3545,11 @@ fn run_yaml_agent_step(
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  let session_id = run_id <> "-" <> step_id
+  let attempt_index =
+    workflow_identity.attempt_index_from_path(workspace_path)
+    |> result_unwrap(1)
+  let session_id =
+    workflow_identity.step_session_id(run_id, step_id, attempt_index)
   let started_at_ms = now_ms()
   hub.register_session(
     event_hub,
@@ -3632,6 +3980,13 @@ fn finish_operator_worker_exit(
     Some(reason_text),
   )
   hub.finish_session(state.event_hub, handle.session_id, reason)
+  append_workflow_cancelled_terminal(
+    state,
+    handle,
+    reason_text,
+    failure.tokens.total,
+    0,
+  )
   let final_issue = case failure.final_issue {
     Some(issue) ->
       case issue.id == handle.issue_id {
@@ -3658,6 +4013,104 @@ fn finish_operator_worker_exit(
     final_issue,
     orchestrator_reason.ParkOperator(reason_text),
   )
+}
+
+fn append_workflow_cancelled_terminal(
+  state: State,
+  handle: worker_registry.WorkerHandle,
+  _reason: String,
+  token_total: Int,
+  turns: Int,
+) -> Nil {
+  case workflow_id_for_handle(state, handle) {
+    Error(_) -> Nil
+    Ok(workflow_id) -> {
+      let _ =
+        append_ledger_bodies(
+          state,
+          [
+            record.WorkflowRunFinished(
+              handle.run_id,
+              workflow_id,
+              handle.issue_id,
+              "cancelled",
+              token_total,
+              turns,
+            ),
+          ],
+          "workflow_terminal_append_failed",
+        )
+      Nil
+    }
+  }
+}
+
+fn append_workflow_interrupted_terminal(
+  state: State,
+  handle: worker_registry.WorkerHandle,
+  reason: String,
+) -> Nil {
+  case workflow_id_for_handle(state, handle) {
+    Error(_) -> Nil
+    Ok(workflow_id) -> {
+      let _ =
+        append_ledger_bodies(
+          state,
+          [
+            record.WorkflowRunInterrupted(
+              handle.run_id,
+              workflow_id,
+              handle.issue_id,
+              reason,
+            ),
+          ],
+          "workflow_terminal_append_failed",
+        )
+      Nil
+    }
+  }
+}
+
+fn workflow_id_for_handle(
+  state: State,
+  handle: worker_registry.WorkerHandle,
+) -> Result(String, Nil) {
+  case workflow_id_from_projection(state, handle.run_id) {
+    Ok(workflow_id) -> Ok(workflow_id)
+    Error(_) ->
+      case runtime_bundle.select_workflow(state.workflow.bundle, handle.issue) {
+        Ok(#(_, dag)) -> Ok(dag.id)
+        Error(_) -> Error(Nil)
+      }
+  }
+}
+
+fn workflow_id_from_projection(
+  state: State,
+  run_id: String,
+) -> Result(String, Nil) {
+  case ledger.path_for_workspace_root(state.workflow.effective.workspace.root) {
+    Error(_) -> Error(Nil)
+    Ok(ledger_path) ->
+      case ledger.load_projection(ledger_path) {
+        Error(_) -> Error(Nil)
+        Ok(projection) ->
+          case dict.get(projection.workflow_runs, run_id) {
+            Ok(status) -> Ok(workflow_id_from_status(status))
+            Error(_) -> Error(Nil)
+          }
+      }
+  }
+}
+
+fn workflow_id_from_status(status: projection.WorkflowRunStatus) -> String {
+  case status {
+    projection.WorkflowRunActive(workflow_id: workflow_id, ..)
+    | projection.WorkflowRunFinished(workflow_id: workflow_id, ..)
+    | projection.WorkflowRunInterrupted(workflow_id: workflow_id, ..)
+    | projection.WorkflowRunSuperseded(workflow_id: workflow_id, ..) ->
+      workflow_id
+  }
 }
 
 fn handle_worker_down(state: State, down: process.Down) -> State {
@@ -3890,45 +4343,56 @@ fn handle_handoff_claim_finished(
                 )
               let counter =
                 counter_for_runtime(post_spawn_runtime, pending.issue.id)
-              case
-                append_ledger_bodies(
-                  state,
-                  [
-                    record.KnownWorkspace(
-                      pending.issue.id,
-                      pending.issue.identifier,
-                      pending.workspace_path,
-                    ),
-                    record.RunStarted(
-                      pending.run_id,
-                      pending.issue.id,
-                      pending.issue.identifier,
-                      pending.workspace_path,
-                    ),
-                    record.IssueCounterUpdated(
-                      pending.issue.id,
-                      pending.issue.identifier,
-                      counter.failure_attempts,
-                      counter.worker_sessions,
-                      state.dependencies.now_ms(),
-                      None,
-                    ),
-                  ],
-                  "ledger_append_failed",
-                )
-              {
-                False -> state
-                True -> {
-                  let state =
-                    spawn_worker(
-                      state,
-                      pending.issue,
-                      pending.workspace_path,
-                      pending.run_id,
-                      pending.session_sequence,
-                    )
+              case workflow_run_started_body_for_claim(state, pending) {
+                Error(reason) -> {
+                  log_state(state, "warn", "workflow_checkpoint_start_failed", [
+                    #("issue_id", pending.issue.id),
+                    #("error", reason),
+                  ])
                   dispatch_candidates(pending.remaining_candidates, state)
                 }
+                Ok(workflow_started_body) ->
+                  case
+                    append_ledger_bodies(
+                      state,
+                      [
+                        workflow_started_body,
+                        record.KnownWorkspace(
+                          pending.issue.id,
+                          pending.issue.identifier,
+                          pending.workspace_path,
+                        ),
+                        record.RunStarted(
+                          pending.run_id,
+                          pending.issue.id,
+                          pending.issue.identifier,
+                          pending.workspace_path,
+                        ),
+                        record.IssueCounterUpdated(
+                          pending.issue.id,
+                          pending.issue.identifier,
+                          counter.failure_attempts,
+                          counter.worker_sessions,
+                          state.dependencies.now_ms(),
+                          None,
+                        ),
+                      ],
+                      "ledger_append_failed",
+                    )
+                  {
+                    False -> state
+                    True -> {
+                      let state =
+                        spawn_worker(
+                          state,
+                          pending.issue,
+                          pending.workspace_path,
+                          pending.run_id,
+                          pending.session_sequence,
+                        )
+                      dispatch_candidates(pending.remaining_candidates, state)
+                    }
+                  }
               }
             }
           }
@@ -4145,6 +4609,37 @@ fn append_ledger_bodies(
             }
           }
       }
+  }
+}
+
+fn observed_updated_at_ms(issue: tracker_issue.Issue) -> Int {
+  case issue.updated_at {
+    Some(time) -> birl.to_unix_milli(time)
+    None -> 0
+  }
+}
+
+fn result_try_string(
+  result: Result(a, String),
+  next: fn(a) -> Result(b, String),
+) -> Result(b, String) {
+  case result {
+    Ok(value) -> next(value)
+    Error(reason) -> Error(reason)
+  }
+}
+
+fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(error) -> Error(mapper(error))
+  }
+}
+
+fn result_unwrap(result: Result(a, b), default: a) -> a {
+  case result {
+    Ok(value) -> value
+    Error(_) -> default
   }
 }
 
@@ -4434,6 +4929,94 @@ fn shutdown_state_after_effect_runner_down(state: State) -> State {
   shutdown_state_internal(state, False)
 }
 
+fn append_shutdown_step_attempt_interruptions(state: State) -> Nil {
+  case ledger.path_for_workspace_root(state.workflow.effective.workspace.root) {
+    Error(_) -> Nil
+    Ok(ledger_path) ->
+      case ledger.load_projection(ledger_path) {
+        Error(_) -> Nil
+        Ok(projection) -> {
+          let bodies =
+            worker_registry.worker_handles(state.registry)
+            |> list.fold([], fn(bodies, handle) {
+              list.append(
+                shutdown_step_attempt_interruption_bodies(
+                  projection,
+                  handle.run_id,
+                ),
+                bodies,
+              )
+            })
+          case bodies {
+            [] -> Nil
+            _ -> {
+              let _ =
+                append_ledger_bodies(
+                  state,
+                  bodies,
+                  "workflow_shutdown_interrupt_append_failed",
+                )
+              Nil
+            }
+          }
+        }
+      }
+  }
+}
+
+fn shutdown_step_attempt_interruption_bodies(
+  projection: projection.Projection,
+  run_id: String,
+) -> List(record.RecordBody) {
+  projection.step_attempts
+  |> dict.values
+  |> list.fold([], fn(bodies, status) {
+    case status {
+      projection.StepAttemptPending(
+        run_id: status_run_id,
+        workflow_id: workflow_id,
+        step_id: step_id,
+        attempt_index: attempt_index,
+        ..,
+      ) ->
+        case status_run_id == run_id {
+          True -> [
+            record.StepAttemptInterrupted(
+              run_id,
+              workflow_id,
+              step_id,
+              attempt_index,
+              "daemon_shutdown",
+            ),
+            ..bodies
+          ]
+          False -> bodies
+        }
+      projection.StepAttemptRunning(
+        run_id: status_run_id,
+        workflow_id: workflow_id,
+        step_id: step_id,
+        attempt_index: attempt_index,
+        ..,
+      ) ->
+        case status_run_id == run_id {
+          True -> [
+            record.StepAttemptInterrupted(
+              run_id,
+              workflow_id,
+              step_id,
+              attempt_index,
+              "daemon_shutdown",
+            ),
+            ..bodies
+          ]
+          False -> bodies
+        }
+      _ -> bodies
+    }
+  })
+}
+
 fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
   process.demonitor_process(state.effect_runner_monitor)
   case stop_effect_runner {
@@ -4452,6 +5035,7 @@ fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
     poll_scheduler.cancel_all(state.poll, state.dependencies.cancel_timer)
   let retry =
     retry_scheduler.cancel_all(state.retry, state.dependencies.cancel_timer)
+  append_shutdown_step_attempt_interruptions(state)
   worker_registry.worker_handles(state.registry)
   |> list.each(fn(handle) { stop_worker(handle) })
   let event_hub_shutdown_timeout_ms = 1000

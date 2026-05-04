@@ -1,4 +1,5 @@
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config/types as config_types
@@ -8,6 +9,7 @@ import scherzo/path
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
+import scherzo/workflow_identity
 import scherzo/workspace
 import simplifile
 
@@ -16,6 +18,7 @@ pub type PreparedStepWorkspace {
     workflow_id: String,
     run_id: String,
     run_root: String,
+    attempt_index: Int,
     workspace_name: String,
     path: String,
     source_workspace_name: Option(String),
@@ -37,10 +40,34 @@ pub fn prepare_step(
   orchestrator: config_types.OrchestratorConfig,
   known_workspaces: Dict(String, PreparedStepWorkspace),
 ) -> Result(PreparedStepWorkspace, PrepareError) {
+  prepare_step_attempt(
+    issue,
+    workflow_id,
+    run_id,
+    step_id,
+    1,
+    workspace_ref,
+    orchestrator,
+    known_workspaces,
+  )
+}
+
+pub fn prepare_step_attempt(
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  workspace_ref: workflow_dag.WorkspaceRef,
+  orchestrator: config_types.OrchestratorConfig,
+  known_workspaces: Dict(String, PreparedStepWorkspace),
+) -> Result(PreparedStepWorkspace, PrepareError) {
   use paths <- try_prepare(workspace_paths(
     issue,
     workflow_id,
     run_id,
+    step_id,
+    attempt_index,
     workspace_ref.name,
     orchestrator,
   ))
@@ -56,6 +83,7 @@ pub fn prepare_step(
       workflow_id: workflow_id,
       run_id: run_id,
       run_root: run_root,
+      attempt_index: attempt_index,
       workspace_name: workspace_ref.name,
       path: workspace_path,
       source_workspace_name: source_name,
@@ -150,6 +178,7 @@ pub fn cleanup_run(
                   workflow_id: "",
                   run_id: "",
                   run_root: target_abs,
+                  attempt_index: 0,
                   workspace_name: "",
                   path: target_abs,
                   source_workspace_name: None,
@@ -188,10 +217,32 @@ pub fn workspace_path_for(
   workspace_name: String,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(String, error.WorkspaceError) {
+  workspace_path_for_attempt(
+    issue,
+    workflow_id,
+    run_id,
+    "step",
+    1,
+    workspace_name,
+    orchestrator,
+  )
+}
+
+pub fn workspace_path_for_attempt(
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  workspace_name: String,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(String, error.WorkspaceError) {
   use paths <- try_workspace(workspace_paths(
     issue,
     workflow_id,
     run_id,
+    step_id,
+    attempt_index,
     workspace_name,
     orchestrator,
   ))
@@ -199,10 +250,33 @@ pub fn workspace_path_for(
   Ok(workspace_path)
 }
 
+pub fn run_root_for(
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(String, error.WorkspaceError) {
+  use issue_key <- try_workspace(workspace.sanitize(issue.identifier))
+  use workflow_key <- try_workspace(workspace.sanitize(workflow_id))
+  use run_key <- try_workspace(workspace.sanitize(run_id))
+  let root_abs =
+    path.absolute(orchestrator.effective.workspace.root)
+    |> result_unwrap(orchestrator.effective.workspace.root)
+  let issue_root = path.join(path.join(root_abs, workflow_key), issue_key)
+  let run_root = path.join(issue_root, run_key)
+  let run_root_abs = path.absolute(run_root) |> result_unwrap(run_root)
+  case path.contains(root_abs, run_root_abs) {
+    True -> Ok(run_root_abs)
+    False -> Error(error.WorkspaceOutsideRoot(run_root_abs))
+  }
+}
+
 fn workspace_paths(
   issue: tracker_issue.Issue,
   workflow_id: String,
   run_id: String,
+  step_id: String,
+  attempt_index: Int,
   workspace_name: String,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(#(String, String), error.WorkspaceError) {
@@ -215,7 +289,15 @@ fn workspace_paths(
     |> result_unwrap(orchestrator.effective.workspace.root)
   let issue_root = path.join(path.join(root_abs, workflow_key), issue_key)
   let run_root = path.join(issue_root, run_key)
-  let workspace_path = path.join(run_root, workspace_key)
+  let step_key = workflow_identity.step_component(step_id)
+  let workspace_path =
+    path.join(
+      path.join(
+        path.join(path.join(run_root, "workspaces"), workspace_key),
+        "steps",
+      ),
+      path.join(step_key, "attempt-" <> int.to_string(attempt_index)),
+    )
   let run_root_abs = path.absolute(run_root) |> result_unwrap(run_root)
   let workspace_abs =
     path.absolute(workspace_path) |> result_unwrap(workspace_path)
@@ -304,6 +386,19 @@ fn hook_env(
     #("SCHERZO_ISSUE_ID", issue.id),
     #("SCHERZO_ISSUE_IDENTIFIER", issue.identifier),
     #("SCHERZO_STEP_ID", step_id),
+    #("SCHERZO_ATTEMPT_INDEX", int.to_string(prepared.attempt_index)),
+    #(
+      "SCHERZO_ATTEMPT_KEY",
+      workflow_identity.attempt_key(
+        prepared.run_id,
+        step_id,
+        prepared.attempt_index,
+      ),
+    ),
+    #(
+      "SCHERZO_HOOK_IDEMPOTENCY_KEY",
+      workflow_identity.hook_idempotency_key(prepared.run_id, step_id),
+    ),
     #("SCHERZO_WORKSPACE_ROOT", orchestrator.effective.workspace.root),
     #("SCHERZO_WORKSPACE_NAME", prepared.workspace_name),
     #("SCHERZO_WORKSPACE_PATH", prepared.path),

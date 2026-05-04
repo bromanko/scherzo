@@ -13,17 +13,24 @@ import scherzo/handoff
 import scherzo/handoff_format
 import scherzo/linear
 import scherzo/linear_triage
+import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/path
 import scherzo/result_artifact
+import scherzo/runtime_bundle
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
+import scherzo/state/artifact_store
+import scherzo/state/ledger
+import scherzo/state/record
 import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_checkpoint
+import scherzo/workflow_fingerprint
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace_run
@@ -315,6 +322,7 @@ fn fake_workflow_run_dependencies(
       workflow_id,
       run_id,
       _step_id,
+      attempt_index,
       workspace_ref,
       orchestrator,
       _known,
@@ -331,6 +339,7 @@ fn fake_workflow_run_dependencies(
         workflow_id: workflow_id,
         run_id: run_id,
         run_root: run_root,
+        attempt_index: attempt_index,
         workspace_name: workspace_ref.name,
         path: run_root <> "/" <> workspace_ref.name,
         source_workspace_name: workspace_ref.from,
@@ -396,6 +405,7 @@ fn fake_workflow_run_dependencies(
         ),
       ))
     },
+    checkpoint: workflow_checkpoint.noop_writer(),
   )
 }
 
@@ -630,6 +640,36 @@ fn wait_for_event(
   }
 }
 
+fn wait_for_event_without_event(
+  subject: process.Subject(String),
+  wanted: String,
+  forbidden: String,
+  attempts: Int,
+) -> Bool {
+  case attempts <= 0 {
+    True -> False
+    False ->
+      case process.receive(subject, within: 500) {
+        Ok(received) ->
+          case received == forbidden {
+            True -> False
+            False ->
+              case received == wanted {
+                True -> True
+                False ->
+                  wait_for_event_without_event(
+                    subject,
+                    wanted,
+                    forbidden,
+                    attempts - 1,
+                  )
+              }
+          }
+        Error(_) -> False
+      }
+  }
+}
+
 fn wait_for_monitor_down(monitor: process.Monitor, timeout_ms: Int) -> Bool {
   let selector =
     process.new_selector()
@@ -834,10 +874,13 @@ pub fn daemon_yaml_agent_steps_get_concrete_sessions_test() {
   let assert Ok(sessions) = hub.list_sessions(event_hub, 1000)
   let session_ids = list.map(sessions, fn(summary) { summary.session_id })
   assert list.contains(session_ids, "ABC-1-42-1")
-  assert list.contains(session_ids, "ABC-1-42-1-implement")
+  assert list.contains(
+    session_ids,
+    "workflow-step-ABC-1-42-1-implement-a1-f9bb818d8483",
+  )
   let matching_step_sessions =
     list.filter(sessions, fn(summary) {
-      summary.session_id == "ABC-1-42-1-implement"
+      summary.session_id == "workflow-step-ABC-1-42-1-implement-a1-f9bb818d8483"
     })
   let assert [_step_session] = matching_step_sessions
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -869,7 +912,12 @@ pub fn daemon_yaml_operator_prompt_routes_to_agent_step_session_test() {
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "agent_ready", 20)
 
-  let result = prompt_until_queued(started.data, "ABC-1-42-1-implement", 20)
+  let result =
+    prompt_until_queued(
+      started.data,
+      "workflow-step-ABC-1-42-1-implement-a1-f9bb818d8483",
+      20,
+    )
   assert result.status == command.Queued
   assert wait_for_event(log_subject, "prompt:hello from operator", 20)
   assert wait_for_event(log_subject, "worker_exited", 20)
@@ -950,7 +998,7 @@ pub fn daemon_yaml_parent_abort_kills_active_step_worker_test() {
   assert !wait_for_event(log_subject, "agent_survived", 10)
   assert wait_for_session_status(
     event_hub,
-    "ABC-1-42-1-implement",
+    "workflow-step-ABC-1-42-1-implement-a1-f9bb818d8483",
     event.Exited(reason.OperatorAbort),
     20,
   )
@@ -988,7 +1036,10 @@ pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
   let assert Ok(result) =
     daemon.apply_operator_command(
       started.data,
-      command.PromptSession("ABC-1-42-1-implement", "after crash"),
+      command.PromptSession(
+        "workflow-step-ABC-1-42-1-implement-a1-f9bb818d8483",
+        "after crash",
+      ),
       1000,
     )
   assert result.status == command.NotFound
@@ -1025,7 +1076,10 @@ pub fn daemon_yaml_poll_dispatches_command_workflow_test() {
   assert simplifile.is_file(marker) != Ok(True)
   let assert Ok(sessions) = hub.list_sessions(event_hub, 1000)
   let session_ids = list.map(sessions, fn(summary) { summary.session_id })
-  assert list.contains(session_ids, "ABC-1-42-1-final_test")
+  assert list.contains(
+    session_ids,
+    "workflow-step-ABC-1-42-1-final_test-a1-c55a07a40185",
+  )
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.has_key(snapshot.completed, "issue-id")
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -1071,7 +1125,7 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
   process.send(started.data, daemon.PollTick(1))
 
   assert wait_for_event(log_subject, "worker_exited", 20)
-  let step_session_id = "ABC-1-42-1-final_test"
+  let step_session_id = "workflow-step-ABC-1-42-1-final_test-a1-c55a07a40185"
   let assert Ok(page) =
     hub.events_after(event_hub, step_session_id, 0, 20, 1000)
   let assert Some(command_event) = find_event(page.events, "command_failed")
@@ -1277,3 +1331,144 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
 
 @external(erlang, "erlang", "integer_to_binary")
 fn int_to_string(value: Int) -> String
+
+pub fn daemon_startup_resumes_matching_workflow_checkpoint_test() {
+  let dir = "test/tmp/daemon-startup-resume-workflow"
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let assert Ok(workspace_root) = path.absolute(dir <> "/workspaces")
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let assert Ok(Nil) =
+    simplifile.write(config_path, workflow_text(workspace_root, 1))
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: first
+    kind: command
+    run: first
+    workspace: main
+  - id: second
+    kind: command
+    depends_on: [first]
+    run: second
+    workspace: main
+",
+    )
+  let candidate = issue("issue-resume", "ABC-99", "Todo")
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, dag)) = runtime_bundle.select_workflow(bundle, candidate)
+  let assert Ok(fingerprint) = workflow_fingerprint.fingerprint(dag)
+  let store = artifact_store.new(workspace_root)
+  let completed_artifact =
+    step_artifact.from_command_result(
+      "first",
+      0,
+      "already done",
+      "",
+      False,
+      [],
+      bundle.orchestrator.artifact_limits,
+    )
+  let assert Ok(stored) =
+    artifact_store.write_step_artifact(
+      store,
+      "run-recover",
+      "implementation",
+      "first",
+      1,
+      completed_artifact,
+    )
+  let run_root = workspace_root <> "/implementation/ABC-99/run-recover"
+  let first_workspace = run_root <> "/main"
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started",
+          1,
+          record.WorkflowRunStarted(
+            "run-recover",
+            "implementation",
+            fingerprint,
+            candidate.id,
+            candidate.identifier,
+            core.issue_fingerprint(candidate),
+            0,
+            run_root,
+          ),
+        ),
+        record.with_id(
+          "first-prepared",
+          2,
+          record.StepAttemptPrepared(
+            "run-recover",
+            "implementation",
+            "first",
+            1,
+            "main",
+            first_workspace,
+            run_root,
+            None,
+            None,
+          ),
+        ),
+        record.with_id(
+          "first-started",
+          3,
+          record.StepAttemptStarted(
+            "run-recover",
+            "implementation",
+            "first",
+            1,
+            "workflow-step-run-recover-first-a1-a7937b64b8ca",
+            None,
+          ),
+        ),
+        record.with_id(
+          "first-finished",
+          4,
+          record.StepAttemptFinished(
+            "run-recover",
+            "implementation",
+            "first",
+            1,
+            "completed",
+            stored.ref,
+            stored.sha256,
+            "main",
+            first_workspace,
+            0,
+            0,
+          ),
+        ),
+      ],
+      True,
+    )
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
+    )
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      logger: fn(_, _, _, _) { Ok(Nil) },
+    )
+  let assert Ok(started) = daemon.start(Some(config_path), deps)
+
+  assert wait_for_event_without_event(
+    log_subject,
+    "yaml_command:second",
+    "yaml_command:first",
+    10,
+  )
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
