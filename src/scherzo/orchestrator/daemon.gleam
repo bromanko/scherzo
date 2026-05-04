@@ -9,12 +9,12 @@ import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config
+import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
 import scherzo/control/linear_parser
 import scherzo/control/linear_transport
 import scherzo/control/server as control_server
-import scherzo/domain
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
@@ -27,6 +27,7 @@ import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/retry_scheduler
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime_bundle
@@ -34,6 +35,7 @@ import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/name as session_name
 import scherzo/session/reason as session_reason
+import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/outbox
 import scherzo/state/projection
@@ -41,6 +43,7 @@ import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 import scherzo/workflow_run
@@ -73,7 +76,7 @@ pub type Message {
   EffectRunnerDown(process.Down)
   SideEffectCompleted(effect_runner.Completion)
   Shutdown(process.Subject(Nil))
-  GetSnapshot(process.Subject(domain.RuntimeState))
+  GetSnapshot(process.Subject(orchestrator_state.RuntimeState))
   ApplyOperatorCommand(
     command.OperatorCommand,
     Int,
@@ -97,11 +100,11 @@ type ControlPlane {
 
 type PendingClaim {
   PendingClaim(
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     workspace_path: String,
     run_id: String,
     session_sequence: Int,
-    remaining_candidates: List(domain.Issue),
+    remaining_candidates: List(tracker_issue.Issue),
   )
 }
 
@@ -111,7 +114,7 @@ type PendingLinearCommandAck {
 
 type StartupRecovery {
   StartupRecovery(
-    runtime: domain.RuntimeState,
+    runtime: orchestrator_state.RuntimeState,
     retry_timers: List(recovery.RecoveredRetry),
     cleanup_workspaces: List(recovery.CleanupRequest),
     outbox_to_replay: List(recovery.OutboxReplay),
@@ -122,14 +125,16 @@ type StartupRecovery {
 
 pub type RuntimeDependencies {
   RuntimeDependencies(
-    make_tracker: fn(domain.TrackerConfig) -> tracker.Client,
-    make_handoff: fn(domain.TrackerConfig, domain.HandoffConfig) ->
+    make_tracker: fn(config_types.TrackerConfig) -> tracker.Client,
+    make_handoff: fn(config_types.TrackerConfig, config_types.HandoffConfig) ->
       handoff.Client,
-    make_linear_commands: fn(domain.TrackerConfig) -> linear.CommandClient,
-    make_triage: fn(domain.TrackerConfig, domain.LinearContractConfig) ->
-      linear_triage.TriageClient,
+    make_linear_commands: fn(config_types.TrackerConfig) -> linear.CommandClient,
+    make_triage: fn(
+      config_types.TrackerConfig,
+      config_types.LinearContractConfig,
+    ) -> linear_triage.TriageClient,
     workflow_run_dependencies: workflow_run.Dependencies,
-    cleanup: fn(String, String, domain.HooksConfig) ->
+    cleanup: fn(String, String, config_types.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
@@ -155,7 +160,7 @@ type State {
     linear_command_state: linear_transport.TransportState,
     pending_linear_command_acks: Dict(String, PendingLinearCommandAck),
     in_flight_linear_command_acks: Dict(String, Bool),
-    runtime: domain.RuntimeState,
+    runtime: orchestrator_state.RuntimeState,
     poll: poll_scheduler.State(TimerHandle),
     retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
@@ -228,7 +233,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
 
 fn start_control_plane(
   dependencies: RuntimeDependencies,
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   event_hub: process.Subject(hub.Message),
   daemon_subject: process.Subject(Message),
   secrets: List(String),
@@ -487,14 +492,14 @@ pub fn shutdown(
 pub fn get_snapshot(
   subject: process.Subject(Message),
   timeout_ms: Int,
-) -> Result(domain.RuntimeState, Nil) {
+) -> Result(orchestrator_state.RuntimeState, Nil) {
   let reply = process.new_subject()
   process.send(subject, GetSnapshot(reply))
   process.receive(reply, within: timeout_ms)
 }
 
 fn load_startup_recovery(
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   dependencies: RuntimeDependencies,
   secrets: List(String),
@@ -543,15 +548,15 @@ fn load_startup_recovery(
 fn fetch_recovery_issue_states(
   tracker_client: tracker.Client,
   issue_ids: List(String),
-) -> Result(List(domain.Issue), StartupError) {
+) -> Result(List(tracker_issue.Issue), StartupError) {
   fetch_recovery_issue_chunks(tracker_client, chunk_strings(issue_ids, 50), [])
 }
 
 fn fetch_recovery_issue_chunks(
   tracker_client: tracker.Client,
   chunks: List(List(String)),
-  acc: List(domain.Issue),
-) -> Result(List(domain.Issue), StartupError) {
+  acc: List(tracker_issue.Issue),
+) -> Result(List(tracker_issue.Issue), StartupError) {
   case chunks {
     [] -> Ok(list.reverse(acc))
     [chunk, ..rest] ->
@@ -990,7 +995,7 @@ fn handle_registry_down_resolution(
             )),
           ),
           workspace_path: Some(handle.workspace_path),
-          tokens: domain.zero_token_totals(),
+          tokens: session_tokens.zero_token_totals(),
           final_issue: None,
         )
       finish_worker_failure(state, handle, failure)
@@ -1118,7 +1123,7 @@ fn retry_issue_for_operator(
 fn retry_resolved_issue(
   state: State,
   operator_command: command.OperatorCommand,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
 ) -> #(State, command.CommandResult) {
   let _ =
     append_ledger_bodies(
@@ -1137,7 +1142,7 @@ fn retry_resolved_issue(
       "ledger_append_failed",
     )
   let runtime =
-    domain.RuntimeState(
+    orchestrator_state.RuntimeState(
       ..state.runtime,
       parked: dict.delete(state.runtime.parked, issue.id),
       retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
@@ -1538,7 +1543,7 @@ fn active_run_issue_ids(state: State) -> List(String) {
   |> append_unique_list(worker_registry.worker_issue_ids(state.registry))
 }
 
-fn active_run_issues(state: State) -> List(domain.Issue) {
+fn active_run_issues(state: State) -> List(tracker_issue.Issue) {
   let runtime =
     state.runtime.running
     |> dict.values
@@ -1550,9 +1555,9 @@ fn active_run_issues(state: State) -> List(domain.Issue) {
 }
 
 fn append_unique_issues(
-  existing: List(domain.Issue),
-  values: List(domain.Issue),
-) -> List(domain.Issue) {
+  existing: List(tracker_issue.Issue),
+  values: List(tracker_issue.Issue),
+) -> List(tracker_issue.Issue) {
   list.fold(values, existing, fn(acc, issue) {
     case list.contains(list.map(acc, fn(item) { item.id }), issue.id) {
       True -> acc
@@ -1571,7 +1576,7 @@ fn issue_is_running_claimed_or_pending(state: State, issue_id: String) -> Bool {
 fn issue_for_ref(
   state: State,
   issue_ref: command.IssueRef,
-) -> Result(domain.Issue, command.CommandStatus) {
+) -> Result(tracker_issue.Issue, command.CommandStatus) {
   case issue_ref {
     command.IssueId(issue_id) -> issue_for_id(state, issue_id)
     command.IssueIdentifier(identifier) ->
@@ -1582,7 +1587,7 @@ fn issue_for_ref(
 fn issue_for_id(
   state: State,
   issue_id: String,
-) -> Result(domain.Issue, command.CommandStatus) {
+) -> Result(tracker_issue.Issue, command.CommandStatus) {
   case dict.get(state.runtime.running, issue_id) {
     Ok(entry) -> Ok(entry.issue)
     Error(_) ->
@@ -1600,7 +1605,7 @@ fn issue_for_id(
 fn issue_for_identifier(
   state: State,
   identifier: String,
-) -> Result(domain.Issue, command.CommandStatus) {
+) -> Result(tracker_issue.Issue, command.CommandStatus) {
   let local = local_issues_with_identifier(state, identifier)
   case unique_issue(local) {
     Ok(issue) -> Ok(issue)
@@ -1621,7 +1626,7 @@ fn issue_for_identifier(
 fn local_issues_with_identifier(
   state: State,
   identifier: String,
-) -> List(domain.Issue) {
+) -> List(tracker_issue.Issue) {
   let running =
     state.runtime.running
     |> dict.values
@@ -1638,7 +1643,7 @@ fn local_issues_with_identifier(
 fn fetch_candidates_with_identifier(
   state: State,
   identifier: String,
-) -> Result(domain.Issue, command.CommandStatus) {
+) -> Result(tracker_issue.Issue, command.CommandStatus) {
   case state.tracker_client.fetch_candidate_issues() {
     Error(_) -> Error(command.Rejected("candidate_fetch_failed"))
     Ok(issues) ->
@@ -1651,7 +1656,7 @@ fn fetch_candidates_with_identifier(
 fn fetch_issue_by_id(
   state: State,
   issue_id: String,
-) -> Result(domain.Issue, command.CommandStatus) {
+) -> Result(tracker_issue.Issue, command.CommandStatus) {
   case state.tracker_client.fetch_issue_states_by_ids([issue_id]) {
     Ok([issue]) -> Ok(issue)
     Ok([]) -> Error(command.NotFound)
@@ -1661,8 +1666,8 @@ fn fetch_issue_by_id(
 }
 
 fn unique_issue(
-  issues: List(domain.Issue),
-) -> Result(domain.Issue, command.CommandStatus) {
+  issues: List(tracker_issue.Issue),
+) -> Result(tracker_issue.Issue, command.CommandStatus) {
   case issues {
     [] -> Error(command.NotFound)
     [issue] -> Ok(issue)
@@ -1709,19 +1714,19 @@ fn worker_for_session(
 
 fn park_issue_state(
   state: State,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   reason: orchestrator_reason.ParkReason,
 ) -> State {
   let parked =
-    domain.ParkedEntry(
+    orchestrator_state.ParkedEntry(
       issue_id: issue.id,
       identifier: issue.identifier,
       reason: reason,
-      release_policy: domain.ExplicitUnparkOnly,
+      release_policy: orchestrator_state.ExplicitUnparkOnly,
       parked_at_ms: state.dependencies.now_ms(),
     )
   let runtime =
-    domain.RuntimeState(
+    orchestrator_state.RuntimeState(
       ..state.runtime,
       running: dict.delete(state.runtime.running, issue.id),
       claimed: dict.delete(state.runtime.claimed, issue.id),
@@ -1742,7 +1747,7 @@ fn park_issue_state(
 fn unpark_issue_state(state: State, issue_id: String) -> State {
   let issue_identifier = identifier_for_runtime(state.runtime, issue_id)
   let runtime =
-    domain.RuntimeState(
+    orchestrator_state.RuntimeState(
       ..state.runtime,
       parked: dict.delete(state.runtime.parked, issue_id),
       retry_attempts: dict.delete(state.runtime.retry_attempts, issue_id),
@@ -1769,7 +1774,10 @@ fn unpark_issue_state(state: State, issue_id: String) -> State {
   state
 }
 
-fn unpark_if_issue_changed_state(state: State, issue: domain.Issue) -> State {
+fn unpark_if_issue_changed_state(
+  state: State,
+  issue: tracker_issue.Issue,
+) -> State {
   let had_retry = dict.has_key(state.runtime.retry_attempts, issue.id)
   let was_parked = dict.has_key(state.runtime.parked, issue.id)
   let runtime = core.unpark_if_issue_changed(state.runtime, issue)
@@ -1856,7 +1864,7 @@ fn apply_reloaded_workflow(
 ) -> State {
   let effective = workflow.effective
   let runtime =
-    domain.RuntimeState(
+    orchestrator_state.RuntimeState(
       ..state.runtime,
       poll_interval_ms: effective.polling.interval_ms,
       max_concurrent_agents: effective.agent.max_concurrent_agents,
@@ -1921,7 +1929,7 @@ fn begin_candidate_fetch_or_finish(state: State, generation: Int) -> State {
 fn handle_running_refresh_finished(
   state: State,
   generation: Int,
-  result: Result(List(domain.Issue), error.TrackerError),
+  result: Result(List(tracker_issue.Issue), error.TrackerError),
 ) -> State {
   case poll_result_is_stale(state, generation) {
     True -> state
@@ -1949,7 +1957,7 @@ fn handle_running_refresh_finished(
 fn handle_candidate_fetch_finished(
   state: State,
   generation: Int,
-  result: Result(List(domain.Issue), error.TrackerError),
+  result: Result(List(tracker_issue.Issue), error.TrackerError),
 ) -> State {
   case poll_result_is_stale(state, generation) {
     True -> state
@@ -1979,7 +1987,7 @@ fn handle_candidate_fetch_finished(
 fn begin_linear_command_fetch_or_finish(
   state: State,
   generation: Int,
-  candidates: List(domain.Issue),
+  candidates: List(tracker_issue.Issue),
   dispatch_after: Bool,
 ) -> State {
   case state.workflow.effective.linear_commands.enabled {
@@ -2008,7 +2016,7 @@ fn begin_linear_command_fetch_or_finish(
 fn handle_linear_command_fetch_finished(
   state: State,
   generation: Int,
-  candidates: List(domain.Issue),
+  candidates: List(tracker_issue.Issue),
   dispatch_after: Bool,
   result: Result(List(linear.LinearComment), error.TrackerError),
 ) -> State {
@@ -2031,7 +2039,7 @@ fn handle_linear_command_fetch_finished(
 
 fn finish_linear_command_phase(
   state: State,
-  candidates: List(domain.Issue),
+  candidates: List(tracker_issue.Issue),
   dispatch_after: Bool,
 ) -> State {
   let state = retry_pending_linear_command_acks(state)
@@ -2336,7 +2344,7 @@ fn result_message_excerpt(
 
 fn observed_issue_ids(
   state: State,
-  candidates: List(domain.Issue),
+  candidates: List(tracker_issue.Issue),
 ) -> List(String) {
   active_run_issue_ids(state)
   |> append_unique_list(dict.keys(state.runtime.retry_attempts))
@@ -2362,7 +2370,10 @@ fn poll_result_is_stale(state: State, generation: Int) -> Bool {
   poll_scheduler.result_is_stale(state.poll, generation)
 }
 
-fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
+fn dispatch_candidates(
+  issues: List(tracker_issue.Issue),
+  state: State,
+) -> State {
   case
     !state.operator_paused && config.can_dispatch(state.workflow.reload_state)
   {
@@ -2407,8 +2418,8 @@ fn dispatch_candidates(issues: List(domain.Issue), state: State) -> State {
 
 fn handle_valid_workflow_candidate(
   state: State,
-  issue: domain.Issue,
-  remaining_candidates: List(domain.Issue),
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
 ) -> State {
   let runtime = core.clear_invalid_workflow_report(state.runtime, issue.id)
   let state = State(..state, runtime: runtime)
@@ -2420,9 +2431,9 @@ fn handle_valid_workflow_candidate(
 
 fn handle_invalid_workflow_candidate(
   state: State,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   violation: workflow_policy.IssueWorkflowViolation,
-  remaining_candidates: List(domain.Issue),
+  remaining_candidates: List(tracker_issue.Issue),
 ) -> State {
   case
     core.already_attempted_invalid_workflow(
@@ -2579,7 +2590,7 @@ fn handle_retry_refresh_finished(
   state: State,
   issue_id: String,
   generation: Int,
-  result: Result(List(domain.Issue), error.TrackerError),
+  result: Result(List(tracker_issue.Issue), error.TrackerError),
 ) -> State {
   let state =
     State(..state, retry: retry_scheduler.finish_refresh(state.retry, issue_id))
@@ -2617,7 +2628,7 @@ fn handle_retry_refresh_finished(
 fn handle_retry_candidate_after_refresh(
   state: State,
   issue_id: String,
-  candidate: Result(Option(domain.Issue), String),
+  candidate: Result(Option(tracker_issue.Issue), String),
 ) -> State {
   let state = case candidate {
     Ok(Some(issue)) -> unpark_if_issue_changed_state(state, issue)
@@ -2660,7 +2671,7 @@ fn handle_retry_candidate_after_refresh(
 fn handle_retry_candidate_with_slots(
   state: State,
   issue_id: String,
-  candidate: Result(Option(domain.Issue), String),
+  candidate: Result(Option(tracker_issue.Issue), String),
 ) -> State {
   case retry_candidate_needs_slot_retry(state, issue_id, candidate) {
     True -> {
@@ -2691,7 +2702,7 @@ fn handle_retry_candidate_with_slots(
 fn retry_candidate_needs_slot_retry(
   state: State,
   issue_id: String,
-  candidate: Result(Option(domain.Issue), String),
+  candidate: Result(Option(tracker_issue.Issue), String),
 ) -> Bool {
   case candidate {
     Ok(Some(issue)) ->
@@ -2713,7 +2724,7 @@ fn slots_remain(state: State) -> Bool {
   < state.workflow.effective.agent.max_concurrent_agents
 }
 
-fn can_reserve_dispatch_slot(state: State, issue: domain.Issue) -> Bool {
+fn can_reserve_dispatch_slot(state: State, issue: tracker_issue.Issue) -> Bool {
   !has_active_run(state, issue.id)
   && !dict.has_key(state.pending_claims, issue.id)
   && slots_remain(state)
@@ -2768,14 +2779,14 @@ fn pending_claim_count_for_state(
   |> list.length
 }
 
-fn dispatch_issue(state: State, issue: domain.Issue) -> State {
+fn dispatch_issue(state: State, issue: tracker_issue.Issue) -> State {
   dispatch_issue_with_continuation(state, issue, [])
 }
 
 fn dispatch_issue_with_continuation(
   state: State,
-  issue: domain.Issue,
-  remaining_candidates: List(domain.Issue),
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
 ) -> State {
   case can_reserve_dispatch_slot(state, issue) {
     False -> retry_dispatch_later_if_needed(state, issue)
@@ -2838,7 +2849,10 @@ fn dispatch_issue_with_continuation(
   }
 }
 
-fn can_route_issue_for_dispatch(state: State, issue: domain.Issue) -> Bool {
+fn can_route_issue_for_dispatch(
+  state: State,
+  issue: tracker_issue.Issue,
+) -> Bool {
   case workflow_reloader.select_workflow(state.workflow, issue) {
     Ok(_) -> True
     Error(runtime_bundle.BundleError(code, message)) -> {
@@ -2852,7 +2866,10 @@ fn can_route_issue_for_dispatch(state: State, issue: domain.Issue) -> Bool {
   }
 }
 
-fn retry_dispatch_later_if_needed(state: State, issue: domain.Issue) -> State {
+fn retry_dispatch_later_if_needed(
+  state: State,
+  issue: tracker_issue.Issue,
+) -> State {
   case dict.has_key(state.runtime.retry_attempts, issue.id) {
     False -> state
     True -> {
@@ -2871,7 +2888,7 @@ fn retry_dispatch_later_if_needed(state: State, issue: domain.Issue) -> State {
 
 fn spawn_worker(
   state: State,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   workspace_path: String,
   run_id: String,
   session_sequence: Int,
@@ -2892,7 +2909,7 @@ fn spawn_worker(
       current_turn: 0,
       started_at_ms: started_at_ms,
       last_event_at_ms: started_at_ms,
-      token_totals: domain.zero_token_totals(),
+      token_totals: session_tokens.zero_token_totals(),
     ),
   )
   event_publisher.lifecycle(
@@ -2957,7 +2974,7 @@ fn spawn_worker(
 }
 
 fn run_workflow_worker(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   run_id: String,
   bundle: runtime_bundle.RuntimeBundle,
   tracker_client: tracker.Client,
@@ -3002,7 +3019,7 @@ fn run_workflow_worker(
 
 fn yaml_workflow_dependencies(
   base: workflow_run.Dependencies,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   run_id: String,
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
@@ -3063,7 +3080,7 @@ fn yaml_workflow_dependencies(
 fn register_yaml_step_session(
   event_hub: process.Subject(hub.Message),
   session_id: String,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   workspace_path: String,
   step_id: String,
   now_ms: fn() -> Int,
@@ -3083,7 +3100,7 @@ fn register_yaml_step_session(
       current_turn: 0,
       started_at_ms: started_at_ms,
       last_event_at_ms: started_at_ms,
-      token_totals: domain.zero_token_totals(),
+      token_totals: session_tokens.zero_token_totals(),
     ),
   )
   hub.update_status(event_hub, session_id, session_event.Running)
@@ -3102,7 +3119,7 @@ fn register_yaml_step_session(
       tool_input: None,
       tool_output: None,
       tool_status: None,
-      tokens: domain.zero_token_totals(),
+      tokens: session_tokens.zero_token_totals(),
       raw_json: None,
     ),
   )
@@ -3110,14 +3127,14 @@ fn register_yaml_step_session(
 
 fn run_yaml_command_step(
   base: workflow_run.Dependencies,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   run_id: String,
   step_id: String,
   command: String,
   workspace_path: String,
   timeout_ms: Int,
   secrets: List(String),
-  limits: domain.ArtifactLimits,
+  limits: config_types.ArtifactLimits,
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
@@ -3178,7 +3195,7 @@ fn publish_yaml_command_failure(
       tool_input: artifact.command,
       tool_output: Some(step_artifact.command_failure_details(artifact)),
       tool_status: Some("failed"),
-      tokens: domain.zero_token_totals(),
+      tokens: session_tokens.zero_token_totals(),
       raw_json: None,
     ),
   )
@@ -3186,11 +3203,11 @@ fn publish_yaml_command_failure(
 
 fn run_yaml_agent_step(
   base: workflow_run.Dependencies,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   run_id: String,
   step_id: String,
   prompt: String,
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   workspace_path: String,
   daemon_subject: process.Subject(Message),
@@ -3213,7 +3230,7 @@ fn run_yaml_agent_step(
       current_turn: 0,
       started_at_ms: started_at_ms,
       last_event_at_ms: started_at_ms,
-      token_totals: domain.zero_token_totals(),
+      token_totals: session_tokens.zero_token_totals(),
     ),
   )
   hub.update_status(event_hub, session_id, session_event.Running)
@@ -3232,7 +3249,7 @@ fn run_yaml_agent_step(
       tool_input: None,
       tool_output: None,
       tool_status: None,
-      tokens: domain.zero_token_totals(),
+      tokens: session_tokens.zero_token_totals(),
       raw_json: None,
     ),
   )
@@ -3275,12 +3292,12 @@ fn run_yaml_agent_step(
 fn yaml_worker_failure(
   reason: String,
   workspace_path: Option(String),
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
 ) -> agent_types.WorkerFailure {
   agent_types.WorkerFailure(
     reason: error.PiFailed(error.PiProtocolError(reason)),
     workspace_path: workspace_path,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     final_issue: Some(issue),
   )
 }
@@ -3597,7 +3614,7 @@ fn finish_operator_worker_exit(
     None -> handle.issue
   }
   let runtime =
-    domain.RuntimeState(
+    orchestrator_state.RuntimeState(
       ..state.runtime,
       completed: dict.insert(
         state.runtime.completed,
@@ -4271,17 +4288,17 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
 }
 
 fn counter_for_runtime(
-  runtime: domain.RuntimeState,
+  runtime: orchestrator_state.RuntimeState,
   issue_id: String,
-) -> domain.IssueCounter {
+) -> orchestrator_state.IssueCounter {
   case dict.get(runtime.issue_counters, issue_id) {
     Ok(counter) -> counter
-    Error(_) -> domain.new_issue_counter()
+    Error(_) -> orchestrator_state.new_issue_counter()
   }
 }
 
 fn identifier_for_runtime(
-  runtime: domain.RuntimeState,
+  runtime: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> String {
   case dict.get(runtime.claimed, issue_id) {
@@ -4307,8 +4324,8 @@ fn append_parked_record_for_runtime(
     Error(_) -> True
     Ok(parked) -> {
       let #(release_policy, issue_fingerprint) = case parked.release_policy {
-        domain.ExplicitUnparkOnly -> #("explicit_unpark_only", "")
-        domain.AutoUnparkOnIssueChange(fingerprint) -> #(
+        orchestrator_state.ExplicitUnparkOnly -> #("explicit_unpark_only", "")
+        orchestrator_state.AutoUnparkOnIssueChange(fingerprint) -> #(
           "auto_unpark_on_issue_change",
           fingerprint,
         )
@@ -4359,10 +4376,10 @@ fn classification_to_string(
 }
 
 fn add_tokens(
-  a: domain.TokenTotals,
-  b: domain.TokenTotals,
-) -> domain.TokenTotals {
-  domain.TokenTotals(
+  a: session_tokens.TokenTotals,
+  b: session_tokens.TokenTotals,
+) -> session_tokens.TokenTotals {
+  session_tokens.TokenTotals(
     input: a.input + b.input,
     output: a.output + b.output,
     cache_read: a.cache_read + b.cache_read,
@@ -4430,7 +4447,11 @@ fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
   )
 }
 
-fn make_run_id(issue: domain.Issue, now_ms: Int, sequence: Int) -> String {
+fn make_run_id(
+  issue: tracker_issue.Issue,
+  now_ms: Int,
+  sequence: Int,
+) -> String {
   issue.identifier
   <> "-"
   <> int.to_string(now_ms)

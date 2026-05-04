@@ -1,12 +1,12 @@
 import birl
 import gleam/option.{None, Some}
 import gleam/string
-import scherzo/domain
 import scherzo/template
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
-fn issue() -> domain.Issue {
-  domain.Issue(
+fn issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-123",
     title: "Fix tests",
@@ -138,7 +138,7 @@ pub fn nested_blocks_render_with_matching_end_tags_test() {
 }
 
 pub fn optional_none_renders_empty_test() {
-  let issue = domain.Issue(..issue(), description: None)
+  let issue = tracker_issue.Issue(..issue(), description: None)
   let assert Ok(rendered) =
     template.render("{{ issue.description }}", issue, None)
   assert string.trim(rendered) == ""

@@ -1,6 +1,6 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/workspace
 import simplifile
 
@@ -13,8 +13,8 @@ fn reset_dir(path: String) -> Nil {
 fn hooks(
   after_create: Option(String),
   before_run: Option(String),
-) -> domain.HooksConfig {
-  domain.HooksConfig(
+) -> config_types.HooksConfig {
+  config_types.HooksConfig(
     after_create: after_create,
     before_run: before_run,
     after_run: None,
@@ -44,7 +44,7 @@ pub fn workspace_path_stays_under_root_test() {
 pub fn create_reuse_and_file_collision_test() {
   let root = "test/tmp/workspace-create"
   reset_dir(root)
-  let config = domain.WorkspaceConfig(root: root)
+  let config = config_types.WorkspaceConfig(root: root)
   let hook_config = hooks(None, Some("test -d ."))
 
   let assert Ok(first) = workspace.prepare("ABC-123", config, hook_config)
@@ -61,7 +61,7 @@ pub fn create_reuse_and_file_collision_test() {
 pub fn population_hook_runs_only_on_new_directory_test() {
   let root = "test/tmp/workspace-hooks"
   reset_dir(root)
-  let config = domain.WorkspaceConfig(root: root)
+  let config = config_types.WorkspaceConfig(root: root)
   let hook_config =
     hooks(Some("printf populated > POPULATED"), Some("test -f POPULATED"))
 
@@ -79,7 +79,7 @@ pub fn population_hook_runs_only_on_new_directory_test() {
 pub fn failing_after_create_removes_new_workspace_test() {
   let root = "test/tmp/workspace-failing-hook"
   reset_dir(root)
-  let config = domain.WorkspaceConfig(root: root)
+  let config = config_types.WorkspaceConfig(root: root)
   let hook_config = hooks(Some("printf partial > PARTIAL; exit 3"), None)
 
   let assert Error(workspace.HookFailure(_)) =
@@ -102,7 +102,7 @@ pub fn sidecar_marker_forces_repopulation_test() {
       "populating",
     )
 
-  let config = domain.WorkspaceConfig(root: root)
+  let config = config_types.WorkspaceConfig(root: root)
   let hook_config =
     hooks(Some("printf populated > POPULATED"), Some("test -f POPULATED"))
   let assert Ok(prepared) = workspace.prepare("ABC-123", config, hook_config)
@@ -113,7 +113,7 @@ pub fn sidecar_marker_forces_repopulation_test() {
 pub fn before_run_failure_aborts_attempt_and_after_run_is_best_effort_test() {
   let root = "test/tmp/workspace-before-run"
   reset_dir(root)
-  let config = domain.WorkspaceConfig(root: root)
+  let config = config_types.WorkspaceConfig(root: root)
   let hook_config = hooks(None, Some("exit 2"))
   let assert Error(workspace.HookFailure(_)) =
     workspace.prepare("ABC-123", config, hook_config)
@@ -121,7 +121,7 @@ pub fn before_run_failure_aborts_attempt_and_after_run_is_best_effort_test() {
   let log_line =
     workspace.after_run(
       root,
-      domain.HooksConfig(..hook_config, after_run: Some("exit 9")),
+      config_types.HooksConfig(..hook_config, after_run: Some("exit 9")),
     )
   assert string.contains(log_line, "event=hook_failed")
 }

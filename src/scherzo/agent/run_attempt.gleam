@@ -9,17 +9,27 @@ import scherzo/agent/turn_loop
 import scherzo/agent/types
 import scherzo/agent/worker_command
 import scherzo/config as config_module
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/log
 import scherzo/pi/client
 import scherzo/pi/protocol
 import scherzo/result_artifact
 import scherzo/session/redaction
+import scherzo/session/tokens as session_tokens
 import scherzo/template
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workspace
+
+pub type RunAttempt {
+  RunAttempt(
+    issue: tracker_issue.Issue,
+    attempt: Option(Int),
+    workspace_path: String,
+  )
+}
 
 const max_tool_text_chars = 4096
 
@@ -31,10 +41,10 @@ type BeforeTurn {
 }
 
 pub fn run_attempt(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   attempt: Option(Int),
   prompt_template: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
@@ -51,10 +61,10 @@ pub fn run_attempt(
 }
 
 pub fn run_attempt_with_commands(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   attempt: Option(Int),
   prompt_template: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -72,10 +82,10 @@ pub fn run_attempt_with_commands(
 }
 
 pub fn run_attempt_with_command_ready(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   attempt: Option(Int),
   prompt_template: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -102,9 +112,9 @@ pub fn run_attempt_with_command_ready(
 }
 
 pub fn run_prompt_in_workspace(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   prompt: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -155,10 +165,10 @@ pub fn run_prompt_in_workspace(
 }
 
 fn run_prepared(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   attempt: Option(Int),
   prompt_template: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -216,9 +226,9 @@ fn run_prepared(
 }
 
 fn run_pi_loop(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   first_prompt: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -246,7 +256,7 @@ fn run_pi_loop(
         issue,
         first_prompt,
         1,
-        domain.zero_token_totals(),
+        session_tokens.zero_token_totals(),
         result_artifact.empty(),
         config,
         tracker_client,
@@ -262,12 +272,12 @@ fn run_pi_loop(
 
 fn loop_turns(
   session: client.Session,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   prompt: String,
   turn: Int,
-  totals: domain.TokenTotals,
-  result: domain.ResultArtifact,
-  config: domain.EffectiveConfig,
+  totals: session_tokens.TokenTotals,
+  result: result_artifact.ResultArtifact,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -444,11 +454,11 @@ fn loop_turns(
 
 fn finish_after_turn(
   session: client.Session,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   turn: Int,
-  prior_totals: domain.TokenTotals,
-  result: domain.ResultArtifact,
-  config: domain.EffectiveConfig,
+  prior_totals: session_tokens.TokenTotals,
+  result: result_artifact.ResultArtifact,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -525,11 +535,11 @@ fn finish_after_turn(
 
 fn decide_after_refresh(
   session: client.Session,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   turn: Int,
-  totals: domain.TokenTotals,
-  result: domain.ResultArtifact,
-  config: domain.EffectiveConfig,
+  totals: session_tokens.TokenTotals,
+  result: result_artifact.ResultArtifact,
+  config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
@@ -606,13 +616,13 @@ fn decide_after_refresh(
 
 fn finish_success(
   session: client.Session,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   classification: types.FinalClassification,
   workspace_path: String,
-  totals: domain.TokenTotals,
+  totals: session_tokens.TokenTotals,
   turns: Int,
-  result: domain.ResultArtifact,
-  config: domain.EffectiveConfig,
+  result: result_artifact.ResultArtifact,
+  config: config_types.EffectiveConfig,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   prompt_queue: List(String),
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
@@ -638,11 +648,11 @@ fn handle_between_turn_commands(
   session: client.Session,
   issue_id: String,
   workspace_path: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   prompt_queue: List(String),
-  totals: domain.TokenTotals,
+  totals: session_tokens.TokenTotals,
 ) -> BeforeTurn {
   case process.receive(command_subject, within: 0) {
     Error(_) -> StartTurn(prompt_queue)
@@ -673,12 +683,12 @@ fn interpret_between_turn_effects(
   session: client.Session,
   issue_id: String,
   workspace_path: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   state: operator_control.State,
   effects: List(operator_control.Effect),
-  totals: domain.TokenTotals,
+  totals: session_tokens.TokenTotals,
 ) -> BeforeTurn {
   case effects {
     [] ->
@@ -798,10 +808,10 @@ fn handle_abort_command(
   session: client.Session,
   issue_id: String,
   workspace_path: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   prompt_queue: List(String),
-  totals: domain.TokenTotals,
+  totals: session_tokens.TokenTotals,
   reply: process.Subject(worker_command.Reply),
 ) -> types.WorkerFailure {
   case client.send_abort(session, config.pi.read_timeout_ms) {
@@ -842,11 +852,11 @@ fn stop_failure(
   session: client.Session,
   issue_id: String,
   workspace_path: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   prompt_queue: List(String),
-  totals: domain.TokenTotals,
-  final_issue: Option(domain.Issue),
+  totals: session_tokens.TokenTotals,
+  final_issue: Option(tracker_issue.Issue),
 ) -> types.WorkerFailure {
   let _ = client.terminate(session)
   let _ = workspace.after_run(workspace_path, config.hooks)
@@ -868,11 +878,11 @@ fn finish_operator_stop(
   session: client.Session,
   issue_id: String,
   workspace_path: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   prompt_queue: List(String),
-  totals: domain.TokenTotals,
-  final_issue: Option(domain.Issue),
+  totals: session_tokens.TokenTotals,
+  final_issue: Option(tracker_issue.Issue),
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   Error(stop_failure(
     session,
@@ -890,12 +900,12 @@ fn cleanup_failure(
   session: client.Session,
   issue_id: String,
   workspace_path: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   prompt_queue: List(String),
   reason: error.AgentRunnerError,
-  tokens: domain.TokenTotals,
-  final_issue: Option(domain.Issue),
+  tokens: session_tokens.TokenTotals,
+  final_issue: Option(tracker_issue.Issue),
 ) -> types.WorkerFailure {
   let _ = client.terminate(session)
   let _ = workspace.after_run(workspace_path, config.hooks)
@@ -912,11 +922,11 @@ fn fail_pi(
   session: client.Session,
   issue_id: String,
   workspace_path: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   emit_update: fn(String, types.PiUpdate) -> Nil,
   prompt_queue: List(String),
   err: error.PiRpcError,
-  tokens: domain.TokenTotals,
+  tokens: session_tokens.TokenTotals,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   Error(cleanup_failure(
     session,
@@ -935,14 +945,19 @@ fn worker_failure(
   reason: error.AgentRunnerError,
   workspace_path: Option(String),
 ) -> types.WorkerFailure {
-  worker_failure_with(reason, workspace_path, domain.zero_token_totals(), None)
+  worker_failure_with(
+    reason,
+    workspace_path,
+    session_tokens.zero_token_totals(),
+    None,
+  )
 }
 
 fn worker_failure_with(
   reason: error.AgentRunnerError,
   workspace_path: Option(String),
-  tokens: domain.TokenTotals,
-  final_issue: Option(domain.Issue),
+  tokens: session_tokens.TokenTotals,
+  final_issue: Option(tracker_issue.Issue),
 ) -> types.WorkerFailure {
   types.WorkerFailure(
     reason: reason,
@@ -965,7 +980,7 @@ fn take_next_prompt(
 fn emit_operator_prompt_queued(
   issue_id: String,
   message: String,
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   emit_update: fn(String, types.PiUpdate) -> Nil,
 ) -> Nil {
   emit_update(
@@ -1037,7 +1052,7 @@ fn lifecycle_update_with_message(
     request_id: None,
     method: None,
     pi_session_id: None,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     tool_name: None,
     tool_input: None,
     tool_output: None,
@@ -1054,7 +1069,7 @@ fn pi_session_started_update(pi_session_id: Option(String)) -> types.PiUpdate {
     request_id: None,
     method: None,
     pi_session_id: pi_session_id,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     tool_name: None,
     tool_input: None,
     tool_output: None,
@@ -1065,7 +1080,7 @@ fn pi_session_started_update(pi_session_id: Option(String)) -> types.PiUpdate {
 fn token_update(
   name: pi_event.PiEvent,
   turn: Int,
-  tokens: domain.TokenTotals,
+  tokens: session_tokens.TokenTotals,
 ) -> types.PiUpdate {
   types.PiUpdate(
     event: name,
@@ -1140,7 +1155,7 @@ fn normalize_tool_text(
 }
 
 fn classify(
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   state: issue_state.IssueState,
 ) -> types.FinalClassification {
   case contains(config.tracker.terminal_states, state) {
@@ -1161,10 +1176,10 @@ fn contains(
 }
 
 fn add_tokens(
-  a: domain.TokenTotals,
-  b: domain.TokenTotals,
-) -> domain.TokenTotals {
-  domain.TokenTotals(
+  a: session_tokens.TokenTotals,
+  b: session_tokens.TokenTotals,
+) -> session_tokens.TokenTotals {
+  session_tokens.TokenTotals(
     input: a.input + b.input,
     output: a.output + b.output,
     cache_read: a.cache_read + b.cache_read,

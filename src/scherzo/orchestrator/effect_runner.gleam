@@ -3,12 +3,13 @@ import gleam/erlang/process
 import gleam/list
 import gleam/otp/actor
 import scherzo/agent/types as agent_types
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_triage
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
 pub type Effect {
@@ -16,7 +17,7 @@ pub type Effect {
   FetchLinearCommands(
     generation: Int,
     issue_ids: List(String),
-    candidates: List(domain.Issue),
+    candidates: List(tracker_issue.Issue),
     dispatch_after: Bool,
     client: linear.CommandClient,
     limit_per_issue: Int,
@@ -24,21 +25,21 @@ pub type Effect {
   RefreshRunning(generation: Int, ids: List(String), client: tracker.Client)
   RefreshRetry(issue_id: String, generation: Int, client: tracker.Client)
   ClaimIssue(
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     workspace_path: String,
     run_id: String,
     client: handoff.Client,
   )
   ReportSuccess(
     issue_id: String,
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     success: agent_types.WorkerSuccess,
     run_id: String,
     client: handoff.Client,
   )
   ReportFailure(
     issue_id: String,
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     failure: agent_types.WorkerFailure,
     run_id: String,
     client: handoff.Client,
@@ -50,7 +51,7 @@ pub type Effect {
     client: linear.CommandClient,
   )
   ReportInvalidWorkflow(
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     violation: workflow_policy.IssueWorkflowViolation,
     violation_fingerprint: String,
     reporting_policy_fingerprint: String,
@@ -59,25 +60,31 @@ pub type Effect {
   CleanupWorkspace(
     root: String,
     workspace_path: String,
-    hooks: domain.HooksConfig,
-    cleanup: fn(String, String, domain.HooksConfig) ->
+    hooks: config_types.HooksConfig,
+    cleanup: fn(String, String, config_types.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
   )
 }
 
 pub type EffectResult {
-  CandidateFetchFinished(Int, Result(List(domain.Issue), error.TrackerError))
+  CandidateFetchFinished(
+    Int,
+    Result(List(tracker_issue.Issue), error.TrackerError),
+  )
   LinearCommandFetchFinished(
     Int,
-    List(domain.Issue),
+    List(tracker_issue.Issue),
     Bool,
     Result(List(linear.LinearComment), error.TrackerError),
   )
-  RunningRefreshFinished(Int, Result(List(domain.Issue), error.TrackerError))
+  RunningRefreshFinished(
+    Int,
+    Result(List(tracker_issue.Issue), error.TrackerError),
+  )
   RetryRefreshFinished(
     String,
     Int,
-    Result(List(domain.Issue), error.TrackerError),
+    Result(List(tracker_issue.Issue), error.TrackerError),
   )
   HandoffClaimFinished(String, String, Result(Nil, error.TrackerError))
   HandoffSuccessFinished(String, String, Result(Nil, error.TrackerError))

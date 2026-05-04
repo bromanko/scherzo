@@ -4,8 +4,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/log
+import scherzo/result_artifact
 import scherzo/template
 import scherzo/workflow_dag
 
@@ -58,7 +59,7 @@ pub fn from_agent_success(
   step_id: String,
   success: agent_types.WorkerSuccess,
   secrets: List(String),
-  limits: domain.ArtifactLimits,
+  limits: config_types.ArtifactLimits,
 ) -> StepArtifact {
   let #(final_response, final_truncated) =
     cap_optional(
@@ -92,7 +93,7 @@ pub fn from_command_result(
   stderr: String,
   timed_out: Bool,
   secrets: List(String),
-  limits: domain.ArtifactLimits,
+  limits: config_types.ArtifactLimits,
 ) -> StepArtifact {
   from_command_result_with_metadata(
     step_id,
@@ -117,7 +118,7 @@ pub fn from_command_result_with_truncation(
   stderr: String,
   timed_out: Bool,
   secrets: List(String),
-  limits: domain.ArtifactLimits,
+  limits: config_types.ArtifactLimits,
   stdout_already_truncated: Bool,
   stderr_already_truncated: Bool,
 ) -> StepArtifact {
@@ -147,7 +148,7 @@ pub fn from_command_result_with_metadata(
   stderr: String,
   timed_out: Bool,
   secrets: List(String),
-  limits: domain.ArtifactLimits,
+  limits: config_types.ArtifactLimits,
   stdout_already_truncated: Bool,
   stderr_already_truncated: Bool,
 ) -> StepArtifact {
@@ -375,8 +376,8 @@ pub fn to_template_locals(
 pub fn workflow_result_artifact(
   dag: workflow_dag.WorkflowDag,
   artifacts: Dict(String, StepArtifact),
-  limits: domain.ArtifactLimits,
-) -> domain.ResultArtifact {
+  limits: config_types.ArtifactLimits,
+) -> result_artifact.ResultArtifact {
   let primary = primary_text(dag, artifacts)
   let summary = summary_for_dag(dag.steps, artifacts, [])
   let text = case primary, summary {
@@ -390,13 +391,13 @@ pub fn workflow_result_artifact(
     || any_truncated(dict.values(artifacts))
   case text == "" {
     True ->
-      domain.ResultArtifact(
+      result_artifact.ResultArtifact(
         final_response: None,
         truncated: truncated,
         source: "workflow_dag",
       )
     False ->
-      domain.ResultArtifact(
+      result_artifact.ResultArtifact(
         final_response: Some(log.truncate(
           text,
           limits.workflow_summary_max_chars,

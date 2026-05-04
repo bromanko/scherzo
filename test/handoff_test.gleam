@@ -5,16 +5,19 @@ import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_attachment
+import scherzo/result_artifact
+import scherzo/session/tokens as session_tokens
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 
-fn tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+fn tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
@@ -24,8 +27,8 @@ fn tracker_config() -> domain.TrackerConfig {
   )
 }
 
-fn handoff_config() -> domain.HandoffConfig {
-  domain.HandoffConfig(
+fn handoff_config() -> config_types.HandoffConfig {
+  config_types.HandoffConfig(
     enabled: True,
     comment_on_claim: True,
     comment_on_success: True,
@@ -40,8 +43,8 @@ fn handoff_config() -> domain.HandoffConfig {
   )
 }
 
-fn issue() -> domain.Issue {
-  domain.Issue(
+fn issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-1",
     title: "Title",
@@ -60,11 +63,14 @@ fn issue() -> domain.Issue {
 fn success() -> agent_types.WorkerSuccess {
   agent_types.WorkerSuccess(
     final_issue: Some(
-      domain.Issue(..issue(), state: issue_state.from_string_unchecked("Done")),
+      tracker_issue.Issue(
+        ..issue(),
+        state: issue_state.from_string_unchecked("Done"),
+      ),
     ),
     final_classification: agent_types.FinalTerminal,
     workspace_path: "workspace",
-    tokens: domain.TokenTotals(
+    tokens: session_tokens.TokenTotals(
       input: 1,
       output: 2,
       cache_read: 0,
@@ -72,7 +78,7 @@ fn success() -> agent_types.WorkerSuccess {
       total: 3,
     ),
     turns: 1,
-    result: domain.ResultArtifact(
+    result: result_artifact.ResultArtifact(
       final_response: Some("Implemented secret-key"),
       truncated: False,
       source: "agent_end_messages",
@@ -87,7 +93,7 @@ fn worker_failure(
   agent_types.WorkerFailure(
     reason: reason,
     workspace_path: workspace_path,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     final_issue: None,
   )
 }
@@ -157,7 +163,7 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
         "secret-key blocked UI request",
       )),
       workspace_path: None,
-      tokens: domain.zero_token_totals(),
+      tokens: session_tokens.zero_token_totals(),
       final_issue: None,
     )
   assert client.report_failure(issue(), failure, "run-3") == Ok(Nil)
@@ -241,7 +247,7 @@ pub fn success_handoff_posts_single_structured_result_comment_test() {
     ))
   }
   let no_state =
-    domain.HandoffConfig(
+    config_types.HandoffConfig(
       ..handoff_config(),
       claim_state_id: None,
       success_state_id: None,
@@ -264,7 +270,7 @@ pub fn success_handoff_with_attachment_uploads_result_to_created_comment_test() 
   let client =
     handoff.linear_client_with_attachment_dependencies(
       tracker_config(),
-      domain.HandoffConfig(
+      config_types.HandoffConfig(
         ..handoff_config(),
         attach_result_on_success: True,
         success_state_id: None,
@@ -294,7 +300,7 @@ pub fn success_handoff_attachment_respects_inline_result_toggle_and_state_order_
   let client =
     handoff.linear_client_with_attachment_dependencies(
       tracker_config(),
-      domain.HandoffConfig(
+      config_types.HandoffConfig(
         ..handoff_config(),
         include_result_on_success: False,
         attach_result_on_success: True,
@@ -329,7 +335,7 @@ pub fn success_handoff_attachment_failure_stops_before_state_update_test() {
   let client =
     handoff.linear_client_with_attachment_dependencies(
       tracker_config(),
-      domain.HandoffConfig(
+      config_types.HandoffConfig(
         ..handoff_config(),
         attach_result_on_success: True,
         success_state_id: Some("success-state"),
@@ -355,7 +361,7 @@ pub fn disabled_handoff_performs_no_transport_calls_test() {
     process.send(subject, request.body)
     Ok(linear.Response(status: 500, body: "{}"))
   }
-  let disabled = domain.HandoffConfig(..handoff_config(), enabled: False)
+  let disabled = config_types.HandoffConfig(..handoff_config(), enabled: False)
   let client = handoff.linear_client(tracker_config(), disabled, transport)
 
   assert client.claim_issue(issue(), "run-1") == Ok(Nil)

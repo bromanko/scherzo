@@ -2,8 +2,9 @@ import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workspace_run
@@ -14,8 +15,8 @@ fn env(_name: String) -> Option(String) {
   None
 }
 
-fn issue() -> domain.Issue {
-  domain.Issue(
+fn issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-123",
     title: "Implement DAGs",
@@ -46,7 +47,7 @@ fn orchestrator(
   dir: String,
   create_hook: String,
   before_hook: String,
-) -> domain.OrchestratorConfig {
+) -> config_types.OrchestratorConfig {
   let source =
     "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\nworkspace:\n  root: workspaces\n  hooks:\n    create: |\n"
     <> indent(create_hook)

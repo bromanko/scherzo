@@ -2,7 +2,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/hooks
 import scherzo/path
@@ -47,8 +47,8 @@ pub fn workspace_path(
 
 pub fn prepare(
   identifier: String,
-  workspace: domain.WorkspaceConfig,
-  hooks_config: domain.HooksConfig,
+  workspace: config_types.WorkspaceConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(PreparedWorkspace, PrepareError) {
   use key_and_path <- try_prepare_workspace(workspace_path(
     workspace.root,
@@ -79,7 +79,7 @@ fn run_after_create(
   key: String,
   root_abs: String,
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(PreparedWorkspace, PrepareError) {
   let marker = population_marker(root_abs, key)
   let _ = simplifile.create_directory_all(path.join(root_abs, ".scherzo-state"))
@@ -117,7 +117,7 @@ fn run_after_create(
 fn run_before_run(
   key: String,
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
   created: Bool,
   populated: Bool,
 ) -> Result(PreparedWorkspace, PrepareError) {
@@ -152,7 +152,7 @@ fn run_before_run(
 
 pub fn after_run(
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> String {
   case hooks_config.after_run {
     Some(script) ->
@@ -169,7 +169,7 @@ pub fn after_run(
 pub fn cleanup(
   workspace_root: String,
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   safe_cleanup(workspace_root, workspace_path, hooks_config)
 }
@@ -177,7 +177,7 @@ pub fn cleanup(
 pub fn cleanup_stored_path(
   workspace_root: String,
   stored_workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   safe_cleanup(workspace_root, stored_workspace_path, hooks_config)
 }
@@ -209,7 +209,7 @@ fn create_directory(
 fn safe_cleanup(
   workspace_root: String,
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   case string.trim(workspace_path) == "" {
     True -> Error(error.WorkspaceOutsideRoot(workspace_path))

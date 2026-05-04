@@ -3,9 +3,9 @@ import gleam/json
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/pi_event
-import scherzo/domain
 import scherzo/session/event
 import scherzo/session/json as session_json
+import scherzo/session/tokens as session_tokens
 
 pub fn session_summary_serializes_exact_required_fields_test() {
   let summary =
@@ -21,7 +21,7 @@ pub fn session_summary_serializes_exact_required_fields_test() {
       current_turn: 0,
       started_at_ms: 10,
       last_event_at_ms: 10,
-      token_totals: domain.TokenTotals(
+      token_totals: session_tokens.TokenTotals(
         input: 1,
         output: 2,
         cache_read: 3,
@@ -96,7 +96,7 @@ pub fn event_payload_has_no_cursor_or_timestamp_test() {
       tool_input: None,
       tool_output: None,
       tool_status: None,
-      tokens: domain.zero_token_totals(),
+      tokens: session_tokens.zero_token_totals(),
       raw_json: None,
     )
 

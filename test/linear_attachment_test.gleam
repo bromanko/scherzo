@@ -4,7 +4,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_attachment
@@ -13,8 +13,8 @@ import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import simplifile
 
-fn tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+fn tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),

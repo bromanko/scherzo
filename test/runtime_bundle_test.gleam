@@ -1,8 +1,8 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
 import scherzo/runtime_bundle
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import simplifile
@@ -18,8 +18,8 @@ fn env(name: String) -> Option(String) {
   }
 }
 
-fn issue(labels: List(String)) -> domain.Issue {
-  domain.Issue(
+fn issue(labels: List(String)) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-123",
     title: "Implement DAGs",

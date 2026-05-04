@@ -2,12 +2,14 @@ import birl
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
-import scherzo/domain
 import scherzo/handoff_format
+import scherzo/result_artifact
+import scherzo/session/tokens as session_tokens
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
-fn issue() -> domain.Issue {
-  domain.Issue(
+fn issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-1",
     title: "Title",
@@ -23,14 +25,19 @@ fn issue() -> domain.Issue {
   )
 }
 
-fn success(result: domain.ResultArtifact) -> agent_types.WorkerSuccess {
+fn success(
+  result: result_artifact.ResultArtifact,
+) -> agent_types.WorkerSuccess {
   agent_types.WorkerSuccess(
     final_issue: Some(
-      domain.Issue(..issue(), state: issue_state.from_string_unchecked("Done")),
+      tracker_issue.Issue(
+        ..issue(),
+        state: issue_state.from_string_unchecked("Done"),
+      ),
     ),
     final_classification: agent_types.FinalTerminal,
     workspace_path: "workspace",
-    tokens: domain.TokenTotals(
+    tokens: session_tokens.TokenTotals(
       input: 10,
       output: 20,
       cache_read: 30,
@@ -46,7 +53,7 @@ pub fn success_comment_includes_result_and_metadata_test() {
   let body =
     handoff_format.success_comment(
       issue(),
-      success(domain.ResultArtifact(
+      success(result_artifact.ResultArtifact(
         final_response: Some("Implemented the fix."),
         truncated: False,
         source: "agent_end_messages",
@@ -72,7 +79,7 @@ pub fn success_comment_omits_result_when_disabled_test() {
   let body =
     handoff_format.success_comment(
       issue(),
-      success(domain.ResultArtifact(
+      success(result_artifact.ResultArtifact(
         final_response: Some("Implemented the fix."),
         truncated: False,
         source: "agent_end_messages",
@@ -91,7 +98,7 @@ pub fn success_comment_marks_truncated_result_test() {
   let body =
     handoff_format.success_comment(
       issue(),
-      success(domain.ResultArtifact(
+      success(result_artifact.ResultArtifact(
         final_response: Some("partial"),
         truncated: True,
         source: "message_update_delta",
@@ -109,7 +116,7 @@ pub fn success_comment_redacts_tracker_secret_test() {
   let body =
     handoff_format.success_comment(
       issue(),
-      success(domain.ResultArtifact(
+      success(result_artifact.ResultArtifact(
         final_response: Some("answer secret-key"),
         truncated: False,
         source: "agent_end_messages",
@@ -127,7 +134,7 @@ pub fn success_comment_reports_missing_result_text_test() {
   let body =
     handoff_format.success_comment(
       issue(),
-      success(domain.ResultArtifact(
+      success(result_artifact.ResultArtifact(
         final_response: None,
         truncated: False,
         source: "none",
@@ -144,7 +151,7 @@ pub fn success_result_attachment_markdown_includes_result_metadata_and_redaction
   let assert Some(markdown) =
     handoff_format.success_result_attachment_markdown(
       issue(),
-      success(domain.ResultArtifact(
+      success(result_artifact.ResultArtifact(
         final_response: Some("answer secret-key"),
         truncated: True,
         source: "agent_end_messages",
@@ -169,7 +176,7 @@ pub fn success_result_attachment_markdown_includes_result_metadata_and_redaction
 pub fn success_result_attachment_markdown_returns_none_without_result_test() {
   assert handoff_format.success_result_attachment_markdown(
       issue(),
-      success(domain.ResultArtifact(
+      success(result_artifact.ResultArtifact(
         final_response: None,
         truncated: False,
         source: "none",

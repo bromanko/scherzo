@@ -6,17 +6,20 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/hub
 import scherzo/session/name as session_name
+import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 import scherzo/workflow_run
@@ -28,8 +31,8 @@ fn reset_dir(dir: String) -> Nil {
   Nil
 }
 
-fn issue(id: String, identifier: String, state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: "Title " <> identifier,
@@ -164,7 +167,7 @@ fn linear_comment_at(
   )
 }
 
-fn tracker_with(candidate: domain.Issue) -> tracker.Client {
+fn tracker_with(candidate: tracker_issue.Issue) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([candidate]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
@@ -178,18 +181,18 @@ fn tracker_with(candidate: domain.Issue) -> tracker.Client {
 }
 
 type TrackerServerMessage {
-  SetTrackerCandidate(domain.Issue)
+  SetTrackerCandidate(tracker_issue.Issue)
   FetchTrackerCandidates(
-    process.Subject(Result(List(domain.Issue), error.TrackerError)),
+    process.Subject(Result(List(tracker_issue.Issue), error.TrackerError)),
   )
   FetchTrackerByIds(
     List(String),
-    process.Subject(Result(List(domain.Issue), error.TrackerError)),
+    process.Subject(Result(List(tracker_issue.Issue), error.TrackerError)),
   )
 }
 
 fn start_tracker_server(
-  initial_candidate: domain.Issue,
+  initial_candidate: tracker_issue.Issue,
 ) -> process.Subject(TrackerServerMessage) {
   let ready = process.new_subject()
   let _pid =
@@ -204,7 +207,7 @@ fn start_tracker_server(
 
 fn tracker_server_loop(
   subject: process.Subject(TrackerServerMessage),
-  candidate: domain.Issue,
+  candidate: tracker_issue.Issue,
 ) -> Nil {
   case process.receive(subject, within: 10_000) {
     Ok(SetTrackerCandidate(candidate)) ->
@@ -381,10 +384,10 @@ fn dependencies(
   linear_command_client: linear.CommandClient,
   log_subject: process.Subject(String),
   agent_runner: fn(
-    domain.Issue,
+    tracker_issue.Issue,
     Option(Int),
     String,
-    domain.EffectiveConfig,
+    config_types.EffectiveConfig,
     tracker.Client,
     fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
@@ -433,10 +436,10 @@ fn field(fields: List(#(String, String)), key: String) -> String {
 
 fn workflow_deps_from_agent(
   agent_runner: fn(
-    domain.Issue,
+    tracker_issue.Issue,
     Option(Int),
     String,
-    domain.EffectiveConfig,
+    config_types.EffectiveConfig,
     tracker.Client,
     fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
@@ -471,10 +474,10 @@ fn workflow_deps_from_agent(
 }
 
 fn unused_agent(
-  _issue: domain.Issue,
+  _issue: tracker_issue.Issue,
   _attempt: Option(Int),
   _definition: String,
-  _effective: domain.EffectiveConfig,
+  _effective: config_types.EffectiveConfig,
   _tracker_client: tracker.Client,
   _emit_update: fn(String, agent_types.PiUpdate) -> Nil,
   _command_subject: process.Subject(worker_command.Command),
@@ -483,17 +486,17 @@ fn unused_agent(
   Error(agent_types.WorkerFailure(
     reason: error.PiFailed(error.PiProtocolError("not used")),
     workspace_path: None,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     final_issue: None,
   ))
 }
 
 fn prompt_agent(log_subject: process.Subject(String)) {
   fn(
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     _attempt: Option(Int),
     _definition: String,
-    _effective: domain.EffectiveConfig,
+    _effective: config_types.EffectiveConfig,
     _tracker_client: tracker.Client,
     _emit_update: fn(String, agent_types.PiUpdate) -> Nil,
     command_subject: process.Subject(worker_command.Command),
@@ -509,7 +512,7 @@ fn prompt_agent(log_subject: process.Subject(String)) {
         Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("stopped")),
           workspace_path: None,
-          tokens: domain.zero_token_totals(),
+          tokens: session_tokens.zero_token_totals(),
           final_issue: None,
         ))
       }
@@ -518,7 +521,7 @@ fn prompt_agent(log_subject: process.Subject(String)) {
         Error(agent_types.WorkerFailure(
           reason: error.OperatorAbort,
           workspace_path: None,
-          tokens: domain.zero_token_totals(),
+          tokens: session_tokens.zero_token_totals(),
           final_issue: None,
         ))
       }
@@ -526,7 +529,7 @@ fn prompt_agent(log_subject: process.Subject(String)) {
         Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("no prompt")),
           workspace_path: None,
-          tokens: domain.zero_token_totals(),
+          tokens: session_tokens.zero_token_totals(),
           final_issue: None,
         ))
     }
@@ -561,7 +564,7 @@ pub fn linear_commands_run_before_candidate_dispatch_test() {
   let assert Ok(snapshot) = wait_for_parked(started.data, "issue-1", 20)
   assert dict.has_key(snapshot.parked, "issue-1")
   let assert Ok(parked_entry) = dict.get(snapshot.parked, "issue-1")
-  assert parked_entry.release_policy == domain.ExplicitUnparkOnly
+  assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
   assert dict.size(snapshot.running) == 0
   let assert Ok(ack) = process.receive(ack_subject, within: 1000)
   assert string.contains(ack, "Status: applied")
@@ -651,12 +654,12 @@ pub fn linear_runtime_issue_commands_poll_when_candidate_dispatch_skipped_test()
 
 pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
   let candidate =
-    domain.Issue(
+    tracker_issue.Issue(
       ..issue("issue-1", "ABC-1", "Todo"),
       updated_at: Some(birl.from_unix(0)),
     )
   let updated_candidate =
-    domain.Issue(..candidate, updated_at: Some(birl.from_unix(1)))
+    tracker_issue.Issue(..candidate, updated_at: Some(birl.from_unix(1)))
   let workflow_path = write_workflow("test/tmp/daemon-linear-abort", 1)
   let log_subject = process.new_subject()
   let fetch_subject = process.new_subject()
@@ -695,7 +698,7 @@ pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
 
   let assert Ok(snapshot) = wait_for_parked(started.data, "issue-1", 20)
   let assert Ok(parked_entry) = dict.get(snapshot.parked, "issue-1")
-  assert parked_entry.release_policy == domain.ExplicitUnparkOnly
+  assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
   assert dict.size(snapshot.running) == 0
   assert !wait_for_log(log_subject, "dispatch_started", 3)
 
@@ -1127,7 +1130,7 @@ fn wait_for_parked(
   subject: process.Subject(daemon.Message),
   issue_id: String,
   attempts: Int,
-) -> Result(domain.RuntimeState, Nil) {
+) -> Result(orchestrator_state.RuntimeState, Nil) {
   case attempts <= 0 {
     True -> Error(Nil)
     False -> {

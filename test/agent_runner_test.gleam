@@ -7,9 +7,10 @@ import gleam/string
 import scherzo/agent/pi_event
 import scherzo/agent/runner
 import scherzo/agent/types as agent_types
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/path
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import simplifile
@@ -25,8 +26,8 @@ fn fake_pi() -> String {
   abs
 }
 
-fn issue(state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-123",
     title: "Fix tests",
@@ -47,9 +48,9 @@ fn config(
   command: String,
   probe: Bool,
   max_turns: Int,
-) -> domain.EffectiveConfig {
-  domain.EffectiveConfig(
-    tracker: domain.TrackerConfig(
+) -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: config_types.TrackerConfig(
       kind: tracker_kind.LinearTracker,
       endpoint: "endpoint",
       api_key: Some("key"),
@@ -57,16 +58,16 @@ fn config(
       active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
       terminal_states: issue_state.list_from_strings(["Done"]),
     ),
-    polling: domain.PollingConfig(interval_ms: 30_000),
-    workspace: domain.WorkspaceConfig(root: root),
-    hooks: domain.HooksConfig(
+    polling: config_types.PollingConfig(interval_ms: 30_000),
+    workspace: config_types.WorkspaceConfig(root: root),
+    hooks: config_types.HooksConfig(
       after_create: Some("printf populated > POPULATED"),
       before_run: Some("test -f POPULATED"),
       after_run: Some("printf after > AFTER_RUN"),
       before_remove: None,
       timeout_ms: 2000,
     ),
-    agent: domain.AgentConfig(
+    agent: config_types.AgentConfig(
       max_concurrent_agents: 1,
       max_turns: max_turns,
       max_retry_backoff_ms: 300_000,
@@ -74,18 +75,18 @@ fn config(
       max_sessions_per_issue: 3,
       max_concurrent_agents_by_state: dict.new(),
     ),
-    pi: domain.PiConfig(
+    pi: config_types.PiConfig(
       command: command,
       turn_timeout_ms: 5000,
       read_timeout_ms: 1000,
       stall_timeout_ms: 300_000,
       auto_retry: True,
-      ui_request_policy: domain.Cancel,
+      ui_request_policy: config_types.Cancel,
       ui_request_timeout_ms: 300_000,
       compatibility_probe: probe,
       rate_limit_payload: None,
     ),
-    handoff: domain.HandoffConfig(
+    handoff: config_types.HandoffConfig(
       enabled: False,
       comment_on_claim: False,
       comment_on_success: False,
@@ -98,7 +99,7 @@ fn config(
       attachment_fallback_to_markdown_link: True,
       result_max_chars: 8000,
     ),
-    linear_contract: domain.LinearContractConfig(
+    linear_contract: config_types.LinearContractConfig(
       enabled: False,
       workflow_label_prefix: "workflow:",
       workflow_labels: [],
@@ -109,7 +110,7 @@ fn config(
       invalid_workflow_state_id: None,
       comment_on_invalid_workflow: False,
     ),
-    linear_commands: domain.LinearCommandConfig(
+    linear_commands: config_types.LinearCommandConfig(
       enabled: False,
       prefix: "/scherzo",
       authorized_user_ids: [],
@@ -125,7 +126,7 @@ fn workflow(prompt: String) -> String {
   prompt
 }
 
-fn tracker_returning(final_issue: domain.Issue) -> tracker.Client {
+fn tracker_returning(final_issue: tracker_issue.Issue) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
@@ -333,7 +334,7 @@ pub fn before_run_and_probe_failures_abort_before_prompt_test() {
   let root = "test/tmp/runner-before-run-failure"
   reset_dir(root)
   let bad_hooks =
-    domain.HooksConfig(
+    config_types.HooksConfig(
       after_create: Some("printf populated > POPULATED"),
       before_run: Some("exit 9"),
       after_run: None,
@@ -341,7 +342,10 @@ pub fn before_run_and_probe_failures_abort_before_prompt_test() {
       timeout_ms: 1000,
     )
   let cfg =
-    domain.EffectiveConfig(..config(root, fake_pi(), True, 3), hooks: bad_hooks)
+    config_types.EffectiveConfig(
+      ..config(root, fake_pi(), True, 3),
+      hooks: bad_hooks,
+    )
   let assert Error(_) =
     runner.run_attempt(
       issue("Todo"),

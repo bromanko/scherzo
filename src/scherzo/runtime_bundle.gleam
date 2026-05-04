@@ -3,10 +3,11 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
 import scherzo/path
+import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 import simplifile
 import yay
@@ -15,8 +16,8 @@ pub type RuntimeBundle {
   RuntimeBundle(
     config_path: String,
     config_contents: String,
-    effective: domain.EffectiveConfig,
-    orchestrator: domain.OrchestratorConfig,
+    effective: config_types.EffectiveConfig,
+    orchestrator: config_types.OrchestratorConfig,
     workflows: Dict(String, workflow_dag.WorkflowDag),
     secrets: List(String),
   )
@@ -28,7 +29,7 @@ pub type BundleError {
 
 pub fn select_workflow(
   bundle: RuntimeBundle,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
   select_routed_workflow(bundle.workflows, bundle.orchestrator.routing, issue)
 }
@@ -54,8 +55,8 @@ pub fn load_with_env(
 
 fn select_routed_workflow(
   workflows: Dict(String, workflow_dag.WorkflowDag),
-  routing: domain.RoutingConfig,
-  issue: domain.Issue,
+  routing: config_types.RoutingConfig,
+  issue: tracker_issue.Issue,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
   let labels = workflow_labels(issue.labels, routing.workflow_label_prefix, [])
   case labels {

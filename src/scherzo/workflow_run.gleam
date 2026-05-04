@@ -6,13 +6,15 @@ import scherzo/agent/run_attempt
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/command_step
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
 import scherzo/process_ext
+import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/template
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 import scherzo/workflow_scheduler
 import scherzo/workspace_run
@@ -37,21 +39,21 @@ pub type WorkflowRunFailure {
 pub type Dependencies {
   Dependencies(
     prepare_step: fn(
-      domain.Issue,
+      tracker_issue.Issue,
       String,
       String,
       String,
       workflow_dag.WorkspaceRef,
-      domain.OrchestratorConfig,
+      config_types.OrchestratorConfig,
       Dict(String, workspace_run.PreparedStepWorkspace),
     ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
     after_step: fn(
-      domain.Issue,
+      tracker_issue.Issue,
       String,
       workspace_run.PreparedStepWorkspace,
-      domain.OrchestratorConfig,
+      config_types.OrchestratorConfig,
     ) -> Nil,
-    cleanup_run: fn(String, domain.OrchestratorConfig) ->
+    cleanup_run: fn(String, config_types.OrchestratorConfig) ->
       Result(Nil, error.WorkspaceError),
     command_step: fn(
       String,
@@ -59,13 +61,13 @@ pub type Dependencies {
       String,
       Int,
       List(String),
-      domain.ArtifactLimits,
+      config_types.ArtifactLimits,
     ) -> step_artifact.StepArtifact,
     agent_step: fn(
-      domain.Issue,
+      tracker_issue.Issue,
       String,
       String,
-      domain.EffectiveConfig,
+      config_types.EffectiveConfig,
       tracker.Client,
       String,
       fn(agent_types.PiUpdate) -> Nil,
@@ -85,8 +87,8 @@ type StepExecutionResult {
   StepExecutionResult(
     step_id: String,
     artifact: step_artifact.StepArtifact,
-    tokens: domain.TokenTotals,
-    final_issue: Option(domain.Issue),
+    tokens: session_tokens.TokenTotals,
+    final_issue: Option(tracker_issue.Issue),
     turns: Int,
   )
 }
@@ -148,9 +150,9 @@ pub fn default_dependencies() -> Dependencies {
 }
 
 pub fn execute(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   run_id: String,
@@ -168,7 +170,7 @@ pub fn execute(
     dict.new(),
     dict.new(),
     None,
-    domain.zero_token_totals(),
+    session_tokens.zero_token_totals(),
     None,
     0,
   )
@@ -190,9 +192,9 @@ pub fn failure_report(failure: WorkflowRunFailure) -> String {
 }
 
 fn loop(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   run_id: String,
@@ -201,8 +203,8 @@ fn loop(
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   run_root: Option(String),
-  tokens: domain.TokenTotals,
-  final_issue: Option(domain.Issue),
+  tokens: session_tokens.TokenTotals,
+  final_issue: Option(tracker_issue.Issue),
   turns: Int,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case workflow_scheduler.outcome(dag, scheduler_state) {
@@ -316,10 +318,10 @@ fn loop(
 
 fn prepare_ready_steps(
   steps: List(workflow_dag.WorkflowStep),
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   workflow_id: String,
   run_id: String,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   acc: List(PreparedStart),
@@ -388,9 +390,9 @@ fn prepare_ready_steps(
 // artifact state.
 fn execute_prepared_steps(
   starts: List(PreparedStart),
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   run_id: String,
@@ -399,8 +401,8 @@ fn execute_prepared_steps(
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   run_root: Option(String),
-  tokens: domain.TokenTotals,
-  final_issue: Option(domain.Issue),
+  tokens: session_tokens.TokenTotals,
+  final_issue: Option(tracker_issue.Issue),
   turns: Int,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case starts {
@@ -483,8 +485,8 @@ fn execute_prepared_steps(
 
 fn run_prepared_batch(
   starts: List(PreparedStart),
-  issue: domain.Issue,
-  orchestrator: domain.OrchestratorConfig,
+  issue: tracker_issue.Issue,
+  orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   dependencies: Dependencies,
@@ -525,8 +527,8 @@ fn run_prepared_batch(
 fn spawn_prepared_steps(
   starts: List(PreparedStart),
   subject: process.Subject(StepExecutionResult),
-  issue: domain.Issue,
-  orchestrator: domain.OrchestratorConfig,
+  issue: tracker_issue.Issue,
+  orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   dependencies: Dependencies,
@@ -548,8 +550,8 @@ fn spawn_prepared_steps(
 fn spawn_prepared_steps_loop(
   starts: List(PreparedStart),
   subject: process.Subject(StepExecutionResult),
-  issue: domain.Issue,
-  orchestrator: domain.OrchestratorConfig,
+  issue: tracker_issue.Issue,
+  orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   dependencies: Dependencies,
@@ -820,8 +822,8 @@ fn step_worker_down_reason(
 fn finish_fatal_batch_result(
   starts: List(PreparedStart),
   result: StepExecutionResult,
-  issue: domain.Issue,
-  orchestrator: domain.OrchestratorConfig,
+  issue: tracker_issue.Issue,
+  orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
   run_root: Option(String),
@@ -864,9 +866,9 @@ fn prepared_start_by_step(
 fn apply_prepared_results(
   starts: List(PreparedStart),
   result_by_step: Dict(String, StepExecutionResult),
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   run_id: String,
@@ -875,8 +877,8 @@ fn apply_prepared_results(
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   run_root: Option(String),
-  tokens: domain.TokenTotals,
-  final_issue: Option(domain.Issue),
+  tokens: session_tokens.TokenTotals,
+  final_issue: Option(tracker_issue.Issue),
   turns: Int,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case starts {
@@ -949,10 +951,10 @@ fn apply_prepared_results(
 
 fn run_after_step(
   dependencies: Dependencies,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   step_id: String,
   workspace: workspace_run.PreparedStepWorkspace,
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> Result(Nil, String) {
   let was_trapping_exits = process_ext.trap_exits(True)
   let subject = process.new_subject()
@@ -1012,16 +1014,16 @@ fn after_step_down_reason(
 fn run_step(
   step: workflow_dag.WorkflowStep,
   workspace: workspace_run.PreparedStepWorkspace,
-  issue: domain.Issue,
-  orchestrator: domain.OrchestratorConfig,
+  issue: tracker_issue.Issue,
+  orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
 ) -> #(
   step_artifact.StepArtifact,
-  domain.TokenTotals,
-  Option(domain.Issue),
+  session_tokens.TokenTotals,
+  Option(tracker_issue.Issue),
   Int,
 ) {
   case step.kind {
@@ -1037,7 +1039,7 @@ fn run_step(
           secrets,
           orchestrator.artifact_limits,
         ),
-        domain.zero_token_totals(),
+        session_tokens.zero_token_totals(),
         None,
         0,
       )
@@ -1065,7 +1067,7 @@ fn run_step(
             secrets,
             orchestrator.artifact_limits,
           ),
-          domain.zero_token_totals(),
+          session_tokens.zero_token_totals(),
           None,
           0,
         )
@@ -1116,16 +1118,16 @@ fn run_step(
 }
 
 fn effective_for_step(
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   step: workflow_dag.WorkflowStep,
-) -> domain.EffectiveConfig {
+) -> config_types.EffectiveConfig {
   let settings =
     model_config.resolve(orchestrator.model_settings, step.model_settings)
   let command =
     model_config.apply_to_command(orchestrator.effective.pi.command, settings)
-  domain.EffectiveConfig(
+  config_types.EffectiveConfig(
     ..orchestrator.effective,
-    pi: domain.PiConfig(..orchestrator.effective.pi, command: command),
+    pi: config_types.PiConfig(..orchestrator.effective.pi, command: command),
   )
 }
 
@@ -1142,7 +1144,7 @@ fn mark_all_running(
 
 fn cleanup_if_needed(
   run_root: Option(String),
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
 ) -> Result(Nil, error.WorkspaceError) {
   case run_root {
@@ -1152,10 +1154,10 @@ fn cleanup_if_needed(
 }
 
 fn add_tokens(
-  left: domain.TokenTotals,
-  right: domain.TokenTotals,
-) -> domain.TokenTotals {
-  domain.TokenTotals(
+  left: session_tokens.TokenTotals,
+  right: session_tokens.TokenTotals,
+) -> session_tokens.TokenTotals {
+  session_tokens.TokenTotals(
     input: left.input + right.input,
     output: left.output + right.output,
     cache_read: left.cache_read + right.cache_read,

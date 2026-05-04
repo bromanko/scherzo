@@ -1,8 +1,8 @@
 import gleam/json
 import gleam/option.{type Option, None, Some}
-import scherzo/domain
 import scherzo/session/event
 import scherzo/session/reason
+import scherzo/session/tokens as session_tokens
 
 pub fn summary_to_string(summary: event.SessionSummary) -> String {
   summary_to_json(summary) |> json.to_string
@@ -78,7 +78,7 @@ fn payload_entries(payload: event.EventPayload) -> List(#(String, json.Json)) {
   ]
 }
 
-fn tokens_to_json(tokens: domain.TokenTotals) -> json.Json {
+fn tokens_to_json(tokens: session_tokens.TokenTotals) -> json.Json {
   json.object([
     #("input", json.int(tokens.input)),
     #("output", json.int(tokens.output)),

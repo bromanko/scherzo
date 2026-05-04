@@ -2,9 +2,9 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/linear_parser
-import scherzo/domain
 import scherzo/linear
 import scherzo/log
 import scherzo/state/projection
@@ -69,7 +69,7 @@ pub fn mark_processed(
 
 pub fn process_comments(
   state: TransportState,
-  config: domain.LinearCommandConfig,
+  config: config_types.LinearCommandConfig,
   comments: List(linear.LinearComment),
   issue_sessions: Dict(String, String),
 ) -> #(TransportState, List(TransportAction)) {
@@ -81,7 +81,7 @@ pub fn process_comments(
 
 fn process_loop(
   state: TransportState,
-  config: domain.LinearCommandConfig,
+  config: config_types.LinearCommandConfig,
   comments: List(linear.LinearComment),
   issue_sessions: Dict(String, String),
   processed_this_tick: Int,
@@ -181,7 +181,7 @@ fn process_loop(
 
 fn durable_receipt_handling(
   state: TransportState,
-  config: domain.LinearCommandConfig,
+  config: config_types.LinearCommandConfig,
   comment: linear.LinearComment,
 ) -> ReceiptHandling {
   let TransportState(command_receipts: receipts, ..) = state
@@ -246,7 +246,7 @@ fn durable_receipt_handling(
 }
 
 fn should_ack_receipt_status(
-  config: domain.LinearCommandConfig,
+  config: config_types.LinearCommandConfig,
   status: String,
 ) -> Bool {
   case status {
@@ -257,7 +257,7 @@ fn should_ack_receipt_status(
 
 fn process_command_like_comment(
   state: TransportState,
-  config: domain.LinearCommandConfig,
+  config: config_types.LinearCommandConfig,
   comment: linear.LinearComment,
   issue_sessions: Dict(String, String),
   rest: List(linear.LinearComment),
@@ -347,7 +347,7 @@ fn process_command_like_comment(
 }
 
 fn maybe_rejection_ack(
-  config: domain.LinearCommandConfig,
+  config: config_types.LinearCommandConfig,
   issue_id: String,
   source_comment_id: String,
   body: String,
@@ -453,7 +453,7 @@ pub fn result_ack_body(
 }
 
 pub fn should_ack_result(
-  config: domain.LinearCommandConfig,
+  config: config_types.LinearCommandConfig,
   result: command.CommandResult,
 ) -> Bool {
   case result.status {

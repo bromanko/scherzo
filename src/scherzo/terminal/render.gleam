@@ -3,8 +3,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/pi_event
-import scherzo/domain
 import scherzo/session/event
+import scherzo/session/tokens as session_tokens
 import scherzo/terminal/sanitize
 import scherzo/terminal/style
 
@@ -966,7 +966,7 @@ fn option_string(value: Option(String), default: String) -> String {
   }
 }
 
-fn token_line(tokens: domain.TokenTotals, pass: Option(Int)) -> String {
+fn token_line(tokens: session_tokens.TokenTotals, pass: Option(Int)) -> String {
   let prefix = case pass {
     Some(pass) -> "Scherzo pass " <> int.to_string(pass) <> " tokens"
     None -> "tokens"
@@ -984,7 +984,7 @@ fn token_line(tokens: domain.TokenTotals, pass: Option(Int)) -> String {
   <> int.to_string(tokens.total)
 }
 
-fn tokens_are_nonzero(tokens: domain.TokenTotals) -> Bool {
+fn tokens_are_nonzero(tokens: session_tokens.TokenTotals) -> Bool {
   tokens.input > 0
   || tokens.output > 0
   || tokens.cache_read > 0

@@ -1,18 +1,19 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
 pub type LinearSmokeReader {
   LinearSmokeReader(
     fetch_candidate_sample: fn() ->
-      Result(List(domain.Issue), error.TrackerError),
+      Result(List(tracker_issue.Issue), error.TrackerError),
     fetch_terminal_sample: fn(List(issue_state.IssueState)) ->
-      Result(List(domain.Issue), error.TrackerError),
+      Result(List(tracker_issue.Issue), error.TrackerError),
     refresh_issue_states_by_ids: fn(List(String)) ->
-      Result(List(domain.Issue), error.TrackerError),
+      Result(List(tracker_issue.Issue), error.TrackerError),
   )
 }
 
@@ -43,7 +44,7 @@ pub fn linear_read_smoke(
 }
 
 pub fn linear_reader(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: linear.Transport,
 ) -> LinearSmokeReader {
   LinearSmokeReader(
@@ -59,15 +60,17 @@ pub fn linear_reader(
   )
 }
 
-pub fn real_linear_reader(config: domain.TrackerConfig) -> LinearSmokeReader {
+pub fn real_linear_reader(
+  config: config_types.TrackerConfig,
+) -> LinearSmokeReader {
   linear_reader(config, linear.http_transport)
 }
 
 fn fetch_one_page(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   states: List(issue_state.IssueState),
   transport: linear.Transport,
-) -> Result(List(domain.Issue), error.TrackerError) {
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   case states {
     [] -> Ok([])
     _ -> {
@@ -85,9 +88,9 @@ fn fetch_one_page(
 
 fn refresh_first_sampled_issue(
   reader: LinearSmokeReader,
-  candidates: List(domain.Issue),
-  terminals: List(domain.Issue),
-) -> Result(List(domain.Issue), error.TrackerError) {
+  candidates: List(tracker_issue.Issue),
+  terminals: List(tracker_issue.Issue),
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   case first_issue_id(candidates) {
     Some(id) -> reader.refresh_issue_states_by_ids([id])
     None ->
@@ -98,7 +101,7 @@ fn refresh_first_sampled_issue(
   }
 }
 
-fn first_issue_id(issues: List(domain.Issue)) -> Option(String) {
+fn first_issue_id(issues: List(tracker_issue.Issue)) -> Option(String) {
   case issues {
     [issue, ..] -> Some(issue.id)
     [] -> None

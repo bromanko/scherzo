@@ -1,10 +1,10 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
 import scherzo/error
 import scherzo/pi/protocol
 import scherzo/port
+import scherzo/session/tokens as session_tokens
 
 const max_interleaved_response_records = 100
 
@@ -168,7 +168,7 @@ pub fn send_extension_ui_value(
 pub fn get_session_stats(
   session: Session,
   read_timeout_ms: Int,
-) -> Result(#(Session, domain.TokenTotals), error.PiRpcError) {
+) -> Result(#(Session, session_tokens.TokenTotals), error.PiRpcError) {
   let id = int_to_string(session.next_id)
   use _ <- try_pi(
     port.send_line(session.process, protocol.encode_get_session_stats(id))

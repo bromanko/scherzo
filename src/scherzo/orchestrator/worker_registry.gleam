@@ -4,13 +4,13 @@ import gleam/list
 import gleam/option.{type Option, Some}
 import gleam/string
 import scherzo/agent/worker_command
-import scherzo/domain
 import scherzo/session/reason as session_reason
+import scherzo/tracker/issue as tracker_issue
 
 pub type WorkerHandle {
   WorkerHandle(
     issue_id: String,
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     run_id: String,
     pid: process.Pid,
     monitor: process.Monitor,
@@ -146,7 +146,7 @@ pub fn worker_issue_ids(registry: Registry) -> List(String) {
   dict.keys(registry.workers)
 }
 
-pub fn worker_issues(registry: Registry) -> List(domain.Issue) {
+pub fn worker_issues(registry: Registry) -> List(tracker_issue.Issue) {
   registry.workers |> dict.values |> list.map(fn(handle) { handle.issue })
 }
 

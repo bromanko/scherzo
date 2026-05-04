@@ -1,7 +1,7 @@
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/log
 import scherzo/path
 import scherzo/port
@@ -18,7 +18,7 @@ pub fn run(
   workspace_path: String,
   timeout_ms: Int,
   secrets: List(String),
-  limits: domain.ArtifactLimits,
+  limits: config_types.ArtifactLimits,
 ) -> step_artifact.StepArtifact {
   let started_ms = monotonic_ms()
   let diagnostics = prepare_diagnostics(workspace_path, step_id)
@@ -68,7 +68,7 @@ fn read_loop(
   timeout_ms: Int,
   started_ms: Int,
   secrets: List(String),
-  limits: domain.ArtifactLimits,
+  limits: config_types.ArtifactLimits,
   stdout: String,
   stdout_truncated: Bool,
   diagnostics: Option(DiagnosticsCapture),
@@ -200,7 +200,7 @@ fn finish_command(
   stderr: String,
   timed_out: Bool,
   secrets: List(String),
-  limits: domain.ArtifactLimits,
+  limits: config_types.ArtifactLimits,
   stdout_truncated: Bool,
   stderr_truncated: Bool,
   diagnostics: Option(DiagnosticsCapture),
@@ -253,7 +253,7 @@ fn stream_will_be_truncated(
   value: String,
   already_truncated: Bool,
   secrets: List(String),
-  limits: domain.ArtifactLimits,
+  limits: config_types.ArtifactLimits,
 ) -> Bool {
   already_truncated
   || string.length(log.redact("command_step_artifact", value, secrets))

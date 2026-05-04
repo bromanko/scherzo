@@ -1,8 +1,8 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
 import scherzo/error
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
 pub type Value {
@@ -15,7 +15,7 @@ pub type Value {
 
 pub type Context {
   Context(
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     attempt: Option(Int),
     locals: List(#(String, Value)),
   )
@@ -23,7 +23,7 @@ pub type Context {
 
 pub fn render(
   template: String,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   attempt: Option(Int),
 ) -> Result(String, error.TemplateError) {
   render_with_locals(template, issue, attempt, [])
@@ -31,7 +31,7 @@ pub fn render(
 
 pub fn render_with_locals(
   template: String,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   attempt: Option(Int),
   locals: List(#(String, Value)),
 ) -> Result(String, error.TemplateError) {

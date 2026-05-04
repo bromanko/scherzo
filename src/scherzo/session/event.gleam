@@ -1,7 +1,7 @@
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
-import scherzo/domain
 import scherzo/session/reason
+import scherzo/session/tokens as session_tokens
 
 pub type SessionStatus {
   Preparing
@@ -57,7 +57,7 @@ pub type EventPayload {
     tool_input: Option(String),
     tool_output: Option(String),
     tool_status: Option(String),
-    tokens: domain.TokenTotals,
+    tokens: session_tokens.TokenTotals,
     raw_json: Option(RedactedRawJson),
   )
 }
@@ -75,7 +75,7 @@ pub type SessionSummary {
     current_turn: Int,
     started_at_ms: Int,
     last_event_at_ms: Int,
-    token_totals: domain.TokenTotals,
+    token_totals: session_tokens.TokenTotals,
   )
 }
 
@@ -110,7 +110,7 @@ pub fn empty_payload(kind: EventKind, name: EventName) -> EventPayload {
     tool_input: None,
     tool_output: None,
     tool_status: None,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     raw_json: None,
   )
 }

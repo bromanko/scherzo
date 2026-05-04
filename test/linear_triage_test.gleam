@@ -3,16 +3,17 @@ import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_triage
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 
-fn tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+fn tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.test/graphql",
     api_key: Some("lin_api_secret"),
@@ -25,8 +26,8 @@ fn tracker_config() -> domain.TrackerConfig {
 fn contract_config(
   comment: Bool,
   state_id: Option(String),
-) -> domain.LinearContractConfig {
-  domain.LinearContractConfig(
+) -> config_types.LinearContractConfig {
+  config_types.LinearContractConfig(
     ..config.default_linear_contract_config(),
     workflow_labels: ["bugfix", "feature"],
     enforce_issue_workflow_labels: True,
@@ -35,8 +36,8 @@ fn contract_config(
   )
 }
 
-fn issue() -> domain.Issue {
-  domain.Issue(
+fn issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-1",
     title: "Needs workflow",

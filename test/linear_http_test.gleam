@@ -1,13 +1,14 @@
 import gleam/httpc
 import gleam/option.{Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/linear
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 
-fn tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+fn tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
@@ -49,7 +50,7 @@ pub fn http_transport_maps_httpc_errors_without_secret_values_test() {
   assert !string.contains(utf8, "secret-key")
 }
 
-fn list_identifiers(issues: List(domain.Issue)) -> List(String) {
+fn list_identifiers(issues: List(tracker_issue.Issue)) -> List(String) {
   case issues {
     [] -> []
     [issue, ..rest] -> [issue.identifier, ..list_identifiers(rest)]

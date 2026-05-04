@@ -2,13 +2,13 @@ import birl
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
-import scherzo/domain
 import scherzo/orchestrator/worker_registry
 import scherzo/session/reason
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
-fn issue(id: String, identifier: String) -> domain.Issue {
-  domain.Issue(
+fn issue(id: String, identifier: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: "Title " <> identifier,
