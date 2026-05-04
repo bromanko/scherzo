@@ -3,7 +3,8 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
+import scherzo/tracker/issue as tracker_issue
 
 pub type IssueWorkflowDecision {
   WorkflowPolicyDisabled
@@ -18,8 +19,8 @@ pub type IssueWorkflowViolation {
 }
 
 pub fn classify_issue(
-  config: domain.LinearContractConfig,
-  issue: domain.Issue,
+  config: config_types.LinearContractConfig,
+  issue: tracker_issue.Issue,
 ) -> IssueWorkflowDecision {
   case config.enforce_issue_workflow_labels {
     False -> WorkflowPolicyDisabled
@@ -51,7 +52,7 @@ pub fn workflow_satisfied(decision: IssueWorkflowDecision) -> Bool {
 }
 
 pub fn allowed_label_names(
-  config: domain.LinearContractConfig,
+  config: config_types.LinearContractConfig,
 ) -> List(String) {
   let prefix = normalize(config.workflow_label_prefix)
   normalized_allowed_workflows(config)
@@ -78,14 +79,14 @@ pub fn violation_fingerprint(violation: IssueWorkflowViolation) -> String {
   }
 }
 
-pub fn observed_labels_fingerprint(issue: domain.Issue) -> String {
+pub fn observed_labels_fingerprint(issue: tracker_issue.Issue) -> String {
   issue.labels
   |> normalize_and_sort
   |> fingerprint_strings
 }
 
 pub fn reporting_policy_fingerprint(
-  config: domain.LinearContractConfig,
+  config: config_types.LinearContractConfig,
 ) -> String {
   [
     "enabled:" <> bool_fingerprint(config.enabled),
@@ -101,7 +102,7 @@ pub fn reporting_policy_fingerprint(
 
 pub fn violation_message(
   violation: IssueWorkflowViolation,
-  config: domain.LinearContractConfig,
+  config: config_types.LinearContractConfig,
 ) -> String {
   let allowed = allowed_label_names(config)
   let expected = expected_labels_block(allowed)
@@ -131,14 +132,16 @@ pub fn violation_message(
   }
 }
 
-fn ready_state_guidance(config: domain.LinearContractConfig) -> String {
+fn ready_state_guidance(config: config_types.LinearContractConfig) -> String {
   case ready_state_name(config) {
     Some(state) -> "move the issue back to " <> state <> "."
     None -> "move the issue back to the configured ready state."
   }
 }
 
-fn ready_state_name(config: domain.LinearContractConfig) -> Option(String) {
+fn ready_state_name(
+  config: config_types.LinearContractConfig,
+) -> Option(String) {
   case dict.get(config.required_states, "ready") {
     Error(_) -> None
     Ok(state) -> {
@@ -172,7 +175,7 @@ fn workflow_like_labels(labels: List(String), prefix: String) -> List(String) {
 }
 
 fn normalized_allowed_workflows(
-  config: domain.LinearContractConfig,
+  config: config_types.LinearContractConfig,
 ) -> List(String) {
   config.workflow_labels
   |> list.map(normalize)

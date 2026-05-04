@@ -5,11 +5,14 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
+import scherzo/result_artifact
+import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
@@ -20,8 +23,8 @@ type CommandStart {
   CommandStart(step_id: String, release: process.Subject(String))
 }
 
-fn issue() -> domain.Issue {
-  domain.Issue(
+fn issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-123",
     title: "Implement DAGs",
@@ -37,9 +40,9 @@ fn issue() -> domain.Issue {
   )
 }
 
-fn effective() -> domain.EffectiveConfig {
-  domain.EffectiveConfig(
-    tracker: domain.TrackerConfig(
+fn effective() -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: config_types.TrackerConfig(
       kind: tracker_kind.LinearTracker,
       endpoint: "https://api.linear.app/graphql",
       api_key: Some("test-key"),
@@ -48,10 +51,15 @@ fn effective() -> domain.EffectiveConfig {
       terminal_states: issue_state.list_from_strings(["Done"]),
     ),
     polling: config.default_polling_config(),
-    workspace: domain.WorkspaceConfig(root: "test/tmp/workflow-run/workspaces"),
+    workspace: config_types.WorkspaceConfig(
+      root: "test/tmp/workflow-run/workspaces",
+    ),
     hooks: config.default_hooks_config(),
-    agent: domain.AgentConfig(..config.default_agent_config(), max_turns: 1),
-    pi: domain.PiConfig(
+    agent: config_types.AgentConfig(
+      ..config.default_agent_config(),
+      max_turns: 1,
+    ),
+    pi: config_types.PiConfig(
       ..config.default_pi_config(),
       compatibility_probe: False,
     ),
@@ -61,24 +69,24 @@ fn effective() -> domain.EffectiveConfig {
   )
 }
 
-fn orchestrator() -> domain.OrchestratorConfig {
-  domain.OrchestratorConfig(
+fn orchestrator() -> config_types.OrchestratorConfig {
+  config_types.OrchestratorConfig(
     effective: effective(),
     config_dir: "test/tmp/workflow-run",
-    routing: domain.RoutingConfig(
+    routing: config_types.RoutingConfig(
       workflow_label_prefix: "workflow:",
       require_exactly_one_workflow_label: True,
       default_workflow: None,
       workflows: dict.from_list([#("implementation", "implementation.yaml")]),
     ),
-    dag_hooks: domain.DagHooksConfig(
+    dag_hooks: config_types.DagHooksConfig(
       create: None,
       before_step: None,
       after_step: None,
       remove: None,
       timeout_ms: 1000,
     ),
-    artifact_limits: domain.ArtifactLimits(
+    artifact_limits: config_types.ArtifactLimits(
       command_stream_max_chars: 1000,
       template_field_max_chars: 1000,
       workflow_summary_max_chars: 4000,
@@ -100,9 +108,9 @@ fn success_agent(prompt: String) -> agent_types.WorkerSuccess {
     final_issue: Some(issue()),
     final_classification: agent_types.FinalTerminal,
     workspace_path: "workspace",
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     turns: 1,
-    result: domain.ResultArtifact(
+    result: result_artifact.ResultArtifact(
       final_response: Some("response:" <> prompt),
       truncated: False,
       source: "test",
@@ -275,7 +283,7 @@ pub fn workflow_run_resolves_default_and_step_model_settings_test() {
         _issue,
         step_id,
         prompt,
-        effective: domain.EffectiveConfig,
+        effective: config_types.EffectiveConfig,
         _tracker,
         _workspace_path,
         _emit_update,
@@ -286,7 +294,7 @@ pub fn workflow_run_resolves_default_and_step_model_settings_test() {
       },
     )
   let orch =
-    domain.OrchestratorConfig(
+    config_types.OrchestratorConfig(
       ..orchestrator(),
       model_settings: model_config.Settings(
         model: Some("google/gemini-2.5-flash"),

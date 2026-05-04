@@ -2,14 +2,16 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import scherzo/agent/types as agent_types
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/model_config
+import scherzo/result_artifact
+import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/template
 import scherzo/workflow_dag
 
-fn limits() -> domain.ArtifactLimits {
-  domain.ArtifactLimits(
+fn limits() -> config_types.ArtifactLimits {
+  config_types.ArtifactLimits(
     command_stream_max_chars: 12,
     template_field_max_chars: 12,
     workflow_summary_max_chars: 200,
@@ -21,9 +23,9 @@ fn agent_success(text: String) -> agent_types.WorkerSuccess {
     final_issue: None,
     final_classification: agent_types.FinalTerminal,
     workspace_path: "workspace",
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     turns: 1,
-    result: domain.ResultArtifact(
+    result: result_artifact.ResultArtifact(
       final_response: Some(text),
       truncated: False,
       source: "test",

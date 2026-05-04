@@ -6,8 +6,8 @@ import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/ctl
-import scherzo/domain
 import scherzo/session/event
+import scherzo/session/tokens as session_tokens
 import scherzo/terminal/style
 
 type OutMsg {
@@ -43,7 +43,7 @@ fn summary() -> event.SessionSummary {
     current_turn: 1,
     started_at_ms: 1,
     last_event_at_ms: 10,
-    token_totals: domain.zero_token_totals(),
+    token_totals: session_tokens.zero_token_totals(),
   )
 }
 

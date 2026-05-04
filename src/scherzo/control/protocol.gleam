@@ -6,10 +6,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/pi_event
 import scherzo/control/command
-import scherzo/domain
 import scherzo/session/event
 import scherzo/session/json as session_json
 import scherzo/session/reason as session_reason
+import scherzo/session/tokens as session_tokens
 
 pub const version = 1
 
@@ -1015,7 +1015,7 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
   )
   use tokens <- decode.optional_field(
     "tokens",
-    domain.zero_token_totals(),
+    session_tokens.zero_token_totals(),
     token_totals_decoder(),
   )
   use raw_json <- decode.optional_field(
@@ -1054,13 +1054,13 @@ fn event_name_decoder(
   }
 }
 
-fn token_totals_decoder() -> decode.Decoder(domain.TokenTotals) {
+fn token_totals_decoder() -> decode.Decoder(session_tokens.TokenTotals) {
   use input <- decode.optional_field("input", 0, decode.int)
   use output <- decode.optional_field("output", 0, decode.int)
   use cache_read <- decode.optional_field("cache_read", 0, decode.int)
   use cache_write <- decode.optional_field("cache_write", 0, decode.int)
   use total <- decode.optional_field("total", 0, decode.int)
-  decode.success(domain.TokenTotals(
+  decode.success(session_tokens.TokenTotals(
     input: input,
     output: output,
     cache_read: cache_read,

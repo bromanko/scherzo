@@ -2,16 +2,17 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
-import scherzo/domain
 import scherzo/error
 import scherzo/log
+import scherzo/session/tokens as session_tokens
+import scherzo/tracker/issue as tracker_issue
 
 const max_failure_detail_chars = 800
 
 const failure_detail_truncated_suffix = "… [truncated]"
 
 pub fn success_comment(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   success: agent_types.WorkerSuccess,
   run_id: String,
   include_result: Bool,
@@ -28,7 +29,7 @@ pub fn success_comment(
 }
 
 pub fn success_result_attachment_markdown(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   success: agent_types.WorkerSuccess,
   run_id: String,
   secrets: List(String),
@@ -51,7 +52,7 @@ pub fn success_result_attachment_markdown(
 }
 
 pub fn failure_comment(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   failure: agent_types.WorkerFailure,
   run_id: String,
   secrets: List(String),
@@ -198,7 +199,7 @@ fn workspace_line(workspace_path: Option(String)) -> String {
   }
 }
 
-fn token_totals(tokens: domain.TokenTotals) -> String {
+fn token_totals(tokens: session_tokens.TokenTotals) -> String {
   "input="
   <> int.to_string(tokens.input)
   <> " output="

@@ -1,8 +1,9 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
+import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
 pub type InvalidWorkflowReportOutcome {
@@ -15,15 +16,15 @@ pub type InvalidWorkflowReportOutcome {
 pub type TriageClient {
   TriageClient(
     report_invalid_workflow: fn(
-      domain.Issue,
+      tracker_issue.Issue,
       workflow_policy.IssueWorkflowViolation,
     ) -> Result(InvalidWorkflowReportOutcome, error.TrackerError),
   )
 }
 
 pub fn triage_client(
-  tracker_config: domain.TrackerConfig,
-  contract_config: domain.LinearContractConfig,
+  tracker_config: config_types.TrackerConfig,
+  contract_config: config_types.LinearContractConfig,
   transport: linear.Transport,
 ) -> TriageClient {
   TriageClient(report_invalid_workflow: fn(issue, violation) {
@@ -38,8 +39,8 @@ pub fn triage_client(
 }
 
 pub fn real_triage_client(
-  tracker_config: domain.TrackerConfig,
-  contract_config: domain.LinearContractConfig,
+  tracker_config: config_types.TrackerConfig,
+  contract_config: config_types.LinearContractConfig,
 ) -> TriageClient {
   triage_client(tracker_config, contract_config, linear.http_transport)
 }
@@ -51,10 +52,10 @@ pub fn disabled_client() -> TriageClient {
 }
 
 fn report_invalid_workflow(
-  tracker_config: domain.TrackerConfig,
-  contract_config: domain.LinearContractConfig,
+  tracker_config: config_types.TrackerConfig,
+  contract_config: config_types.LinearContractConfig,
   transport: linear.Transport,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   violation: workflow_policy.IssueWorkflowViolation,
 ) -> Result(InvalidWorkflowReportOutcome, error.TrackerError) {
   let comment_enabled = contract_config.comment_on_invalid_workflow
@@ -100,10 +101,10 @@ fn report_invalid_workflow(
 }
 
 fn post_comment(
-  tracker_config: domain.TrackerConfig,
-  contract_config: domain.LinearContractConfig,
+  tracker_config: config_types.TrackerConfig,
+  contract_config: config_types.LinearContractConfig,
   transport: linear.Transport,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   violation: workflow_policy.IssueWorkflowViolation,
 ) -> Result(Nil, error.TrackerError) {
   let body = workflow_policy.violation_message(violation, contract_config)
@@ -117,7 +118,7 @@ fn post_comment(
 }
 
 fn update_state(
-  tracker_config: domain.TrackerConfig,
+  tracker_config: config_types.TrackerConfig,
   transport: linear.Transport,
   issue_id: String,
   state_id: String,

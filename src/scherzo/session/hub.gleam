@@ -3,9 +3,9 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
-import scherzo/domain
 import scherzo/session/event
 import scherzo/session/reason
+import scherzo/session/tokens as session_tokens
 
 pub const default_max_events_per_session = 2000
 
@@ -22,7 +22,7 @@ pub type Message {
   RegisterSession(event.SessionSummary)
   UpdateStatus(String, event.SessionStatus)
   UpdatePiSession(String, String)
-  UpdateTokens(String, domain.TokenTotals)
+  UpdateTokens(String, session_tokens.TokenTotals)
   Publish(String, event.EventPayload)
   FinishSession(String, reason.WorkerExitReason)
   ListSessions(process.Subject(Result(List(event.SessionSummary), HubError)))
@@ -149,7 +149,7 @@ pub fn update_pi_session(
 pub fn update_tokens(
   subject: process.Subject(Message),
   session_id: String,
-  tokens: domain.TokenTotals,
+  tokens: session_tokens.TokenTotals,
 ) -> Nil {
   process.send(subject, UpdateTokens(session_id, tokens))
 }
@@ -349,7 +349,7 @@ fn update_summary_pi_session(
 fn update_summary_tokens(
   state: State,
   session_id: String,
-  tokens: domain.TokenTotals,
+  tokens: session_tokens.TokenTotals,
 ) -> State {
   update_summary(state, session_id, fn(summary) {
     event.SessionSummary(

@@ -1,10 +1,10 @@
 import gleam/erlang/process
 import gleam/option.{None}
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/orchestrator/effect_runner
 
-fn hooks() -> domain.HooksConfig {
-  domain.HooksConfig(
+fn hooks() -> config_types.HooksConfig {
+  config_types.HooksConfig(
     after_create: None,
     before_run: None,
     after_run: None,

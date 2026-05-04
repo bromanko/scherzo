@@ -1,20 +1,20 @@
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
 
-fn limits() -> domain.ArtifactLimits {
-  domain.ArtifactLimits(
+fn limits() -> config_types.ArtifactLimits {
+  config_types.ArtifactLimits(
     command_stream_max_chars: 100,
     template_field_max_chars: 100,
     workflow_summary_max_chars: 100,
   )
 }
 
-fn diagnostic_limits() -> domain.ArtifactLimits {
-  domain.ArtifactLimits(
+fn diagnostic_limits() -> config_types.ArtifactLimits {
+  config_types.ArtifactLimits(
     command_stream_max_chars: 100,
     template_field_max_chars: 1000,
     workflow_summary_max_chars: 100,

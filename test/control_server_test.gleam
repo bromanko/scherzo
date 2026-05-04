@@ -9,10 +9,10 @@ import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/server
-import scherzo/domain
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason
+import scherzo/session/tokens as session_tokens
 
 fn summary(session_id: String) -> event.SessionSummary {
   event.SessionSummary(
@@ -27,7 +27,7 @@ fn summary(session_id: String) -> event.SessionSummary {
     current_turn: 1,
     started_at_ms: 10,
     last_event_at_ms: 10,
-    token_totals: domain.zero_token_totals(),
+    token_totals: session_tokens.zero_token_totals(),
   )
 }
 
@@ -44,7 +44,7 @@ fn payload(name: String) -> event.EventPayload {
     tool_input: None,
     tool_output: None,
     tool_status: None,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     raw_json: None,
   )
 }

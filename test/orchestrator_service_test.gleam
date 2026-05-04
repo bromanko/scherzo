@@ -4,14 +4,16 @@ import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
-import scherzo/domain
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_contract
 import scherzo/orchestrator/service
 import scherzo/path
+import scherzo/result_artifact
+import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_run
 import scherzo/workspace_run
@@ -37,8 +39,8 @@ fn fake_pi() -> String {
   abs
 }
 
-fn issue(state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-123",
     title: "Fix tests",
@@ -148,9 +150,9 @@ fn workflow_deps() -> workflow_run.Dependencies {
         final_issue: Some(issue),
         final_classification: agent_types.FinalTerminal,
         workspace_path: workspace_path,
-        tokens: domain.zero_token_totals(),
+        tokens: session_tokens.zero_token_totals(),
         turns: 1,
-        result: domain.ResultArtifact(
+        result: result_artifact.ResultArtifact(
           final_response: Some(prompt),
           truncated: False,
           source: "test",
@@ -440,7 +442,7 @@ pub fn yaml_once_runs_command_workflow_test() {
       command_workflow_yaml("sh -c 'exit 1'"),
     )
   let candidate =
-    domain.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+    tracker_issue.Issue(..issue("Todo"), labels: ["workflow:implementation"])
   let assert Ok(result) =
     service.run_once_with_dependencies(
       Some(config_path),
@@ -522,7 +524,7 @@ pub fn fake_end_to_end_service_dispatch_test() {
       command_workflow_yaml("printf ok"),
     )
   let candidate =
-    domain.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+    tracker_issue.Issue(..issue("Todo"), labels: ["workflow:implementation"])
   let assert Ok(result) =
     service.run_once_with_dependencies(
       Some(workflow_path),
@@ -544,8 +546,8 @@ fn empty_tracker() -> tracker.Client {
 }
 
 fn tracker_with_candidate(
-  candidate: domain.Issue,
-  final: domain.Issue,
+  candidate: tracker_issue.Issue,
+  final: tracker_issue.Issue,
 ) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([candidate]) },

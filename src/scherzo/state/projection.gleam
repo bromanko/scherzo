@@ -7,7 +7,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq}
 import gleam/result
 import gleam/string
-import scherzo/domain
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/state/record
 
 pub type Projection {
@@ -746,11 +746,14 @@ pub fn known_workspace_for_issue(
 pub fn latest_counter(
   projection: Projection,
   issue_id: String,
-) -> domain.IssueCounter {
+) -> orchestrator_state.IssueCounter {
   case dict.get(projection.issue_counters, issue_id) {
     Ok(counter) ->
-      domain.IssueCounter(counter.failure_attempts, counter.worker_sessions)
-    Error(_) -> domain.new_issue_counter()
+      orchestrator_state.IssueCounter(
+        counter.failure_attempts,
+        counter.worker_sessions,
+      )
+    Error(_) -> orchestrator_state.new_issue_counter()
   }
 }
 

@@ -3,8 +3,8 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
 import scherzo/error
+import scherzo/session/tokens as session_tokens
 
 pub type RpcRecord {
   RpcRecord(
@@ -16,7 +16,7 @@ pub type RpcRecord {
     delta: Option(String),
     message: Option(String),
     method: Option(String),
-    tokens: domain.TokenTotals,
+    tokens: session_tokens.TokenTotals,
     tool_name: Option(String),
     tool_input: Option(String),
     tool_output: Option(String),
@@ -570,7 +570,7 @@ fn non_empty(value: String) -> Option(String) {
 pub type Data {
   Data(
     session_id: Option(String),
-    tokens: domain.TokenTotals,
+    tokens: session_tokens.TokenTotals,
     tool_name: Option(String),
     tool_input: Option(String),
     tool_output: Option(String),
@@ -581,7 +581,7 @@ pub type Data {
 fn empty_data() -> Data {
   Data(
     session_id: None,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     tool_name: None,
     tool_input: None,
     tool_output: None,
@@ -597,7 +597,7 @@ fn data_decoder() -> decode.Decoder(Data) {
   )
   use tokens <- decode.optional_field(
     "tokens",
-    domain.zero_token_totals(),
+    session_tokens.zero_token_totals(),
     tokens_decoder(),
   )
   use tool_name_camel <- decode.optional_field(
@@ -665,13 +665,13 @@ fn data_decoder() -> decode.Decoder(Data) {
   ))
 }
 
-fn tokens_decoder() -> decode.Decoder(domain.TokenTotals) {
+fn tokens_decoder() -> decode.Decoder(session_tokens.TokenTotals) {
   use input <- decode.optional_field("input", 0, decode.int)
   use output <- decode.optional_field("output", 0, decode.int)
   use cache_read <- decode.optional_field("cacheRead", 0, decode.int)
   use cache_write <- decode.optional_field("cacheWrite", 0, decode.int)
   use total <- decode.optional_field("total", 0, decode.int)
-  decode.success(domain.TokenTotals(
+  decode.success(session_tokens.TokenTotals(
     input: input,
     output: output,
     cache_read: cache_read,

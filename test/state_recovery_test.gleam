@@ -2,11 +2,13 @@ import birl
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/orchestrator/core
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 
@@ -144,7 +146,7 @@ pub fn parked_issue_survives_restart_test() {
       ),
     ])
   let refreshed =
-    domain.Issue(..issue("issue-1", "ABC-1", "Todo"), title: "changed")
+    tracker_issue.Issue(..issue("issue-1", "ABC-1", "Todo"), title: "changed")
 
   let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
 
@@ -176,7 +178,7 @@ pub fn auto_parked_issue_with_same_fingerprint_survives_restart_test() {
 
 pub fn auto_parked_issue_with_new_fingerprint_unparks_test() {
   let original = issue("issue-1", "ABC-1", "Todo")
-  let refreshed = domain.Issue(..original, title: "changed")
+  let refreshed = tracker_issue.Issue(..original, title: "changed")
   let projection =
     projection.fold([
       record.with_id(
@@ -384,9 +386,9 @@ pub fn linear_command_ack_outbox_is_replayed_test() {
   assert plan.records_to_append == []
 }
 
-fn config() -> domain.EffectiveConfig {
-  domain.EffectiveConfig(
-    tracker: domain.TrackerConfig(
+fn config() -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: config_types.TrackerConfig(
       kind: tracker_kind.LinearTracker,
       endpoint: "endpoint",
       api_key: Some("key"),
@@ -394,16 +396,16 @@ fn config() -> domain.EffectiveConfig {
       active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
       terminal_states: issue_state.list_from_strings(["Done", "Closed"]),
     ),
-    polling: domain.PollingConfig(interval_ms: 30_000),
-    workspace: domain.WorkspaceConfig(root: "test/tmp/workspaces"),
-    hooks: domain.HooksConfig(
+    polling: config_types.PollingConfig(interval_ms: 30_000),
+    workspace: config_types.WorkspaceConfig(root: "test/tmp/workspaces"),
+    hooks: config_types.HooksConfig(
       after_create: Some("true"),
       before_run: None,
       after_run: None,
       before_remove: None,
       timeout_ms: 1000,
     ),
-    agent: domain.AgentConfig(
+    agent: config_types.AgentConfig(
       max_concurrent_agents: 2,
       max_turns: 20,
       max_retry_backoff_ms: 40_000,
@@ -411,18 +413,18 @@ fn config() -> domain.EffectiveConfig {
       max_sessions_per_issue: 2,
       max_concurrent_agents_by_state: dict.new(),
     ),
-    pi: domain.PiConfig(
+    pi: config_types.PiConfig(
       command: "fake",
       turn_timeout_ms: 1000,
       read_timeout_ms: 1000,
       stall_timeout_ms: 1000,
       auto_retry: True,
-      ui_request_policy: domain.Cancel,
+      ui_request_policy: config_types.Cancel,
       ui_request_timeout_ms: 300_000,
       compatibility_probe: True,
       rate_limit_payload: None,
     ),
-    handoff: domain.HandoffConfig(
+    handoff: config_types.HandoffConfig(
       enabled: False,
       comment_on_claim: False,
       comment_on_success: False,
@@ -435,7 +437,7 @@ fn config() -> domain.EffectiveConfig {
       attachment_fallback_to_markdown_link: True,
       result_max_chars: 8000,
     ),
-    linear_contract: domain.LinearContractConfig(
+    linear_contract: config_types.LinearContractConfig(
       enabled: False,
       workflow_label_prefix: "workflow:",
       workflow_labels: [],
@@ -446,7 +448,7 @@ fn config() -> domain.EffectiveConfig {
       invalid_workflow_state_id: None,
       comment_on_invalid_workflow: False,
     ),
-    linear_commands: domain.LinearCommandConfig(
+    linear_commands: config_types.LinearCommandConfig(
       enabled: False,
       prefix: "/scherzo",
       authorized_user_ids: [],
@@ -458,8 +460,8 @@ fn config() -> domain.EffectiveConfig {
   )
 }
 
-fn issue(id: String, identifier: String, state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: "Title " <> identifier,
@@ -482,14 +484,14 @@ fn has_record_kind(records: List(record.LedgerRecord), kind: String) -> Bool {
 }
 
 fn unwrap_counter(
-  result: Result(domain.IssueCounter, a),
-) -> domain.IssueCounter {
+  result: Result(orchestrator_state.IssueCounter, a),
+) -> orchestrator_state.IssueCounter {
   let assert Ok(counter) = result
   counter
 }
 
 fn counter_failure_attempts(
-  runtime: domain.RuntimeState,
+  runtime: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> Int {
   runtime.issue_counters
@@ -498,7 +500,10 @@ fn counter_failure_attempts(
   |> fn(counter) { counter.failure_attempts }
 }
 
-fn has_retry(runtime: domain.RuntimeState, issue_id: String) -> Bool {
+fn has_retry(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> Bool {
   dict.has_key(runtime.retry_attempts, issue_id)
 }
 

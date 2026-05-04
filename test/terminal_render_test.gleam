@@ -1,7 +1,7 @@
 import gleam/option.{None, Some}
 import gleam/string
-import scherzo/domain
 import scherzo/session/event
+import scherzo/session/tokens as session_tokens
 import scherzo/terminal/render
 import scherzo/terminal/sanitize
 import scherzo/terminal/style
@@ -19,7 +19,7 @@ fn summary() -> event.SessionSummary {
     current_turn: 1,
     started_at_ms: 10,
     last_event_at_ms: 20,
-    token_totals: domain.zero_token_totals(),
+    token_totals: session_tokens.zero_token_totals(),
   )
 }
 
@@ -267,7 +267,7 @@ pub fn render_defaults_to_scherzo_pass_and_hides_pi_cycles_test() {
       10,
       event.EventPayload(
         ..payload(event.TokenStats, "turn_finished"),
-        tokens: domain.TokenTotals(
+        tokens: session_tokens.TokenTotals(
           input: 10,
           output: 20,
           cache_read: 3,
@@ -606,7 +606,7 @@ pub fn render_ui_request_body_and_pass_token_summary_test() {
       event.EventPayload(
         ..payload(event.TokenStats, "turn_finished")
         |> with_turn(1),
-        tokens: domain.TokenTotals(
+        tokens: session_tokens.TokenTotals(
           input: 1,
           output: 2,
           cache_read: 0,

@@ -1,19 +1,26 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
 import scherzo/log
 import scherzo/pi/protocol
 
-pub fn empty() -> domain.ResultArtifact {
-  domain.ResultArtifact(final_response: None, truncated: False, source: "none")
+pub type ResultArtifact {
+  ResultArtifact(
+    final_response: Option(String),
+    truncated: Bool,
+    source: String,
+  )
+}
+
+pub fn empty() -> ResultArtifact {
+  ResultArtifact(final_response: None, truncated: False, source: "none")
 }
 
 pub fn from_records(
   records: List(protocol.RpcRecord),
   secrets: List(String),
   max_chars: Int,
-) -> domain.ResultArtifact {
+) -> ResultArtifact {
   case last_non_empty(assistant_messages(records)) {
     Some(text) -> build_result(text, "agent_end_messages", secrets, max_chars)
     None ->
@@ -26,10 +33,10 @@ pub fn from_records(
 }
 
 pub fn append(
-  existing: domain.ResultArtifact,
-  next: domain.ResultArtifact,
+  existing: ResultArtifact,
+  next: ResultArtifact,
   max_chars: Int,
-) -> domain.ResultArtifact {
+) -> ResultArtifact {
   case existing.final_response, next.final_response {
     None, None -> empty()
     Some(text), None ->
@@ -39,7 +46,7 @@ pub fn append(
     Some(left), Some(right) -> {
       let combined = left <> "\n\n" <> right
       let newly_truncated = string.length(combined) > max_chars
-      domain.ResultArtifact(
+      ResultArtifact(
         final_response: Some(log.truncate(combined, max_chars)),
         truncated: existing.truncated || next.truncated || newly_truncated,
         source: "combined_turns",
@@ -53,9 +60,9 @@ fn build_result(
   source: String,
   secrets: List(String),
   max_chars: Int,
-) -> domain.ResultArtifact {
+) -> ResultArtifact {
   let redacted = log.redact("assistant_output", text, secrets)
-  domain.ResultArtifact(
+  ResultArtifact(
     final_response: Some(log.truncate(redacted, max_chars)),
     truncated: string.length(redacted) > max_chars,
     source: source,
@@ -67,9 +74,9 @@ fn cap_existing(
   already_truncated: Bool,
   source: String,
   max_chars: Int,
-) -> domain.ResultArtifact {
+) -> ResultArtifact {
   let newly_truncated = string.length(text) > max_chars
-  domain.ResultArtifact(
+  ResultArtifact(
     final_response: Some(log.truncate(text, max_chars)),
     truncated: already_truncated || newly_truncated,
     source: source,

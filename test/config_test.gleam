@@ -2,7 +2,7 @@ import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -50,7 +50,7 @@ pub fn default_values_test() {
   assert pi.read_timeout_ms == 5000
   assert pi.stall_timeout_ms == 300_000
   assert pi.auto_retry == True
-  assert pi.ui_request_policy == domain.Cancel
+  assert pi.ui_request_policy == config_types.Cancel
   assert pi.ui_request_timeout_ms == 300_000
   assert pi.compatibility_probe == True
 }
@@ -215,7 +215,8 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert configured_operator_policy.pi.ui_request_policy == domain.Operator
+  assert configured_operator_policy.pi.ui_request_policy
+    == config_types.Operator
   assert configured_operator_policy.pi.ui_request_timeout_ms == 1234
 
   let cancel_policy =
@@ -226,7 +227,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert configured_cancel_policy.pi.ui_request_policy == domain.Cancel
+  assert configured_cancel_policy.pi.ui_request_policy == config_types.Cancel
 
   let explicit_timeout =
     minimal_front() <> "pi:\n  ui_request_timeout_ms: 1234\n"
@@ -245,7 +246,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert configured_fail_policy.pi.ui_request_policy == domain.Fail
+  assert configured_fail_policy.pi.ui_request_policy == config_types.Fail
 
   let ignore_policy = minimal_front() <> "pi:\n  ui_request_policy: ignore\n"
   let assert Ok(configured_ignore_policy) =
@@ -254,7 +255,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert configured_ignore_policy.pi.ui_request_policy == domain.Ignore
+  assert configured_ignore_policy.pi.ui_request_policy == config_types.Ignore
 
   let invalid_policy = minimal_front() <> "pi:\n  ui_request_policy: surprise\n"
   let assert Error(error.InvalidConfig(_)) =

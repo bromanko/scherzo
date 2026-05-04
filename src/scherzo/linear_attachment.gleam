@@ -6,7 +6,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_body_data
@@ -106,7 +106,7 @@ pub fn real_upload_transport(
 }
 
 pub fn attach_markdown_to_comment(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   filename: String,
   body: BitArray,
@@ -151,7 +151,7 @@ pub fn attach_markdown_to_comment(
 }
 
 pub fn attach_markdown_file_to_comment(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   path: String,
   options: AttachOptions,
@@ -215,7 +215,7 @@ type ModeDecision {
 }
 
 fn fetch_comment(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   dependencies: Dependencies,
 ) -> Result(linear.LinearCommentDocument, error.TrackerError) {
@@ -261,7 +261,7 @@ fn decide_attach_mode(
 }
 
 fn attach_native(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   filename: String,
   body: BitArray,
@@ -303,7 +303,7 @@ fn attach_native(
 }
 
 fn attach_fallback(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment: linear.LinearCommentDocument,
   filename: String,
   body: BitArray,
@@ -332,7 +332,7 @@ fn attach_fallback(
 }
 
 fn upload_markdown(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   filename: String,
   body: BitArray,
   size: Int,

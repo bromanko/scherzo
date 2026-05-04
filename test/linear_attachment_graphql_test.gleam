@@ -1,15 +1,15 @@
 import gleam/json
 import gleam/option.{Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_body_data
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 
-fn tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+fn tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),

@@ -4,18 +4,21 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
+import scherzo/config/types as config_types
 import scherzo/control/client
 import scherzo/control/command
 import scherzo/control/file as control_file
-import scherzo/domain
 import scherzo/error
 import scherzo/handoff
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason as session_reason
+import scherzo/session/tokens as session_tokens
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_run
 import simplifile
@@ -122,8 +125,8 @@ steps:
   config_path
 }
 
-fn issue(id: String, identifier: String, state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: "Title " <> identifier,
@@ -178,10 +181,10 @@ fn in_process_dependencies(
   handoff_client: handoff.Client,
   hub_subject: process.Subject(hub.Message),
   agent_runner: fn(
-    domain.Issue,
+    tracker_issue.Issue,
     Option(Int),
     String,
-    domain.EffectiveConfig,
+    config_types.EffectiveConfig,
     tracker.Client,
     fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
@@ -201,10 +204,10 @@ fn in_process_dependencies(
 
 fn workflow_deps_from_agent(
   agent_runner: fn(
-    domain.Issue,
+    tracker_issue.Issue,
     Option(Int),
     String,
-    domain.EffectiveConfig,
+    config_types.EffectiveConfig,
     tracker.Client,
     fn(String, agent_types.PiUpdate) -> Nil,
     process.Subject(worker_command.Command),
@@ -257,22 +260,22 @@ fn blocking_handoff(log_subject: process.Subject(String)) -> handoff.Client {
 fn long_running_agent(
   log_subject: process.Subject(String),
 ) -> fn(
-  domain.Issue,
+  tracker_issue.Issue,
   Option(Int),
   String,
-  domain.EffectiveConfig,
+  config_types.EffectiveConfig,
   tracker.Client,
   fn(String, agent_types.PiUpdate) -> Nil,
   process.Subject(worker_command.Command),
   fn() -> Nil,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  fn(issue: domain.Issue, _, _, _, _, _, _, _) {
+  fn(issue: tracker_issue.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.id)
     process.sleep(5000)
     Error(agent_types.WorkerFailure(
       reason: error.PiFailed(error.PiProtocolError("stopped")),
       workspace_path: None,
-      tokens: domain.zero_token_totals(),
+      tokens: session_tokens.zero_token_totals(),
       final_issue: None,
     ))
   }
@@ -281,21 +284,21 @@ fn long_running_agent(
 fn failing_agent(
   log_subject: process.Subject(String),
 ) -> fn(
-  domain.Issue,
+  tracker_issue.Issue,
   Option(Int),
   String,
-  domain.EffectiveConfig,
+  config_types.EffectiveConfig,
   tracker.Client,
   fn(String, agent_types.PiUpdate) -> Nil,
   process.Subject(worker_command.Command),
   fn() -> Nil,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  fn(issue: domain.Issue, _, _, _, _, _, _, _) {
+  fn(issue: tracker_issue.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.id)
     Error(agent_types.WorkerFailure(
       reason: error.PiFailed(error.PiProtocolError("boom")),
       workspace_path: Some("test/tmp/failed-workspace"),
-      tokens: domain.zero_token_totals(),
+      tokens: session_tokens.zero_token_totals(),
       final_issue: None,
     ))
   }
@@ -304,16 +307,16 @@ fn failing_agent(
 fn fail_original_then_block_agent(
   log_subject: process.Subject(String),
 ) -> fn(
-  domain.Issue,
+  tracker_issue.Issue,
   Option(Int),
   String,
-  domain.EffectiveConfig,
+  config_types.EffectiveConfig,
   tracker.Client,
   fn(String, agent_types.PiUpdate) -> Nil,
   process.Subject(worker_command.Command),
   fn() -> Nil,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  fn(issue: domain.Issue, _, _, _, _, _, _, _) {
+  fn(issue: tracker_issue.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.title)
     case issue.title == "Changed title" {
       True -> process.sleep(5000)
@@ -322,7 +325,7 @@ fn fail_original_then_block_agent(
     Error(agent_types.WorkerFailure(
       reason: error.PiFailed(error.PiProtocolError("boom")),
       workspace_path: Some("test/tmp/failed-workspace"),
-      tokens: domain.zero_token_totals(),
+      tokens: session_tokens.zero_token_totals(),
       final_issue: None,
     ))
   }
@@ -404,7 +407,7 @@ pub fn daemon_park_and_unpark_commands_mutate_runtime_state_test() {
   let assert Ok(snapshot_after_park) = daemon.get_snapshot(started.data, 1000)
   assert dict.has_key(snapshot_after_park.parked, "issue-1")
   let assert Ok(parked_entry) = dict.get(snapshot_after_park.parked, "issue-1")
-  assert parked_entry.release_policy == domain.ExplicitUnparkOnly
+  assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
 
   let assert Ok(unparked) =
     client.apply_command(
@@ -622,7 +625,7 @@ pub fn park_rejects_claimed_issues_test() {
 
 pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   let candidate = issue("auto-park", "ABC-AUTO", "Todo")
-  let changed = domain.Issue(..candidate, title: "Changed title")
+  let changed = tracker_issue.Issue(..candidate, title: "Changed title")
   let tracker_server = start_control_tracker_server(candidate)
   let #(workflow_path, _root) =
     write_workflow_with_limits("test/tmp/daemon-control-auto-park", 1, 1, 3)
@@ -644,7 +647,9 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   let assert Ok(parked_snapshot) = daemon.get_snapshot(started.data, 1000)
   let assert Ok(parked_entry) = dict.get(parked_snapshot.parked, "auto-park")
   assert parked_entry.release_policy
-    == domain.AutoUnparkOnIssueChange(core.issue_fingerprint(candidate))
+    == orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(
+      candidate,
+    ))
   drain_logs(log_subject)
 
   process.send(tracker_server, SetControlTrackerCandidate(changed))
@@ -709,7 +714,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
       tracker_client,
       disabled_handoff(),
       hub_subject,
-      fn(issue: domain.Issue, _, _, _, _, _, command_subject, ready) {
+      fn(issue: tracker_issue.Issue, _, _, _, _, _, command_subject, ready) {
         ready()
         process.send(log_subject, "agent_run:" <> issue.id)
         let assert Ok(worker_command.QueuePrompt(message, reply)) =
@@ -720,7 +725,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
         Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("stopped")),
           workspace_path: None,
-          tokens: domain.zero_token_totals(),
+          tokens: session_tokens.zero_token_totals(),
           final_issue: None,
         ))
       },
@@ -803,7 +808,7 @@ pub fn daemon_shutdown_closes_control_server_and_removes_control_file_test() {
 
 fn assert_session_stop_command(
   dir: String,
-  candidate: domain.Issue,
+  candidate: tracker_issue.Issue,
   operator_command: command.OperatorCommand,
   reason: session_reason.WorkerExitReason,
 ) -> Nil {
@@ -838,7 +843,7 @@ fn assert_session_stop_command(
   hub.stop(hub_subject)
 }
 
-fn tracker_with(candidate: domain.Issue) -> tracker.Client {
+fn tracker_with(candidate: tracker_issue.Issue) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([candidate]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
@@ -847,18 +852,18 @@ fn tracker_with(candidate: domain.Issue) -> tracker.Client {
 }
 
 type ControlTrackerMessage {
-  SetControlTrackerCandidate(domain.Issue)
+  SetControlTrackerCandidate(tracker_issue.Issue)
   FetchControlTrackerCandidates(
-    process.Subject(Result(List(domain.Issue), error.TrackerError)),
+    process.Subject(Result(List(tracker_issue.Issue), error.TrackerError)),
   )
   FetchControlTrackerByIds(
     List(String),
-    process.Subject(Result(List(domain.Issue), error.TrackerError)),
+    process.Subject(Result(List(tracker_issue.Issue), error.TrackerError)),
   )
 }
 
 fn start_control_tracker_server(
-  candidate: domain.Issue,
+  candidate: tracker_issue.Issue,
 ) -> process.Subject(ControlTrackerMessage) {
   let ready = process.new_subject()
   let _pid =
@@ -873,7 +878,7 @@ fn start_control_tracker_server(
 
 fn control_tracker_loop(
   subject: process.Subject(ControlTrackerMessage),
-  candidate: domain.Issue,
+  candidate: tracker_issue.Issue,
 ) -> Nil {
   case process.receive(subject, within: 10_000) {
     Ok(SetControlTrackerCandidate(candidate)) ->

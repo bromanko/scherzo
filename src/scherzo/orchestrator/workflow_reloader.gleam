@@ -1,7 +1,8 @@
 import gleam/option.{type Option, Some}
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/runtime_bundle
+import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 import simplifile
 
@@ -12,7 +13,7 @@ pub type State {
     last_contents: String,
     bundle: runtime_bundle.RuntimeBundle,
     reload_state: config.ReloadState,
-    effective: domain.EffectiveConfig,
+    effective: config_types.EffectiveConfig,
     secrets: List(String),
   )
 }
@@ -79,7 +80,7 @@ pub fn mark_invalid(state: State, reason: String) -> State {
 
 pub fn select_workflow(
   state: State,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
 ) -> Result(#(String, workflow_dag.WorkflowDag), runtime_bundle.BundleError) {
   runtime_bundle.select_workflow(state.bundle, issue)
 }

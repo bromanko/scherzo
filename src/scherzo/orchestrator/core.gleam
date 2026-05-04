@@ -4,15 +4,18 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/orchestrator/reason
+import scherzo/orchestrator/state as orchestrator_state
+import scherzo/session/tokens as session_tokens
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 
 const invalid_workflow_report_cache_limit = 1024
 
 pub type Effect {
-  Dispatch(domain.Issue)
+  Dispatch(tracker_issue.Issue)
   ScheduleRetry(
     issue_id: String,
     delay_ms: Int,
@@ -27,7 +30,7 @@ pub type Effect {
 }
 
 pub type Transition {
-  Transition(state: domain.RuntimeState, effects: List(Effect))
+  Transition(state: orchestrator_state.RuntimeState, effects: List(Effect))
 }
 
 pub type WorkflowCleanupPolicy {
@@ -35,8 +38,10 @@ pub type WorkflowCleanupPolicy {
   CleanupWorkflowWorkspace(String)
 }
 
-pub fn new_state(config: domain.EffectiveConfig) -> domain.RuntimeState {
-  domain.RuntimeState(
+pub fn new_state(
+  config: config_types.EffectiveConfig,
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
     poll_interval_ms: config.polling.interval_ms,
     max_concurrent_agents: config.agent.max_concurrent_agents,
     running: dict.new(),
@@ -46,16 +51,18 @@ pub fn new_state(config: domain.EffectiveConfig) -> domain.RuntimeState {
     parked: dict.new(),
     invalid_workflow_reports: dict.new(),
     completed: dict.new(),
-    aggregate_pi_totals: domain.zero_token_totals(),
+    aggregate_pi_totals: session_tokens.zero_token_totals(),
     latest_rate_limit_payload: None,
   )
 }
 
-pub fn sort_candidates(issues: List(domain.Issue)) -> List(domain.Issue) {
+pub fn sort_candidates(
+  issues: List(tracker_issue.Issue),
+) -> List(tracker_issue.Issue) {
   list.sort(issues, by: compare_issue)
 }
 
-fn compare_issue(a: domain.Issue, b: domain.Issue) -> Order {
+fn compare_issue(a: tracker_issue.Issue, b: tracker_issue.Issue) -> Order {
   case compare_priority(a.priority, b.priority) {
     Eq -> string.compare(a.identifier, b.identifier)
     other -> other
@@ -71,7 +78,7 @@ fn compare_priority(a: Option(Int), b: Option(Int)) -> Order {
   }
 }
 
-pub fn issue_fingerprint(issue: domain.Issue) -> String {
+pub fn issue_fingerprint(issue: tracker_issue.Issue) -> String {
   [
     encode_string(issue.id),
     encode_string(issue.identifier),
@@ -112,7 +119,7 @@ fn encode_optional_int(value: Option(Int)) -> String {
   }
 }
 
-fn blocker_fingerprint(blockers: List(domain.BlockerRef)) -> String {
+fn blocker_fingerprint(blockers: List(tracker_issue.BlockerRef)) -> String {
   blockers
   |> list.map(fn(blocker) {
     [
@@ -127,27 +134,27 @@ fn blocker_fingerprint(blockers: List(domain.BlockerRef)) -> String {
 }
 
 pub fn should_dispatch(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
-  issue: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
 ) -> Bool {
   dispatch_preconditions_satisfied(state, config, issue)
   && workflow_policy_satisfied(config, issue)
 }
 
 pub fn dispatch_preconditions_satisfied(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
-  issue: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
 ) -> Bool {
   dispatch_preconditions_satisfied_without_slot_capacity(state, config, issue)
   && slots_available(state, config, issue.state)
 }
 
 pub fn dispatch_preconditions_satisfied_without_slot_capacity(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
-  issue: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
 ) -> Bool {
   issue_has_required_fields(issue)
   && is_active(config, issue.state)
@@ -159,32 +166,32 @@ pub fn dispatch_preconditions_satisfied_without_slot_capacity(
 }
 
 pub fn workflow_policy_satisfied(
-  config: domain.EffectiveConfig,
-  issue: domain.Issue,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
 ) -> Bool {
   workflow_policy.classify_issue(config.linear_contract, issue)
   |> workflow_policy.workflow_satisfied
 }
 
 pub fn is_active(
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   state: issue_state.IssueState,
 ) -> Bool {
   contains_normalized(config.tracker.active_states, state)
 }
 
 pub fn is_terminal(
-  config: domain.EffectiveConfig,
+  config: config_types.EffectiveConfig,
   state: issue_state.IssueState,
 ) -> Bool {
   contains_normalized(config.tracker.terminal_states, state)
 }
 
 pub fn retry_candidate_preconditions_satisfied(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_id: String,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
 ) -> Bool {
   retry_candidate_preconditions_satisfied_without_slot_capacity(
     state,
@@ -196,10 +203,10 @@ pub fn retry_candidate_preconditions_satisfied(
 }
 
 pub fn retry_candidate_preconditions_satisfied_without_slot_capacity(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_id: String,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
 ) -> Bool {
   issue.id == issue_id
   && issue_has_required_fields(issue)
@@ -211,14 +218,17 @@ pub fn retry_candidate_preconditions_satisfied_without_slot_capacity(
   && blockers_satisfied(config, issue)
 }
 
-fn retry_claim_allowed(state: domain.RuntimeState, issue_id: String) -> Bool {
+fn retry_claim_allowed(
+  state: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> Bool {
   case dict.has_key(state.claimed, issue_id) {
     False -> True
     True -> dict.has_key(state.retry_attempts, issue_id)
   }
 }
 
-fn issue_has_required_fields(issue: domain.Issue) -> Bool {
+fn issue_has_required_fields(issue: tracker_issue.Issue) -> Bool {
   string.trim(issue.id) != ""
   && string.trim(issue.identifier) != ""
   && string.trim(issue.title) != ""
@@ -226,8 +236,8 @@ fn issue_has_required_fields(issue: domain.Issue) -> Bool {
 }
 
 fn is_parked_for_issue(
-  state: domain.RuntimeState,
-  issue: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
 ) -> Bool {
   case dict.get(state.parked, issue.id) {
     Ok(parked) -> park_blocks_dispatch(parked, issue)
@@ -236,18 +246,19 @@ fn is_parked_for_issue(
 }
 
 fn park_blocks_dispatch(
-  parked: domain.ParkedEntry,
-  issue: domain.Issue,
+  parked: orchestrator_state.ParkedEntry,
+  issue: tracker_issue.Issue,
 ) -> Bool {
   case parked.release_policy {
-    domain.ExplicitUnparkOnly -> True
-    domain.AutoUnparkOnIssueChange(stored) -> stored == issue_fingerprint(issue)
+    orchestrator_state.ExplicitUnparkOnly -> True
+    orchestrator_state.AutoUnparkOnIssueChange(stored) ->
+      stored == issue_fingerprint(issue)
   }
 }
 
 fn slots_available(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_state_value: issue_state.IssueState,
 ) -> Bool {
   case config.agent.max_concurrent_agents == 0 {
@@ -259,8 +270,8 @@ fn slots_available(
 }
 
 fn per_state_slot_available(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_state_value: issue_state.IssueState,
 ) -> Bool {
   let key = issue_state.key(issue_state_value)
@@ -271,7 +282,7 @@ fn per_state_slot_available(
 }
 
 fn running_count_for_state(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   normalized_state: issue_state.IssueStateKey,
 ) -> Int {
   state.running
@@ -284,8 +295,8 @@ fn running_count_for_state(
 }
 
 fn blockers_satisfied(
-  config: domain.EffectiveConfig,
-  issue: domain.Issue,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
 ) -> Bool {
   case issue_state.equals_key(issue.state, issue_state.todo_key()) {
     False -> True
@@ -301,16 +312,16 @@ fn blockers_satisfied(
 }
 
 pub fn apply_worker_start(
-  state: domain.RuntimeState,
-  issue: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
   workspace_path: String,
-) -> domain.RuntimeState {
-  domain.RuntimeState(
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
     ..state,
     running: dict.insert(
       state.running,
       issue.id,
-      domain.RunningEntry(
+      orchestrator_state.RunningEntry(
         issue: issue,
         workspace_path: workspace_path,
         session: None,
@@ -321,11 +332,11 @@ pub fn apply_worker_start(
 }
 
 pub fn apply_workflow_success(
-  state: domain.RuntimeState,
-  _config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  _config: config_types.EffectiveConfig,
   issue_id: String,
-  final_issue: domain.Issue,
-  tokens: domain.TokenTotals,
+  final_issue: tracker_issue.Issue,
+  tokens: session_tokens.TokenTotals,
   _now_ms: Int,
   cleanup: WorkflowCleanupPolicy,
 ) -> Transition {
@@ -341,11 +352,11 @@ pub fn apply_workflow_success(
 }
 
 pub fn apply_worker_success(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_id: String,
-  final_issue: domain.Issue,
-  tokens: domain.TokenTotals,
+  final_issue: tracker_issue.Issue,
+  tokens: session_tokens.TokenTotals,
   now_ms: Int,
 ) -> Transition {
   apply_worker_success_with_workspace_path(
@@ -360,12 +371,12 @@ pub fn apply_worker_success(
 }
 
 pub fn apply_worker_success_with_workspace_path(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_id: String,
-  final_issue: domain.Issue,
+  final_issue: tracker_issue.Issue,
   workspace_path: String,
-  tokens: domain.TokenTotals,
+  tokens: session_tokens.TokenTotals,
   now_ms: Int,
 ) -> Transition {
   let workspace_path = case string.trim(workspace_path) == "" {
@@ -397,18 +408,22 @@ pub fn apply_worker_success_with_workspace_path(
 }
 
 pub fn apply_worker_failure(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_id: String,
-  baseline_issue: domain.Issue,
+  baseline_issue: tracker_issue.Issue,
   now_ms: Int,
 ) -> Transition {
   let baseline_issue = issue_with_lifecycle_id(baseline_issue, issue_id)
   let state =
-    domain.RuntimeState(..state, running: dict.delete(state.running, issue_id))
+    orchestrator_state.RuntimeState(
+      ..state,
+      running: dict.delete(state.running, issue_id),
+    )
   let counter = get_counter(state, issue_id)
   let failures = counter.failure_attempts + 1
-  let counter = domain.IssueCounter(..counter, failure_attempts: failures)
+  let counter =
+    orchestrator_state.IssueCounter(..counter, failure_attempts: failures)
   let state = put_counter(state, issue_id, counter)
   case failures >= config.agent.max_retry_attempts {
     True -> park(state, baseline_issue, reason.ParkMaxRetryAttempts, now_ms)
@@ -423,24 +438,25 @@ pub fn apply_worker_failure(
 }
 
 fn issue_with_lifecycle_id(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   issue_id: String,
-) -> domain.Issue {
+) -> tracker_issue.Issue {
   case issue.id == issue_id {
     True -> issue
-    False -> domain.Issue(..issue, id: issue_id)
+    False -> tracker_issue.Issue(..issue, id: issue_id)
   }
 }
 
 fn continue_or_park(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
-  issue: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
   now_ms: Int,
 ) -> Transition {
   let counter = get_counter(state, issue.id)
   let sessions = counter.worker_sessions + 1
-  let counter = domain.IssueCounter(..counter, worker_sessions: sessions)
+  let counter =
+    orchestrator_state.IssueCounter(..counter, worker_sessions: sessions)
   let state = put_counter(state, issue.id, counter)
   case sessions >= config.agent.max_sessions_per_issue {
     True -> park(state, issue, reason.ParkMaxSessionsPerIssue, now_ms)
@@ -457,12 +473,12 @@ fn cleanup_effects(workspace_path: String) -> List(Effect) {
 }
 
 fn state_after_worker_exit(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   issue_id: String,
-  final_issue: domain.Issue,
-  tokens: domain.TokenTotals,
-) -> domain.RuntimeState {
-  domain.RuntimeState(
+  final_issue: tracker_issue.Issue,
+  tokens: session_tokens.TokenTotals,
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
     ..state,
     running: dict.delete(state.running, issue_id),
     completed: dict.insert(state.completed, issue_id, final_issue),
@@ -471,7 +487,7 @@ fn state_after_worker_exit(
 }
 
 pub fn schedule_retry(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   issue_id: String,
   delay_ms: Int,
   reason: reason.RetryReason,
@@ -481,13 +497,13 @@ pub fn schedule_retry(
     Error(_) -> 1
   }
   let retry =
-    domain.RetryEntry(
+    orchestrator_state.RetryEntry(
       issue_id: issue_id,
       delay_ms: delay_ms,
       timer_generation: generation,
     )
   Transition(
-    state: domain.RuntimeState(
+    state: orchestrator_state.RuntimeState(
       ..state,
       retry_attempts: dict.insert(state.retry_attempts, issue_id, retry),
     ),
@@ -499,10 +515,10 @@ pub fn schedule_retry(
 }
 
 pub fn handle_retry_candidate(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_id: String,
-  candidate: Result(Option(domain.Issue), String),
+  candidate: Result(Option(tracker_issue.Issue), String),
 ) -> Transition {
   case candidate {
     Error(_) ->
@@ -554,8 +570,8 @@ pub fn handle_retry_candidate(
 }
 
 pub fn schedule_retry_with_backoff(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_id: String,
   reason: reason.RetryReason,
 ) -> Transition {
@@ -568,8 +584,8 @@ pub fn schedule_retry_with_backoff(
 }
 
 fn retry_backoff_delay(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
   issue_id: String,
 ) -> Int {
   let attempt = case dict.get(state.retry_attempts, issue_id) {
@@ -580,9 +596,9 @@ fn retry_backoff_delay(
 }
 
 pub fn reconcile_issue(
-  state: domain.RuntimeState,
-  config: domain.EffectiveConfig,
-  refreshed: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  refreshed: tracker_issue.Issue,
 ) -> Transition {
   case dict.get(state.running, refreshed.id) {
     Error(_) -> Transition(state: state, effects: [])
@@ -591,7 +607,7 @@ pub fn reconcile_issue(
         True ->
           Transition(
             state: release_claim(
-              domain.RuntimeState(
+              orchestrator_state.RuntimeState(
                 ..state,
                 running: dict.delete(state.running, refreshed.id),
               ),
@@ -606,12 +622,12 @@ pub fn reconcile_issue(
           case is_active(config, refreshed.state) {
             True ->
               Transition(
-                state: domain.RuntimeState(
+                state: orchestrator_state.RuntimeState(
                   ..state,
                   running: dict.insert(
                     state.running,
                     refreshed.id,
-                    domain.RunningEntry(..entry, issue: refreshed),
+                    orchestrator_state.RunningEntry(..entry, issue: refreshed),
                   ),
                 ),
                 effects: [],
@@ -619,7 +635,7 @@ pub fn reconcile_issue(
             False ->
               Transition(
                 state: release_claim(
-                  domain.RuntimeState(
+                  orchestrator_state.RuntimeState(
                     ..state,
                     running: dict.delete(state.running, refreshed.id),
                   ),
@@ -633,18 +649,18 @@ pub fn reconcile_issue(
 }
 
 pub fn unpark_if_issue_changed(
-  state: domain.RuntimeState,
-  issue: domain.Issue,
-) -> domain.RuntimeState {
+  state: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
+) -> orchestrator_state.RuntimeState {
   case dict.get(state.parked, issue.id) {
     Ok(parked) ->
       case parked.release_policy {
-        domain.ExplicitUnparkOnly -> state
-        domain.AutoUnparkOnIssueChange(stored) ->
+        orchestrator_state.ExplicitUnparkOnly -> state
+        orchestrator_state.AutoUnparkOnIssueChange(stored) ->
           case stored == issue_fingerprint(issue) {
             True -> state
             False ->
-              domain.RuntimeState(
+              orchestrator_state.RuntimeState(
                 ..state,
                 claimed: dict.delete(state.claimed, issue.id),
                 parked: dict.delete(state.parked, issue.id),
@@ -677,10 +693,10 @@ fn backoff_delay_loop(
 }
 
 pub fn add_tokens(
-  a: domain.TokenTotals,
-  b: domain.TokenTotals,
-) -> domain.TokenTotals {
-  domain.TokenTotals(
+  a: session_tokens.TokenTotals,
+  b: session_tokens.TokenTotals,
+) -> session_tokens.TokenTotals {
+  session_tokens.TokenTotals(
     input: a.input + b.input,
     output: a.output + b.output,
     cache_read: a.cache_read + b.cache_read,
@@ -690,8 +706,8 @@ pub fn add_tokens(
 }
 
 fn park(
-  state: domain.RuntimeState,
-  baseline_issue: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  baseline_issue: tracker_issue.Issue,
   reason: reason.ParkReason,
   now_ms: Int,
 ) -> Transition {
@@ -700,17 +716,17 @@ fn park(
     dict.get(state.claimed, issue_id)
     |> result_unwrap(baseline_issue.identifier)
   let parked =
-    domain.ParkedEntry(
+    orchestrator_state.ParkedEntry(
       issue_id: issue_id,
       identifier: identifier,
       reason: reason,
-      release_policy: domain.AutoUnparkOnIssueChange(issue_fingerprint(
-        baseline_issue,
-      )),
+      release_policy: orchestrator_state.AutoUnparkOnIssueChange(
+        issue_fingerprint(baseline_issue),
+      ),
       parked_at_ms: now_ms,
     )
   Transition(
-    state: domain.RuntimeState(
+    state: orchestrator_state.RuntimeState(
       ..state,
       claimed: dict.delete(state.claimed, issue_id),
       parked: dict.insert(state.parked, issue_id, parked),
@@ -721,17 +737,17 @@ fn park(
 }
 
 fn clear_retry(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   issue_id: String,
-) -> domain.RuntimeState {
-  domain.RuntimeState(
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
     ..state,
     retry_attempts: dict.delete(state.retry_attempts, issue_id),
   )
 }
 
 pub fn stop_retry_for_policy_invalid(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> Transition {
   Transition(
@@ -741,10 +757,10 @@ pub fn stop_retry_for_policy_invalid(
 }
 
 pub fn already_attempted_invalid_workflow(
-  state: domain.RuntimeState,
-  issue: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
   violation: workflow_policy.IssueWorkflowViolation,
-  config: domain.LinearContractConfig,
+  config: config_types.LinearContractConfig,
 ) -> Bool {
   case dict.get(state.invalid_workflow_reports, issue.id) {
     Error(_) -> False
@@ -761,14 +777,14 @@ pub fn already_attempted_invalid_workflow(
 }
 
 pub fn mark_invalid_workflow_report_pending(
-  state: domain.RuntimeState,
-  issue: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
   violation: workflow_policy.IssueWorkflowViolation,
-  config: domain.LinearContractConfig,
+  config: config_types.LinearContractConfig,
   now_ms: Int,
-) -> domain.RuntimeState {
+) -> orchestrator_state.RuntimeState {
   let report =
-    domain.InvalidWorkflowReport(
+    orchestrator_state.InvalidWorkflowReport(
       issue_id: issue.id,
       identifier: issue.identifier,
       violation_code: workflow_policy.violation_code(violation),
@@ -783,7 +799,7 @@ pub fn mark_invalid_workflow_report_pending(
       attempted_at_ms: now_ms,
       last_result: "pending",
     )
-  domain.RuntimeState(
+  orchestrator_state.RuntimeState(
     ..state,
     invalid_workflow_reports: dict.insert(
         state.invalid_workflow_reports,
@@ -795,12 +811,12 @@ pub fn mark_invalid_workflow_report_pending(
 }
 
 pub fn mark_invalid_workflow_report_result(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   issue_id: String,
   violation_fingerprint: String,
   reporting_policy_fingerprint: String,
   last_result: String,
-) -> domain.RuntimeState {
+) -> orchestrator_state.RuntimeState {
   case dict.get(state.invalid_workflow_reports, issue_id) {
     Error(_) -> state
     Ok(report) ->
@@ -810,12 +826,15 @@ pub fn mark_invalid_workflow_report_result(
       {
         False -> state
         True ->
-          domain.RuntimeState(
+          orchestrator_state.RuntimeState(
             ..state,
             invalid_workflow_reports: dict.insert(
               state.invalid_workflow_reports,
               issue_id,
-              domain.InvalidWorkflowReport(..report, last_result: last_result),
+              orchestrator_state.InvalidWorkflowReport(
+                ..report,
+                last_result: last_result,
+              ),
             ),
           )
       }
@@ -823,10 +842,10 @@ pub fn mark_invalid_workflow_report_result(
 }
 
 pub fn clear_invalid_workflow_report(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   issue_id: String,
-) -> domain.RuntimeState {
-  domain.RuntimeState(
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
     ..state,
     invalid_workflow_reports: dict.delete(
       state.invalid_workflow_reports,
@@ -836,8 +855,8 @@ pub fn clear_invalid_workflow_report(
 }
 
 fn trim_invalid_workflow_reports(
-  reports: dict.Dict(String, domain.InvalidWorkflowReport),
-) -> dict.Dict(String, domain.InvalidWorkflowReport) {
+  reports: dict.Dict(String, orchestrator_state.InvalidWorkflowReport),
+) -> dict.Dict(String, orchestrator_state.InvalidWorkflowReport) {
   case dict.size(reports) <= invalid_workflow_report_cache_limit {
     True -> reports
     False ->
@@ -850,8 +869,8 @@ fn trim_invalid_workflow_reports(
 }
 
 fn compare_invalid_workflow_report_entries(
-  a: #(String, domain.InvalidWorkflowReport),
-  b: #(String, domain.InvalidWorkflowReport),
+  a: #(String, orchestrator_state.InvalidWorkflowReport),
+  b: #(String, orchestrator_state.InvalidWorkflowReport),
 ) -> Order {
   let #(a_id, a_report) = a
   let #(b_id, b_report) = b
@@ -862,10 +881,10 @@ fn compare_invalid_workflow_report_entries(
 }
 
 fn release_claim(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   issue_id: String,
-) -> domain.RuntimeState {
-  domain.RuntimeState(
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
     ..state,
     claimed: dict.delete(state.claimed, issue_id),
     retry_attempts: dict.delete(state.retry_attempts, issue_id),
@@ -873,19 +892,19 @@ fn release_claim(
 }
 
 fn get_counter(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   issue_id: String,
-) -> domain.IssueCounter {
+) -> orchestrator_state.IssueCounter {
   dict.get(state.issue_counters, issue_id)
-  |> result_unwrap(domain.new_issue_counter())
+  |> result_unwrap(orchestrator_state.new_issue_counter())
 }
 
 fn put_counter(
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   issue_id: String,
-  counter: domain.IssueCounter,
-) -> domain.RuntimeState {
-  domain.RuntimeState(
+  counter: orchestrator_state.IssueCounter,
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
     ..state,
     issue_counters: dict.insert(state.issue_counters, issue_id, counter),
   )

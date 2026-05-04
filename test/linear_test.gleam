@@ -1,13 +1,14 @@
 import gleam/option.{None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 
-fn tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+fn tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
@@ -40,7 +41,10 @@ fn response_page(
 pub fn candidate_query_uses_project_slug_filter_test() {
   let assert Error(error.LinearApiRequest(_)) =
     linear.build_candidate_request(
-      domain.TrackerConfig(..tracker_config(), endpoint: "http://linear.test"),
+      config_types.TrackerConfig(
+        ..tracker_config(),
+        endpoint: "http://linear.test",
+      ),
       issue_state.list_from_strings(["Todo"]),
       Some("cursor"),
     )
@@ -418,7 +422,7 @@ fn page_info(has_next: String) -> String {
   "{\"hasNextPage\":" <> has_next <> ",\"endCursor\":null}"
 }
 
-fn list_identifiers(issues: List(domain.Issue)) -> List(String) {
+fn list_identifiers(issues: List(tracker_issue.Issue)) -> List(String) {
   case issues {
     [] -> []
     [issue, ..rest] -> [issue.identifier, ..list_identifiers(rest)]

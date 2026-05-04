@@ -3,7 +3,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/probe
 import scherzo/doctor
-import scherzo/domain
 import scherzo/error
 import scherzo/instance_lock
 import scherzo/linear
@@ -12,6 +11,7 @@ import scherzo/orchestrator/service
 import scherzo/path
 import scherzo/runtime_bundle
 import scherzo/smoke
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workspace_run
 import simplifile
@@ -42,8 +42,8 @@ fn fake_pi() -> String {
   abs
 }
 
-fn issue(id: String) -> domain.Issue {
-  domain.Issue(
+fn issue(id: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: id,
     identifier: id,
     title: "Issue " <> id,
@@ -149,9 +149,9 @@ fn successful_deps(
 }
 
 fn smoke_reader_success(
-  candidates: List(domain.Issue),
-  terminals: List(domain.Issue),
-  refreshed: List(domain.Issue),
+  candidates: List(tracker_issue.Issue),
+  terminals: List(tracker_issue.Issue),
+  refreshed: List(tracker_issue.Issue),
 ) -> smoke.LinearSmokeReader {
   smoke.LinearSmokeReader(
     fetch_candidate_sample: fn() { Ok(candidates) },

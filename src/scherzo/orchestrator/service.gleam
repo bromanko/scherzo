@@ -5,8 +5,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/probe
+import scherzo/config/types as config_types
 import scherzo/doctor
-import scherzo/domain
 import scherzo/error
 import scherzo/instance_lock
 import scherzo/lifecycle
@@ -17,10 +17,12 @@ import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/reason as orchestrator_reason
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/runtime_bundle
 import scherzo/signal
 import scherzo/smoke
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_run
@@ -33,9 +35,9 @@ pub type StartupError {
 
 pub type Dependencies {
   Dependencies(
-    tracker: fn(domain.TrackerConfig) -> tracker.Client,
+    tracker: fn(config_types.TrackerConfig) -> tracker.Client,
     workflow_run_dependencies: workflow_run.Dependencies,
-    cleanup: fn(String, String, domain.HooksConfig) ->
+    cleanup: fn(String, String, config_types.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
     logger: fn(String) -> Result(Nil, Nil),
     now_ms: fn() -> Int,
@@ -54,7 +56,8 @@ pub type DaemonLifecycleDependencies {
 
 pub type ContractCheckDependencies {
   ContractCheckDependencies(
-    make_contract_client: fn(domain.TrackerConfig) -> linear.ContractClient,
+    make_contract_client: fn(config_types.TrackerConfig) ->
+      linear.ContractClient,
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
   )
@@ -68,20 +71,21 @@ pub type DoctorDependencies {
   DoctorDependencies(
     load_bundle: fn(Option(String)) ->
       Result(runtime_bundle.RuntimeBundle, runtime_bundle.BundleError),
-    make_linear_smoke_reader: fn(domain.TrackerConfig) ->
+    make_linear_smoke_reader: fn(config_types.TrackerConfig) ->
       smoke.LinearSmokeReader,
-    make_contract_client: fn(domain.TrackerConfig) -> linear.ContractClient,
+    make_contract_client: fn(config_types.TrackerConfig) ->
+      linear.ContractClient,
     acquire_lock: fn(String) -> Result(DoctorLock, instance_lock.LockError),
     prepare_step: fn(
-      domain.Issue,
+      tracker_issue.Issue,
       String,
       String,
       String,
       workflow_dag.WorkspaceRef,
-      domain.OrchestratorConfig,
+      config_types.OrchestratorConfig,
       Dict(String, workspace_run.PreparedStepWorkspace),
     ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
-    cleanup_run: fn(String, domain.OrchestratorConfig) ->
+    cleanup_run: fn(String, config_types.OrchestratorConfig) ->
       Result(Nil, error.WorkspaceError),
     pi_probe: fn(String, String, Int) -> Result(Nil, error.PiRpcError),
     logger: fn(String, String, List(log.Field), List(String)) ->
@@ -91,7 +95,11 @@ pub type DoctorDependencies {
 }
 
 pub type ServiceResult {
-  ServiceResult(logs: List(String), dispatched: Int, state: domain.RuntimeState)
+  ServiceResult(
+    logs: List(String),
+    dispatched: Int,
+    state: orchestrator_state.RuntimeState,
+  )
 }
 
 pub fn default_dependencies() -> Dependencies {
@@ -722,8 +730,8 @@ fn prepare_doctor_workspace(
   )
 }
 
-fn doctor_issue() -> domain.Issue {
-  domain.Issue(
+fn doctor_issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "SCHERZO-DOCTOR",
     identifier: "SCHERZO-DOCTOR",
     title: "Scherzo doctor",
@@ -818,7 +826,7 @@ fn maybe_workspace_hooks_pass(
   }
 }
 
-fn configured_workspace_hooks(hooks: domain.DagHooksConfig) -> String {
+fn configured_workspace_hooks(hooks: config_types.DagHooksConfig) -> String {
   []
   |> append_hook_name(hooks.create, "create")
   |> append_hook_name(hooks.before_step, "before_step")
@@ -1177,11 +1185,11 @@ fn acquire_lock(
 }
 
 fn run_pi_probe_orchestrator(
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   secrets: List(String),
 ) -> Result(Nil, StartupError) {
   let issue =
-    domain.Issue(
+    tracker_issue.Issue(
       id: "SCHERZO-PROBE",
       identifier: "SCHERZO-PROBE",
       title: "Scherzo probe",
@@ -1281,7 +1289,7 @@ fn run_once_loaded(
 
 fn run_tick(
   bundle: runtime_bundle.RuntimeBundle,
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   tracker_client: tracker.Client,
   dependencies: Dependencies,
   logs: List(String),
@@ -1319,9 +1327,9 @@ fn run_tick(
 }
 
 fn dispatch_candidates(
-  candidates: List(domain.Issue),
+  candidates: List(tracker_issue.Issue),
   bundle: runtime_bundle.RuntimeBundle,
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   tracker_client: tracker.Client,
   dependencies: Dependencies,
   logs: List(String),
@@ -1382,12 +1390,12 @@ fn dispatch_candidates(
 }
 
 fn dispatch_issue(
-  remaining: List(domain.Issue),
-  issue: domain.Issue,
+  remaining: List(tracker_issue.Issue),
+  issue: tracker_issue.Issue,
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
   bundle: runtime_bundle.RuntimeBundle,
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   tracker_client: tracker.Client,
   dependencies: Dependencies,
   logs: List(String),
@@ -1497,7 +1505,7 @@ fn dispatch_issue(
 
 fn interpret_effects(
   effects: List(core.Effect),
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   dependencies: Dependencies,
   logs: List(String),
 ) -> List(String) {
@@ -1513,7 +1521,7 @@ fn interpret_effects(
 
 fn interpret_effect(
   effect: core.Effect,
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   dependencies: Dependencies,
 ) -> String {
   case effect {

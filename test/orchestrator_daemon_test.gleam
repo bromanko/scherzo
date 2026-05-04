@@ -8,7 +8,6 @@ import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/control/command
-import scherzo/domain
 import scherzo/error
 import scherzo/handoff
 import scherzo/handoff_format
@@ -16,11 +15,14 @@ import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/path
+import scherzo/result_artifact
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason
+import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 import scherzo/workflow_run
@@ -33,8 +35,8 @@ fn reset_dir(dir: String) -> Nil {
   Nil
 }
 
-fn issue(id: String, identifier: String, state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: "Title " <> identifier,
@@ -247,16 +249,16 @@ steps:
 }
 
 fn success(
-  final: domain.Issue,
+  final: tracker_issue.Issue,
   workspace_path: String,
 ) -> agent_types.WorkerSuccess {
   agent_types.WorkerSuccess(
     final_issue: Some(final),
     final_classification: agent_types.FinalTerminal,
     workspace_path: workspace_path,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     turns: 1,
-    result: domain.ResultArtifact(
+    result: result_artifact.ResultArtifact(
       final_response: None,
       truncated: False,
       source: "none",
@@ -301,7 +303,7 @@ type FetchRequest {
 
 type FetchDirective {
   CrashFetch
-  ReturnCandidates(List(domain.Issue))
+  ReturnCandidates(List(tracker_issue.Issue))
 }
 
 fn fake_workflow_run_dependencies(
@@ -373,7 +375,7 @@ fn fake_workflow_run_dependencies(
         request_id: None,
         method: None,
         pi_session_id: None,
-        tokens: domain.zero_token_totals(),
+        tokens: session_tokens.zero_token_totals(),
         tool_name: None,
         tool_input: None,
         tool_output: None,
@@ -383,9 +385,9 @@ fn fake_workflow_run_dependencies(
         final_issue: Some(issue),
         final_classification: agent_types.FinalTerminal,
         workspace_path: workspace_path,
-        tokens: domain.zero_token_totals(),
+        tokens: session_tokens.zero_token_totals(),
         turns: 1,
-        result: domain.ResultArtifact(
+        result: result_artifact.ResultArtifact(
           final_response: Some(prompt),
           truncated: False,
           source: "test",
@@ -418,7 +420,7 @@ fn blocking_command_ready_workflow_run_dependencies(
       Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError("stopped:" <> step_id)),
         workspace_path: Some(workspace_path),
-        tokens: domain.zero_token_totals(),
+        tokens: session_tokens.zero_token_totals(),
         final_issue: Some(issue),
       ))
     },
@@ -447,7 +449,7 @@ fn surviving_agent_workflow_run_dependencies(
       Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError("survived_abort")),
         workspace_path: Some(workspace_path),
-        tokens: domain.zero_token_totals(),
+        tokens: session_tokens.zero_token_totals(),
         final_issue: Some(issue),
       ))
     },
@@ -481,9 +483,9 @@ fn command_ready_workflow_run_dependencies(
             final_issue: Some(issue),
             final_classification: agent_types.FinalTerminal,
             workspace_path: workspace_path,
-            tokens: domain.zero_token_totals(),
+            tokens: session_tokens.zero_token_totals(),
             turns: 1,
-            result: domain.ResultArtifact(
+            result: result_artifact.ResultArtifact(
               final_response: Some(prompt <> ":" <> message),
               truncated: False,
               source: "test",
@@ -495,7 +497,7 @@ fn command_ready_workflow_run_dependencies(
           Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("unexpected_command")),
             workspace_path: Some(workspace_path),
-            tokens: domain.zero_token_totals(),
+            tokens: session_tokens.zero_token_totals(),
             final_issue: Some(issue),
           ))
         }
@@ -503,7 +505,7 @@ fn command_ready_workflow_run_dependencies(
           Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("command_timeout")),
             workspace_path: Some(workspace_path),
-            tokens: domain.zero_token_totals(),
+            tokens: session_tokens.zero_token_totals(),
             final_issue: Some(issue),
           ))
       }
@@ -742,7 +744,7 @@ pub fn daemon_reports_invalid_workflow_candidate_when_slots_are_full_test() {
   let workflow_path =
     write_enforcing_workflow("test/tmp/daemon-invalid-workflow-full-slots", 1)
   let valid_candidate =
-    domain.Issue(..issue("valid-id", "ABC-1", "Todo"), labels: [
+    tracker_issue.Issue(..issue("valid-id", "ABC-1", "Todo"), labels: [
       "workflow:implementation",
     ])
   let invalid_candidate = issue("invalid-id", "ABC-2", "Todo")
@@ -771,7 +773,7 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
   let workflow_path =
     write_enforcing_workflow("test/tmp/daemon-valid-workflow", 1)
   let candidate =
-    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
       "workflow:implementation",
     ])
   let client =
@@ -780,7 +782,7 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
       fetch_issues_by_states: fn(_) { Ok([]) },
       fetch_issue_states_by_ids: fn(_) {
         Ok([
-          domain.Issue(
+          tracker_issue.Issue(
             ..candidate,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -806,7 +808,7 @@ pub fn daemon_yaml_agent_steps_get_concrete_sessions_test() {
   let dir = "test/tmp/daemon-yaml-agent-session"
   let workflow_path = write_yaml_agent_workflow(dir)
   let candidate =
-    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
       "workflow:implementation",
     ])
   let client =
@@ -843,7 +845,7 @@ pub fn daemon_yaml_operator_prompt_routes_to_agent_step_session_test() {
   let dir = "test/tmp/daemon-yaml-agent-command"
   let workflow_path = write_yaml_agent_workflow(dir)
   let candidate =
-    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
       "workflow:implementation",
     ])
   let client =
@@ -876,7 +878,7 @@ pub fn daemon_yaml_parent_prompt_rejects_multiple_active_step_routes_test() {
   let dir = "test/tmp/daemon-yaml-parent-command-multiple"
   let workflow_path = write_parallel_yaml_agent_workflow(dir)
   let candidate =
-    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
       "workflow:implementation",
     ])
   let client =
@@ -913,7 +915,7 @@ pub fn daemon_yaml_parent_abort_kills_active_step_worker_test() {
   let dir = "test/tmp/daemon-yaml-parent-abort"
   let workflow_path = write_yaml_agent_workflow(dir)
   let candidate =
-    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
       "workflow:implementation",
     ])
   let client =
@@ -958,7 +960,7 @@ pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
   let dir = "test/tmp/daemon-yaml-agent-command-crash"
   let workflow_path = write_yaml_agent_workflow(dir)
   let candidate =
-    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
       "workflow:implementation",
     ])
   let client =
@@ -996,7 +998,7 @@ pub fn daemon_yaml_poll_dispatches_command_workflow_test() {
   let assert Ok(marker) = path.absolute(dir <> "/marker")
   let workflow_path = write_yaml_workflow(dir, marker)
   let candidate =
-    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
       "workflow:implementation",
     ])
   let client =
@@ -1031,7 +1033,7 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
   let dir = "test/tmp/daemon-command-failure-diagnostics"
   let workflow_path = write_real_failing_command_workflow(dir)
   let candidate =
-    domain.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
       "workflow:implementation",
     ])
   let client =
@@ -1103,7 +1105,7 @@ pub fn daemon_poll_dispatches_fake_worker_routes_update_and_shutdown_test() {
       fetch_issues_by_states: fn(_) { Ok([]) },
       fetch_issue_states_by_ids: fn(_) {
         Ok([
-          domain.Issue(
+          tracker_issue.Issue(
             ..candidate,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -1162,7 +1164,10 @@ pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test(
   let workflow_path = write_workflow("test/tmp/daemon-retry-terminal", 1)
   let retried = issue("retry-id", "ABC-2", "Todo")
   let done =
-    domain.Issue(..retried, state: issue_state.from_string_unchecked("Done"))
+    tracker_issue.Issue(
+      ..retried,
+      state: issue_state.from_string_unchecked("Done"),
+    )
   let log_subject = process.new_subject()
   let client =
     tracker.Client(
@@ -1175,12 +1180,21 @@ pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test(
       ..base_dependencies(client, log_subject),
       workflow_run_dependencies: workflow_run.Dependencies(
         ..fake_workflow_run_dependencies(log_subject),
-        agent_step: fn(issue: domain.Issue, _, _, _, _, workspace_path, _, _) {
+        agent_step: fn(
+          issue: tracker_issue.Issue,
+          _,
+          _,
+          _,
+          _,
+          workspace_path,
+          _,
+          _,
+        ) {
           let _ = issue
           Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("boom")),
             workspace_path: Some(workspace_path),
-            tokens: domain.zero_token_totals(),
+            tokens: session_tokens.zero_token_totals(),
             final_issue: None,
           ))
         },
@@ -1201,7 +1215,7 @@ pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test(
 pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
   let workflow_path = write_workflow("test/tmp/daemon-retry", 1)
   let first = issue("retry-id", "ABC-2", "Todo")
-  let second = domain.Issue(..first, title: "retry succeeds")
+  let second = tracker_issue.Issue(..first, title: "retry succeeds")
   let log_subject = process.new_subject()
   let client =
     tracker.Client(
@@ -1214,19 +1228,28 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
       ..base_dependencies(client, log_subject),
       workflow_run_dependencies: workflow_run.Dependencies(
         ..fake_workflow_run_dependencies(log_subject),
-        agent_step: fn(issue: domain.Issue, _, _, _, _, workspace_path, _, _) {
+        agent_step: fn(
+          issue: tracker_issue.Issue,
+          _,
+          _,
+          _,
+          _,
+          workspace_path,
+          _,
+          _,
+        ) {
           process.send(log_subject, "agent_run")
           case issue.title == "retry succeeds" {
             False ->
               Error(agent_types.WorkerFailure(
                 reason: error.PiFailed(error.PiProtocolError("boom")),
                 workspace_path: Some(workspace_path),
-                tokens: domain.zero_token_totals(),
+                tokens: session_tokens.zero_token_totals(),
                 final_issue: None,
               ))
             True ->
               Ok(success(
-                domain.Issue(
+                tracker_issue.Issue(
                   ..issue,
                   state: issue_state.from_string_unchecked("Done"),
                 ),

@@ -4,9 +4,9 @@ import gleam/string
 import scherzo/agent/pi_event
 import scherzo/control/command
 import scherzo/control/protocol
-import scherzo/domain
 import scherzo/session/event
 import scherzo/session/reason as session_reason
+import scherzo/session/tokens as session_tokens
 
 pub fn decode_ping_request_requires_token_test() {
   let assert Ok(protocol.Ping("1", "secret")) =
@@ -307,7 +307,7 @@ pub fn encode_events_response_contains_cursor_and_session_test() {
             tool_input: None,
             tool_output: None,
             tool_status: None,
-            tokens: domain.zero_token_totals(),
+            tokens: session_tokens.zero_token_totals(),
             raw_json: None,
           ),
         ),

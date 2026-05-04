@@ -7,13 +7,15 @@ import scherzo/agent/pi_event
 import scherzo/agent/types
 import scherzo/agent/worker_command
 import scherzo/config as config_module
+import scherzo/config/types as config_types
 import scherzo/control/command
-import scherzo/domain
 import scherzo/error
 import scherzo/log
 import scherzo/pi/client
 import scherzo/pi/protocol
 import scherzo/session/redaction
+import scherzo/session/tokens as session_tokens
+import scherzo/tracker/issue as tracker_issue
 
 const max_tool_text_chars = 4096
 
@@ -23,8 +25,8 @@ pub type Context {
   Context(
     issue_id: String,
     turn: Int,
-    totals: domain.TokenTotals,
-    config: domain.EffectiveConfig,
+    totals: session_tokens.TokenTotals,
+    config: config_types.EffectiveConfig,
     emit_update: fn(String, types.PiUpdate) -> Nil,
     command_subject: process.Subject(worker_command.Command),
     turn_deadline_ms: Int,
@@ -33,14 +35,14 @@ pub type Context {
       String,
       List(String),
       error.AgentRunnerError,
-      domain.TokenTotals,
-      Option(domain.Issue),
+      session_tokens.TokenTotals,
+      Option(tracker_issue.Issue),
     ) -> types.WorkerFailure,
     handle_abort: fn(
       client.Session,
       String,
       List(String),
-      domain.TokenTotals,
+      session_tokens.TokenTotals,
       process.Subject(worker_command.Reply),
     ) -> types.WorkerFailure,
   )
@@ -558,7 +560,7 @@ fn handle_blocking_ui_policy(
   stall_deadline_ms: Int,
 ) -> Result(ActiveTurn, types.WorkerFailure) {
   case context.config.pi.ui_request_policy {
-    domain.Fail ->
+    config_types.Fail ->
       Error(context.cleanup_failure(
         session,
         context.issue_id,
@@ -569,7 +571,7 @@ fn handle_blocking_ui_policy(
         context.totals,
         None,
       ))
-    domain.Ignore ->
+    config_types.Ignore ->
       active_turn_loop(
         context,
         session,
@@ -579,7 +581,7 @@ fn handle_blocking_ui_policy(
         turn_records,
         monotonic_ms() + context.config.pi.stall_timeout_ms,
       )
-    domain.Cancel -> {
+    config_types.Cancel -> {
       case
         client.send_extension_ui_cancel(
           session,
@@ -627,7 +629,7 @@ fn handle_blocking_ui_policy(
           ))
       }
     }
-    domain.Operator -> {
+    config_types.Operator -> {
       let now = monotonic_ms()
       let pending_ui =
         operator_control.PendingUi(
@@ -776,7 +778,7 @@ fn lifecycle_update_with_message(
     request_id: None,
     method: None,
     pi_session_id: None,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     tool_name: None,
     tool_input: None,
     tool_output: None,
@@ -799,7 +801,7 @@ fn lifecycle_update_with_request(
     request_id: Some(request_id),
     method: Some(method),
     pi_session_id: None,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     tool_name: None,
     tool_input: None,
     tool_output: None,
