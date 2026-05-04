@@ -170,32 +170,42 @@ fn handle_authorized_request(
       close_socket(socket)
     }
     protocol.ListSessions(id, _) -> {
-      let response = case store.list_sessions(settings.event_timeout_ms) {
+      let response = case
+        call_session_backend(store.list_sessions, settings.event_timeout_ms)
+      {
         Ok(snapshot) ->
           protocol.success_response(id, protocol.list_sessions_data(snapshot))
-        Error(err) -> error_for_hub(id, err)
+        Error(err) -> error_for_session_backend(id, err)
       }
       let _ = send_response(socket, response)
       close_socket(socket)
     }
     protocol.GetSession(id, _, session_id) -> {
       let response = case
-        store.get_session(session_id, settings.event_timeout_ms)
+        call_session_backend(
+          fn(timeout_ms) { store.get_session(session_id, timeout_ms) },
+          settings.event_timeout_ms,
+        )
       {
         Ok(summary) ->
           protocol.success_response(id, protocol.session_data(summary))
-        Error(err) -> error_for_hub(id, err)
+        Error(err) -> error_for_session_backend(id, err)
       }
       let _ = send_response(socket, response)
       close_socket(socket)
     }
     protocol.GetEvents(id, _, session_id, after, limit) -> {
       let response = case
-        store.events_after(session_id, after, limit, settings.event_timeout_ms)
+        call_session_backend(
+          fn(timeout_ms) {
+            store.events_after(session_id, after, limit, timeout_ms)
+          },
+          settings.event_timeout_ms,
+        )
       {
         Ok(page) ->
           protocol.success_response(id, protocol.event_page_data(page))
-        Error(err) -> error_for_hub(id, err)
+        Error(err) -> error_for_session_backend(id, err)
       }
       let _ = send_response(socket, response)
       close_socket(socket)
@@ -236,6 +246,35 @@ fn handle_command_request(
   }
   let _ = send_response(socket, response)
   close_socket(socket)
+}
+
+type SessionBackendError {
+  SessionBackendTimeout
+  SessionBackendHubError(hub.HubError)
+}
+
+fn call_session_backend(
+  operation: fn(Int) -> Result(a, hub.HubError),
+  timeout_ms: Int,
+) -> Result(a, SessionBackendError) {
+  let reply = process.new_subject()
+  let operation_timeout_ms = backend_operation_timeout(timeout_ms)
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(reply, operation(operation_timeout_ms))
+    })
+  case process.receive(reply, within: timeout_ms) {
+    Ok(Ok(value)) -> Ok(value)
+    Ok(Error(err)) -> Error(SessionBackendHubError(err))
+    Error(Nil) -> Error(SessionBackendTimeout)
+  }
+}
+
+fn backend_operation_timeout(timeout_ms: Int) -> Int {
+  case timeout_ms > 25 {
+    True -> timeout_ms - 25
+    False -> max_int(timeout_ms / 2, 1)
+  }
 }
 
 fn call_command_backend(
@@ -374,6 +413,21 @@ fn send_stream_events(
   }
 }
 
+fn error_for_session_backend(
+  id: String,
+  err: SessionBackendError,
+) -> protocol.Response {
+  case err {
+    SessionBackendTimeout ->
+      protocol.error_response(
+        id,
+        "session_backend_timeout",
+        session_backend_timeout_message(),
+      )
+    SessionBackendHubError(err) -> error_for_hub(id, err)
+  }
+}
+
 fn error_for_hub(id: String, err: hub.HubError) -> protocol.Response {
   case err {
     hub.SessionNotFound(session_id) ->
@@ -388,12 +442,33 @@ fn error_for_hub(id: String, err: hub.HubError) -> protocol.Response {
         "invalid_limit",
         "invalid event limit: " <> int.to_string(limit),
       )
-    hub.HubUnavailable | hub.ActorCallTimeout ->
+    hub.HubUnavailable ->
       protocol.error_response(
         id,
         "event_hub_unavailable",
         "event hub unavailable",
       )
+    hub.ActorCallTimeout ->
+      protocol.error_response(
+        id,
+        "event_hub_timeout",
+        event_hub_timeout_message(),
+      )
+  }
+}
+
+fn session_backend_timeout_message() -> String {
+  "control server is reachable, but the session backend did not answer within the configured timeout"
+}
+
+fn event_hub_timeout_message() -> String {
+  "control server is reachable, but the EventHub did not answer within the configured timeout"
+}
+
+fn max_int(a: Int, b: Int) -> Int {
+  case a > b {
+    True -> a
+    False -> b
   }
 }
 
