@@ -87,7 +87,7 @@ pub fn parse_args_rejects_usage_errors_test() {
 
 pub fn usage_mentions_required_operational_constraints_test() {
   let usage = main.usage()
-  assert string.contains(usage, "gleam run -- [mode] [path-to-scherzo.yaml]")
+  assert string.contains(usage, "scherzo [mode] [path-to-scherzo.yaml]")
   assert string.contains(usage, "LINEAR_API_KEY")
   assert string.contains(usage, "YAML orchestrator config")
   assert string.contains(usage, "workspace.hooks")

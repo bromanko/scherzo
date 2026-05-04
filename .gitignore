@@ -1,5 +1,7 @@
 build/
 _build/
+result
+result-*
 .devenv/
 .direnv/
 erl_crash.dump
