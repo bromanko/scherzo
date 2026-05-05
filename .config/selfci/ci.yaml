@@ -1,0 +1,4 @@
+job:
+  clone-mode: partial
+  command: |
+    exec "$SELFCI_BASE_DIR/.config/selfci/ci.sh"
