@@ -5,6 +5,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/pi_event
+import scherzo/agent/run_attempt
 import scherzo/agent/runner
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
@@ -18,6 +19,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/turn_telemetry
+import scherzo/workflow_attempt
 import simplifile
 
 fn reset_dir(dir: String) -> Nil {
@@ -91,6 +93,11 @@ fn config(
       ui_request_timeout_ms: 300_000,
       compatibility_probe: probe,
       rate_limit_payload: None,
+      argv_command: None,
+      session_persistence: config_types.PiSessionPersistenceConfig(
+        enabled: False,
+        recovery_prompt: "",
+      ),
     ),
     handoff: config_types.HandoffConfig(
       enabled: False,
@@ -124,6 +131,29 @@ fn config(
       max_comments_per_tick: 50,
       acknowledge_success: True,
       acknowledge_rejection: True,
+    ),
+  )
+}
+
+fn persistent_config(
+  root: String,
+  argv_env: List(#(String, String)),
+) -> config_types.EffectiveConfig {
+  let base = config(root, "unused-pi-command", False, 1)
+  config_types.EffectiveConfig(
+    ..base,
+    pi: config_types.PiConfig(
+      ..base.pi,
+      compatibility_probe: False,
+      argv_command: Some(config_types.PiArgvCommand(
+        executable: fake_pi(),
+        args: ["--mode", "rpc"],
+        env: argv_env,
+      )),
+      session_persistence: config_types.PiSessionPersistenceConfig(
+        enabled: True,
+        recovery_prompt: "RECOVERY",
+      ),
     ),
   )
 }
@@ -332,6 +362,114 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
     simplifile.is_file(success.workspace_path <> "/POPULATED")
   let assert Ok(True) =
     simplifile.is_file(success.workspace_path <> "/AFTER_RUN")
+}
+
+pub fn recovery_prompt_reopens_recorded_session_without_original_prompt_test() {
+  let root = "test/tmp/runner-recovery-prompt"
+  reset_dir(root)
+  let workspace = root <> "/workspace"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(abs_workspace) = path.absolute(workspace)
+  let assert Ok(transcript) = path.absolute(root <> "/transcript.jsonl")
+  let assert Ok(argv_log) = path.absolute(root <> "/argv.log")
+  let session_file = abs_workspace <> "/captured.pi-session"
+  let cfg =
+    persistent_config(root, [
+      #("FAKE_PI_TRANSCRIPT", transcript),
+      #("FAKE_PI_ARGV_LOG", argv_log),
+    ])
+  let context =
+    workflow_attempt.StepAttemptContext(
+      run_id: "run-1",
+      issue_id: "issue-id",
+      issue_identifier: "ABC-123",
+      workflow_id: "implementation",
+      workflow_fingerprint: "wf-sha",
+      step_id: "apply_feedback",
+      workspace_name: "main",
+      attempt_index: 1,
+      workspace_path: abs_workspace,
+      continuation_capable: True,
+      continuation_session_file: Some(session_file),
+    )
+
+  let assert Ok(success) =
+    run_attempt.run_prompt_mode_in_workspace(
+      issue("Todo"),
+      workflow_attempt.RecoveryPrompt("RECOVERY_PROMPT_MARKER"),
+      context,
+      cfg,
+      tracker_returning(issue("Done")),
+      emit,
+      process.new_subject(),
+      fn() { Nil },
+      abs_workspace,
+      fn(_) { Nil },
+    )
+
+  assert success.final_classification == agent_types.FinalTerminal
+  let assert Ok(argv_contents) = simplifile.read(argv_log)
+  assert string.contains(argv_contents, "cwd=" <> abs_workspace)
+  assert string.contains(argv_contents, "argv[3]=--session")
+  assert string.contains(argv_contents, "argv[4]=" <> session_file)
+  let assert Ok(transcript_contents) = simplifile.read(transcript)
+  assert string.contains(transcript_contents, "RECOVERY_PROMPT_MARKER")
+  assert !string.contains(
+    transcript_contents,
+    "ORIGINAL_PROMPT_SHOULD_NOT_APPEAR",
+  )
+}
+
+pub fn recovery_resume_validation_failure_returns_specific_failure_before_prompt_test() {
+  let root = "test/tmp/runner-recovery-validation-failure"
+  reset_dir(root)
+  let workspace = root <> "/workspace"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(abs_workspace) = path.absolute(workspace)
+  let assert Ok(transcript) = path.absolute(root <> "/transcript.jsonl")
+  let session_file = abs_workspace <> "/captured.pi-session"
+  let cfg =
+    persistent_config(root, [
+      #("FAKE_PI_TRANSCRIPT", transcript),
+      #("FAKE_PI_SESSION_FILE_MISMATCH", abs_workspace <> "/other.pi-session"),
+    ])
+  let context =
+    workflow_attempt.StepAttemptContext(
+      run_id: "run-1",
+      issue_id: "issue-id",
+      issue_identifier: "ABC-123",
+      workflow_id: "implementation",
+      workflow_fingerprint: "wf-sha",
+      step_id: "apply_feedback",
+      workspace_name: "main",
+      attempt_index: 1,
+      workspace_path: abs_workspace,
+      continuation_capable: True,
+      continuation_session_file: Some(session_file),
+    )
+
+  let assert Error(failure) =
+    run_attempt.run_prompt_mode_in_workspace(
+      issue("Todo"),
+      workflow_attempt.RecoveryPrompt("RECOVERY_PROMPT_MARKER"),
+      context,
+      cfg,
+      tracker_returning(issue("Done")),
+      emit,
+      process.new_subject(),
+      fn() { Nil },
+      abs_workspace,
+      fn(_) { Nil },
+    )
+
+  assert failure.reason
+    == error.PiFailed(error.PiProtocolError(
+      workflow_attempt.recovery_pi_resume_validation_failed,
+    ))
+  let assert Ok(transcript_contents) = simplifile.read(transcript)
+  assert string.contains(transcript_contents, "get_state")
+  assert !string.contains(transcript_contents, "prompt")
+  assert !string.contains(transcript_contents, "RECOVERY_PROMPT_MARKER")
 }
 
 pub fn cancel_ui_policy_sends_extension_ui_cancel_test() {

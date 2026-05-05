@@ -16,6 +16,7 @@ import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_run
@@ -105,6 +106,13 @@ fn empty_tracker() -> tracker.Client {
     fetch_issues_by_states: fn(_) { Ok([]) },
     fetch_issue_states_by_ids: fn(_) { Ok([]) },
   )
+}
+
+fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
+  case mode {
+    workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.RecoveryPrompt(prompt) -> prompt
+  }
 }
 
 fn success_agent(prompt: String) -> agent_types.WorkerSuccess {
@@ -202,12 +210,15 @@ fn deps(
     agent_step: fn(
       _issue,
       context: workflow_run.StepContext,
-      prompt,
+      prompt_mode,
+      _attempt_context,
       _effective,
       _tracker,
       _emit_update,
       _command_ready,
+      _record_pi_session,
     ) {
+      let prompt = prompt_text(prompt_mode)
       process.send(subject, "agent:" <> context.workspace_path <> ":" <> prompt)
       Ok(success_agent(prompt))
     },
@@ -287,6 +298,7 @@ fn recovered_context(
     final_issue: None,
     turns: 0,
     warnings: [],
+    pi_session_continuations: dict.new(),
   )
 }
 
@@ -435,6 +447,96 @@ pub fn recovered_failed_continued_artifact_feeds_downstream_prompt_test() {
   assert string.contains(agent_event, "1")
 }
 
+pub fn recovered_pi_resume_validation_failure_is_fatal_even_with_continue_policy_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: resume\n    kind: agent\n    prompt: ORIGINAL_PROMPT_SHOULD_NOT_APPEAR\n    workspace: main\n    on_failure: continue\n  - id: downstream\n    kind: command\n    depends_on: [resume]\n    run: downstream\n    workspace: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent_prompt:" <> context.step_id <> ":" <> prompt_text(prompt_mode),
+        )
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError(
+            workflow_attempt.recovery_pi_resume_validation_failed,
+          )),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: Some(issue()),
+        ))
+      },
+    )
+  let context =
+    workflow_run.RecoveredRunContext(
+      ..recovered_context(
+        dag.id,
+        dict.new(),
+        dict.new(),
+        dict.new(),
+        dict.from_list([#("resume", 1)]),
+      ),
+      pi_session_continuations: dict.from_list([
+        #(
+          "resume",
+          workflow_attempt.PiContinuation(
+            run_id: "run-1",
+            issue_id: "issue-id",
+            issue_identifier: "ABC-123",
+            workflow_id: "implementation",
+            workflow_fingerprint: "wf-test",
+            step_id: "resume",
+            workspace_name: "main",
+            attempt_index: 1,
+            workspace_path: "test/tmp/workflow-run/workspaces/implementation/ABC-123/main",
+            session_id: "pi-session",
+            session_file: "test/tmp/session.json",
+            recovery_prompt: "RECOVERY_PROMPT_MARKER",
+          ),
+        ),
+      ]),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute_with_context(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      workflow_run.RecoveredRun(context),
+      dependencies,
+    )
+
+  assert failure.agent_reason
+    == Some(
+      error.PiFailed(error.PiProtocolError(
+        workflow_attempt.recovery_pi_resume_validation_failed,
+      )),
+    )
+  assert receive_event(subject) == "prepare_recovered:resume:main:"
+  assert receive_event(subject) == "agent_prompt:resume:RECOVERY_PROMPT_MARKER"
+  assert receive_event(subject) == "after:resume"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  assert process.receive(subject, within: 50) == Error(Nil)
+}
+
 pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
@@ -447,7 +549,7 @@ pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test()
       ..base,
       checkpoint: workflow_checkpoint.Writer(
         ..workflow_checkpoint.noop_writer(),
-        step_started: fn(_, _, _, _, _, _) {
+        step_started: fn(_, _, _, _, _, _, _) {
           Error(workflow_checkpoint.CheckpointAppendFailed("start failed"))
         },
       ),
@@ -558,17 +660,19 @@ pub fn workflow_run_resolves_default_and_step_model_settings_test() {
       agent_step: fn(
         _issue,
         context: workflow_run.StepContext,
-        prompt,
+        prompt_mode,
+        _attempt_context,
         effective: config_types.EffectiveConfig,
         _tracker,
         _emit_update,
         _command_ready,
+        _record_pi_session,
       ) {
         process.send(
           command_subject,
           context.step_id <> ":" <> effective.pi.command,
         )
-        Ok(success_agent(prompt))
+        Ok(success_agent(prompt_text(prompt_mode)))
       },
     )
   let orch =

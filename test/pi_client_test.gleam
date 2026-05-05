@@ -5,6 +5,7 @@ import scherzo/agent/probe
 import scherzo/error
 import scherzo/path
 import scherzo/pi/client
+import scherzo/pi/command as pi_command
 import scherzo/pi/protocol
 import simplifile
 
@@ -17,6 +18,82 @@ fn reset_dir(dir: String) -> Nil {
 fn fake_pi() -> String {
   let assert Ok(abs) = path.absolute("test/fixtures/fake_pi_rpc.sh")
   abs
+}
+
+pub fn structured_argv_launch_records_cwd_argv_and_session_file_test() {
+  let cwd = "test/tmp/pi-rpc-argv-launch"
+  reset_dir(cwd)
+  let assert Ok(abs_cwd) = path.absolute(cwd)
+  let assert Ok(argv_log) = path.absolute(cwd <> "/argv.log")
+  let session_file = abs_cwd <> "/fresh.pi-session"
+  let spec =
+    pi_command.ArgvLaunch(fake_pi(), ["--mode", "rpc"], [
+      #("FAKE_PI_ARGV_LOG", argv_log),
+      #("FAKE_PI_SESSION_FILE", session_file),
+    ])
+
+  let assert Ok(session) =
+    client.launch_spec(spec, abs_cwd, "ABC-123: Title", True, 1000)
+  assert session.session_id == Some("fake-session")
+  assert session.session_file == Some(session_file)
+  assert session.reported_cwd == Some(abs_cwd)
+  let _ = client.terminate(session)
+
+  let assert Ok(contents) = simplifile.read(argv_log)
+  assert string.contains(contents, "cwd=" <> abs_cwd)
+  assert string.contains(contents, "argv[0]=" <> fake_pi())
+  assert string.contains(contents, "argv[1]=--mode")
+  assert string.contains(contents, "argv[2]=rpc")
+}
+
+pub fn continuation_reopen_uses_recorded_session_file_and_validates_before_prompt_test() {
+  let cwd = "test/tmp/pi-rpc-continuation"
+  reset_dir(cwd)
+  let assert Ok(abs_cwd) = path.absolute(cwd)
+  let assert Ok(argv_log) = path.absolute(cwd <> "/argv.log")
+  let assert Ok(transcript) = path.absolute(cwd <> "/transcript.jsonl")
+  let session_file = abs_cwd <> "/captured.pi-session"
+  let spec =
+    pi_command.ArgvLaunch(
+      fake_pi(),
+      ["--mode", "rpc", "--session", session_file],
+      [#("FAKE_PI_ARGV_LOG", argv_log), #("FAKE_PI_TRANSCRIPT", transcript)],
+    )
+
+  let assert Ok(session) =
+    client.reopen_session_for_continuation(spec, abs_cwd, session_file, 1000)
+  let assert Ok(#(session, _)) = client.send_prompt(session, "RECOVERY", 1000)
+  let _ = client.terminate(session)
+
+  let assert Ok(argv_contents) = simplifile.read(argv_log)
+  assert string.contains(argv_contents, "cwd=" <> abs_cwd)
+  assert string.contains(argv_contents, "argv[3]=--session")
+  assert string.contains(argv_contents, "argv[4]=" <> session_file)
+  let assert Ok(transcript_contents) = simplifile.read(transcript)
+  assert string.contains(transcript_contents, "RECOVERY")
+}
+
+pub fn continuation_reopen_validation_failure_sends_no_prompt_test() {
+  let cwd = "test/tmp/pi-rpc-continuation-validation-failure"
+  reset_dir(cwd)
+  let assert Ok(abs_cwd) = path.absolute(cwd)
+  let assert Ok(transcript) = path.absolute(cwd <> "/transcript.jsonl")
+  let session_file = abs_cwd <> "/captured.pi-session"
+  let spec =
+    pi_command.ArgvLaunch(
+      fake_pi(),
+      ["--mode", "rpc", "--session", session_file],
+      [
+        #("FAKE_PI_TRANSCRIPT", transcript),
+        #("FAKE_PI_SESSION_FILE_MISMATCH", abs_cwd <> "/other.pi-session"),
+      ],
+    )
+
+  let assert Error(error.PiProtocolError(_)) =
+    client.reopen_session_for_continuation(spec, abs_cwd, session_file, 1000)
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert string.contains(contents, "get_state")
+  assert !string.contains(contents, "prompt")
 }
 
 pub fn stepwise_prompt_read_and_stats_with_fake_pi_test() {

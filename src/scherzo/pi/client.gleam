@@ -2,6 +2,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/error
+import scherzo/pi/command as pi_command
 import scherzo/pi/protocol
 import scherzo/port
 import scherzo/session/tokens as session_tokens
@@ -16,6 +17,8 @@ pub type Session {
     command: String,
     cwd: String,
     session_id: Option(String),
+    session_file: Option(String),
+    reported_cwd: Option(String),
     next_id: Int,
   )
 }
@@ -27,13 +30,31 @@ pub fn launch(
   auto_retry: Bool,
   read_timeout_ms: Int,
 ) -> Result(Session, error.PiRpcError) {
-  use process <- try_pi(port.start(command, cwd) |> map_port_start_error)
+  launch_spec(
+    pi_command.ShellLaunch(command),
+    cwd,
+    session_name,
+    auto_retry,
+    read_timeout_ms,
+  )
+}
+
+pub fn launch_spec(
+  spec: pi_command.LaunchSpec,
+  cwd: String,
+  session_name: String,
+  auto_retry: Bool,
+  read_timeout_ms: Int,
+) -> Result(Session, error.PiRpcError) {
+  use process <- try_pi(start_launch(spec, cwd) |> map_port_start_error)
   let session =
     Session(
       process: process,
-      command: command,
+      command: describe_launch(spec),
       cwd: cwd,
       session_id: None,
+      session_file: None,
+      reported_cwd: None,
       next_id: 1,
     )
   use session <- try_pi(send_expect_success(
@@ -46,7 +67,107 @@ pub fn launch(
   use session <- try_pi(send_auto_retry(session, auto_retry, read_timeout_ms))
   use pair <- try_pi(send_get_state(session, read_timeout_ms))
   let #(session, record) = pair
-  Ok(Session(..session, session_id: record.session_id))
+  Ok(
+    Session(
+      ..session,
+      session_id: record.session_id,
+      session_file: record.session_file,
+      reported_cwd: record.cwd,
+    ),
+  )
+}
+
+pub fn reopen_session_for_continuation(
+  spec: pi_command.LaunchSpec,
+  cwd: String,
+  expected_session_file: String,
+  read_timeout_ms: Int,
+) -> Result(Session, error.PiRpcError) {
+  use session <- try_pi(launch_spec(
+    spec,
+    cwd,
+    "Scherzo recovered workflow step",
+    False,
+    read_timeout_ms,
+  ))
+  case validate_reopened_state(session, expected_session_file, cwd) {
+    Ok(Nil) -> Ok(session)
+    Error(err) -> {
+      let _ = terminate(session)
+      Error(err)
+    }
+  }
+}
+
+fn start_launch(
+  spec: pi_command.LaunchSpec,
+  cwd: String,
+) -> Result(port.Process, port.PortError) {
+  case spec {
+    pi_command.ShellLaunch(command) -> port.start(command, cwd)
+    pi_command.ArgvLaunch(executable, args, env) ->
+      port.start_argv(executable, args, cwd, env)
+  }
+}
+
+fn describe_launch(spec: pi_command.LaunchSpec) -> String {
+  case spec {
+    pi_command.ShellLaunch(command) -> command
+    pi_command.ArgvLaunch(executable, args, _) ->
+      string.join([executable, ..args], with: " ")
+  }
+}
+
+fn validate_reopened_state(
+  session: Session,
+  expected_session_file: String,
+  expected_cwd: String,
+) -> Result(Nil, error.PiRpcError) {
+  case session.session_id {
+    None -> Error(error.PiProtocolError("reopened session missing sessionId"))
+    Some(value) ->
+      case string.trim(value) == "" {
+        True ->
+          Error(error.PiProtocolError("reopened session missing sessionId"))
+        False ->
+          validate_reopened_session_file(
+            session.session_file,
+            expected_session_file,
+            session.reported_cwd,
+            expected_cwd,
+          )
+      }
+  }
+}
+
+fn validate_reopened_session_file(
+  actual: Option(String),
+  expected_session_file: String,
+  reported_cwd: Option(String),
+  expected_cwd: String,
+) -> Result(Nil, error.PiRpcError) {
+  case actual {
+    None -> Error(error.PiProtocolError("reopened session missing sessionFile"))
+    Some(value) ->
+      case value == expected_session_file {
+        False -> Error(error.PiProtocolError("reopened sessionFile mismatch"))
+        True -> validate_reopened_cwd(reported_cwd, expected_cwd)
+      }
+  }
+}
+
+fn validate_reopened_cwd(
+  reported_cwd: Option(String),
+  expected_cwd: String,
+) -> Result(Nil, error.PiRpcError) {
+  case reported_cwd {
+    None -> Ok(Nil)
+    Some(actual_cwd) ->
+      case actual_cwd == expected_cwd {
+        True -> Ok(Nil)
+        False -> Error(error.PiProtocolError("reopened cwd mismatch"))
+      }
+  }
 }
 
 pub fn send_prompt(

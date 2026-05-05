@@ -49,6 +49,7 @@ import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
@@ -569,12 +570,13 @@ fn load_startup_recovery(
       refreshed_issues,
     )
   use workflow_finalization <- try_startup(
-    recovery.finalize_workflow_candidates(
+    recovery.finalize_workflow_candidates_with_config(
       replayed.projection,
       workflow_candidates,
       observations,
       artifact_store.new(effective.workspace.root),
       dependencies.now_ms(),
+      effective,
     )
     |> map_recovery_error,
   )
@@ -1130,6 +1132,7 @@ fn run_recovered_workflow_worker(
               ),
               next_attempt_indexes: recovered.next_attempt_indexes,
               run_root: Some(recovered.run_root),
+              pi_session_continuations: recovered.pi_session_continuations,
             )
           case
             workflow_run.execute_with_resume(
@@ -1152,11 +1155,7 @@ fn run_recovered_workflow_worker(
           {
             Ok(success) -> Ok(success.worker_success)
             Error(failure) ->
-              Error(yaml_worker_failure(
-                workflow_run.failure_report(failure),
-                failure.run_root,
-                recovered.issue,
-              ))
+              Error(yaml_workflow_failure(failure, recovered.issue))
           }
         }
       }
@@ -3821,23 +3820,27 @@ fn yaml_workflow_dependencies(
     agent_step: fn(
       issue,
       context,
-      prompt,
+      prompt_mode,
+      attempt_context,
       effective,
       tracker_client,
       _emit_update,
       _command_ready,
+      record_pi_session,
     ) {
       run_yaml_agent_step(
         base,
         issue,
         run_id,
         context,
-        prompt,
+        prompt_mode,
+        attempt_context,
         effective,
         tracker_client,
         daemon_subject,
         event_hub,
         now_ms,
+        record_pi_session,
       )
     },
   )
@@ -3962,12 +3965,14 @@ fn run_yaml_agent_step(
   issue: tracker_issue.Issue,
   run_id: String,
   context: workflow_run.StepContext,
-  prompt: String,
+  prompt_mode: workflow_attempt.AgentPromptMode,
+  attempt_context: workflow_attempt.StepAttemptContext,
   effective: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
+  record_pi_session: fn(workflow_attempt.PiSessionObservation) -> Nil,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   let session_id =
     yaml_step_session.id(run_id, context.step_id, context.attempt_index)
@@ -4015,7 +4020,8 @@ fn run_yaml_agent_step(
     base.agent_step(
       issue,
       context,
-      prompt,
+      prompt_mode,
+      attempt_context,
       effective,
       tracker_client,
       fn(update) {
@@ -4027,6 +4033,7 @@ fn run_yaml_agent_step(
           YamlStepCommandReady(session_id, command_subject),
         )
       },
+      record_pi_session,
     )
   case result {
     Ok(success) -> {
@@ -4347,96 +4354,162 @@ fn finish_worker_failure(
   handle: worker_registry.WorkerHandle,
   failure: agent_types.WorkerFailure,
 ) -> State {
+  case is_recovery_resume_validation_worker_failure(failure) {
+    True -> finish_recovery_resume_validation_failure(state, handle, failure)
+    False ->
+      case failure.reason {
+        error.OperatorAbort ->
+          finish_operator_worker_exit(
+            state,
+            handle,
+            failure,
+            session_reason.OperatorAbort,
+          )
+        error.OperatorStopAfterCurrentTurn ->
+          finish_operator_worker_exit(
+            state,
+            handle,
+            failure,
+            session_reason.OperatorStopAfterCurrentTurn,
+          )
+        _ -> finish_standard_worker_failure(state, handle, failure)
+      }
+  }
+}
+
+fn is_recovery_resume_validation_worker_failure(
+  failure: agent_types.WorkerFailure,
+) -> Bool {
   case failure.reason {
-    error.OperatorAbort ->
-      finish_operator_worker_exit(
-        state,
-        handle,
-        failure,
-        session_reason.OperatorAbort,
-      )
-    error.OperatorStopAfterCurrentTurn ->
-      finish_operator_worker_exit(
-        state,
-        handle,
-        failure,
-        session_reason.OperatorStopAfterCurrentTurn,
-      )
-    _ -> {
-      let failure_message =
-        worker_failure_message(failure, state.workflow.secrets)
-      log_state(state, "warn", "worker_exited", [
-        #("issue_id", handle.issue_id),
-        #("run_id", handle.run_id),
-        #("reason", failure_message),
-      ])
-      event_publisher.lifecycle(
-        state.event_hub,
-        handle.session_id,
-        session_event.WorkerExited,
-        Some(failure_message),
-      )
-      hub.finish_session(
-        state.event_hub,
-        handle.session_id,
-        session_reason.Failed,
-      )
-      let baseline_issue = case failure.final_issue {
-        Some(issue) ->
-          case issue.id == handle.issue_id {
-            True -> issue
-            False -> handle.issue
-          }
-        None -> handle.issue
-      }
-      let transition =
-        core.apply_worker_failure(
-          state.runtime,
-          state.workflow.effective,
-          handle.issue_id,
-          baseline_issue,
-          state.dependencies.now_ms(),
-        )
-      let state = State(..state, runtime: transition.state)
-      case
-        append_ledger_bodies(
+    error.PiFailed(error.PiProtocolError(reason)) ->
+      reason == workflow_attempt.recovery_pi_resume_validation_failed
+    _ -> False
+  }
+}
+
+fn finish_standard_worker_failure(
+  state: State,
+  handle: worker_registry.WorkerHandle,
+  failure: agent_types.WorkerFailure,
+) -> State {
+  let failure_message = worker_failure_message(failure, state.workflow.secrets)
+  log_state(state, "warn", "worker_exited", [
+    #("issue_id", handle.issue_id),
+    #("run_id", handle.run_id),
+    #("reason", failure_message),
+  ])
+  event_publisher.lifecycle(
+    state.event_hub,
+    handle.session_id,
+    session_event.WorkerExited,
+    Some(failure_message),
+  )
+  hub.finish_session(state.event_hub, handle.session_id, session_reason.Failed)
+  let baseline_issue = baseline_issue_for_failure(handle, failure)
+  let transition =
+    core.apply_worker_failure(
+      state.runtime,
+      state.workflow.effective,
+      handle.issue_id,
+      baseline_issue,
+      state.dependencies.now_ms(),
+    )
+  let state = State(..state, runtime: transition.state)
+  case append_worker_failure_records(state, handle, failure, baseline_issue) {
+    False -> state
+    True -> {
+      let state =
+        enqueue_side_effect(
           state,
-          [
-            record.RunFinished(
-              handle.run_id,
-              handle.issue_id,
-              "failure",
-              failure.tokens.total,
-              0,
-            ),
-            counter_record_for_state(
-              state,
-              handle.issue_id,
-              baseline_issue.identifier,
-              Some(handle.run_id),
-            ),
-          ],
-          "ledger_append_failed",
+          effect_runner.ReportFailure(
+            issue_id: handle.issue_id,
+            issue: handle.issue,
+            failure: failure,
+            run_id: handle.run_id,
+            client: state.handoff_client,
+          ),
         )
-      {
-        False -> state
-        True -> {
-          let state =
-            enqueue_side_effect(
-              state,
-              effect_runner.ReportFailure(
-                issue_id: handle.issue_id,
-                issue: handle.issue,
-                failure: failure,
-                run_id: handle.run_id,
-                client: state.handoff_client,
-              ),
-            )
-          apply_effects(state, transition.effects)
-        }
-      }
+      apply_effects(state, transition.effects)
     }
   }
+}
+
+fn finish_recovery_resume_validation_failure(
+  state: State,
+  handle: worker_registry.WorkerHandle,
+  failure: agent_types.WorkerFailure,
+) -> State {
+  let reason = workflow_attempt.recovery_pi_resume_validation_failed
+  log_state(state, "warn", "worker_exited", [
+    #("issue_id", handle.issue_id),
+    #("run_id", handle.run_id),
+    #("reason", reason),
+  ])
+  event_publisher.lifecycle(
+    state.event_hub,
+    handle.session_id,
+    session_event.WorkerExited,
+    Some(reason),
+  )
+  hub.finish_session(state.event_hub, handle.session_id, session_reason.Failed)
+  let baseline_issue = baseline_issue_for_failure(handle, failure)
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      running: dict.delete(state.runtime.running, handle.issue_id),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, handle.issue_id),
+    )
+  let state = State(..state, runtime: runtime)
+  case append_worker_failure_records(state, handle, failure, baseline_issue) {
+    False -> state
+    True ->
+      park_issue_state(
+        state,
+        baseline_issue,
+        orchestrator_reason.ParkOperator(reason),
+      )
+  }
+}
+
+fn baseline_issue_for_failure(
+  handle: worker_registry.WorkerHandle,
+  failure: agent_types.WorkerFailure,
+) -> tracker_issue.Issue {
+  case failure.final_issue {
+    Some(issue) ->
+      case issue.id == handle.issue_id {
+        True -> issue
+        False -> handle.issue
+      }
+    None -> handle.issue
+  }
+}
+
+fn append_worker_failure_records(
+  state: State,
+  handle: worker_registry.WorkerHandle,
+  failure: agent_types.WorkerFailure,
+  baseline_issue: tracker_issue.Issue,
+) -> Bool {
+  append_ledger_bodies(
+    state,
+    [
+      record.RunFinished(
+        handle.run_id,
+        handle.issue_id,
+        "failure",
+        failure.tokens.total,
+        0,
+      ),
+      counter_record_for_state(
+        state,
+        handle.issue_id,
+        baseline_issue.identifier,
+        Some(handle.run_id),
+      ),
+    ],
+    "ledger_append_failed",
+  )
 }
 
 fn finish_operator_worker_exit(

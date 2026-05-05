@@ -1,6 +1,6 @@
 -module(scherzo_port_ffi).
 
--export([start/2, start_with_env/3, send_line/2, read_stdout_line/2, read_diagnostics/1, terminate/1, await_exit/2]).
+-export([start/2, start_with_env/3, start_argv/4, send_line/2, read_stdout_line/2, read_diagnostics/1, terminate/1, await_exit/2]).
 
 -define(MAX_LINE, 10000000).
 
@@ -20,6 +20,31 @@ start_with_env(Command, Cwd, Env) ->
                     exit_status,
                     use_stdio,
                     {args, ["-lc", Wrapper]},
+                    {cd, Dir},
+                    {env, normalize_env(Env)}
+                ]),
+                {ok, {scherzo_process, Port, ErrPath}};
+            false ->
+                {error, <<"cwd_not_directory">>}
+        end
+    catch
+        Class:Reason -> {error, unicode:characters_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
+    end.
+
+start_argv(Executable, Args, Cwd, Env) ->
+    try
+        Exe = to_list(Executable),
+        ArgList = [to_list(Arg) || Arg <- Args],
+        Dir = to_list(Cwd),
+        case filelib:is_dir(Dir) of
+            true ->
+                ErrPath = stderr_path(),
+                Wrapper = "exec 2> \"$1\"; shift; exec \"$@\"",
+                Port = open_port({spawn_executable, "/bin/bash"}, [
+                    binary,
+                    exit_status,
+                    use_stdio,
+                    {args, ["-c", Wrapper, "scherzo-argv", ErrPath, Exe | ArgList]},
                     {cd, Dir},
                     {env, normalize_env(Env)}
                 ]),

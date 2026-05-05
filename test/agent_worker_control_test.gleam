@@ -88,6 +88,11 @@ fn config(
       ui_request_timeout_ms: 1000,
       compatibility_probe: False,
       rate_limit_payload: None,
+      argv_command: None,
+      session_persistence: config_types.PiSessionPersistenceConfig(
+        enabled: False,
+        recovery_prompt: "",
+      ),
     ),
     handoff: config_types.HandoffConfig(
       enabled: False,

@@ -78,6 +78,7 @@ pub fn workflow_records_roundtrip_test() {
         attempt_index: 2,
         operator_session_id: "workflow-step-run-001-build-a2-abcdef123456",
         external_session_ref: None,
+        continuation_capable: False,
       ),
     ),
     record.with_id(
@@ -175,6 +176,7 @@ pub fn projection_tracks_step_attempts_and_completed_workspaces_test() {
           1,
           "workflow-step-run-1-build-a1-abc",
           None,
+          False,
         ),
       ),
       record.with_id(

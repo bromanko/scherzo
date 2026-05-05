@@ -29,12 +29,20 @@ import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_fingerprint
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
+
+fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
+  case mode {
+    workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.RecoveryPrompt(prompt) -> prompt
+  }
+}
 
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
@@ -397,12 +405,15 @@ fn fake_workflow_run_dependencies(
     agent_step: fn(
       issue,
       context: workflow_run.StepContext,
-      prompt,
+      prompt_mode,
+      _attempt_context,
       _effective,
       _tracker,
       emit_update,
       _command_ready,
+      _record_pi_session,
     ) {
+      let prompt = prompt_text(prompt_mode)
       process.send(log_subject, "yaml_agent:" <> prompt)
       emit_update(
         agent_types.RunnerPiUpdate(agent_types.PiUpdate(
@@ -446,11 +457,13 @@ fn blocking_command_ready_workflow_run_dependencies(
     agent_step: fn(
       issue,
       context: workflow_run.StepContext,
-      _prompt,
+      _prompt_mode,
+      _attempt_context,
       _effective,
       _tracker,
       _emit_update,
       command_ready,
+      _record_pi_session,
     ) {
       let command_subject = process.new_subject()
       command_ready(command_subject)
@@ -477,11 +490,13 @@ fn surviving_agent_workflow_run_dependencies(
     agent_step: fn(
       issue,
       context: workflow_run.StepContext,
-      _prompt,
+      _prompt_mode,
+      _attempt_context,
       _effective,
       _tracker,
       _emit_update,
       _command_ready,
+      _record_pi_session,
     ) {
       process.send(log_subject, "agent_started")
       process.sleep(500)
@@ -505,12 +520,15 @@ fn command_ready_workflow_run_dependencies(
     agent_step: fn(
       issue,
       context: workflow_run.StepContext,
-      prompt,
+      prompt_mode,
+      _attempt_context,
       _effective,
       _tracker,
       _emit_update,
       command_ready,
+      _record_pi_session,
     ) {
+      let prompt = prompt_text(prompt_mode)
       let command_subject = process.new_subject()
       command_ready(command_subject)
       process.send(log_subject, "agent_ready")
@@ -561,11 +579,13 @@ fn crashing_command_ready_workflow_run_dependencies(
     agent_step: fn(
       _issue,
       _context,
-      _prompt,
+      _prompt_mode,
+      _attempt_context,
       _effective,
       _tracker,
       _emit_update,
       command_ready,
+      _record_pi_session,
     ) {
       let command_subject = process.new_subject()
       command_ready(command_subject)
@@ -1008,6 +1028,8 @@ pub fn daemon_retry_refresh_dependency_blocked_cancels_retry_test() {
           _,
           _,
           _,
+          _,
+          _,
         ) {
           Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("boom")),
@@ -1435,6 +1457,8 @@ pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test(
           _,
           _,
           _,
+          _,
+          _,
         ) {
           let _ = issue
           Error(agent_types.WorkerFailure(
@@ -1490,6 +1514,8 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
         agent_step: fn(
           issue: tracker_issue.Issue,
           context: workflow_run.StepContext,
+          _,
+          _,
           _,
           _,
           _,
@@ -1637,6 +1663,7 @@ steps:
             1,
             "workflow-step-run-recover-first-a1-a7937b64b8ca",
             None,
+            False,
           ),
         ),
         record.with_id(

@@ -78,6 +78,10 @@ pub fn default_agent_config() -> config_types.AgentConfig {
   )
 }
 
+pub fn default_recovery_prompt() -> String {
+  "You are being resumed by Scherzo after an interrupted workflow agent step.\nContinue from the existing pi session context that was reopened for this step.\nDo not restart from scratch and do not assume the original prompt has been resent.\nWork in the current directory, which is the recorded workspace for this step.\nIf the prior session context shows the step was already completed, summarize the completed work and stop.\nOtherwise, inspect the current workspace as needed, finish the same step, and provide a concise final response for Scherzo."
+}
+
 pub fn default_pi_config() -> config_types.PiConfig {
   config_types.PiConfig(
     command: "pi --mode rpc --no-session",
@@ -89,6 +93,11 @@ pub fn default_pi_config() -> config_types.PiConfig {
     ui_request_timeout_ms: 300_000,
     compatibility_probe: True,
     rate_limit_payload: None,
+    argv_command: None,
+    session_persistence: config_types.PiSessionPersistenceConfig(
+      enabled: False,
+      recovery_prompt: default_recovery_prompt(),
+    ),
   )
 }
 
@@ -435,6 +444,12 @@ fn resolve_pi(
       use ui_request_policy <- result_try(
         ui_policy(get_string(pi, "ui_request_policy")),
       )
+      use argv_command <- result_try(resolve_pi_argv(pi))
+      use session_persistence <- result_try(resolve_pi_session_persistence(pi))
+      use _ <- result_try(validate_pi_session_persistence(
+        argv_command,
+        session_persistence,
+      ))
       Ok(config_types.PiConfig(
         command: command,
         turn_timeout_ms: turn_timeout_ms,
@@ -446,9 +461,108 @@ fn resolve_pi(
         compatibility_probe: get_bool(pi, "compatibility_probe")
           |> bool_default(True),
         rate_limit_payload: None,
+        argv_command: argv_command,
+        session_persistence: session_persistence,
       ))
     }
   }
+}
+
+fn resolve_pi_argv(
+  pi: yay.Node,
+) -> Result(Option(config_types.PiArgvCommand), error.ConfigError) {
+  case get_node(pi, "argv") {
+    None -> Ok(None)
+    Some(yay.NodeSeq(values)) -> {
+      use argv <- result_try(read_string_values(values, "pi.argv", []))
+      case argv {
+        [] -> Error(error.InvalidConfig("pi.argv must be non-empty"))
+        [executable, ..args] -> {
+          use env <- result_try(get_string_map_strict(
+            pi,
+            "argv_env",
+            "pi.argv_env",
+          ))
+          Ok(
+            Some(config_types.PiArgvCommand(
+              executable: executable,
+              args: args,
+              env: env,
+            )),
+          )
+        }
+      }
+    }
+    Some(_) -> Error(error.InvalidConfig("pi.argv must be a string list"))
+  }
+}
+
+fn resolve_pi_session_persistence(
+  pi: yay.Node,
+) -> Result(config_types.PiSessionPersistenceConfig, error.ConfigError) {
+  let defaults =
+    config_types.PiSessionPersistenceConfig(
+      enabled: False,
+      recovery_prompt: default_recovery_prompt(),
+    )
+  case get_node(pi, "session_persistence") {
+    None -> Ok(defaults)
+    Some(node) ->
+      case node {
+        yay.NodeMap(_) -> {
+          use enabled_option <- result_try(get_bool_strict(
+            node,
+            "enabled",
+            "pi.session_persistence.enabled",
+          ))
+          use prompt_option <- result_try(get_optional_string_strict(
+            node,
+            "recovery_prompt",
+            "pi.session_persistence.recovery_prompt",
+          ))
+          Ok(config_types.PiSessionPersistenceConfig(
+            enabled: enabled_option |> bool_default(defaults.enabled),
+            recovery_prompt: prompt_option
+              |> optional_non_empty_string
+              |> option_unwrap(defaults.recovery_prompt),
+          ))
+        }
+        _ -> Error(error.InvalidConfig("pi.session_persistence must be a map"))
+      }
+  }
+}
+
+fn validate_pi_session_persistence(
+  argv_command: Option(config_types.PiArgvCommand),
+  session_persistence: config_types.PiSessionPersistenceConfig,
+) -> Result(Nil, error.ConfigError) {
+  case session_persistence.enabled {
+    False -> Ok(Nil)
+    True -> {
+      use argv <- result_try(required_option(
+        argv_command,
+        error.InvalidConfig("pi.session_persistence requires pi.argv"),
+      ))
+      case string.trim(argv.executable) == "" {
+        True ->
+          Error(error.InvalidConfig(
+            "pi.session_persistence requires pi.argv executable to be non-empty",
+          ))
+        False ->
+          case has_forbidden_session_flag(argv.args) {
+            True ->
+              Error(error.InvalidConfig(
+                "pi.session_persistence requires pi.argv without --session or --no-session",
+              ))
+            False -> Ok(Nil)
+          }
+      }
+    }
+  }
+}
+
+fn has_forbidden_session_flag(args: List(String)) -> Bool {
+  list.any(args, fn(arg) { arg == "--session" || arg == "--no-session" })
 }
 
 fn resolve_handoff(
@@ -1196,6 +1310,46 @@ fn get_string_list(node: yay.Node, key: String) -> Option(List(String)) {
         _ -> None
       }
     _ -> None
+  }
+}
+
+fn read_string_values(
+  values: List(yay.Node),
+  path: String,
+  acc: List(String),
+) -> Result(List(String), error.ConfigError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeStr(value), ..rest] ->
+      read_string_values(rest, path, [value, ..acc])
+    [_, ..] -> Error(error.InvalidConfig(path <> " entries must be strings"))
+  }
+}
+
+fn get_string_map_strict(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(List(#(String, String)), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok([])
+    Some(yay.NodeMap(entries)) -> read_string_map_entries(entries, path, [])
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a string map"))
+  }
+}
+
+fn read_string_map_entries(
+  entries: List(#(yay.Node, yay.Node)),
+  path: String,
+  acc: List(#(String, String)),
+) -> Result(List(#(String, String)), error.ConfigError) {
+  case entries {
+    [] -> Ok(list.reverse(acc))
+    [#(yay.NodeStr(key), yay.NodeStr(value)), ..rest] ->
+      read_string_map_entries(rest, path, [#(key, value), ..acc])
+    [#(yay.NodeStr(_), _), ..] ->
+      Error(error.InvalidConfig(path <> " values must be strings"))
+    [#(_, _), ..] -> Error(error.InvalidConfig(path <> " keys must be strings"))
   }
 }
 

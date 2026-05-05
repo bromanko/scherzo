@@ -21,6 +21,7 @@ import scherzo/state/record
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_attempt
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import simplifile
@@ -452,17 +453,19 @@ fn workflow_deps_from_agent(
     agent_step: fn(
       issue,
       _context,
-      prompt,
+      prompt_mode,
+      _attempt_context,
       effective,
       tracker_client,
       emit_update,
       command_ready,
+      _record_pi_session,
     ) {
       let command_subject = process.new_subject()
       agent_runner(
         issue,
         None,
-        prompt,
+        prompt_text(prompt_mode),
         effective,
         tracker_client,
         fn(_, update) { emit_update(update) },
@@ -471,6 +474,13 @@ fn workflow_deps_from_agent(
       )
     },
   )
+}
+
+fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
+  case mode {
+    workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.RecoveryPrompt(prompt) -> prompt
+  }
 }
 
 fn unused_agent(

@@ -6,6 +6,7 @@ import scherzo/state/artifact_store
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/step_artifact
+import scherzo/workflow_attempt
 import scherzo/workflow_identity
 import scherzo/workspace_run
 
@@ -52,7 +53,11 @@ pub type Writer {
       String,
       workspace_run.PreparedStepWorkspace,
     ) -> Result(Nil, CheckpointError),
-    step_started: fn(String, String, String, Int, String, Option(String)) ->
+    step_started: fn(String, String, String, Int, String, Option(String), Bool) ->
+      Result(Nil, CheckpointError),
+    step_continuation_started: fn(String, String, String, Int, String) ->
+      Result(Nil, CheckpointError),
+    step_pi_session_recorded: fn(workflow_attempt.PiSessionObservation) ->
       Result(Nil, CheckpointError),
     write_step_artifact: fn(StepFinished, step_artifact.StepArtifact) ->
       Result(ArtifactWritten, CheckpointError),
@@ -67,7 +72,9 @@ pub fn noop_writer() -> Writer {
   Writer(
     workflow_finished: fn(_) { Ok(Nil) },
     step_prepared: fn(_, _, _, _) { Ok(Nil) },
-    step_started: fn(_, _, _, _, _, _) { Ok(Nil) },
+    step_started: fn(_, _, _, _, _, _, _) { Ok(Nil) },
+    step_continuation_started: fn(_, _, _, _, _) { Ok(Nil) },
+    step_pi_session_recorded: fn(_) { Ok(Nil) },
     write_step_artifact: fn(finished, _artifact) {
       Ok(ArtifactWritten(
         ref: "noop/"
@@ -125,6 +132,7 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
       attempt_index,
       operator_session_id,
       external_session_ref,
+      continuation_capable,
     ) {
       append_body(
         workspace_root,
@@ -136,6 +144,45 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
           attempt_index,
           operator_session_id,
           external_session_ref,
+          continuation_capable,
+        ),
+      )
+    },
+    step_continuation_started: fn(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      session_id,
+    ) {
+      append_body(
+        workspace_root,
+        now_ms,
+        record.StepAttemptContinuationStarted(
+          run_id,
+          workflow_id,
+          step_id,
+          attempt_index,
+          session_id,
+        ),
+      )
+    },
+    step_pi_session_recorded: fn(observation) {
+      append_body(
+        workspace_root,
+        now_ms,
+        record.StepAttemptPiSessionRecorded(
+          observation.run_id,
+          observation.issue_id,
+          observation.issue_identifier,
+          observation.workflow_id,
+          observation.workflow_fingerprint,
+          observation.step_id,
+          observation.workspace_name,
+          observation.attempt_index,
+          observation.workspace_path,
+          observation.session_id,
+          observation.session_file,
         ),
       )
     },

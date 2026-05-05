@@ -16,6 +16,7 @@ import scherzo/state/projection
 import scherzo/state/record
 import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_attempt
 import scherzo/workflow_dag
 import simplifile
 
@@ -70,6 +71,7 @@ pub type RecoveredWorkflowRun {
     completed_artifacts: Dict(String, step_artifact.StepArtifact),
     completed_workspaces: Dict(String, RecoveredWorkspaceSummary),
     next_attempt_indexes: Dict(String, Int),
+    pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
   )
 }
 
@@ -103,6 +105,10 @@ pub type CurrentWorkflowObservation {
 pub type WorkflowRecoveryMode {
   ResumeRecoveredWorkflows
   ParkRecoveredWorkflows
+}
+
+type SessionRecoveryConfig {
+  SessionRecoveryConfig(enabled: Bool, recovery_prompt: String)
 }
 
 pub type WorkflowFinalization {
@@ -156,6 +162,10 @@ pub fn known_issue_ids(projection: projection.Projection) -> List(String) {
   projection.known_issue_ids(projection)
 }
 
+fn default_session_recovery_config() -> SessionRecoveryConfig {
+  SessionRecoveryConfig(enabled: False, recovery_prompt: "")
+}
+
 pub fn workflow_candidates(
   projection: projection.Projection,
 ) -> List(WorkflowRecoveryCandidate) {
@@ -193,12 +203,35 @@ pub fn finalize_workflow_candidates(
   artifact_store: artifact_store.Store,
   now_ms: Int,
 ) -> Result(WorkflowFinalization, RecoveryError) {
-  finalize_workflow_candidates_with_mode(
+  finalize_workflow_candidates_with_config_and_mode(
     projection,
     candidates,
     observations,
     artifact_store,
     now_ms,
+    default_session_recovery_config(),
+    ResumeRecoveredWorkflows,
+  )
+}
+
+pub fn finalize_workflow_candidates_with_config(
+  projection: projection.Projection,
+  candidates: List(WorkflowRecoveryCandidate),
+  observations: Dict(String, CurrentWorkflowObservation),
+  artifact_store: artifact_store.Store,
+  now_ms: Int,
+  config: config_types.EffectiveConfig,
+) -> Result(WorkflowFinalization, RecoveryError) {
+  finalize_workflow_candidates_with_config_and_mode(
+    projection,
+    candidates,
+    observations,
+    artifact_store,
+    now_ms,
+    SessionRecoveryConfig(
+      enabled: config.pi.session_persistence.enabled,
+      recovery_prompt: config.pi.session_persistence.recovery_prompt,
+    ),
     ResumeRecoveredWorkflows,
   )
 }
@@ -211,12 +244,33 @@ pub fn finalize_workflow_candidates_with_mode(
   now_ms: Int,
   mode: WorkflowRecoveryMode,
 ) -> Result(WorkflowFinalization, RecoveryError) {
+  finalize_workflow_candidates_with_config_and_mode(
+    projection,
+    candidates,
+    observations,
+    artifact_store,
+    now_ms,
+    default_session_recovery_config(),
+    mode,
+  )
+}
+
+fn finalize_workflow_candidates_with_config_and_mode(
+  projection: projection.Projection,
+  candidates: List(WorkflowRecoveryCandidate),
+  observations: Dict(String, CurrentWorkflowObservation),
+  artifact_store: artifact_store.Store,
+  now_ms: Int,
+  session_recovery: SessionRecoveryConfig,
+  mode: WorkflowRecoveryMode,
+) -> Result(WorkflowFinalization, RecoveryError) {
   let _ = projection
   finalize_workflow_candidates_loop(
     candidates,
     observations,
     artifact_store,
     now_ms,
+    session_recovery,
     mode,
     [],
     [],
@@ -289,6 +343,7 @@ fn finalize_workflow_candidates_loop(
   observations: Dict(String, CurrentWorkflowObservation),
   store: artifact_store.Store,
   now_ms: Int,
+  session_recovery: SessionRecoveryConfig,
   mode: WorkflowRecoveryMode,
   record_bodies: List(record.RecordBody),
   resumptions: List(RecoveredWorkflowRun),
@@ -309,6 +364,7 @@ fn finalize_workflow_candidates_loop(
         candidate,
         observation,
         store,
+        session_recovery,
         mode,
       ))
       let #(bodies, resumption, candidate_warnings) = finalized
@@ -317,6 +373,7 @@ fn finalize_workflow_candidates_loop(
         observations,
         store,
         now_ms,
+        session_recovery,
         mode,
         list.append(list.reverse(bodies), record_bodies),
         append_optional_resumption(resumptions, resumption),
@@ -330,6 +387,7 @@ fn finalize_one_workflow_candidate(
   candidate: WorkflowRecoveryCandidate,
   observation: CurrentWorkflowObservation,
   store: artifact_store.Store,
+  session_recovery: SessionRecoveryConfig,
   mode: WorkflowRecoveryMode,
 ) -> Result(
   #(List(record.RecordBody), Option(RecoveredWorkflowRun), List(String)),
@@ -423,6 +481,7 @@ fn finalize_one_workflow_candidate(
                 store,
                 dag,
                 workspace_root,
+                session_recovery,
               )
           }
       }
@@ -436,12 +495,20 @@ fn finalize_resumable_workflow_candidate(
   store: artifact_store.Store,
   dag: workflow_dag.WorkflowDag,
   workspace_root: String,
+  session_recovery: SessionRecoveryConfig,
 ) -> Result(
   #(List(record.RecordBody), Option(RecoveredWorkflowRun), List(String)),
   RecoveryError,
 ) {
   case
-    recover_completed_attempts(candidate, issue, store, dag, workspace_root)
+    recover_completed_attempts(
+      candidate,
+      issue,
+      store,
+      dag,
+      workspace_root,
+      session_recovery,
+    )
   {
     Ok(recovered) -> {
       let #(resumption, bodies) = recovered
@@ -472,16 +539,13 @@ fn finalize_resumable_workflow_candidate(
           park_candidate_bodies(
             candidate,
             issue.identifier,
-            "unsafe_interrupted_command_step",
+            reason,
             issue_fingerprint,
             candidate.observed_updated_at_ms,
           ),
           None,
           [
-            "workflow_recovery_parked_unsafe_interrupted_command_step:"
-            <> candidate.run_id
-            <> ":"
-            <> reason,
+            "workflow_recovery_parked_" <> reason <> ":" <> candidate.run_id,
           ],
         ),
       )
@@ -514,6 +578,7 @@ fn recover_completed_attempts(
   store: artifact_store.Store,
   dag: workflow_dag.WorkflowDag,
   workspace_root: String,
+  session_recovery: SessionRecoveryConfig,
 ) -> Result(#(RecoveredWorkflowRun, List(record.RecordBody)), RecoveryError) {
   let attempts = list.sort(candidate.attempts, by: compare_attempts_for_replay)
   recover_attempts_loop(
@@ -526,7 +591,9 @@ fn recover_completed_attempts(
     dict.new(),
     dict.new(),
     dict.new(),
+    dict.new(),
     [],
+    session_recovery,
   )
 }
 
@@ -540,7 +607,9 @@ fn recover_attempts_loop(
   artifacts: Dict(String, step_artifact.StepArtifact),
   workspaces: Dict(String, RecoveredWorkspaceSummary),
   next_indexes: Dict(String, Int),
+  continuations: Dict(String, workflow_attempt.PiContinuation),
   bodies: List(record.RecordBody),
+  session_recovery: SessionRecoveryConfig,
 ) -> Result(#(RecoveredWorkflowRun, List(record.RecordBody)), RecoveryError) {
   case attempts {
     [] -> {
@@ -561,6 +630,7 @@ fn recover_attempts_loop(
           completed_artifacts: artifacts,
           completed_workspaces: workspaces,
           next_attempt_indexes: next_indexes,
+          pi_session_continuations: continuations,
         ),
         list.reverse(bodies),
       ))
@@ -624,11 +694,12 @@ fn recover_attempts_loop(
             artifacts,
             workspaces,
             next_indexes,
+            continuations,
             bodies,
+            session_recovery,
           )
         }
-        projection.StepAttemptPending(workflow_id: workflow_id, ..)
-        | projection.StepAttemptRunning(workflow_id: workflow_id, ..) ->
+        projection.StepAttemptPending(workflow_id: workflow_id, ..) ->
           case interrupted_step_is_safe_to_retry(dag, step_id) {
             Error(reason) -> Error(UnsafeWorkflowRecovery(reason))
             Ok(Nil) ->
@@ -642,6 +713,7 @@ fn recover_attempts_loop(
                 artifacts,
                 workspaces,
                 next_indexes,
+                continuations,
                 [
                   record.StepAttemptInterrupted(
                     run_id,
@@ -652,8 +724,55 @@ fn recover_attempts_loop(
                   ),
                   ..bodies
                 ],
+                session_recovery,
               )
           }
+        projection.StepAttemptRunning(workflow_id: workflow_id, ..) ->
+          recover_running_or_interrupted_attempt(
+            attempt,
+            rest,
+            candidate,
+            issue,
+            store,
+            dag,
+            workspace_root,
+            artifacts,
+            workspaces,
+            next_indexes,
+            continuations,
+            bodies,
+            session_recovery,
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            "daemon_restart",
+          )
+        projection.StepAttemptInterruptedStatus(
+          workflow_id: workflow_id,
+          reason: reason,
+          ..,
+        ) ->
+          recover_running_or_interrupted_attempt(
+            attempt,
+            rest,
+            candidate,
+            issue,
+            store,
+            dag,
+            workspace_root,
+            artifacts,
+            workspaces,
+            next_indexes,
+            continuations,
+            bodies,
+            session_recovery,
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            reason,
+          )
         _ ->
           recover_attempts_loop(
             rest,
@@ -665,10 +784,322 @@ fn recover_attempts_loop(
             artifacts,
             workspaces,
             next_indexes,
+            continuations,
             bodies,
+            session_recovery,
           )
       }
     }
+  }
+}
+
+fn recover_running_or_interrupted_attempt(
+  attempt: projection.StepAttemptStatus,
+  rest: List(projection.StepAttemptStatus),
+  candidate: WorkflowRecoveryCandidate,
+  issue: tracker_issue.Issue,
+  store: artifact_store.Store,
+  dag: workflow_dag.WorkflowDag,
+  workspace_root: String,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  workspaces: Dict(String, RecoveredWorkspaceSummary),
+  next_indexes: Dict(String, Int),
+  continuations: Dict(String, workflow_attempt.PiContinuation),
+  bodies: List(record.RecordBody),
+  session_recovery: SessionRecoveryConfig,
+  run_id: String,
+  workflow_id: String,
+  step_id: String,
+  attempt_index: Int,
+  interrupt_reason: String,
+) -> Result(#(RecoveredWorkflowRun, List(record.RecordBody)), RecoveryError) {
+  case attempt_continuation_capable(attempt) {
+    True -> {
+      use continuation <- result.try(build_continuation(
+        attempt,
+        candidate,
+        issue,
+        dag,
+        workspace_root,
+        session_recovery,
+      ))
+      recover_attempts_loop(
+        rest,
+        candidate,
+        issue,
+        store,
+        dag,
+        workspace_root,
+        artifacts,
+        workspaces,
+        dict.insert(next_indexes, step_id, attempt_index),
+        dict.insert(continuations, step_id, continuation),
+        bodies,
+        session_recovery,
+      )
+    }
+    False ->
+      case interrupted_step_is_safe_to_retry(dag, step_id) {
+        Error(reason) -> Error(UnsafeWorkflowRecovery(reason))
+        Ok(Nil) ->
+          recover_attempts_loop(
+            rest,
+            candidate,
+            issue,
+            store,
+            dag,
+            workspace_root,
+            artifacts,
+            workspaces,
+            next_indexes,
+            continuations,
+            [
+              record.StepAttemptInterrupted(
+                run_id,
+                workflow_id,
+                step_id,
+                attempt_index,
+                interrupt_reason,
+              ),
+              ..bodies
+            ],
+            session_recovery,
+          )
+      }
+  }
+}
+
+fn build_continuation(
+  attempt: projection.StepAttemptStatus,
+  candidate: WorkflowRecoveryCandidate,
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  workspace_root: String,
+  session_recovery: SessionRecoveryConfig,
+) -> Result(workflow_attempt.PiContinuation, RecoveryError) {
+  case session_recovery.enabled {
+    False ->
+      Error(UnsafeWorkflowRecovery("recovery_session_persistence_disabled"))
+    True ->
+      case continuation_fields(attempt) {
+        Error(reason) -> Error(UnsafeWorkflowRecovery(reason))
+        Ok(fields) -> {
+          let #(
+            step_id,
+            attempt_index,
+            workspace_name,
+            workspace_path,
+            session_id,
+            session_file,
+            fact_count,
+          ) = fields
+          case is_agent_step(dag, step_id) {
+            False ->
+              Error(UnsafeWorkflowRecovery(
+                "unsafe_interrupted_command_step:" <> step_id,
+              ))
+            True -> {
+              use _ <- result.try(validate_continuation_facts(
+                workspace_root,
+                candidate.run_root,
+                workspace_path,
+                session_id,
+                session_file,
+                fact_count,
+              ))
+              let attempt_context =
+                workflow_attempt.StepAttemptContext(
+                  run_id: candidate.run_id,
+                  issue_id: candidate.issue_id,
+                  issue_identifier: issue.identifier,
+                  workflow_id: candidate.workflow_id,
+                  workflow_fingerprint: candidate.workflow_fingerprint,
+                  step_id: step_id,
+                  workspace_name: workspace_name,
+                  attempt_index: attempt_index,
+                  workspace_path: workspace_path,
+                  continuation_capable: True,
+                  continuation_session_file: Some(session_file),
+                )
+              let recovery_prompt =
+                workflow_attempt.render_recovery_prompt(
+                  session_recovery.recovery_prompt,
+                  attempt_context,
+                )
+              Ok(workflow_attempt.PiContinuation(
+                run_id: candidate.run_id,
+                issue_id: candidate.issue_id,
+                issue_identifier: issue.identifier,
+                workflow_id: candidate.workflow_id,
+                workflow_fingerprint: candidate.workflow_fingerprint,
+                step_id: step_id,
+                workspace_name: workspace_name,
+                attempt_index: attempt_index,
+                workspace_path: workspace_path,
+                session_id: session_id,
+                session_file: session_file,
+                recovery_prompt: recovery_prompt,
+              ))
+            }
+          }
+        }
+      }
+  }
+}
+
+fn attempt_continuation_capable(status: projection.StepAttemptStatus) -> Bool {
+  case status {
+    projection.StepAttemptRunning(continuation_capable: value, ..) -> value
+    projection.StepAttemptInterruptedStatus(continuation_capable: value, ..) ->
+      value
+    _ -> False
+  }
+}
+
+fn continuation_fields(
+  status: projection.StepAttemptStatus,
+) -> Result(#(String, Int, String, String, String, String, Int), String) {
+  case status {
+    projection.StepAttemptRunning(
+      step_id: step_id,
+      attempt_index: attempt_index,
+      workspace_name: workspace_name,
+      workspace_path: workspace_path,
+      pi_session_id: pi_session_id,
+      pi_session_file: pi_session_file,
+      pi_session_fact_count: fact_count,
+      ..,
+    ) ->
+      require_session_fields(
+        step_id,
+        attempt_index,
+        workspace_name,
+        workspace_path,
+        pi_session_id,
+        pi_session_file,
+        fact_count,
+      )
+    projection.StepAttemptInterruptedStatus(
+      step_id: step_id,
+      attempt_index: attempt_index,
+      workspace_name: workspace_name,
+      workspace_path: workspace_path,
+      pi_session_id: pi_session_id,
+      pi_session_file: pi_session_file,
+      pi_session_fact_count: fact_count,
+      ..,
+    ) ->
+      require_session_fields(
+        step_id,
+        attempt_index,
+        workspace_name,
+        workspace_path,
+        pi_session_id,
+        pi_session_file,
+        fact_count,
+      )
+    _ -> Error("recovery_session_fact_missing")
+  }
+}
+
+fn require_session_fields(
+  step_id: String,
+  attempt_index: Int,
+  workspace_name: String,
+  workspace_path: String,
+  pi_session_id: Option(String),
+  pi_session_file: Option(String),
+  fact_count: Int,
+) -> Result(#(String, Int, String, String, String, String, Int), String) {
+  case fact_count {
+    0 -> Error("recovery_session_fact_missing")
+    1 ->
+      case pi_session_id, pi_session_file {
+        Some(session_id), Some(session_file) ->
+          Ok(#(
+            step_id,
+            attempt_index,
+            workspace_name,
+            workspace_path,
+            session_id,
+            session_file,
+            fact_count,
+          ))
+        _, _ -> Error("recovery_session_fact_missing")
+      }
+    _ -> Error("recovery_session_fact_ambiguous")
+  }
+}
+
+fn validate_continuation_facts(
+  workspace_root: String,
+  run_root: String,
+  workspace_path: String,
+  session_id: String,
+  session_file: String,
+  fact_count: Int,
+) -> Result(Nil, RecoveryError) {
+  case fact_count != 1 {
+    True -> Error(UnsafeWorkflowRecovery("recovery_session_fact_ambiguous"))
+    False ->
+      case string.trim(session_id) == "" {
+        True -> Error(UnsafeWorkflowRecovery("recovery_session_fact_missing"))
+        False ->
+          case string.trim(session_file) == "" {
+            True ->
+              Error(UnsafeWorkflowRecovery("recovery_session_file_missing"))
+            False -> {
+              use _ <- result.try(validate_continuation_workspace(
+                workspace_root,
+                run_root,
+                workspace_path,
+              ))
+              case simplifile.is_file(session_file) {
+                Ok(True) -> Ok(Nil)
+                _ ->
+                  Error(UnsafeWorkflowRecovery("recovery_session_file_missing"))
+              }
+            }
+          }
+      }
+  }
+}
+
+fn validate_continuation_workspace(
+  workspace_root: String,
+  run_root: String,
+  workspace_path: String,
+) -> Result(Nil, RecoveryError) {
+  let root_abs = path.absolute(workspace_root) |> result.unwrap(workspace_root)
+  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
+  let workspace_abs =
+    path.absolute(workspace_path) |> result.unwrap(workspace_path)
+  case
+    string.trim(workspace_abs) == ""
+    || workspace_abs == root_abs
+    || workspace_abs == run_root_abs
+  {
+    True -> Error(UnsafeWorkflowRecovery("recovery_workspace_unsafe"))
+    False ->
+      case
+        path.contains(root_abs, workspace_abs)
+        && path.contains(root_abs, run_root_abs)
+        && path.contains(run_root_abs, workspace_abs)
+      {
+        False -> Error(UnsafeWorkflowRecovery("recovery_workspace_unsafe"))
+        True ->
+          case simplifile.is_directory(workspace_abs) {
+            Ok(True) -> Ok(Nil)
+            _ -> Error(UnsafeWorkflowRecovery("recovery_workspace_missing"))
+          }
+      }
+  }
+}
+
+fn is_agent_step(dag: workflow_dag.WorkflowDag, step_id: String) -> Bool {
+  case workflow_dag.step_by_id(dag, step_id) {
+    Ok(workflow_dag.WorkflowStep(kind: workflow_dag.AgentStep(_), ..)) -> True
+    _ -> False
   }
 }
 
@@ -1066,18 +1497,10 @@ fn attempt_identity(
       _,
     ) -> #(run_id, step_id, attempt_index)
     projection.StepAttemptRunning(
-      run_id,
-      _,
-      step_id,
-      attempt_index,
-      _,
-      _,
-      _,
-      _,
-      _,
-      _,
-      _,
-      _,
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
     ) -> #(run_id, step_id, attempt_index)
     projection.StepAttemptFinishedStatus(
       run_id: run_id,
@@ -1086,12 +1509,10 @@ fn attempt_identity(
       ..,
     ) -> #(run_id, step_id, attempt_index)
     projection.StepAttemptInterruptedStatus(
-      run_id,
-      _,
-      step_id,
-      attempt_index,
-      _,
-      _,
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
     ) -> #(run_id, step_id, attempt_index)
     projection.StepAttemptSupersededStatus(
       run_id,

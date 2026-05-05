@@ -19,6 +19,7 @@ import scherzo/step_artifact
 import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_identity
@@ -76,6 +77,7 @@ pub type RecoveredRunContext {
     final_issue: Option(tracker_issue.Issue),
     turns: Int,
     warnings: List(String),
+    pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
   )
 }
 
@@ -150,11 +152,13 @@ pub type Dependencies {
     agent_step: fn(
       tracker_issue.Issue,
       StepContext,
-      String,
+      workflow_attempt.AgentPromptMode,
+      workflow_attempt.StepAttemptContext,
       config_types.EffectiveConfig,
       tracker.Client,
       fn(agent_types.RunnerUpdate) -> Nil,
       fn(process.Subject(worker_command.Command)) -> Nil,
+      fn(workflow_attempt.PiSessionObservation) -> Nil,
     ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
     checkpoint: workflow_checkpoint.Writer,
   )
@@ -166,6 +170,7 @@ pub type ResumeState {
     workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
     next_attempt_indexes: Dict(String, Int),
     run_root: Option(String),
+    pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
   )
 }
 
@@ -239,22 +244,26 @@ pub fn default_dependencies() -> Dependencies {
     agent_step: fn(
       issue,
       context,
-      prompt,
+      prompt_mode,
+      attempt_context,
       effective,
       tracker_client,
       emit_update,
       command_ready,
+      record_pi_session,
     ) {
       let command_subject = process.new_subject()
-      run_attempt.run_prompt_in_workspace(
+      run_attempt.run_prompt_mode_in_workspace(
         issue,
-        prompt,
+        prompt_mode,
+        attempt_context,
         effective,
         tracker_client,
         fn(_, update) { emit_update(update) },
         command_subject,
         fn() { command_ready(command_subject) },
         context.workspace_path,
+        record_pi_session,
       )
     },
     checkpoint: workflow_checkpoint.noop_writer(),
@@ -301,22 +310,21 @@ pub fn execute_with_resume(
     orchestrator,
     tracker_client,
     secrets,
-    RecoveredRun(
-      RecoveredRunContext(
-        workflow_id: dag.id,
-        workflow_fingerprint: "",
-        run_id: run_id,
-        run_root: run_root_value,
-        scheduler_statuses: scheduler_state.statuses,
-        artifacts: resume.artifacts,
-        prepared_workspaces: resume.workspaces,
-        step_attempts: resume.next_attempt_indexes,
-        token_totals: session_tokens.zero_token_totals(),
-        final_issue: None,
-        turns: 0,
-        warnings: [],
-      ),
-    ),
+    RecoveredRun(RecoveredRunContext(
+      workflow_id: dag.id,
+      workflow_fingerprint: "",
+      run_id: run_id,
+      run_root: run_root_value,
+      scheduler_statuses: scheduler_state.statuses,
+      artifacts: resume.artifacts,
+      prepared_workspaces: resume.workspaces,
+      step_attempts: resume.next_attempt_indexes,
+      token_totals: session_tokens.zero_token_totals(),
+      final_issue: None,
+      turns: 0,
+      warnings: [],
+      pi_session_continuations: resume.pi_session_continuations,
+    )),
     dependencies,
   )
 }
@@ -350,6 +358,7 @@ pub fn execute_with_context(
         None,
         0,
         True,
+        dict.new(),
       )
     RecoveredRun(recovered) ->
       case recovered.workflow_id != dag.id {
@@ -398,6 +407,7 @@ pub fn execute_with_context(
                 recovered.final_issue,
                 recovered.turns,
                 cleanup_allowed,
+                recovered.pi_session_continuations,
               )
             }
           }
@@ -473,6 +483,7 @@ fn loop(
   final_issue: Option(tracker_issue.Issue),
   turns: Int,
   cleanup_allowed: Bool,
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case workflow_scheduler.outcome(dag, scheduler_state) {
     workflow_scheduler.WorkflowSucceeded -> {
@@ -670,6 +681,7 @@ fn loop(
                 turns,
                 cleanup_allowed,
                 recovered_execution,
+                pi_session_continuations,
               )
             }
           }
@@ -928,6 +940,7 @@ fn execute_prepared_steps(
   turns: Int,
   cleanup_allowed: Bool,
   recovered_execution: Bool,
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case starts {
     [] ->
@@ -949,17 +962,20 @@ fn execute_prepared_steps(
         final_issue,
         turns,
         cleanup_allowed,
+        pi_session_continuations,
       )
     _ -> {
       case
         run_prepared_batch(
           starts,
           issue,
+          dag,
           orchestrator,
           tracker_client,
           secrets,
           dependencies,
           artifacts,
+          pi_session_continuations,
         )
       {
         Error(StepBatchStartError(reason, batch_cleanup_allowed)) -> {
@@ -1011,6 +1027,7 @@ fn execute_prepared_steps(
             turns,
             True,
             recovered_execution,
+            pi_session_continuations,
           )
         }
         Ok(StepBatchFatal(result)) ->
@@ -1034,11 +1051,13 @@ fn execute_prepared_steps(
 fn run_prepared_batch(
   starts: List(PreparedStart),
   issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
 ) -> Result(StepBatchOutcome, StepBatchStartError) {
   let was_trapping_exits = process_ext.trap_exits(True)
   let subject = process.new_subject()
@@ -1047,11 +1066,13 @@ fn run_prepared_batch(
       starts,
       subject,
       issue,
+      dag,
       orchestrator,
       tracker_client,
       secrets,
       dependencies,
       artifacts,
+      pi_session_continuations,
     )
   case spawned {
     Error(error) -> {
@@ -1085,21 +1106,25 @@ fn spawn_prepared_steps(
   starts: List(PreparedStart),
   subject: process.Subject(StepExecutionResult),
   issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
 ) -> Result(List(SpawnedStepWorker), StepBatchStartError) {
   spawn_prepared_steps_loop(
     starts,
     subject,
     issue,
+    dag,
     orchestrator,
     tracker_client,
     secrets,
     dependencies,
     artifacts,
+    pi_session_continuations,
     [],
   )
 }
@@ -1108,11 +1133,13 @@ fn spawn_prepared_steps_loop(
   starts: List(PreparedStart),
   subject: process.Subject(StepExecutionResult),
   issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
   acc: List(SpawnedStepWorker),
 ) -> Result(List(SpawnedStepWorker), StepBatchStartError) {
   case starts {
@@ -1124,16 +1151,27 @@ fn spawn_prepared_steps_loop(
           step.id,
           workspace.attempt_index,
         )
-      case
-        dependencies.checkpoint.step_started(
-          workspace.run_id,
-          workspace.workflow_id,
-          step.id,
-          workspace.attempt_index,
-          session_id,
-          None,
-        )
-      {
+      let start_result = case dict.get(pi_session_continuations, step.id) {
+        Ok(continuation) ->
+          dependencies.checkpoint.step_continuation_started(
+            workspace.run_id,
+            workspace.workflow_id,
+            step.id,
+            workspace.attempt_index,
+            continuation.session_id,
+          )
+        Error(_) ->
+          dependencies.checkpoint.step_started(
+            workspace.run_id,
+            workspace.workflow_id,
+            step.id,
+            workspace.attempt_index,
+            session_id,
+            None,
+            step_is_continuation_capable(step, orchestrator),
+          )
+      }
+      case start_result {
         Error(error) -> {
           terminate_step_workers(monitor_to_pid(acc, dict.new()))
           Error(StepBatchStartError(
@@ -1150,11 +1188,13 @@ fn spawn_prepared_steps_loop(
                   step,
                   workspace,
                   issue,
+                  dag,
                   orchestrator,
                   tracker_client,
                   secrets,
                   dependencies,
                   artifacts,
+                  pi_session_continuations,
                 )
               process.send(
                 subject,
@@ -1172,11 +1212,13 @@ fn spawn_prepared_steps_loop(
             rest,
             subject,
             issue,
+            dag,
             orchestrator,
             tracker_client,
             secrets,
             dependencies,
             artifacts,
+            pi_session_continuations,
             [
               SpawnedStepWorker(step_id: step.id, pid: pid, monitor: monitor),
               ..acc
@@ -1243,12 +1285,16 @@ fn is_fatal_result(
   result: StepExecutionResult,
   failure_policies: Dict(String, workflow_dag.FailurePolicy),
 ) -> Bool {
-  case step_artifact.succeeded(result.artifact.status) {
-    True -> False
+  case is_recovery_resume_validation_artifact(result.artifact) {
+    True -> True
     False ->
-      case dict.get(failure_policies, result.step_id) {
-        Ok(workflow_dag.ContinueWorkflow) -> False
-        _ -> True
+      case step_artifact.succeeded(result.artifact.status) {
+        True -> False
+        False ->
+          case dict.get(failure_policies, result.step_id) {
+            Ok(workflow_dag.ContinueWorkflow) -> False
+            _ -> True
+          }
       }
   }
 }
@@ -1483,7 +1529,7 @@ fn finish_fatal_batch_result(
     cleanup_if_allowed(run_root, orchestrator, dependencies, cleanup_allowed)
   Error(WorkflowRunFailure(
     reason: reason,
-    agent_reason: None,
+    agent_reason: agent_reason_for_artifact(result.artifact),
     artifacts: artifacts,
     run_root: run_root,
     failed_step_id: Some(result.step_id),
@@ -1559,6 +1605,7 @@ fn apply_prepared_results(
   turns: Int,
   cleanup_allowed: Bool,
   recovered_execution: Bool,
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case starts {
     [] ->
@@ -1580,6 +1627,7 @@ fn apply_prepared_results(
         final_issue,
         turns,
         cleanup_allowed,
+        pi_session_continuations,
       )
     [PreparedStart(step: step, workspace: workspace), ..rest] -> {
       let assert Ok(result) = dict.get(result_by_step, step.id)
@@ -1725,6 +1773,7 @@ fn apply_prepared_results(
                     turns + result.turns,
                     cleanup_allowed,
                     recovered_execution,
+                    pi_session_continuations,
                   )
                 }
               }
@@ -1800,11 +1849,13 @@ fn run_step(
   step: workflow_dag.WorkflowStep,
   workspace: workspace_run.PreparedStepWorkspace,
   issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
   tracker_client: tracker.Client,
   secrets: List(String),
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
 ) -> #(
   step_artifact.StepArtifact,
   session_tokens.TokenTotals,
@@ -1829,7 +1880,190 @@ fn run_step(
         0,
       )
     }
-    workflow_dag.AgentStep(prompt_ref) -> {
+    workflow_dag.AgentStep(prompt_ref) ->
+      run_agent_step(
+        step,
+        prompt_ref,
+        context,
+        issue,
+        dag,
+        orchestrator,
+        tracker_client,
+        secrets,
+        dependencies,
+        artifacts,
+        pi_session_continuations,
+      )
+  }
+}
+
+fn run_agent_step(
+  step: workflow_dag.WorkflowStep,
+  prompt_ref: workflow_dag.PromptRef,
+  context: StepContext,
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  dependencies: Dependencies,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+) -> #(
+  step_artifact.StepArtifact,
+  session_tokens.TokenTotals,
+  Option(tracker_issue.Issue),
+  Int,
+) {
+  case
+    prompt_mode_for_step(
+      step,
+      prompt_ref,
+      issue,
+      artifacts,
+      pi_session_continuations,
+    )
+  {
+    Error(_) -> #(
+      step_artifact.from_command_result(
+        step.id,
+        1,
+        "",
+        "template render failed",
+        False,
+        secrets,
+        orchestrator.artifact_limits,
+      ),
+      session_tokens.zero_token_totals(),
+      None,
+      0,
+    )
+    Ok(prompt_mode) -> {
+      let effective = effective_for_step(orchestrator, step)
+      let continuation = case dict.get(pi_session_continuations, step.id) {
+        Ok(value) -> Some(value)
+        Error(_) -> None
+      }
+      let attempt_context =
+        workflow_attempt_context(
+          context,
+          dag,
+          orchestrator,
+          prompt_mode,
+          continuation,
+        )
+      case
+        dependencies.agent_step(
+          issue,
+          context,
+          prompt_mode,
+          attempt_context,
+          effective,
+          tracker_client,
+          fn(_) { Nil },
+          fn(_) { Nil },
+          fn(observation) {
+            let _ =
+              dependencies.checkpoint.step_pi_session_recorded(observation)
+            Nil
+          },
+        )
+      {
+        Ok(success) -> #(
+          step_artifact.from_agent_success(
+            step.id,
+            success,
+            secrets,
+            orchestrator.artifact_limits,
+          ),
+          success.tokens,
+          success.final_issue,
+          success.turns,
+        )
+        Error(failure) -> #(
+          agent_failure_artifact(
+            step.id,
+            failure,
+            secrets,
+            orchestrator.artifact_limits,
+          ),
+          failure.tokens,
+          failure.final_issue,
+          0,
+        )
+      }
+    }
+  }
+}
+
+fn agent_failure_artifact(
+  step_id: String,
+  failure: agent_types.WorkerFailure,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+) -> step_artifact.StepArtifact {
+  let detail = "agent step failed:" <> error.agent_code(failure.reason)
+  let stderr = case is_recovery_resume_validation_failure(failure.reason) {
+    True ->
+      "SCHERZO_FAILURE_CODE="
+      <> workflow_attempt.recovery_pi_resume_validation_failed
+      <> "\n"
+      <> detail
+    False -> detail
+  }
+  step_artifact.from_command_result(
+    step_id,
+    1,
+    "",
+    stderr,
+    False,
+    secrets,
+    limits,
+  )
+}
+
+fn is_recovery_resume_validation_failure(
+  reason: error.AgentRunnerError,
+) -> Bool {
+  case reason {
+    error.PiFailed(error.PiProtocolError(message)) ->
+      message == workflow_attempt.recovery_pi_resume_validation_failed
+    _ -> False
+  }
+}
+
+fn is_recovery_resume_validation_artifact(
+  artifact: step_artifact.StepArtifact,
+) -> Bool {
+  artifact.failure_code
+  == Some(workflow_attempt.recovery_pi_resume_validation_failed)
+}
+
+fn agent_reason_for_artifact(
+  artifact: step_artifact.StepArtifact,
+) -> Option(error.AgentRunnerError) {
+  case is_recovery_resume_validation_artifact(artifact) {
+    True ->
+      Some(
+        error.PiFailed(error.PiProtocolError(
+          workflow_attempt.recovery_pi_resume_validation_failed,
+        )),
+      )
+    False -> None
+  }
+}
+
+fn prompt_mode_for_step(
+  step: workflow_dag.WorkflowStep,
+  prompt_ref: workflow_dag.PromptRef,
+  issue: tracker_issue.Issue,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+) -> Result(workflow_attempt.AgentPromptMode, Nil) {
+  case dict.get(pi_session_continuations, step.id) {
+    Ok(continuation) ->
+      Ok(workflow_attempt.RecoveryPrompt(continuation.recovery_prompt))
+    Error(_) -> {
       let prompt_template = case prompt_ref {
         workflow_dag.PromptInline(prompt) -> prompt
         workflow_dag.PromptFile(path) -> path
@@ -1842,62 +2076,53 @@ fn run_step(
           step_artifact.to_template_locals(artifacts),
         )
       {
-        Error(_) -> #(
-          step_artifact.from_command_result(
-            step.id,
-            1,
-            "",
-            "template render failed",
-            False,
-            secrets,
-            orchestrator.artifact_limits,
-          ),
-          session_tokens.zero_token_totals(),
-          None,
-          0,
-        )
-        Ok(prompt) -> {
-          let effective = effective_for_step(orchestrator, step)
-          case
-            dependencies.agent_step(
-              issue,
-              context,
-              prompt,
-              effective,
-              tracker_client,
-              fn(_) { Nil },
-              fn(_) { Nil },
-            )
-          {
-            Ok(success) -> #(
-              step_artifact.from_agent_success(
-                step.id,
-                success,
-                secrets,
-                orchestrator.artifact_limits,
-              ),
-              success.tokens,
-              success.final_issue,
-              success.turns,
-            )
-            Error(failure) -> #(
-              step_artifact.from_command_result(
-                step.id,
-                1,
-                "",
-                "agent step failed:" <> error.agent_code(failure.reason),
-                False,
-                secrets,
-                orchestrator.artifact_limits,
-              ),
-              failure.tokens,
-              failure.final_issue,
-              0,
-            )
-          }
-        }
+        Ok(prompt) -> Ok(workflow_attempt.OriginalPrompt(prompt))
+        Error(_) -> Error(Nil)
       }
     }
+  }
+}
+
+fn workflow_attempt_context(
+  context: StepContext,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  prompt_mode: workflow_attempt.AgentPromptMode,
+  continuation: Option(workflow_attempt.PiContinuation),
+) -> workflow_attempt.StepAttemptContext {
+  let workflow_fingerprint =
+    workflow_attempt.workflow_fingerprint(dag, orchestrator)
+    |> result.unwrap("")
+  workflow_attempt.StepAttemptContext(
+    run_id: context.run_id,
+    issue_id: context.issue_id,
+    issue_identifier: context.issue_identifier,
+    workflow_id: context.workflow_id,
+    workflow_fingerprint: workflow_fingerprint,
+    step_id: context.step_id,
+    workspace_name: context.workspace_name,
+    attempt_index: context.attempt_index,
+    workspace_path: context.workspace_path,
+    continuation_capable: case prompt_mode {
+      workflow_attempt.RecoveryPrompt(_) -> True
+      workflow_attempt.OriginalPrompt(_) ->
+        orchestrator.effective.pi.session_persistence.enabled
+    },
+    continuation_session_file: case continuation {
+      Some(value) -> Some(value.session_file)
+      None -> None
+    },
+  )
+}
+
+fn step_is_continuation_capable(
+  step: workflow_dag.WorkflowStep,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Bool {
+  case step.kind {
+    workflow_dag.AgentStep(_) ->
+      orchestrator.effective.pi.session_persistence.enabled
+    workflow_dag.CommandStep(_, _) -> False
   }
 }
 
@@ -1956,9 +2181,23 @@ fn effective_for_step(
     model_config.resolve(orchestrator.model_settings, step.model_settings)
   let command =
     model_config.apply_to_command(orchestrator.effective.pi.command, settings)
+  let argv_command = case orchestrator.effective.pi.argv_command {
+    Some(argv) ->
+      Some(
+        config_types.PiArgvCommand(
+          ..argv,
+          args: model_config.apply_to_argv_args(argv.args, settings),
+        ),
+      )
+    None -> None
+  }
   config_types.EffectiveConfig(
     ..orchestrator.effective,
-    pi: config_types.PiConfig(..orchestrator.effective.pi, command: command),
+    pi: config_types.PiConfig(
+      ..orchestrator.effective.pi,
+      command: command,
+      argv_command: argv_command,
+    ),
   )
 }
 
