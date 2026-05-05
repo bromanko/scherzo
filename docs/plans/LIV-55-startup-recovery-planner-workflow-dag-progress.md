@@ -15,7 +15,7 @@ Scherzo workflows are directed acyclic graphs, or DAGs: each workflow YAML file 
 
 This plan designs and implements a pure startup recovery planner only. Pure means the planner receives all facts as arguments and returns a value; it does not read files, call Linear, spawn agents, run commands, append ledgers, verify artifact files, clean directories, or mutate runtime state. The daemon and workflow runner will not be changed by this implementation ticket. In particular, this ticket is standalone-only: it defines planner-facing input types that mirror the durable workflow checkpoint contract from the checked-in LIV-54 plan, but it does not implement an adapter from `src/scherzo/state/projection.gleam`, does not import `src/scherzo/state/recovery.gleam`, and does not wire daemon startup. A later integration ticket must build and test the adapter once the durable checkpoint implementation exists in source.
 
-Backward compatibility with ledgers or snapshots written before workflow-resumption work is explicitly out of scope. The current tree still uses durable schema version `1`, and `src/scherzo/state/record.gleam`, `src/scherzo/state/projection.gleam`, and `src/scherzo/state/recovery.gleam` do not yet expose workflow run or step-attempt projection types. That absence is not an open question for this plan; it is the reason this ticket remains standalone. The planner contract below embeds the durable fields a later adapter must supply, so the future adapter does not have to invent recovery semantics.
+Backward compatibility with ledgers or snapshots written before workflow-resumption work is explicitly out of scope. At implementation time, the LIV-54 schema version `2` source had already landed: `src/scherzo/state/record.gleam`, `src/scherzo/state/projection.gleam`, and `src/scherzo/state/recovery.gleam` now expose workflow run and step-attempt records and integration recovery helpers. This ticket remains standalone anyway. The pure planner must not import those state modules, must not replace their current recovery behavior, and must not wire daemon startup. The planner contract below embeds the durable fields a later adapter can supply so the adapter does not have to invent recovery semantics.
 
 ## Strategy Overview
 
@@ -31,7 +31,7 @@ The simplest plausible alternative is to recover only at the whole-run level: if
 
 Another option is to extend `src/scherzo/workflow_scheduler.gleam` directly with recovery behavior. That module currently models live execution statuses as pending, running, succeeded, failed-continued, and failed-fatal. It is intentionally small and focused on selecting live ready steps. Recovery needs additional concepts: prepared-but-not-started attempts, durable started attempts, recorded interruption facts, superseded attempts, artifact verification boundaries, drift errors, inspection requests, and top-level workflow terminal records. Folding those concerns into the live scheduler would make the scheduler harder to reason about. This plan still reuses `workflow_scheduler.ready_steps` for the part it owns: selecting ready pending steps after recovery states have been reduced to the live scheduler's statuses.
 
-A third option is to implement the projection adapter now. That is rejected for this ticket because the current source tree does not yet contain the schema version `2` workflow checkpoint records or workflow recovery candidate projection. Building an adapter against non-existent types would either block on stakeholder clarification or invent a second durable projection. This plan instead defines a stable pure planner input contract that mirrors the checked-in LIV-54 durable contract and leaves adapter implementation to the later ticket that has the real projection source available.
+A third option is to implement a projection adapter now. That is rejected for this ticket even though the schema version `2` workflow checkpoint source has landed, because the Linear issue and workflow contract explicitly scope this implementation to a standalone pure planner. Importing `src/scherzo/state/projection.gleam` or `src/scherzo/state/recovery.gleam` here would mix policy design with existing side-effecting startup recovery and make this ticket harder to review. This plan instead defines a stable pure planner input contract that mirrors the checked-in LIV-54 durable contract and leaves any adapter that feeds real projection data into this module to a later integration ticket.
 
 A fourth option is to immediately wire recovery into `src/scherzo/orchestrator/daemon.gleam` startup. That is too large for this ticket and would mix policy design with side effects. This plan deliberately stops at a pure planner and test suite so the recovery semantics can be reviewed before any production path invokes them.
 
@@ -55,18 +55,23 @@ A seventh risk is duplicating live scheduler behavior incorrectly. The counterme
 
 - [x] (2026-05-03 00:00Z) Drafted the first ExecPlan for a pure startup recovery planner without source implementation.
 - [x] (2026-05-03 00:00Z) Incorporated adversarial review findings: aligned the planner contract with LIV-54 durable records, removed the open prerequisite clarification by making the ticket standalone-only, consumed recorded finished outcomes, made cleanup under drift conservative, added prepared and superseded attempts, and required scheduler parity coverage.
-- [ ] Add the pure planner module and durable-contract-shaped type model.
-- [ ] Add tests for durable attempt classification, recorded outcomes, drift blocking, scheduler-backed dependency planning, multiple attempts, idempotence, artifact-boundary behavior, and cleanup safety.
-- [ ] Run formatting and the Gleam test suite.
-- [ ] Update this ExecPlan with implementation discoveries, decisions, and outcomes.
+- [x] (2026-05-04 21:00Z) Added `src/scherzo/workflow_recovery_planner.gleam` with durable-contract-shaped input types, recovery state/output action types, conservative default policy, drift gates, latest-attempt classification, artifact preservation, idempotent interruption intents, scheduler-backed start selection, workflow-finish intents, and durable-terminal cleanup requests.
+- [x] (2026-05-04 21:08Z) Added `test/workflow_recovery_planner_test.gleam` covering unattempted, completed, failed-continued, failed-fatal, prepared, started, already-interrupted, superseded, multiple-attempt, duplicate-index, drift, malformed-attempt, scheduler parity, artifact-boundary, terminal-finish, cleanup, policy, and idempotence cases.
+- [x] (2026-05-04 21:08Z) Ran targeted planner validation through `direnv exec . gleam test test/workflow_recovery_planner_test.gleam`; because Gleam's test runner compiled and ran the full package test main, it reported `692 passed, no failures`.
+- [x] (2026-05-04 21:09Z) Formatted the new planner and test files with `direnv exec . gleam format src/scherzo/workflow_recovery_planner.gleam test/workflow_recovery_planner_test.gleam`.
+- [x] (2026-05-04 21:12Z) Ran final repository formatting validation with `direnv exec . gleam format --check src test`; it exited with status `0`.
+- [x] (2026-05-04 21:12Z) Ran final full test validation with `direnv exec . gleam test`; it reported `692 passed, no failures`.
+- [x] (2026-05-04 21:12Z) Updated this ExecPlan with implementation discoveries, decisions, validation results, and completion retrospective.
+- [x] (2026-05-04 21:18Z) Confirmed post-review session recovery candidate behavior: candidates are emitted only for active, no-drift runs with a matching workflow definition, issue fingerprint drift suppresses candidates, and durable finished runs do not expose stale candidates.
+- [x] (2026-05-04 21:18Z) Ran post-feedback targeted planner validation with `direnv exec . gleam test test/workflow_recovery_planner_test.gleam`; because Gleam's test runner compiled and ran the package test main, it reported `694 passed, no failures`.
 
 ## Surprises & Discoveries
 
 - Observation: The current live workflow scheduler already treats `FailedContinued` as a complete dependency.
   Evidence: `src/scherzo/workflow_scheduler.gleam` defines `StepRuntime` with `FailedContinued`, and `workflow_scheduler.ready_steps` uses `Succeeded` and `FailedContinued` as dependency-complete states.
 
-- Observation: Current startup recovery is run-level and not step-attempt-aware.
-  Evidence: `src/scherzo/state/recovery.gleam` plans around issue-level `RunStarted`, `RunFinished`, and `RunInterrupted` projections, while workflow step-attempt recovery states do not exist in the inspected module.
+- Observation: At plan drafting, startup recovery was described as run-level and not step-attempt-aware, but implementation began after LIV-54 had already added workflow recovery helpers.
+  Evidence: `src/scherzo/state/recovery.gleam` now defines workflow recovery candidate and finalization helpers that import projection and artifact-store modules. LIV-63 still intentionally adds a separate pure planner and does not modify that startup path.
 
 - Observation: The daemon already has a startup shape that replays durable state and refreshes Linear issue state before planning recovery.
   Evidence: `src/scherzo/orchestrator/daemon.gleam` has `load_startup_recovery`, which replays the ledger, fetches issue states by known ids, and calls `recovery.plan`. A later integration can use the same shape after this pure planner exists.
@@ -74,8 +79,14 @@ A seventh risk is duplicating live scheduler behavior incorrectly. The counterme
 - Observation: The checked-in LIV-54 plan defines the durable checkpoint contract this planner must align with, including `WorkflowRunStarted`, `WorkflowRunFinished`, `StepAttemptPrepared`, `StepAttemptStarted`, `StepAttemptFinished(outcome, artifact_ref, artifact_sha256, ...)`, `StepAttemptInterrupted`, and `StepAttemptSuperseded`.
   Evidence: `docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md` restates those record constructors and says finished outcomes are `completed`, `failed_continued`, or `failed_fatal`.
 
-- Observation: The current source tree does not yet implement the LIV-54 schema version `2` workflow checkpoint records.
-  Evidence: `src/scherzo/state/record.gleam` still defines `pub const schema_version = 1`, and searches of `src/scherzo/state/record.gleam`, `src/scherzo/state/projection.gleam`, and `src/scherzo/state/recovery.gleam` find no `WorkflowRunStarted` or `StepAttemptPrepared` constructors.
+- Observation: The LIV-54 schema version `2` workflow checkpoint source landed before this implementation began, but this ticket still needed to remain standalone.
+  Evidence: `src/scherzo/state/record.gleam` now defines `pub const schema_version = 2`, `WorkflowRunStarted`, and `StepAttemptPrepared`; `src/scherzo/state/projection.gleam` now defines `WorkflowRunStatus` and `StepAttemptStatus`; `src/scherzo/state/recovery.gleam` now imports projection and artifact-store modules. The new pure planner module imports only `step_artifact`, `workflow_dag`, and `workflow_scheduler` from Scherzo.
+
+- Observation: The workflow DAG parser requires a single terminal sink, so the originally sketched independent-root and same-workspace-root fixture YAML snippets are invalid as written.
+  Evidence: `src/scherzo/workflow_dag.gleam` runs `validate_single_terminal_sink`, and the implemented scheduler parity fixtures in `test/workflow_recovery_planner_test.gleam` add a final join step while keeping `docs` and `tests` as independent ready roots.
+
+- Observation: The current `StepArtifact` field for command status is named `exit_code`, not `command_exit_code`.
+  Evidence: `src/scherzo/step_artifact.gleam` defines `StepArtifact(..., exit_code: Option(Int), ...)`, and the new planner tests construct artifacts with `exit_code: Some(0)` or `Some(1)`.
 
 ## Decision Log
 
@@ -111,9 +122,29 @@ A seventh risk is duplicating live scheduler behavior incorrectly. The counterme
   Rationale: The live scheduler already owns capacity and same-workspace selection. The recovery planner should not fork those semantics when it can reduce safe recovery states to scheduler statuses.
   Date: 2026-05-03
 
+- Decision: Keep the planner completely standalone even after discovering that LIV-54 schema version `2` source and recovery helpers are present.
+  Rationale: LIV-63 asks for a standalone pure planner and explicitly excludes daemon startup wiring, projection adapters, artifact-store adapters, file I/O, and Linear/pi calls. The existing source recovery path can coexist while this module establishes reviewable policy semantics for a future adapter.
+  Date: 2026-05-04
+
+- Decision: Resolve duplicate synthetic attempt indexes with a deterministic status priority where finished, interrupted, and superseded statuses sort after prepared and started statuses, and emit a warning.
+  Rationale: Durable projection code should not feed duplicate latest statuses, but tests can synthesize malformed facts. Prefering terminal statuses prevents a duplicate started/interrupted attempt from creating a second interruption intent while keeping the warning visible.
+  Date: 2026-05-04
+
+- Decision: Add final join steps to parallel-root scheduler parity fixtures.
+  Rationale: The current workflow DAG validator requires a single terminal sink. The final join keeps the tests valid while still proving that independent root steps and same-workspace root steps are selected exactly like `workflow_scheduler.ready_steps`.
+  Date: 2026-05-04
+
+- Decision: Emit step-derived output lists, such as interruption intents, inspection requests, park requests, and session candidates, in DAG step order instead of dictionary value order.
+  Rationale: The planner is intended to be deterministic. DAG order is already the scheduler's selection order and avoids depending on map iteration behavior for review-visible recovery intents.
+  Date: 2026-05-04
+
+- Decision: Expose agent session recovery candidates only for active runs with no drift and a matching current workflow definition, and suppress them for durable terminal runs.
+  Rationale: A session candidate is only useful as future operator-inspection input while a run is still active and aligned with the current workflow. Issue drift, workflow drift, unavailable current facts, or an already finished durable run make session continuation stale or unsafe, so the planner must not surface candidates in those cases.
+  Date: 2026-05-04
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+As of 2026-05-04 21:18Z, the standalone planner and test suite are implemented, post-review feedback is incorporated, and targeted validation is green. The new module returns inert recovery data only: explicit step recovery states, preserved verified artifacts, start intents selected through the live scheduler, interruption record intents, workflow-finish record intents, inspection and park requests, cleanup requests for already-finished durable runs, session recovery candidates that are limited to active no-drift runs with a matching workflow definition, drift errors, and warnings. No daemon, runner, projection, artifact-store, Linear, or pi integration was added. Post-feedback targeted validation passed via `direnv exec . gleam test test/workflow_recovery_planner_test.gleam`, which compiled and ran the package test main with `694 passed, no failures`. Earlier repository validation also passed before the review-applied tests increased the suite count: `direnv exec . gleam format --check src test` exited with status `0`, and `direnv exec . gleam test` reported `692 passed, no failures`; the dedicated final validation workflow should rerun the full commands.
 
 ## Context and Orientation
 
@@ -125,9 +156,9 @@ The current live scheduler lives in `src/scherzo/workflow_scheduler.gleam`. It c
 
 The current executor lives in `src/scherzo/workflow_run.gleam`. It prepares workspaces, starts ready batches, runs command and agent steps, gathers `step_artifact.StepArtifact` values, passes artifacts into downstream prompts, and cleans the run root on success or fatal failure. This ticket does not change that executor.
 
-Durable run-level state currently lives under `src/scherzo/state/`. `src/scherzo/state/record.gleam` defines ledger record shapes such as `RunStarted`, `RunFinished`, `RunInterrupted`, `KnownWorkspace`, and parked issue records. `src/scherzo/state/projection.gleam` folds ledger records into a projection. `src/scherzo/state/recovery.gleam` plans run-level startup recovery. The checked-in LIV-54 plan defines future schema version `2` workflow facts. This plan consumes durable-contract-shaped facts but does not require those future source modules to exist yet.
+Durable state currently lives under `src/scherzo/state/`. `src/scherzo/state/record.gleam` now includes schema version `2` workflow run and step-attempt record constructors, `src/scherzo/state/projection.gleam` folds those records into workflow run and step attempt projection statuses, and `src/scherzo/state/recovery.gleam` contains existing integration recovery helpers. This plan consumes durable-contract-shaped facts through its own pure input types and deliberately does not import those state modules.
 
-The daemon startup flow in `src/scherzo/orchestrator/daemon.gleam` already shows the side-effect boundary a later integration can use: replay durable state, refresh issues from the tracker, call a pure planning function, append recovery records, then perform cleanup or schedule timers. This plan only builds the workflow-specific pure planning function and tests.
+The daemon startup flow in `src/scherzo/orchestrator/daemon.gleam` owns side effects such as replaying durable state, refreshing issues from the tracker, appending recovery records, spawning recovered work, and cleanup. This plan only builds the separate workflow-specific pure planning function and tests; it does not call or change daemon startup.
 
 ## Preconditions and Verified Facts
 
@@ -135,7 +166,7 @@ The repository is a Gleam project. `gleam.toml` declares package name `scherzo`,
 
 The inspected tree contains `src/scherzo/workflow_dag.gleam`, `src/scherzo/workflow_scheduler.gleam`, `src/scherzo/workflow_run.gleam`, `src/scherzo/step_artifact.gleam`, `src/scherzo/state/record.gleam`, `src/scherzo/state/projection.gleam`, `src/scherzo/state/recovery.gleam`, and `src/scherzo/orchestrator/daemon.gleam`. It also contains workflow tests including `test/workflow_scheduler_test.gleam` and `test/workflow_run_test.gleam`.
 
-The current source tree still uses durable schema version `1`. `src/scherzo/state/record.gleam` defines `pub const schema_version = 1`, and the state modules do not expose `WorkflowRunStarted`, `WorkflowRunFinished`, `StepAttemptPrepared`, `StepAttemptStarted`, `StepAttemptFinished`, `StepAttemptInterrupted`, or `StepAttemptSuperseded`. Therefore the implementation must not add a projection adapter in this ticket. It should proceed with only `src/scherzo/workflow_recovery_planner.gleam` and `test/workflow_recovery_planner_test.gleam`.
+The current source tree now uses durable schema version `2`. `src/scherzo/state/record.gleam` defines `WorkflowRunStarted`, `WorkflowRunFinished`, `StepAttemptPrepared`, `StepAttemptStarted`, `StepAttemptFinished`, `StepAttemptInterrupted`, and `StepAttemptSuperseded`, and the projection/recovery modules expose workflow run and step attempt state. Despite that, this ticket must not add a projection adapter or daemon wiring. It should proceed with only `src/scherzo/workflow_recovery_planner.gleam`, `test/workflow_recovery_planner_test.gleam`, and living-document updates in this plan.
 
 The durable contract this planner aligns with is restated here so the implementer does not need prior-plan memory. A workflow run start fact has `run_id`, `workflow_id`, `workflow_fingerprint`, `issue_id`, `issue_identifier`, `issue_fingerprint`, `observed_updated_at_ms`, and `run_root`. A top-level workflow finished fact has `run_id`, `workflow_id`, `issue_id`, an outcome string `completed`, `failed_fatal`, or `cancelled`, plus token and turn counts. A prepared step attempt has `run_id`, `workflow_id`, `step_id`, `attempt_index`, `workspace_name`, `workspace_path`, `run_root`, and optional source workspace fields. A started step attempt has `run_id`, `workflow_id`, `step_id`, `attempt_index`, `operator_session_id`, and `external_session_ref`. A finished step attempt has `run_id`, `workflow_id`, `step_id`, `attempt_index`, recorded outcome string `completed`, `failed_continued`, or `failed_fatal`, `artifact_ref`, `artifact_sha256`, `workspace_name`, `workspace_path`, `token_total`, and `turns`. An interrupted attempt has `run_id`, `workflow_id`, `step_id`, `attempt_index`, and `reason`. A superseded attempt has `run_id`, `workflow_id`, `step_id`, `attempt_index`, `superseded_by_attempt_index`, and `reason`.
 
@@ -527,7 +558,7 @@ Also define `base_run(step_attempts)` returning `WorkflowRunFacts` with `run_id:
 
 20. Update this ExecPlan's Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective sections with actual implementation evidence.
 
-21. Commit after the tree is green. A suitable commit message is `Add workflow startup recovery planner`.
+21. Do not create a commit in this Scherzo workflow. The surrounding workflow contract says the publish step creates the final logical jj commit after review and validation are complete.
 
 ## Testing and Falsifiability
 
@@ -582,10 +613,10 @@ The following repository facts guided this plan:
     # Defines public StepArtifact and StepStatus constructors.
 
     src/scherzo/state/record.gleam
-    # Current source still has pub const schema_version = 1.
+    # Current source has pub const schema_version = 2 and workflow checkpoint record constructors.
 
     docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md
-    # Defines future workflow checkpoint records and artifact verification contract.
+    # Defines the workflow checkpoint records and artifact verification contract this planner mirrors.
 
 Self-review checklist for this plan: it defines pure inputs and outputs, mirrors durable prepared/started/finished/interrupted/superseded facts, consumes recorded finished outcomes, defaults interrupted commands to inspection or park, blocks continuation on workflow or issue drift, avoids cleanup under drift unless a durable top-level finish record exists, handles multiple attempts and repeated startup idempotence, requires scheduler parity tests, keeps pi session continuation and projection adapters out of scope, and requests cleanup only for durable terminal run roots.
 
