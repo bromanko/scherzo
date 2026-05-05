@@ -13,6 +13,19 @@ steps:
     depends_on: [research]
     run: |
       set -eu
-      test -f research-findings.md
-      cat research-findings.md
+      findings=research-findings.md
+      test -f "$findings"
+      cat "$findings"
+
+      if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then
+        changed=$(jj diff --name-only -r @ --color=never)
+        changed=$(printf '%s\n' "$changed" | sed '/^[[:space:]]*$/d')
+        if [ "$changed" = "$findings" ]; then
+          jj abandon @ --color=never >&2
+        elif [ -n "$changed" ]; then
+          echo "unexpected repository changes after research workflow:" >&2
+          printf '%s\n' "$changed" >&2
+          exit 1
+        fi
+      fi
     workspace: main
