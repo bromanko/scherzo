@@ -3554,8 +3554,7 @@ fn run_workflow_worker(
         )
       {
         Ok(success) -> Ok(success.worker_success)
-        Error(failure) ->
-          Error(yaml_worker_failure_from_workflow(failure, issue))
+        Error(failure) -> Error(yaml_workflow_failure(failure, issue))
       }
     }
   }
@@ -3817,27 +3816,6 @@ fn run_yaml_agent_step(
   result
 }
 
-fn yaml_worker_failure_from_workflow(
-  failure: workflow_run.WorkflowRunFailure,
-  issue: tracker_issue.Issue,
-) -> agent_types.WorkerFailure {
-  case failure.agent_reason {
-    Some(reason) ->
-      agent_types.WorkerFailure(
-        reason: reason,
-        workspace_path: failure.run_root,
-        tokens: session_tokens.zero_token_totals(),
-        final_issue: Some(issue),
-      )
-    None ->
-      yaml_worker_failure(
-        workflow_run.failure_report(failure),
-        failure.run_root,
-        issue,
-      )
-  }
-}
-
 fn yaml_worker_failure(
   reason: String,
   workspace_path: Option(String),
@@ -3849,6 +3827,37 @@ fn yaml_worker_failure(
     tokens: session_tokens.zero_token_totals(),
     final_issue: Some(issue),
   )
+}
+
+fn yaml_workflow_failure(
+  failure: workflow_run.WorkflowRunFailure,
+  issue: tracker_issue.Issue,
+) -> agent_types.WorkerFailure {
+  let report = workflow_run.failure_report(failure)
+  case workflow_run.failed_command_failure(failure) {
+    Some(#(code, step_id)) ->
+      agent_types.WorkerFailure(
+        reason: error.WorkflowCommandFailed(
+          code: code,
+          step_id: step_id,
+          detail: report,
+        ),
+        workspace_path: failure.run_root,
+        tokens: session_tokens.zero_token_totals(),
+        final_issue: Some(issue),
+      )
+    None ->
+      case failure.agent_reason {
+        Some(reason) ->
+          agent_types.WorkerFailure(
+            reason: reason,
+            workspace_path: failure.run_root,
+            tokens: session_tokens.zero_token_totals(),
+            final_issue: Some(issue),
+          )
+        None -> yaml_worker_failure(report, failure.run_root, issue)
+      }
+  }
 }
 
 fn handle_worker_command_ready(
@@ -4062,6 +4071,12 @@ fn worker_failure_message(
     error.PiFailed(error.PiProtocolError(reason)) ->
       code <> ":pi_protocol_error:" <> log.redact("failure", reason, secrets)
     error.PiFailed(pi_error) -> code <> ":" <> error.pi_rpc_code(pi_error)
+    error.WorkflowCommandFailed(step_id: step_id, detail: detail, ..) ->
+      code
+      <> ":workflow_command_failed:"
+      <> step_id
+      <> ":"
+      <> log.redact("failure", detail, secrets)
     error.ProbeFailed(pi_error) -> code <> ":" <> error.pi_rpc_code(pi_error)
     error.PromptFailed(template_error) ->
       code <> ":" <> error.template_code(template_error)

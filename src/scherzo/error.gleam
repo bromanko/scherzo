@@ -51,6 +51,7 @@ pub type AgentRunnerError {
   WorkflowHookFailed(HookError)
   ProbeFailed(PiRpcError)
   PiFailed(PiRpcError)
+  WorkflowCommandFailed(code: String, step_id: String, detail: String)
   StateRefreshFailed(TrackerError)
   OperatorAbort
   OperatorStopAfterCurrentTurn
@@ -162,6 +163,7 @@ pub fn agent_code(error: AgentRunnerError) -> String {
     WorkflowHookFailed(_) -> "workflow_hook_failed"
     ProbeFailed(_) -> "agent_probe_failed"
     PiFailed(_) -> "agent_pi_failed"
+    WorkflowCommandFailed(code: code, ..) -> code
     StateRefreshFailed(_) -> "agent_state_refresh_failed"
     OperatorAbort -> "agent_operator_abort"
     OperatorStopAfterCurrentTurn -> "agent_operator_stop_after_current_turn"

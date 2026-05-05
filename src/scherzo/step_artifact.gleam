@@ -8,6 +8,7 @@ import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/log
+import scherzo/path
 import scherzo/result_artifact
 import scherzo/template
 import scherzo/workflow_dag
@@ -26,6 +27,7 @@ pub type StepArtifact {
     command: Option(String),
     duration_ms: Option(Int),
     diagnostic_path: Option(String),
+    failure_code: Option(String),
     stdout: String,
     stderr: String,
     timed_out: Bool,
@@ -66,6 +68,7 @@ pub fn to_json(artifact: StepArtifact) -> json.Json {
     #("command", option_string_to_json(artifact.command)),
     #("duration_ms", option_int_to_json(artifact.duration_ms)),
     #("diagnostic_path", option_string_to_json(artifact.diagnostic_path)),
+    #("failure_code", option_string_to_json(artifact.failure_code)),
     #("stdout", json.string(artifact.stdout)),
     #("stderr", json.string(artifact.stderr)),
     #("timed_out", json.bool(artifact.timed_out)),
@@ -123,6 +126,11 @@ pub fn decoder() -> decode.Decoder(StepArtifact) {
     None,
     decode.optional(decode.string),
   )
+  use failure_code <- decode.optional_field(
+    "failure_code",
+    None,
+    decode.optional(decode.string),
+  )
   use stdout <- decode.field("stdout", decode.string)
   use stderr <- decode.field("stderr", decode.string)
   use timed_out <- decode.field("timed_out", decode.bool)
@@ -141,6 +149,7 @@ pub fn decoder() -> decode.Decoder(StepArtifact) {
     command: command,
     duration_ms: duration_ms,
     diagnostic_path: diagnostic_path,
+    failure_code: failure_code,
     stdout: stdout,
     stderr: stderr,
     timed_out: timed_out,
@@ -194,6 +203,7 @@ pub fn from_agent_success(
     command: None,
     duration_ms: None,
     diagnostic_path: None,
+    failure_code: None,
     stdout: "",
     stderr: "",
     timed_out: False,
@@ -270,6 +280,11 @@ pub fn from_command_result_with_metadata(
   stdout_already_truncated: Bool,
   stderr_already_truncated: Bool,
 ) -> StepArtifact {
+  let status = status_from_exit(exit_code, timed_out)
+  let failure_code = case status {
+    StepSucceeded -> None
+    StepFailed -> failure_code_from_streams(stdout, stderr)
+  }
   let #(stdout, stdout_truncated) =
     cap_with_truncation(
       stdout,
@@ -286,13 +301,14 @@ pub fn from_command_result_with_metadata(
     )
   let #(command, _) =
     cap_optional(command, secrets, limits.template_field_max_chars)
-  let status = status_from_exit(exit_code, timed_out)
   let status_text = status_to_string(status)
   let summary =
     step_id
     <> " "
     <> status_text
-    <> " command exit_code="
+    <> " command"
+    <> failure_code_inline(failure_code)
+    <> " exit_code="
     <> int_to_string(exit_code)
     <> case timed_out {
       True -> " timed_out=true"
@@ -306,6 +322,7 @@ pub fn from_command_result_with_metadata(
     command: command,
     duration_ms: duration_ms,
     diagnostic_path: diagnostic_path,
+    failure_code: failure_code,
     stdout: stdout,
     stderr: stderr,
     timed_out: timed_out,
@@ -323,6 +340,7 @@ pub fn command_failure_summary(artifact: StepArtifact) -> Option(String) {
       let head =
         "command step failed: step="
         <> artifact.step_id
+        <> failure_code_inline(artifact.failure_code)
         <> command_inline(artifact.command)
         <> exit_inline(artifact.exit_code)
         <> duration_inline(artifact.duration_ms)
@@ -341,6 +359,7 @@ pub fn command_failure_details(artifact: StepArtifact) -> String {
   let metadata =
     "step: "
     <> artifact.step_id
+    <> failure_code_detail(artifact.failure_code)
     <> "\ncommand: "
     <> option_string(artifact.command, "<not recorded>")
     <> "\n"
@@ -352,6 +371,78 @@ pub fn command_failure_details(artifact: StepArtifact) -> String {
   let stdout = stream_detail("stdout", artifact.stdout)
   let stderr = stream_detail("stderr", artifact.stderr)
   metadata <> stdout <> stderr
+}
+
+const failure_code_prefix = "SCHERZO_FAILURE_CODE="
+
+pub fn failure_code_from_streams(
+  stdout: String,
+  stderr: String,
+) -> Option(String) {
+  case failure_code_from_stream(stderr) {
+    Some(code) -> Some(code)
+    None -> failure_code_from_stream(stdout)
+  }
+}
+
+fn failure_code_from_stream(stream: String) -> Option(String) {
+  stream
+  |> string.split("\n")
+  |> first_failure_code_line
+}
+
+fn first_failure_code_line(lines: List(String)) -> Option(String) {
+  case lines {
+    [] -> None
+    [line, ..rest] -> {
+      let line = string.trim(line)
+      case string.starts_with(line, failure_code_prefix) {
+        True ->
+          case
+            line
+            |> string.drop_start(string.length(failure_code_prefix))
+            |> sanitized_failure_code
+          {
+            Some(code) -> Some(code)
+            None -> first_failure_code_line(rest)
+          }
+        False -> first_failure_code_line(rest)
+      }
+    }
+  }
+}
+
+fn sanitized_failure_code(value: String) -> Option(String) {
+  let code = string.trim(value)
+  case code != "" && safe_failure_code(code) {
+    True -> Some(code)
+    False -> None
+  }
+}
+
+fn safe_failure_code(code: String) -> Bool {
+  code
+  |> string.to_graphemes
+  |> list.all(is_failure_code_grapheme)
+}
+
+fn is_failure_code_grapheme(grapheme: String) -> Bool {
+  string.length(grapheme) == 1
+  && string.contains("abcdefghijklmnopqrstuvwxyz0123456789_", grapheme)
+}
+
+fn failure_code_inline(failure_code: Option(String)) -> String {
+  case failure_code {
+    Some(code) -> " failure_code=" <> code
+    None -> ""
+  }
+}
+
+fn failure_code_detail(failure_code: Option(String)) -> String {
+  case failure_code {
+    Some(code) -> "\nfailure_code: " <> code
+    None -> ""
+  }
 }
 
 fn command_inline(command: Option(String)) -> String {
@@ -401,8 +492,68 @@ fn stream_inline(label: String, value: String, truncated: Bool) -> String {
 
 fn artifact_inline(path: Option(String)) -> String {
   case path {
-    Some(path) -> " artifact=" <> path
+    Some(path) -> " artifact=" <> display_path(path)
     None -> ""
+  }
+}
+
+fn display_path(value: String) -> String {
+  case string.starts_with(value, "/") {
+    False -> value
+    True ->
+      case repo_relative_path(value) {
+        Some(relative) -> relative
+        None ->
+          case scherzo_workspace_relative_path(value) {
+            Some(relative) -> relative
+            None -> "<absolute path hidden>"
+          }
+      }
+  }
+}
+
+fn repo_relative_path(value: String) -> Option(String) {
+  case path.env("SCHERZO_REPO_ROOT") {
+    Some(root) ->
+      case relative_to_root(value, root) {
+        Some(relative) -> Some(relative)
+        None -> cwd_relative_path(value)
+      }
+    None -> cwd_relative_path(value)
+  }
+}
+
+fn cwd_relative_path(value: String) -> Option(String) {
+  case path.absolute(".") {
+    Ok(root) -> relative_to_root(value, root)
+    Error(_) -> None
+  }
+}
+
+fn relative_to_root(value: String, root: String) -> Option(String) {
+  let root_abs = path.absolute(root) |> result_unwrap(root)
+  let root_abs = trim_trailing_slash(root_abs)
+  case path.contains(root_abs, value) {
+    True ->
+      case value == root_abs {
+        True -> Some(".")
+        False -> Some(string.drop_start(value, string.length(root_abs) + 1))
+      }
+    False -> None
+  }
+}
+
+fn scherzo_workspace_relative_path(value: String) -> Option(String) {
+  case string.split_once(value, on: "/.scherzo/workspaces/") {
+    Ok(#(_, rest)) -> Some(".scherzo/workspaces/" <> rest)
+    Error(_) -> None
+  }
+}
+
+fn trim_trailing_slash(value: String) -> String {
+  case value != "/" && string.ends_with(value, "/") {
+    True -> string.drop_end(value, 1)
+    False -> value
   }
 }
 
@@ -468,7 +619,7 @@ fn stream_truncation_detail(
       <> label
       <> "_truncated: true"
       <> case diagnostic_path {
-        Some(path) -> " (full retained artifact: " <> path <> ")"
+        Some(path) -> " (full retained artifact: " <> display_path(path) <> ")"
         None -> " (full retained artifact unavailable)"
       }
   }
@@ -541,6 +692,7 @@ fn artifact_locals(
       prefix <> "diagnostic_path",
       option_string_value(artifact.diagnostic_path),
     ),
+    #(prefix <> "failure_code", option_string_value(artifact.failure_code)),
     #(prefix <> "stdout", template.VString(artifact.stdout)),
     #(prefix <> "stderr", template.VString(artifact.stderr)),
     #(prefix <> "timed_out", template.VBool(artifact.timed_out)),
@@ -661,6 +813,13 @@ fn option_int_value(value: Option(Int)) -> template.Value {
   case value {
     Some(value) -> template.VInt(value)
     None -> template.VNil
+  }
+}
+
+fn result_unwrap(result: Result(a, b), default: a) -> a {
+  case result {
+    Ok(value) -> value
+    Error(_) -> default
   }
 }
 

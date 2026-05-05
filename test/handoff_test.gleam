@@ -10,11 +10,13 @@ import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_attachment
+import scherzo/path
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import simplifile
 
 fn tracker_config() -> config_types.TrackerConfig {
   config_types.TrackerConfig(
@@ -254,6 +256,70 @@ pub fn failure_handoff_handles_workspace_path_safely_test() {
     absolute_comment,
     "not shown because Scherzo recorded an absolute path",
   )
+}
+
+pub fn workflow_command_failure_handoff_renders_retained_workspace_context_test() {
+  let relative_workspace =
+    "test/tmp/handoff-retained/.scherzo/workspaces/implementation/ABC-1/run-1"
+  let _ = simplifile.delete("test/tmp/handoff-retained")
+  let assert Ok(Nil) = simplifile.create_directory_all(relative_workspace)
+  let assert Ok(Nil) =
+    simplifile.write(
+      relative_workspace <> "/.scherzo-keep-workspace",
+      "retained\n",
+    )
+  let assert Ok(absolute_workspace) = path.absolute(relative_workspace)
+  let detail =
+    "workflow_command_failed:publish_rebase_conflict\n"
+    <> "workflow_step_failed\n"
+    <> "command step failed: step=publish_pr failure_code=publish_rebase_conflict exit_code=1 stderr=conflict"
+  let failure =
+    worker_failure(
+      error.WorkflowCommandFailed(
+        code: "publish_rebase_conflict",
+        step_id: "publish_pr",
+        detail: detail,
+      ),
+      Some(absolute_workspace),
+    )
+
+  let failure_comment =
+    capture_failure_comment(failure, "run-retained-workspace")
+
+  assert string.contains(failure_comment, "error: publish_rebase_conflict")
+  assert string.contains(failure_comment, "step: publish_pr")
+  assert string.contains(
+    failure_comment,
+    "failure_code: publish_rebase_conflict",
+  )
+  assert string.contains(failure_comment, "retained_workspace: yes")
+  assert string.contains(failure_comment, "workspace: .scherzo/workspaces/")
+  assert string.contains(failure_comment, "Resolve the rebase conflicts")
+  assert !string.contains(failure_comment, absolute_workspace)
+  assert !string.contains(failure_comment, "agent_pi_failed")
+  assert !string.contains(failure_comment, "pi_protocol_error")
+}
+
+pub fn workflow_command_failure_handoff_renders_revalidation_action_test() {
+  let failure =
+    worker_failure(
+      error.WorkflowCommandFailed(
+        code: "publish_revalidation_failed",
+        step_id: "publish_pr",
+        detail: "workflow_command_failed:publish_revalidation_failed\nvalidation failed",
+      ),
+      Some(".scherzo/workspaces/implementation/ABC-1/run-1"),
+    )
+
+  let failure_comment =
+    capture_failure_comment(failure, "run-revalidation-failed")
+
+  assert string.contains(failure_comment, "error: publish_revalidation_failed")
+  assert string.contains(failure_comment, "step: publish_pr")
+  assert string.contains(failure_comment, "retained_workspace: not_detected")
+  assert string.contains(failure_comment, "post-rebase validation output")
+  assert !string.contains(failure_comment, "agent_pi_failed")
+  assert !string.contains(failure_comment, "pi_protocol_error")
 }
 
 pub fn success_handoff_posts_single_structured_result_comment_test() {

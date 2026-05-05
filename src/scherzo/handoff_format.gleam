@@ -4,8 +4,10 @@ import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/error
 import scherzo/log
+import scherzo/path
 import scherzo/session/tokens as session_tokens
 import scherzo/tracker/issue as tracker_issue
+import simplifile
 
 const max_failure_detail_chars = 800
 
@@ -66,9 +68,12 @@ pub fn failure_comment(
 fn failure_diagnostics(failure: agent_types.WorkerFailure) -> String {
   "Failure diagnostics:\n- error: "
   <> error.agent_code(failure.reason)
-  <> underlying_error_line(failure.reason)
-  <> detail_line(failure.reason)
+  <> workflow_command_lines(failure.reason)
+  <> retained_workspace_line(failure.reason, failure.workspace_path)
   <> workspace_line(failure.workspace_path)
+  <> suggested_next_action_line(failure.reason)
+  <> underlying_error_line(failure.reason)
+  <> detail_line(failure)
   <> "\n- tokens: "
   <> token_totals(failure.tokens)
 }
@@ -90,6 +95,7 @@ fn underlying_error_code(reason: error.AgentRunnerError) -> Option(String) {
     error.WorkflowHookFailed(hook_error) -> Some(error.hook_code(hook_error))
     error.ProbeFailed(pi_error) -> Some(error.pi_rpc_code(pi_error))
     error.PiFailed(pi_error) -> Some(error.pi_rpc_code(pi_error))
+    error.WorkflowCommandFailed(..) -> None
     error.StateRefreshFailed(tracker_error) ->
       Some(error.tracker_code(tracker_error))
     error.OperatorAbort -> None
@@ -97,14 +103,17 @@ fn underlying_error_code(reason: error.AgentRunnerError) -> Option(String) {
   }
 }
 
-fn detail_line(reason: error.AgentRunnerError) -> String {
-  case failure_detail(reason) {
+fn detail_line(failure: agent_types.WorkerFailure) -> String {
+  case failure_detail(failure.reason, failure.workspace_path) {
     None -> ""
     Some(detail) -> "\n- detail: " <> truncate_detail(detail)
   }
 }
 
-fn failure_detail(reason: error.AgentRunnerError) -> Option(String) {
+fn failure_detail(
+  reason: error.AgentRunnerError,
+  workspace_path: Option(String),
+) -> Option(String) {
   case reason {
     error.PromptFailed(template_error) -> template_detail(template_error)
     error.WorkspaceFailed(workspace_error) -> workspace_detail(workspace_error)
@@ -112,6 +121,8 @@ fn failure_detail(reason: error.AgentRunnerError) -> Option(String) {
     error.WorkflowHookFailed(hook_error) -> hook_detail(hook_error)
     error.ProbeFailed(pi_error) -> pi_detail(pi_error)
     error.PiFailed(pi_error) -> pi_detail(pi_error)
+    error.WorkflowCommandFailed(code: code, step_id: step_id, detail: detail) ->
+      Some(workflow_command_detail(code, step_id, detail, workspace_path))
     error.StateRefreshFailed(tracker_error) -> tracker_detail(tracker_error)
     error.OperatorAbort -> Some("operator requested abort")
     error.OperatorStopAfterCurrentTurn ->
@@ -185,19 +196,170 @@ fn tracker_detail(tracker_error: error.TrackerError) -> Option(String) {
   }
 }
 
-fn workspace_line(workspace_path: Option(String)) -> String {
+fn workflow_command_lines(reason: error.AgentRunnerError) -> String {
+  case reason {
+    error.WorkflowCommandFailed(code: code, step_id: step_id, ..) ->
+      "\n- step: " <> step_id <> "\n- failure_code: " <> code
+    _ -> ""
+  }
+}
+
+fn retained_workspace_line(
+  reason: error.AgentRunnerError,
+  workspace_path: Option(String),
+) -> String {
+  case reason {
+    error.WorkflowCommandFailed(..) ->
+      "\n- retained_workspace: " <> retained_workspace_status(workspace_path)
+    _ -> ""
+  }
+}
+
+fn retained_workspace_status(workspace_path: Option(String)) -> String {
   case workspace_path {
-    None -> ""
-    Some(path) ->
-      case path == "" {
-        True -> ""
+    None -> "unknown"
+    Some(raw_path) ->
+      case string.trim(raw_path) == "" {
+        True -> "unknown"
         False ->
-          case string.starts_with(path, "/") {
-            True ->
-              "\n- workspace: _not shown because Scherzo recorded an absolute path_"
-            False -> "\n- workspace: " <> path
+          case
+            simplifile.is_file(path.join(raw_path, ".scherzo-keep-workspace"))
+          {
+            Ok(True) -> "yes"
+            _ -> "not_detected"
           }
       }
+  }
+}
+
+fn suggested_next_action_line(reason: error.AgentRunnerError) -> String {
+  case reason {
+    error.WorkflowCommandFailed(code: code, ..) ->
+      "\n- suggested_next_action: " <> suggested_next_action(code)
+    _ -> ""
+  }
+}
+
+fn suggested_next_action(code: String) -> String {
+  case code {
+    "prepare_plan_ambiguous" ->
+      "Clarify the Linear issue so it references exactly one ExecPlan path, then retry the workflow."
+    "base_refresh_conflict" ->
+      "Refresh or reconcile the PR base, then retry the workflow."
+    "publish_rebase_conflict" ->
+      "Resolve the rebase conflicts in the retained workspace, rerun validation, then retry publish."
+    "publish_revalidation_failed" ->
+      "Inspect the post-rebase validation output in the retained workspace, fix the failures, then retry publish."
+    _ ->
+      "Inspect the retained workspace and command diagnostics, fix the failing command, then retry the workflow."
+  }
+}
+
+fn workflow_command_detail(
+  code: String,
+  step_id: String,
+  detail: String,
+  workspace_path: Option(String),
+) -> String {
+  "workflow command step "
+  <> step_id
+  <> " failed with "
+  <> code
+  <> ": "
+  <> sanitize_workspace_path_in_detail(detail, workspace_path)
+}
+
+fn sanitize_workspace_path_in_detail(
+  detail: String,
+  workspace_path: Option(String),
+) -> String {
+  case workspace_path, display_workspace_path(workspace_path) {
+    Some(raw_path), Some(display_path) ->
+      string.replace(detail, each: raw_path, with: display_path)
+    _, _ -> detail
+  }
+}
+
+fn workspace_line(workspace_path: Option(String)) -> String {
+  case display_workspace_path(workspace_path) {
+    None -> ""
+    Some(path) -> "\n- workspace: " <> path
+  }
+}
+
+fn display_workspace_path(workspace_path: Option(String)) -> Option(String) {
+  case workspace_path {
+    None -> None
+    Some(raw_path) -> {
+      let raw_path = string.trim(raw_path)
+      case raw_path == "" {
+        True -> None
+        False ->
+          case string.starts_with(raw_path, "/") {
+            False -> Some(raw_path)
+            True -> display_absolute_workspace_path(raw_path)
+          }
+      }
+    }
+  }
+}
+
+fn display_absolute_workspace_path(raw_path: String) -> Option(String) {
+  case repo_relative_path(raw_path) {
+    Some(relative) -> Some(relative)
+    None ->
+      case scherzo_workspace_relative_path(raw_path) {
+        Some(relative) -> Some(relative)
+        None ->
+          Some(
+            "_not shown because Scherzo recorded an absolute path outside the repository_",
+          )
+      }
+  }
+}
+
+fn repo_relative_path(raw_path: String) -> Option(String) {
+  case path.env("SCHERZO_REPO_ROOT") {
+    Some(root) ->
+      case relative_to_root(raw_path, root) {
+        Some(relative) -> Some(relative)
+        None -> cwd_relative_path(raw_path)
+      }
+    None -> cwd_relative_path(raw_path)
+  }
+}
+
+fn cwd_relative_path(raw_path: String) -> Option(String) {
+  case path.absolute(".") {
+    Ok(root) -> relative_to_root(raw_path, root)
+    Error(_) -> None
+  }
+}
+
+fn relative_to_root(raw_path: String, root: String) -> Option(String) {
+  let root_abs = path.absolute(root) |> result_unwrap(root)
+  let root_abs = trim_trailing_slash(root_abs)
+  case path.contains(root_abs, raw_path) {
+    True ->
+      case raw_path == root_abs {
+        True -> Some(".")
+        False -> Some(string.drop_start(raw_path, string.length(root_abs) + 1))
+      }
+    False -> None
+  }
+}
+
+fn scherzo_workspace_relative_path(raw_path: String) -> Option(String) {
+  case string.split_once(raw_path, on: "/.scherzo/workspaces/") {
+    Ok(#(_, rest)) -> Some(".scherzo/workspaces/" <> rest)
+    Error(_) -> None
+  }
+}
+
+fn trim_trailing_slash(value: String) -> String {
+  case value != "/" && string.ends_with(value, "/") {
+    True -> string.drop_end(value, 1)
+    False -> value
   }
 }
 
@@ -260,5 +422,12 @@ fn classification_to_string(
     agent_types.FinalActive -> "active"
     agent_types.FinalTerminal -> "terminal"
     agent_types.FinalNonActive -> "non_active"
+  }
+}
+
+fn result_unwrap(result: Result(a, b), default: a) -> a {
+  case result {
+    Ok(value) -> value
+    Error(_) -> default
   }
 }

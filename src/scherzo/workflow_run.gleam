@@ -248,17 +248,52 @@ pub fn execute_with_resume(
 }
 
 pub fn failure_report(failure: WorkflowRunFailure) -> String {
+  case failed_command_artifact(failure) {
+    Some(artifact) ->
+      case step_artifact.command_failure_summary(artifact) {
+        Some(summary) ->
+          workflow_command_failure_prefix(artifact)
+          <> failure.reason
+          <> "\n"
+          <> summary
+        None -> failure.reason
+      }
+    None -> failure.reason
+  }
+}
+
+pub fn failed_command_failure(
+  failure: WorkflowRunFailure,
+) -> Option(#(String, String)) {
+  case failed_command_artifact(failure) {
+    Some(artifact) ->
+      case artifact.failure_code {
+        Some(code) -> Some(#(code, artifact.step_id))
+        None -> None
+      }
+    None -> None
+  }
+}
+
+fn failed_command_artifact(
+  failure: WorkflowRunFailure,
+) -> Option(step_artifact.StepArtifact) {
   case failure.failed_step_id {
     Some(step_id) ->
       case dict.get(failure.artifacts, step_id) {
-        Ok(artifact) ->
-          case step_artifact.command_failure_summary(artifact) {
-            Some(summary) -> failure.reason <> "\n" <> summary
-            None -> failure.reason
-          }
-        Error(_) -> failure.reason
+        Ok(artifact) -> Some(artifact)
+        Error(_) -> None
       }
-    None -> failure.reason
+    None -> None
+  }
+}
+
+fn workflow_command_failure_prefix(
+  artifact: step_artifact.StepArtifact,
+) -> String {
+  case artifact.failure_code {
+    Some(code) -> "workflow_command_failed:" <> code <> "\n"
+    None -> ""
   }
 }
 

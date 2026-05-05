@@ -352,9 +352,16 @@ fn diagnostic_body(
   stderr_truncated: Bool,
   secrets: List(String),
 ) -> String {
+  let failure_code = case
+    step_artifact.failure_code_from_streams(stdout, stderr)
+  {
+    Some(code) -> "\nfailure_code: " <> code
+    None -> ""
+  }
   "Scherzo command-step diagnostics\n"
   <> "step_id: "
   <> step_id
+  <> failure_code
   <> "\ncommand: "
   <> log.redact("command_step_artifact", command, secrets)
   <> "\nexit_code: "
