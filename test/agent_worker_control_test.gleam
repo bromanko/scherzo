@@ -40,6 +40,7 @@ fn issue(state: String) -> tracker_issue.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
   )

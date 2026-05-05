@@ -54,6 +54,7 @@ fn issue(id: String) -> tracker_issue.Issue {
     url: None,
     labels: ["workflow:implementation"],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: None,
     updated_at: None,
   )

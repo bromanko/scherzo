@@ -59,13 +59,13 @@ A final risk is the tiny race between a successful final validation query and th
 
 - [x] (2026-05-04 00:00Z) Drafted the ExecPlan for review.
 - [x] (2026-05-04 00:00Z) Incorporated review feedback on final validation state, pagination policy, retry-blocked behavior, final-validation tests, reporting validation, and concrete step granularity.
-- [ ] Confirm Linear's real GraphQL relation payload shape with the fixture described in this plan before changing production decoders.
-- [ ] Add or normalize blocker data in the tracker issue model and Linear parser.
-- [ ] Add core blocker policy tests and make blocker checks apply to every active candidate state.
-- [ ] Add final pre-claim dispatch validation in the daemon and one-shot service paths.
-- [ ] Add blocked-dependency reporting without Linear comments.
-- [ ] Add retry, parking, workflow-label, handoff, and fixture tests.
-- [ ] Run the validation commands and update Outcomes & Retrospective.
+- [x] (2026-05-05 10:20Z) Confirmed the planned Linear relation shape with `test/fixtures/linear/blocked_issue_candidate_response.json` and parser tests for incoming `inverseRelations`, ignored outgoing `relations`, missing relation data, and truncated pages.
+- [x] (2026-05-05 10:20Z) Added `Issue.blocked_by_complete`, updated Linear candidate and refresh queries to request `inverseRelations(first: 100) { ... pageInfo }`, and decoded incomplete relation pages fail-closed.
+- [x] (2026-05-05 10:20Z) Added `core.blocker_decision`, removed the Todo-only blocker gate, included blocker completeness in issue fingerprints, and added core policy/cache tests for all active states and incomplete data.
+- [x] (2026-05-05 10:20Z) Added daemon final pre-claim validation with pending validation state, `ValidateDispatchClaim`, refreshed precondition checks, and tests for blocked and terminal refreshed blockers.
+- [x] (2026-05-05 10:20Z) Added blocked-dependency report caching and structured warning logs for candidate, claim-validation, and retry phases without adding Linear comments.
+- [x] (2026-05-05 10:20Z) Added retry dependency-block cancellation and one-shot service refresh safety tests; updated existing daemon, service, and helper fixtures for the new required blocker-completeness field.
+- [x] (2026-05-05 10:20Z) Ran `direnv exec . gleam format --check src test` and `direnv exec . gleam test`; both pass after formatting.
 
 ## Surprises & Discoveries
 
@@ -77,6 +77,10 @@ A final risk is the tiny race between a successful final validation query and th
   Evidence: `src/scherzo/orchestrator/core.gleam`, `src/scherzo/orchestrator/state.gleam`, `src/scherzo/orchestrator/daemon.gleam`, and `src/scherzo/linear_triage.gleam` implement cached invalid-workflow reporting.
 - Observation: The daemon already has `PendingClaim`, `pending_claims`, `RetryRefreshFinished`, `RefreshRetry`, `retry_scheduler.finish_refresh`, `core.ReleaseClaim`, and ledger records for `RetryScheduled` and `RetryCancelled`.
   Evidence: `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/orchestrator/effect_runner.gleam`, `src/scherzo/orchestrator/core.gleam`, `src/scherzo/orchestrator/state.gleam`, and `src/scherzo/state/record.gleam` contain those types and handlers.
+- Observation: Adding a required `Issue.blocked_by_complete` field affected many test and fixture issue constructors even when they do not model blockers.
+  Evidence: Full-suite compilation required normal fake issue constructors across daemon, service, workflow, handoff, template, smoke, and runner tests to set `blocked_by_complete: True`.
+- Observation: Existing daemon tests often used `fetch_issue_states_by_ids` to return terminal issues or empty lists because no pre-claim refresh previously existed.
+  Evidence: After adding `ValidateDispatchClaim`, tests that expected immediate dispatch had to return an active refreshed candidate for validation and reserve terminal refresh responses for explicit running-refresh or retry scenarios.
 
 ## Decision Log
 
@@ -104,10 +108,16 @@ A final risk is the tiny race between a successful final validation query and th
 - Decision: Retry refresh that observes a dependency block cancels the retry attempt instead of scheduling exponential retry.
   Rationale: A human Linear dependency is not a transient system failure. Linear dependency changes are the release mechanism, so repeated retry timers would create noise and could keep stale claimed state alive.
   Date: 2026-05-04
+- Decision: Missing `inverseRelations` or missing relation `pageInfo` in Linear issue payloads is a parser error, while `pageInfo.hasNextPage == true` decodes as `blocked_by_complete: False`.
+  Rationale: A malformed or incomplete dispatch payload must not become an apparently safe empty blocker list. A parser error fails the whole fetch closed; a known truncated page is carried to policy and logged with `incomplete=true`.
+  Date: 2026-05-05
+- Decision: The one-shot service path performs the same final issue refresh before `workflow_run.execute`, then reruns blocker, core dispatch, and workflow selection on the refreshed issue.
+  Rationale: The service path has no daemon `PendingClaim`, but it can still execute stale candidate data. Refreshing immediately before execution preserves the same safety property without introducing daemon-only state.
+  Date: 2026-05-05
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Implementation completed the blocker-aware dispatch policy. Linear candidate and refresh payloads now carry blocker completeness, core dispatch treats direct blockers as a state-independent precondition, daemon dispatch validates a selected issue immediately before claim, retry refresh cancels dependency-blocked retries, and one-shot dispatch refreshes before execution. The added tests cover incoming and outgoing Linear relation direction, truncated relation pages, active-state-independent blocker policy, final daemon validation with newly appearing blockers, retry cancellation for dependency blocks, service refresh blocking, report cache behavior, and existing dispatch/retry/session behavior. Validation passed with `direnv exec . gleam format --check src test` and `direnv exec . gleam test` on 2026-05-05.
 
 ## Context and Orientation
 

@@ -43,6 +43,7 @@ fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: None,
     updated_at: None,
   )

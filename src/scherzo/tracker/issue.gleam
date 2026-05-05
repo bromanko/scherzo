@@ -22,6 +22,7 @@ pub type Issue {
     url: Option(String),
     labels: List(String),
     blocked_by: List(BlockerRef),
+    blocked_by_complete: Bool,
     created_at: Option(Time),
     updated_at: Option(Time),
   )

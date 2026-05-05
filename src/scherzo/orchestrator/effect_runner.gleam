@@ -24,6 +24,11 @@ pub type Effect {
   )
   RefreshRunning(generation: Int, ids: List(String), client: tracker.Client)
   RefreshRetry(issue_id: String, generation: Int, client: tracker.Client)
+  ValidateDispatchClaim(
+    issue_id: String,
+    generation: Int,
+    client: tracker.Client,
+  )
   ClaimIssue(
     issue: tracker_issue.Issue,
     workspace_path: String,
@@ -66,6 +71,13 @@ pub type Effect {
   )
 }
 
+pub type DispatchClaimValidationError {
+  DispatchValidationTrackerError(error.TrackerError)
+  DispatchValidationMissingIssue
+  DispatchValidationDuplicateIssue
+  DispatchValidationIdMismatch(expected: String, actual: String)
+}
+
 pub type EffectResult {
   CandidateFetchFinished(
     Int,
@@ -85,6 +97,11 @@ pub type EffectResult {
     String,
     Int,
     Result(List(tracker_issue.Issue), error.TrackerError),
+  )
+  DispatchClaimValidationFinished(
+    issue_id: String,
+    generation: Int,
+    result: Result(tracker_issue.Issue, DispatchClaimValidationError),
   )
   HandoffClaimFinished(String, String, Result(Nil, error.TrackerError))
   HandoffSuccessFinished(String, String, Result(Nil, error.TrackerError))
@@ -214,6 +231,7 @@ pub fn effect_kind(effect: Effect) -> String {
     FetchLinearCommands(_, _, _, _, _, _) -> "fetch_linear_commands"
     RefreshRunning(_, _, _) -> "refresh_running"
     RefreshRetry(_, _, _) -> "refresh_retry"
+    ValidateDispatchClaim(_, _, _) -> "validate_dispatch_claim"
     ClaimIssue(_, _, _, _) -> "claim_issue"
     ReportSuccess(_, _, _, _, _) -> "report_success"
     ReportFailure(_, _, _, _, _) -> "report_failure"
@@ -367,6 +385,26 @@ fn shutdown_in_flight(state: State) -> Nil {
   })
 }
 
+fn normalize_dispatch_claim_validation(
+  expected_issue_id: String,
+  result: Result(List(tracker_issue.Issue), error.TrackerError),
+) -> Result(tracker_issue.Issue, DispatchClaimValidationError) {
+  case result {
+    Error(err) -> Error(DispatchValidationTrackerError(err))
+    Ok([]) -> Error(DispatchValidationMissingIssue)
+    Ok([issue]) ->
+      case issue.id == expected_issue_id {
+        True -> Ok(issue)
+        False ->
+          Error(DispatchValidationIdMismatch(
+            expected: expected_issue_id,
+            actual: issue.id,
+          ))
+      }
+    Ok([_, ..]) -> Error(DispatchValidationDuplicateIssue)
+  }
+}
+
 fn run_side_effect(effect: Effect) -> EffectResult {
   case effect {
     FetchCandidates(generation, client) ->
@@ -392,6 +430,15 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         issue_id,
         generation,
         client.fetch_issue_states_by_ids([issue_id]),
+      )
+    ValidateDispatchClaim(issue_id, generation, client) ->
+      DispatchClaimValidationFinished(
+        issue_id: issue_id,
+        generation: generation,
+        result: normalize_dispatch_claim_validation(
+          issue_id,
+          client.fetch_issue_states_by_ids([issue_id]),
+        ),
       )
     ClaimIssue(issue, _workspace_path, run_id, client) ->
       HandoffClaimFinished(issue.id, run_id, client.claim_issue(issue, run_id))

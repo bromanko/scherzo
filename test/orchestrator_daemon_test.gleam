@@ -54,6 +54,7 @@ fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
   )
@@ -847,14 +848,7 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) {
-        Ok([
-          tracker_issue.Issue(
-            ..candidate,
-            state: issue_state.from_string_unchecked("Done"),
-          ),
-        ])
-      },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
   let triage_subject = process.new_subject()
@@ -871,6 +865,177 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn daemon_final_validation_blocks_new_dependency_test() {
+  let workflow_path =
+    write_enforcing_workflow("test/tmp/daemon-validation-blocked", 1)
+  let candidate =
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let refreshed =
+    tracker_issue.Issue(..candidate, blocked_by: [
+      tracker_issue.BlockerRef(
+        id: Some("blocker-id"),
+        identifier: Some("ABC-0"),
+        state: Some(issue_state.from_string_unchecked("Todo")),
+      ),
+    ])
+  let refresh_subject = process.new_subject()
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) {
+        let reply = process.new_subject()
+        process.send(refresh_subject, reply)
+        case process.receive(reply, within: 1000) {
+          Ok(issue) -> Ok([issue])
+          Error(_) -> Error(error.LinearApiRequest("refresh timeout"))
+        }
+      },
+    )
+  let log_subject = process.new_subject()
+  let claim_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      make_handoff: fn(_, _) {
+        handoff.Client(
+          claim_issue: fn(issue, _) {
+            process.send(claim_subject, issue.id)
+            Ok(Nil)
+          },
+          report_success: fn(_, _, _) { Ok(Nil) },
+          report_failure: fn(_, _, _) { Ok(Nil) },
+        )
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  let assert Ok(reply) = process.receive(refresh_subject, within: 1000)
+  process.send(reply, refreshed)
+
+  assert wait_for_event(
+    log_subject,
+    "linear_dependency_claim_validation_blocked",
+    20,
+  )
+  assert process.receive(claim_subject, within: 100) == Error(Nil)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.size(snapshot.running) == 0
+  assert !dict.has_key(snapshot.claimed, candidate.id)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_final_validation_allows_terminal_blocker_test() {
+  let workflow_path =
+    write_enforcing_workflow("test/tmp/daemon-validation-terminal", 1)
+  let candidate =
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "Todo"), labels: [
+      "workflow:implementation",
+    ])
+  let refreshed =
+    tracker_issue.Issue(..candidate, title: "Refreshed title", blocked_by: [
+      tracker_issue.BlockerRef(
+        id: Some("blocker-id"),
+        identifier: Some("ABC-0"),
+        state: Some(issue_state.from_string_unchecked("Done")),
+      ),
+    ])
+  let refresh_subject = process.new_subject()
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) {
+        let reply = process.new_subject()
+        process.send(refresh_subject, reply)
+        case process.receive(reply, within: 1000) {
+          Ok(issue) -> Ok([issue])
+          Error(_) -> Error(error.LinearApiRequest("refresh timeout"))
+        }
+      },
+    )
+  let log_subject = process.new_subject()
+  let deps = base_dependencies(client, log_subject)
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  let assert Ok(reply) = process.receive(refresh_subject, within: 1000)
+  process.send(reply, refreshed)
+
+  assert wait_for_event(log_subject, "dispatch_started", 20)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_retry_refresh_dependency_blocked_cancels_retry_test() {
+  let workflow_path = write_workflow("test/tmp/daemon-retry-dependency", 1)
+  let retried = issue("retry-id", "ABC-2", "Todo")
+  let blocked =
+    tracker_issue.Issue(..retried, blocked_by: [
+      tracker_issue.BlockerRef(
+        id: Some("blocker-id"),
+        identifier: Some("ABC-0"),
+        state: Some(issue_state.from_string_unchecked("Todo")),
+      ),
+    ])
+  let refresh_subject = process.new_subject()
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([retried]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) {
+        let reply = process.new_subject()
+        process.send(refresh_subject, reply)
+        case process.receive(reply, within: 1000) {
+          Ok(issue) -> Ok([issue])
+          Error(_) -> Error(error.LinearApiRequest("refresh timeout"))
+        }
+      },
+    )
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..fake_workflow_run_dependencies(log_subject),
+        agent_step: fn(
+          _issue: tracker_issue.Issue,
+          context: workflow_run.StepContext,
+          _,
+          _,
+          _,
+          _,
+          _,
+        ) {
+          Error(agent_types.WorkerFailure(
+            reason: error.PiFailed(error.PiProtocolError("boom")),
+            workspace_path: Some(context.workspace_path),
+            tokens: session_tokens.zero_token_totals(),
+            final_issue: None,
+          ))
+        },
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  let assert Ok(initial_refresh) =
+    process.receive(refresh_subject, within: 1000)
+  process.send(initial_refresh, retried)
+  assert wait_for_event(log_subject, "retry_scheduled", 20)
+
+  process.send(started.data, daemon.RetryTick("retry-id", 1))
+  let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
+  process.send(retry_refresh, blocked)
+  assert wait_for_event(log_subject, "linear_dependency_retry_blocked", 20)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert !dict.has_key(snapshot.retry_attempts, "retry-id")
+  assert !dict.has_key(snapshot.claimed, "retry-id")
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn daemon_yaml_agent_steps_get_concrete_sessions_test() {
   let dir = "test/tmp/daemon-yaml-agent-session"
   let workflow_path = write_yaml_agent_workflow(dir)
@@ -882,7 +1047,7 @@ pub fn daemon_yaml_agent_steps_get_concrete_sessions_test() {
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
   let assert Ok(event_hub) = hub.start(20, fn() { 42 })
@@ -922,7 +1087,7 @@ pub fn daemon_yaml_operator_prompt_routes_to_agent_step_session_test() {
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
   let deps =
@@ -960,7 +1125,7 @@ pub fn daemon_yaml_parent_prompt_rejects_multiple_active_step_routes_test() {
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
   let deps =
@@ -997,7 +1162,7 @@ pub fn daemon_yaml_parent_abort_kills_active_step_worker_test() {
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
   let assert Ok(event_hub) = hub.start(20, fn() { 42 })
@@ -1042,7 +1207,7 @@ pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
   let deps =
@@ -1083,7 +1248,7 @@ pub fn daemon_yaml_poll_dispatches_command_workflow_test() {
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
   let assert Ok(event_hub) = hub.start(20, fn() { 42 })
@@ -1121,7 +1286,7 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
   let failure_report_subject = process.new_subject()
@@ -1184,14 +1349,7 @@ pub fn daemon_poll_dispatches_fake_worker_routes_update_and_shutdown_test() {
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) {
-        Ok([
-          tracker_issue.Issue(
-            ..candidate,
-            state: issue_state.from_string_unchecked("Done"),
-          ),
-        ])
-      },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
   let assert Ok(started) =
@@ -1250,11 +1408,19 @@ pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test(
       state: issue_state.from_string_unchecked("Done"),
     )
   let log_subject = process.new_subject()
+  let refresh_subject = process.new_subject()
   let client =
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([retried]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([done]) },
+      fetch_issue_states_by_ids: fn(_) {
+        let reply = process.new_subject()
+        process.send(refresh_subject, reply)
+        case process.receive(reply, within: 1000) {
+          Ok(issue) -> Ok([issue])
+          Error(_) -> Error(error.LinearApiRequest("refresh timeout"))
+        }
+      },
     )
   let deps =
     daemon.RuntimeDependencies(
@@ -1283,9 +1449,14 @@ pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test(
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
+  let assert Ok(initial_refresh) =
+    process.receive(refresh_subject, within: 1000)
+  process.send(initial_refresh, retried)
   assert wait_for_event(log_subject, "retry_scheduled", 20)
 
   process.send(started.data, daemon.RetryTick("retry-id", 1))
+  let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
+  process.send(retry_refresh, done)
   assert wait_for_event(log_subject, "claim_released", 20)
   process.send(started.data, daemon.RetryTick("retry-id", 2))
   assert wait_for_event(log_subject, "retry_timer_stale", 10)
@@ -1297,11 +1468,19 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
   let first = issue("retry-id", "ABC-2", "Todo")
   let second = tracker_issue.Issue(..first, title: "retry succeeds")
   let log_subject = process.new_subject()
+  let refresh_subject = process.new_subject()
   let client =
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([first]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([second]) },
+      fetch_issue_states_by_ids: fn(_) {
+        let reply = process.new_subject()
+        process.send(refresh_subject, reply)
+        case process.receive(reply, within: 1000) {
+          Ok(issue) -> Ok([issue])
+          Error(_) -> Error(error.LinearApiRequest("refresh timeout"))
+        }
+      },
     )
   let deps =
     daemon.RuntimeDependencies(
@@ -1341,11 +1520,16 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
+  let assert Ok(initial_refresh) =
+    process.receive(refresh_subject, within: 1000)
+  process.send(initial_refresh, first)
   assert wait_for_event(log_subject, "retry_scheduled", 20)
 
   process.send(started.data, daemon.RetryTick("retry-id", 99))
   assert wait_for_event(log_subject, "retry_timer_stale", 10)
   process.send(started.data, daemon.RetryTick("retry-id", 1))
+  let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
+  process.send(retry_refresh, second)
   assert wait_for_event(log_subject, "worker_exited", 20)
   process.send(started.data, daemon.RetryTick("retry-id", 1))
   assert wait_for_event(log_subject, "retry_timer_stale", 10)

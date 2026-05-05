@@ -45,6 +45,7 @@ fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
   )
@@ -157,14 +158,7 @@ fn client_with(candidate: tracker_issue.Issue) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([candidate]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
-    fetch_issue_states_by_ids: fn(_) {
-      Ok([
-        tracker_issue.Issue(
-          ..candidate,
-          state: issue_state.from_string_unchecked("Done"),
-        ),
-      ])
-    },
+    fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
   )
 }
 
@@ -442,12 +436,20 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
   let first = issue("retry-id", "ABC-RETRY", "Todo")
   let second = tracker_issue.Issue(..first, title: "retry succeeds")
   let log_subject = process.new_subject()
+  let refresh_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
   let client =
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([first]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([second]) },
+      fetch_issue_states_by_ids: fn(_) {
+        let reply = process.new_subject()
+        process.send(refresh_subject, reply)
+        case process.receive(reply, within: 1000) {
+          Ok(issue) -> Ok([issue])
+          Error(_) -> Error(error.LinearApiRequest("refresh timeout"))
+        }
+      },
     )
   let deps =
     dependencies(
@@ -479,6 +481,9 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
+  let assert Ok(initial_refresh) =
+    process.receive(refresh_subject, within: 1000)
+  process.send(initial_refresh, first)
   assert wait_for_log(log_subject, "retry_scheduled", 20)
 
   let assert Ok(failed_summary) =
@@ -489,6 +494,8 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
   assert !list.contains(event_names(failed_page.events), "retry_scheduled")
 
   process.send(started.data, daemon.RetryTick("retry-id", 1))
+  let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
+  process.send(retry_refresh, second)
   assert wait_for_log(log_subject, "worker_exited", 20)
 
   let assert Ok(succeeded_summary) =
@@ -661,12 +668,20 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
       state: issue_state.from_string_unchecked("Done"),
     )
   let log_subject = process.new_subject()
+  let refresh_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
   let client =
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([terminal]) },
+      fetch_issue_states_by_ids: fn(_) {
+        let reply = process.new_subject()
+        process.send(refresh_subject, reply)
+        case process.receive(reply, within: 1000) {
+          Ok(issue) -> Ok([issue])
+          Error(_) -> Error(error.LinearApiRequest("refresh timeout"))
+        }
+      },
     )
   let deps =
     dependencies(
@@ -689,8 +704,14 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
+  let assert Ok(initial_refresh) =
+    process.receive(refresh_subject, within: 1000)
+  process.send(initial_refresh, candidate)
   assert wait_for_log(log_subject, "dispatch_started", 20)
   process.send(started.data, daemon.PollTick(2))
+  let assert Ok(running_refresh) =
+    process.receive(refresh_subject, within: 1000)
+  process.send(running_refresh, terminal)
   assert wait_for_log(log_subject, "worker_stop_requested", 20)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-STOP-42-1", 20)

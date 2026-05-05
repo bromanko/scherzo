@@ -52,6 +52,7 @@ fn issue(state: String) -> tracker_issue.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
   )
@@ -542,6 +543,78 @@ pub fn yaml_linear_contract_check_uses_orchestrator_config_test() {
     process.receive(log_subject, within: 1000)
 }
 
+pub fn service_refresh_blocks_non_terminal_dependency_test() {
+  let root = "test/tmp/service-blocked-refresh/workspaces"
+  reset_dir("test/tmp/service-blocked-refresh")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      "test/tmp/service-blocked-refresh/workflows",
+    )
+  let workflow_path = "test/tmp/service-blocked-refresh/scherzo.yaml"
+  let assert Ok(Nil) = simplifile.write(workflow_path, yaml_config(root, ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-blocked-refresh/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
+  let candidate =
+    tracker_issue.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+  let blocked =
+    tracker_issue.Issue(..candidate, blocked_by: [
+      tracker_issue.BlockerRef(
+        id: Some("blocker-id"),
+        identifier: Some("ABC-0"),
+        state: Some(issue_state.from_string_unchecked("Todo")),
+      ),
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([blocked]) },
+    )
+  let assert Ok(result) =
+    service.run_once_with_dependencies(Some(workflow_path), deps(client))
+  assert result.dispatched == 0
+  assert contains_log(result.logs, "linear_dependency_claim_validation_blocked")
+}
+
+pub fn service_refresh_allows_terminal_dependency_test() {
+  let root = "test/tmp/service-terminal-refresh/workspaces"
+  reset_dir("test/tmp/service-terminal-refresh")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      "test/tmp/service-terminal-refresh/workflows",
+    )
+  let workflow_path = "test/tmp/service-terminal-refresh/scherzo.yaml"
+  let assert Ok(Nil) = simplifile.write(workflow_path, yaml_config(root, ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-terminal-refresh/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
+  let candidate =
+    tracker_issue.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+  let refreshed =
+    tracker_issue.Issue(..candidate, blocked_by: [
+      tracker_issue.BlockerRef(
+        id: Some("blocker-id"),
+        identifier: Some("ABC-0"),
+        state: Some(issue_state.from_string_unchecked("Done")),
+      ),
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([refreshed]) },
+    )
+  let assert Ok(result) =
+    service.run_once_with_dependencies(Some(workflow_path), deps(client))
+  assert result.dispatched == 1
+  assert contains_log(result.logs, "dispatch_started")
+}
+
 pub fn fake_end_to_end_service_dispatch_test() {
   let root = "test/tmp/service-integration/workspaces"
   reset_dir("test/tmp/service-integration")
@@ -578,12 +651,12 @@ fn empty_tracker() -> tracker.Client {
 
 fn tracker_with_candidate(
   candidate: tracker_issue.Issue,
-  final: tracker_issue.Issue,
+  _final: tracker_issue.Issue,
 ) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([candidate]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
-    fetch_issue_states_by_ids: fn(_) { Ok([final]) },
+    fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
   )
 }
 

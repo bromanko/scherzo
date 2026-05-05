@@ -6,6 +6,7 @@ import scherzo/linear
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import simplifile
 
 fn tracker_config() -> config_types.TrackerConfig {
   config_types.TrackerConfig(
@@ -31,7 +32,7 @@ fn response_page(
   <> identifier
   <> "\",\"description\":\"Desc\",\"priority\":1,\"branchName\":\"branch\",\"url\":\"https://linear/"
   <> identifier
-  <> "\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[{\"name\":\"Bug\"}]},\"inverseRelations\":{\"nodes\":[{\"type\":\"blocks\",\"issue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Done\"}}}]}}],\"pageInfo\":{\"hasNextPage\":"
+  <> "\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[{\"name\":\"Bug\"}]},\"inverseRelations\":{\"nodes\":[{\"type\":\"blocks\",\"issue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Done\"}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":"
   <> has_next
   <> ",\"endCursor\":"
   <> cursor
@@ -87,21 +88,54 @@ pub fn normalizes_linear_payload_test() {
   let assert [issue] = page.nodes
   assert issue.identifier == "ABC-123"
   assert issue.labels == ["bug"]
+  assert issue.blocked_by_complete == True
   let assert [blocker] = issue.blocked_by
   assert blocker.identifier == Some("B-1")
   assert issue.created_at != None
   assert page.has_next_page == False
 }
 
+pub fn blocked_issue_fixture_decodes_incoming_inverse_relation_test() {
+  let assert Ok(body) =
+    simplifile.read(
+      "test/fixtures/linear/blocked_issue_candidate_response.json",
+    )
+  let assert Ok(page) =
+    linear.parse_page_response(linear.Response(status: 200, body: body))
+  let assert [issue] = page.nodes
+  assert issue.identifier == "A-1"
+  assert issue.blocked_by_complete == True
+  let assert [blocker] = issue.blocked_by
+  assert blocker.id == Some("B-id")
+  assert blocker.identifier == Some("B-1")
+  assert blocker.state == Some(issue_state.from_string_unchecked("In Progress"))
+}
+
 pub fn outgoing_blocks_relation_does_not_decode_as_blocker_test() {
   let response =
     linear.Response(
       status: 200,
-      body: "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"ABC-123-id\",\"identifier\":\"ABC-123\",\"title\":\"Title ABC-123\",\"state\":{\"name\":\"Todo\"},\"relations\":{\"nodes\":[{\"type\":\"blocks\",\"relatedIssue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Backlog\"}}}]},\"inverseRelations\":{\"nodes\":[]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}",
+      body: "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"ABC-123-id\",\"identifier\":\"ABC-123\",\"title\":\"Title ABC-123\",\"state\":{\"name\":\"Todo\"},\"relations\":{\"nodes\":[{\"type\":\"blocks\",\"relatedIssue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Backlog\"}}}]},\"inverseRelations\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}",
     )
   let assert Ok(page) = linear.parse_page_response(response)
   let assert [issue] = page.nodes
   assert issue.blocked_by == []
+}
+
+pub fn truncated_inverse_relation_page_decodes_incomplete_test() {
+  let body =
+    "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"ABC-123-id\",\"identifier\":\"ABC-123\",\"title\":\"Title ABC-123\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[]},\"inverseRelations\":{\"nodes\":[{\"type\":\"blocks\",\"issue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Done\"}}}],\"pageInfo\":{\"hasNextPage\":true,\"endCursor\":\"cursor\"}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  let assert Ok(page) =
+    linear.parse_page_response(linear.Response(status: 200, body: body))
+  let assert [issue] = page.nodes
+  assert issue.blocked_by_complete == False
+}
+
+pub fn missing_inverse_relations_is_rejected_test() {
+  let body =
+    "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"ABC-123-id\",\"identifier\":\"ABC-123\",\"title\":\"Title ABC-123\",\"state\":{\"name\":\"Todo\"}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_page_response(linear.Response(status: 200, body: body))
 }
 
 pub fn pagination_preserves_order_test() {

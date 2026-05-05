@@ -117,6 +117,15 @@ type PendingClaim {
   )
 }
 
+type PendingDispatchValidation {
+  PendingDispatchValidation(
+    issue: tracker_issue.Issue,
+    remaining_candidates: List(tracker_issue.Issue),
+    generation: Int,
+    requested_at_ms: Int,
+  )
+}
+
 type PendingLinearCommandAck {
   PendingLinearCommandAck(issue_id: String, body: String)
 }
@@ -176,6 +185,8 @@ type State {
     retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
     pending_claims: Dict(String, PendingClaim),
+    pending_dispatch_validations: Dict(String, PendingDispatchValidation),
+    next_dispatch_validation_generation: Int,
     recovery_by_issue: Dict(String, session_event.RecoveryInfo),
     effect_runner: effect_runner.Handle,
     effect_runner_monitor: process.Monitor,
@@ -437,6 +448,8 @@ pub fn start(
                       retry: retry_scheduler.new(),
                       registry: worker_registry.new(),
                       pending_claims: dict.new(),
+                      pending_dispatch_validations: dict.new(),
+                      next_dispatch_validation_generation: 1,
                       recovery_by_issue: startup_recovery.recovery_by_issue,
                       effect_runner: effect_runner_handle,
                       effect_runner_monitor: effect_runner_monitor,
@@ -2018,6 +2031,7 @@ fn issue_is_running_claimed_or_pending(state: State, issue_id: String) -> Bool {
   || dict.has_key(state.runtime.running, issue_id)
   || dict.has_key(state.runtime.claimed, issue_id)
   || dict.has_key(state.pending_claims, issue_id)
+  || dict.has_key(state.pending_dispatch_validations, issue_id)
 }
 
 fn issue_for_ref(
@@ -2041,9 +2055,13 @@ fn issue_for_id(
       case dict.get(state.pending_claims, issue_id) {
         Ok(pending) -> Ok(pending.issue)
         Error(_) ->
-          case dict.get(state.runtime.completed, issue_id) {
-            Ok(issue) -> Ok(issue)
-            Error(_) -> fetch_issue_by_id(state, issue_id)
+          case dict.get(state.pending_dispatch_validations, issue_id) {
+            Ok(pending) -> Ok(pending.issue)
+            Error(_) ->
+              case dict.get(state.runtime.completed, issue_id) {
+                Ok(issue) -> Ok(issue)
+                Error(_) -> fetch_issue_by_id(state, issue_id)
+              }
           }
       }
   }
@@ -2082,8 +2100,15 @@ fn local_issues_with_identifier(
     state.pending_claims
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
+  let pending_validations =
+    state.pending_dispatch_validations
+    |> dict.values
+    |> list.map(fn(entry) { entry.issue })
   let completed = state.runtime.completed |> dict.values
-  list.append(running, list.append(pending, completed))
+  list.append(
+    running,
+    list.append(pending, list.append(pending_validations, completed)),
+  )
   |> list.filter(fn(issue) { issue.identifier == identifier })
 }
 
@@ -2849,33 +2874,56 @@ fn dispatch_candidates(
         [] -> state
         [issue, ..rest] -> {
           let state = unpark_if_issue_changed_state(state, issue)
-          case
-            core.dispatch_preconditions_satisfied_without_slot_capacity(
-              state.runtime,
-              state.workflow.effective,
-              issue,
-            )
-            && !dict.has_key(state.pending_claims, issue.id)
-          {
-            False -> dispatch_candidates(rest, state)
-            True ->
+          case core.blocker_decision(state.workflow.effective, issue) {
+            core.BlockedByDependency(_, _) -> {
+              let state =
+                report_blocked_dependency(
+                  state,
+                  issue,
+                  "candidate",
+                  "linear_dependency_blocked_candidate",
+                  core.blocker_decision(state.workflow.effective, issue),
+                )
+              dispatch_candidates(rest, state)
+            }
+            core.BlockersSatisfied -> {
+              let runtime =
+                core.clear_blocked_dependency_report(
+                  state.runtime,
+                  issue.id,
+                  "candidate",
+                )
+              let state = State(..state, runtime: runtime)
               case
-                workflow_policy.classify_issue(
-                  state.workflow.effective.linear_contract,
+                core.dispatch_preconditions_satisfied_without_slot_capacity(
+                  state.runtime,
+                  state.workflow.effective,
                   issue,
                 )
+                && !dict.has_key(state.pending_claims, issue.id)
+                && !dict.has_key(state.pending_dispatch_validations, issue.id)
               {
-                workflow_policy.WorkflowInvalid(violation) ->
-                  handle_invalid_workflow_candidate(
-                    state,
-                    issue,
-                    violation,
-                    rest,
-                  )
-                workflow_policy.WorkflowPolicyDisabled
-                | workflow_policy.WorkflowSelected(_, _) ->
-                  handle_valid_workflow_candidate(state, issue, rest)
+                False -> dispatch_candidates(rest, state)
+                True ->
+                  case
+                    workflow_policy.classify_issue(
+                      state.workflow.effective.linear_contract,
+                      issue,
+                    )
+                  {
+                    workflow_policy.WorkflowInvalid(violation) ->
+                      handle_invalid_workflow_candidate(
+                        state,
+                        issue,
+                        violation,
+                        rest,
+                      )
+                    workflow_policy.WorkflowPolicyDisabled
+                    | workflow_policy.WorkflowSelected(_, _) ->
+                      handle_valid_workflow_candidate(state, issue, rest)
+                  }
               }
+            }
           }
         }
       }
@@ -2891,7 +2939,95 @@ fn handle_valid_workflow_candidate(
   let state = State(..state, runtime: runtime)
   case can_reserve_dispatch_slot(state, issue) {
     False -> dispatch_candidates(remaining_candidates, state)
-    True -> dispatch_issue_with_continuation(state, issue, remaining_candidates)
+    True -> begin_dispatch_validation(state, issue, remaining_candidates)
+  }
+}
+
+fn report_blocked_dependency(
+  state: State,
+  issue: tracker_issue.Issue,
+  phase: String,
+  event: String,
+  decision: core.BlockerDecision,
+) -> State {
+  case
+    core.already_reported_blocked_dependency(
+      state.runtime,
+      state.workflow.effective,
+      issue,
+      phase,
+      decision,
+    )
+  {
+    True -> state
+    False -> {
+      log_state(state, "warn", event, [
+        #("issue_id", issue.id),
+        #("issue_identifier", issue.identifier),
+        #("phase", phase),
+        #(
+          "blocker_fingerprint",
+          core.blocked_dependency_fingerprint(
+            state.workflow.effective,
+            issue,
+            phase,
+            decision,
+          ),
+        ),
+        #("blockers", blocker_summary(issue, decision)),
+        #("incomplete", bool_field(core.blocker_decision_incomplete(decision))),
+      ])
+      let runtime =
+        core.mark_blocked_dependency_reported(
+          state.runtime,
+          state.workflow.effective,
+          issue,
+          phase,
+          decision,
+          state.dependencies.now_ms(),
+        )
+      State(..state, runtime: runtime)
+    }
+  }
+}
+
+fn blocker_summary(
+  issue: tracker_issue.Issue,
+  decision: core.BlockerDecision,
+) -> String {
+  let blockers = case decision {
+    core.BlockersSatisfied -> issue.blocked_by
+    core.BlockedByDependency(open_blockers, _) ->
+      case open_blockers {
+        [] -> issue.blocked_by
+        _ -> open_blockers
+      }
+  }
+  blockers
+  |> list.map(blocker_to_summary)
+  |> string.join(with: ",")
+}
+
+fn blocker_to_summary(blocker: tracker_issue.BlockerRef) -> String {
+  let name = case blocker.identifier {
+    Some(identifier) -> identifier
+    None ->
+      case blocker.id {
+        Some(id) -> id
+        None -> "unknown"
+      }
+  }
+  let state = case blocker.state {
+    Some(state) -> issue_state.to_string(state)
+    None -> "unknown"
+  }
+  name <> ":" <> state
+}
+
+fn bool_field(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
   }
 }
 
@@ -3102,33 +3238,65 @@ fn handle_retry_candidate_after_refresh(
   }
   case candidate {
     Ok(Some(issue)) ->
-      case
-        core.retry_candidate_preconditions_satisfied_without_slot_capacity(
-          state.runtime,
-          state.workflow.effective,
-          issue_id,
-          issue,
-        )
-      {
-        False -> handle_retry_candidate_with_slots(state, issue_id, candidate)
-        True ->
+      case core.blocker_decision(state.workflow.effective, issue) {
+        core.BlockedByDependency(_, _) -> {
+          let decision = core.blocker_decision(state.workflow.effective, issue)
+          let state =
+            report_blocked_dependency(
+              state,
+              issue,
+              "retry",
+              "linear_dependency_retry_blocked",
+              decision,
+            )
+          let transition =
+            core.stop_retry_for_dependency_blocked(state.runtime, issue_id)
+          let state =
+            State(
+              ..state,
+              runtime: transition.state,
+              recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
+            )
+          apply_effects(state, transition.effects)
+        }
+        core.BlockersSatisfied -> {
+          let runtime =
+            core.clear_blocked_dependency_report(
+              state.runtime,
+              issue.id,
+              "retry",
+            )
+          let state = State(..state, runtime: runtime)
           case
-            workflow_policy.classify_issue(
-              state.workflow.effective.linear_contract,
+            core.retry_candidate_preconditions_satisfied_without_slot_capacity(
+              state.runtime,
+              state.workflow.effective,
+              issue_id,
               issue,
             )
           {
-            workflow_policy.WorkflowInvalid(violation) -> {
-              let transition =
-                core.stop_retry_for_policy_invalid(state.runtime, issue_id)
-              let state = State(..state, runtime: transition.state)
-              let state = apply_effects(state, transition.effects)
-              handle_invalid_workflow_candidate(state, issue, violation, [])
-            }
-            workflow_policy.WorkflowPolicyDisabled
-            | workflow_policy.WorkflowSelected(_, _) ->
+            False ->
               handle_retry_candidate_with_slots(state, issue_id, candidate)
+            True ->
+              case
+                workflow_policy.classify_issue(
+                  state.workflow.effective.linear_contract,
+                  issue,
+                )
+              {
+                workflow_policy.WorkflowInvalid(violation) -> {
+                  let transition =
+                    core.stop_retry_for_policy_invalid(state.runtime, issue_id)
+                  let state = State(..state, runtime: transition.state)
+                  let state = apply_effects(state, transition.effects)
+                  handle_invalid_workflow_candidate(state, issue, violation, [])
+                }
+                workflow_policy.WorkflowPolicyDisabled
+                | workflow_policy.WorkflowSelected(_, _) ->
+                  handle_retry_candidate_with_slots(state, issue_id, candidate)
+              }
           }
+        }
       }
     _ -> handle_retry_candidate_with_slots(state, issue_id, candidate)
   }
@@ -3193,6 +3361,7 @@ fn slots_remain(state: State) -> Bool {
 fn can_reserve_dispatch_slot(state: State, issue: tracker_issue.Issue) -> Bool {
   !has_active_run(state, issue.id)
   && !dict.has_key(state.pending_claims, issue.id)
+  && !dict.has_key(state.pending_dispatch_validations, issue.id)
   && slots_remain(state)
   && per_state_dispatch_slot_available(state, issue.state)
 }
@@ -3247,6 +3416,49 @@ fn pending_claim_count_for_state(
 
 fn dispatch_issue(state: State, issue: tracker_issue.Issue) -> State {
   dispatch_issue_with_continuation(state, issue, [])
+}
+
+fn begin_dispatch_validation(
+  state: State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+) -> State {
+  case issue_is_running_claimed_or_pending(state, issue.id) {
+    True -> dispatch_candidates(remaining_candidates, state)
+    False -> {
+      let generation = state.next_dispatch_validation_generation
+      let pending =
+        PendingDispatchValidation(
+          issue: issue,
+          remaining_candidates: remaining_candidates,
+          generation: generation,
+          requested_at_ms: state.dependencies.now_ms(),
+        )
+      let state =
+        State(
+          ..state,
+          pending_dispatch_validations: dict.insert(
+            state.pending_dispatch_validations,
+            issue.id,
+            pending,
+          ),
+          next_dispatch_validation_generation: generation + 1,
+        )
+      log_state(state, "info", "linear_dependency_claim_validation_started", [
+        #("issue_id", issue.id),
+        #("issue_identifier", issue.identifier),
+        #("generation", int.to_string(generation)),
+      ])
+      enqueue_side_effect(
+        state,
+        effect_runner.ValidateDispatchClaim(
+          issue_id: issue.id,
+          generation: generation,
+          client: state.tracker_client,
+        ),
+      )
+    }
+  }
 }
 
 fn dispatch_issue_with_continuation(
@@ -4465,6 +4677,13 @@ fn handle_side_effect_result(
       handle_running_refresh_finished(state, generation, result)
     effect_runner.RetryRefreshFinished(issue_id, generation, result) ->
       handle_retry_refresh_finished(state, issue_id, generation, result)
+    effect_runner.DispatchClaimValidationFinished(issue_id, generation, result) ->
+      handle_dispatch_claim_validation_finished(
+        state,
+        issue_id,
+        generation,
+        result,
+      )
     effect_runner.HandoffClaimFinished(issue_id, run_id, result) ->
       handle_handoff_claim_finished(state, issue_id, run_id, result)
     effect_runner.HandoffSuccessFinished(issue_id, _run_id, result) ->
@@ -4526,6 +4745,16 @@ fn crash_result_for_effect(
         generation,
         Error(error.LinearApiRequest(reason)),
       )
+    effect_runner.ValidateDispatchClaim(issue_id, generation, _) ->
+      effect_runner.DispatchClaimValidationFinished(
+        issue_id: issue_id,
+        generation: generation,
+        result: Error(
+          effect_runner.DispatchValidationTrackerError(error.LinearApiRequest(
+            reason,
+          )),
+        ),
+      )
     effect_runner.ClaimIssue(issue, _, run_id, _) ->
       effect_runner.HandoffClaimFinished(
         issue.id,
@@ -4568,6 +4797,205 @@ fn crash_result_for_effect(
         workspace_path,
         Error(error.WorkspaceIo(reason)),
       )
+  }
+}
+
+fn handle_dispatch_claim_validation_finished(
+  state: State,
+  issue_id: String,
+  generation: Int,
+  result: Result(
+    tracker_issue.Issue,
+    effect_runner.DispatchClaimValidationError,
+  ),
+) -> State {
+  case dict.get(state.pending_dispatch_validations, issue_id) {
+    Error(_) -> {
+      log_state(state, "info", "dispatch_validation_stale", [
+        #("issue_id", issue_id),
+        #("generation", int.to_string(generation)),
+      ])
+      state
+    }
+    Ok(pending) ->
+      case pending.generation != generation {
+        True -> {
+          log_state(state, "info", "dispatch_validation_stale", [
+            #("issue_id", issue_id),
+            #("generation", int.to_string(generation)),
+          ])
+          state
+        }
+        False -> {
+          let state =
+            State(
+              ..state,
+              pending_dispatch_validations: dict.delete(
+                state.pending_dispatch_validations,
+                issue_id,
+              ),
+            )
+          case result {
+            Error(err) -> {
+              log_state(
+                state,
+                "warn",
+                "linear_dependency_claim_validation_failed",
+                [
+                  #("issue_id", issue_id),
+                  #("generation", int.to_string(generation)),
+                  #("reason", dispatch_validation_error_reason(err)),
+                ],
+              )
+              dispatch_candidates(pending.remaining_candidates, state)
+            }
+            Ok(refreshed_issue) ->
+              handle_successful_dispatch_validation(
+                state,
+                pending,
+                refreshed_issue,
+              )
+          }
+        }
+      }
+  }
+}
+
+fn handle_successful_dispatch_validation(
+  state: State,
+  pending: PendingDispatchValidation,
+  refreshed_issue: tracker_issue.Issue,
+) -> State {
+  let state = unpark_if_issue_changed_state(state, refreshed_issue)
+  let decision =
+    core.blocker_decision(state.workflow.effective, refreshed_issue)
+  case decision {
+    core.BlockedByDependency(_, _) -> {
+      let state =
+        report_blocked_dependency(
+          state,
+          refreshed_issue,
+          "claim_validation",
+          "linear_dependency_claim_validation_blocked",
+          decision,
+        )
+      dispatch_candidates(pending.remaining_candidates, state)
+    }
+    core.BlockersSatisfied -> {
+      let runtime =
+        core.clear_blocked_dependency_report(
+          state.runtime,
+          refreshed_issue.id,
+          "claim_validation",
+        )
+      let state = State(..state, runtime: runtime)
+      case dispatch_validation_precondition_failure(state, refreshed_issue) {
+        Some(reason) -> {
+          log_state(state, "info", "dispatch_validation_precondition_failed", [
+            #("issue_id", refreshed_issue.id),
+            #("generation", int.to_string(pending.generation)),
+            #("reason", reason),
+          ])
+          dispatch_candidates(pending.remaining_candidates, state)
+        }
+        None ->
+          case
+            workflow_policy.classify_issue(
+              state.workflow.effective.linear_contract,
+              refreshed_issue,
+            )
+          {
+            workflow_policy.WorkflowInvalid(violation) ->
+              handle_invalid_workflow_candidate(
+                state,
+                refreshed_issue,
+                violation,
+                pending.remaining_candidates,
+              )
+            workflow_policy.WorkflowPolicyDisabled
+            | workflow_policy.WorkflowSelected(_, _) ->
+              case can_reserve_dispatch_slot(state, refreshed_issue) {
+                False -> {
+                  log_state(
+                    state,
+                    "info",
+                    "dispatch_validation_slot_unavailable",
+                    [
+                      #("issue_id", refreshed_issue.id),
+                      #("generation", int.to_string(pending.generation)),
+                    ],
+                  )
+                  dispatch_candidates(pending.remaining_candidates, state)
+                }
+                True ->
+                  dispatch_issue_with_continuation(
+                    state,
+                    refreshed_issue,
+                    pending.remaining_candidates,
+                  )
+              }
+          }
+      }
+    }
+  }
+}
+
+fn dispatch_validation_precondition_failure(
+  state: State,
+  issue: tracker_issue.Issue,
+) -> Option(String) {
+  case
+    string.trim(issue.id) == ""
+    || string.trim(issue.identifier) == ""
+    || string.trim(issue.title) == ""
+    || string.trim(issue_state.to_string(issue.state)) == ""
+  {
+    True -> Some("missing_required_fields")
+    False ->
+      case core.is_active(state.workflow.effective, issue.state) {
+        False -> Some("inactive_state")
+        True ->
+          case core.is_terminal(state.workflow.effective, issue.state) {
+            True -> Some("terminal_state")
+            False ->
+              case
+                has_active_run(state, issue.id)
+                || dict.has_key(state.runtime.running, issue.id)
+              {
+                True -> Some("already_running")
+                False ->
+                  case
+                    dict.has_key(state.runtime.claimed, issue.id)
+                    || dict.has_key(state.pending_claims, issue.id)
+                  {
+                    True -> Some("already_claimed")
+                    False ->
+                      case
+                        core.dispatch_preconditions_satisfied_without_slot_capacity(
+                          state.runtime,
+                          state.workflow.effective,
+                          issue,
+                        )
+                      {
+                        True -> None
+                        False -> Some("parked")
+                      }
+                  }
+              }
+          }
+      }
+  }
+}
+
+fn dispatch_validation_error_reason(
+  err: effect_runner.DispatchClaimValidationError,
+) -> String {
+  case err {
+    effect_runner.DispatchValidationTrackerError(tracker_error) ->
+      "tracker_error:" <> error.tracker_code(tracker_error)
+    effect_runner.DispatchValidationMissingIssue -> "missing_issue"
+    effect_runner.DispatchValidationDuplicateIssue -> "duplicate_issue"
+    effect_runner.DispatchValidationIdMismatch(_, _) -> "id_mismatch"
   }
 }
 
@@ -4998,12 +5426,12 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
         ),
       )
     }
-    core.CancelRetry(issue_id) -> {
+    core.CancelRetry(issue_id, generation, reason) -> {
       let _ =
         append_ledger_bodies(
           state,
           [
-            record.RetryCancelled(issue_id, 0, "cancel_retry"),
+            record.RetryCancelled(issue_id, generation, reason),
           ],
           "ledger_append_failed",
         )
@@ -5327,6 +5755,7 @@ fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
     retry: retry,
     registry: registry,
     pending_claims: dict.new(),
+    pending_dispatch_validations: dict.new(),
     control_server: NoControlServer,
     control_file_path: None,
   )
