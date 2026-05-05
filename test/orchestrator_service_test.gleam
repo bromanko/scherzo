@@ -15,10 +15,18 @@ import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
+
+fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
+  case mode {
+    workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.RecoveryPrompt(prompt) -> prompt
+  }
+}
 
 pub type CapturedLog {
   CapturedLog(
@@ -171,11 +179,13 @@ fn workflow_deps() -> workflow_run.Dependencies {
     agent_step: fn(
       issue,
       context: workflow_run.StepContext,
-      prompt,
+      prompt_mode,
+      _attempt_context,
       _effective,
       _tracker,
       _emit_update,
       _command_ready,
+      _record_pi_session,
     ) {
       Ok(agent_types.WorkerSuccess(
         final_issue: Some(issue),
@@ -184,7 +194,7 @@ fn workflow_deps() -> workflow_run.Dependencies {
         tokens: session_tokens.zero_token_totals(),
         turns: 1,
         result: result_artifact.ResultArtifact(
-          final_response: Some(prompt),
+          final_response: Some(prompt_text(prompt_mode)),
           truncated: False,
           source: "test",
         ),

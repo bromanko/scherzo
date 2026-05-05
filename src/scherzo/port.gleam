@@ -40,6 +40,16 @@ pub fn start_with_env(
   |> result.map_error(StartFailed)
 }
 
+pub fn start_argv(
+  executable: String,
+  args: List(String),
+  cwd: String,
+  env: List(#(String, String)),
+) -> Result(Process, PortError) {
+  ffi_start_argv(executable, args, cwd, env)
+  |> result.map_error(StartFailed)
+}
+
 pub fn send_line(process: Process, line: String) -> Result(Nil, PortError) {
   ffi_send_line(process, line)
   |> result.map_error(fn(error) { SendFailed(error) })
@@ -111,6 +121,14 @@ fn ffi_start(command: String, cwd: String) -> Result(Process, String)
 @external(erlang, "scherzo_port_ffi", "start_with_env")
 fn ffi_start_with_env(
   command: String,
+  cwd: String,
+  env: List(#(String, String)),
+) -> Result(Process, String)
+
+@external(erlang, "scherzo_port_ffi", "start_argv")
+fn ffi_start_argv(
+  executable: String,
+  args: List(String),
   cwd: String,
   env: List(#(String, String)),
 ) -> Result(Process, String)

@@ -13,6 +13,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/log
 import scherzo/pi/client
+import scherzo/pi/command as pi_command
 import scherzo/pi/protocol
 import scherzo/result_artifact
 import scherzo/session/redaction
@@ -22,6 +23,7 @@ import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/turn_telemetry
+import scherzo/workflow_attempt
 import scherzo/workspace
 
 pub type RunAttempt {
@@ -122,16 +124,48 @@ pub fn run_prompt_in_workspace(
   on_command_ready: fn() -> Nil,
   workspace_path: String,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
+  run_prompt_mode_in_workspace(
+    issue,
+    workflow_attempt.OriginalPrompt(prompt),
+    workflow_attempt.StepAttemptContext(
+      run_id: "",
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      workflow_id: "",
+      workflow_fingerprint: "",
+      step_id: "",
+      workspace_name: "",
+      attempt_index: 0,
+      workspace_path: workspace_path,
+      continuation_capable: False,
+      continuation_session_file: None,
+    ),
+    config,
+    tracker_client,
+    emit_update,
+    command_subject,
+    on_command_ready,
+    workspace_path,
+    fn(_) { Nil },
+  )
+}
+
+pub fn run_prompt_mode_in_workspace(
+  issue: tracker_issue.Issue,
+  prompt_mode: workflow_attempt.AgentPromptMode,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  config: config_types.EffectiveConfig,
+  tracker_client: tracker.Client,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  command_subject: process.Subject(worker_command.Command),
+  on_command_ready: fn() -> Nil,
+  workspace_path: String,
+  record_pi_session: fn(workflow_attempt.PiSessionObservation) -> Nil,
+) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   case config.pi.compatibility_probe {
     True -> {
       emit_update(issue.id, lifecycle_update(pi_event.ProbeStarted))
-      case
-        probe.probe(
-          config.pi.command,
-          workspace_path,
-          config.pi.read_timeout_ms,
-        )
-      {
+      case probe_for_config(config, workspace_path) {
         Error(err) -> {
           let _ = workspace.after_run(workspace_path, config.hooks)
           Error(worker_failure(error.ProbeFailed(err), Some(workspace_path)))
@@ -140,13 +174,15 @@ pub fn run_prompt_in_workspace(
           emit_update(issue.id, lifecycle_update(pi_event.ProbeFinished))
           run_pi_loop(
             issue,
-            prompt,
+            prompt_mode,
+            attempt_context,
             config,
             tracker_client,
             emit_update,
             command_subject,
             on_command_ready,
             workspace_path,
+            record_pi_session,
           )
         }
       }
@@ -154,14 +190,56 @@ pub fn run_prompt_in_workspace(
     False ->
       run_pi_loop(
         issue,
-        prompt,
+        prompt_mode,
+        attempt_context,
         config,
         tracker_client,
         emit_update,
         command_subject,
         on_command_ready,
         workspace_path,
+        record_pi_session,
       )
+  }
+}
+
+fn probe_for_config(
+  config: config_types.EffectiveConfig,
+  workspace_path: String,
+) -> Result(Nil, error.PiRpcError) {
+  case config.pi.session_persistence.enabled {
+    False ->
+      probe.probe(config.pi.command, workspace_path, config.pi.read_timeout_ms)
+    True ->
+      case pi_command.build_launch(config.pi, pi_command.FreshPersistent) {
+        Error(_) -> Error(error.PiProtocolError("invalid persistent pi launch"))
+        Ok(spec) ->
+          case
+            client.launch_spec(
+              spec,
+              workspace_path,
+              "scherzo compatibility probe",
+              False,
+              config.pi.read_timeout_ms,
+            )
+          {
+            Ok(session) -> {
+              case
+                client.get_session_stats(session, config.pi.read_timeout_ms)
+              {
+                Ok(#(session, _)) -> {
+                  let _ = client.terminate(session)
+                  Ok(Nil)
+                }
+                Error(err) -> {
+                  let _ = client.terminate(session)
+                  Error(err)
+                }
+              }
+            }
+            Error(err) -> Error(err)
+          }
+      }
   }
 }
 
@@ -185,13 +263,7 @@ fn run_prepared(
       case config.pi.compatibility_probe {
         True -> {
           emit_update(issue.id, lifecycle_update(pi_event.ProbeStarted))
-          case
-            probe.probe(
-              config.pi.command,
-              prepared.path,
-              config.pi.read_timeout_ms,
-            )
-          {
+          case probe_for_config(config, prepared.path) {
             Error(err) -> {
               let _ = workspace.after_run(prepared.path, config.hooks)
               Error(worker_failure(error.ProbeFailed(err), Some(prepared.path)))
@@ -200,13 +272,27 @@ fn run_prepared(
               emit_update(issue.id, lifecycle_update(pi_event.ProbeFinished))
               run_pi_loop(
                 issue,
-                prompt,
+                workflow_attempt.OriginalPrompt(prompt),
+                workflow_attempt.StepAttemptContext(
+                  run_id: "",
+                  issue_id: issue.id,
+                  issue_identifier: issue.identifier,
+                  workflow_id: "",
+                  workflow_fingerprint: "",
+                  step_id: "",
+                  workspace_name: "",
+                  attempt_index: 0,
+                  workspace_path: prepared.path,
+                  continuation_capable: False,
+                  continuation_session_file: None,
+                ),
                 config,
                 tracker_client,
                 emit_update,
                 command_subject,
                 on_command_ready,
                 prepared.path,
+                fn(_) { Nil },
               )
             }
           }
@@ -214,48 +300,168 @@ fn run_prepared(
         False ->
           run_pi_loop(
             issue,
-            prompt,
+            workflow_attempt.OriginalPrompt(prompt),
+            workflow_attempt.StepAttemptContext(
+              run_id: "",
+              issue_id: issue.id,
+              issue_identifier: issue.identifier,
+              workflow_id: "",
+              workflow_fingerprint: "",
+              step_id: "",
+              workspace_name: "",
+              attempt_index: 0,
+              workspace_path: prepared.path,
+              continuation_capable: False,
+              continuation_session_file: None,
+            ),
             config,
             tracker_client,
             emit_update,
             command_subject,
             on_command_ready,
             prepared.path,
+            fn(_) { Nil },
           )
       }
   }
 }
 
+fn launch_for_prompt_mode(
+  mode: workflow_attempt.AgentPromptMode,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  config: config_types.EffectiveConfig,
+  workspace_path: String,
+  issue: tracker_issue.Issue,
+) -> Result(client.Session, error.PiRpcError) {
+  case mode {
+    workflow_attempt.OriginalPrompt(_) -> {
+      let launch_mode = case config.pi.session_persistence.enabled {
+        True -> pi_command.FreshPersistent
+        False -> pi_command.FreshNoSession
+      }
+      case pi_command.build_launch(config.pi, launch_mode) {
+        Error(_) -> Error(error.PiProtocolError("invalid pi launch config"))
+        Ok(spec) ->
+          client.launch_spec(
+            spec,
+            workspace_path,
+            issue.identifier <> ": " <> issue.title,
+            config.pi.auto_retry,
+            config.pi.read_timeout_ms,
+          )
+      }
+    }
+    workflow_attempt.RecoveryPrompt(_) ->
+      case attempt_context.continuation_session_file {
+        Some(session_file) ->
+          launch_continuation(config, workspace_path, session_file)
+        None -> Error(error.PiProtocolError("missing recorded pi session"))
+      }
+  }
+}
+
+fn launch_continuation(
+  config: config_types.EffectiveConfig,
+  workspace_path: String,
+  session_file: String,
+) -> Result(client.Session, error.PiRpcError) {
+  case
+    pi_command.build_launch(config.pi, pi_command.ContinueSession(session_file))
+  {
+    Error(_) -> Error(error.PiProtocolError("invalid pi continuation launch"))
+    Ok(spec) ->
+      client.reopen_session_for_continuation(
+        spec,
+        workspace_path,
+        session_file,
+        config.pi.read_timeout_ms,
+      )
+  }
+}
+
+fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
+  case mode {
+    workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.RecoveryPrompt(prompt) -> prompt
+  }
+}
+
+fn record_session_observation(
+  mode: workflow_attempt.AgentPromptMode,
+  context: workflow_attempt.StepAttemptContext,
+  session: client.Session,
+  record_pi_session: fn(workflow_attempt.PiSessionObservation) -> Nil,
+) -> Nil {
+  case
+    mode,
+    context.continuation_capable,
+    session.session_id,
+    session.session_file
+  {
+    workflow_attempt.OriginalPrompt(_),
+      True,
+      Some(session_id),
+      Some(session_file)
+    ->
+      case string.trim(session_id) == "" || string.trim(session_file) == "" {
+        True -> Nil
+        False ->
+          record_pi_session(workflow_attempt.PiSessionObservation(
+            run_id: context.run_id,
+            issue_id: context.issue_id,
+            issue_identifier: context.issue_identifier,
+            workflow_id: context.workflow_id,
+            workflow_fingerprint: context.workflow_fingerprint,
+            step_id: context.step_id,
+            workspace_name: context.workspace_name,
+            attempt_index: context.attempt_index,
+            workspace_path: context.workspace_path,
+            session_id: session_id,
+            session_file: session_file,
+          ))
+      }
+    _, _, _, _ -> Nil
+  }
+}
+
 fn run_pi_loop(
   issue: tracker_issue.Issue,
-  first_prompt: String,
+  first_prompt: workflow_attempt.AgentPromptMode,
+  attempt_context: workflow_attempt.StepAttemptContext,
   config: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
   emit_update: fn(String, types.RunnerUpdate) -> Nil,
   command_subject: process.Subject(worker_command.Command),
   on_command_ready: fn() -> Nil,
   workspace_path: String,
+  record_pi_session: fn(workflow_attempt.PiSessionObservation) -> Nil,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   case
-    client.launch(
-      config.pi.command,
+    launch_for_prompt_mode(
+      first_prompt,
+      attempt_context,
+      config,
       workspace_path,
-      issue.identifier <> ": " <> issue.title,
-      config.pi.auto_retry,
-      config.pi.read_timeout_ms,
+      issue,
     )
   {
     Error(err) -> {
       let _ = workspace.after_run(workspace_path, config.hooks)
-      Error(worker_failure(error.PiFailed(err), Some(workspace_path)))
+      Error(launch_worker_failure(first_prompt, err, workspace_path))
     }
     Ok(session) -> {
       emit_update(issue.id, pi_session_started_update(session.session_id))
+      record_session_observation(
+        first_prompt,
+        attempt_context,
+        session,
+        record_pi_session,
+      )
       on_command_ready()
       loop_turns(
         session,
         issue,
-        first_prompt,
+        prompt_text(first_prompt),
         1,
         session_tokens.zero_token_totals(),
         result_artifact.empty(),
@@ -268,6 +474,24 @@ fn run_pi_loop(
         workspace_path,
       )
     }
+  }
+}
+
+fn launch_worker_failure(
+  prompt_mode: workflow_attempt.AgentPromptMode,
+  err: error.PiRpcError,
+  workspace_path: String,
+) -> types.WorkerFailure {
+  case prompt_mode {
+    workflow_attempt.RecoveryPrompt(_) ->
+      worker_failure(
+        error.PiFailed(error.PiProtocolError(
+          workflow_attempt.recovery_pi_resume_validation_failed,
+        )),
+        Some(workspace_path),
+      )
+    workflow_attempt.OriginalPrompt(_) ->
+      worker_failure(error.PiFailed(err), Some(workspace_path))
   }
 }
 

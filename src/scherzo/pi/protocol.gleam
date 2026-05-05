@@ -13,6 +13,8 @@ pub type RpcRecord {
     command: Option(String),
     success: Option(Bool),
     session_id: Option(String),
+    session_file: Option(String),
+    cwd: Option(String),
     delta: Option(String),
     message: Option(String),
     method: Option(String),
@@ -227,6 +229,8 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     command: command,
     success: success,
     session_id: data.session_id,
+    session_file: data.session_file,
+    cwd: data.cwd,
     delta: delta,
     message: message,
     method: method,
@@ -570,6 +574,8 @@ fn non_empty(value: String) -> Option(String) {
 pub type Data {
   Data(
     session_id: Option(String),
+    session_file: Option(String),
+    cwd: Option(String),
     tokens: session_tokens.TokenTotals,
     tool_name: Option(String),
     tool_input: Option(String),
@@ -581,6 +587,8 @@ pub type Data {
 fn empty_data() -> Data {
   Data(
     session_id: None,
+    session_file: None,
+    cwd: None,
     tokens: session_tokens.zero_token_totals(),
     tool_name: None,
     tool_input: None,
@@ -593,7 +601,17 @@ fn data_decoder() -> decode.Decoder(Data) {
   use session_id <- decode.optional_field(
     "sessionId",
     None,
-    decode.optional(decode.string),
+    tolerant_optional_string_decoder(),
+  )
+  use session_file <- decode.optional_field(
+    "sessionFile",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use cwd <- decode.optional_field(
+    "cwd",
+    None,
+    tolerant_optional_string_decoder(),
   )
   use tokens <- decode.optional_field(
     "tokens",
@@ -657,6 +675,8 @@ fn data_decoder() -> decode.Decoder(Data) {
   )
   decode.success(Data(
     session_id: session_id,
+    session_file: session_file,
+    cwd: cwd,
     tokens: tokens,
     tool_name: first_non_empty([tool_name_camel, tool_name_snake, name]),
     tool_input: first_non_empty([command, input, args]),

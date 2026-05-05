@@ -56,6 +56,11 @@ fn config() -> config_types.EffectiveConfig {
       ui_request_timeout_ms: 300_000,
       compatibility_probe: True,
       rate_limit_payload: None,
+      argv_command: None,
+      session_persistence: config_types.PiSessionPersistenceConfig(
+        enabled: False,
+        recovery_prompt: "",
+      ),
     ),
     handoff: config_types.HandoffConfig(
       enabled: False,

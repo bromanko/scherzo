@@ -104,6 +104,10 @@ pub type StepAttemptStatus {
     source_workspace_path: Option(String),
     operator_session_id: String,
     external_session_ref: Option(String),
+    continuation_capable: Bool,
+    pi_session_id: Option(String),
+    pi_session_file: Option(String),
+    pi_session_fact_count: Int,
     started_at_ms: Int,
   )
   StepAttemptFinishedStatus(
@@ -128,7 +132,14 @@ pub type StepAttemptStatus {
     workflow_id: String,
     step_id: String,
     attempt_index: Int,
+    workspace_name: String,
+    workspace_path: String,
+    run_root: String,
     reason: String,
+    continuation_capable: Bool,
+    pi_session_id: Option(String),
+    pi_session_file: Option(String),
+    pi_session_fact_count: Int,
     interrupted_at_ms: Int,
   )
   StepAttemptSupersededStatus(
@@ -524,6 +535,7 @@ pub fn apply(
       attempt_index,
       operator_session_id,
       external_session_ref,
+      continuation_capable,
     ) -> {
       let key = step_attempt_key(run_id, step_id, attempt_index)
       let status = case dict.get(projection.step_attempts, key) {
@@ -551,6 +563,10 @@ pub fn apply(
             source_workspace_path,
             operator_session_id,
             external_session_ref,
+            continuation_capable,
+            None,
+            None,
+            0,
             at_ms,
           )
         _ ->
@@ -566,6 +582,224 @@ pub fn apply(
             None,
             operator_session_id,
             external_session_ref,
+            continuation_capable,
+            None,
+            None,
+            0,
+            at_ms,
+          )
+      }
+      Projection(
+        ..projection,
+        step_attempts: dict.insert(projection.step_attempts, key, status),
+      )
+    }
+    record.StepAttemptContinuationStarted(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      session_id,
+    ) -> {
+      let key = step_attempt_key(run_id, step_id, attempt_index)
+      let status = case dict.get(projection.step_attempts, key) {
+        Ok(StepAttemptPending(
+          _,
+          _,
+          _,
+          _,
+          workspace_name,
+          workspace_path,
+          run_root,
+          source_workspace_name,
+          source_workspace_path,
+          _,
+        )) ->
+          StepAttemptRunning(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            workspace_name,
+            workspace_path,
+            run_root,
+            source_workspace_name,
+            source_workspace_path,
+            "",
+            Some(session_id),
+            True,
+            Some(session_id),
+            None,
+            1,
+            at_ms,
+          )
+        Ok(StepAttemptInterruptedStatus(
+          workspace_name: workspace_name,
+          workspace_path: workspace_path,
+          run_root: run_root,
+          pi_session_file: pi_session_file,
+          pi_session_fact_count: pi_session_fact_count,
+          ..,
+        )) ->
+          StepAttemptRunning(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            workspace_name,
+            workspace_path,
+            run_root,
+            None,
+            None,
+            "",
+            Some(session_id),
+            True,
+            Some(session_id),
+            pi_session_file,
+            pi_session_fact_count,
+            at_ms,
+          )
+        _ ->
+          StepAttemptRunning(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            "",
+            "",
+            "",
+            None,
+            None,
+            "",
+            Some(session_id),
+            True,
+            Some(session_id),
+            None,
+            1,
+            at_ms,
+          )
+      }
+      Projection(
+        ..projection,
+        step_attempts: dict.insert(projection.step_attempts, key, status),
+      )
+    }
+    record.StepAttemptPiSessionRecorded(
+      run_id,
+      _,
+      _,
+      workflow_id,
+      _,
+      step_id,
+      workspace_name,
+      attempt_index,
+      workspace_path,
+      session_id,
+      session_file,
+    ) -> {
+      let key = step_attempt_key(run_id, step_id, attempt_index)
+      let status = case dict.get(projection.step_attempts, key) {
+        Ok(StepAttemptRunning(
+          workflow_id: status_workflow_id,
+          workspace_name: status_workspace_name,
+          workspace_path: status_workspace_path,
+          run_root: run_root,
+          source_workspace_name: source_workspace_name,
+          source_workspace_path: source_workspace_path,
+          operator_session_id: operator_session_id,
+          external_session_ref: external_session_ref,
+          continuation_capable: continuation_capable,
+          pi_session_fact_count: count,
+          started_at_ms: started_at_ms,
+          ..,
+        )) -> {
+          let #(pi_session_id, pi_session_file, fact_count) =
+            session_fact_values(
+              status_workflow_id,
+              status_workspace_name,
+              status_workspace_path,
+              workflow_id,
+              workspace_name,
+              workspace_path,
+              session_id,
+              session_file,
+              count,
+            )
+          StepAttemptRunning(
+            run_id,
+            status_workflow_id,
+            step_id,
+            attempt_index,
+            status_workspace_name,
+            status_workspace_path,
+            run_root,
+            source_workspace_name,
+            source_workspace_path,
+            operator_session_id,
+            external_session_ref,
+            continuation_capable,
+            pi_session_id,
+            pi_session_file,
+            fact_count,
+            started_at_ms,
+          )
+        }
+        Ok(StepAttemptInterruptedStatus(
+          workflow_id: status_workflow_id,
+          workspace_name: status_workspace_name,
+          workspace_path: status_workspace_path,
+          run_root: run_root,
+          reason: reason,
+          continuation_capable: continuation_capable,
+          pi_session_fact_count: count,
+          interrupted_at_ms: interrupted_at_ms,
+          ..,
+        )) -> {
+          let #(pi_session_id, pi_session_file, fact_count) =
+            session_fact_values(
+              status_workflow_id,
+              status_workspace_name,
+              status_workspace_path,
+              workflow_id,
+              workspace_name,
+              workspace_path,
+              session_id,
+              session_file,
+              count,
+            )
+          StepAttemptInterruptedStatus(
+            run_id,
+            status_workflow_id,
+            step_id,
+            attempt_index,
+            status_workspace_name,
+            status_workspace_path,
+            run_root,
+            reason,
+            continuation_capable,
+            pi_session_id,
+            pi_session_file,
+            fact_count,
+            interrupted_at_ms,
+          )
+        }
+        _ ->
+          StepAttemptRunning(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            workspace_name,
+            workspace_path,
+            "",
+            None,
+            None,
+            "",
+            None,
+            True,
+            Some(session_id),
+            Some(session_file),
+            1,
             at_ms,
           )
       }
@@ -621,22 +855,77 @@ pub fn apply(
       step_id,
       attempt_index,
       reason,
-    ) ->
-      Projection(
-        ..projection,
-        step_attempts: dict.insert(
-          projection.step_attempts,
-          step_attempt_key(run_id, step_id, attempt_index),
+    ) -> {
+      let key = step_attempt_key(run_id, step_id, attempt_index)
+      let status = case dict.get(projection.step_attempts, key) {
+        Ok(StepAttemptRunning(
+          workspace_name: workspace_name,
+          workspace_path: workspace_path,
+          run_root: run_root,
+          continuation_capable: continuation_capable,
+          pi_session_id: pi_session_id,
+          pi_session_file: pi_session_file,
+          pi_session_fact_count: pi_session_fact_count,
+          ..,
+        )) ->
           StepAttemptInterruptedStatus(
             run_id,
             workflow_id,
             step_id,
             attempt_index,
+            workspace_name,
+            workspace_path,
+            run_root,
             reason,
+            continuation_capable,
+            pi_session_id,
+            pi_session_file,
+            pi_session_fact_count,
             at_ms,
-          ),
-        ),
+          )
+        Ok(StepAttemptPending(
+          workspace_name: workspace_name,
+          workspace_path: workspace_path,
+          run_root: run_root,
+          ..,
+        )) ->
+          StepAttemptInterruptedStatus(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            workspace_name,
+            workspace_path,
+            run_root,
+            reason,
+            False,
+            None,
+            None,
+            0,
+            at_ms,
+          )
+        _ ->
+          StepAttemptInterruptedStatus(
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+            "",
+            "",
+            "",
+            reason,
+            False,
+            None,
+            None,
+            0,
+            at_ms,
+          )
+      }
+      Projection(
+        ..projection,
+        step_attempts: dict.insert(projection.step_attempts, key, status),
       )
+    }
     record.StepAttemptSuperseded(
       run_id,
       workflow_id,
@@ -1119,6 +1408,28 @@ pub fn step_attempt_key(
   run_id <> "\u{001f}" <> step_id <> "\u{001f}" <> int.to_string(attempt_index)
 }
 
+fn session_fact_values(
+  status_workflow_id: String,
+  status_workspace_name: String,
+  status_workspace_path: String,
+  fact_workflow_id: String,
+  fact_workspace_name: String,
+  fact_workspace_path: String,
+  session_id: String,
+  session_file: String,
+  current_count: Int,
+) -> #(Option(String), Option(String), Int) {
+  let fact_count = current_count + 1
+  case
+    status_workflow_id == fact_workflow_id
+    && status_workspace_name == fact_workspace_name
+    && status_workspace_path == fact_workspace_path
+  {
+    True -> #(Some(session_id), Some(session_file), fact_count)
+    False -> #(None, None, fact_count)
+  }
+}
+
 pub fn next_attempt_index(
   projection: Projection,
   run_id: String,
@@ -1286,18 +1597,10 @@ fn attempt_identity(status: StepAttemptStatus) -> #(String, String, Int) {
       attempt_index,
     )
     StepAttemptRunning(
-      run_id,
-      _,
-      step_id,
-      attempt_index,
-      _,
-      _,
-      _,
-      _,
-      _,
-      _,
-      _,
-      _,
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
     ) -> #(run_id, step_id, attempt_index)
     StepAttemptFinishedStatus(
       run_id: run_id,
@@ -1305,11 +1608,12 @@ fn attempt_identity(status: StepAttemptStatus) -> #(String, String, Int) {
       attempt_index: attempt_index,
       ..,
     ) -> #(run_id, step_id, attempt_index)
-    StepAttemptInterruptedStatus(run_id, _, step_id, attempt_index, _, _) -> #(
-      run_id,
-      step_id,
-      attempt_index,
-    )
+    StepAttemptInterruptedStatus(
+      run_id: run_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      ..,
+    ) -> #(run_id, step_id, attempt_index)
     StepAttemptSupersededStatus(run_id, _, step_id, attempt_index, _, _, _) -> #(
       run_id,
       step_id,
@@ -1719,6 +2023,10 @@ fn step_attempt_entry_to_json(
       source_workspace_path,
       operator_session_id,
       external_session_ref,
+      continuation_capable,
+      pi_session_id,
+      pi_session_file,
+      pi_session_fact_count,
       started_at_ms,
     ) ->
       json.object([
@@ -1735,6 +2043,10 @@ fn step_attempt_entry_to_json(
         #("source_workspace_path", option_string_to_json(source_workspace_path)),
         #("operator_session_id", json.string(operator_session_id)),
         #("external_session_ref", option_string_to_json(external_session_ref)),
+        #("continuation_capable", json.bool(continuation_capable)),
+        #("pi_session_id", option_string_to_json(pi_session_id)),
+        #("pi_session_file", option_string_to_json(pi_session_file)),
+        #("pi_session_fact_count", json.int(pi_session_fact_count)),
         #("started_at_ms", json.int(started_at_ms)),
       ])
     StepAttemptFinishedStatus(
@@ -1778,7 +2090,14 @@ fn step_attempt_entry_to_json(
       workflow_id,
       step_id,
       attempt_index,
+      workspace_name,
+      workspace_path,
+      run_root,
       reason,
+      continuation_capable,
+      pi_session_id,
+      pi_session_file,
+      pi_session_fact_count,
       interrupted_at_ms,
     ) ->
       json.object([
@@ -1788,7 +2107,14 @@ fn step_attempt_entry_to_json(
         #("workflow_id", json.string(workflow_id)),
         #("step_id", json.string(step_id)),
         #("attempt_index", json.int(attempt_index)),
+        #("workspace_name", json.string(workspace_name)),
+        #("workspace_path", json.string(workspace_path)),
+        #("run_root", json.string(run_root)),
         #("reason", json.string(reason)),
+        #("continuation_capable", json.bool(continuation_capable)),
+        #("pi_session_id", option_string_to_json(pi_session_id)),
+        #("pi_session_file", option_string_to_json(pi_session_file)),
+        #("pi_session_fact_count", json.int(pi_session_fact_count)),
         #("interrupted_at_ms", json.int(interrupted_at_ms)),
       ])
     StepAttemptSupersededStatus(
@@ -2339,6 +2665,26 @@ fn step_attempt_snapshot_decoder() -> decode.Decoder(StepAttemptSnapshot) {
         None,
         decode.optional(decode.string),
       )
+      use continuation_capable <- decode.optional_field(
+        "continuation_capable",
+        False,
+        decode.bool,
+      )
+      use pi_session_id <- decode.optional_field(
+        "pi_session_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use pi_session_file <- decode.optional_field(
+        "pi_session_file",
+        None,
+        decode.optional(decode.string),
+      )
+      use pi_session_fact_count <- decode.optional_field(
+        "pi_session_fact_count",
+        0,
+        decode.int,
+      )
       use started_at_ms <- decode.field("started_at_ms", decode.int)
       decode.success(StepAttemptSnapshot(
         key,
@@ -2354,6 +2700,10 @@ fn step_attempt_snapshot_decoder() -> decode.Decoder(StepAttemptSnapshot) {
           source_workspace_path,
           operator_session_id,
           external_session_ref,
+          continuation_capable,
+          pi_session_id,
+          pi_session_file,
+          pi_session_fact_count,
           started_at_ms,
         ),
       ))
@@ -2400,7 +2750,38 @@ fn step_attempt_snapshot_decoder() -> decode.Decoder(StepAttemptSnapshot) {
       ))
     }
     "interrupted" -> {
+      use workspace_name <- decode.optional_field(
+        "workspace_name",
+        "",
+        decode.string,
+      )
+      use workspace_path <- decode.optional_field(
+        "workspace_path",
+        "",
+        decode.string,
+      )
+      use run_root <- decode.optional_field("run_root", "", decode.string)
       use reason <- decode.field("reason", decode.string)
+      use continuation_capable <- decode.optional_field(
+        "continuation_capable",
+        False,
+        decode.bool,
+      )
+      use pi_session_id <- decode.optional_field(
+        "pi_session_id",
+        None,
+        decode.optional(decode.string),
+      )
+      use pi_session_file <- decode.optional_field(
+        "pi_session_file",
+        None,
+        decode.optional(decode.string),
+      )
+      use pi_session_fact_count <- decode.optional_field(
+        "pi_session_fact_count",
+        0,
+        decode.int,
+      )
       use interrupted_at_ms <- decode.field("interrupted_at_ms", decode.int)
       decode.success(StepAttemptSnapshot(
         key,
@@ -2409,7 +2790,14 @@ fn step_attempt_snapshot_decoder() -> decode.Decoder(StepAttemptSnapshot) {
           workflow_id,
           step_id,
           attempt_index,
+          workspace_name,
+          workspace_path,
+          run_root,
           reason,
+          continuation_capable,
+          pi_session_id,
+          pi_session_file,
+          pi_session_fact_count,
           interrupted_at_ms,
         ),
       ))
@@ -2438,7 +2826,21 @@ fn step_attempt_snapshot_decoder() -> decode.Decoder(StepAttemptSnapshot) {
       decode.failure(
         StepAttemptSnapshot(
           "",
-          StepAttemptInterruptedStatus("", "", "", 0, "", 0),
+          StepAttemptInterruptedStatus(
+            "",
+            "",
+            "",
+            0,
+            "",
+            "",
+            "",
+            "",
+            False,
+            None,
+            None,
+            0,
+            0,
+          ),
         ),
         expected: "StepAttemptSnapshot",
       )

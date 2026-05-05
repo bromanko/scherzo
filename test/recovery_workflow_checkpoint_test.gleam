@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/option.{None, Some}
+import gleam/string
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
 import scherzo/state/artifact_store
@@ -133,6 +134,7 @@ pub fn workflow_recovery_reuses_finished_artifacts_and_interrupts_running_attemp
           1,
           "workflow-step-run-1-a-a1-ca978112ca1b",
           None,
+          False,
         ),
       ),
       record.with_id(
@@ -177,6 +179,7 @@ pub fn workflow_recovery_reuses_finished_artifacts_and_interrupts_running_attemp
           1,
           "workflow-step-run-1-b-a1-3e23e8160039",
           None,
+          False,
         ),
       ),
     ])
@@ -462,6 +465,7 @@ pub fn workflow_recovery_parks_interrupted_command_attempts_test() {
           1,
           "workflow-step-run-command-command-a1-abc",
           None,
+          False,
         ),
       ),
     ])
@@ -720,7 +724,9 @@ fn has_park_reason(records: List(record.LedgerRecord), reason: String) -> Bool {
     [record, ..rest] ->
       case record.body {
         record.IssueParkedV2(reason: parked_reason, ..) ->
-          parked_reason == reason || has_park_reason(rest, reason)
+          parked_reason == reason
+          || string.starts_with(parked_reason, reason <> ":")
+          || has_park_reason(rest, reason)
         _ -> has_park_reason(rest, reason)
       }
   }

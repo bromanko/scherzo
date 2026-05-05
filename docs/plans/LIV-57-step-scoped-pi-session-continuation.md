@@ -69,27 +69,31 @@ The main privacy risk is exposing pi transcripts or local session paths. The cou
 - [x] (2026-05-04 00:00Z) Drafted this ExecPlan from LIV-57 and inspected the current repository surfaces needed for an accurate plan.
 - [x] (2026-05-04 00:00Z) Incorporated adversarial review feedback by folding the missing step-attempt/recovery foundation into this plan, moving real-pi validation to the first milestone, replacing separate preflight with single-process reopen validation, and adding privacy/documentation test work.
 - [x] (2026-05-04 15:20Z) Addressed PR review feedback by separating rollout optionality from true continuation semantics and requiring `continuation_capable` to be persisted on step-attempt start.
-- [ ] Run the real-pi feasibility spike and update this plan if pi `sessionFile` timing or reopen behavior differs from the design.
-- [ ] Add durable step-attempt records, projection state, and recovery continuation request plumbing to the current run-scoped state model.
-- [ ] Add structured pi argv configuration and launch construction for session-enabled pi runs.
-- [ ] Decode and capture pi `sessionFile` and record it against the exact step attempt.
-- [ ] Extend recovery planning to choose safe step-scoped continuation candidates and to park unsafe cases.
-- [ ] Execute continuation from the recorded workspace with `--session` and a recovery prompt on the same process used for reopen validation.
-- [ ] Add fake-pi, state, workflow-runner, command-construction, redaction, and documentation tests.
-- [ ] Complete mandatory real-pi validation evidence and record concise results in this plan.
+- [x] (2026-05-05 14:45Z) Ran the real-pi validation through the production structured launch path. `SCHERZO_REAL_PI_VALIDATION=1 direnv exec . gleam test` passed, proving a captured `sessionFile` could be reopened with `--session` from the recorded workspace and accept a recovery prompt.
+- [x] (2026-05-05 14:45Z) Added durable step-attempt records, projection state, and recovery continuation request plumbing to the current run-scoped state model.
+- [x] (2026-05-05 14:45Z) Added structured pi argv configuration and launch construction for session-enabled pi runs.
+- [x] (2026-05-05 14:45Z) Decoded and captured pi `sessionFile` and recorded it against the exact step attempt.
+- [x] (2026-05-05 14:45Z) Extended recovery planning to choose safe step-scoped continuation candidates and to park unsafe cases.
+- [x] (2026-05-05 14:45Z) Executed continuation from the recorded workspace with `--session` and a recovery prompt on the same process used for reopen validation.
+- [x] (2026-05-05 14:45Z) Added fake-pi, state, workflow-runner, command-construction, redaction, and documentation tests, including post-review coverage for argv/cwd logging, no original prompt resend, no prompt on resume-validation failure, and recovery failure code propagation.
+- [x] (2026-05-05 14:45Z) Completed mandatory real-pi validation evidence and recorded concise results in this plan.
 
 ## Surprises & Discoveries
 
 - Observation: The current `pi.command` configuration is a single shell string and the repository port wrapper starts it through a shell in `src/scherzo_port_ffi.erl`.
   Evidence: `src/scherzo/config.gleam` defaults `pi.command` to `pi --mode rpc --no-session`; `src/scherzo/pi/client.gleam` passes that string to `port.start`; `src/scherzo/port.gleam` exposes `start(command, cwd)`.
-- Observation: The current workflow runner already prepares per-step workspaces and routes agent steps through `run_prompt_in_workspace`, but it does not yet create a durable step-attempt context.
-  Evidence: `src/scherzo/workspace_run.gleam` defines `PreparedStepWorkspace`; `src/scherzo/workflow_run.gleam` prepares steps, renders agent prompts, applies per-step model settings, and calls `Dependencies.agent_step` with `workspace.path` but no attempt identity.
-- Observation: The durable state currently has run-level interruption recovery, not step-attempt recovery.
-  Evidence: `src/scherzo/state/record.gleam` defines `RunStarted`, `RunFinished`, and `RunInterrupted`; `src/scherzo/state/projection.gleam` projects `runs`; `src/scherzo/state/recovery.gleam` has `recover_interrupted_runs` that parks, retries, or cleans up issue-level interrupted runs.
-- Observation: The fake pi fixture already supports transcript capture, but it does not yet expose launch argv or configurable `sessionFile` behavior.
-  Evidence: `test/fixtures/fake_pi_rpc.sh` records JSON input lines when `FAKE_PI_TRANSCRIPT` is set and currently returns `sessionFile:null` from `get_state`.
-- Observation: Operator config documentation exists in `README.md` and `examples/scherzo.yaml`, and both currently show only `pi.command: "pi --mode rpc --no-session"`.
-  Evidence: `README.md` describes the orchestrator config shape and `examples/scherzo.yaml` contains the example `pi` block.
+- Observation: At plan start, the workflow runner already prepared per-step workspaces and routed agent steps through `run_prompt_in_workspace`, but it did not yet create a durable step-attempt context.
+  Evidence: `src/scherzo/workspace_run.gleam` defines `PreparedStepWorkspace`; `src/scherzo/workflow_run.gleam` prepares steps, renders agent prompts, applies per-step model settings, and now calls `Dependencies.agent_step` with prompt mode, attempt context, and session recording.
+- Observation: At plan start, durable state had run-level interruption recovery, not step-attempt recovery.
+  Evidence: `src/scherzo/state/record.gleam`, `src/scherzo/state/projection.gleam`, and `src/scherzo/state/recovery.gleam` now include step-attempt and step pi-session recovery state in addition to the earlier run records.
+- Observation: At plan start, the fake pi fixture supported transcript capture but not launch argv or configurable `sessionFile` behavior.
+  Evidence: `test/fixtures/fake_pi_rpc.sh` now records argv and cwd when `FAKE_PI_ARGV_LOG` is set, returns session files from `FAKE_PI_SESSION_FILE` or `--session`, and supports mismatch and `get_state` failure controls.
+- Observation: Operator config documentation initially showed only `pi.command: "pi --mode rpc --no-session"`.
+  Evidence: `README.md` and `examples/scherzo.yaml` now document `pi.argv`, `pi.session_persistence.enabled`, local transcript sensitivity, and retention boundaries.
+- Observation: The post-review real-pi validation passed through the production structured argv path.
+  Evidence: `SCHERZO_REAL_PI_VALIDATION=1 direnv exec . gleam test` passed with 749 tests and no failures after launching real pi, capturing a non-empty `sessionFile`, reopening it with `--session` from the same workspace, validating `get_state`, and sending a recovery prompt.
+- Observation: Recovery resume-validation failure needed an explicit failure code that survives the workflow-runner artifact path.
+  Evidence: Review found validation failures flowed back as ordinary worker failure. The implementation now emits `recovery_pi_resume_validation_failed`, stores it in the step artifact failure code, treats it as fatal regardless of step failure policy, and parks the issue in daemon failure handling.
 
 ## Decision Log
 
@@ -120,10 +124,15 @@ The main privacy risk is exposing pi transcripts or local session paths. The cou
 - Decision: Operator-facing config documentation, invalid-config messages, and privacy redaction tests are in scope; retention dashboards and cleanup controls are deferred.
   Rationale: Operators need enough documentation to enable the feature safely, and leakage prevention must be verifiable now. Durable retention policy and cleanup UX are a separate operator-control surface.
   Date: 2026-05-04
+- Decision: Dynamic resume-validation failure uses the explicit reason code `recovery_pi_resume_validation_failed` and is fatal even when the recovered step has `on_failure: continue`.
+  Rationale: Reopen validation happens before any recovery prompt is sent. If it fails, continuing downstream or retrying as an ordinary worker failure could hide an unsafe recovery path. The explicit code lets the daemon park the issue with the required reason.
+  Date: 2026-05-05
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Post-review implementation completed the step-scoped continuation path and closed the main safety gaps from review. Fake-pi now exposes launch argv, cwd, configurable session files, and resume-validation mismatch controls, so tests can prove continuation launches use structured argv, run from the recorded workspace, send only the recovery prompt, and send no prompt when reopen validation fails. Resume-validation failure now propagates as `recovery_pi_resume_validation_failed`, is fatal even for `on_failure: continue`, and parks the issue instead of flowing through ordinary retry/failure handling. Operator docs now describe `pi.argv`, `pi.session_persistence`, local transcript sensitivity, and the current retention boundary.
+
+Validation on 2026-05-05 passed with `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `SCHERZO_REAL_PI_VALIDATION=1 direnv exec . gleam test`. The real-pi validation used the production structured argv path, captured a `sessionFile`, terminated the first process, reopened with `--session <captured-session-file>` from the same workspace, validated `get_state`, and successfully sent a recovery prompt. No transcript contents, session file contents, or machine-specific session paths are recorded here.
 
 ## Context and Orientation
 
@@ -143,7 +152,7 @@ The state ledger and projection live in `src/scherzo/state/record.gleam` and `sr
 
 The daemon integration that appends ledger records and applies recovery plans lives in `src/scherzo/orchestrator/daemon.gleam`. The implementation must route new step-attempt records through the same local ledger append path used for existing run and outbox records. Operator summaries and attach/event JSON are represented under `src/scherzo/session/`, especially `src/scherzo/session/json.gleam`; those surfaces must not expose raw pi session file paths.
 
-The fake pi test fixture lives in `test/fixtures/fake_pi_rpc.sh`. It reads JSON RPC lines from stdin, writes JSON RPC lines to stdout, can record input lines through `FAKE_PI_TRANSCRIPT`, and currently returns a fake `sessionId` and null `sessionFile` from `get_state`. This plan extends the fixture so tests can assert launch argv, cwd, session-file behavior, and recovery prompt behavior.
+The fake pi test fixture lives in `test/fixtures/fake_pi_rpc.sh`. It reads JSON RPC lines from stdin, writes JSON RPC lines to stdout, records input lines through `FAKE_PI_TRANSCRIPT`, records launch argv and cwd through `FAKE_PI_ARGV_LOG`, returns fake session metadata from `get_state`, and supports session-file mismatch and `get_state` failure controls so tests can assert recovery prompt behavior.
 
 Operator config documentation lives in `README.md` and the reusable example config `examples/scherzo.yaml`. This plan updates those docs during implementation so operators know how to enable structured argv and session persistence safely.
 
@@ -491,7 +500,20 @@ A failed resume-validation transcript should have no prompt commands:
     prompt_count=0
     park_reason=recovery_pi_resume_validation_failed
 
-After Milestone 0 real-pi feasibility validation, add a concise note here with the date, command shape, and observation. After final validation, add a second concise note proving the production path still passes. Do not paste full transcripts, session file contents, local machine-specific paths, secrets, Linear issue contents, or private source snippets.
+Fake-pi validation on 2026-05-05 covered structured argv and cwd logging, continuation `--session` argument boundaries, recovery prompt delivery, original-prompt absence, and no prompt on resume-validation failure. The argv log shape was:
+
+    cwd=<recorded-workspace-path>
+    argv[0]=test/fixtures/fake_pi_rpc.sh
+    argv[1]=--mode
+    argv[2]=rpc
+    argv[3]=--session
+    argv[4]=<recorded-session-file>
+
+Real-pi validation on 2026-05-05 used the production structured command shape `pi --mode rpc` for the first process and `pi --mode rpc --session <captured-session-file>` for reopen. The first process reported a non-empty `sessionFile`; the reopened process reported compatible state from the same workspace and accepted a recovery prompt. Validation command:
+
+    SCHERZO_REAL_PI_VALIDATION=1 direnv exec . gleam test
+
+The command completed with 749 tests and no failures. No full transcript, session file contents, local path, secret, or Linear issue data is included here.
 
 ## Interfaces and Dependencies
 

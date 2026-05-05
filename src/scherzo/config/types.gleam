@@ -51,6 +51,18 @@ pub type AgentConfig {
   )
 }
 
+pub type PiArgvCommand {
+  PiArgvCommand(
+    executable: String,
+    args: List(String),
+    env: List(#(String, String)),
+  )
+}
+
+pub type PiSessionPersistenceConfig {
+  PiSessionPersistenceConfig(enabled: Bool, recovery_prompt: String)
+}
+
 pub type PiConfig {
   PiConfig(
     command: String,
@@ -62,6 +74,8 @@ pub type PiConfig {
     ui_request_timeout_ms: Int,
     compatibility_probe: Bool,
     rate_limit_payload: Option(String),
+    argv_command: Option(PiArgvCommand),
+    session_persistence: PiSessionPersistenceConfig,
   )
 }
 

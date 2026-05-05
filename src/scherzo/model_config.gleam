@@ -129,6 +129,20 @@ pub fn apply_to_command(command: String, settings: Settings) -> String {
   command <> model_flag(settings.model) <> thinking_flag(settings.thinking)
 }
 
+pub fn apply_to_argv_args(
+  args: List(String),
+  settings: Settings,
+) -> List(String) {
+  let args = case settings.model {
+    Some(model) -> list.append(args, ["--model", model])
+    None -> args
+  }
+  case settings.thinking {
+    Some(level) -> list.append(args, ["--thinking", thinking_to_string(level)])
+    None -> args
+  }
+}
+
 pub fn error_code(error: ModelError) -> String {
   let ModelError(code: code, ..) = error
   code

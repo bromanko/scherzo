@@ -32,7 +32,15 @@ agent:
   max_retry_attempts: 5
   max_sessions_per_issue: 3
 pi:
+  # Default non-persistent launch path. Scherzo uses this shell command while
+  # session persistence is disabled.
   command: "pi --mode rpc --no-session"
+  # Opt-in persistent launches must use structured argv so Scherzo owns
+  # --session construction during recovery. Do not include --session or
+  # --no-session here.
+  # argv: ["pi", "--mode", "rpc"]
+  # session_persistence:
+  #   enabled: true
   # Optional project defaults inherited by workflow agent steps.
   # model: google/gemini-2.5-flash
   # thinking: low

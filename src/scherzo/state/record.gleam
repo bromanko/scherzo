@@ -77,6 +77,27 @@ pub type RecordBody {
     attempt_index: Int,
     operator_session_id: String,
     external_session_ref: Option(String),
+    continuation_capable: Bool,
+  )
+  StepAttemptContinuationStarted(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    session_id: String,
+  )
+  StepAttemptPiSessionRecorded(
+    run_id: String,
+    issue_id: String,
+    issue_identifier: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    step_id: String,
+    workspace_name: String,
+    attempt_index: Int,
+    workspace_path: String,
+    session_id: String,
+    session_file: String,
   )
   StepAttemptFinished(
     run_id: String,
@@ -210,6 +231,9 @@ type RecordFields {
     attempt_index: Option(Int),
     operator_session_id: Option(String),
     external_session_ref: Option(String),
+    continuation_capable: Option(Bool),
+    session_id: Option(String),
+    session_file: Option(String),
     outcome: Option(String),
     artifact_ref: Option(String),
     artifact_sha256: Option(String),
@@ -272,6 +296,8 @@ pub fn kind(body: RecordBody) -> String {
     WorkflowRunSuperseded(..) -> "workflow_run_superseded"
     StepAttemptPrepared(..) -> "step_attempt_prepared"
     StepAttemptStarted(..) -> "step_attempt_started"
+    StepAttemptContinuationStarted(..) -> "step_attempt_continuation_started"
+    StepAttemptPiSessionRecorded(..) -> "step_attempt_pi_session_recorded"
     StepAttemptFinished(..) -> "step_attempt_finished"
     StepAttemptInterrupted(..) -> "step_attempt_interrupted"
     StepAttemptSuperseded(..) -> "step_attempt_superseded"
@@ -437,6 +463,7 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       attempt_index,
       operator_session_id,
       external_session_ref,
+      continuation_capable,
     ) -> [
       #("run_id", json.string(run_id)),
       #("workflow_id", json.string(workflow_id)),
@@ -444,6 +471,45 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("attempt_index", json.int(attempt_index)),
       #("operator_session_id", json.string(operator_session_id)),
       #("external_session_ref", option_string_to_json(external_session_ref)),
+      #("continuation_capable", json.bool(continuation_capable)),
+    ]
+    StepAttemptContinuationStarted(
+      run_id,
+      workflow_id,
+      step_id,
+      attempt_index,
+      session_id,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("step_id", json.string(step_id)),
+      #("attempt_index", json.int(attempt_index)),
+      #("session_id", json.string(session_id)),
+    ]
+    StepAttemptPiSessionRecorded(
+      run_id,
+      issue_id,
+      issue_identifier,
+      workflow_id,
+      workflow_fingerprint,
+      step_id,
+      workspace_name,
+      attempt_index,
+      workspace_path,
+      session_id,
+      session_file,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("issue_id", json.string(issue_id)),
+      #("issue_identifier", json.string(issue_identifier)),
+      #("workflow_id", json.string(workflow_id)),
+      #("workflow_fingerprint", json.string(workflow_fingerprint)),
+      #("step_id", json.string(step_id)),
+      #("workspace_name", json.string(workspace_name)),
+      #("attempt_index", json.int(attempt_index)),
+      #("workspace_path", json.string(workspace_path)),
+      #("session_id", json.string(session_id)),
+      #("session_file", json.string(session_file)),
     ]
     StepAttemptFinished(
       run_id,
@@ -796,6 +862,80 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         attempt_index,
         operator_session_id,
         fields.external_session_ref,
+        option_bool(fields.continuation_capable, False),
+      ))
+    }
+    "step_attempt_continuation_started" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use step_id <- result.try(required_string(fields.step_id, "step_id"))
+      use attempt_index <- result.try(required_int(
+        fields.attempt_index,
+        "attempt_index",
+      ))
+      use session_id <- result.try(required_string(
+        fields.session_id,
+        "session_id",
+      ))
+      Ok(StepAttemptContinuationStarted(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        session_id,
+      ))
+    }
+    "step_attempt_pi_session_recorded" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use issue_identifier <- result.try(required_string(
+        fields.issue_identifier,
+        "issue_identifier",
+      ))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use workflow_fingerprint <- result.try(required_string(
+        fields.workflow_fingerprint,
+        "workflow_fingerprint",
+      ))
+      use step_id <- result.try(required_string(fields.step_id, "step_id"))
+      use workspace_name <- result.try(required_string(
+        fields.workspace_name,
+        "workspace_name",
+      ))
+      use attempt_index <- result.try(required_int(
+        fields.attempt_index,
+        "attempt_index",
+      ))
+      use workspace_path <- result.try(required_string(
+        fields.workspace_path,
+        "workspace_path",
+      ))
+      use session_id <- result.try(required_string(
+        fields.session_id,
+        "session_id",
+      ))
+      use session_file <- result.try(required_string(
+        fields.session_file,
+        "session_file",
+      ))
+      Ok(StepAttemptPiSessionRecorded(
+        run_id,
+        issue_id,
+        issue_identifier,
+        workflow_id,
+        workflow_fingerprint,
+        step_id,
+        workspace_name,
+        attempt_index,
+        workspace_path,
+        session_id,
+        session_file,
       ))
     }
     "step_attempt_finished" -> {
@@ -1192,6 +1332,21 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use continuation_capable <- decode.optional_field(
+    "continuation_capable",
+    None,
+    decode.optional(decode.bool),
+  )
+  use session_id <- decode.optional_field(
+    "session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use session_file <- decode.optional_field(
+    "session_file",
+    None,
+    decode.optional(decode.string),
+  )
   use outcome <- decode.optional_field(
     "outcome",
     None,
@@ -1347,6 +1502,9 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     attempt_index: attempt_index,
     operator_session_id: operator_session_id,
     external_session_ref: external_session_ref,
+    continuation_capable: continuation_capable,
+    session_id: session_id,
+    session_file: session_file,
     outcome: outcome,
     artifact_ref: artifact_ref,
     artifact_sha256: artifact_sha256,
@@ -1395,6 +1553,13 @@ fn required_int(value: Option(Int), field: String) -> Result(Int, DecodeError) {
   }
 }
 
+fn option_bool(value: Option(Bool), default: Bool) -> Bool {
+  case value {
+    Some(value) -> value
+    None -> default
+  }
+}
+
 fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
   case body {
     LinearCommandSeen(comment_id, issue_id, author_id, command_name, excerpt) ->
@@ -1419,6 +1584,32 @@ fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
         outbox_kind,
         dedupe_key,
         safe_payload(payload_json, secrets),
+      )
+    StepAttemptPiSessionRecorded(
+      run_id,
+      issue_id,
+      issue_identifier,
+      workflow_id,
+      workflow_fingerprint,
+      step_id,
+      workspace_name,
+      attempt_index,
+      _,
+      session_id,
+      _,
+    ) ->
+      StepAttemptPiSessionRecorded(
+        run_id,
+        issue_id,
+        issue_identifier,
+        workflow_id,
+        workflow_fingerprint,
+        step_id,
+        workspace_name,
+        attempt_index,
+        "[redacted workspace path]",
+        session_id,
+        "[redacted pi session file]",
       )
     other -> other
   }

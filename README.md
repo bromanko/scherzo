@@ -150,7 +150,15 @@ agent:
   max_sessions_per_issue: 3
 
 pi:
+  # Default non-persistent launch path. Scherzo uses this shell command while
+  # pi.session_persistence.enabled is false.
   command: "pi --mode rpc --no-session"
+  # Opt-in persistent launches use structured argv so Scherzo can safely append
+  # --session <recorded-session-file> during recovery without mutating a shell
+  # command string. Do not include --session or --no-session in pi.argv.
+  # argv: ["pi", "--mode", "rpc"]
+  # session_persistence:
+  #   enabled: true
   # Optional project defaults for workflow agent steps. `model` is the full
   # pi model/provider selection key; `thinking` is configured separately.
   model: google/gemini-2.5-flash
@@ -521,9 +529,11 @@ The deterministic test suite covers ledger record roundtrips for counters, known
 
 ## Safety posture
 
-Scherzo is intended for trusted repositories and trusted workflow files. Hooks are arbitrary shell. pi tool execution follows the operator's `pi.command` and host OS environment. Scherzo enforces workspace cwd and root containment, but it does not provide a VM or container sandbox.
+Scherzo is intended for trusted repositories and trusted workflow files. Hooks are arbitrary shell. pi tool execution follows the operator's `pi.command` or, when session persistence is enabled, the structured `pi.argv` plus host OS environment. Scherzo enforces workspace cwd and root containment, but it does not provide a VM or container sandbox.
 
-Run only one Scherzo instance per Linear project and canonical workspace root. The local durable ledger supports single-instance restart recovery, not multi-host or multi-workspace exactly-once behavior. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. For interactive daemon runs, prefer `direnv exec . scherzo-start .scherzo/scherzo.yaml`; that devenv helper wraps `gleam run -- ...` and translates Ctrl-C/SIGINT into SIGTERM so the graceful shutdown path runs. Direct `gleam run` Ctrl-C, `kill -9`, host power loss, or BEAM VM crashes may leave a stale `workspace.root/.scherzo-state/instance.lock`; operators must remove it only after checking no Scherzo process remains active. Live pi sessions and EventHub history are still not recovered in this phase. Linear command recovery remains bounded to observed issues and the configured comment poll limit; webhooks and Linear-side idempotency are future work.
+`pi.session_persistence.enabled` is opt-in. When enabled, Scherzo records the local pi `sessionFile` path for each continuation-capable workflow agent step attempt and may reopen that file with `--session` from the recorded step workspace during crash recovery. These session files and their paths are local sensitive data: they can contain pi transcript state and references to local files. Scherzo stores only the path in the local durable ledger for recovery, does not upload transcript contents to Linear, and redacts raw session paths from operator-facing diagnostics. Retention and cleanup of pi's local transcript files remain an operator responsibility until the separate retention UX lands.
+
+Run only one Scherzo instance per Linear project and canonical workspace root. The local durable ledger supports single-instance restart recovery, not multi-host or multi-workspace exactly-once behavior. Daemon mode handles SIGTERM gracefully by shutting down workers, removing the control file, and releasing the local instance lock before exit. For interactive daemon runs, prefer `direnv exec . scherzo-start .scherzo/scherzo.yaml`; that devenv helper wraps `gleam run -- ...` and translates Ctrl-C/SIGINT into SIGTERM so the graceful shutdown path runs. Direct `gleam run` Ctrl-C, `kill -9`, host power loss, or BEAM VM crashes may leave a stale `workspace.root/.scherzo-state/instance.lock`; operators must remove it only after checking no Scherzo process remains active. Linear command recovery remains bounded to observed issues and the configured comment poll limit; webhooks and Linear-side idempotency are future work.
 
 ## Legacy Markdown removal
 
