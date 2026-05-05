@@ -97,11 +97,12 @@ The main scope risk is turning this into a distributed workflow database. Counte
 - [x] (2026-05-03 15:34Z) Created Linear tickets LIV-54 through LIV-58 for the five child planning ExecPlans and recorded them in Outcomes & Retrospective.
 - [x] (2026-05-03 15:50Z) Reviewed this umbrella against the current repository tree and tightened stale workflow facts, stable run identity, attempt identity, operator session id uniqueness, workflow/issue drift detection, hook safety, ledger schema/reset policy, artifact durability, and validation expectations.
 - [x] (2026-05-03 16:01Z) Confirmed and refreshed Linear tasks LIV-54 through LIV-58 for writing all five child ExecPlans, including the explicit no-backward-compatibility scope rule.
-- [ ] Write child ExecPlan 1: durable workflow run and step checkpoint records.
-- [ ] Write child ExecPlan 2: startup workflow recovery planner.
-- [ ] Write child ExecPlan 3: recovery-aware workflow runner execution.
-- [ ] Write child ExecPlan 4: step-scoped pi session persistence and continuation.
-- [ ] Write child ExecPlan 5: operator UX, documentation, and retention policy.
+- [x] (2026-05-03 20:19Z) Wrote child ExecPlan 1 at `docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md`.
+- [x] (2026-05-04 03:52Z) Wrote child ExecPlan 2 at `docs/plans/LIV-55-startup-recovery-planner-workflow-dag-progress.md`.
+- [x] (2026-05-04 03:52Z) Wrote child ExecPlan 3 at `docs/plans/LIV-56-recovery-aware-workflow-runner-execution.md`.
+- [x] (2026-05-04 14:13Z) Wrote child ExecPlan 4 at `docs/plans/LIV-57-step-scoped-pi-session-continuation.md`.
+- [x] (2026-05-04 14:13Z) Wrote child ExecPlan 5 at `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`.
+- [x] (2026-05-05 17:52Z) Reconciled this umbrella and the related Linear tickets to the actual checked-in `LIV-xx-...md` child plan filenames.
 
 ## Surprises & Discoveries
 
@@ -122,6 +123,9 @@ The main scope risk is turning this into a distributed workflow database. Counte
 
 - Observation: Downstream workflow prompt rendering depends on the full `StepArtifact` shape, not just a success flag.
   Evidence: `src/scherzo/workflow_run.gleam` renders agent prompts with `step_artifact.to_template_locals(artifacts)`, and `src/scherzo/step_artifact.gleam` exposes status, final response, exit code, stdout, stderr, timeout, truncation flags, and summary fields.
+
+- Observation: The checked-in child plan files use their Linear planning issue identifiers in the filename rather than the original `workflow-resumption-0x-...md` names drafted in this umbrella.
+  Evidence: the current repository contains `docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md`, `docs/plans/LIV-55-startup-recovery-planner-workflow-dag-progress.md`, `docs/plans/LIV-56-recovery-aware-workflow-runner-execution.md`, `docs/plans/LIV-57-step-scoped-pi-session-continuation.md`, and `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`; Linear issue LIV-66 failed its `prepare_plan` step while pointing at the old expected `docs/plans/workflow-resumption-04-step-scoped-pi-sessions.md` path.
 
 ## Decision Log
 
@@ -161,17 +165,23 @@ The main scope risk is turning this into a distributed workflow database. Counte
   Rationale: Current workspace paths include `run_id`. Allocating a new run-root id on restart loses the prior step workspaces and artifacts. Process-level executions and operator step sessions need distinct attempt identity instead of replacing the logical workflow run id.
   Date: 2026-05-03
 
+- Decision: Treat the checked-in `docs/plans/LIV-xx-...md` child plan filenames as canonical instead of renaming the files back to the original `workflow-resumption-0x-...md` draft names.
+  Rationale: The `LIV-xx` filenames match the PRs and implementation issues that already landed. Updating this umbrella and Linear descriptions is less disruptive than renaming completed plan files and rewriting historical PR references.
+  Date: 2026-05-05
+
 ## Outcomes & Retrospective
 
 Umbrella setup completed on 2026-05-03. The old `docs/plans/hardening-04-pi-session-continuation.md` plan is retained but now has a supersession notice warning not to implement it as written. The child planning tickets created in Linear are:
 
-- LIV-54: `Write plan: durable workflow step checkpoints for resumption`, expected plan path `docs/plans/workflow-resumption-01-durable-step-state.md`.
-- LIV-55: `Write plan: startup recovery planner for workflow DAG progress`, expected plan path `docs/plans/workflow-resumption-02-startup-recovery-planner.md`.
-- LIV-56: `Write plan: recovery-aware workflow runner execution`, expected plan path `docs/plans/workflow-resumption-03-recovery-aware-runner.md`.
-- LIV-57: `Write plan: step-scoped pi session continuation`, expected plan path `docs/plans/workflow-resumption-04-step-scoped-pi-sessions.md`.
-- LIV-58: `Write plan: workflow recovery operator UX and retention policy`, expected plan path `docs/plans/workflow-resumption-05-operator-ux-retention.md`.
+- LIV-54: `Write plan: durable workflow step checkpoints for resumption`, actual plan path `docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md`.
+- LIV-55: `Write plan: startup recovery planner for workflow DAG progress`, actual plan path `docs/plans/LIV-55-startup-recovery-planner-workflow-dag-progress.md`.
+- LIV-56: `Write plan: recovery-aware workflow runner execution`, actual plan path `docs/plans/LIV-56-recovery-aware-workflow-runner-execution.md`.
+- LIV-57: `Write plan: step-scoped pi session continuation`, actual plan path `docs/plans/LIV-57-step-scoped-pi-session-continuation.md`.
+- LIV-58: `Write plan: workflow recovery operator UX and retention policy`, actual plan path `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`.
 
 These tickets were created in the LIV team, Scherzo project, Backlog state, with the `workflow:execplan` label so they can be promoted into the ExecPlan workflow when ready. On 2026-05-03, their descriptions were refreshed to match this reviewed umbrella, including the rule that child plans do not need backward compatibility with pre-workflow-resumption local ledgers or snapshots and may instead specify an explicit old-state reset path. No runtime implementation was performed as part of this umbrella step.
+
+On 2026-05-05, this umbrella was reconciled with the actual checked-in child plan filenames. The repository uses `docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md`, `docs/plans/LIV-55-startup-recovery-planner-workflow-dag-progress.md`, `docs/plans/LIV-56-recovery-aware-workflow-runner-execution.md`, `docs/plans/LIV-57-step-scoped-pi-session-continuation.md`, and `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md` as the canonical child plan paths. Linear planning tickets LIV-54 through LIV-58 and implementation ticket LIV-66 were updated to reference those canonical paths so future workflow runs do not look for the obsolete `workflow-resumption-0x-...md` filenames.
 
 ## Context and Orientation
 
@@ -213,15 +223,15 @@ Out of scope for the recovery program: distributed multi-host scheduling; exactl
 
 ## Child Plan Roadmap
 
-Child Plan 1 is `workflow-resumption-01-durable-step-state.md`. It adds durable workflow run, step attempt, workspace, artifact, and step-interruption records. It must also specify ledger record decoding, projection snapshot replacement, old-state reset behavior, attempt-index assignment, workflow definition fingerprinting, issue fingerprint recording, artifact storage location, artifact write ordering, and step session id shape. It does not need compatibility with existing issue-level ledgers. At the end, tests can replay a new-format ledger and reconstruct which steps and attempts of a workflow run are pending, running, completed, failed, or interrupted, without changing daemon recovery behavior yet.
+Child Plan 1 is `docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md`. It adds durable workflow run, step attempt, workspace, artifact, and step-interruption records. It must also specify ledger record decoding, projection snapshot replacement, old-state reset behavior, attempt-index assignment, workflow definition fingerprinting, issue fingerprint recording, artifact storage location, artifact write ordering, and step session id shape. It does not need compatibility with existing issue-level ledgers. At the end, tests can replay a new-format ledger and reconstruct which steps and attempts of a workflow run are pending, running, completed, failed, or interrupted, without changing daemon recovery behavior yet.
 
-Child Plan 2 is `workflow-resumption-02-startup-recovery-planner.md`. It builds the pure recovery planner for workflow progress. At the end, tests can feed durable step facts plus refreshed Linear issue states and receive conservative recovery actions: preserve completed terminal artifacts, block or park unsafe interrupted command steps, identify recoverable agent steps, schedule retry only when safe, reject workflow or issue drift, and cleanup terminal run roots. Parallel recovery cases should use explicit fixture DAGs with `max_parallel_steps` greater than one and distinct workspace names rather than relying on the current dogfood workflows to be parallel.
+Child Plan 2 is `docs/plans/LIV-55-startup-recovery-planner-workflow-dag-progress.md`. It builds the pure recovery planner for workflow progress. At the end, tests can feed durable step facts plus refreshed Linear issue states and receive conservative recovery actions: preserve completed terminal artifacts, block or park unsafe interrupted command steps, identify recoverable agent steps, schedule retry only when safe, reject workflow or issue drift, and cleanup terminal run roots. Parallel recovery cases should use explicit fixture DAGs with `max_parallel_steps` greater than one and distinct workspace names rather than relying on the current dogfood workflows to be parallel.
 
-Child Plan 3 is `workflow-resumption-03-recovery-aware-runner.md`. It wires the planner into workflow execution. At the end, daemon restart can resume a workflow run from durable step checkpoints without pi session continuation: completed steps are skipped, artifacts are available to downstream prompts, pending steps can continue, and interrupted steps follow the policy from Child Plan 2.
+Child Plan 3 is `docs/plans/LIV-56-recovery-aware-workflow-runner-execution.md`. It wires the planner into workflow execution. At the end, daemon restart can resume a workflow run from durable step checkpoints without pi session continuation: completed steps are skipped, artifacts are available to downstream prompts, pending steps can continue, and interrupted steps follow the policy from Child Plan 2.
 
-Child Plan 4 is `workflow-resumption-04-step-scoped-pi-sessions.md`. It replaces the obsolete issue-level session continuation plan with step-scoped pi persistence. At the end, an interrupted agent step can launch pi with the recorded session file from the exact same step workspace and send a recovery prompt. This plan must include a mandatory real-pi probe.
+Child Plan 4 is `docs/plans/LIV-57-step-scoped-pi-session-continuation.md`. It replaces the obsolete issue-level session continuation plan with step-scoped pi persistence. At the end, an interrupted agent step can launch pi with the recorded session file from the exact same step workspace and send a recovery prompt. This plan must include a mandatory real-pi probe.
 
-Child Plan 5 is `workflow-resumption-05-operator-ux-retention.md`. It makes recovery understandable and operable. At the end, `scherzoctl`/session views expose recovered, interrupted, resumed, parked, and inspection-needed states; README documents recovery guarantees and limits; and pi session/artifact retention policy is explicit.
+Child Plan 5 is `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`. It makes recovery understandable and operable. At the end, `scherzoctl`/session views expose recovered, interrupted, resumed, parked, and inspection-needed states; README documents recovery guarantees and limits; and pi session/artifact retention policy is explicit.
 
 ## Milestones
 
@@ -239,7 +249,7 @@ Milestone 5 writes and reviews Child Plan 5. This closes operational visibility,
 
 Create this umbrella file under `docs/plans/workflow-resumption-umbrella.md`. Mark the old `docs/plans/hardening-04-pi-session-continuation.md` as superseded or keep it only as historical context so no implementer follows it accidentally.
 
-Create Linear tickets in the `LIV` team and Scherzo project for each child plan. Each ticket should be a planning ticket, not a direct implementation ticket. It should reference this umbrella plan, name the expected plan file, and instruct the assignee to produce a reviewed ExecPlan before implementation.
+Create Linear tickets in the `LIV` team and Scherzo project for each child plan. Each ticket should be a planning ticket, not a direct implementation ticket. It should reference this umbrella plan, name the canonical checked-in plan file, and instruct the assignee to produce a reviewed ExecPlan before implementation.
 
 When writing child plans, preserve self-containment. Each child plan should repeat the relevant definitions from this umbrella rather than relying on memory. Each child plan should include deterministic tests, validation commands, rollout and recovery behavior, and a clear boundary with the other child plans. Before freezing a child plan, re-read the current versions of the workflow YAML files, `src/scherzo/workflow_run.gleam`, `src/scherzo/workflow_scheduler.gleam`, `src/scherzo/workspace_run.gleam`, `src/scherzo/step_artifact.gleam`, `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/state/record.gleam`, `src/scherzo/state/projection.gleam`, `src/scherzo/state/ledger.gleam`, and `src/scherzo/state/recovery.gleam`; if they differ from this umbrella, update the child plan's verified facts rather than copying stale claims.
 
@@ -249,29 +259,29 @@ When writing child plans, preserve self-containment. Each child plan should repe
 
 2. Add a supersession note to `docs/plans/hardening-04-pi-session-continuation.md` or otherwise prevent it from being selected for implementation as-is. This is complete.
 
-3. Create the Child Plan 1 Linear ticket with title `Write plan: durable workflow step checkpoints for resumption`. Its acceptance is a new ExecPlan at `docs/plans/workflow-resumption-01-durable-step-state.md`. This is complete as LIV-54.
+3. Create the Child Plan 1 Linear ticket with title `Write plan: durable workflow step checkpoints for resumption`. Its acceptance is a new ExecPlan at `docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md`. This is complete as LIV-54.
 
-4. Create the Child Plan 2 Linear ticket with title `Write plan: startup recovery planner for workflow DAG progress`. Its acceptance is a new ExecPlan at `docs/plans/workflow-resumption-02-startup-recovery-planner.md`. This is complete as LIV-55.
+4. Create the Child Plan 2 Linear ticket with title `Write plan: startup recovery planner for workflow DAG progress`. Its acceptance is a new ExecPlan at `docs/plans/LIV-55-startup-recovery-planner-workflow-dag-progress.md`. This is complete as LIV-55.
 
-5. Create the Child Plan 3 Linear ticket with title `Write plan: recovery-aware workflow runner execution`. Its acceptance is a new ExecPlan at `docs/plans/workflow-resumption-03-recovery-aware-runner.md`. This is complete as LIV-56.
+5. Create the Child Plan 3 Linear ticket with title `Write plan: recovery-aware workflow runner execution`. Its acceptance is a new ExecPlan at `docs/plans/LIV-56-recovery-aware-workflow-runner-execution.md`. This is complete as LIV-56.
 
-6. Create the Child Plan 4 Linear ticket with title `Write plan: step-scoped pi session continuation`. Its acceptance is a new ExecPlan at `docs/plans/workflow-resumption-04-step-scoped-pi-sessions.md`. This is complete as LIV-57.
+6. Create the Child Plan 4 Linear ticket with title `Write plan: step-scoped pi session continuation`. Its acceptance is a new ExecPlan at `docs/plans/LIV-57-step-scoped-pi-session-continuation.md`. This is complete as LIV-57.
 
-7. Create the Child Plan 5 Linear ticket with title `Write plan: workflow recovery operator UX and retention policy`. Its acceptance is a new ExecPlan at `docs/plans/workflow-resumption-05-operator-ux-retention.md`. This is complete as LIV-58.
+7. Create the Child Plan 5 Linear ticket with title `Write plan: workflow recovery operator UX and retention policy`. Its acceptance is a new ExecPlan at `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`. This is complete as LIV-58.
 
 8. Update the Outcomes & Retrospective section of this umbrella plan with the created Linear identifiers. This is complete.
 
 9. Keep runtime code unchanged as part of this umbrella. If validation is desired after documentation edits, from the repository root run `direnv exec . gleam test` only as a repository health check; docs and Linear ticket creation do not require it. The expected result for a healthy tree is that all Gleam tests pass.
 
-10. When starting LIV-54, write `docs/plans/workflow-resumption-01-durable-step-state.md`. Before drafting, re-read `src/scherzo/state/record.gleam`, `src/scherzo/state/projection.gleam`, `src/scherzo/state/ledger.gleam`, `src/scherzo/state/recovery.gleam`, `src/scherzo/workflow_run.gleam`, `src/scherzo/workflow_scheduler.gleam`, `src/scherzo/workspace_run.gleam`, `src/scherzo/step_artifact.gleam`, `src/scherzo/orchestrator/daemon.gleam`, and the workflow YAML files under `.scherzo/workflows/`. The plan must close the schema-version, old-state reset, stable-run-id, attempt-index, operator-session-id, workflow-fingerprint, issue-fingerprint, artifact-store, and artifact-write-ordering decisions before implementation. Do not spend design complexity on backward-compatible replay of old issue-level ledgers.
+10. When starting LIV-54, write `docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md`. Before drafting, re-read `src/scherzo/state/record.gleam`, `src/scherzo/state/projection.gleam`, `src/scherzo/state/ledger.gleam`, `src/scherzo/state/recovery.gleam`, `src/scherzo/workflow_run.gleam`, `src/scherzo/workflow_scheduler.gleam`, `src/scherzo/workspace_run.gleam`, `src/scherzo/step_artifact.gleam`, `src/scherzo/orchestrator/daemon.gleam`, and the workflow YAML files under `.scherzo/workflows/`. The plan must close the schema-version, old-state reset, stable-run-id, attempt-index, operator-session-id, workflow-fingerprint, issue-fingerprint, artifact-store, and artifact-write-ordering decisions before implementation. Do not spend design complexity on backward-compatible replay of old issue-level ledgers.
 
-11. When starting LIV-55, write `docs/plans/workflow-resumption-02-startup-recovery-planner.md`. It must define pure planner inputs and outputs, include fixture DAGs for sequential and parallel cases, and state how refreshed Linear issue state gates retry, park, resume, and cleanup decisions.
+11. When starting LIV-55, write `docs/plans/LIV-55-startup-recovery-planner-workflow-dag-progress.md`. It must define pure planner inputs and outputs, include fixture DAGs for sequential and parallel cases, and state how refreshed Linear issue state gates retry, park, resume, and cleanup decisions.
 
-12. When starting LIV-56, write `docs/plans/workflow-resumption-03-recovery-aware-runner.md`. It must specify how `src/scherzo/workflow_run.gleam` consumes the planner output, skips durable completed or failed-continued steps, restores the full artifact shape for downstream prompts, keeps current behavior unchanged when no workflow recovery facts exist, and uses unique operator step session ids for repeated step attempts.
+12. When starting LIV-56, write `docs/plans/LIV-56-recovery-aware-workflow-runner-execution.md`. It must specify how `src/scherzo/workflow_run.gleam` consumes the planner output, skips durable completed or failed-continued steps, restores the full artifact shape for downstream prompts, keeps current behavior unchanged when no workflow recovery facts exist, and uses unique operator step session ids for repeated step attempts.
 
-13. When starting LIV-57, write `docs/plans/workflow-resumption-04-step-scoped-pi-sessions.md`. It must depend on the step-attempt and workspace facts from the earlier plans, store pi session files by step attempt, validate cwd before launch, and include a mandatory real-pi probe.
+13. When starting LIV-57, write `docs/plans/LIV-57-step-scoped-pi-session-continuation.md`. It must depend on the step-attempt and workspace facts from the earlier plans, store pi session files by step attempt, validate cwd before launch, and include a mandatory real-pi probe.
 
-14. When starting LIV-58, write `docs/plans/workflow-resumption-05-operator-ux-retention.md`. It must cover `scherzoctl` and session-view status terms, README/operator documentation, local artifact and transcript retention, cleanup, and sensitive-data handling.
+14. When starting LIV-58, write `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`. It must cover `scherzoctl` and session-view status terms, README/operator documentation, local artifact and transcript retention, cleanup, and sensitive-data handling.
 
 ## Testing and Falsifiability
 
@@ -322,7 +332,7 @@ The obsolete plan to avoid implementing as-is is:
 
 The replacement child plan for pi sessions should be:
 
-    docs/plans/workflow-resumption-04-step-scoped-pi-sessions.md
+    docs/plans/LIV-57-step-scoped-pi-session-continuation.md
 
 ## Interfaces and Dependencies
 
@@ -381,6 +391,12 @@ The child plans should converge on durable identifiers equivalent to:
 
 Exact Gleam type names are left to the child implementation plans, but the identity shape is not optional. Any design that cannot identify `run_id`, `workflow_id`, `step_id`, `attempt_index`, and the exact `workspace_path` for a resumed agent step should be rejected. Any design that allocates a new run-root id for recovered work without a deliberate abandonment policy, stores artifacts only in a cleanup-targeted workspace, ignores workflow or issue drift, or lacks a clear old-state reset path should also be rejected.
 
+## Open Questions and Clarifications Needed
+
+No open questions remain for this umbrella. The canonical child plan files are the checked-in `docs/plans/LIV-54-durable-workflow-step-checkpoints-for-resumption.md`, `docs/plans/LIV-55-startup-recovery-planner-workflow-dag-progress.md`, `docs/plans/LIV-56-recovery-aware-workflow-runner-execution.md`, `docs/plans/LIV-57-step-scoped-pi-session-continuation.md`, and `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md` files.
+
 ## Review Note
 
 Reviewed and revised on 2026-05-03 to make the umbrella implementable against the current repository tree. The changes correct stale workflow assumptions, add stable logical run identity and step-attempt identity, require unique operator session ids for repeated attempts, require workflow and Linear issue drift detection, tighten artifact durability and failed-continued step handling, and make ledger/snapshot schema replacement plus old-state reset behavior a first-class requirement for Child Plan 1. Backward compatibility with existing issue-level ledgers and snapshots is explicitly not required.
+
+Updated on 2026-05-05 to reconcile the umbrella and Linear ticket descriptions with the actual checked-in child plan filenames. The original `workflow-resumption-0x-...md` filenames are historical draft names only.

@@ -31,7 +31,12 @@ VALIDATION_PATH = TMP_DIR / "scherzo-implementation-validation.json"
 PUBLISH_PATH = TMP_DIR / "scherzo-implementation-publish.json"
 TICKET_BRIEF_PATH = TMP_DIR / "scherzo-implementation-brief.md"
 PR_BODY_PATH = TMP_DIR / "scherzo-implementation-pr-body.md"
+BASE_REFRESH_LATEST_PATH = TMP_DIR / "scherzo-implementation-refresh-base-latest.json"
+BASE_DRIFT_REPAIR_SUMMARY_PATH = TMP_DIR / "scherzo-implementation-base-drift-repair.md"
+BASE_DRIFT_REPAIR_FAILURE_PATH = TMP_DIR / "scherzo-implementation-base-drift-failure.md"
 RETENTION_MARKER = ".scherzo-keep-workspace"
+REFRESH_STAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
 PLAN_RE = re.compile(
     r"(?<![A-Za-z0-9_./-])(docs/plans/[A-Za-z0-9][A-Za-z0-9._-]*\.md)(?![A-Za-z0-9_/-])"
 )
@@ -48,7 +53,7 @@ COMMAND_DIAGNOSTIC_MAX_CHARS = 3500
 
 def usage() -> None:
     print(
-        """Usage: scherzo-implementation <prepare|analyze|validate|publish|extract-plan|languages|ticket-brief>
+        """Usage: scherzo-implementation <prepare|refresh-base|analyze|validate|publish|extract-plan|languages|ticket-brief>
 
 Run from a Scherzo jj workflow workspace root.
 
@@ -63,6 +68,9 @@ prepare --source ticket
               until a PR is safely published.
 analyze       Diff from the recorded starting parent to @, detect supported
               review languages, and print review commands.
+refresh-base --stage <stage>
+              Fetch SCHERZO_PR_REMOTE/SCHERZO_PR_BASE, rebase @ when needed,
+              and write structured base-refresh JSON under tmp/.
 validate      Run final direnv-backed format and test verification.
 publish       Describe the final jj change, push a bookmark, create/find a PR,
               clear the retention marker, and print the PR URL.
@@ -113,6 +121,20 @@ def subprocess_failure_details(stdout: str, stderr: str, returncode: int) -> str
     return "\n\n".join(parts)
 
 
+def run_proc(
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+
+
 def run(
     args: list[str],
     *,
@@ -120,13 +142,7 @@ def run(
     failure_code: str | None = None,
     env: dict[str, str] | None = None,
 ) -> str:
-    proc = subprocess.run(
-        args,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+    proc = run_proc(args, env=env)
     if check and proc.returncode != 0:
         details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
         fail(f"command failed: {' '.join(args)}\n{details}", failure_code=failure_code)
@@ -164,13 +180,17 @@ def shell_display(value: str) -> str:
     return "'" + value.replace("'", "'\\''") + "'"
 
 
-def require_command(name: str) -> None:
+def command_exists(name: str) -> bool:
     proc = subprocess.run(
         ["sh", "-c", f"command -v {name} >/dev/null 2>&1"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    if proc.returncode != 0:
+    return proc.returncode == 0
+
+
+def require_command(name: str) -> None:
+    if not command_exists(name):
         fail(f"required command not found: {name}")
 
 
@@ -423,16 +443,6 @@ def changed_files_since(base_change_id: str) -> list[str]:
     return clean_lines(output)
 
 
-def revision_exists(revision: str) -> bool:
-    proc = subprocess.run(
-        ["jj", "log", "-r", revision, "--no-graph", "-T", "commit_id", "--color=never"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    return proc.returncode == 0 and bool(proc.stdout.strip())
-
-
 def revision_commit_ids(revision: str) -> list[str]:
     output = run([
         "jj",
@@ -447,45 +457,24 @@ def revision_commit_ids(revision: str) -> list[str]:
     return clean_lines(output)
 
 
+def revision_commit_ids_if_exists(revision: str) -> list[str] | None:
+    proc = run_proc([
+        "jj",
+        "log",
+        "-r",
+        revision,
+        "--no-graph",
+        "-T",
+        "commit_id ++ \"\\n\"",
+        "--color=never",
+    ])
+    if proc.returncode == 0 and proc.stdout.strip():
+        return clean_lines(proc.stdout)
+    return None
+
+
 def current_parent_commit_ids() -> list[str]:
     return revision_commit_ids("@-")
-
-
-def fetch_publish_base(base: str, remote: str) -> None:
-    proc = subprocess.run(
-        ["jj", "git", "fetch", "--remote", remote, "--branch", base],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if proc.stdout:
-        print(proc.stdout, end="")
-    if proc.stderr:
-        print(proc.stderr, end="", file=sys.stderr)
-    if proc.returncode != 0:
-        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
-        fail(
-            f"could not fetch PR base {base!r} from remote {remote!r}. "
-            f"Fetch or configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry.\n{details}",
-            failure_code="base_refresh_conflict",
-        )
-
-
-def publish_base_revision(base: str, remote: str) -> str:
-    remote_base = f"{base}@{remote}"
-    if revision_exists(remote_base):
-        return remote_base
-    if revision_exists(base):
-        print(
-            f"warning: remote publish base {remote_base!r} was not found after fetch; "
-            f"falling back to local revision {base!r}",
-            file=sys.stderr,
-        )
-        return base
-    fail(
-        f"could not find publish base revision {remote_base!r} or {base!r}",
-        failure_code="base_refresh_conflict",
-    )
 
 
 def has_unresolved_conflicts(revision: str) -> bool:
@@ -507,45 +496,410 @@ def has_unresolved_conflicts(revision: str) -> bool:
     return proc.returncode == 0 and bool(proc.stdout.strip())
 
 
-def normalize_publish_base(base_revision: str) -> bool:
-    base_commit_ids = revision_commit_ids(base_revision)
-    parent_commit_ids = current_parent_commit_ids()
-    if len(base_commit_ids) == 1 and parent_commit_ids == base_commit_ids:
-        return False
+def command_display(args: list[str]) -> str:
+    return " ".join(args)
 
-    print("## Publish base normalization")
-    print(
-        f"Rebasing final implementation change onto `{base_revision}` before "
-        "publishing so the PR branch does not push local workspace ancestors."
-    )
-    proc = subprocess.run(
-        ["jj", "rebase", "-r", "@", "-d", base_revision, "--color=never"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if proc.stdout:
-        print(proc.stdout, end="")
-    if proc.stderr:
-        print(proc.stderr, end="", file=sys.stderr)
-    if proc.returncode != 0:
-        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
+
+def configured_publish_base() -> tuple[str, str]:
+    base = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
+    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    return base, remote
+
+
+def parse_refresh_base_args(args: list[str]) -> str:
+    if len(args) != 2 or args[0] != "--stage":
+        fail("refresh-base requires exactly: --stage <stage>")
+    stage = args[1].strip()
+    if stage in {"", ".", ".."} or "/" in stage or "\\" in stage:
+        fail(f"invalid refresh-base stage {args[1]!r}; stage must be a safe filename segment")
+    if not REFRESH_STAGE_RE.fullmatch(stage):
         fail(
-            "could not rebase the final implementation change onto the PR base "
-            f"{base_revision!r}. Resolve the retained workspace manually, rerun "
-            f"validation, and publish again.\n{details}",
-            failure_code="publish_rebase_conflict",
+            f"invalid refresh-base stage {args[1]!r}; expected "
+            "^[A-Za-z0-9][A-Za-z0-9._-]*$"
         )
-    if has_unresolved_conflicts("@"):
-        status = run(["jj", "status", "--color=never"], check=False).strip()
-        fail(
-            "rebasing the final implementation change onto the PR base left "
-            "unresolved conflicts. Resolve the conflicts in the retained "
-            "workspace, rerun validation, and publish again."
-            + ("\n" + status if status else ""),
-            failure_code="publish_rebase_conflict",
+    return stage
+
+
+def refresh_base_json_path(stage: str) -> Path:
+    # Re-parse the constructed stage to keep this helper safe when called directly.
+    safe_stage = parse_refresh_base_args(["--stage", stage])
+    return TMP_DIR / f"scherzo-implementation-refresh-base-{safe_stage}.json"
+
+
+def fetch_base_result(base: str, remote: str) -> tuple[list[str], subprocess.CompletedProcess[str]]:
+    args = ["jj", "git", "fetch", "--remote", remote, "--branch", base]
+    return args, run_proc(args)
+
+
+def resolve_base_revision(base: str, remote: str) -> tuple[str | None, list[str] | None, bool]:
+    remote_base = f"{base}@{remote}"
+    remote_commits = revision_commit_ids_if_exists(remote_base)
+    if remote_commits is not None:
+        return remote_base, remote_commits, False
+    local_commits = revision_commit_ids_if_exists(base)
+    if local_commits is not None:
+        print(
+            f"warning: remote publish base {remote_base!r} was not found after fetch; "
+            f"falling back to local revision {base!r}",
+            file=sys.stderr,
         )
-    return True
+        return base, local_commits, True
+    return None, None, False
+
+
+def normalize_conflict_file_path(value: str) -> str:
+    return JJ_CONFLICT_STATUS_RE.sub("", value.strip())
+
+
+def conflicted_files() -> list[str]:
+    proc = run_proc(["jj", "resolve", "--list", "--color=never"])
+    if proc.returncode == 0:
+        files: list[str] = []
+        seen: set[str] = set()
+        for line in proc.stdout.splitlines():
+            path = normalize_conflict_file_path(line)
+            if path and path not in seen:
+                files.append(path)
+                seen.add(path)
+        return sorted(files)
+    if "No conflicts found" in proc.stdout or "No conflicts found" in proc.stderr:
+        return []
+    return []
+
+
+def has_unresolved_conflicts_at_current_change() -> bool:
+    return has_unresolved_conflicts("@")
+
+
+def refresh_result(
+    *,
+    stage: str,
+    status: str,
+    repairable: bool,
+    remote: str,
+    base: str,
+    base_revision: str,
+    base_commit_before_fetch: str | None,
+    base_commit_after_fetch: str | None,
+    parent_commits_before: list[str],
+    parent_commits_after: list[str],
+    current_change_id: str,
+    rebased: bool,
+    has_unresolved_conflicts: bool,
+    conflicted: list[str],
+    message: str,
+    commands: list[str],
+    fetch_stdout: str = "",
+    fetch_stderr: str = "",
+    rebase_stdout: str = "",
+    rebase_stderr: str = "",
+    rebase_exit_code: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "stage": stage,
+        "status": status,
+        "repairable": repairable,
+        "remote": remote,
+        "base": base,
+        "base_revision": base_revision,
+        "base_commit_before_fetch": base_commit_before_fetch,
+        "base_commit_after_fetch": base_commit_after_fetch,
+        "parent_commits_before": parent_commits_before,
+        "parent_commits_after": parent_commits_after,
+        "current_change_id": current_change_id,
+        "rebased": rebased,
+        "has_unresolved_conflicts": has_unresolved_conflicts,
+        "conflicted_files": conflicted,
+        "metadata_base_change_id_updated": False,
+        "message": message,
+        "commands": commands,
+    }
+    if fetch_stdout.strip():
+        result["fetch_stdout"] = fetch_stdout
+    if fetch_stderr.strip():
+        result["fetch_stderr"] = fetch_stderr
+    if rebase_stdout.strip():
+        result["rebase_stdout"] = rebase_stdout
+    if rebase_stderr.strip():
+        result["rebase_stderr"] = rebase_stderr
+    if rebase_exit_code is not None:
+        result["rebase_exit_code"] = rebase_exit_code
+    return result
+
+
+def first_commit_id(commits: list[str] | None) -> str | None:
+    if commits:
+        return commits[0]
+    return None
+
+
+def refresh_base(stage: str) -> dict[str, Any]:
+    base, remote = configured_publish_base()
+    remote_base = f"{base}@{remote}"
+    commands: list[str] = []
+    base_commits_before_fetch = revision_commit_ids_if_exists(remote_base)
+    parent_commits_before = current_parent_commit_ids()
+    current_change_id = current_change_id_short()
+
+    fetch_args, fetch_proc = fetch_base_result(base, remote)
+    commands.append(command_display(fetch_args))
+    if fetch_proc.stdout:
+        print(fetch_proc.stdout, end="")
+    if fetch_proc.stderr:
+        print(fetch_proc.stderr, end="", file=sys.stderr)
+    if fetch_proc.returncode != 0:
+        return refresh_result(
+            stage=stage,
+            status="fetch_failed",
+            repairable=False,
+            remote=remote,
+            base=base,
+            base_revision=remote_base,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=None,
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=current_parent_commit_ids(),
+            current_change_id=current_change_id,
+            rebased=False,
+            has_unresolved_conflicts=has_unresolved_conflicts_at_current_change(),
+            conflicted=conflicted_files(),
+            message=(
+                f"could not fetch PR base {base!r} from remote {remote!r}; "
+                "fetch or configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry"
+            ),
+            commands=commands,
+            fetch_stdout=fetch_proc.stdout,
+            fetch_stderr=fetch_proc.stderr,
+        )
+
+    base_revision, base_commits_after_fetch, _used_local_fallback = resolve_base_revision(base, remote)
+    if base_revision is None or base_commits_after_fetch is None:
+        return refresh_result(
+            stage=stage,
+            status="base_not_found",
+            repairable=False,
+            remote=remote,
+            base=base,
+            base_revision=remote_base,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=None,
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=current_parent_commit_ids(),
+            current_change_id=current_change_id,
+            rebased=False,
+            has_unresolved_conflicts=has_unresolved_conflicts_at_current_change(),
+            conflicted=conflicted_files(),
+            message=f"could not find publish base revision {remote_base!r} or {base!r}",
+            commands=commands,
+        )
+
+    existing_conflicts = has_unresolved_conflicts_at_current_change()
+    existing_conflicted_files = conflicted_files() if existing_conflicts else []
+    if existing_conflicts:
+        return refresh_result(
+            stage=stage,
+            status="conflicts",
+            repairable=True,
+            remote=remote,
+            base=base,
+            base_revision=base_revision,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=current_parent_commit_ids(),
+            current_change_id=current_change_id,
+            rebased=False,
+            has_unresolved_conflicts=True,
+            conflicted=existing_conflicted_files,
+            message="current change already has unresolved conflicts after fetching publish base",
+            commands=commands,
+        )
+
+    if len(base_commits_after_fetch) == 1 and parent_commits_before == base_commits_after_fetch:
+        return refresh_result(
+            stage=stage,
+            status="fresh",
+            repairable=False,
+            remote=remote,
+            base=base,
+            base_revision=base_revision,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=current_parent_commit_ids(),
+            current_change_id=current_change_id,
+            rebased=False,
+            has_unresolved_conflicts=False,
+            conflicted=[],
+            message="current parent already matches publish base",
+            commands=commands,
+        )
+
+    if stage == "publish":
+        print("## Publish base normalization")
+        print(
+            f"Rebasing final implementation change onto `{base_revision}` before "
+            "publishing so the PR branch does not push local workspace ancestors."
+        )
+    else:
+        print("## Refreshing implementation base")
+        print(f"Rebasing current implementation change onto `{base_revision}`.")
+
+    rebase_args = ["jj", "rebase", "-r", "@", "-d", base_revision, "--color=never"]
+    rebase_proc = run_proc(rebase_args)
+    commands.append(command_display(rebase_args))
+    if rebase_proc.stdout:
+        print(rebase_proc.stdout, end="")
+    if rebase_proc.stderr:
+        print(rebase_proc.stderr, end="", file=sys.stderr)
+
+    unresolved = has_unresolved_conflicts_at_current_change()
+    files = conflicted_files() if unresolved else []
+    parent_commits_after = current_parent_commit_ids()
+    if unresolved:
+        return refresh_result(
+            stage=stage,
+            status="conflicts",
+            repairable=True,
+            remote=remote,
+            base=base,
+            base_revision=base_revision,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=parent_commits_after,
+            current_change_id=current_change_id,
+            rebased=True,
+            has_unresolved_conflicts=True,
+            conflicted=files,
+            message="rebasing onto the publish base left unresolved conflicts"
+            if files
+            else "rebasing onto the publish base left unresolved conflicts; conflicted file list could not be determined",
+            commands=commands,
+            rebase_stdout=rebase_proc.stdout,
+            rebase_stderr=rebase_proc.stderr,
+            rebase_exit_code=rebase_proc.returncode,
+        )
+    if rebase_proc.returncode != 0:
+        return refresh_result(
+            stage=stage,
+            status="rebase_failed",
+            repairable=False,
+            remote=remote,
+            base=base,
+            base_revision=base_revision,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=parent_commits_after,
+            current_change_id=current_change_id,
+            rebased=True,
+            has_unresolved_conflicts=False,
+            conflicted=[],
+            message="could not rebase the implementation change onto the publish base",
+            commands=commands,
+            rebase_stdout=rebase_proc.stdout,
+            rebase_stderr=rebase_proc.stderr,
+            rebase_exit_code=rebase_proc.returncode,
+        )
+    return refresh_result(
+        stage=stage,
+        status="rebased_clean",
+        repairable=False,
+        remote=remote,
+        base=base,
+        base_revision=base_revision,
+        base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+        base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+        parent_commits_before=parent_commits_before,
+        parent_commits_after=parent_commits_after,
+        current_change_id=current_change_id,
+        rebased=True,
+        has_unresolved_conflicts=False,
+        conflicted=[],
+        message="rebased current change onto publish base without unresolved conflicts",
+        commands=commands,
+        rebase_stdout=rebase_proc.stdout,
+        rebase_stderr=rebase_proc.stderr,
+        rebase_exit_code=rebase_proc.returncode,
+    )
+
+
+def update_start_refresh_metadata(result: dict[str, Any]) -> None:
+    if result.get("stage") != "before-implementation":
+        return
+    if result.get("status") not in {"fresh", "rebased_clean"}:
+        return
+    metadata = load_json(METADATA_PATH)
+    refreshed_base_change_id = current_base_change_id()
+    previous_base_change_id = metadata.get("base_change_id")
+    if previous_base_change_id != refreshed_base_change_id:
+        if "initial_base_change_id" not in metadata:
+            metadata["initial_base_change_id"] = previous_base_change_id
+        metadata["base_change_id"] = refreshed_base_change_id
+        write_json(METADATA_PATH, metadata)
+        result["metadata_base_change_id_updated"] = True
+
+
+def write_refresh_base_result(result: dict[str, Any]) -> Path:
+    path = refresh_base_json_path(str(result["stage"]))
+    write_json(path, result)
+    write_json(BASE_REFRESH_LATEST_PATH, result)
+    print(f"REFRESH_BASE_STATUS={result['status']}")
+    print(f"REFRESH_BASE_REPAIRABLE={str(bool(result['repairable'])).lower()}")
+    print(f"REFRESH_BASE_REBASED={str(bool(result['rebased'])).lower()}")
+    print(f"REFRESH_BASE_BASE_REVISION={result['base_revision']}")
+    print(f"REFRESH_BASE_JSON={path}")
+    print("REFRESH_BASE_CONFLICTED_FILES:")
+    files = result.get("conflicted_files") or []
+    if files:
+        for file in files:
+            print(f"- {file}")
+    else:
+        print("- None")
+    return path
+
+
+def refresh_base_command(args: list[str]) -> None:
+    stage = parse_refresh_base_args(args)
+    require_command("jj")
+    result = refresh_base(stage)
+    update_start_refresh_metadata(result)
+    write_refresh_base_result(result)
+    status = result["status"]
+    if status in {"fresh", "rebased_clean"}:
+        sys.exit(0)
+    if status == "conflicts":
+        sys.exit(20)
+    sys.exit(1)
+
+
+def append_base_drift_repair_summary(body: str) -> tuple[str, bool]:
+    if not BASE_DRIFT_REPAIR_SUMMARY_PATH.exists():
+        return body, False
+    summary = BASE_DRIFT_REPAIR_SUMMARY_PATH.read_text().strip()
+    section = "\n\n## Base drift repair\n\n"
+    if summary:
+        section += summary + "\n"
+    else:
+        section += f"See `{BASE_DRIFT_REPAIR_SUMMARY_PATH}`.\n"
+    return body.rstrip() + section, True
+
+
+def publish_blocked_after_refresh(result: dict[str, Any], *, failure_code: str) -> None:
+    print("PUBLISH_BLOCKED=true")
+    print("PUBLISH_BLOCKED_REASON=base drift after final validation")
+    message = str(result.get("message") or "base moved after final validation")
+    if result.get("status") == "conflicts":
+        files = result.get("conflicted_files") or []
+        if files:
+            message += "\nConflicted files:\n" + "\n".join(f"- {file}" for file in files)
+    fail(
+        "publish blocked because the PR base moved after the repair window. "
+        "Rerun the workflow or repair the retained workspace manually.\n" + message,
+        failure_code=failure_code,
+    )
 
 
 def empty_description_commits_to_push(remote: str) -> list[str]:
@@ -884,6 +1238,25 @@ def validation_env() -> dict[str, str]:
 
 
 def validate_command(*, failure_code: str | None = None) -> None:
+    if BASE_DRIFT_REPAIR_FAILURE_PATH.exists():
+        failure = BASE_DRIFT_REPAIR_FAILURE_PATH.read_text().strip()
+        fail(
+            f"base drift repair requested workflow failure via {BASE_DRIFT_REPAIR_FAILURE_PATH}:"
+            + ("\n" + failure if failure else ""),
+            failure_code=failure_code,
+        )
+    if command_exists("jj") and has_unresolved_conflicts_at_current_change():
+        files = conflicted_files()
+        details = ""
+        if files:
+            details = "\nConflicted files:\n" + "\n".join(f"- {file}" for file in files)
+        else:
+            details = "\nConflicted file list could not be determined by `jj resolve --list`."
+        fail(
+            "jj reports unresolved conflicts in the current change; resolve base-drift "
+            "conflicts before validation." + details,
+            failure_code=failure_code,
+        )
     require_command("direnv")
     commands = [
         ["direnv", "allow", "."],
@@ -1012,22 +1385,32 @@ def publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str, str, s
 def publish_command() -> None:
     require_command("jj")
     ensure_validation_passed()
-    require_command("gh")
     metadata = load_json(METADATA_PATH)
 
     source_kind, branch_prefix, slug, description, pr_title, body = publish_values(metadata)
 
-    base = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
-    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
-    repo = default_repo(remote)
-    fetch_publish_base(base, remote)
-    base_revision = publish_base_revision(base, remote)
-    rebased = normalize_publish_base(base_revision)
-    if rebased:
+    base, remote = configured_publish_base()
+    refresh = refresh_base("publish")
+    write_refresh_base_result(refresh)
+    refresh_status = str(refresh.get("status") or "")
+    if refresh_status == "conflicts":
+        publish_blocked_after_refresh(refresh, failure_code="publish_rebase_conflict")
+    if refresh_status == "rebase_failed":
+        publish_blocked_after_refresh(refresh, failure_code="publish_rebase_conflict")
+    if refresh_status in {"fetch_failed", "base_not_found"}:
+        publish_blocked_after_refresh(refresh, failure_code="base_refresh_conflict")
+
+    base_revision = str(refresh.get("base_revision") or f"{base}@{remote}")
+    if refresh_status == "rebased_clean":
         print("")
         print("## Revalidation after publish-base normalization")
-        validate_command(failure_code="publish_revalidation_failed")
-        ensure_validation_passed()
+        try:
+            validate_command(failure_code="publish_revalidation_failed")
+            ensure_validation_passed()
+        except SystemExit:
+            print("PUBLISH_BLOCKED=true")
+            print("PUBLISH_BLOCKED_REASON=base drift after final validation")
+            raise
 
     files = changed_files_since(base_revision)
     if not files:
@@ -1038,11 +1421,14 @@ def publish_command() -> None:
         fail("could not determine current jj change id")
     branch = f"{branch_prefix}/{slug}-{change_id}"
 
+    repo = default_repo(remote)
+    require_command("gh")
     run(["jj", "describe", "-m", description])
     ensure_no_empty_descriptions_to_push(remote)
     run(["jj", "bookmark", "set", branch, "--revision", "@"])
     run(["jj", "git", "push", "--remote", remote, "--bookmark", branch, "--allow-new"])
 
+    body, repair_summary_included = append_base_drift_repair_summary(body)
     PR_BODY_PATH.parent.mkdir(parents=True, exist_ok=True)
     PR_BODY_PATH.write_text(body)
 
@@ -1076,7 +1462,10 @@ def publish_command() -> None:
         "pr_url": pr_url,
         "changed_files": files,
         "publish_base_revision": base_revision,
+        "base_drift_repair_summary_included": repair_summary_included,
     }
+    if repair_summary_included:
+        publish["base_drift_repair_summary_path"] = str(BASE_DRIFT_REPAIR_SUMMARY_PATH)
     if source_kind == "execplan":
         publish["plan_path"] = metadata["plan_path"]
         publish["issue_identifier"] = metadata.get("issue_identifier") or ""
@@ -1142,6 +1531,8 @@ def main(argv: list[str]) -> None:
     args = argv[2:]
     if command == "prepare":
         prepare_command(args)
+    elif command == "refresh-base":
+        refresh_base_command(args)
     elif command == "analyze" and not args:
         analyze_command()
     elif command == "validate" and not args:

@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/list
 import scherzo/config/types as config_types
 import scherzo/step_artifact
@@ -167,6 +168,32 @@ pub fn on_failure_continue_counts_as_complete_test() {
   let assert Ok(workflow_scheduler.FailedContinued) =
     workflow_scheduler.status_of(state, "test_after_implement")
   assert ids(workflow_scheduler.ready_steps(dag, state)) == ["apply_feedback"]
+}
+
+pub fn init_with_statuses_rejects_unknown_step_test() {
+  let dag = implementation_dag(4)
+  let recovered = dict.from_list([#("ghost", workflow_scheduler.Succeeded)])
+  assert workflow_scheduler.init_with_statuses(dag, recovered)
+    == Error("unknown_recovered_step:ghost")
+}
+
+pub fn init_with_statuses_rejects_running_step_test() {
+  let dag = implementation_dag(4)
+  let recovered = dict.from_list([#("implement", workflow_scheduler.Running)])
+  assert workflow_scheduler.init_with_statuses(dag, recovered)
+    == Error("running_recovered_step:implement")
+}
+
+pub fn init_with_statuses_defaults_missing_steps_to_pending_test() {
+  let dag = implementation_dag(4)
+  let recovered = dict.from_list([#("implement", workflow_scheduler.Succeeded)])
+  let assert Ok(state) = workflow_scheduler.init_with_statuses(dag, recovered)
+  let assert Ok(workflow_scheduler.Succeeded) =
+    workflow_scheduler.status_of(state, "implement")
+  let assert Ok(workflow_scheduler.Pending) =
+    workflow_scheduler.status_of(state, "code_review")
+  assert ids(workflow_scheduler.ready_steps(dag, state))
+    == ["test_after_implement", "code_review", "security_review"]
 }
 
 @external(erlang, "erlang", "integer_to_binary")

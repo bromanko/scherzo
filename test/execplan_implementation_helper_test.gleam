@@ -41,6 +41,13 @@ fn chmod_executable(path: String) -> Nil {
   assert artifact.exit_code == Some(0)
 }
 
+fn read_or_empty(path: String) -> String {
+  case simplifile.read(path) {
+    Ok(contents) -> contents
+    Error(_) -> ""
+  }
+}
+
 pub fn extract_plan_requires_exactly_one_existing_plan_path_test() {
   let dir = "test/tmp/execplan-helper-extract"
   reset_dir(dir)
@@ -325,7 +332,7 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -391,7 +398,7 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -440,7 +447,7 @@ pub fn publish_rebase_conflict_emits_stable_failure_code_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_JJ_REBASE_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_JJ_REBASE_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -466,7 +473,7 @@ pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_DIRENV_TEST_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_DIRENV_TEST_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -616,6 +623,489 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
   assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE=LIV-200")
   let assert Ok(lc_log) = simplifile.read(dir <> "/lc.log")
   assert !string.contains(lc_log, "ARG=create")
+}
+
+pub fn refresh_base_reports_fresh_base_test() {
+  let dir = "test/tmp/implementation-helper-refresh-fresh"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=fresh")
+  assert string.contains(artifact.stdout, "REFRESH_BASE_REPAIRABLE=false")
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert !string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
+  let assert Ok(json) =
+    simplifile.read(
+      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
+    )
+  assert string.contains(json, "\"status\": \"fresh\"")
+  assert string.contains(json, "\"rebased\": false")
+}
+
+pub fn refresh_base_rebases_stale_base_and_updates_start_metadata_test() {
+  let dir = "test/tmp/implementation-helper-refresh-rebase-start"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation.json",
+      "{\"source_kind\":\"ticket\",\"base_change_id\":\"old-base\"}\n",
+    )
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-implementation",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=rebased_clean")
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(jj_log, "git fetch --remote origin --branch main")
+  assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
+  let assert Ok(metadata) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation.json")
+  assert string.contains(
+    metadata,
+    "\"base_change_id\": \"refreshed-base-change\"",
+  )
+  assert string.contains(metadata, "\"initial_base_change_id\": \"old-base\"")
+  let assert Ok(json) =
+    simplifile.read(
+      dir
+      <> "/tmp/scherzo-implementation-refresh-base-before-implementation.json",
+    )
+  assert string.contains(json, "\"metadata_base_change_id_updated\": true")
+}
+
+pub fn refresh_base_reports_repairable_conflicts_test() {
+  let dir = "test/tmp/implementation-helper-refresh-conflicts"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(20)
+  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=conflicts")
+  assert string.contains(artifact.stdout, "REFRESH_BASE_REPAIRABLE=true")
+  assert string.contains(artifact.stdout, "- src/conflicted.gleam")
+  let assert Ok(json) =
+    simplifile.read(
+      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
+    )
+  assert string.contains(json, "\"status\": \"conflicts\"")
+  assert string.contains(json, "\"has_unresolved_conflicts\": true")
+}
+
+pub fn refresh_base_fetch_failure_is_nonrepairable_test() {
+  let dir = "test/tmp/implementation-helper-refresh-fetch-failure"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_FETCH_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=fetch_failed")
+  let assert Ok(json) =
+    simplifile.read(
+      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
+    )
+  assert string.contains(json, "\"status\": \"fetch_failed\"")
+  assert string.contains(json, "\"repairable\": false")
+}
+
+pub fn refresh_base_base_not_found_is_nonrepairable_test() {
+  let dir = "test/tmp/implementation-helper-refresh-base-not-found"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_BASE_MISSING=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  let assert Ok(json) =
+    simplifile.read(
+      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
+    )
+  assert string.contains(json, "\"status\": \"base_not_found\"")
+  assert string.contains(json, "\"repairable\": false")
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert !string.contains(jj_log, "rebase -r @")
+}
+
+pub fn refresh_base_rebase_failed_without_conflicts_is_nonrepairable_test() {
+  let dir = "test/tmp/implementation-helper-refresh-rebase-failed"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_REBASE_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  let assert Ok(json) =
+    simplifile.read(
+      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
+    )
+  assert string.contains(json, "\"status\": \"rebase_failed\"")
+  assert string.contains(json, "\"repairable\": false")
+}
+
+pub fn refresh_base_rejects_unsafe_stage_and_writes_latest_json_test() {
+  let dir = "test/tmp/implementation-helper-refresh-safe-stage"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let bad =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage ../bad",
+    )
+  assert bad.status == step_artifact.StepFailed
+  assert bad.exit_code == Some(1)
+  assert string.contains(bad.stderr, "invalid refresh-base stage")
+  let assert Error(_) = simplifile.read("test/tmp/bad")
+
+  let good =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_PARENT_MATCH=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-validation",
+    )
+  assert good.status == step_artifact.StepSucceeded
+  let assert Ok(stage_json) =
+    simplifile.read(
+      dir <> "/tmp/scherzo-implementation-refresh-base-before-validation.json",
+    )
+  let assert Ok(latest_json) =
+    simplifile.read(
+      dir <> "/tmp/scherzo-implementation-refresh-base-latest.json",
+    )
+  assert string.contains(stage_json, "\"stage\": \"before-validation\"")
+  assert string.contains(latest_json, "\"stage\": \"before-validation\"")
+  assert string.contains(latest_json, "\"status\": \"fresh\"")
+}
+
+pub fn validate_fails_on_base_drift_failure_marker_test() {
+  let dir = "test/tmp/implementation-helper-validate-marker"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-base-drift-failure.md",
+      "# Base drift repair failure\n",
+    )
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(
+    artifact.stderr,
+    "base drift repair requested workflow failure",
+  )
+  assert read_or_empty(dir <> "/direnv.log") == ""
+}
+
+pub fn validate_fails_on_unresolved_jj_conflicts_test() {
+  let dir = "test/tmp/implementation-helper-validate-conflicts"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_CONFLICT=1 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stderr, "src/conflicted.gleam")
+  assert read_or_empty(dir <> "/direnv.log") == ""
+}
+
+pub fn publish_time_conflicts_do_not_publish_test() {
+  let dir = "test/tmp/implementation-helper-publish-conflicts-blocked"
+  reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=conflicts")
+  assert string.contains(artifact.stdout, "PUBLISH_BLOCKED=true")
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert !string.contains(jj_log, "describe -m")
+  assert !string.contains(jj_log, "bookmark set")
+  assert !string.contains(jj_log, "git push")
+  assert read_or_empty(dir <> "/gh.log") == ""
+  let assert Ok(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
+  let assert Ok(json) =
+    simplifile.read(
+      dir <> "/tmp/scherzo-implementation-refresh-base-publish.json",
+    )
+  assert string.contains(json, "\"status\": \"conflicts\"")
+}
+
+pub fn publish_time_revalidation_failure_does_not_publish_test() {
+  let dir = "test/tmp/implementation-helper-publish-revalidation-blocked"
+  reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_DIRENV_TEST_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("publish_revalidation_failed")
+  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=rebased_clean")
+  assert string.contains(artifact.stdout, "PUBLISH_BLOCKED=true")
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert !string.contains(jj_log, "bookmark set")
+  assert !string.contains(jj_log, "git push")
+  assert read_or_empty(dir <> "/gh.log") == ""
+  let assert Ok(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
+  let assert Ok(json) =
+    simplifile.read(
+      dir <> "/tmp/scherzo-implementation-refresh-base-publish.json",
+    )
+  assert string.contains(json, "\"status\": \"rebased_clean\"")
+}
+
+pub fn publish_time_revalidation_success_may_publish_test() {
+  let dir = "test/tmp/implementation-helper-publish-revalidation-success"
+  reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/.scherzo-keep-workspace", "keep\n")
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(jj_log, "bookmark set")
+  assert string.contains(jj_log, "git push --remote origin")
+  let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
+  assert string.contains(gh_log, "pr create")
+  let assert Error(_) = simplifile.read(dir <> "/.scherzo-keep-workspace")
+}
+
+pub fn publish_includes_base_drift_repair_summary_test() {
+  let dir = "test/tmp/implementation-helper-publish-repair-summary"
+  reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-base-drift-repair.md",
+      "# Base drift repair summary\n\nNo-op summary.\n",
+    )
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(body) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-pr-body.md")
+  assert string.contains(body, "## Base drift repair")
+  let assert Ok(publish_json) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
+  assert string.contains(
+    publish_json,
+    "\"base_drift_repair_summary_included\": true",
+  )
+  assert string.contains(
+    publish_json,
+    "\"base_drift_repair_summary_path\": \"tmp/scherzo-implementation-base-drift-repair.md\"",
+  )
+
+  let dir_without = "test/tmp/implementation-helper-publish-no-repair-summary"
+  reset_dir(dir_without)
+  write_publish_fixture_metadata(dir_without)
+  write_fake_refresh_jj(dir_without <> "/bin/jj")
+  write_fake_gh(dir_without <> "/bin/gh")
+  write_fake_direnv(dir_without <> "/bin/direnv")
+  chmod_executable(dir_without <> "/bin/jj")
+  chmod_executable(dir_without <> "/bin/gh")
+  chmod_executable(dir_without <> "/bin/direnv")
+
+  let artifact_without =
+    run_helper_in(
+      dir_without,
+      "SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+    )
+
+  assert artifact_without.status == step_artifact.StepSucceeded
+  let assert Ok(publish_json_without) =
+    simplifile.read(dir_without <> "/tmp/scherzo-implementation-publish.json")
+  assert string.contains(
+    publish_json_without,
+    "\"base_drift_repair_summary_included\": false",
+  )
+}
+
+pub fn repair_base_drift_prompt_contains_state_table_test() {
+  let assert Ok(prompt) =
+    simplifile.read(".scherzo/workflows/prompts/repair-base-drift.md")
+  assert string.contains(prompt, "tmp/scherzo-implementation-refresh-base")
+  assert string.contains(prompt, "rebased_clean")
+  assert string.contains(prompt, "conflicts")
+  assert string.contains(prompt, "rebased_clean` and validation succeeded")
+  assert string.contains(
+    prompt,
+    "tmp/scherzo-implementation-base-drift-repair.md",
+  )
+  assert string.contains(
+    prompt,
+    "tmp/scherzo-implementation-base-drift-failure.md",
+  )
+  assert string.contains(
+    prompt,
+    "Do not create, forget, finish, switch, push, bookmark",
+  )
+  assert string.contains(prompt, "pull requests")
+}
+
+pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
+  let assert Ok(implementation) =
+    simplifile.read(".scherzo/workflows/implementation.yaml")
+  let assert Ok(execplan) =
+    simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
+
+  assert_workflow_refresh_ordering(
+    implementation,
+    "prepare_context",
+    "implement",
+    "apply_feedback",
+  )
+  assert_workflow_refresh_ordering(
+    execplan,
+    "prepare_plan",
+    "implement_plan",
+    "apply_review_feedback",
+  )
+}
+
+fn assert_workflow_refresh_ordering(
+  workflow: String,
+  prepare_step: String,
+  implement_step: String,
+  feedback_step: String,
+) -> Nil {
+  assert string.contains(workflow, "- id: refresh_base_before_implementation")
+  assert string.contains(workflow, "depends_on: [" <> prepare_step <> "]")
+  assert string.contains(workflow, "- id: " <> implement_step)
+  assert string.contains(
+    workflow,
+    "depends_on: [refresh_base_before_implementation]",
+  )
+  assert string.contains(workflow, "- id: refresh_base_before_validation")
+  assert string.contains(workflow, "depends_on: [" <> feedback_step <> "]")
+  assert string.contains(workflow, "refresh-base --stage before-validation")
+  assert string.contains(workflow, "- id: validate_after_refresh")
+  assert string.contains(
+    workflow,
+    "depends_on: [refresh_base_before_validation]",
+  )
+  assert string.contains(workflow, "on_failure: continue")
+  assert string.contains(workflow, "- id: repair_base_drift")
+  assert string.contains(workflow, "depends_on: [validate_after_refresh]")
+  assert string.contains(workflow, "prompts/repair-base-drift.md")
+  assert string.contains(workflow, "- id: final_validate")
+  assert string.contains(workflow, "depends_on: [repair_base_drift]")
+  assert string.contains(workflow, "- id: publish_pr")
+  assert string.contains(workflow, "depends_on: [final_validate]")
 }
 
 fn write_publish_fixture_metadata(dir: String) -> Nil {
@@ -845,6 +1335,55 @@ fn write_fake_jj(path: String) -> Nil {
         <> "    @-) echo localparentcommit; exit 0;;\n"
         <> "    @) case \"$template\" in *change_id.short*) echo publishchange;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "    conflicts*) exit 0;;\n"
+        <> "    remote_bookmarks*) exit 0;;\n"
+        <> "    *) exit 1;;\n"
+        <> "  esac\n"
+        <> "fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_fake_refresh_jj(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> jj.log\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then echo 'origin https://github.com/example/repo.git'; exit 0; fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_REFRESH_FETCH_FAIL:-}\" = 1 ]; then echo 'fetch failed' >&2; exit 3; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = diff ]; then echo 'scripts/scherzo-implementation'; exit 0; fi\n"
+        <> "if [ \"$1\" = rebase ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE:-}\" = 1 ]; then touch .fake-conflict; echo 'simulated conflict' >&2; exit 1; fi\n"
+        <> "  if [ \"${SCHERZO_FAKE_REFRESH_REBASE_FAIL:-}\" = 1 ]; then echo 'simulated rebase infrastructure failure' >&2; exit 1; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = resolve ] && [ \"$2\" = --list ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT:-}\" = 1 ] || [ -f .fake-conflict ]; then echo 'src/conflicted.gleam    2-sided conflict'; exit 0; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = bookmark ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = status ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = log ]; then\n"
+        <> "  rev=\n"
+        <> "  template=\n"
+        <> "  prev=\n"
+        <> "  for arg in \"$@\"; do\n"
+        <> "    if [ \"$prev\" = -r ]; then rev=$arg; fi\n"
+        <> "    if [ \"$prev\" = -T ]; then template=$arg; fi\n"
+        <> "    prev=$arg\n"
+        <> "  done\n"
+        <> "  case \"$rev\" in\n"
+        <> "    main@origin) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; echo remotecommit; exit 0;;\n"
+        <> "    main) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; echo localfallbackcommit; exit 0;;\n"
+        <> "    @-) case \"$template\" in *change_id*) echo refreshed-base-change;; *) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ]; then echo remotecommit; else echo localparentcommit; fi;; esac; exit 0;;\n"
+        <> "    @) case \"$template\" in *change_id.short*) echo refreshchange;; *) echo currentcommit;; esac; exit 0;;\n"
+        <> "    conflicts*) if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT:-}\" = 1 ] || [ -f .fake-conflict ]; then echo conflictchange; fi; exit 0;;\n"
         <> "    remote_bookmarks*) exit 0;;\n"
         <> "    *) exit 1;;\n"
         <> "  esac\n"

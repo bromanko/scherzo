@@ -173,6 +173,65 @@ pub fn hook_receives_step_environment_and_config_cwd_test() {
   assert next_main.source_workspace_path == Some(main.path)
 }
 
+pub fn recovered_workspace_validation_rejects_paths_outside_run_root_test() {
+  let dir = "test/tmp/workspace-run-recovered-validation"
+  reset_dir(dir)
+  let orchestrator =
+    orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
+  let assert Ok(expected_run_root) =
+    workspace_run.run_root_for(issue(), "implementation", "run-1", orchestrator)
+  let assert Ok(other_run_workspace) =
+    workspace_run.workspace_path_for(
+      issue(),
+      "implementation",
+      "run-2",
+      "main",
+      orchestrator,
+    )
+  let assert Ok(Nil) = simplifile.create_directory_all(other_run_workspace)
+  let recovered_workspace =
+    workspace_run.PreparedStepWorkspace(
+      workflow_id: "implementation",
+      run_id: "run-1",
+      run_root: expected_run_root,
+      attempt_index: 1,
+      workspace_name: "main",
+      path: other_run_workspace,
+      source_workspace_name: None,
+      source_workspace_path: None,
+    )
+  let known = dict.from_list([#("main", recovered_workspace)])
+
+  let assert Error(workspace_run.WorkspaceFailure(error.WorkspaceIo(
+    "invalid recovered workspace",
+  ))) =
+    workspace_run.prepare_recovered_step_attempt(
+      issue(),
+      "implementation",
+      "run-1",
+      expected_run_root,
+      "reuse_main",
+      2,
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      known,
+    )
+  let assert Error(workspace_run.WorkspaceFailure(error.WorkspaceIo(
+    "invalid recovered workspace",
+  ))) =
+    workspace_run.prepare_recovered_step_attempt(
+      issue(),
+      "implementation",
+      "run-1",
+      expected_run_root,
+      "copy_main",
+      1,
+      workflow_dag.WorkspaceRef(name: "review", from: Some("main")),
+      orchestrator,
+      known,
+    )
+}
+
 pub fn cleanup_rejects_paths_outside_workspace_root_test() {
   let dir = "test/tmp/workspace-run-cleanup"
   reset_dir(dir)
