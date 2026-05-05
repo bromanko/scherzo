@@ -89,6 +89,24 @@ pub fn command_step_timeout_returns_failed_artifact_test() {
   assert artifact.timed_out == True
 }
 
+pub fn command_step_env_is_available_to_helpers_test() {
+  let dir = "test/tmp/command-step-env"
+  reset_dir(dir)
+  let artifact =
+    command_step.run_with_env(
+      "env_step",
+      "printf '%s|%s\n' \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"",
+      dir,
+      1000,
+      [#("SCHERZO_RUN_ROOT", "run-root"), #("SCHERZO_STEP_ID", "env_step")],
+      [],
+      limits(),
+    )
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert artifact.stdout == "run-root|env_step\n"
+}
+
 pub fn command_step_redacts_fake_secret_test() {
   let dir = "test/tmp/command-step-secret"
   reset_dir(dir)

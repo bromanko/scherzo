@@ -21,13 +21,18 @@ from pathlib import Path
 from typing import Any
 
 TMP_DIR = Path("tmp")
-METADATA_PATH = TMP_DIR / "scherzo-merge-conflict.json"
-BRIEF_PATH = TMP_DIR / "scherzo-merge-conflict-brief.md"
+RUN_STATE_DIR = (
+    Path(os.environ["SCHERZO_RUN_ROOT"]).resolve() / "artifacts" / "merge-conflict"
+    if os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    else TMP_DIR
+)
+METADATA_PATH = RUN_STATE_DIR / "scherzo-merge-conflict.json"
+BRIEF_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-brief.md"
 RESOLUTION_SUMMARY_PATH = TMP_DIR / "scherzo-merge-conflict-resolution.md"
 FAILURE_PATH = TMP_DIR / "scherzo-merge-conflict-failure.md"
-VALIDATION_PATH = TMP_DIR / "scherzo-merge-conflict-validation.json"
-PUBLISH_PATH = TMP_DIR / "scherzo-merge-conflict-publish.json"
-PR_COMMENT_PATH = TMP_DIR / "scherzo-merge-conflict-pr-comment.md"
+VALIDATION_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-validation.json"
+PUBLISH_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-publish.json"
+PR_COMMENT_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-pr-comment.md"
 RETENTION_MARKER = ".scherzo-keep-workspace"
 CONFLICT_MARKER_RE = re.compile(r"^(<<<<<<<|>>>>>>>|%%%%%%%|\+{7}|\\{7})", re.MULTILINE)
 
@@ -690,6 +695,7 @@ def prepare_command() -> None:
             print(f"- {file}")
     else:
         print("- None")
+    print(f"METADATA_PATH={METADATA_PATH}")
     print(f"BRIEF_PATH={BRIEF_PATH}")
     print(f"RETENTION_MARKER={retention_marker_path()}")
 

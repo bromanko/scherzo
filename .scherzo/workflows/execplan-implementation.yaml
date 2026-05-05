@@ -5,7 +5,7 @@ max_parallel_steps: 1
 steps:
   - id: prepare_plan
     kind: command
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-implementation" prepare --source execplan'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" prepare --source execplan'
     timeout_ms: 300000
     workspace: main
 
@@ -18,7 +18,7 @@ steps:
   - id: analyze_changes
     kind: command
     depends_on: [implement_plan]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-implementation" analyze'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" analyze'
     workspace: main
 
   - id: review_changes
@@ -36,13 +36,13 @@ steps:
   - id: final_validate
     kind: command
     depends_on: [apply_review_feedback]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-implementation" validate'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" validate'
     timeout_ms: 1200000
     workspace: main
 
   - id: publish_pr
     kind: command
     depends_on: [final_validate]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; "$repo_root/scripts/scherzo-implementation" publish'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" publish'
     timeout_ms: 300000
     workspace: main

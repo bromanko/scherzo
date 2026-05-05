@@ -174,17 +174,23 @@ fn deps(
       process.send(subject, "cleanup:" <> run_root)
       Ok(Nil)
     },
-    command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
-      process.send(subject, "run:" <> step_id)
-      let exit_code = case failing_command == Some(step_id) {
+    command_step: fn(
+      context: workflow_run.StepContext,
+      _command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
+      process.send(subject, "run:" <> context.step_id)
+      let exit_code = case failing_command == Some(context.step_id) {
         True -> 1
         False -> 0
       }
       step_artifact.from_command_result(
-        step_id,
+        context.step_id,
         exit_code,
-        "stdout:" <> step_id,
-        "stderr:" <> step_id,
+        "stdout:" <> context.step_id,
+        "stderr:" <> context.step_id,
         False,
         secrets,
         limits,
@@ -192,15 +198,14 @@ fn deps(
     },
     agent_step: fn(
       _issue,
-      _step_id,
+      context: workflow_run.StepContext,
       prompt,
       _effective,
       _tracker,
-      workspace_path,
       _emit_update,
       _command_ready,
     ) {
-      process.send(subject, "agent:" <> workspace_path <> ":" <> prompt)
+      process.send(subject, "agent:" <> context.workspace_path <> ":" <> prompt)
       Ok(success_agent(prompt))
     },
     checkpoint: workflow_checkpoint.noop_writer(),
@@ -285,15 +290,17 @@ pub fn workflow_run_resolves_default_and_step_model_settings_test() {
       ..base,
       agent_step: fn(
         _issue,
-        step_id,
+        context: workflow_run.StepContext,
         prompt,
         effective: config_types.EffectiveConfig,
         _tracker,
-        _workspace_path,
         _emit_update,
         _command_ready,
       ) {
-        process.send(command_subject, step_id <> ":" <> effective.pi.command)
+        process.send(
+          command_subject,
+          context.step_id <> ":" <> effective.pi.command,
+        )
         Ok(success_agent(prompt))
       },
     )
@@ -354,6 +361,37 @@ pub fn workflow_run_prepare_failure_cleans_partial_ready_batch_test() {
   assert process.receive(subject, within: 50) == Error(Nil)
 }
 
+pub fn workflow_run_prepare_hook_failure_is_first_class_test() {
+  let subject = process.new_subject()
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      implementation_dag(),
+      orchestrator(),
+      empty_tracker(),
+      ["secret-token"],
+      "run-1",
+      deps_with_prepare_hook_failure(
+        subject,
+        "implement",
+        "hook secret-token stderr",
+      ),
+    )
+
+  assert string.contains(failure.reason, "hook_failed:hook_failed")
+  assert string.contains(failure.reason, "before_step exited 17")
+  assert string.contains(failure.reason, "hook [REDACTED] stderr")
+  assert !string.contains(failure.reason, "secret-token")
+  assert failure.agent_reason
+    == Some(
+      error.WorkflowHookFailed(error.HookFailed(
+        "before_step",
+        17,
+        "hook secret-token stderr",
+      )),
+    )
+}
+
 pub fn workflow_run_ready_batch_runs_steps_concurrently_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
@@ -366,10 +404,19 @@ pub fn workflow_run_ready_batch_runs_steps_concurrently_test() {
   let dependencies =
     workflow_run.Dependencies(
       ..base,
-      command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
         let release_subject = process.new_subject()
-        process.send(command_subject, CommandStart(step_id, release_subject))
-        case step_id == "final" {
+        process.send(
+          command_subject,
+          CommandStart(context.step_id, release_subject),
+        )
+        case context.step_id == "final" {
           True -> Nil
           False -> {
             let _ = process.receive_forever(release_subject)
@@ -377,9 +424,9 @@ pub fn workflow_run_ready_batch_runs_steps_concurrently_test() {
           }
         }
         step_artifact.from_command_result(
-          step_id,
+          context.step_id,
           0,
-          "stdout:" <> step_id,
+          "stdout:" <> context.step_id,
           "",
           False,
           secrets,
@@ -412,6 +459,77 @@ pub fn workflow_run_ready_batch_runs_steps_concurrently_test() {
   let assert Ok(Ok(_success)) = process.receive(result_subject, within: 1000)
 }
 
+pub fn workflow_run_ready_steps_sharing_workspace_are_serialized_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: first\n    kind: command\n    run: first\n    workspace: main\n  - id: second\n    kind: command\n    run: second\n    workspace: main\n  - id: final\n    kind: command\n    depends_on: [first, second]\n    run: final\n    workspace: main\n",
+    )
+  let command_subject = process.new_subject()
+  let result_subject = process.new_subject()
+  let dummy_subject = process.new_subject()
+  let base = deps(dummy_subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let release_subject = process.new_subject()
+        process.send(
+          command_subject,
+          CommandStart(context.step_id, release_subject),
+        )
+        case context.step_id == "final" {
+          True -> Nil
+          False -> {
+            let _ = process.receive_forever(release_subject)
+            Nil
+          }
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "stdout:" <> context.step_id,
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let _ =
+    process.spawn_unlinked(fn() {
+      let result =
+        workflow_run.execute(
+          issue(),
+          dag,
+          orchestrator(),
+          empty_tracker(),
+          [],
+          "run-1",
+          dependencies,
+        )
+      process.send(result_subject, result)
+    })
+
+  let assert Ok(first_start) = process.receive(command_subject, within: 1000)
+  let CommandStart(step_id: first_id, release: release_first) = first_start
+  assert first_id == "first"
+  assert process.receive(command_subject, within: 50) == Error(Nil)
+
+  process.send(release_first, "go")
+  let assert Ok(second_start) = process.receive(command_subject, within: 1000)
+  let CommandStart(step_id: second_id, release: release_second) = second_start
+  assert second_id == "second"
+  process.send(release_second, "go")
+  let assert Ok(Ok(_success)) = process.receive(result_subject, within: 1000)
+}
+
 pub fn workflow_run_fatal_ready_step_cancels_active_siblings_test() {
   let assert Ok(dag) =
     workflow_dag.parse(
@@ -424,18 +542,27 @@ pub fn workflow_run_fatal_ready_step_cancels_active_siblings_test() {
   let dependencies =
     workflow_run.Dependencies(
       ..base,
-      command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
         let release_subject = process.new_subject()
-        process.send(command_subject, CommandStart(step_id, release_subject))
+        process.send(
+          command_subject,
+          CommandStart(context.step_id, release_subject),
+        )
         let _ = process.receive_forever(release_subject)
-        let exit_code = case step_id == "fail" {
+        let exit_code = case context.step_id == "fail" {
           True -> 1
           False -> 0
         }
         step_artifact.from_command_result(
-          step_id,
+          context.step_id,
           exit_code,
-          "stdout:" <> step_id,
+          "stdout:" <> context.step_id,
           "",
           False,
           secrets,
@@ -487,14 +614,20 @@ pub fn workflow_run_after_step_runs_in_dag_order_for_ready_batch_test() {
   let dependencies =
     workflow_run.Dependencies(
       ..base,
-      command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
-        process.send(subject, "run:" <> step_id)
-        case step_id == "first" {
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        process.send(subject, "run:" <> context.step_id)
+        case context.step_id == "first" {
           True -> {
             let release_subject = process.new_subject()
             process.send(
               command_subject,
-              CommandStart(step_id, release_subject),
+              CommandStart(context.step_id, release_subject),
             )
             let _ = process.receive_forever(release_subject)
             Nil
@@ -502,9 +635,9 @@ pub fn workflow_run_after_step_runs_in_dag_order_for_ready_batch_test() {
           False -> Nil
         }
         step_artifact.from_command_result(
-          step_id,
+          context.step_id,
           0,
-          "stdout:" <> step_id,
+          "stdout:" <> context.step_id,
           "",
           False,
           secrets,
@@ -559,14 +692,13 @@ pub fn workflow_run_step_worker_crash_returns_failure_test() {
     workflow_run.Dependencies(
       ..base,
       command_step: fn(
-        step_id,
+        context: workflow_run.StepContext,
         _command,
-        _workspace,
         _timeout,
         _secrets,
         _limits,
       ) {
-        process.send(subject, "run:" <> step_id)
+        process.send(subject, "run:" <> context.step_id)
         panic as "command crashed"
       },
     )
@@ -636,6 +768,49 @@ fn deps_with_prepare_failure(
           process.send(subject, "prepare_failed:" <> step_id)
           Error(workspace_run.WorkspaceFailure(error.WorkspaceIo("boom")))
         }
+        False ->
+          base.prepare_step(
+            issue,
+            workflow_id,
+            run_id,
+            step_id,
+            attempt_index,
+            workspace_ref,
+            orchestrator,
+            known,
+          )
+      }
+    },
+  )
+}
+
+fn deps_with_prepare_hook_failure(
+  subject: process.Subject(String),
+  fail_step_id: String,
+  diagnostics: String,
+) -> workflow_run.Dependencies {
+  let base = deps(subject, None)
+  workflow_run.Dependencies(
+    ..base,
+    prepare_step: fn(
+      issue,
+      workflow_id,
+      run_id,
+      step_id,
+      attempt_index,
+      workspace_ref,
+      orchestrator,
+      known,
+    ) {
+      case step_id == fail_step_id {
+        True ->
+          Error(
+            workspace_run.HookFailure(error.HookFailed(
+              "before_step",
+              17,
+              diagnostics,
+            )),
+          )
         False ->
           base.prepare_step(
             issue,

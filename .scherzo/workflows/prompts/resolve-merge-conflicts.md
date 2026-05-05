@@ -19,8 +19,8 @@ Workflow contract:
 - If you cannot resolve a conflict without making a behavioral choice, write `tmp/scherzo-merge-conflict-failure.md` explaining the ambiguity and stop. The validation step will fail the workflow as requested.
 - You are already inside a dedicated jj workspace. Do not create, forget, finish, switch, push, bookmark, commit, squash, abandon, or otherwise manage jj workspaces or branches. Later deterministic command steps validate, describe, bookmark, and push.
 - Do not use `gh` to post comments. The publish step posts one PR comment when the target is a PR.
-- Read `tmp/scherzo-merge-conflict.json` for target metadata and the exact conflicted file list.
-- Read `tmp/scherzo-merge-conflict-brief.md` for the normalized target brief.
+- Read the `METADATA_PATH=...` file printed by the prepare step for target metadata and the exact conflicted file list.
+- Read the `BRIEF_PATH=...` file printed by the prepare step for the normalized target brief.
 - Edit only files listed under `CONFLICTED_FILES` in the preparation output. Validation hashes every other tracked file and fails if any non-conflicted tracked path changes.
 - Remove all jj conflict markers. Jujutsu conflict markers may include lines starting with `<<<<<<<`, `+++++++`, `%%%%%%%`, `\\\\\\\`, or `>>>>>>>`.
 - If `CONFLICT_COUNT=0`, make no source changes. You may still read the metadata and finish with a no-op summary.
@@ -36,7 +36,7 @@ Conflict-resolution policy:
 
 Process:
 
-1. Read `tmp/scherzo-merge-conflict.json` and `tmp/scherzo-merge-conflict-brief.md`.
+1. Read the `METADATA_PATH` and `BRIEF_PATH` files printed in the prepare output.
 2. If no conflicts were recorded, do not edit tracked files.
 3. Inspect only the conflicted files and the smallest nearby context needed to understand mechanical moves/renames.
 4. Resolve conflict markers in the conflicted files only.

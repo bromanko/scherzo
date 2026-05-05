@@ -128,11 +128,17 @@ fn workflow_deps() -> workflow_run.Dependencies {
     },
     after_step: fn(_, _, _, _) { Nil },
     cleanup_run: fn(_, _) { Ok(Nil) },
-    command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
+    command_step: fn(
+      context: workflow_run.StepContext,
+      _command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
       step_artifact.from_command_result(
-        step_id,
+        context.step_id,
         0,
-        "stdout:" <> step_id,
+        "stdout:" <> context.step_id,
         "",
         False,
         secrets,
@@ -141,18 +147,17 @@ fn workflow_deps() -> workflow_run.Dependencies {
     },
     agent_step: fn(
       issue,
-      _step_id,
+      context: workflow_run.StepContext,
       prompt,
       _effective,
       _tracker,
-      workspace_path,
       _emit_update,
       _command_ready,
     ) {
       Ok(agent_types.WorkerSuccess(
         final_issue: Some(issue),
         final_classification: agent_types.FinalTerminal,
-        workspace_path: workspace_path,
+        workspace_path: context.workspace_path,
         tokens: session_tokens.zero_token_totals(),
         turns: 1,
         result: result_artifact.ResultArtifact(

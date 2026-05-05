@@ -83,7 +83,7 @@ pub fn workflow_recovery_reuses_finished_artifacts_and_interrupts_running_attemp
           "a",
           1,
           "main",
-          "root/run-1/workspaces/main/steps/a/attempt-1",
+          "root/run-1/workspaces/main",
           "root/run-1",
           Some("seed"),
           Some("root/seed"),
@@ -113,7 +113,7 @@ pub fn workflow_recovery_reuses_finished_artifacts_and_interrupts_running_attemp
           stored.ref,
           stored.sha256,
           "main",
-          "root/run-1/workspaces/main/steps/a/attempt-1",
+          "root/run-1/workspaces/main",
           0,
           0,
         ),
@@ -127,7 +127,7 @@ pub fn workflow_recovery_reuses_finished_artifacts_and_interrupts_running_attemp
           "b",
           1,
           "main",
-          "root/run-1/workspaces/main/steps/b/attempt-1",
+          "root/run-1/workspaces/main",
           "root/run-1",
           None,
           None,
@@ -176,8 +176,7 @@ pub fn workflow_recovery_reuses_finished_artifacts_and_interrupts_running_attemp
   assert recovered_artifact == artifact
   let assert Ok(recovered_workspace) =
     dict.get(resumption.completed_workspaces, "main")
-  assert recovered_workspace.path
-    == "root/run-1/workspaces/main/steps/a/attempt-1"
+  assert recovered_workspace.path == "root/run-1/workspaces/main"
   assert recovered_workspace.run_root == "root/run-1"
   assert recovered_workspace.source_workspace_name == Some("seed")
   assert recovered_workspace.source_workspace_path == Some("root/seed")
@@ -243,7 +242,7 @@ pub fn workflow_recovery_validates_failed_fatal_artifact_without_promoting_works
           "fatal",
           1,
           "main",
-          "root/run-fatal/workspaces/main/steps/fatal/attempt-1",
+          "root/run-fatal/workspaces/main",
           "root/run-fatal",
           None,
           None,
@@ -261,7 +260,7 @@ pub fn workflow_recovery_validates_failed_fatal_artifact_without_promoting_works
           stored.ref,
           stored.sha256,
           "main",
-          "root/run-fatal/workspaces/main/steps/fatal/attempt-1",
+          "root/run-fatal/workspaces/main",
           0,
           0,
         ),

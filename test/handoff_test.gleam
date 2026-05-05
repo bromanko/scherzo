@@ -205,6 +205,25 @@ pub fn failure_handoff_includes_hook_diagnostics_test() {
   assert string.contains(failure_comment, "hook output")
 }
 
+pub fn failure_handoff_includes_workflow_hook_diagnostics_test() {
+  let failure =
+    worker_failure(
+      error.WorkflowHookFailed(error.HookFailed(
+        "before_step",
+        23,
+        "stderr details",
+      )),
+      None,
+    )
+  let failure_comment = capture_failure_comment(failure, "run-workflow-hook")
+
+  assert string.contains(failure_comment, "workflow_hook_failed")
+  assert string.contains(failure_comment, "hook_failed")
+  assert string.contains(failure_comment, "before_step")
+  assert string.contains(failure_comment, "23")
+  assert string.contains(failure_comment, "stderr details")
+}
+
 pub fn failure_handoff_truncates_long_details_test() {
   let long_message = string.repeat("x", times: 800) <> "SHOULD_NOT_APPEAR"
   let failure =

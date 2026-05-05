@@ -87,6 +87,7 @@ fn underlying_error_code(reason: error.AgentRunnerError) -> Option(String) {
     error.WorkspaceFailed(workspace_error) ->
       Some(error.workspace_code(workspace_error))
     error.HookFailedError(hook_error) -> Some(error.hook_code(hook_error))
+    error.WorkflowHookFailed(hook_error) -> Some(error.hook_code(hook_error))
     error.ProbeFailed(pi_error) -> Some(error.pi_rpc_code(pi_error))
     error.PiFailed(pi_error) -> Some(error.pi_rpc_code(pi_error))
     error.StateRefreshFailed(tracker_error) ->
@@ -108,6 +109,7 @@ fn failure_detail(reason: error.AgentRunnerError) -> Option(String) {
     error.PromptFailed(template_error) -> template_detail(template_error)
     error.WorkspaceFailed(workspace_error) -> workspace_detail(workspace_error)
     error.HookFailedError(hook_error) -> hook_detail(hook_error)
+    error.WorkflowHookFailed(hook_error) -> hook_detail(hook_error)
     error.ProbeFailed(pi_error) -> pi_detail(pi_error)
     error.PiFailed(pi_error) -> pi_detail(pi_error)
     error.StateRefreshFailed(tracker_error) -> tracker_detail(tracker_error)

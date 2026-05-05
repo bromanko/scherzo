@@ -1,12 +1,9 @@
 #!/bin/sh
 # Shared jj workspace hook helpers for checked-in Scherzo workflows.
 #
-# Scherzo runs hooks with cwd set to the per-issue workspace path. This script
-# is intentionally invoked from the coordinating repository root, for example:
-#
-#   sh "$repo_root/scripts/scherzo-jj-workspace" after-create research
-#
-# The target workspace path is always the hook cwd.
+# Scherzo passes the logical run/workspace identity explicitly. The target
+# workspace path is SCHERZO_WORKSPACE_PATH; hook cwd may be the config directory
+# or the workspace depending on the caller.
 
 set -eu
 
@@ -14,8 +11,9 @@ usage() {
   cat >&2 <<'EOF'
 Usage: scherzo-jj-workspace <after-create|before-run|before-remove> <workflow-name>
 
-Run from a Scherzo hook cwd. SCHERZO_REPO_ROOT may point at the coordinating
-jj repository; otherwise the script infers it from .scherzo/workspaces layout.
+Run from a Scherzo hook. SCHERZO_WORKSPACE_PATH points at the logical workspace
+and SCHERZO_RUN_ROOT points at the workflow run root. SCHERZO_REPO_ROOT may point
+at the coordinating jj repository; otherwise the script uses SCHERZO_CONFIG_DIR.
 Set SCHERZO_JJ_WORKSPACE_BASE to override the initial base revision; otherwise
 new root workspaces prefer ${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin},
 then ${SCHERZO_PR_BASE:-main}, then main@origin, then main, then @.
@@ -34,7 +32,12 @@ fi
 
 command=$1
 workflow_name=$2
-workspace_path=$(pwd -P)
+workspace_path=${SCHERZO_WORKSPACE_PATH:-$(pwd -P)}
+workspace_path=$(cd "$workspace_path" 2>/dev/null && pwd -P || printf '%s\n' "$workspace_path")
+run_root=${SCHERZO_RUN_ROOT:-}
+if [ -n "$run_root" ]; then
+  run_root=$(cd "$run_root" 2>/dev/null && pwd -P || printf '%s\n' "$run_root")
+fi
 
 sanitize_key() {
   printf '%s' "$1" \
@@ -59,9 +62,14 @@ infer_repo_root() {
     return
   fi
 
+  if [ -n "${SCHERZO_CONFIG_DIR:-}" ]; then
+    (cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)
+    return
+  fi
+
   # Expected checked-in convention:
-  #   <repo>/.scherzo/workspaces/<workflow-name>/<issue-key>
-  (cd "$workspace_path/../../../.." && pwd -P)
+  #   <repo>/.scherzo/workspaces/<workflow-name>/<issue-key>/<run-key>/workspaces/<workspace-name>
+  (cd "$workspace_path/../../../../../../.." && pwd -P)
 }
 
 repo_root=$(infer_repo_root)
@@ -101,12 +109,6 @@ workspace_base_revision() {
   fi
 }
 
-workspace_row_for_root() {
-  root=$1
-  jj workspace list --color=never -T 'name ++ ":" ++ root ++ ":" ++ self.target().change_id() ++ "\n"' \
-    | awk -F: -v root="$root" '$2 == root { print $0; exit }'
-}
-
 prepare_destination_for_workspace_add() {
   workspace_parent=$(dirname "$workspace_path")
   workspace_leaf=$(basename "$workspace_path")
@@ -137,7 +139,7 @@ allow_trusted_envrc_after_create() {
       fail ".envrc exists but direnv is not installed in workspace setup environment"
     if ! output=$(direnv allow . 2>&1); then
       printf '%s\n' "$output" >&2
-      fail "direnv allow failed for workspace: $workspace_path"
+      echo "scherzo-jj-workspace: warning: direnv allow failed for workspace: $workspace_path" >&2
     fi
   fi
 }

@@ -353,12 +353,18 @@ fn fake_workflow_run_dependencies(
       process.send(log_subject, "yaml_cleanup:" <> run_root)
       Ok(Nil)
     },
-    command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
-      process.send(log_subject, "yaml_command:" <> step_id)
+    command_step: fn(
+      context: workflow_run.StepContext,
+      _command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
+      process.send(log_subject, "yaml_command:" <> context.step_id)
       step_artifact.from_command_result(
-        step_id,
+        context.step_id,
         0,
-        "stdout:" <> step_id,
+        "stdout:" <> context.step_id,
         "",
         False,
         secrets,
@@ -367,11 +373,10 @@ fn fake_workflow_run_dependencies(
     },
     agent_step: fn(
       issue,
-      _step_id,
+      context: workflow_run.StepContext,
       prompt,
       _effective,
       _tracker,
-      workspace_path,
       emit_update,
       _command_ready,
     ) {
@@ -395,7 +400,7 @@ fn fake_workflow_run_dependencies(
       Ok(agent_types.WorkerSuccess(
         final_issue: Some(issue),
         final_classification: agent_types.FinalTerminal,
-        workspace_path: workspace_path,
+        workspace_path: context.workspace_path,
         tokens: session_tokens.zero_token_totals(),
         turns: 1,
         result: result_artifact.ResultArtifact(
@@ -417,11 +422,10 @@ fn blocking_command_ready_workflow_run_dependencies(
     ..base,
     agent_step: fn(
       issue,
-      step_id,
+      context: workflow_run.StepContext,
       _prompt,
       _effective,
       _tracker,
-      workspace_path,
       _emit_update,
       command_ready,
     ) {
@@ -430,8 +434,10 @@ fn blocking_command_ready_workflow_run_dependencies(
       process.send(log_subject, "agent_ready")
       process.sleep(5000)
       Error(agent_types.WorkerFailure(
-        reason: error.PiFailed(error.PiProtocolError("stopped:" <> step_id)),
-        workspace_path: Some(workspace_path),
+        reason: error.PiFailed(error.PiProtocolError(
+          "stopped:" <> context.step_id,
+        )),
+        workspace_path: Some(context.workspace_path),
         tokens: session_tokens.zero_token_totals(),
         final_issue: Some(issue),
       ))
@@ -447,11 +453,10 @@ fn surviving_agent_workflow_run_dependencies(
     ..base,
     agent_step: fn(
       issue,
-      _step_id,
+      context: workflow_run.StepContext,
       _prompt,
       _effective,
       _tracker,
-      workspace_path,
       _emit_update,
       _command_ready,
     ) {
@@ -460,7 +465,7 @@ fn surviving_agent_workflow_run_dependencies(
       process.send(log_subject, "agent_survived")
       Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError("survived_abort")),
-        workspace_path: Some(workspace_path),
+        workspace_path: Some(context.workspace_path),
         tokens: session_tokens.zero_token_totals(),
         final_issue: Some(issue),
       ))
@@ -476,11 +481,10 @@ fn command_ready_workflow_run_dependencies(
     ..base,
     agent_step: fn(
       issue,
-      _step_id,
+      context: workflow_run.StepContext,
       prompt,
       _effective,
       _tracker,
-      workspace_path,
       _emit_update,
       command_ready,
     ) {
@@ -494,7 +498,7 @@ fn command_ready_workflow_run_dependencies(
           Ok(agent_types.WorkerSuccess(
             final_issue: Some(issue),
             final_classification: agent_types.FinalTerminal,
-            workspace_path: workspace_path,
+            workspace_path: context.workspace_path,
             tokens: session_tokens.zero_token_totals(),
             turns: 1,
             result: result_artifact.ResultArtifact(
@@ -508,7 +512,7 @@ fn command_ready_workflow_run_dependencies(
           let _ = other
           Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("unexpected_command")),
-            workspace_path: Some(workspace_path),
+            workspace_path: Some(context.workspace_path),
             tokens: session_tokens.zero_token_totals(),
             final_issue: Some(issue),
           ))
@@ -516,7 +520,7 @@ fn command_ready_workflow_run_dependencies(
         Error(_) ->
           Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("command_timeout")),
-            workspace_path: Some(workspace_path),
+            workspace_path: Some(context.workspace_path),
             tokens: session_tokens.zero_token_totals(),
             final_issue: Some(issue),
           ))
@@ -533,11 +537,10 @@ fn crashing_command_ready_workflow_run_dependencies(
     ..base,
     agent_step: fn(
       _issue,
-      _step_id,
+      _context,
       _prompt,
       _effective,
       _tracker,
-      _workspace_path,
       _emit_update,
       command_ready,
     ) {
@@ -1238,18 +1241,17 @@ pub fn daemon_retry_refresh_done_issue_releases_claim_without_rescheduling_test(
         ..fake_workflow_run_dependencies(log_subject),
         agent_step: fn(
           issue: tracker_issue.Issue,
+          context: workflow_run.StepContext,
           _,
           _,
           _,
-          _,
-          workspace_path,
           _,
           _,
         ) {
           let _ = issue
           Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("boom")),
-            workspace_path: Some(workspace_path),
+            workspace_path: Some(context.workspace_path),
             tokens: session_tokens.zero_token_totals(),
             final_issue: None,
           ))
@@ -1286,11 +1288,10 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
         ..fake_workflow_run_dependencies(log_subject),
         agent_step: fn(
           issue: tracker_issue.Issue,
+          context: workflow_run.StepContext,
           _,
           _,
           _,
-          _,
-          workspace_path,
           _,
           _,
         ) {
@@ -1299,7 +1300,7 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
             False ->
               Error(agent_types.WorkerFailure(
                 reason: error.PiFailed(error.PiProtocolError("boom")),
-                workspace_path: Some(workspace_path),
+                workspace_path: Some(context.workspace_path),
                 tokens: session_tokens.zero_token_totals(),
                 final_issue: None,
               ))
@@ -1309,7 +1310,7 @@ pub fn daemon_retry_timer_requeues_failed_worker_once_test() {
                   ..issue,
                   state: issue_state.from_string_unchecked("Done"),
                 ),
-                workspace_path,
+                context.workspace_path,
               ))
           }
         },

@@ -48,6 +48,7 @@ pub type AgentRunnerError {
   PromptFailed(TemplateError)
   WorkspaceFailed(WorkspaceError)
   HookFailedError(HookError)
+  WorkflowHookFailed(HookError)
   ProbeFailed(PiRpcError)
   PiFailed(PiRpcError)
   StateRefreshFailed(TrackerError)
@@ -158,6 +159,7 @@ pub fn agent_code(error: AgentRunnerError) -> String {
     PromptFailed(_) -> "agent_prompt_failed"
     WorkspaceFailed(_) -> "agent_workspace_failed"
     HookFailedError(_) -> "agent_hook_failed"
+    WorkflowHookFailed(_) -> "workflow_hook_failed"
     ProbeFailed(_) -> "agent_probe_failed"
     PiFailed(_) -> "agent_pi_failed"
     StateRefreshFailed(_) -> "agent_state_refresh_failed"

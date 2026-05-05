@@ -62,7 +62,7 @@ pub fn workflow_records_roundtrip_test() {
         step_id: "build",
         attempt_index: 2,
         workspace_name: "main",
-        workspace_path: "workspace-root/workflow-alpha/LIV-59/run-001/workspaces/main/steps/build-abcdef123456/attempt-2",
+        workspace_path: "workspace-root/workflow-alpha/LIV-59/run-001/workspaces/main",
         run_root: "workspace-root/workflow-alpha/LIV-59/run-001",
         source_workspace_name: None,
         source_workspace_path: None,
@@ -92,7 +92,7 @@ pub fn workflow_records_roundtrip_test() {
         artifact_ref: "runs/run-001/build-abcdef123456/attempt-2.json",
         artifact_sha256: "artifact-sha",
         workspace_name: "main",
-        workspace_path: "workspace-root/workflow-alpha/LIV-59/run-001/workspaces/main/steps/build-abcdef123456/attempt-2",
+        workspace_path: "workspace-root/workflow-alpha/LIV-59/run-001/workspaces/main",
         token_total: 5,
         turns: 1,
       ),
@@ -159,7 +159,7 @@ pub fn projection_tracks_step_attempts_and_completed_workspaces_test() {
           "build",
           1,
           "main",
-          "root/run-1/workspaces/main/steps/build/attempt-1",
+          "root/run-1/workspaces/main",
           "root/run-1",
           None,
           None,
@@ -189,7 +189,7 @@ pub fn projection_tracks_step_attempts_and_completed_workspaces_test() {
           "runs/run-1/build/attempt-1.json",
           "sha",
           "main",
-          "root/run-1/workspaces/main/steps/build/attempt-1",
+          "root/run-1/workspaces/main",
           0,
           0,
         ),
@@ -199,7 +199,7 @@ pub fn projection_tracks_step_attempts_and_completed_workspaces_test() {
   assert projection.next_attempt_index(folded, "run-1", "build") == 2
   let assert Ok(workspace) =
     projection.latest_completed_workspace(folded, "run-1", "main")
-  assert workspace.path == "root/run-1/workspaces/main/steps/build/attempt-1"
+  assert workspace.path == "root/run-1/workspaces/main"
   let assert Ok(status) =
     dict.get(
       folded.step_attempts,

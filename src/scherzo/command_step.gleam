@@ -20,6 +20,26 @@ pub fn run(
   secrets: List(String),
   limits: config_types.ArtifactLimits,
 ) -> step_artifact.StepArtifact {
+  run_with_env(
+    step_id,
+    command,
+    workspace_path,
+    timeout_ms,
+    [],
+    secrets,
+    limits,
+  )
+}
+
+pub fn run_with_env(
+  step_id: String,
+  command: String,
+  workspace_path: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+) -> step_artifact.StepArtifact {
   let started_ms = monotonic_ms()
   let diagnostics = prepare_diagnostics(workspace_path, step_id)
   let command_to_run = case diagnostics {
@@ -27,7 +47,7 @@ pub fn run(
       command_with_stdout_capture(command, stdout_path)
     None -> command
   }
-  case port.start(command_to_run, workspace_path) {
+  case port.start_with_env(command_to_run, workspace_path, env) {
     Error(err) -> {
       let stderr = port_error_to_string(err)
       finish_command(

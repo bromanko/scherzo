@@ -3555,11 +3555,7 @@ fn run_workflow_worker(
       {
         Ok(success) -> Ok(success.worker_success)
         Error(failure) ->
-          Error(yaml_worker_failure(
-            workflow_run.failure_report(failure),
-            failure.run_root,
-            issue,
-          ))
+          Error(yaml_worker_failure_from_workflow(failure, issue))
       }
     }
   }
@@ -3575,21 +3571,13 @@ fn yaml_workflow_dependencies(
 ) -> workflow_run.Dependencies {
   workflow_run.Dependencies(
     ..base,
-    command_step: fn(
-      step_id,
-      command,
-      workspace_path,
-      timeout_ms,
-      secrets,
-      limits,
-    ) {
+    command_step: fn(context, command, timeout_ms, secrets, limits) {
       run_yaml_command_step(
         base,
         issue,
         run_id,
-        step_id,
+        context,
         command,
-        workspace_path,
         timeout_ms,
         secrets,
         limits,
@@ -3600,11 +3588,10 @@ fn yaml_workflow_dependencies(
     },
     agent_step: fn(
       issue,
-      step_id,
+      context,
       prompt,
       effective,
       tracker_client,
-      workspace_path,
       _emit_update,
       _command_ready,
     ) {
@@ -3612,11 +3599,10 @@ fn yaml_workflow_dependencies(
         base,
         issue,
         run_id,
-        step_id,
+        context,
         prompt,
         effective,
         tracker_client,
-        workspace_path,
         daemon_subject,
         event_hub,
         now_ms,
@@ -3676,9 +3662,8 @@ fn run_yaml_command_step(
   base: workflow_run.Dependencies,
   issue: tracker_issue.Issue,
   run_id: String,
-  step_id: String,
+  context: workflow_run.StepContext,
   command: String,
-  workspace_path: String,
   timeout_ms: Int,
   secrets: List(String),
   limits: config_types.ArtifactLimits,
@@ -3686,29 +3671,23 @@ fn run_yaml_command_step(
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
 ) -> step_artifact.StepArtifact {
-  let attempt_index =
-    workflow_identity.attempt_index_from_path(workspace_path)
-    |> result_unwrap(1)
   let session_id =
-    workflow_identity.step_session_id(run_id, step_id, attempt_index)
+    workflow_identity.step_session_id(
+      run_id,
+      context.step_id,
+      context.attempt_index,
+    )
   register_yaml_step_session(
     event_hub,
     session_id,
     issue,
-    workspace_path,
-    step_id,
+    context.workspace_path,
+    context.step_id,
     now_ms,
   )
   process.send(daemon_subject, YamlStepStarted(session_id, run_id))
   let artifact =
-    base.command_step(
-      step_id,
-      command,
-      workspace_path,
-      timeout_ms,
-      secrets,
-      limits,
-    )
+    base.command_step(context, command, timeout_ms, secrets, limits)
   case step_artifact.succeeded(artifact.status) {
     True -> Nil
     False -> publish_yaml_command_failure(event_hub, session_id, artifact)
@@ -3752,20 +3731,20 @@ fn run_yaml_agent_step(
   base: workflow_run.Dependencies,
   issue: tracker_issue.Issue,
   run_id: String,
-  step_id: String,
+  context: workflow_run.StepContext,
   prompt: String,
   effective: config_types.EffectiveConfig,
   tracker_client: tracker.Client,
-  workspace_path: String,
   daemon_subject: process.Subject(Message),
   event_hub: process.Subject(hub.Message),
   now_ms: fn() -> Int,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  let attempt_index =
-    workflow_identity.attempt_index_from_path(workspace_path)
-    |> result_unwrap(1)
   let session_id =
-    workflow_identity.step_session_id(run_id, step_id, attempt_index)
+    workflow_identity.step_session_id(
+      run_id,
+      context.step_id,
+      context.attempt_index,
+    )
   let started_at_ms = now_ms()
   hub.register_session(
     event_hub,
@@ -3775,7 +3754,7 @@ fn run_yaml_agent_step(
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_title: issue.title,
-      workspace_path: workspace_path,
+      workspace_path: context.workspace_path,
       pi_session_id: None,
       status: session_event.Preparing,
       recovery: None,
@@ -3800,18 +3779,17 @@ fn run_yaml_agent_step(
         session_event.Lifecycle,
         session_event.LifecycleName(session_event.StepStarted),
       ),
-      message: Some(step_id),
+      message: Some(context.step_id),
     ),
   )
   process.send(daemon_subject, YamlStepStarted(session_id, run_id))
   let result =
     base.agent_step(
       issue,
-      step_id,
+      context,
       prompt,
       effective,
       tracker_client,
-      workspace_path,
       fn(update) {
         process.send(daemon_subject, YamlStepUpdate(session_id, update))
       },
@@ -3837,6 +3815,27 @@ fn run_yaml_agent_step(
   }
   process.send(daemon_subject, YamlStepFinished(session_id))
   result
+}
+
+fn yaml_worker_failure_from_workflow(
+  failure: workflow_run.WorkflowRunFailure,
+  issue: tracker_issue.Issue,
+) -> agent_types.WorkerFailure {
+  case failure.agent_reason {
+    Some(reason) ->
+      agent_types.WorkerFailure(
+        reason: reason,
+        workspace_path: failure.run_root,
+        tokens: session_tokens.zero_token_totals(),
+        final_issue: Some(issue),
+      )
+    None ->
+      yaml_worker_failure(
+        workflow_run.failure_report(failure),
+        failure.run_root,
+        issue,
+      )
+  }
 }
 
 fn yaml_worker_failure(
@@ -4069,11 +4068,34 @@ fn worker_failure_message(
     error.WorkspaceFailed(workspace_error) ->
       code <> ":" <> error.workspace_code(workspace_error)
     error.HookFailedError(hook_error) ->
-      code <> ":" <> error.hook_code(hook_error)
+      code <> ":" <> hook_failure_message(hook_error, secrets)
+    error.WorkflowHookFailed(hook_error) ->
+      code <> ":" <> hook_failure_message(hook_error, secrets)
     error.StateRefreshFailed(tracker_error) ->
       code <> ":" <> error.tracker_code(tracker_error)
     error.OperatorAbort | error.OperatorStopAfterCurrentTurn -> code
   }
+}
+
+fn hook_failure_message(
+  hook_error: error.HookError,
+  secrets: List(String),
+) -> String {
+  let detail = case hook_error {
+    error.HookFailed(command, status, output) ->
+      error.hook_code(hook_error)
+      <> ":"
+      <> command
+      <> " exited "
+      <> int.to_string(status)
+      <> ": "
+      <> output
+    error.HookTimedOut(command) ->
+      error.hook_code(hook_error) <> ":" <> command <> " timed out"
+    error.HookIo(message) -> error.hook_code(hook_error) <> ":" <> message
+  }
+  log.redact("failure", detail, secrets)
+  |> log.truncate(4000)
 }
 
 fn finish_worker_failure(
@@ -4860,13 +4882,6 @@ fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
   case result {
     Ok(value) -> Ok(value)
     Error(error) -> Error(mapper(error))
-  }
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
   }
 }
 

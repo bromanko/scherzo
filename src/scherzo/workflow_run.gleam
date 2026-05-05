@@ -1,14 +1,17 @@
 import gleam/dict.{type Dict}
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/agent/run_attempt
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/log
 import scherzo/model_config
 import scherzo/process_ext
 import scherzo/session/tokens as session_tokens
@@ -33,9 +36,25 @@ pub type WorkflowRunSuccess {
 pub type WorkflowRunFailure {
   WorkflowRunFailure(
     reason: String,
+    agent_reason: Option(error.AgentRunnerError),
     artifacts: Dict(String, step_artifact.StepArtifact),
     run_root: Option(String),
     failed_step_id: Option(String),
+  )
+}
+
+pub type StepContext {
+  StepContext(
+    workflow_id: String,
+    run_id: String,
+    run_root: String,
+    step_id: String,
+    attempt_index: Int,
+    workspace_name: String,
+    workspace_path: String,
+    config_dir: String,
+    issue_id: String,
+    issue_identifier: String,
   )
 }
 
@@ -60,8 +79,7 @@ pub type Dependencies {
     cleanup_run: fn(String, config_types.OrchestratorConfig) ->
       Result(Nil, error.WorkspaceError),
     command_step: fn(
-      String,
-      String,
+      StepContext,
       String,
       Int,
       List(String),
@@ -69,11 +87,10 @@ pub type Dependencies {
     ) -> step_artifact.StepArtifact,
     agent_step: fn(
       tracker_issue.Issue,
-      String,
+      StepContext,
       String,
       config_types.EffectiveConfig,
       tracker.Client,
-      String,
       fn(agent_types.RunnerUpdate) -> Nil,
       fn(process.Subject(worker_command.Command)) -> Nil,
     ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
@@ -129,7 +146,11 @@ type AfterStepMessage {
 }
 
 type PrepareReadyFailure {
-  PrepareReadyFailure(reason: String, run_root: Option(String))
+  PrepareReadyFailure(
+    reason: String,
+    agent_reason: Option(error.AgentRunnerError),
+    run_root: Option(String),
+  )
 }
 
 pub fn default_dependencies() -> Dependencies {
@@ -137,14 +158,23 @@ pub fn default_dependencies() -> Dependencies {
     prepare_step: workspace_run.prepare_step_attempt,
     after_step: workspace_run.after_step,
     cleanup_run: workspace_run.cleanup_run,
-    command_step: command_step.run,
+    command_step: fn(context, command, timeout_ms, secrets, limits) {
+      command_step.run_with_env(
+        context.step_id,
+        command,
+        context.workspace_path,
+        timeout_ms,
+        step_command_env(context),
+        secrets,
+        limits,
+      )
+    },
     agent_step: fn(
       issue,
-      _step_id,
+      context,
       prompt,
       effective,
       tracker_client,
-      workspace_path,
       emit_update,
       command_ready,
     ) {
@@ -157,7 +187,7 @@ pub fn default_dependencies() -> Dependencies {
         fn(_, update) { emit_update(update) },
         command_subject,
         fn() { command_ready(command_subject) },
-        workspace_path,
+        context.workspace_path,
       )
     },
     checkpoint: workflow_checkpoint.noop_writer(),
@@ -294,6 +324,7 @@ fn loop(
         Error(err) ->
           Error(WorkflowRunFailure(
             reason: "cleanup_failed:" <> error.workspace_code(err),
+            agent_reason: None,
             artifacts: artifacts,
             run_root: run_root,
             failed_step_id: None,
@@ -319,6 +350,7 @@ fn loop(
       )
       Error(WorkflowRunFailure(
         reason: "workflow_step_failed",
+        agent_reason: None,
         artifacts: artifacts,
         run_root: run_root,
         failed_step_id: None,
@@ -339,12 +371,24 @@ fn loop(
           let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
           Error(WorkflowRunFailure(
             reason: "workflow_deadlocked",
+            agent_reason: None,
             artifacts: artifacts,
             run_root: run_root,
             failed_step_id: None,
           ))
         }
         steps -> {
+          let steps =
+            select_workspace_serial_batch(
+              steps,
+              issue,
+              dag.id,
+              run_id,
+              orchestrator,
+              attempt_indexes,
+              dict.new(),
+              [],
+            )
           case
             prepare_ready_steps(
               steps,
@@ -353,12 +397,13 @@ fn loop(
               run_id,
               orchestrator,
               dependencies,
+              secrets,
               prepared_workspaces,
               attempt_indexes,
               [],
             )
           {
-            Error(PrepareReadyFailure(reason, prepared_run_root)) -> {
+            Error(PrepareReadyFailure(reason, agent_reason, prepared_run_root)) -> {
               let failure_run_root = option_or(prepared_run_root, run_root)
               mark_workflow_failed_terminal(
                 dependencies,
@@ -372,6 +417,7 @@ fn loop(
                 cleanup_if_needed(failure_run_root, orchestrator, dependencies)
               Error(WorkflowRunFailure(
                 reason: reason,
+                agent_reason: agent_reason,
                 artifacts: artifacts,
                 run_root: failure_run_root,
                 failed_step_id: None,
@@ -412,6 +458,87 @@ fn loop(
   }
 }
 
+// Workspace paths are shared per logical workspace for the whole workflow run.
+// Keep each ready batch to one step per resolved workspace path so command
+// execution and before_step hooks for mutable worktrees never overlap in the
+// same directory, while still allowing different workspaces to run together.
+fn select_workspace_serial_batch(
+  steps: List(workflow_dag.WorkflowStep),
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+  orchestrator: config_types.OrchestratorConfig,
+  attempt_indexes: Dict(String, Int),
+  selected_locks: Dict(String, Nil),
+  acc: List(workflow_dag.WorkflowStep),
+) -> List(workflow_dag.WorkflowStep) {
+  case steps {
+    [] -> list.reverse(acc)
+    [step, ..rest] -> {
+      let lock =
+        workspace_lock_for_step(
+          step,
+          issue,
+          workflow_id,
+          run_id,
+          orchestrator,
+          attempt_indexes,
+        )
+      case dict.get(selected_locks, lock) {
+        Ok(_) ->
+          select_workspace_serial_batch(
+            rest,
+            issue,
+            workflow_id,
+            run_id,
+            orchestrator,
+            attempt_indexes,
+            selected_locks,
+            acc,
+          )
+        Error(_) ->
+          select_workspace_serial_batch(
+            rest,
+            issue,
+            workflow_id,
+            run_id,
+            orchestrator,
+            attempt_indexes,
+            dict.insert(selected_locks, lock, Nil),
+            [step, ..acc],
+          )
+      }
+    }
+  }
+}
+
+fn workspace_lock_for_step(
+  step: workflow_dag.WorkflowStep,
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+  orchestrator: config_types.OrchestratorConfig,
+  attempt_indexes: Dict(String, Int),
+) -> String {
+  let attempt_index =
+    dict.get(attempt_indexes, step.id)
+    |> result.unwrap(1)
+  case
+    workspace_run.workspace_path_for_attempt(
+      issue,
+      workflow_id,
+      run_id,
+      step.id,
+      attempt_index,
+      step.workspace.name,
+      orchestrator,
+    )
+  {
+    Ok(path) -> "path:" <> path
+    Error(_) -> "name:" <> step.workspace.name
+  }
+}
+
 fn prepare_ready_steps(
   steps: List(workflow_dag.WorkflowStep),
   issue: tracker_issue.Issue,
@@ -419,6 +546,7 @@ fn prepare_ready_steps(
   run_id: String,
   orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
+  secrets: List(String),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   attempt_indexes: Dict(String, Int),
   acc: List(PreparedStart),
@@ -461,11 +589,13 @@ fn prepare_ready_steps(
         Error(workspace_run.WorkspaceFailure(err)) ->
           Error(PrepareReadyFailure(
             "workspace_failed:" <> error.workspace_code(err),
+            None,
             prepared_run_root(acc),
           ))
         Error(workspace_run.HookFailure(err)) ->
           Error(PrepareReadyFailure(
-            "hook_failed:" <> error.hook_code(err),
+            hook_failure_report(err, secrets),
+            Some(error.WorkflowHookFailed(err)),
             prepared_run_root(acc),
           ))
         Ok(prepared) -> {
@@ -481,6 +611,7 @@ fn prepare_ready_steps(
               Error(PrepareReadyFailure(
                 "checkpoint_failed:"
                   <> workflow_checkpoint.describe_error(error),
+                None,
                 prepared_run_root([
                   PreparedStart(step: step, workspace: prepared),
                   ..acc
@@ -496,6 +627,7 @@ fn prepare_ready_steps(
                 run_id,
                 orchestrator,
                 dependencies,
+                secrets,
                 prepared_workspaces,
                 next_attempt_indexes,
                 [PreparedStart(step: step, workspace: prepared), ..acc],
@@ -574,6 +706,7 @@ fn execute_prepared_steps(
           let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
           Error(WorkflowRunFailure(
             reason: reason,
+            agent_reason: None,
             artifacts: artifacts,
             run_root: run_root,
             failed_step_id: None,
@@ -1068,6 +1201,7 @@ fn finish_fatal_batch_result(
   let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
   Error(WorkflowRunFailure(
     reason: reason,
+    agent_reason: None,
     artifacts: artifacts,
     run_root: run_root,
     failed_step_id: Some(result.step_id),
@@ -1196,6 +1330,7 @@ fn apply_prepared_results(
           Error(WorkflowRunFailure(
             reason: "checkpoint_failed:"
               <> workflow_checkpoint.describe_error(error),
+            agent_reason: None,
             artifacts: artifacts,
             run_root: run_root,
             failed_step_id: Some(step.id),
@@ -1223,6 +1358,7 @@ fn apply_prepared_results(
               let _ = cleanup_if_needed(run_root, orchestrator, dependencies)
               Error(WorkflowRunFailure(
                 reason: reason,
+                agent_reason: None,
                 artifacts: artifacts,
                 run_root: run_root,
                 failed_step_id: Some(step.id),
@@ -1246,6 +1382,7 @@ fn apply_prepared_results(
                   Error(WorkflowRunFailure(
                     reason: "checkpoint_failed:"
                       <> workflow_checkpoint.describe_error(error),
+                    agent_reason: None,
                     artifacts: artifacts,
                     run_root: run_root,
                     failed_step_id: Some(step.id),
@@ -1369,15 +1506,15 @@ fn run_step(
   Option(tracker_issue.Issue),
   Int,
 ) {
+  let context = step_context(step, workspace, issue, orchestrator)
   case step.kind {
     workflow_dag.CommandStep(run, timeout_ms) -> {
       let timeout_ms =
         option_unwrap(timeout_ms, orchestrator.dag_hooks.timeout_ms)
       #(
         dependencies.command_step(
-          step.id,
+          context,
           run,
-          workspace.path,
           timeout_ms,
           secrets,
           orchestrator.artifact_limits,
@@ -1419,11 +1556,10 @@ fn run_step(
           case
             dependencies.agent_step(
               issue,
-              step.id,
+              context,
               prompt,
               effective,
               tracker_client,
-              workspace.path,
               fn(_) { Nil },
               fn(_) { Nil },
             )
@@ -1458,6 +1594,53 @@ fn run_step(
       }
     }
   }
+}
+
+fn step_context(
+  step: workflow_dag.WorkflowStep,
+  workspace: workspace_run.PreparedStepWorkspace,
+  issue: tracker_issue.Issue,
+  orchestrator: config_types.OrchestratorConfig,
+) -> StepContext {
+  StepContext(
+    workflow_id: workspace.workflow_id,
+    run_id: workspace.run_id,
+    run_root: workspace.run_root,
+    step_id: step.id,
+    attempt_index: workspace.attempt_index,
+    workspace_name: workspace.workspace_name,
+    workspace_path: workspace.path,
+    config_dir: orchestrator.config_dir,
+    issue_id: issue.id,
+    issue_identifier: issue.identifier,
+  )
+}
+
+fn step_command_env(context: StepContext) -> List(#(String, String)) {
+  [
+    #("SCHERZO_CONFIG_DIR", context.config_dir),
+    #("SCHERZO_WORKFLOW_ID", context.workflow_id),
+    #("SCHERZO_RUN_ID", context.run_id),
+    #("SCHERZO_RUN_ROOT", context.run_root),
+    #("SCHERZO_ISSUE_ID", context.issue_id),
+    #("SCHERZO_ISSUE_IDENTIFIER", context.issue_identifier),
+    #("SCHERZO_STEP_ID", context.step_id),
+    #("SCHERZO_ATTEMPT_INDEX", int.to_string(context.attempt_index)),
+    #(
+      "SCHERZO_ATTEMPT_KEY",
+      workflow_identity.attempt_key(
+        context.run_id,
+        context.step_id,
+        context.attempt_index,
+      ),
+    ),
+    #(
+      "SCHERZO_HOOK_IDEMPOTENCY_KEY",
+      workflow_identity.hook_idempotency_key(context.run_id, context.step_id),
+    ),
+    #("SCHERZO_WORKSPACE_NAME", context.workspace_name),
+    #("SCHERZO_WORKSPACE_PATH", context.workspace_path),
+  ]
 }
 
 fn effective_for_step(
@@ -1565,6 +1748,7 @@ fn result_try_checkpoint(
       Error(WorkflowRunFailure(
         reason: "checkpoint_failed:"
           <> workflow_checkpoint.describe_error(error),
+        agent_reason: None,
         artifacts: artifacts,
         run_root: run_root,
         failed_step_id: failed_step_id,
@@ -1584,6 +1768,30 @@ fn option_or(value: Option(a), fallback: Option(a)) -> Option(a) {
     Some(_) -> value
     None -> fallback
   }
+}
+
+fn hook_failure_report(err: error.HookError, secrets: List(String)) -> String {
+  let code = "hook_failed:" <> error.hook_code(err)
+  let detail = case err {
+    error.HookFailed(name, status, diagnostics) -> {
+      let diagnostics = string.trim(diagnostics)
+      case diagnostics == "" {
+        True -> code <> ":" <> name <> " exited " <> int.to_string(status)
+        False ->
+          code
+          <> ":"
+          <> name
+          <> " exited "
+          <> int.to_string(status)
+          <> ": "
+          <> diagnostics
+      }
+    }
+    error.HookTimedOut(name) -> code <> ":" <> name <> " timed out"
+    error.HookIo(message) -> code <> ":" <> message
+  }
+  log.redact("failure", detail, secrets)
+  |> log.truncate(4000)
 }
 
 fn prepared_run_root(starts: List(PreparedStart)) -> Option(String) {

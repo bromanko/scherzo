@@ -592,7 +592,15 @@ def review_commands(languages: list[str]) -> list[str]:
 
 
 def run_root_for_current_workspace() -> Path:
-    return Path.cwd().resolve().parent
+    explicit = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).resolve()
+
+    cwd = Path.cwd().resolve()
+    parts = cwd.parts
+    if len(parts) >= 3 and parts[-2] == "workspaces":
+        return cwd.parent.parent
+    return cwd.parent
 
 
 def retention_marker_path() -> Path:

@@ -218,11 +218,10 @@ fn workflow_deps_from_agent(
     ..workflow_run.default_dependencies(),
     agent_step: fn(
       issue,
-      _step_id,
+      _context,
       prompt,
       effective,
       tracker_client,
-      _workspace_path,
       emit_update,
       command_ready,
     ) {

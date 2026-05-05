@@ -287,8 +287,8 @@ fn workspace_paths(
   issue: tracker_issue.Issue,
   workflow_id: String,
   run_id: String,
-  step_id: String,
-  attempt_index: Int,
+  _step_id: String,
+  _attempt_index: Int,
   workspace_name: String,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(#(String, String), error.WorkspaceError) {
@@ -301,15 +301,8 @@ fn workspace_paths(
     |> result_unwrap(orchestrator.effective.workspace.root)
   let issue_root = path.join(path.join(root_abs, workflow_key), issue_key)
   let run_root = path.join(issue_root, run_key)
-  let step_key = workflow_identity.step_component(step_id)
   let workspace_path =
-    path.join(
-      path.join(
-        path.join(path.join(run_root, "workspaces"), workspace_key),
-        "steps",
-      ),
-      path.join(step_key, "attempt-" <> int.to_string(attempt_index)),
-    )
+    path.join(path.join(run_root, "workspaces"), workspace_key)
   let run_root_abs = path.absolute(run_root) |> result_unwrap(run_root)
   let workspace_abs =
     path.absolute(workspace_path) |> result_unwrap(workspace_path)
@@ -437,6 +430,7 @@ fn hook_env(
     #("SCHERZO_CONFIG_DIR", orchestrator.config_dir),
     #("SCHERZO_WORKFLOW_ID", prepared.workflow_id),
     #("SCHERZO_RUN_ID", prepared.run_id),
+    #("SCHERZO_RUN_ROOT", prepared.run_root),
     #("SCHERZO_ISSUE_ID", issue.id),
     #("SCHERZO_ISSUE_IDENTIFIER", issue.identifier),
     #("SCHERZO_STEP_ID", step_id),

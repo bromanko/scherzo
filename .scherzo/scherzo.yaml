@@ -29,14 +29,9 @@ workspace:
     remove: |
       set -eu
       repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
-      workflow_name=${SCHERZO_WORKFLOW_ID:-$(basename "$(dirname "$(dirname "$SCHERZO_WORKSPACE_PATH")")")}
-      if [ -d "$SCHERZO_WORKSPACE_PATH" ]; then
-        for workspace_dir in "$SCHERZO_WORKSPACE_PATH"/*; do
-          [ -e "$workspace_dir" ] || continue
-          if [ -d "$workspace_dir/.jj" ]; then
-            (cd "$workspace_dir" && SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" before-remove "$workflow_name")
-          fi
-        done
+      workflow_name=${SCHERZO_WORKFLOW_ID:-workflow}
+      if [ -d "$SCHERZO_RUN_ROOT/workspaces" ]; then
+        SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" before-remove "$workflow_name"
       fi
     timeout_ms: 60000
 agent:

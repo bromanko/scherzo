@@ -105,15 +105,15 @@ pub fn prepares_logical_workspace_paths_under_run_root_test() {
     )
   assert string.ends_with(
     main.path,
-    "/workspaces/implementation/ABC-123/run-1/workspaces/main/steps/implement-f9bb818d8483/attempt-1",
+    "/workspaces/implementation/ABC-123/run-1/workspaces/main",
   )
   assert string.ends_with(
     code_review_path,
-    "/workspaces/implementation/ABC-123/run-1/workspaces/code-review/steps/step-3e64cc41cf8e/attempt-1",
+    "/workspaces/implementation/ABC-123/run-1/workspaces/code-review",
   )
   assert string.ends_with(
     other_run.path,
-    "/workspaces/implementation/ABC-123/run-2/workspaces/main/steps/implement-f9bb818d8483/attempt-1",
+    "/workspaces/implementation/ABC-123/run-2/workspaces/main",
   )
   assert main.path != code_review_path
   assert main.path != other_run.path
@@ -123,7 +123,7 @@ pub fn hook_receives_step_environment_and_config_cwd_test() {
   let dir = "test/tmp/workspace-run-hooks"
   reset_dir(dir)
   let create_hook =
-    "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nprintf '%s|%s|%s|%s|%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_CONFIG_DIR\" \"$SCHERZO_STEP_ID\" \"$SCHERZO_WORKSPACE_NAME\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_SOURCE_WORKSPACE_NAME\" \"$SCHERZO_SOURCE_WORKSPACE_PATH\" >> hook.log\nif [ -n \"$SCHERZO_SOURCE_WORKSPACE_PATH\" ]; then cp \"$SCHERZO_SOURCE_WORKSPACE_PATH/marker\" \"$SCHERZO_WORKSPACE_PATH/from-source\"; fi"
+    "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nprintf '%s|%s|%s|%s|%s|%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_CONFIG_DIR\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\" \"$SCHERZO_WORKSPACE_NAME\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_SOURCE_WORKSPACE_NAME\" \"$SCHERZO_SOURCE_WORKSPACE_PATH\" >> hook.log\nif [ -n \"$SCHERZO_SOURCE_WORKSPACE_PATH\" ]; then cp \"$SCHERZO_SOURCE_WORKSPACE_PATH/marker\" \"$SCHERZO_WORKSPACE_PATH/from-source\"; fi"
   let before_hook = "pwd > \"$SCHERZO_WORKSPACE_PATH/before-cwd\""
   let orchestrator = orchestrator(dir, create_hook, before_hook)
   let assert Ok(main) =
