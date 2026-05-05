@@ -9,9 +9,16 @@ steps:
     timeout_ms: 300000
     workspace: main
 
+  - id: refresh_base_before_implementation
+    kind: command
+    depends_on: [prepare_context]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" refresh-base --stage before-implementation'
+    timeout_ms: 300000
+    workspace: main
+
   - id: implement
     kind: agent
-    depends_on: [prepare_context]
+    depends_on: [refresh_base_before_implementation]
     prompt: prompts/implement.md
     workspace: main
 
@@ -33,9 +40,31 @@ steps:
     prompt: prompts/apply-feedback.md
     workspace: main
 
-  - id: final_validate
+  - id: refresh_base_before_validation
     kind: command
     depends_on: [apply_feedback]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" refresh-base --stage before-validation'
+    timeout_ms: 300000
+    on_failure: continue
+    workspace: main
+
+  - id: validate_after_refresh
+    kind: command
+    depends_on: [refresh_base_before_validation]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" validate'
+    timeout_ms: 1200000
+    on_failure: continue
+    workspace: main
+
+  - id: repair_base_drift
+    kind: agent
+    depends_on: [validate_after_refresh]
+    prompt: prompts/repair-base-drift.md
+    workspace: main
+
+  - id: final_validate
+    kind: command
+    depends_on: [repair_base_drift]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" validate'
     timeout_ms: 1200000
     workspace: main
