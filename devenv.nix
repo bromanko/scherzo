@@ -25,6 +25,7 @@ in
     pkgs.nodejs_22
     pkgs.git
     pkgs.jq
+    pkgs.selfci
     (linearctlCommand "lc")
     (linearctlCommand "linearctl")
   ];
