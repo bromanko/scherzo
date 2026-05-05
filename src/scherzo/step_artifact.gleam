@@ -635,11 +635,23 @@ fn stream_detail(label: String, value: String) -> String {
 pub fn to_template_locals(
   artifacts: Dict(String, StepArtifact),
 ) -> List(#(String, template.Value)) {
-  dict.to_list(artifacts)
-  |> list.flat_map(fn(entry) {
-    let #(step_id, artifact) = entry
-    artifact_locals(step_id, artifact)
-  })
+  let locals =
+    dict.to_list(artifacts)
+    |> list.flat_map(fn(entry) {
+      let #(step_id, artifact) = entry
+      artifact_locals(step_id, artifact)
+    })
+
+  case dict.get(artifacts, "prepare_context") {
+    Ok(artifact) ->
+      list.append(artifact_locals("source_preparation", artifact), locals)
+    Error(_) ->
+      case dict.get(artifacts, "prepare_plan") {
+        Ok(artifact) ->
+          list.append(artifact_locals("source_preparation", artifact), locals)
+        Error(_) -> locals
+      }
+  }
 }
 
 pub fn workflow_result_artifact(

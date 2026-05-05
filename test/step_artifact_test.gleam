@@ -82,6 +82,32 @@ pub fn command_success_artifact_exposes_exit_and_stdout_test() {
     == template.VString("all passed")
 }
 
+pub fn prepare_artifacts_expose_source_preparation_alias_test() {
+  assert source_preparation_stdout_for("prepare_plan", "PLAN=ok")
+    == template.VString("PLAN=ok")
+  assert source_preparation_stdout_for("prepare_context", "ISSUE=ok")
+    == template.VString("ISSUE=ok")
+}
+
+fn source_preparation_stdout_for(
+  step_id: String,
+  stdout: String,
+) -> template.Value {
+  let artifact =
+    step_artifact.from_command_result(
+      step_id,
+      0,
+      stdout,
+      "",
+      False,
+      [],
+      limits(),
+    )
+  let locals =
+    step_artifact.to_template_locals(dict.from_list([#(step_id, artifact)]))
+  lookup(locals, "steps.source_preparation.stdout")
+}
+
 pub fn command_failure_and_timeout_are_artifacts_test() {
   let artifact =
     step_artifact.from_command_result(

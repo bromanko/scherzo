@@ -54,10 +54,11 @@ A sixth risk is that new status output becomes hard for prompts and tests to par
 
 - [x] (2026-05-04 00:00Z) Drafted the ExecPlan proposal for review.
 - [x] (2026-05-04 00:00Z) Incorporated adversarial review findings about clean-rebase no-op repair, post-repair containment, publish-time safety tests, expanded helper branches, and manual dry-run scope.
-- [ ] Implement and test `scripts/scherzo-implementation refresh-base`.
-- [ ] Add the `repair_base_drift` prompt and validation guards.
-- [ ] Update both implementation workflow YAML files with start and pre-validation base refresh ordering.
-- [ ] Validate the helper, workflows, and fallback behavior locally.
+- [x] (2026-05-05 16:05Z) Implemented and tested `scripts/scherzo-implementation refresh-base`, including stable stdout, stage/latest JSON, start metadata updates, conflict/fetch/base-missing/rebase-failed statuses, and publish-time reuse.
+- [x] (2026-05-05 16:05Z) Added the `repair_base_drift` prompt, validation guards for base-drift failure markers and unresolved jj conflicts, and PR/publish JSON visibility for repair summaries.
+- [x] (2026-05-05 16:05Z) Updated both implementation workflow YAML files with start refresh, pre-validation refresh, continue-on-failure validation, repair, strict final validation, and publish ordering.
+- [x] (2026-05-05 16:05Z) Validated helper, workflow ordering, fallback behavior, formatting, and the full Gleam test suite locally.
+- [x] (2026-05-05 16:18Z) Applied the review-feedback handoff. No remaining review findings required code changes; confirmed the source-preparation alias coverage includes both `prepare_plan` and `prepare_context`, and reran format plus full Gleam validation successfully.
 
 ## Surprises & Discoveries
 
@@ -67,6 +68,10 @@ A sixth risk is that new status output becomes hard for prompts and tests to par
   Evidence: `.scherzo/workflows/execplan.yaml` runs `validate_draft` with `on_failure: continue`, then invokes `repair_validation`.
 - Observation: There is already a narrow merge-conflict repair prompt and helper that record conflicted files, constrain edits, and require a summary or failure file.
   Evidence: `.scherzo/workflows/prompts/resolve-merge-conflicts.md` and `scripts/scherzo-merge-conflict` provide the policy model for base-drift conflict repair.
+- Observation: Workflow prompt templates do not support optional missing step variables; referencing both `steps.prepare_context.stdout` and `steps.prepare_plan.stdout` in one shared prompt would fail in one workflow or the other.
+  Evidence: `src/scherzo/template.gleam` returns `TemplateRenderError("unknown variable ...")` for missing locals, and `test/template_test.gleam` asserts that unknown artifact variables still fail.
+- Observation: The checked-in implementation workflows currently use `SCHERZO_CONFIG_DIR` for repository-root discovery, not the older `pwd | sed` prefix shown in the plan's interface example.
+  Evidence: `.scherzo/workflows/implementation.yaml` and `.scherzo/workflows/execplan-implementation.yaml` used `repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}` before this implementation.
 
 ## Decision Log
 
@@ -91,10 +96,18 @@ A sixth risk is that new status output becomes hard for prompts and tests to par
 - Decision: Do not serialize implementation workflows across the repository.
   Rationale: Per-workspace refresh and repair directly addresses stale bases while preserving parallelism.
   Date: 2026-05-04
+- Decision: Add a `steps.source_preparation.*` template alias for implementation prepare artifacts and have the shared repair prompt use that alias.
+  Rationale: The direct implementation workflow names its prepare step `prepare_context`, while the ExecPlan implementation workflow names it `prepare_plan`. The existing template engine intentionally fails on unknown artifact variables, so an alias preserves the prompt's source-preparation context without weakening unknown-variable validation globally.
+  Date: 2026-05-05
+- Decision: Preserve the current `SCHERZO_CONFIG_DIR` repository-root discovery convention while adding new refresh commands to workflow YAML.
+  Rationale: The plan's `pwd | sed` prefix was stale relative to the current checked-in workflows. Keeping the current convention minimizes unrelated YAML churn and matches repository-local behavior.
+  Date: 2026-05-05
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Completed on 2026-05-05. The implementation workflows now refresh their PR base before agent work and before final validation, route repairable pre-validation base drift through a constrained agent prompt, and keep a strict validation gate before publish. The shared helper now produces machine-readable refresh JSON and stable `REFRESH_BASE_*` stdout lines, publish reuses the same refresh path as a last-moment safety guard, and repair summaries are exposed in both PR body content and publish JSON. The main plan deviation was adding a template alias for source preparation output so one shared prompt can render in both workflows without changing the template engine's intentional unknown-variable failures.
+
+Post-review feedback application on 2026-05-05 found no remaining findings to address. The expanded source-preparation alias coverage includes both implementation prepare step names, and the full validation suite remained green.
 
 ## Context and Orientation
 
