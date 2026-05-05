@@ -86,24 +86,42 @@ pub fn read_step_artifact(
   ref: String,
   expected_sha256: String,
 ) -> Result(step_artifact.StepArtifact, ArtifactError) {
-  use final_path <- result.try(resolve_ref_for_read(store, ref))
-  use contents <- result.try(
-    simplifile.read(final_path)
-    |> result.map_error(fn(error) {
-      case error {
-        simplifile.Enoent -> MissingStepArtifact(ref)
-        _ -> ArtifactIo("read artifact: " <> simplifile.describe_error(error))
-      }
-    }),
-  )
+  use contents <- result.try(read_step_artifact_contents(store, ref))
   let actual_sha = hash.sha256_hex(contents)
   case actual_sha == expected_sha256 {
     False -> Error(CorruptStepArtifact(ref))
-    True ->
-      case decode_stored_string(contents) {
-        Ok(stored) -> Ok(stored.artifact)
-        Error(reason) -> Error(DecodeArtifactFailed(reason))
-      }
+    True -> decode_step_artifact_contents(contents)
+  }
+}
+
+pub fn read_step_artifact_unverified(
+  store: Store,
+  ref: String,
+) -> Result(step_artifact.StepArtifact, ArtifactError) {
+  use contents <- result.try(read_step_artifact_contents(store, ref))
+  decode_step_artifact_contents(contents)
+}
+
+fn read_step_artifact_contents(
+  store: Store,
+  ref: String,
+) -> Result(String, ArtifactError) {
+  use final_path <- result.try(resolve_ref_for_read(store, ref))
+  simplifile.read(final_path)
+  |> result.map_error(fn(error) {
+    case error {
+      simplifile.Enoent -> MissingStepArtifact(ref)
+      _ -> ArtifactIo("read artifact: " <> simplifile.describe_error(error))
+    }
+  })
+}
+
+fn decode_step_artifact_contents(
+  contents: String,
+) -> Result(step_artifact.StepArtifact, ArtifactError) {
+  case decode_stored_string(contents) {
+    Ok(stored) -> Ok(stored.artifact)
+    Error(reason) -> Error(DecodeArtifactFailed(reason))
   }
 }
 

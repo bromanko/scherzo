@@ -126,6 +126,28 @@ fn workflow_deps() -> workflow_run.Dependencies {
         source_workspace_path: None,
       ))
     },
+    prepare_recovered_step: fn(
+      _issue,
+      workflow_id,
+      run_id,
+      expected_run_root,
+      _step_id,
+      attempt_index,
+      workspace_ref,
+      _orchestrator,
+      _known,
+    ) {
+      Ok(workspace_run.PreparedStepWorkspace(
+        workflow_id: workflow_id,
+        run_id: run_id,
+        run_root: expected_run_root,
+        attempt_index: attempt_index,
+        workspace_name: workspace_ref.name,
+        path: expected_run_root <> "/" <> workspace_ref.name,
+        source_workspace_name: workspace_ref.from,
+        source_workspace_path: None,
+      ))
+    },
     after_step: fn(_, _, _, _) { Nil },
     cleanup_run: fn(_, _) { Ok(Nil) },
     command_step: fn(

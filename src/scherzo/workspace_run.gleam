@@ -62,6 +62,114 @@ pub fn prepare_step_attempt(
   orchestrator: config_types.OrchestratorConfig,
   known_workspaces: Dict(String, PreparedStepWorkspace),
 ) -> Result(PreparedStepWorkspace, PrepareError) {
+  prepare_step_attempt_with_cleanup(
+    issue,
+    workflow_id,
+    run_id,
+    step_id,
+    attempt_index,
+    workspace_ref,
+    orchestrator,
+    known_workspaces,
+    True,
+  )
+}
+
+pub fn prepare_recovered_step(
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+  expected_run_root: String,
+  step_id: String,
+  workspace_ref: workflow_dag.WorkspaceRef,
+  orchestrator: config_types.OrchestratorConfig,
+  known_workspaces: Dict(String, PreparedStepWorkspace),
+) -> Result(PreparedStepWorkspace, PrepareError) {
+  prepare_recovered_step_attempt(
+    issue,
+    workflow_id,
+    run_id,
+    expected_run_root,
+    step_id,
+    1,
+    workspace_ref,
+    orchestrator,
+    known_workspaces,
+  )
+}
+
+pub fn prepare_recovered_step_attempt(
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+  expected_run_root: String,
+  step_id: String,
+  attempt_index: Int,
+  workspace_ref: workflow_dag.WorkspaceRef,
+  orchestrator: config_types.OrchestratorConfig,
+  known_workspaces: Dict(String, PreparedStepWorkspace),
+) -> Result(PreparedStepWorkspace, PrepareError) {
+  use _ <- try_prepare(validate_expected_run_root(
+    issue,
+    workflow_id,
+    run_id,
+    expected_run_root,
+    orchestrator,
+  ))
+  let known_workspaces = known_workspaces
+  case reusable_workspace(workspace_ref, known_workspaces) {
+    Some(prepared) -> {
+      use _ <- try_prepare(validate_recovered_workspace(
+        prepared,
+        workflow_id,
+        run_id,
+        expected_run_root,
+        workspace_ref.name,
+        orchestrator,
+      ))
+      reuse_prepared_workspace(
+        issue,
+        step_id,
+        prepared,
+        attempt_index,
+        orchestrator,
+      )
+    }
+    None -> {
+      use _ <- try_prepare(validate_recovered_source_workspace(
+        workspace_ref.from,
+        known_workspaces,
+        workflow_id,
+        run_id,
+        expected_run_root,
+        orchestrator,
+      ))
+      prepare_step_attempt_with_cleanup(
+        issue,
+        workflow_id,
+        run_id,
+        step_id,
+        attempt_index,
+        workspace_ref,
+        orchestrator,
+        known_workspaces,
+        False,
+      )
+    }
+  }
+}
+
+fn prepare_step_attempt_with_cleanup(
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  workspace_ref: workflow_dag.WorkspaceRef,
+  orchestrator: config_types.OrchestratorConfig,
+  known_workspaces: Dict(String, PreparedStepWorkspace),
+  cleanup_on_error: Bool,
+) -> Result(PreparedStepWorkspace, PrepareError) {
   case reusable_workspace(workspace_ref, known_workspaces) {
     Some(prepared) ->
       reuse_prepared_workspace(
@@ -87,6 +195,7 @@ pub fn prepare_step_attempt(
         known_workspaces,
       ))
       let #(source_name, source_path) = source
+      use _ <- try_prepare(validate_source_directory(source_path))
       use _ <- try_prepare(create_directory(run_root))
       let prepared =
         PreparedStepWorkspace(
@@ -102,7 +211,13 @@ pub fn prepare_step_attempt(
       case finish_prepare_step(issue, step_id, prepared, orchestrator) {
         Ok(prepared) -> Ok(prepared)
         Error(err) -> {
-          let _ = cleanup_run(run_root, orchestrator)
+          case cleanup_on_error {
+            True -> {
+              let _ = cleanup_run(run_root, orchestrator)
+              Nil
+            }
+            False -> Nil
+          }
           Error(err)
         }
       }
@@ -280,6 +395,104 @@ pub fn run_root_for(
   case path.contains(root_abs, run_root_abs) {
     True -> Ok(run_root_abs)
     False -> Error(error.WorkspaceOutsideRoot(run_root_abs))
+  }
+}
+
+fn validate_expected_run_root(
+  issue: tracker_issue.Issue,
+  workflow_id: String,
+  run_id: String,
+  expected_run_root: String,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(Nil, error.WorkspaceError) {
+  use computed <- try_workspace(run_root_for(
+    issue,
+    workflow_id,
+    run_id,
+    orchestrator,
+  ))
+  let expected_abs =
+    path.absolute(expected_run_root) |> result_unwrap(expected_run_root)
+  case computed == expected_abs {
+    True -> Ok(Nil)
+    False -> Error(error.WorkspaceIo("recovered run root mismatch"))
+  }
+}
+
+fn validate_recovered_workspace(
+  prepared: PreparedStepWorkspace,
+  workflow_id: String,
+  run_id: String,
+  expected_run_root: String,
+  workspace_name: String,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(Nil, error.WorkspaceError) {
+  let expected_abs =
+    path.absolute(expected_run_root) |> result_unwrap(expected_run_root)
+  let prepared_run_root_abs =
+    path.absolute(prepared.run_root) |> result_unwrap(prepared.run_root)
+  let root_abs =
+    path.absolute(orchestrator.effective.workspace.root)
+    |> result_unwrap(orchestrator.effective.workspace.root)
+  let prepared_path_abs =
+    path.absolute(prepared.path) |> result_unwrap(prepared.path)
+  case
+    prepared.workflow_id == workflow_id
+    && prepared.run_id == run_id
+    && prepared.workspace_name == workspace_name
+    && prepared_run_root_abs == expected_abs
+    && prepared_path_abs != expected_abs
+    && path.contains(expected_abs, prepared_path_abs)
+    && path.contains(root_abs, prepared_path_abs)
+    && path.contains(root_abs, prepared_run_root_abs)
+  {
+    True -> validate_existing_directory(prepared.path)
+    False -> Error(error.WorkspaceIo("invalid recovered workspace"))
+  }
+}
+
+fn validate_recovered_source_workspace(
+  source_name: Option(String),
+  known_workspaces: Dict(String, PreparedStepWorkspace),
+  workflow_id: String,
+  run_id: String,
+  expected_run_root: String,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(Nil, error.WorkspaceError) {
+  case source_name {
+    None -> Ok(Nil)
+    Some(name) ->
+      case dict.get(known_workspaces, name) {
+        Error(_) -> Ok(Nil)
+        Ok(prepared) ->
+          validate_recovered_workspace(
+            prepared,
+            workflow_id,
+            run_id,
+            expected_run_root,
+            name,
+            orchestrator,
+          )
+      }
+  }
+}
+
+fn validate_source_directory(
+  source_path: Option(String),
+) -> Result(Nil, error.WorkspaceError) {
+  case source_path {
+    None -> Ok(Nil)
+    Some(path) -> validate_existing_directory(path)
+  }
+}
+
+fn validate_existing_directory(
+  path: String,
+) -> Result(Nil, error.WorkspaceError) {
+  case simplifile.is_directory(path) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) -> Error(error.WorkspaceIo("source workspace missing"))
+    Error(_) -> Error(error.WorkspaceIo("source workspace missing"))
   }
 }
 

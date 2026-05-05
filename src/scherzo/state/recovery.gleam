@@ -9,12 +9,15 @@ import scherzo/config/types as config_types
 import scherzo/orchestrator/core
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
+import scherzo/path
 import scherzo/state/artifact_store
 import scherzo/state/outbox
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_dag
+import simplifile
 
 pub type RecoveredRetry {
   RecoveredRetry(
@@ -90,9 +93,16 @@ pub type CurrentWorkflowObservation {
     workflow_id: String,
     workflow_fingerprint: String,
     issue_fingerprint: String,
+    dag: workflow_dag.WorkflowDag,
+    workspace_root: String,
   )
   IssueUnavailable
   WorkflowUnavailable(reason: String)
+}
+
+pub type WorkflowRecoveryMode {
+  ResumeRecoveredWorkflows
+  ParkRecoveredWorkflows
 }
 
 pub type WorkflowFinalization {
@@ -119,6 +129,8 @@ pub type RecoveryError {
   MissingOutboxPayload(outbox_id: String)
   InvalidRecordSemantics(reason: String)
   StepArtifactRecoveryFailed(reason: String)
+  UnsafeWorkflowRecovery(reason: String)
+  WorkspaceRecoveryFailed(reason: String)
 }
 
 type Build {
@@ -181,12 +193,31 @@ pub fn finalize_workflow_candidates(
   artifact_store: artifact_store.Store,
   now_ms: Int,
 ) -> Result(WorkflowFinalization, RecoveryError) {
+  finalize_workflow_candidates_with_mode(
+    projection,
+    candidates,
+    observations,
+    artifact_store,
+    now_ms,
+    ResumeRecoveredWorkflows,
+  )
+}
+
+pub fn finalize_workflow_candidates_with_mode(
+  projection: projection.Projection,
+  candidates: List(WorkflowRecoveryCandidate),
+  observations: Dict(String, CurrentWorkflowObservation),
+  artifact_store: artifact_store.Store,
+  now_ms: Int,
+  mode: WorkflowRecoveryMode,
+) -> Result(WorkflowFinalization, RecoveryError) {
   let _ = projection
   finalize_workflow_candidates_loop(
     candidates,
     observations,
     artifact_store,
     now_ms,
+    mode,
     [],
     [],
     [],
@@ -236,6 +267,8 @@ pub fn describe_error(error: RecoveryError) -> String {
     MissingOutboxPayload(outbox_id) -> "outbox_payload_missing:" <> outbox_id
     InvalidRecordSemantics(reason) -> reason
     StepArtifactRecoveryFailed(reason) -> reason
+    UnsafeWorkflowRecovery(reason) -> "unsafe_workflow_recovery:" <> reason
+    WorkspaceRecoveryFailed(reason) -> "workspace_recovery_failed:" <> reason
   }
 }
 
@@ -256,6 +289,7 @@ fn finalize_workflow_candidates_loop(
   observations: Dict(String, CurrentWorkflowObservation),
   store: artifact_store.Store,
   now_ms: Int,
+  mode: WorkflowRecoveryMode,
   record_bodies: List(record.RecordBody),
   resumptions: List(RecoveredWorkflowRun),
   warnings: List(String),
@@ -275,6 +309,7 @@ fn finalize_workflow_candidates_loop(
         candidate,
         observation,
         store,
+        mode,
       ))
       let #(bodies, resumption, candidate_warnings) = finalized
       finalize_workflow_candidates_loop(
@@ -282,6 +317,7 @@ fn finalize_workflow_candidates_loop(
         observations,
         store,
         now_ms,
+        mode,
         list.append(list.reverse(bodies), record_bodies),
         append_optional_resumption(resumptions, resumption),
         list.append(list.reverse(candidate_warnings), warnings),
@@ -294,6 +330,7 @@ fn finalize_one_workflow_candidate(
   candidate: WorkflowRecoveryCandidate,
   observation: CurrentWorkflowObservation,
   store: artifact_store.Store,
+  mode: WorkflowRecoveryMode,
 ) -> Result(
   #(List(record.RecordBody), Option(RecoveredWorkflowRun), List(String)),
   RecoveryError,
@@ -301,25 +338,44 @@ fn finalize_one_workflow_candidate(
   case observation {
     IssueUnavailable ->
       Ok(
-        #(interrupt_candidate_bodies(candidate, "issue_unavailable"), None, [
-          "workflow_recovery_interrupted_issue_unavailable:" <> candidate.run_id,
-        ]),
+        #(
+          park_candidate_bodies(
+            candidate,
+            candidate.issue_identifier,
+            "issue_unavailable",
+            candidate.issue_fingerprint,
+            candidate.observed_updated_at_ms,
+          ),
+          None,
+          [
+            "workflow_recovery_parked_issue_unavailable:" <> candidate.run_id,
+          ],
+        ),
       )
     WorkflowUnavailable(reason) ->
       Ok(
         #(
-          interrupt_candidate_bodies(
+          park_candidate_bodies(
             candidate,
+            candidate.issue_identifier,
             "workflow_unavailable:" <> reason,
+            candidate.issue_fingerprint,
+            candidate.observed_updated_at_ms,
           ),
           None,
           [
-            "workflow_recovery_interrupted_workflow_unavailable:"
-            <> candidate.run_id,
+            "workflow_recovery_parked_workflow_unavailable:" <> candidate.run_id,
           ],
         ),
       )
-    CurrentWorkflow(issue, workflow_id, workflow_fingerprint, issue_fingerprint) ->
+    CurrentWorkflow(
+      issue,
+      workflow_id,
+      workflow_fingerprint,
+      issue_fingerprint,
+      dag,
+      workspace_root,
+    ) ->
       case
         workflow_id == candidate.workflow_id
         && workflow_fingerprint == candidate.workflow_fingerprint
@@ -327,20 +383,128 @@ fn finalize_one_workflow_candidate(
       {
         False ->
           Ok(
-            #(supersede_candidate_bodies(candidate), None, [
-              "workflow_recovery_superseded:" <> candidate.run_id,
-            ]),
+            #(
+              park_candidate_bodies(
+                candidate,
+                issue.identifier,
+                "workflow_drift",
+                issue_fingerprint,
+                candidate.observed_updated_at_ms,
+              ),
+              None,
+              [
+                "workflow_recovery_parked_workflow_drift:" <> candidate.run_id,
+              ],
+            ),
           )
-        True -> {
-          use recovered <- result.try(recover_completed_attempts(
-            candidate,
-            issue,
-            store,
-          ))
-          let #(resumption, bodies) = recovered
-          Ok(#(bodies, Some(resumption), []))
-        }
+        True ->
+          case mode {
+            ParkRecoveredWorkflows ->
+              Ok(
+                #(
+                  park_candidate_bodies(
+                    candidate,
+                    issue.identifier,
+                    "workflow_recovery_disabled",
+                    issue_fingerprint,
+                    candidate.observed_updated_at_ms,
+                  ),
+                  None,
+                  [
+                    "workflow_recovery_parked_disabled:" <> candidate.run_id,
+                  ],
+                ),
+              )
+            ResumeRecoveredWorkflows ->
+              finalize_resumable_workflow_candidate(
+                candidate,
+                issue,
+                issue_fingerprint,
+                store,
+                dag,
+                workspace_root,
+              )
+          }
       }
+  }
+}
+
+fn finalize_resumable_workflow_candidate(
+  candidate: WorkflowRecoveryCandidate,
+  issue: tracker_issue.Issue,
+  issue_fingerprint: String,
+  store: artifact_store.Store,
+  dag: workflow_dag.WorkflowDag,
+  workspace_root: String,
+) -> Result(
+  #(List(record.RecordBody), Option(RecoveredWorkflowRun), List(String)),
+  RecoveryError,
+) {
+  case
+    recover_completed_attempts(candidate, issue, store, dag, workspace_root)
+  {
+    Ok(recovered) -> {
+      let #(resumption, bodies) = recovered
+      Ok(#(bodies, Some(resumption), []))
+    }
+    Error(StepArtifactRecoveryFailed(reason)) ->
+      Ok(
+        #(
+          park_candidate_bodies(
+            candidate,
+            issue.identifier,
+            "artifact_recovery_failed",
+            issue_fingerprint,
+            candidate.observed_updated_at_ms,
+          ),
+          None,
+          [
+            "workflow_recovery_parked_artifact_recovery_failed:"
+            <> candidate.run_id
+            <> ":"
+            <> reason,
+          ],
+        ),
+      )
+    Error(UnsafeWorkflowRecovery(reason)) ->
+      Ok(
+        #(
+          park_candidate_bodies(
+            candidate,
+            issue.identifier,
+            "unsafe_interrupted_command_step",
+            issue_fingerprint,
+            candidate.observed_updated_at_ms,
+          ),
+          None,
+          [
+            "workflow_recovery_parked_unsafe_interrupted_command_step:"
+            <> candidate.run_id
+            <> ":"
+            <> reason,
+          ],
+        ),
+      )
+    Error(WorkspaceRecoveryFailed(reason)) ->
+      Ok(
+        #(
+          park_candidate_bodies(
+            candidate,
+            issue.identifier,
+            "workspace_recovery_failed",
+            issue_fingerprint,
+            candidate.observed_updated_at_ms,
+          ),
+          None,
+          [
+            "workflow_recovery_parked_workspace_recovery_failed:"
+            <> candidate.run_id
+            <> ":"
+            <> reason,
+          ],
+        ),
+      )
+    Error(error) -> Error(error)
   }
 }
 
@@ -348,6 +512,8 @@ fn recover_completed_attempts(
   candidate: WorkflowRecoveryCandidate,
   issue: tracker_issue.Issue,
   store: artifact_store.Store,
+  dag: workflow_dag.WorkflowDag,
+  workspace_root: String,
 ) -> Result(#(RecoveredWorkflowRun, List(record.RecordBody)), RecoveryError) {
   let attempts = list.sort(candidate.attempts, by: compare_attempts_for_replay)
   recover_attempts_loop(
@@ -355,6 +521,8 @@ fn recover_completed_attempts(
     candidate,
     issue,
     store,
+    dag,
+    workspace_root,
     dict.new(),
     dict.new(),
     dict.new(),
@@ -367,13 +535,22 @@ fn recover_attempts_loop(
   candidate: WorkflowRecoveryCandidate,
   issue: tracker_issue.Issue,
   store: artifact_store.Store,
+  dag: workflow_dag.WorkflowDag,
+  workspace_root: String,
   artifacts: Dict(String, step_artifact.StepArtifact),
   workspaces: Dict(String, RecoveredWorkspaceSummary),
   next_indexes: Dict(String, Int),
   bodies: List(record.RecordBody),
 ) -> Result(#(RecoveredWorkflowRun, List(record.RecordBody)), RecoveryError) {
   case attempts {
-    [] ->
+    [] -> {
+      use _ <- result.try(validate_recovered_workflow_filesystem(
+        candidate,
+        dag,
+        workspace_root,
+        artifacts,
+        workspaces,
+      ))
       Ok(#(
         RecoveredWorkflowRun(
           issue: issue,
@@ -387,6 +564,7 @@ fn recover_attempts_loop(
         ),
         list.reverse(bodies),
       ))
+    }
     [attempt, ..rest] -> {
       let #(run_id, step_id, attempt_index) = attempt_identity(attempt)
       let next_indexes =
@@ -441,6 +619,8 @@ fn recover_attempts_loop(
             candidate,
             issue,
             store,
+            dag,
+            workspace_root,
             artifacts,
             workspaces,
             next_indexes,
@@ -449,31 +629,39 @@ fn recover_attempts_loop(
         }
         projection.StepAttemptPending(workflow_id: workflow_id, ..)
         | projection.StepAttemptRunning(workflow_id: workflow_id, ..) ->
-          recover_attempts_loop(
-            rest,
-            candidate,
-            issue,
-            store,
-            artifacts,
-            workspaces,
-            next_indexes,
-            [
-              record.StepAttemptInterrupted(
-                run_id,
-                workflow_id,
-                step_id,
-                attempt_index,
-                "daemon_restart",
-              ),
-              ..bodies
-            ],
-          )
+          case interrupted_step_is_safe_to_retry(dag, step_id) {
+            Error(reason) -> Error(UnsafeWorkflowRecovery(reason))
+            Ok(Nil) ->
+              recover_attempts_loop(
+                rest,
+                candidate,
+                issue,
+                store,
+                dag,
+                workspace_root,
+                artifacts,
+                workspaces,
+                next_indexes,
+                [
+                  record.StepAttemptInterrupted(
+                    run_id,
+                    workflow_id,
+                    step_id,
+                    attempt_index,
+                    "daemon_restart",
+                  ),
+                  ..bodies
+                ],
+              )
+          }
         _ ->
           recover_attempts_loop(
             rest,
             candidate,
             issue,
             store,
+            dag,
+            workspace_root,
             artifacts,
             workspaces,
             next_indexes,
@@ -482,6 +670,265 @@ fn recover_attempts_loop(
       }
     }
   }
+}
+
+fn interrupted_step_is_safe_to_retry(
+  dag: workflow_dag.WorkflowDag,
+  step_id: String,
+) -> Result(Nil, String) {
+  case workflow_dag.step_by_id(dag, step_id) {
+    Error(_) -> Error("unknown_interrupted_step:" <> step_id)
+    Ok(step) ->
+      case step.kind {
+        workflow_dag.CommandStep(_, _) ->
+          Error("unsafe_interrupted_command_step:" <> step_id)
+        workflow_dag.AgentStep(_) -> Ok(Nil)
+      }
+  }
+}
+
+fn validate_recovered_workflow_filesystem(
+  candidate: WorkflowRecoveryCandidate,
+  dag: workflow_dag.WorkflowDag,
+  workspace_root: String,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  workspaces: Dict(String, RecoveredWorkspaceSummary),
+) -> Result(Nil, RecoveryError) {
+  use roots <- result.try(validate_recovered_run_root(candidate, workspace_root))
+  let #(root_abs, run_root_abs) = roots
+  use _ <- result.try(validate_completed_workspace_summaries(
+    dict.values(workspaces),
+    candidate,
+    dag,
+    root_abs,
+    run_root_abs,
+  ))
+  validate_pending_source_workspaces(dag.steps, dag, artifacts, workspaces)
+}
+
+fn validate_recovered_run_root(
+  candidate: WorkflowRecoveryCandidate,
+  workspace_root: String,
+) -> Result(#(String, String), RecoveryError) {
+  let root_abs = path.absolute(workspace_root) |> result.unwrap(workspace_root)
+  let run_root_abs =
+    path.absolute(candidate.run_root) |> result.unwrap(candidate.run_root)
+  case
+    string.trim(run_root_abs) == ""
+    || run_root_abs == root_abs
+    || !path.contains(root_abs, run_root_abs)
+  {
+    True ->
+      Error(WorkspaceRecoveryFailed("invalid_run_root:" <> candidate.run_id))
+    False -> Ok(#(root_abs, run_root_abs))
+  }
+}
+
+fn validate_completed_workspace_summaries(
+  workspaces: List(RecoveredWorkspaceSummary),
+  candidate: WorkflowRecoveryCandidate,
+  dag: workflow_dag.WorkflowDag,
+  root_abs: String,
+  run_root_abs: String,
+) -> Result(Nil, RecoveryError) {
+  case workspaces {
+    [] -> Ok(Nil)
+    [workspace, ..rest] -> {
+      use _ <- result.try(validate_completed_workspace_summary(
+        workspace,
+        candidate,
+        dag,
+        root_abs,
+        run_root_abs,
+      ))
+      validate_completed_workspace_summaries(
+        rest,
+        candidate,
+        dag,
+        root_abs,
+        run_root_abs,
+      )
+    }
+  }
+}
+
+fn validate_completed_workspace_summary(
+  workspace: RecoveredWorkspaceSummary,
+  candidate: WorkflowRecoveryCandidate,
+  dag: workflow_dag.WorkflowDag,
+  root_abs: String,
+  run_root_abs: String,
+) -> Result(Nil, RecoveryError) {
+  let workspace_run_root_abs =
+    path.absolute(workspace.run_root) |> result.unwrap(workspace.run_root)
+  let workspace_path_abs =
+    path.absolute(workspace.path) |> result.unwrap(workspace.path)
+  case
+    workspace.workflow_id == candidate.workflow_id
+    && workspace.run_id == candidate.run_id
+    && workspace_run_root_abs == run_root_abs
+    && workspace_path_abs != run_root_abs
+    && path.contains(run_root_abs, workspace_path_abs)
+    && path.contains(root_abs, workspace_path_abs)
+    && dag_has_workspace_name(dag.steps, workspace.workspace_name)
+  {
+    True ->
+      validate_existing_recovered_directory(
+        workspace_path_abs,
+        "missing_workspace:" <> workspace.workspace_name,
+      )
+    False ->
+      Error(WorkspaceRecoveryFailed(
+        "invalid_workspace:" <> workspace.workspace_name,
+      ))
+  }
+}
+
+fn validate_pending_source_workspaces(
+  steps: List(workflow_dag.WorkflowStep),
+  dag: workflow_dag.WorkflowDag,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  workspaces: Dict(String, RecoveredWorkspaceSummary),
+) -> Result(Nil, RecoveryError) {
+  case steps {
+    [] -> Ok(Nil)
+    [step, ..rest] -> {
+      use _ <- result.try(validate_pending_step_source(
+        step,
+        dag,
+        artifacts,
+        workspaces,
+      ))
+      validate_pending_source_workspaces(rest, dag, artifacts, workspaces)
+    }
+  }
+}
+
+fn validate_pending_step_source(
+  step: workflow_dag.WorkflowStep,
+  dag: workflow_dag.WorkflowDag,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  workspaces: Dict(String, RecoveredWorkspaceSummary),
+) -> Result(Nil, RecoveryError) {
+  case dict.has_key(artifacts, step.id), step.workspace.from {
+    True, _ -> Ok(Nil)
+    False, None -> Ok(Nil)
+    False, Some(source) ->
+      case dict.get(workspaces, source) {
+        Ok(workspace) ->
+          validate_existing_recovered_directory(
+            path.absolute(workspace.path) |> result.unwrap(workspace.path),
+            "missing_source_workspace:" <> source <> ":for_step:" <> step.id,
+          )
+        Error(_) ->
+          case
+            source_workspace_can_be_produced_later(
+              source,
+              step.depends_on,
+              dag,
+              artifacts,
+              [],
+            )
+          {
+            True -> Ok(Nil)
+            False ->
+              Error(WorkspaceRecoveryFailed(
+                "missing_source_workspace:" <> source <> ":for_step:" <> step.id,
+              ))
+          }
+      }
+  }
+}
+
+fn source_workspace_can_be_produced_later(
+  source: String,
+  dependency_ids: List(String),
+  dag: workflow_dag.WorkflowDag,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  seen: List(String),
+) -> Bool {
+  case dependency_ids {
+    [] -> False
+    [dependency_id, ..rest] -> {
+      case list.contains(seen, dependency_id) {
+        True ->
+          source_workspace_can_be_produced_later(
+            source,
+            rest,
+            dag,
+            artifacts,
+            seen,
+          )
+        False ->
+          case workflow_dag.step_by_id(dag, dependency_id) {
+            Error(_) ->
+              source_workspace_can_be_produced_later(
+                source,
+                rest,
+                dag,
+                artifacts,
+                [dependency_id, ..seen],
+              )
+            Ok(step) -> {
+              let step_is_pending = !dict.has_key(artifacts, step.id)
+              case step_is_pending && step.workspace.name == source {
+                True -> True
+                False ->
+                  source_workspace_can_be_produced_later(
+                    source,
+                    list.append(step.depends_on, rest),
+                    dag,
+                    artifacts,
+                    [dependency_id, ..seen],
+                  )
+              }
+            }
+          }
+      }
+    }
+  }
+}
+
+fn validate_existing_recovered_directory(
+  path_abs: String,
+  reason: String,
+) -> Result(Nil, RecoveryError) {
+  case simplifile.is_directory(path_abs) {
+    Ok(True) -> Ok(Nil)
+    _ -> Error(WorkspaceRecoveryFailed(reason))
+  }
+}
+
+fn dag_has_workspace_name(
+  steps: List(workflow_dag.WorkflowStep),
+  workspace_name: String,
+) -> Bool {
+  case steps {
+    [] -> False
+    [step, ..rest] ->
+      step.workspace.name == workspace_name
+      || dag_has_workspace_name(rest, workspace_name)
+  }
+}
+
+fn park_candidate_bodies(
+  candidate: WorkflowRecoveryCandidate,
+  issue_identifier: String,
+  reason: String,
+  issue_fingerprint: String,
+  observed_updated_at_ms: Int,
+) -> List(record.RecordBody) {
+  [
+    record.IssueParkedV2(
+      candidate.issue_id,
+      issue_identifier,
+      reason,
+      "explicit_unpark_only",
+      issue_fingerprint,
+      observed_updated_at_ms,
+    ),
+    ..interrupt_candidate_bodies(candidate, reason)
+  ]
 }
 
 fn interrupt_candidate_bodies(
@@ -496,25 +943,6 @@ fn interrupt_candidate_bodies(
       reason,
     ),
     ..unfinished_attempt_bodies(candidate, reason, "interrupt")
-  ]
-}
-
-fn supersede_candidate_bodies(
-  candidate: WorkflowRecoveryCandidate,
-) -> List(record.RecordBody) {
-  [
-    record.WorkflowRunSuperseded(
-      candidate.run_id,
-      candidate.workflow_id,
-      candidate.issue_id,
-      "",
-      "current_issue_or_workflow_changed",
-    ),
-    ..unfinished_attempt_bodies(
-      candidate,
-      "current_issue_or_workflow_changed",
-      "supersede",
-    )
   ]
 }
 
