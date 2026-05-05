@@ -46,17 +46,43 @@ pub fn launch_spec(
   auto_retry: Bool,
   read_timeout_ms: Int,
 ) -> Result(Session, error.PiRpcError) {
-  use process <- try_pi(start_launch(spec, cwd) |> map_port_start_error)
-  let session =
-    Session(
-      process: process,
-      command: describe_launch(spec),
-      cwd: cwd,
-      session_id: None,
-      session_file: None,
-      reported_cwd: None,
-      next_id: 1,
-    )
+  case start_launch(spec, cwd) |> map_port_start_error {
+    Error(err) -> Error(err)
+    Ok(process) -> {
+      let session =
+        Session(
+          process: process,
+          command: describe_launch(spec),
+          cwd: cwd,
+          session_id: None,
+          session_file: None,
+          reported_cwd: None,
+          next_id: 1,
+        )
+      case
+        complete_launch_handshake(
+          session,
+          session_name,
+          auto_retry,
+          read_timeout_ms,
+        )
+      {
+        Ok(session) -> Ok(session)
+        Error(err) -> {
+          let _ = port.terminate(process)
+          Error(err)
+        }
+      }
+    }
+  }
+}
+
+fn complete_launch_handshake(
+  session: Session,
+  session_name: String,
+  auto_retry: Bool,
+  read_timeout_ms: Int,
+) -> Result(Session, error.PiRpcError) {
   use session <- try_pi(send_expect_success(
     session,
     "set_session_name",
