@@ -16,6 +16,7 @@ pub type RpcRecord {
     session_file: Option(String),
     cwd: Option(String),
     delta: Option(String),
+    assistant_event_type: Option(String),
     message: Option(String),
     method: Option(String),
     tokens: session_tokens.TokenTotals,
@@ -142,6 +143,11 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     None,
     decode.optional(decode.string),
   )
+  use assistant_event_type <- decode.then(decode.optionally_at(
+    ["assistantMessageEvent", "type"],
+    None,
+    decode.optional(decode.string),
+  ))
   use assistant_event_delta <- decode.then(decode.optionally_at(
     ["assistantMessageEvent", "delta"],
     None,
@@ -222,7 +228,16 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     None,
     decode.optional(decode.string),
   )
-  let delta = first_non_empty([top_delta, assistant_event_delta])
+  let delta =
+    first_non_empty([
+      top_delta,
+      text_assistant_event_delta(assistant_event_type, assistant_event_delta),
+    ])
+  let assistant_messages =
+    list.append(
+      assistant_messages,
+      completed_assistant_message_texts(type_, message_object),
+    )
   decode.success(RpcRecord(
     type_: type_,
     id: id,
@@ -232,6 +247,7 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     session_file: data.session_file,
     cwd: data.cwd,
     delta: delta,
+    assistant_event_type: assistant_event_type,
     message: message,
     method: method,
     tokens: data.tokens,
@@ -322,6 +338,35 @@ fn agent_end_content_decoder() -> decode.Decoder(Option(String)) {
       |> decode.map(all_text_content),
     decode.dynamic |> decode.map(fn(_) { None }),
   ])
+}
+
+fn text_assistant_event_delta(
+  event_type: Option(String),
+  delta: Option(String),
+) -> Option(String) {
+  case event_type, delta {
+    Some("text_delta"), Some(value) -> Some(value)
+    _, _ -> None
+  }
+}
+
+fn completed_assistant_message_texts(
+  event_type: String,
+  message: MessageObject,
+) -> List(String) {
+  case event_type {
+    "message" -> assistant_message_text(message)
+    "message_end" -> assistant_message_text(message)
+    "turn_end" -> assistant_message_text(message)
+    _ -> []
+  }
+}
+
+fn assistant_message_text(message: MessageObject) -> List(String) {
+  case message.role, all_text_content(message.content) {
+    Some("assistant"), Some(content) -> [content]
+    _, _ -> []
+  }
 }
 
 fn all_text_content(items: List(ContentItem)) -> Option(String) {

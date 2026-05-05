@@ -19,11 +19,11 @@ pub fn prefers_agent_end_assistant_message_test() {
   let artifact = result_artifact.from_records(records, [], 8000)
 
   assert artifact.final_response == Some("final")
-  assert artifact.source == "agent_end_messages"
+  assert artifact.source == "completed_assistant_messages"
   assert artifact.truncated == False
 }
 
-pub fn falls_back_to_message_update_deltas_test() {
+pub fn ignores_message_update_deltas_as_final_result_test() {
   let records = [
     decode("{\"type\":\"message_update\",\"delta\":\"hello \"}"),
     decode("{\"type\":\"message_update\",\"delta\":\"world\"}"),
@@ -31,8 +31,25 @@ pub fn falls_back_to_message_update_deltas_test() {
 
   let artifact = result_artifact.from_records(records, [], 8000)
 
-  assert artifact.final_response == Some("hello world")
-  assert artifact.source == "message_update_delta"
+  assert artifact.final_response == None
+  assert artifact.source == "none"
+}
+
+pub fn uses_completed_turn_message_when_agent_end_messages_are_empty_test() {
+  let records = [
+    decode(
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"thinking_delta\",\"delta\":\"scratch\"}}",
+    ),
+    decode(
+      "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"complete final\"}]}}",
+    ),
+    decode("{\"type\":\"agent_end\",\"messages\":[]}"),
+  ]
+
+  let artifact = result_artifact.from_records(records, [], 8000)
+
+  assert artifact.final_response == Some("complete final")
+  assert artifact.source == "completed_assistant_messages"
 }
 
 pub fn ignores_tool_and_lifecycle_events_test() {
@@ -63,31 +80,52 @@ pub fn redacts_final_message_result_text_test() {
   assert !string.contains(text, "secret-key")
 }
 
-pub fn redacts_and_truncates_delta_fallback_text_test() {
+pub fn redacts_completed_message_text_test() {
   let records = [
     decode(
-      "{\"type\":\"message_update\",\"delta\":\"prefix secret-key suffix extra text\"}",
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"prefix secret-key suffix\"}]}}",
     ),
   ]
 
-  let artifact = result_artifact.from_records(records, ["secret-key"], 20)
+  let artifact = result_artifact.from_records(records, ["secret-key"], 80)
 
   let assert Some(text) = artifact.final_response
   assert string.contains(text, "[REDACTED]")
   assert !string.contains(text, "secret-key")
-  assert artifact.truncated == True
+  assert artifact.truncated == False
+}
+
+pub fn ignores_tool_call_json_delta_as_final_result_test() {
+  let records = [
+    decode(
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"toolcall_delta\",\"delta\":\"{\\\"name\\\":\\\"dash_search\\\",\\\"argumentsJson\\\":\\\"{}\\\"}\"}}",
+    ),
+  ]
+
+  let artifact = result_artifact.from_records(records, [], 8000)
+
+  assert artifact.final_response == None
+  assert artifact.source == "none"
 }
 
 pub fn append_combines_turn_results_test() {
   let first =
     result_artifact.from_records(
-      [decode("{\"type\":\"message_update\",\"delta\":\"first\"}")],
+      [
+        decode(
+          "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"first\"}]}}",
+        ),
+      ],
       [],
       8000,
     )
   let second =
     result_artifact.from_records(
-      [decode("{\"type\":\"message_update\",\"delta\":\"second\"}")],
+      [
+        decode(
+          "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}}",
+        ),
+      ],
       [],
       8000,
     )

@@ -351,7 +351,7 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
   assert success.final_classification == agent_types.FinalTerminal
   assert success.tokens.total == 3
   assert success.result.final_response == Some("done")
-  assert success.result.source == "agent_end_messages"
+  assert success.result.source == "completed_assistant_messages"
   assert turn_event_names(drain_updates(update_subject, []))
     == ["turn_started", "turn_finished"]
   let assert Ok(contents) = simplifile.read(transcript)
@@ -519,7 +519,7 @@ pub fn worker_success_result_redacts_secret_output_test() {
   let assert Some(text) = success.result.final_response
   assert string.contains(text, "[REDACTED]")
   assert !string.contains(text, "key")
-  assert success.result.source == "message_update_delta"
+  assert success.result.source == "completed_assistant_messages"
 }
 
 pub fn worker_success_result_includes_interleaved_skipped_records_test() {
@@ -538,7 +538,7 @@ pub fn worker_success_result_includes_interleaved_skipped_records_test() {
       emit,
     )
   let assert Some(text) = success.result.final_response
-  assert string.contains(text, "interleaved")
+  assert !string.contains(text, "interleaved")
   assert string.contains(text, "POPULATED")
 }
 

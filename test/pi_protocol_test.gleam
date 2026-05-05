@@ -34,9 +34,16 @@ pub fn decode_response_and_event_test() {
 
   let assert Ok(codex_event) =
     protocol.decode_record(
-      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"delta\":\"nested hi\"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_delta\",\"delta\":\"nested hi\"}}",
     )
   assert codex_event.delta == Some("nested hi")
+
+  let assert Ok(thinking_event) =
+    protocol.decode_record(
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"thinking_delta\",\"delta\":\"scratch\"}}",
+    )
+  assert thinking_event.delta == None
+  assert thinking_event.assistant_event_type == Some("thinking_delta")
 }
 
 pub fn decode_extension_ui_request_message_test() {

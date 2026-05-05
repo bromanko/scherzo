@@ -59,6 +59,29 @@ pub fn agent_success_artifact_exposes_template_local_test() {
     == template.VString("Looks good")
 }
 
+pub fn agent_success_without_final_response_stays_successful_test() {
+  let success =
+    agent_types.WorkerSuccess(
+      final_issue: None,
+      final_classification: agent_types.FinalTerminal,
+      workspace_path: "workspace",
+      tokens: session_tokens.zero_token_totals(),
+      turns: 1,
+      result: result_artifact.ResultArtifact(
+        final_response: None,
+        truncated: False,
+        source: "none",
+      ),
+    )
+  let artifact =
+    step_artifact.from_agent_success("research", success, [], limits())
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.failure_code == None
+  assert artifact.final_response == None
+  assert artifact.final_response_truncated == False
+}
+
 pub fn command_success_artifact_exposes_exit_and_stdout_test() {
   let artifact =
     step_artifact.from_command_result(
