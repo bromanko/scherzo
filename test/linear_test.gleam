@@ -246,7 +246,7 @@ pub fn contract_request_uses_project_slug_and_read_only_query_test() {
   assert string.contains(request.body, "projects(first: 2")
   assert string.contains(request.body, "teams(first: 10")
   assert string.contains(request.body, "states(first: 50")
-  assert string.contains(request.body, "labels(first: 100")
+  assert string.contains(request.body, "labels(first: 140")
   assert string.contains(request.body, "issueLabels(first: 100")
   assert string.contains(request.body, "projectSlug")
   assert string.contains(request.body, "PROJ")
