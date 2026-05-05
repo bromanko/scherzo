@@ -63,12 +63,13 @@ Top-level recovered workers can confuse operators if the process session id is r
 
 - [x] (2026-05-03 00:00Z) Drafted this ExecPlan from the Linear ticket and a targeted inspection of the current runner, daemon, workspace, scheduler, and state recovery paths.
 - [x] (2026-05-03 01:00Z) Incorporated adversarial review findings about durable recovery interfaces, attempt lifecycle, recovered cleanup safety, worker session identity, workspace filesystem validation, and test visibility.
-- [ ] Normalize or create durable workflow checkpoint interfaces, artifact storage, DAG fingerprinting, and pure recovery action types.
-- [ ] Implement recovery context types and scheduler hydration.
-- [ ] Thread recovered context through daemon startup, pending claims, worker spawn, and workflow execution.
-- [ ] Add durable attempt lifecycle records and attempt-aware YAML step sessions.
-- [ ] Add recovery tests for skipped terminal steps, failed-continued artifacts, parallel interruption, unique attempts, mid-attempt crash recovery, filesystem validation, and unsafe recovery conditions.
-- [ ] Run formatting and test validation.
+- [x] (2026-05-05 09:15Z) Normalized the existing durable workflow checkpoint substrate by adding the `src/scherzo/state/workflow_checkpoint.gleam` facade, unverified full-shape artifact reads, stable `workflow_fingerprint.for_dag`, and recovery park mode/fail-closed artifact handling.
+- [x] (2026-05-05 09:15Z) Implemented recovery context types, `workflow_scheduler.init_with_statuses`, `workflow_run.execute_with_context`, recovered scheduler hydration, preserved artifacts, next-attempt indexes, and recovered cleanup guards before new attempts start.
+- [x] (2026-05-05 09:15Z) Threaded recovered context through the current daemon startup resumption path and workflow execution, and made recovered worker process session ids distinct as `run_id-resume-<sequence>` while preserving the logical `run_id`.
+- [x] (2026-05-05 09:15Z) Preserved durable attempt lifecycle records through the existing workflow checkpoint writer and added a public `src/scherzo/orchestrator/yaml_step_session.gleam` contract for attempt-aware YAML step session ids.
+- [x] (2026-05-05 09:15Z) Added recovery tests for skipped terminal steps, failed-continued artifacts feeding prompts, interrupted parallel branches using higher attempts, scheduler hydration validation, unique step sessions, missing artifacts parking, and disabled recovery parking.
+- [x] (2026-05-05 09:22Z) Ran formatting and the full Gleam test suite successfully: `673 passed, no failures`.
+- [x] (2026-05-05 09:50Z) Applied review feedback by moving unsafe interrupted command-attempt and recovered source-workspace checks into startup recovery planning, expanding execution fingerprinting to include DAG hooks and artifact limits, and adding regression tests; the Gleam suite now reports `677 passed, no failures`.
 
 ## Surprises & Discoveries
 
@@ -86,6 +87,18 @@ Top-level recovered workers can confuse operators if the process session id is r
 
 - Observation: The adversarial review identified that top-level worker session sequence reservation is ineffective if `make_session_id` continues to return only `run_id`.
   Evidence: The plan now requires a recovered worker process session id that includes the newly reserved session sequence while preserving the logical `run_id` separately.
+
+- Observation: The implementation branch already contained durable run-level and step-attempt checkpoint records, full-shape artifact storage, and a basic workflow recovery finalization path under `src/scherzo/workflow_checkpoint.gleam`, `src/scherzo/state/artifact_store.gleam`, and `src/scherzo/state/recovery.gleam`.
+  Evidence: `record.StepAttemptPrepared`, `record.StepAttemptStarted`, `record.StepAttemptFinished`, `artifact_store.write_step_artifact`, and `recovery.finalize_workflow_candidates` existed before runner hydration changes.
+
+- Observation: YAML step session ids were already attempt-aware through `workflow_identity.step_session_id`, and several daemon/session tests asserted the hashed `workflow-step-...-a<attempt>-<hash>` shape.
+  Evidence: The implementation introduced `src/scherzo/orchestrator/yaml_step_session.gleam` as the public contract but delegated to `workflow_identity.step_session_id` to preserve existing operator-visible session compatibility while keeping attempt identity.
+
+- Observation: The repository's `gleam test --target erlang <files...>` invocation compiles and runs the full `scherzo_test.main` suite rather than limiting execution to the listed files.
+  Evidence: The targeted validation attempt executed hundreds of tests, including daemon session tests outside the requested file list.
+
+- Observation: Review found that the first implementation compared only parsed DAG structure during workflow drift checks; recovery-relevant execution settings also live in the orchestrator config.
+  Evidence: `workflow_fingerprint.fingerprint_for_execution` now hashes the parsed DAG together with `dag_hooks`, artifact limits, and global model settings, and `test/workflow_fingerprint_test.gleam` proves hook and artifact-limit changes alter the execution fingerprint.
 
 ## Decision Log
 
@@ -121,9 +134,35 @@ Top-level recovered workers can confuse operators if the process session id is r
   Rationale: The immediate safety requirement is that production can be patched to park recovered workflows instead of spawning them. The implementation will expose `WorkflowRecoveryMode` to tests and startup wiring, and production will pass `ResumeRecoveredWorkflows` by default.
   Date: 2026-05-03
 
+- Decision: Preserve the existing hashed YAML step session id shape behind the new public `yaml_step_session.id` helper instead of switching to the shorter literal `run_id-step_id-a<attempt>` string.
+  Rationale: Existing daemon control and session-event tests already depend on `workflow-step-<run>-<step>-a<attempt>-<hash>` session ids. That shape is already attempt-aware and operator-visible, so preserving it avoids an unnecessary compatibility break while still satisfying the unique-attempt requirement.
+  Date: 2026-05-05
+
+- Decision: Add `src/scherzo/state/workflow_checkpoint.gleam` as a facade over the existing artifact store rather than replacing the established `.scherzo-state/artifacts/runs/...` artifact layout.
+  Rationale: The existing `artifact_store` already writes and decodes full `step_artifact.StepArtifact` values with checksum verification for durable recovery. A facade provides the plan's state-facing API without migrating or duplicating the artifact storage implementation.
+  Date: 2026-05-05
+
+- Decision: Convert missing or corrupt terminal artifacts and disabled workflow recovery mode into parked workflow recovery records instead of startup failure.
+  Rationale: Startup must fail closed for unsafe recovered work but should not prevent the daemon from starting. Parking preserves diagnostic state and lets an operator decide whether to retry from scratch.
+  Date: 2026-05-05
+
+- Decision: Treat any unfinished command step attempt as unsafe during startup planning until an explicit durable rerunnable policy exists.
+  Rationale: The current checkpoint schema records prepared, started, finished, interrupted, and superseded attempts but does not record command idempotency. Parking an unfinished command attempt avoids duplicating potentially external side effects after a crash.
+  Date: 2026-05-05
+
+- Decision: Compare recovered workflow runs using an execution fingerprint that includes parsed DAG content plus DAG hook commands, artifact limits, and global model defaults.
+  Rationale: A hook or artifact-limit change can alter recovered execution behavior even when the YAML DAG file is unchanged, so startup recovery must classify those changes as workflow drift rather than resume under stale assumptions.
+  Date: 2026-05-05
+
+- Decision: Validate recovered terminal workspace records in the recovery planner while still allowing not-yet-run target workspaces to be created by recovered preparation.
+  Rationale: Completed workspace state can feed downstream steps and must exist under the recovered run root before a worker is spawned. A workspace for a step that has never produced state is not diagnostic state yet, so normal preparation may create it safely.
+  Date: 2026-05-05
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The implementation completed the runner-centered recovery path on 2026-05-05. A recovered workflow can now hydrate scheduler statuses directly, preserve durable terminal artifacts for downstream prompt rendering, carry next-attempt indexes into rerun steps, and avoid deleting a recovered run root when recovery fails before any new step attempt starts. Daemon startup now keeps the logical recovered `run_id` while assigning recovered worker processes a distinct `run_id-resume-<sequence>` session id. Missing artifacts, disabled recovery mode, unsafe unfinished command attempts, missing recovered source workspaces, and execution-fingerprint drift now park recovered runs rather than causing silent reruns or daemon startup failure.
+
+The latest validation run from the repository root included `direnv exec . gleam format --check src test` followed by `direnv exec . gleam test`; the full suite reported `677 passed, no failures`. One compatibility adjustment was made: the exact YAML step session string remains the existing hashed `workflow-step-...-a<attempt>-<hash>` form through the new public `yaml_step_session.id` helper, rather than the shorter illustrative form in the original plan. This keeps existing operator routing stable while still making repeated attempts distinct.
 
 ## Context and Orientation
 

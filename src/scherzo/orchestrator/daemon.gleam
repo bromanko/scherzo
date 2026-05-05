@@ -31,6 +31,7 @@ import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
+import scherzo/orchestrator/yaml_step_session
 import scherzo/runtime_bundle
 import scherzo/session/event as session_event
 import scherzo/session/hub
@@ -49,8 +50,8 @@ import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_checkpoint
+import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
-import scherzo/workflow_identity
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace
@@ -619,7 +620,9 @@ fn current_workflow_observation(
     Error(runtime_bundle.BundleError(code, message)) ->
       recovery.WorkflowUnavailable(code <> ":" <> message)
     Ok(#(_, dag)) ->
-      case workflow_fingerprint.fingerprint(dag) {
+      case
+        workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
+      {
         Error(_) -> recovery.WorkflowUnavailable("workflow_fingerprint_failed")
         Ok(fingerprint) ->
           recovery.CurrentWorkflow(
@@ -627,6 +630,8 @@ fn current_workflow_observation(
             dag.id,
             fingerprint,
             core.issue_fingerprint(issue),
+            dag,
+            bundle.effective.workspace.root,
           )
       }
   }
@@ -964,11 +969,7 @@ fn spawn_recovered_workflow_resumption(
         worker_registry.reserve_session_sequence(state.registry)
       let state = State(..state, registry: registry)
       let session_id =
-        make_session_id(
-          recovered.issue.identifier,
-          recovered.run_id,
-          session_sequence,
-        )
+        make_recovered_session_id(recovered.run_id, session_sequence)
       let started_at_ms = state.dependencies.now_ms()
       let recovery =
         Some(
@@ -1090,10 +1091,12 @@ fn run_recovered_workflow_worker(
     Error(runtime_bundle.BundleError(code, _)) ->
       Error(yaml_worker_failure(code, Some(recovered.run_root), recovered.issue))
     Ok(#(_, dag)) ->
-      case dag.id == recovered.workflow_id {
+      case
+        recovered_workflow_identity_matches(dag, bundle.orchestrator, recovered)
+      {
         False ->
           Error(yaml_worker_failure(
-            "workflow_recovery_identity_mismatch",
+            "workflow_recovery_invalid:workflow_drift",
             Some(recovered.run_root),
             recovered.issue,
           ))
@@ -1143,6 +1146,21 @@ fn run_recovered_workflow_worker(
               ))
           }
         }
+      }
+  }
+}
+
+fn recovered_workflow_identity_matches(
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  recovered: recovery.RecoveredWorkflowRun,
+) -> Bool {
+  case dag.id == recovered.workflow_id {
+    False -> False
+    True ->
+      case workflow_fingerprint.fingerprint_for_execution(dag, orchestrator) {
+        Error(_) -> False
+        Ok(fingerprint) -> fingerprint == recovered.workflow_fingerprint
       }
   }
 }
@@ -3307,7 +3325,10 @@ fn workflow_run_started_body_for_claim(
       Error(code <> ":" <> message)
     Ok(#(_, dag)) -> {
       use fingerprint <- result_try_string(
-        workflow_fingerprint.fingerprint(dag)
+        workflow_fingerprint.fingerprint_for_execution(
+          dag,
+          state.workflow.bundle.orchestrator,
+        )
         |> result_map_error(fn(_) { "workflow_fingerprint_failed" }),
       )
       use run_root <- result_try_string(
@@ -3616,6 +3637,7 @@ fn register_yaml_step_session(
   issue: tracker_issue.Issue,
   workspace_path: String,
   step_id: String,
+  attempt_index: Int,
   now_ms: fn() -> Int,
 ) -> Nil {
   let started_at_ms = now_ms()
@@ -3652,7 +3674,7 @@ fn register_yaml_step_session(
         session_event.Lifecycle,
         session_event.LifecycleName(session_event.StepStarted),
       ),
-      message: Some(step_id),
+      message: Some(step_id <> " attempt " <> int.to_string(attempt_index)),
     ),
   )
 }
@@ -3671,17 +3693,14 @@ fn run_yaml_command_step(
   now_ms: fn() -> Int,
 ) -> step_artifact.StepArtifact {
   let session_id =
-    workflow_identity.step_session_id(
-      run_id,
-      context.step_id,
-      context.attempt_index,
-    )
+    yaml_step_session.id(run_id, context.step_id, context.attempt_index)
   register_yaml_step_session(
     event_hub,
     session_id,
     issue,
     context.workspace_path,
     context.step_id,
+    context.attempt_index,
     now_ms,
   )
   process.send(daemon_subject, YamlStepStarted(session_id, run_id))
@@ -3739,11 +3758,7 @@ fn run_yaml_agent_step(
   now_ms: fn() -> Int,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   let session_id =
-    workflow_identity.step_session_id(
-      run_id,
-      context.step_id,
-      context.attempt_index,
-    )
+    yaml_step_session.id(run_id, context.step_id, context.attempt_index)
   let started_at_ms = now_ms()
   hub.register_session(
     event_hub,
@@ -3778,7 +3793,9 @@ fn run_yaml_agent_step(
         session_event.Lifecycle,
         session_event.LifecycleName(session_event.StepStarted),
       ),
-      message: Some(context.step_id),
+      message: Some(
+        context.step_id <> " attempt " <> int.to_string(context.attempt_index),
+      ),
     ),
   )
   process.send(daemon_subject, YamlStepStarted(session_id, run_id))
@@ -5333,6 +5350,10 @@ fn make_session_id(
   _sequence: Int,
 ) -> String {
   run_id
+}
+
+fn make_recovered_session_id(run_id: String, sequence: Int) -> String {
+  run_id <> "-resume-" <> int.to_string(sequence)
 }
 
 fn log_state(

@@ -346,6 +346,28 @@ fn fake_workflow_run_dependencies(
         source_workspace_path: None,
       ))
     },
+    prepare_recovered_step: fn(
+      _issue,
+      workflow_id,
+      run_id,
+      expected_run_root,
+      _step_id,
+      attempt_index,
+      workspace_ref,
+      _orchestrator,
+      _known,
+    ) {
+      Ok(workspace_run.PreparedStepWorkspace(
+        workflow_id: workflow_id,
+        run_id: run_id,
+        run_root: expected_run_root,
+        attempt_index: attempt_index,
+        workspace_name: workspace_ref.name,
+        path: expected_run_root <> "/" <> workspace_ref.name,
+        source_workspace_name: workspace_ref.from,
+        source_workspace_path: None,
+      ))
+    },
     after_step: fn(_, step_id, _, _) {
       process.send(log_subject, "yaml_after:" <> step_id)
     },
@@ -1362,7 +1384,8 @@ steps:
   let candidate = issue("issue-resume", "ABC-99", "Todo")
   let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
   let assert Ok(#(_, dag)) = runtime_bundle.select_workflow(bundle, candidate)
-  let assert Ok(fingerprint) = workflow_fingerprint.fingerprint(dag)
+  let assert Ok(fingerprint) =
+    workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
   let store = artifact_store.new(workspace_root)
   let completed_artifact =
     step_artifact.from_command_result(
@@ -1385,6 +1408,7 @@ steps:
     )
   let run_root = workspace_root <> "/implementation/ABC-99/run-recover"
   let first_workspace = run_root <> "/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(first_workspace)
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(workspace_root)
   let assert Ok(Nil) =
     ledger.append_many(

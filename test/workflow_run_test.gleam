@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -18,6 +19,7 @@ import scherzo/tracker/state as issue_state
 import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_run
+import scherzo/workflow_scheduler
 import scherzo/workspace_run
 
 type CommandStart {
@@ -134,37 +136,37 @@ fn deps(
       _orchestrator,
       known,
     ) {
-      let source = case workspace_ref.from {
-        None -> ""
-        Some(name) ->
-          case dict.get(known, name) {
-            Ok(prepared) -> name <> "=" <> prepared.path
-            Error(_) -> name <> "=missing"
-          }
-      }
-      process.send(
+      prepare_fake_step(
         subject,
-        "prepare:" <> step_id <> ":" <> workspace_ref.name <> ":" <> source,
+        workflow_id,
+        run_id,
+        step_id,
+        attempt_index,
+        workspace_ref,
+        known,
+        "prepare",
       )
-      Ok(
-        workspace_run.PreparedStepWorkspace(
-          workflow_id: workflow_id,
-          run_id: run_id,
-          run_root: "test/tmp/workflow-run/workspaces/implementation/ABC-123",
-          attempt_index: attempt_index,
-          workspace_name: workspace_ref.name,
-          path: "test/tmp/workflow-run/workspaces/implementation/ABC-123/"
-            <> workspace_ref.name,
-          source_workspace_name: workspace_ref.from,
-          source_workspace_path: case workspace_ref.from {
-            None -> None
-            Some(name) ->
-              case dict.get(known, name) {
-                Ok(prepared) -> Some(prepared.path)
-                Error(_) -> None
-              }
-          },
-        ),
+    },
+    prepare_recovered_step: fn(
+      _issue,
+      workflow_id,
+      run_id,
+      _expected_run_root,
+      step_id,
+      attempt_index,
+      workspace_ref,
+      _orchestrator,
+      known,
+    ) {
+      prepare_fake_step(
+        subject,
+        workflow_id,
+        run_id,
+        step_id,
+        attempt_index,
+        workspace_ref,
+        known,
+        "prepare_recovered",
       )
     },
     after_step: fn(_issue, step_id, _prepared, _orchestrator) {
@@ -212,12 +214,79 @@ fn deps(
   )
 }
 
+fn prepare_fake_step(
+  subject: process.Subject(String),
+  workflow_id: String,
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  workspace_ref: workflow_dag.WorkspaceRef,
+  known: dict.Dict(String, workspace_run.PreparedStepWorkspace),
+  event_prefix: String,
+) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError) {
+  let source = case workspace_ref.from {
+    None -> ""
+    Some(name) ->
+      case dict.get(known, name) {
+        Ok(prepared) -> name <> "=" <> prepared.path
+        Error(_) -> name <> "=missing"
+      }
+  }
+  process.send(
+    subject,
+    event_prefix <> ":" <> step_id <> ":" <> workspace_ref.name <> ":" <> source,
+  )
+  Ok(
+    workspace_run.PreparedStepWorkspace(
+      workflow_id: workflow_id,
+      run_id: run_id,
+      run_root: "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+      attempt_index: attempt_index,
+      workspace_name: workspace_ref.name,
+      path: "test/tmp/workflow-run/workspaces/implementation/ABC-123/"
+        <> workspace_ref.name,
+      source_workspace_name: workspace_ref.from,
+      source_workspace_path: case workspace_ref.from {
+        None -> None
+        Some(name) ->
+          case dict.get(known, name) {
+            Ok(prepared) -> Some(prepared.path)
+            Error(_) -> None
+          }
+      },
+    ),
+  )
+}
+
 fn implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nmax_parallel_steps: 3\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement prompt\n    workspace: main\n  - id: test_after_implement\n    kind: command\n    depends_on: [implement]\n    run: test command\n    workspace: main\n    on_failure: continue\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: code review prompt\n    workspace:\n      name: code-review\n      from: main\n  - id: apply_feedback\n    kind: agent\n    depends_on: [test_after_implement, code_review]\n    prompt: apply {{ steps.code_review.final_response }} {{ steps.test_after_implement.exit_code }}\n    workspace: main\n",
     )
   dag
+}
+
+fn recovered_context(
+  workflow_id: String,
+  scheduler_statuses: dict.Dict(String, workflow_scheduler.StepRuntime),
+  artifacts: dict.Dict(String, step_artifact.StepArtifact),
+  prepared_workspaces: dict.Dict(String, workspace_run.PreparedStepWorkspace),
+  step_attempts: dict.Dict(String, Int),
+) -> workflow_run.RecoveredRunContext {
+  workflow_run.RecoveredRunContext(
+    workflow_id: workflow_id,
+    workflow_fingerprint: "wf-test",
+    run_id: "run-1",
+    run_root: "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+    scheduler_statuses: scheduler_statuses,
+    artifacts: artifacts,
+    prepared_workspaces: prepared_workspaces,
+    step_attempts: step_attempts,
+    token_totals: session_tokens.zero_token_totals(),
+    final_issue: None,
+    turns: 0,
+    warnings: [],
+  )
 }
 
 pub fn workflow_run_fans_out_fans_in_and_renders_artifacts_test() {
@@ -275,6 +344,203 @@ pub fn workflow_run_on_failure_continue_makes_artifact_available_test() {
     )
   let assert Some(text) = success.worker_success.result.final_response
   assert string.contains(text, "response:apply response:code review prompt 1")
+}
+
+pub fn recovered_completed_upstream_step_is_not_rerun_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n  - id: summarize\n    kind: command\n    depends_on: [collect]\n    run: summarize\n    workspace: main\n",
+    )
+  let collect_artifact =
+    step_artifact.from_command_result(
+      "collect",
+      0,
+      "collected",
+      "",
+      False,
+      [],
+      orchestrator().artifact_limits,
+    )
+  let subject = process.new_subject()
+  let context =
+    recovered_context(
+      dag.id,
+      dict.from_list([#("collect", workflow_scheduler.Succeeded)]),
+      dict.from_list([#("collect", collect_artifact)]),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(success) =
+    workflow_run.execute_with_context(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      workflow_run.RecoveredRun(context),
+      deps(subject, None),
+    )
+
+  assert dict.has_key(success.artifacts, "collect")
+  assert dict.has_key(success.artifacts, "summarize")
+  assert receive_event(subject) == "prepare_recovered:summarize:main:"
+  assert receive_event(subject) == "run:summarize"
+  assert receive_event(subject) == "after:summarize"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  assert process.receive(subject, within: 50) == Error(Nil)
+}
+
+pub fn recovered_failed_continued_artifact_feeds_downstream_prompt_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: lint\n    kind: command\n    run: lint\n    workspace: main\n    on_failure: continue\n  - id: repair\n    kind: agent\n    depends_on: [lint]\n    prompt: fix {{ steps.lint.stderr }} {{ steps.lint.exit_code }}\n    workspace: main\n",
+    )
+  let lint_artifact =
+    step_artifact.from_command_result(
+      "lint",
+      1,
+      "",
+      "lint failed",
+      False,
+      [],
+      orchestrator().artifact_limits,
+    )
+  let subject = process.new_subject()
+  let context =
+    recovered_context(
+      dag.id,
+      dict.from_list([#("lint", workflow_scheduler.FailedContinued)]),
+      dict.from_list([#("lint", lint_artifact)]),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(success) =
+    workflow_run.execute_with_context(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      workflow_run.RecoveredRun(context),
+      deps(subject, None),
+    )
+
+  let assert Ok(restored_lint) = dict.get(success.artifacts, "lint")
+  assert restored_lint == lint_artifact
+  assert receive_event(subject) == "prepare_recovered:repair:main:"
+  let agent_event = receive_event(subject)
+  assert string.contains(agent_event, "lint failed")
+  assert string.contains(agent_event, "1")
+}
+
+pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: build\n    kind: command\n    run: build\n    workspace: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      checkpoint: workflow_checkpoint.Writer(
+        ..workflow_checkpoint.noop_writer(),
+        step_started: fn(_, _, _, _, _, _) {
+          Error(workflow_checkpoint.CheckpointAppendFailed("start failed"))
+        },
+      ),
+    )
+  let context =
+    recovered_context(dag.id, dict.new(), dict.new(), dict.new(), dict.new())
+  let assert Error(failure) =
+    workflow_run.execute_with_context(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      workflow_run.RecoveredRun(context),
+      dependencies,
+    )
+
+  assert failure.reason == "checkpoint_failed:start failed"
+  assert failure.run_root
+    == Some("test/tmp/workflow-run/workspaces/implementation/ABC-123")
+  assert receive_event(subject) == "prepare_recovered:build:main:"
+  assert process.receive(subject, within: 50) == Error(Nil)
+}
+
+pub fn parallel_recovery_runs_only_interrupted_branch_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nmax_parallel_steps: 2\nsteps:\n  - id: docs\n    kind: command\n    run: docs\n    workspace: docs\n  - id: tests\n    kind: command\n    run: tests\n    workspace: tests\n  - id: final\n    kind: command\n    depends_on: [docs, tests]\n    run: final\n    workspace: final\n",
+    )
+  let docs_artifact =
+    step_artifact.from_command_result(
+      "docs",
+      0,
+      "docs done",
+      "",
+      False,
+      [],
+      orchestrator().artifact_limits,
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "run_attempt:"
+            <> context.step_id
+            <> ":"
+            <> int.to_string(context.attempt_index),
+        )
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "stdout:" <> context.step_id,
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+  let context =
+    recovered_context(
+      dag.id,
+      dict.from_list([#("docs", workflow_scheduler.Succeeded)]),
+      dict.from_list([#("docs", docs_artifact)]),
+      dict.new(),
+      dict.from_list([#("tests", 2)]),
+    )
+  let assert Ok(success) =
+    workflow_run.execute_with_context(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      workflow_run.RecoveredRun(context),
+      dependencies,
+    )
+
+  assert dict.has_key(success.artifacts, "docs")
+  assert receive_event(subject) == "prepare_recovered:tests:tests:"
+  assert receive_event(subject) == "run_attempt:tests:2"
+  assert receive_event(subject) == "after:tests"
+  assert receive_event(subject) == "prepare_recovered:final:final:"
+  assert receive_event(subject) == "run_attempt:final:1"
 }
 
 pub fn workflow_run_resolves_default_and_step_model_settings_test() {
