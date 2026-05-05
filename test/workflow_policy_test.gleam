@@ -29,6 +29,7 @@ fn issue_with_labels(labels: List(String)) -> tracker_issue.Issue {
     url: None,
     labels: labels,
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(1)),
   )

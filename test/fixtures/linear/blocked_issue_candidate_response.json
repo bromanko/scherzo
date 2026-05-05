@@ -1,0 +1,47 @@
+{
+  "data": {
+    "issues": {
+      "nodes": [
+        {
+          "id": "A-id",
+          "identifier": "A-1",
+          "title": "Blocked candidate",
+          "description": "A depends on B",
+          "priority": 1,
+          "branchName": "a-1-blocked-candidate",
+          "url": "https://linear.example/A-1",
+          "createdAt": "2026-05-04T00:00:00Z",
+          "updatedAt": "2026-05-04T01:00:00Z",
+          "state": { "name": "Todo" },
+          "labels": { "nodes": [{ "name": "workflow:implementation" }] },
+          "relations": {
+            "nodes": [
+              {
+                "type": "blocks",
+                "relatedIssue": {
+                  "id": "C-id",
+                  "identifier": "C-1",
+                  "state": { "name": "Todo" }
+                }
+              }
+            ]
+          },
+          "inverseRelations": {
+            "nodes": [
+              {
+                "type": "blocks",
+                "issue": {
+                  "id": "B-id",
+                  "identifier": "B-1",
+                  "state": { "name": "In Progress" }
+                }
+              }
+            ],
+            "pageInfo": { "hasNextPage": false, "endCursor": null }
+          }
+        }
+      ],
+      "pageInfo": { "hasNextPage": false, "endCursor": null }
+    }
+  }
+}

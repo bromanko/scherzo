@@ -22,6 +22,7 @@ pub fn issue_records_labels_and_blockers_test() {
           state: Some(issue_state.from_string_unchecked("Done")),
         ),
       ],
+      blocked_by_complete: True,
       created_at: Some(birl.from_unix(0)),
       updated_at: Some(birl.from_unix(1)),
     )

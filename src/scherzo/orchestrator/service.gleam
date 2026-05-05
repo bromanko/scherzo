@@ -742,6 +742,7 @@ fn doctor_issue() -> tracker_issue.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: None,
     updated_at: None,
   )
@@ -1200,6 +1201,7 @@ fn run_pi_probe_orchestrator(
       url: None,
       labels: [],
       blocked_by: [],
+      blocked_by_complete: True,
       created_at: None,
       updated_at: None,
     )
@@ -1339,43 +1341,29 @@ fn dispatch_candidates(
     [] -> Ok(ServiceResult(logs: logs, dispatched: dispatched, state: state))
     [issue, ..rest] -> {
       let state = core.unpark_if_issue_changed(state, issue)
-      case core.should_dispatch(state, bundle.effective, issue) {
-        False ->
+      case core.blocker_decision(bundle.effective, issue) {
+        core.BlockedByDependency(_, _) -> {
+          let line =
+            log.warn("linear_dependency_blocked_candidate", [
+              #("issue_id", issue.id),
+              #("issue_identifier", issue.identifier),
+            ])
+          let _ = dependencies.logger(line)
           dispatch_candidates(
             rest,
             bundle,
             state,
             tracker_client,
             dependencies,
-            logs,
+            [line, ..logs],
             dispatched,
           )
-        True ->
-          case runtime_bundle.select_workflow(bundle, issue) {
-            Error(runtime_bundle.BundleError(code, _)) -> {
-              let skipped =
-                log.warn("workflow_route_failed", [
-                  #("issue_id", issue.id),
-                  #("issue_identifier", issue.identifier),
-                  #("error", code),
-                ])
-              let _ = dependencies.logger(skipped)
+        }
+        core.BlockersSatisfied ->
+          case core.should_dispatch(state, bundle.effective, issue) {
+            False ->
               dispatch_candidates(
                 rest,
-                bundle,
-                state,
-                tracker_client,
-                dependencies,
-                [skipped, ..logs],
-                dispatched,
-              )
-            }
-            Ok(#(workflow_id, dag)) ->
-              dispatch_issue(
-                rest,
-                issue,
-                workflow_id,
-                dag,
                 bundle,
                 state,
                 tracker_client,
@@ -1383,13 +1371,177 @@ fn dispatch_candidates(
                 logs,
                 dispatched,
               )
+            True ->
+              case runtime_bundle.select_workflow(bundle, issue) {
+                Error(runtime_bundle.BundleError(code, _)) -> {
+                  let skipped =
+                    log.warn("workflow_route_failed", [
+                      #("issue_id", issue.id),
+                      #("issue_identifier", issue.identifier),
+                      #("error", code),
+                    ])
+                  let _ = dependencies.logger(skipped)
+                  dispatch_candidates(
+                    rest,
+                    bundle,
+                    state,
+                    tracker_client,
+                    dependencies,
+                    [skipped, ..logs],
+                    dispatched,
+                  )
+                }
+                Ok(#(workflow_id, dag)) ->
+                  dispatch_issue(
+                    rest,
+                    issue,
+                    workflow_id,
+                    dag,
+                    bundle,
+                    state,
+                    tracker_client,
+                    dependencies,
+                    logs,
+                    dispatched,
+                  )
+              }
           }
       }
     }
   }
 }
 
+fn validate_service_dispatch_issue(
+  tracker_client: tracker.Client,
+  issue_id: String,
+) -> Result(tracker_issue.Issue, String) {
+  case tracker_client.fetch_issue_states_by_ids([issue_id]) {
+    Error(err) -> Error("tracker_error:" <> error.tracker_code(err))
+    Ok([]) -> Error("missing_issue")
+    Ok([issue]) ->
+      case issue.id == issue_id {
+        True -> Ok(issue)
+        False -> Error("id_mismatch")
+      }
+    Ok([_, ..]) -> Error("duplicate_issue")
+  }
+}
+
+fn bool_string(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
+  }
+}
+
 fn dispatch_issue(
+  remaining: List(tracker_issue.Issue),
+  issue: tracker_issue.Issue,
+  _workflow_id: String,
+  _dag: workflow_dag.WorkflowDag,
+  bundle: runtime_bundle.RuntimeBundle,
+  state: orchestrator_state.RuntimeState,
+  tracker_client: tracker.Client,
+  dependencies: Dependencies,
+  logs: List(String),
+  dispatched: Int,
+) -> Result(ServiceResult, StartupError) {
+  case validate_service_dispatch_issue(tracker_client, issue.id) {
+    Error(reason) -> {
+      let line =
+        log.warn("linear_dependency_claim_validation_failed", [
+          #("issue_id", issue.id),
+          #("reason", reason),
+        ])
+      let _ = dependencies.logger(line)
+      dispatch_candidates(
+        remaining,
+        bundle,
+        state,
+        tracker_client,
+        dependencies,
+        [line, ..logs],
+        dispatched,
+      )
+    }
+    Ok(refreshed_issue) -> {
+      let state = core.unpark_if_issue_changed(state, refreshed_issue)
+      let decision = core.blocker_decision(bundle.effective, refreshed_issue)
+      case decision {
+        core.BlockedByDependency(_, _) -> {
+          let line =
+            log.warn("linear_dependency_claim_validation_blocked", [
+              #("issue_id", refreshed_issue.id),
+              #("issue_identifier", refreshed_issue.identifier),
+              #(
+                "incomplete",
+                bool_string(core.blocker_decision_incomplete(decision)),
+              ),
+            ])
+          let _ = dependencies.logger(line)
+          dispatch_candidates(
+            remaining,
+            bundle,
+            state,
+            tracker_client,
+            dependencies,
+            [line, ..logs],
+            dispatched,
+          )
+        }
+        core.BlockersSatisfied ->
+          case core.should_dispatch(state, bundle.effective, refreshed_issue) {
+            False ->
+              dispatch_candidates(
+                remaining,
+                bundle,
+                state,
+                tracker_client,
+                dependencies,
+                logs,
+                dispatched,
+              )
+            True ->
+              case runtime_bundle.select_workflow(bundle, refreshed_issue) {
+                Error(runtime_bundle.BundleError(code, _)) -> {
+                  let skipped =
+                    log.warn("workflow_route_failed", [
+                      #("issue_id", refreshed_issue.id),
+                      #("issue_identifier", refreshed_issue.identifier),
+                      #("error", code),
+                    ])
+                  let _ = dependencies.logger(skipped)
+                  dispatch_candidates(
+                    remaining,
+                    bundle,
+                    state,
+                    tracker_client,
+                    dependencies,
+                    [skipped, ..logs],
+                    dispatched,
+                  )
+                }
+                Ok(#(workflow_id, dag)) ->
+                  execute_dispatch_issue(
+                    remaining,
+                    refreshed_issue,
+                    workflow_id,
+                    dag,
+                    bundle,
+                    state,
+                    tracker_client,
+                    dependencies,
+                    logs,
+                    dispatched,
+                  )
+              }
+          }
+      }
+    }
+  }
+}
+
+fn execute_dispatch_issue(
   remaining: List(tracker_issue.Issue),
   issue: tracker_issue.Issue,
   workflow_id: String,
@@ -1560,8 +1712,12 @@ fn interpret_effect(
         #("generation", int_to_string(generation)),
         #("reason", orchestrator_reason.retry_to_string(reason)),
       ])
-    core.CancelRetry(issue_id) ->
-      log.info("retry_cancelled", [#("issue_id", issue_id)])
+    core.CancelRetry(issue_id, generation, reason) ->
+      log.info("retry_cancelled", [
+        #("issue_id", issue_id),
+        #("generation", int_to_string(generation)),
+        #("reason", reason),
+      ])
     core.ReleaseClaim(issue_id) ->
       log.info("claim_released", [#("issue_id", issue_id)])
     core.StopWorker(issue_id, reason) ->

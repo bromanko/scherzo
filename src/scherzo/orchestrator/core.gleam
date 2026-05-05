@@ -14,6 +14,8 @@ import scherzo/workflow_policy
 
 const invalid_workflow_report_cache_limit = 1024
 
+const blocked_dependency_report_cache_limit = 1024
+
 pub type Effect {
   Dispatch(tracker_issue.Issue)
   ScheduleRetry(
@@ -22,7 +24,7 @@ pub type Effect {
     generation: Int,
     reason: reason.RetryReason,
   )
-  CancelRetry(issue_id: String)
+  CancelRetry(issue_id: String, generation: Int, reason: String)
   CleanupWorkspace(path: String)
   ReleaseClaim(issue_id: String)
   StopWorker(issue_id: String, reason: reason.StopReason)
@@ -38,6 +40,14 @@ pub type WorkflowCleanupPolicy {
   CleanupWorkflowWorkspace(String)
 }
 
+pub type BlockerDecision {
+  BlockersSatisfied
+  BlockedByDependency(
+    open_blockers: List(tracker_issue.BlockerRef),
+    incomplete: Bool,
+  )
+}
+
 pub fn new_state(
   config: config_types.EffectiveConfig,
 ) -> orchestrator_state.RuntimeState {
@@ -50,6 +60,7 @@ pub fn new_state(
     issue_counters: dict.new(),
     parked: dict.new(),
     invalid_workflow_reports: dict.new(),
+    blocked_dependency_reports: dict.new(),
     completed: dict.new(),
     aggregate_pi_totals: session_tokens.zero_token_totals(),
     latest_rate_limit_payload: None,
@@ -87,6 +98,7 @@ pub fn issue_fingerprint(issue: tracker_issue.Issue) -> String {
     encode_optional_int(issue.priority),
     encode_string(issue_state.to_string(issue.state)),
     encode_optional_string(issue.branch_name),
+    encode_string(bool_to_string(issue.blocked_by_complete)),
     blocker_fingerprint(issue.blocked_by),
   ]
   |> string.join(with: "|")
@@ -94,6 +106,13 @@ pub fn issue_fingerprint(issue: tracker_issue.Issue) -> String {
 
 fn encode_string(value: String) -> String {
   int.to_string(string.length(value)) <> ":" <> value
+}
+
+fn bool_to_string(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
+  }
 }
 
 fn encode_optional_string(value: Option(String)) -> String {
@@ -298,16 +317,28 @@ fn blockers_satisfied(
   config: config_types.EffectiveConfig,
   issue: tracker_issue.Issue,
 ) -> Bool {
-  case issue_state.equals_key(issue.state, issue_state.todo_key()) {
-    False -> True
-    True ->
-      issue.blocked_by
-      |> list.all(fn(blocker) {
-        case blocker.state {
-          Some(state) -> is_terminal(config, state)
-          None -> False
-        }
-      })
+  case blocker_decision(config, issue) {
+    BlockersSatisfied -> True
+    BlockedByDependency(_, _) -> False
+  }
+}
+
+pub fn blocker_decision(
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
+) -> BlockerDecision {
+  let open_blockers =
+    issue.blocked_by
+    |> list.filter(fn(blocker) {
+      case blocker.state {
+        Some(state) -> !is_terminal(config, state)
+        None -> True
+      }
+    })
+  case issue.blocked_by_complete, open_blockers {
+    True, [] -> BlockersSatisfied
+    complete, blockers ->
+      BlockedByDependency(open_blockers: blockers, incomplete: !complete)
   }
 }
 
@@ -508,7 +539,7 @@ pub fn schedule_retry(
       retry_attempts: dict.insert(state.retry_attempts, issue_id, retry),
     ),
     effects: [
-      CancelRetry(issue_id),
+      CancelRetry(issue_id, generation, "reschedule_retry"),
       ScheduleRetry(issue_id, delay_ms, generation, reason),
     ],
   )
@@ -750,10 +781,172 @@ pub fn stop_retry_for_policy_invalid(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
 ) -> Transition {
+  let generation = retry_generation(state, issue_id)
   Transition(
     state: release_claim(clear_retry(state, issue_id), issue_id),
-    effects: [CancelRetry(issue_id), ReleaseClaim(issue_id)],
+    effects: [
+      CancelRetry(issue_id, generation, "policy_invalid"),
+      ReleaseClaim(issue_id),
+    ],
   )
+}
+
+pub fn stop_retry_for_dependency_blocked(
+  state: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> Transition {
+  let generation = retry_generation(state, issue_id)
+  Transition(
+    state: release_claim(clear_retry(state, issue_id), issue_id),
+    effects: [
+      CancelRetry(issue_id, generation, "linear_dependency_blocked"),
+      ReleaseClaim(issue_id),
+    ],
+  )
+}
+
+fn retry_generation(
+  state: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> Int {
+  case dict.get(state.retry_attempts, issue_id) {
+    Ok(entry) -> entry.timer_generation
+    Error(_) -> 0
+  }
+}
+
+pub fn blocked_dependency_fingerprint(
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
+  phase: String,
+  decision: BlockerDecision,
+) -> String {
+  [
+    encode_string(phase),
+    encode_string(bool_to_string(issue.blocked_by_complete)),
+    encode_string(bool_to_string(blocker_decision_incomplete(decision))),
+    encode_string(terminal_state_policy_fingerprint(config)),
+    blocker_fingerprint(issue.blocked_by),
+  ]
+  |> string.join(with: "|")
+}
+
+pub fn terminal_state_policy_fingerprint(
+  config: config_types.EffectiveConfig,
+) -> String {
+  config.tracker.terminal_states
+  |> list.map(fn(state) { issue_state.key_to_string(issue_state.key(state)) })
+  |> list.sort(by: string.compare)
+  |> string.join(with: ",")
+}
+
+pub fn blocker_decision_incomplete(decision: BlockerDecision) -> Bool {
+  case decision {
+    BlockersSatisfied -> False
+    BlockedByDependency(_, incomplete) -> incomplete
+  }
+}
+
+pub fn already_reported_blocked_dependency(
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
+  phase: String,
+  decision: BlockerDecision,
+) -> Bool {
+  let key = blocked_dependency_report_key(issue.id, phase)
+  case dict.get(state.blocked_dependency_reports, key) {
+    Error(_) -> False
+    Ok(report) ->
+      report.last_result != "failed"
+      && report.observed_updated_at == issue.updated_at
+      && report.blocker_fingerprint
+      == blocked_dependency_fingerprint(config, issue, phase, decision)
+      && report.terminal_state_policy_fingerprint
+      == terminal_state_policy_fingerprint(config)
+  }
+}
+
+pub fn mark_blocked_dependency_reported(
+  state: orchestrator_state.RuntimeState,
+  config: config_types.EffectiveConfig,
+  issue: tracker_issue.Issue,
+  phase: String,
+  decision: BlockerDecision,
+  now_ms: Int,
+) -> orchestrator_state.RuntimeState {
+  let key = blocked_dependency_report_key(issue.id, phase)
+  let report =
+    orchestrator_state.BlockedDependencyReport(
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      phase: phase,
+      blocker_fingerprint: blocked_dependency_fingerprint(
+        config,
+        issue,
+        phase,
+        decision,
+      ),
+      observed_updated_at: issue.updated_at,
+      terminal_state_policy_fingerprint: terminal_state_policy_fingerprint(
+        config,
+      ),
+      attempted_at_ms: now_ms,
+      last_result: "logged",
+    )
+  orchestrator_state.RuntimeState(
+    ..state,
+    blocked_dependency_reports: dict.insert(
+        state.blocked_dependency_reports,
+        key,
+        report,
+      )
+      |> trim_blocked_dependency_reports,
+  )
+}
+
+pub fn clear_blocked_dependency_report(
+  state: orchestrator_state.RuntimeState,
+  issue_id: String,
+  phase: String,
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
+    ..state,
+    blocked_dependency_reports: dict.delete(
+      state.blocked_dependency_reports,
+      blocked_dependency_report_key(issue_id, phase),
+    ),
+  )
+}
+
+fn blocked_dependency_report_key(issue_id: String, phase: String) -> String {
+  issue_id <> "|" <> phase
+}
+
+fn trim_blocked_dependency_reports(
+  reports: dict.Dict(String, orchestrator_state.BlockedDependencyReport),
+) -> dict.Dict(String, orchestrator_state.BlockedDependencyReport) {
+  case dict.size(reports) <= blocked_dependency_report_cache_limit {
+    True -> reports
+    False ->
+      reports
+      |> dict.to_list
+      |> list.sort(by: compare_blocked_dependency_report_entries)
+      |> list.take(blocked_dependency_report_cache_limit)
+      |> dict.from_list
+  }
+}
+
+fn compare_blocked_dependency_report_entries(
+  a: #(String, orchestrator_state.BlockedDependencyReport),
+  b: #(String, orchestrator_state.BlockedDependencyReport),
+) -> Order {
+  let #(a_id, a_report) = a
+  let #(b_id, b_report) = b
+  case int.compare(b_report.attempted_at_ms, a_report.attempted_at_ms) {
+    Eq -> string.compare(a_id, b_id)
+    order -> order
+  }
 }
 
 pub fn already_attempted_invalid_workflow(

@@ -27,6 +27,7 @@ fn issue() -> tracker_issue.Issue {
     url: None,
     labels: ["workflow:smoke"],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: None,
     updated_at: None,
   )

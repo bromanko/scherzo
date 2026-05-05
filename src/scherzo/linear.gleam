@@ -517,11 +517,11 @@ fn graphql_request(endpoint: String, api_key: String, body: String) -> Request {
 }
 
 pub fn candidate_query() -> String {
-  "query CandidateIssues($projectSlug: String!, $activeStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $activeStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations { nodes { type issue { id identifier state { name } } } } } pageInfo { hasNextPage endCursor } } }"
+  "query CandidateIssues($projectSlug: String!, $activeStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $activeStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn state_refresh_query() -> String {
-  "query IssueStates($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations { nodes { type issue { id identifier state { name } } } } } pageInfo { hasNextPage endCursor } } }"
+  "query IssueStates($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn issue_comments_query() -> String {
@@ -1269,11 +1269,10 @@ fn issue_decoder() -> decode.Decoder(tracker_issue.Issue) {
     decode.optional(decode.string),
   )
   use labels <- decode.optional_field("labels", [], labels_decoder())
-  use blockers <- decode.optional_field(
-    "inverseRelations",
-    [],
-    blockers_decoder(),
-  )
+  // Linear dependency direction matters: for candidate A, an incoming
+  // inverseRelations `blocks` relation points at blocker B. Outgoing
+  // `relations` means A blocks some other issue and is intentionally ignored.
+  use blocker_page <- decode.field("inverseRelations", blockers_decoder())
   decode.success(tracker_issue.Issue(
     id: id,
     identifier: identifier,
@@ -1284,7 +1283,8 @@ fn issue_decoder() -> decode.Decoder(tracker_issue.Issue) {
     branch_name: branch_name,
     url: url,
     labels: list.map(labels, string.lowercase),
-    blocked_by: blockers,
+    blocked_by: blocker_page.blockers,
+    blocked_by_complete: blocker_page.complete,
     created_at: parse_optional_time(created_at),
     updated_at: parse_optional_time(updated_at),
   ))
@@ -1305,16 +1305,24 @@ fn label_decoder() -> decode.Decoder(String) {
   decode.success(name)
 }
 
-fn blockers_decoder() -> decode.Decoder(List(tracker_issue.BlockerRef)) {
+pub type BlockerPage {
+  BlockerPage(blockers: List(tracker_issue.BlockerRef), complete: Bool)
+}
+
+fn blockers_decoder() -> decode.Decoder(BlockerPage) {
   use nodes <- decode.field("nodes", decode.list(relation_decoder()))
-  decode.success(
+  use page_info <- decode.field("pageInfo", page_info_decoder())
+  let blockers =
     list.filter_map(nodes, fn(rel) {
       case rel {
         Relation("blocks", blocker) -> Ok(blocker)
         _ -> Error(Nil)
       }
-    }),
-  )
+    })
+  decode.success(BlockerPage(
+    blockers: blockers,
+    complete: !page_info.has_next_page,
+  ))
 }
 
 pub type Relation {

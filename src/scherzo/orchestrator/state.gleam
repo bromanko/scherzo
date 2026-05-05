@@ -55,6 +55,19 @@ pub type InvalidWorkflowReport {
   )
 }
 
+pub type BlockedDependencyReport {
+  BlockedDependencyReport(
+    issue_id: String,
+    identifier: String,
+    phase: String,
+    blocker_fingerprint: String,
+    observed_updated_at: Option(Time),
+    terminal_state_policy_fingerprint: String,
+    attempted_at_ms: Int,
+    last_result: String,
+  )
+}
+
 pub type RuntimeState {
   RuntimeState(
     poll_interval_ms: Int,
@@ -65,6 +78,7 @@ pub type RuntimeState {
     issue_counters: Dict(String, IssueCounter),
     parked: Dict(String, ParkedEntry),
     invalid_workflow_reports: Dict(String, InvalidWorkflowReport),
+    blocked_dependency_reports: Dict(String, BlockedDependencyReport),
     completed: Dict(String, tracker_issue.Issue),
     aggregate_pi_totals: session_tokens.TokenTotals,
     latest_rate_limit_payload: Option(String),

@@ -121,6 +121,7 @@ fn issue(
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
   )
@@ -230,6 +231,10 @@ pub fn issue_fingerprint_changes_for_blockers_test() {
 
   assert core.issue_fingerprint(base) == core.issue_fingerprint(reordered)
   assert core.issue_fingerprint(base) != core.issue_fingerprint(blocker_changed)
+  assert core.issue_fingerprint(base)
+    != core.issue_fingerprint(
+      tracker_issue.Issue(..base, blocked_by_complete: False),
+    )
 }
 
 pub fn issue_fingerprint_changes_for_core_fields_test() {
@@ -342,7 +347,8 @@ pub fn retry_policy_invalid_can_stop_retry_test() {
     core.stop_retry_for_policy_invalid(retry_state, "a")
   assert !dict.has_key(stopped.retry_attempts, "a")
   assert !dict.has_key(stopped.claimed, "a")
-  assert effects == [core.CancelRetry("a"), core.ReleaseClaim("a")]
+  assert effects
+    == [core.CancelRetry("a", 1, "policy_invalid"), core.ReleaseClaim("a")]
 }
 
 pub fn invalid_workflow_report_fingerprint_helpers_test() {
@@ -501,6 +507,157 @@ pub fn per_state_slots_and_blockers_test() {
   )
 }
 
+pub fn blocker_decision_applies_to_all_active_states_test() {
+  let base = issue("a", "ABC-1", "Todo", Some(1))
+  let todo_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-todo"),
+      identifier: Some("B-1"),
+      state: Some(issue_state.from_string_unchecked("Todo")),
+    )
+  let in_progress_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-progress"),
+      identifier: Some("B-2"),
+      state: Some(issue_state.from_string_unchecked("In Progress")),
+    )
+  let backlog_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-backlog"),
+      identifier: Some("B-3"),
+      state: Some(issue_state.from_string_unchecked("Backlog")),
+    )
+  let done_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-done"),
+      identifier: Some("B-4"),
+      state: Some(issue_state.from_string_unchecked("Done")),
+    )
+  let canceled_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-canceled"),
+      identifier: Some("B-5"),
+      state: Some(issue_state.from_string_unchecked("Canceled")),
+    )
+  let unknown_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-unknown"),
+      identifier: Some("B-6"),
+      state: None,
+    )
+
+  assert core.blocker_decision(config(), base) == core.BlockersSatisfied
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [todo_blocker]),
+  )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [in_progress_blocker]),
+  )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [backlog_blocker]),
+  )
+  assert core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [done_blocker]),
+  )
+  assert core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [canceled_blocker]),
+  )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [unknown_blocker]),
+  )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by_complete: False),
+  )
+
+  let in_progress_issue =
+    tracker_issue.Issue(
+      ..base,
+      state: issue_state.from_string_unchecked("In Progress"),
+      blocked_by: [todo_blocker],
+    )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    in_progress_issue,
+  )
+}
+
+pub fn blocked_dependency_report_cache_test() {
+  let issue =
+    tracker_issue.Issue(..issue("a", "ABC-1", "Todo", Some(1)), blocked_by: [
+      tracker_issue.BlockerRef(
+        id: Some("block"),
+        identifier: Some("B-1"),
+        state: Some(issue_state.from_string_unchecked("Todo")),
+      ),
+    ])
+  let decision = core.blocker_decision(config(), issue)
+  let state = core.new_state(config())
+  assert !core.already_reported_blocked_dependency(
+    state,
+    config(),
+    issue,
+    "candidate",
+    decision,
+  )
+  let marked =
+    core.mark_blocked_dependency_reported(
+      state,
+      config(),
+      issue,
+      "candidate",
+      decision,
+      100,
+    )
+  assert core.already_reported_blocked_dependency(
+    marked,
+    config(),
+    issue,
+    "candidate",
+    decision,
+  )
+  assert !core.already_reported_blocked_dependency(
+    marked,
+    config(),
+    tracker_issue.Issue(..issue, blocked_by_complete: False),
+    "candidate",
+    core.blocker_decision(
+      config(),
+      tracker_issue.Issue(..issue, blocked_by_complete: False),
+    ),
+  )
+  assert !core.already_reported_blocked_dependency(
+    marked,
+    config(),
+    issue,
+    "retry",
+    decision,
+  )
+  let cleared =
+    core.clear_blocked_dependency_report(marked, issue.id, "candidate")
+  assert !core.already_reported_blocked_dependency(
+    cleared,
+    config(),
+    issue,
+    "candidate",
+    decision,
+  )
+}
+
 pub fn worker_success_terminal_cleans_and_releases_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let final =
@@ -573,7 +730,7 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
     )
   assert effects
     == [
-      core.CancelRetry("a"),
+      core.CancelRetry("a", 1, "reschedule_retry"),
       core.ScheduleRetry("a", 1000, 1, reason.RetryAfterContinuation),
     ]
 
@@ -612,7 +769,7 @@ pub fn worker_failure_backoff_and_retry_cap_test() {
     core.apply_worker_failure(state, config(), "a", issue, 100)
   assert effects1
     == [
-      core.CancelRetry("a"),
+      core.CancelRetry("a", 1, "reschedule_retry"),
       core.ScheduleRetry("a", 10_000, 1, reason.RetryAfterFailure),
     ]
   let state = core.apply_worker_start(one, issue, "/tmp/ws")
@@ -782,7 +939,7 @@ pub fn retry_candidate_without_slot_capacity_retries_no_slots_test() {
 
   assert effects
     == [
-      core.CancelRetry("a"),
+      core.CancelRetry("a", 2, "reschedule_retry"),
       core.ScheduleRetry("a", 20_000, 2, reason.RetryNoSlots),
     ]
   assert dict.has_key(next.retry_attempts, "a")
@@ -800,7 +957,7 @@ pub fn retry_timer_handling_test() {
   assert dict.has_key(kept.claimed, "a")
   assert poll_failed
     == [
-      core.CancelRetry("a"),
+      core.CancelRetry("a", 2, "reschedule_retry"),
       core.ScheduleRetry("a", 20_000, 2, reason.RetryPollFailed),
     ]
 
@@ -808,7 +965,7 @@ pub fn retry_timer_handling_test() {
     core.handle_retry_candidate(kept, config(), "a", Error("tracker"))
   assert poll_failed_again
     == [
-      core.CancelRetry("a"),
+      core.CancelRetry("a", 3, "reschedule_retry"),
       core.ScheduleRetry("a", 40_000, 3, reason.RetryPollFailed),
     ]
 
@@ -832,7 +989,7 @@ pub fn retry_candidate_without_slots_uses_backoff_test() {
 
   assert effects
     == [
-      core.CancelRetry("a"),
+      core.CancelRetry("a", 2, "reschedule_retry"),
       core.ScheduleRetry("a", 20_000, 2, reason.RetryNoSlots),
     ]
 }
@@ -942,6 +1099,7 @@ pub fn auto_park_clears_on_core_issue_change_test() {
       ..issue,
       title: "New title",
       blocked_by: [],
+      blocked_by_complete: True,
       updated_at: Some(birl.from_unix(2)),
     )
 

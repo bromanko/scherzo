@@ -23,7 +23,7 @@ fn response_page(identifier: String) -> String {
   <> identifier
   <> "-id\",\"identifier\":\""
   <> identifier
-  <> "\",\"title\":\"Title\",\"description\":null,\"priority\":1,\"branchName\":null,\"url\":null,\"createdAt\":null,\"updatedAt\":null,\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[]},\"relations\":{\"nodes\":[]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  <> "\",\"title\":\"Title\",\"description\":null,\"priority\":1,\"branchName\":null,\"url\":null,\"createdAt\":null,\"updatedAt\":null,\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[]},\"inverseRelations\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
 }
 
 pub fn real_client_delegates_candidate_terminal_and_refresh_queries_test() {
