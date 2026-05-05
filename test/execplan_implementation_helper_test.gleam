@@ -157,6 +157,11 @@ pub fn extract_plan_rejects_ambiguous_plan_paths_test() {
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("prepare_plan_ambiguous")
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=prepare_plan_ambiguous",
+  )
   assert string.contains(
     artifact.stderr,
     "found multiple ExecPlan path candidates",
@@ -288,24 +293,7 @@ pub fn jj_workspace_hook_prefers_configured_remote_base_for_new_root_workspaces_
 pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   let dir = "test/tmp/implementation-helper-publish-normalize"
   reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/tmp/scherzo-implementation.json",
-      "{\n"
-        <> "  \"source_kind\": \"ticket\",\n"
-        <> "  \"issue_identifier\": \"SCH-123\",\n"
-        <> "  \"issue_title\": \"Fix publish\",\n"
-        <> "  \"issue_url\": \"https://linear.example/SCH-123\",\n"
-        <> "  \"base_change_id\": \"local-start\"\n"
-        <> "}\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/tmp/scherzo-implementation-validation.json",
-      "{\"status\": \"passed\", \"commands\": []}\n",
-    )
+  write_publish_fixture_metadata(dir)
   write_fake_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
   write_fake_direnv(dir <> "/bin/direnv")
@@ -342,6 +330,60 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
     publish_json,
     "\"publish_base_revision\": \"main@origin\"",
   )
+}
+
+pub fn publish_rebase_conflict_emits_stable_failure_code_test() {
+  let dir = "test/tmp/implementation-helper-publish-rebase-conflict"
+  reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  write_fake_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_JJ_REBASE_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("publish_rebase_conflict")
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=publish_rebase_conflict",
+  )
+  assert string.contains(artifact.stderr, "could not rebase")
+}
+
+pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
+  let dir = "test/tmp/implementation-helper-publish-revalidation-failed"
+  reset_dir(dir)
+  write_publish_fixture_metadata(dir)
+  write_fake_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_DIRENV_TEST_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("publish_revalidation_failed")
+  assert string.contains(
+    artifact.stdout,
+    "Revalidation after publish-base normalization",
+  )
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=publish_revalidation_failed",
+  )
+  assert string.contains(artifact.stderr, "command failed with exit code 1")
 }
 
 pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
@@ -478,6 +520,28 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
   assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE=LIV-200")
   let assert Ok(lc_log) = simplifile.read(dir <> "/lc.log")
   assert !string.contains(lc_log, "ARG=create")
+}
+
+fn write_publish_fixture_metadata(dir: String) -> Nil {
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation.json",
+      "{\n"
+        <> "  \"source_kind\": \"ticket\",\n"
+        <> "  \"issue_identifier\": \"SCH-123\",\n"
+        <> "  \"issue_title\": \"Fix publish\",\n"
+        <> "  \"issue_url\": \"https://linear.example/SCH-123\",\n"
+        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-validation.json",
+      "{\"status\": \"passed\", \"commands\": []}\n",
+    )
+  Nil
 }
 
 fn write_followup_plan(dir: String) -> Nil {
@@ -664,7 +728,10 @@ fn write_fake_jj(path: String) -> Nil {
         <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then exit 0; fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
         <> "if [ \"$1\" = diff ]; then echo 'scripts/scherzo-implementation'; exit 0; fi\n"
-        <> "if [ \"$1\" = rebase ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = rebase ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_REBASE_FAIL:-}\" = 1 ]; then echo 'simulated rebase conflict' >&2; exit 1; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
         <> "if [ \"$1\" = bookmark ]; then exit 0; fi\n"
         <> "if [ \"$1\" = status ]; then exit 0; fi\n"
@@ -708,7 +775,10 @@ fn write_fake_direnv(path: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       path,
-      "#!/bin/sh\n" <> "printf '%s\\n' \"$*\" >> direnv.log\n" <> "exit 0\n",
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> direnv.log\n"
+        <> "if [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ] && [ \"$*\" = 'exec . gleam test' ]; then echo 'simulated validation failure' >&2; exit 1; fi\n"
+        <> "exit 0\n",
     )
   Nil
 }

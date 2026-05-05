@@ -614,6 +614,52 @@ pub fn workflow_run_fatal_failure_stops_remaining_steps_test() {
   assert process.receive(subject, within: 50) == Error(Nil)
 }
 
+pub fn workflow_run_failure_report_promotes_command_failure_code_test() {
+  let subject = process.new_subject()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: publish_pr\n    kind: command\n    run: publish\n    workspace: main\n",
+    )
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
+        process.send(subject, "run:" <> step_id)
+        step_artifact.from_command_result(
+          step_id,
+          1,
+          "",
+          "SCHERZO_FAILURE_CODE=publish_rebase_conflict\nconflict output\n",
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert workflow_run.failed_command_failure(failure)
+    == Some(#("publish_rebase_conflict", "publish_pr"))
+  let report = workflow_run.failure_report(failure)
+  assert string.contains(
+    report,
+    "workflow_command_failed:publish_rebase_conflict",
+  )
+  assert string.contains(report, "failure_code=publish_rebase_conflict")
+  assert string.contains(report, "step=publish_pr")
+}
+
 fn deps_with_prepare_failure(
   subject: process.Subject(String),
   fail_step_id: String,

@@ -177,6 +177,7 @@ fn empty_artifact() -> step_artifact.StepArtifact {
     command: None,
     duration_ms: None,
     diagnostic_path: None,
+    failure_code: None,
     stdout: "",
     stderr: "",
     timed_out: False,
