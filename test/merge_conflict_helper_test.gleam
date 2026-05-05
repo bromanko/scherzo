@@ -58,6 +58,32 @@ pub fn extract_target_accepts_local_pr_reference_test() {
   assert string.contains(artifact.stdout, "PR_NUMBER=51")
 }
 
+pub fn extract_target_prefers_issue_fields_over_diagnostic_comments_test() {
+  let dir = "test/tmp/merge-conflict-extract-pr-with-diagnostic-comment"
+  reset_dir(dir)
+  let text_path = dir <> "/issue.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      text_path,
+      "{\n"
+        <> "  \"title\": \"Resolve conflicts for PR #31\",\n"
+        <> "  \"description\": \"https://github.com/bromanko/scherzo/pull/31\\n\",\n"
+        <> "  \"comments\": {\"nodes\": [\n"
+        <> "    {\"createdAt\": \"2026-05-05T01:31:05.807Z\", \"body\": \"Parent commit: Merge pull request #29 from bromanko/scherzo/old\", \"user\": {\"name\": \"Bromanko Agent\"}}\n"
+        <> "  ]}\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_helper("extract-target-issue " <> text_path <> " bromanko/scherzo")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "TARGET_KIND=pr")
+  assert string.contains(artifact.stdout, "REPO=bromanko/scherzo")
+  assert string.contains(artifact.stdout, "PR_NUMBER=31")
+}
+
 pub fn extract_target_accepts_explicit_branch_line_test() {
   let dir = "test/tmp/merge-conflict-extract-branch"
   reset_dir(dir)
@@ -127,6 +153,38 @@ pub fn validate_accepts_resolved_conflicts_when_only_conflicted_files_changed_te
   assert string.contains(artifact.stdout, "VALIDATION=ok")
   assert string.contains(artifact.stdout, "RESOLUTION_STATUS=resolved")
   assert string.contains(artifact.stdout, "PROJECT_VALIDATION=skipped")
+}
+
+pub fn validate_accepts_prepare_metadata_with_jj_conflict_status_suffix_test() {
+  let dir = "test/tmp/merge-conflict-validate-status-suffix"
+  write_validation_fixture(dir, "safe\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-merge-conflict.json",
+      "{\n"
+        <> "  \"linear_issue_identifier\": \"LIV-123\",\n"
+        <> "  \"repo\": \"bromanko/scherzo\",\n"
+        <> "  \"remote\": \"origin\",\n"
+        <> "  \"target_kind\": \"branch\",\n"
+        <> "  \"head_branch\": \"feature/conflicted-branch\",\n"
+        <> "  \"base_branch\": \"main\",\n"
+        <> "  \"conflicted_files\": [\"conflicted.txt      2-sided conflict including an executable\"],\n"
+        <> "  \"non_conflict_fingerprints\": {\n"
+        <> "    \"conflicted.txt\": {\"type\": \"file\", \"sha256\": \"stale\", \"size\": 0},\n"
+        <> "    \"safe.txt\": {\"type\": \"file\", \"sha256\": \"93d868f3b59590f611d7646894ce8def1cea5ad63a9af0d9ccc56e9bc6968c11\", \"size\": 5}\n"
+        <> "  }\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate --skip-project-validation",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "VALIDATION=ok")
 }
 
 pub fn validate_reports_unresolved_conflict_path_without_jj_status_suffix_test() {
@@ -214,7 +272,7 @@ fn write_fake_unresolved_conflict_jj(path: String) -> Nil {
       path,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> jj.log\n"
-        <> "if [ \"$1\" = resolve ]; then echo 'conflicted.txt 2-sided conflict'; exit 0; fi\n"
+        <> "if [ \"$1\" = resolve ]; then echo 'conflicted.txt      2-sided conflict including an executable'; exit 0; fi\n"
         <> "if [ \"$1 $2\" = 'file list' ]; then printf '%s\\n' conflicted.txt safe.txt; exit 0; fi\n"
         <> "exit 1\n",
     )

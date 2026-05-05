@@ -35,6 +35,7 @@ PUBLISH_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-publish.json"
 PR_COMMENT_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-pr-comment.md"
 RETENTION_MARKER = ".scherzo-keep-workspace"
 CONFLICT_MARKER_RE = re.compile(r"^(<<<<<<<|>>>>>>>|%%%%%%%|\+{7}|\\{7})", re.MULTILINE)
+JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
 
 
 def usage() -> None:
@@ -55,6 +56,8 @@ publish       Fast-forward the target branch with the validated merge commit,
 Test helper:
 extract-target <text-file> [repo]
               Extract one PR or branch target from a text fixture and print it.
+extract-target-issue <json-file> [repo]
+              Extract one PR or branch target from an issue JSON fixture and print it.
 """,
         file=sys.stderr,
     )
@@ -370,6 +373,20 @@ def extract_target_candidates(issue: dict[str, Any], repo: str) -> list[dict[str
     return extract_target_candidates_from_texts(issue_texts(issue), repo)
 
 
+def candidate_has_primary_source(candidate: dict[str, Any]) -> bool:
+    """Return True when a target came from the issue title or description.
+
+    Scherzo appends operational comments containing historical diagnostics, and
+    those diagnostics can mention other PRs. Treat the editable issue fields as
+    authoritative when they identify exactly one target, while still allowing
+    comments to provide the target when title/description do not.
+    """
+    return any(
+        source.endswith(" in title") or source.endswith(" in description")
+        for source in candidate.get("sources", [])
+    )
+
+
 def choose_target_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     if not candidates:
         fail(
@@ -378,10 +395,15 @@ def choose_target_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
             "'bromanko/scherzo#51', a full GitHub PR URL, or a line like "
             "'Branch: feature/conflicted-branch'."
         )
-    if len(candidates) > 1:
-        details = "; ".join(format_candidate(candidate) for candidate in candidates)
+
+    primary_candidates = [
+        candidate for candidate in candidates if candidate_has_primary_source(candidate)
+    ]
+    eligible_candidates = primary_candidates or candidates
+    if len(eligible_candidates) > 1:
+        details = "; ".join(format_candidate(candidate) for candidate in eligible_candidates)
         fail("multiple PR/branch targets found; please clarify exactly one. " + details)
-    return candidates[0]
+    return eligible_candidates[0]
 
 
 def format_candidate(candidate: dict[str, Any]) -> str:
@@ -461,6 +483,21 @@ def branch_target(candidate: dict[str, Any], expected_repo: str) -> dict[str, An
     }
 
 
+def normalize_conflict_file_path(value: str) -> str:
+    return JJ_CONFLICT_STATUS_RE.sub("", value.strip())
+
+
+def normalize_conflicted_files(paths: list[Any]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in paths:
+        path = normalize_conflict_file_path(str(value))
+        if path and path not in seen:
+            normalized.append(path)
+            seen.add(path)
+    return normalized
+
+
 def conflict_files() -> list[str]:
     proc = run_proc(["jj", "resolve", "--list", "--color=never"])
     if proc.returncode == 0:
@@ -469,7 +506,7 @@ def conflict_files() -> list[str]:
             line = line.strip()
             if not line:
                 continue
-            files.append(re.sub(r"\s+\d+-sided conflict$", "", line))
+            files.append(normalize_conflict_file_path(line))
         return sorted(files)
     if "No conflicts found" in proc.stderr or "No conflicts found" in proc.stdout:
         return []
@@ -483,6 +520,10 @@ def current_commit(rev: str) -> str:
 
 def current_commit_short(rev: str) -> str:
     return run(["jj", "log", "-r", rev, "--no-graph", "-T", "commit_id.short()", "--color=never"]).strip()
+
+
+def track_remote_bookmark(remote: str, branch: str) -> None:
+    run(["jj", "bookmark", "track", branch, f"--remote={remote}"])
 
 
 def tracked_files() -> list[str]:
@@ -701,8 +742,12 @@ def prepare_command() -> None:
 
 
 def compare_non_conflict_fingerprints(metadata: dict[str, Any]) -> None:
-    conflicted = set(metadata.get("conflicted_files", []))
-    expected: dict[str, dict[str, Any]] = metadata.get("non_conflict_fingerprints", {})
+    conflicted = set(normalize_conflicted_files(metadata.get("conflicted_files", [])))
+    expected: dict[str, dict[str, Any]] = {
+        path: fingerprint
+        for path, fingerprint in metadata.get("non_conflict_fingerprints", {}).items()
+        if path not in conflicted
+    }
     current = tracked_file_fingerprints(conflicted)
 
     expected_paths = set(expected)
@@ -764,7 +809,10 @@ def validate_resolution_guard() -> str:
             + (f":\n{details}" if details else "")
         )
 
-    conflicted: list[str] = metadata.get("conflicted_files", [])
+    conflicted = normalize_conflicted_files(metadata.get("conflicted_files", []))
+    if conflicted != metadata.get("conflicted_files", []):
+        metadata["conflicted_files"] = conflicted
+        write_json(METADATA_PATH, metadata)
     compare_non_conflict_fingerprints(metadata)
 
     remaining = conflict_files()
@@ -923,6 +971,7 @@ def publish_command() -> None:
 
     target_label = f"PR #{metadata['pr_number']}" if metadata.get("pr_number") else f"branch {head_branch}"
     run(["jj", "describe", "-m", f"chore: resolve merge conflicts for {target_label}"])
+    track_remote_bookmark(remote, head_branch)
     run(["jj", "bookmark", "set", head_branch, "--revision", "@"])
     run(["jj", "git", "push", "--remote", remote, "--bookmark", head_branch])
     commit = current_commit_short("@")
@@ -957,6 +1006,15 @@ def publish_command() -> None:
         print(f"- {path}")
 
 
+def print_target(target: dict[str, Any]) -> None:
+    print(f"TARGET_KIND={target['kind']}")
+    print(f"REPO={target['repo']}")
+    if target["kind"] == "pr":
+        print(f"PR_NUMBER={target['number']}")
+    else:
+        print(f"BRANCH={target['branch']}")
+
+
 def extract_target_command(args: list[str]) -> None:
     if len(args) not in {1, 2}:
         usage()
@@ -965,12 +1023,17 @@ def extract_target_command(args: list[str]) -> None:
     repo = args[1] if len(args) == 2 else "bromanko/scherzo"
     issue = {"title": "", "description": text, "comments": {"nodes": []}}
     target = choose_target_candidate(extract_target_candidates(issue, repo))
-    print(f"TARGET_KIND={target['kind']}")
-    print(f"REPO={target['repo']}")
-    if target["kind"] == "pr":
-        print(f"PR_NUMBER={target['number']}")
-    else:
-        print(f"BRANCH={target['branch']}")
+    print_target(target)
+
+
+def extract_target_issue_command(args: list[str]) -> None:
+    if len(args) not in {1, 2}:
+        usage()
+        sys.exit(2)
+    issue = json.loads(Path(args[0]).read_text())
+    repo = args[1] if len(args) == 2 else "bromanko/scherzo"
+    target = choose_target_candidate(extract_target_candidates(issue, repo))
+    print_target(target)
 
 
 def main(argv: list[str]) -> int:
@@ -984,6 +1047,8 @@ def main(argv: list[str]) -> int:
         publish_command()
     elif command == "extract-target":
         extract_target_command(args)
+    elif command == "extract-target-issue":
+        extract_target_issue_command(args)
     elif command in {"-h", "--help", "help"}:
         usage()
     else:
