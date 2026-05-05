@@ -1,4 +1,5 @@
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
@@ -6,6 +7,7 @@ import scherzo/error
 import scherzo/log
 import scherzo/path
 import scherzo/session/tokens as session_tokens
+import scherzo/terminal/sanitize as terminal_sanitize
 import scherzo/tracker/issue as tracker_issue
 import simplifile
 
@@ -27,6 +29,7 @@ pub fn success_comment(
       header <> "\n\n" <> result_section(success) <> "\n\n" <> metadata(success)
     False -> header <> "\n\n" <> metadata(success)
   }
+  let body = sanitize_comment_body(body)
   log.redact("comment_body", body, secrets)
 }
 
@@ -48,6 +51,7 @@ pub fn success_result_attachment_markdown(
         <> result_section(success)
         <> "\n\n"
         <> metadata(success)
+      let body = sanitize_comment_body(body)
       Some(log.redact("attachment_body", body, secrets))
     }
   }
@@ -62,7 +66,15 @@ pub fn failure_comment(
   let header =
     "Scherzo failed run " <> run_id <> " for " <> issue.identifier <> "."
   let body = header <> "\n\n" <> failure_diagnostics(failure)
+  let body = sanitize_comment_body(body)
   log.redact("failure_comment", body, secrets)
+}
+
+fn sanitize_comment_body(body: String) -> String {
+  body
+  |> terminal_sanitize.block_lines
+  |> list.intersperse("\n")
+  |> string.concat
 }
 
 fn failure_diagnostics(failure: agent_types.WorkerFailure) -> String {

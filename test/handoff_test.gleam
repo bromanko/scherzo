@@ -237,6 +237,22 @@ pub fn failure_handoff_truncates_long_details_test() {
   assert !string.contains(failure_comment, "SHOULD_NOT_APPEAR")
 }
 
+pub fn failure_handoff_escapes_control_characters_test() {
+  let failure =
+    worker_failure(
+      error.PiFailed(error.PiProtocolError(
+        "bad" <> "\u{0}" <> "stderr" <> "\u{1b}" <> "[31m\nnext line",
+      )),
+      None,
+    )
+  let failure_comment = capture_failure_comment(failure, "run-control")
+
+  assert string.contains(failure_comment, "bad␀stderr␛[31m")
+  assert string.contains(failure_comment, "next line")
+  assert !string.contains(failure_comment, "\u{0}")
+  assert !string.contains(failure_comment, "\u{1b}[31m")
+}
+
 pub fn failure_handoff_handles_workspace_path_safely_test() {
   let relative_workspace =
     "test/tmp/workflow-run/workspaces/implementation/ABC-123"

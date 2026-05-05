@@ -113,12 +113,19 @@ def subprocess_failure_details(stdout: str, stderr: str, returncode: int) -> str
     return "\n\n".join(parts)
 
 
-def run(args: list[str], *, check: bool = True, failure_code: str | None = None) -> str:
+def run(
+    args: list[str],
+    *,
+    check: bool = True,
+    failure_code: str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     proc = subprocess.run(
         args,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
     if check and proc.returncode != 0:
         details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
@@ -126,13 +133,19 @@ def run(args: list[str], *, check: bool = True, failure_code: str | None = None)
     return proc.stdout
 
 
-def run_and_print(args: list[str], *, failure_code: str | None = None) -> None:
+def run_and_print(
+    args: list[str],
+    *,
+    failure_code: str | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
     print("$ " + " ".join(shell_display(arg) for arg in args), flush=True)
     proc = subprocess.run(
         args,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
     if proc.stdout:
         print(proc.stdout, end="")
@@ -860,6 +873,16 @@ def comma_join(values: list[str]) -> str:
     return ",".join(values) if values else "none"
 
 
+def validation_env() -> dict[str, str]:
+    env = os.environ.copy()
+    # Validation runs the repository test suite, and some tests execute Scherzo
+    # helper scripts against fixture directories. SCHERZO_RUN_ROOT is a
+    # workflow-run-scoped setting; inheriting it makes nested helper invocations
+    # read/write the outer run artifacts instead of their test fixture tmp/ data.
+    env.pop("SCHERZO_RUN_ROOT", None)
+    return env
+
+
 def validate_command(*, failure_code: str | None = None) -> None:
     require_command("direnv")
     commands = [
@@ -868,8 +891,9 @@ def validate_command(*, failure_code: str | None = None) -> None:
         ["direnv", "exec", ".", "gleam", "format", "--check", "src", "test"],
         ["direnv", "exec", ".", "gleam", "test"],
     ]
+    env = validation_env()
     for command in commands:
-        run_and_print(command, failure_code=failure_code)
+        run_and_print(command, failure_code=failure_code, env=env)
     write_json(VALIDATION_PATH, {"commands": [" ".join(c) for c in commands], "status": "passed"})
     print("FINAL_VALIDATION=passed")
 

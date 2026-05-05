@@ -290,6 +290,27 @@ pub fn jj_workspace_hook_prefers_configured_remote_base_for_new_root_workspaces_
   assert string.contains(script, "--revision \"$base_revision\"")
 }
 
+pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
+  let dir = "test/tmp/implementation-helper-validate-env"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "FINAL_VALIDATION=passed")
+  let assert Ok(validation_json) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-validation.json")
+  assert string.contains(validation_json, "\"status\": \"passed\"")
+}
+
 pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   let dir = "test/tmp/implementation-helper-publish-normalize"
   reset_dir(dir)
@@ -852,6 +873,7 @@ fn write_fake_direnv(path: String) -> Nil {
       path,
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> direnv.log\n"
+        <> "if [ \"${SCHERZO_FAIL_IF_RUN_ROOT_LEAKS:-}\" = 1 ] && [ -n \"${SCHERZO_RUN_ROOT:-}\" ]; then echo 'SCHERZO_RUN_ROOT leaked into validation' >&2; exit 1; fi\n"
         <> "if [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ] && [ \"$*\" = 'exec . gleam test' ]; then echo 'simulated validation failure' >&2; exit 1; fi\n"
         <> "exit 0\n",
     )

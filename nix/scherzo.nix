@@ -4,6 +4,7 @@
 , erlang
 , rebar3
 , cacert
+, coreutils
 , makeWrapper
 , src
 }:
@@ -12,6 +13,8 @@ let
   manifest = builtins.fromTOML (builtins.readFile "${src}/gleam.toml");
   pname = manifest.name;
   version = manifest.version;
+  runtimePath = lib.makeBinPath [ erlang coreutils ];
+  startRunnerPath = lib.makeBinPath [ coreutils ];
 
   deps = stdenvNoCC.mkDerivation {
     pname = "${pname}-gleam-deps";
@@ -67,6 +70,8 @@ stdenvNoCC.mkDerivation {
     export HOME="$TMPDIR/home"
     export HEX_HOME="$TMPDIR/hex"
     export REBAR_CACHE_DIR="$TMPDIR/rebar-cache"
+    # Prevent BEAM compile_info chunks from embedding transient Nix build paths.
+    export ERL_COMPILER_OPTIONS=deterministic
     mkdir -p "$HOME" "$HEX_HOME" "$REBAR_CACHE_DIR"
 
     rm -rf build
@@ -91,16 +96,13 @@ stdenvNoCC.mkDerivation {
     patchShebangs "$out/libexec/${pname}/scherzo-start-runner"
     makeWrapper "$out/lib/${pname}/entrypoint.sh" "$out/bin/scherzo" \
       --add-flags run \
-      --prefix PATH : ${lib.makeBinPath [ erlang ]}
+      --prefix PATH : ${runtimePath}
     makeWrapper "$out/bin/scherzo" "$out/bin/scherzoctl" \
       --add-flags ctl
-
-    cat > "$out/bin/scherzo-start" <<EOF
-#!/usr/bin/env bash
-exec "$out/libexec/${pname}/scherzo-start-runner" -- "$out/bin/scherzo" "\$@"
-EOF
-    chmod +x "$out/bin/scherzo-start"
-    patchShebangs "$out/bin/scherzo-start"
+    makeWrapper "$out/libexec/${pname}/scherzo-start-runner" "$out/bin/scherzo-start" \
+      --add-flags -- \
+      --add-flags "$out/bin/scherzo" \
+      --prefix PATH : ${startRunnerPath}
 
     runHook postInstall
   '';
@@ -110,9 +112,16 @@ EOF
   installCheckPhase = ''
     runHook preInstallCheck
 
-    "$out/bin/scherzo" --help >/dev/null
-    "$out/bin/scherzo-start" --help >/dev/null
-    "$out/bin/scherzoctl" --help >/dev/null
+    mkdir -p "$TMPDIR/install-check-home"
+
+    PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" --help > scherzo-help
+    grep -q "Usage: scherzo" scherzo-help
+
+    PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo-start" --help > scherzo-start-help
+    grep -q "Usage: scherzo" scherzo-start-help
+
+    PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzoctl" --help > scherzoctl-help
+    grep -q "Usage: scherzo ctl" scherzoctl-help
 
     runHook postInstallCheck
   '';
