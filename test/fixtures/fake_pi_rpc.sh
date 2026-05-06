@@ -6,6 +6,10 @@ if [[ -n "${FAKE_PI_STDERR:-}" ]]; then
   echo "fake pi diagnostic: ${FAKE_PI_STDERR}" >&2
 fi
 
+if [[ -n "${FAKE_PI_PID_FILE:-}" ]]; then
+  printf '%s\n' "$$" > "$FAKE_PI_PID_FILE"
+fi
+
 if [[ -n "${FAKE_PI_NEVER_END:-}" ]]; then
   while true; do sleep 60; done
 fi
@@ -164,10 +168,13 @@ while IFS= read -r line; do
       jq -cn '{type:"agent_start"}'
       jq -cn '{type:"turn_start"}'
       if [[ -n "${FAKE_PI_MESSAGE_SECRET:-}" ]]; then
+        fake_pi_text="POPULATED ${FAKE_PI_MESSAGE_SECRET}"
         jq -cn --arg secret "$FAKE_PI_MESSAGE_SECRET" '{type:"message_update",delta:("POPULATED " + $secret),authorization:$secret,nested:{token:$secret}}'
       elif [[ -f POPULATED ]]; then
+        fake_pi_text="POPULATED"
         jq -cn '{type:"message_update",delta:"POPULATED"}'
       else
+        fake_pi_text="not-populated"
         jq -cn '{type:"message_update",delta:"not-populated"}'
       fi
       if [[ -n "${FAKE_PI_TOOL:-}" ]]; then
@@ -196,7 +203,7 @@ while IFS= read -r line; do
       if [[ -n "${FAKE_PI_STALL_AFTER_PROMPT:-}" ]]; then
         sleep "$(awk "BEGIN { print ${FAKE_PI_STALL_AFTER_PROMPT} / 1000 }")"
       fi
-      jq -cn '{type:"turn_end"}'
+      jq -cn --arg text "$fake_pi_text" '{type:"turn_end",message:{role:"assistant",content:[{type:"text",text:$text}]}}'
       if [[ -n "${FAKE_PI_DELAY_BEFORE_AGENT_END_MS:-}" ]]; then
         sleep "$(awk "BEGIN { print ${FAKE_PI_DELAY_BEFORE_AGENT_END_MS} / 1000 }")"
       fi

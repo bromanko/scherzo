@@ -71,7 +71,7 @@ analyze       Diff from the recorded starting parent to @, detect supported
 refresh-base --stage <stage>
               Fetch SCHERZO_PR_REMOTE/SCHERZO_PR_BASE, rebase @ when needed,
               and write structured base-refresh JSON under tmp/.
-validate      Run final direnv-backed format and test verification.
+validate      Run final direnv-backed SelfCI verification.
 publish       Describe the final jj change, push a bookmark, create/find a PR,
               clear the retention marker, and print the PR URL.
 
@@ -175,7 +175,7 @@ def run_and_print(
 
 
 def shell_display(value: str) -> str:
-    if re.match(r"^[A-Za-z0-9_./:=+-]+$", value):
+    if re.match(r"^[A-Za-z0-9_./:=+@-]+$", value):
         return value
     return "'" + value.replace("'", "'\\''") + "'"
 
@@ -1237,6 +1237,42 @@ def validation_env() -> dict[str, str]:
     return env
 
 
+def fallback_validation_base_revision() -> str:
+    base, remote = configured_publish_base()
+    return f"{base}@{remote}"
+
+
+def final_validation_base_revision(*, failure_code: str | None = None) -> str:
+    if not BASE_REFRESH_LATEST_PATH.exists():
+        return fallback_validation_base_revision()
+    try:
+        refresh = json.loads(BASE_REFRESH_LATEST_PATH.read_text())
+    except json.JSONDecodeError as exc:
+        fail(
+            f"invalid {BASE_REFRESH_LATEST_PATH}; cannot resolve SelfCI base revision: {exc}",
+            failure_code=failure_code,
+        )
+    base_revision = str(refresh.get("base_revision") or "").strip()
+    if base_revision:
+        return base_revision
+    return fallback_validation_base_revision()
+
+
+def selfci_validation_command(base_revision: str) -> list[str]:
+    return [
+        "direnv",
+        "exec",
+        ".",
+        "selfci",
+        "check",
+        "--base",
+        base_revision,
+        "--candidate",
+        "@",
+        "--print-output",
+    ]
+
+
 def validate_command(*, failure_code: str | None = None) -> None:
     if BASE_DRIFT_REPAIR_FAILURE_PATH.exists():
         failure = BASE_DRIFT_REPAIR_FAILURE_PATH.read_text().strip()
@@ -1258,16 +1294,23 @@ def validate_command(*, failure_code: str | None = None) -> None:
             failure_code=failure_code,
         )
     require_command("direnv")
-    commands = [
-        ["direnv", "allow", "."],
-        ["rm", "-rf", "test/tmp"],
-        ["direnv", "exec", ".", "gleam", "format", "--check", "src", "test"],
-        ["direnv", "exec", ".", "gleam", "test"],
-    ]
+    base_revision = final_validation_base_revision(failure_code=failure_code)
+    setup_commands = [["direnv", "allow", "."]]
+    validation_command = selfci_validation_command(base_revision)
     env = validation_env()
-    for command in commands:
+    for command in setup_commands:
         run_and_print(command, failure_code=failure_code, env=env)
-    write_json(VALIDATION_PATH, {"commands": [" ".join(c) for c in commands], "status": "passed"})
+    run_and_print(validation_command, failure_code=failure_code, env=env)
+    write_json(
+        VALIDATION_PATH,
+        {
+            "base_revision": base_revision,
+            "commands": [" ".join(validation_command)],
+            "setup_commands": [" ".join(c) for c in setup_commands],
+            "status": "passed",
+            "validator": "selfci",
+        },
+    )
     print("FINAL_VALIDATION=passed")
 
 
@@ -1319,6 +1362,41 @@ def format_issue_line(issue_identifier: str, issue_title: str, issue_url: str) -
     return "Issue: Linear issue"
 
 
+def current_validation_result() -> dict[str, Any]:
+    if not VALIDATION_PATH.exists():
+        fail(f"missing {VALIDATION_PATH}; run validate before publish")
+    return json.loads(VALIDATION_PATH.read_text())
+
+
+def validation_commands_from_result(validation: dict[str, Any]) -> list[str]:
+    commands = validation.get("commands")
+    if not isinstance(commands, list):
+        return []
+    return [str(command).strip() for command in commands if str(command).strip()]
+
+
+def validation_body_section() -> str:
+    validation = current_validation_result()
+    commands = validation_commands_from_result(validation)
+    is_selfci = validation.get("validator") == "selfci"
+    if is_selfci and not commands:
+        base_revision = str(
+            validation.get("base_revision") or fallback_validation_base_revision()
+        )
+        commands = [" ".join(selfci_validation_command(base_revision))]
+    label = (
+        "SelfCI validation completed before publication"
+        if is_selfci
+        else "Validation completed before publication"
+    )
+    if not commands:
+        return label + ".\n\n"
+    lines = [label + ":", ""]
+    lines.extend(f"- `{command}`" for command in commands)
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]:
     plan_path = metadata["plan_path"]
     issue_identifier = metadata.get("issue_identifier") or ""
@@ -1338,10 +1416,8 @@ def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, st
         "Implements a Linear issue through Scherzo's `workflow:execplan-implementation` dogfood workflow.\n\n"
         f"{format_issue_line(issue_identifier, issue_title, issue_url)}\n\n"
         f"Source ExecPlan: `{plan_path}`\n\n"
-        "Validation completed before publication:\n\n"
-        "- `direnv exec . gleam format --check src test`\n"
-        "- `direnv exec . gleam test`\n\n"
-        "This PR is ready for human acceptance.\n"
+        + validation_body_section()
+        + "This PR is ready for human acceptance.\n"
     )
     return branch_prefix, description, pr_title, body
 
@@ -1359,10 +1435,8 @@ def ticket_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]
         "Implements a Linear ticket through Scherzo's `workflow:implementation` dogfood workflow.\n\n"
         f"{linear_issue_line}\n\n"
         "Source: Linear ticket title, description, labels, and recent comments. No ExecPlan is required for this workflow.\n\n"
-        "Validation completed before publication:\n\n"
-        "- `direnv exec . gleam format --check src test`\n"
-        "- `direnv exec . gleam test`\n\n"
-        "This PR is ready for human acceptance.\n"
+        + validation_body_section()
+        + "This PR is ready for human acceptance.\n"
     )
     return branch_prefix, description, pr_title, body
 
@@ -1387,8 +1461,6 @@ def publish_command() -> None:
     ensure_validation_passed()
     metadata = load_json(METADATA_PATH)
 
-    source_kind, branch_prefix, slug, description, pr_title, body = publish_values(metadata)
-
     base, remote = configured_publish_base()
     refresh = refresh_base("publish")
     write_refresh_base_result(refresh)
@@ -1411,6 +1483,8 @@ def publish_command() -> None:
             print("PUBLISH_BLOCKED=true")
             print("PUBLISH_BLOCKED_REASON=base drift after final validation")
             raise
+
+    source_kind, branch_prefix, slug, description, pr_title, body = publish_values(metadata)
 
     files = changed_files_since(base_revision)
     if not files:
@@ -1486,8 +1560,12 @@ def publish_command() -> None:
     print(f"BRANCH={branch}")
     print("")
     print("## Validation")
-    print("- `direnv exec . gleam format --check src test`: passed")
-    print("- `direnv exec . gleam test`: passed")
+    validation = current_validation_result()
+    validation_commands = validation_commands_from_result(validation)
+    if validation.get("validator") == "selfci" and not validation_commands:
+        validation_commands = [" ".join(selfci_validation_command(base_revision))]
+    for command in validation_commands:
+        print(f"- `{command}`: passed")
     print("")
     print("## Changed files")
     for file in files:

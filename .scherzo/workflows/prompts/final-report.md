@@ -30,8 +30,7 @@ Final response format:
 One short paragraph describing the completed change.
 
 ## Validation
-- `direnv exec . gleam format --check src test`: passed or relevant note.
-- `direnv exec . gleam test`: passed or relevant note.
+- `direnv exec . selfci check --base <base> --candidate @ --print-output`: passed or relevant note.
 
 ## Files changed
 - Bullet list of important changed files/directories.

@@ -307,15 +307,62 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "FINAL_VALIDATION=passed")
+  let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
+  assert string.contains(direnv_log, "allow .")
+  assert string.contains(
+    direnv_log,
+    "exec . selfci check --base main@origin --candidate @ --print-output",
+  )
+  assert !string.contains(direnv_log, "exec . gleam format --check src test")
+  assert !string.contains(direnv_log, "exec . gleam test")
   let assert Ok(validation_json) =
     simplifile.read(dir <> "/tmp/scherzo-implementation-validation.json")
   assert string.contains(validation_json, "\"status\": \"passed\"")
+  assert string.contains(validation_json, "\"validator\": \"selfci\"")
+  assert string.contains(validation_json, "\"base_revision\": \"main@origin\"")
+  assert string.contains(
+    validation_json,
+    "direnv exec . selfci check --base main@origin --candidate @ --print-output",
+  )
+}
+
+pub fn validate_uses_latest_refresh_base_revision_for_selfci_test() {
+  let dir = "test/tmp/implementation-helper-validate-refresh-base"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-refresh-base-latest.json",
+      "{\"base_revision\":\"feature-base@origin\"}\n",
+    )
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
+  assert string.contains(
+    direnv_log,
+    "exec . selfci check --base feature-base@origin --candidate @ --print-output",
+  )
+  let assert Ok(validation_json) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-validation.json")
+  assert string.contains(
+    validation_json,
+    "\"base_revision\": \"feature-base@origin\"",
+  )
 }
 
 pub fn publish_rebases_to_remote_base_and_revalidates_test() {
@@ -351,7 +398,23 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
   assert string.contains(jj_log, "diff --from main@origin --to @ --name-only")
   let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
-  assert string.contains(direnv_log, "exec . gleam test")
+  assert string.contains(
+    direnv_log,
+    "exec . selfci check --base main@origin --candidate @ --print-output",
+  )
+  assert !string.contains(direnv_log, "exec . gleam format --check src test")
+  assert !string.contains(direnv_log, "exec . gleam test")
+  assert string.contains(
+    artifact.stdout,
+    "`direnv exec . selfci check --base main@origin --candidate @ --print-output`: passed",
+  )
+  let assert Ok(body) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-pr-body.md")
+  assert string.contains(body, "SelfCI validation completed before publication")
+  assert string.contains(
+    body,
+    "`direnv exec . selfci check --base main@origin --candidate @ --print-output`",
+  )
   let assert Ok(publish_json) =
     simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
   assert string.contains(
@@ -430,6 +493,11 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
     body,
     "Source ExecPlan: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
   )
+  assert string.contains(body, "SelfCI validation completed before publication")
+  assert string.contains(
+    body,
+    "`direnv exec . selfci check --base main@origin --candidate @ --print-output`",
+  )
   let assert Ok(publish_json) =
     simplifile.read(dir <> "/tmp/scherzo-implementation-publish.json")
   assert string.contains(publish_json, "\"issue_identifier\": \"LIV-65\"")
@@ -473,7 +541,7 @@ pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_DIRENV_TEST_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -925,7 +993,7 @@ pub fn publish_time_revalidation_failure_does_not_publish_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_FAKE_DIRENV_TEST_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
+      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_RUN_ROOT=\"$PWD\" SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation publish",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -1413,7 +1481,10 @@ fn write_fake_direnv(path: String) -> Nil {
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> direnv.log\n"
         <> "if [ \"${SCHERZO_FAIL_IF_RUN_ROOT_LEAKS:-}\" = 1 ] && [ -n \"${SCHERZO_RUN_ROOT:-}\" ]; then echo 'SCHERZO_RUN_ROOT leaked into validation' >&2; exit 1; fi\n"
-        <> "if [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ] && [ \"$*\" = 'exec . gleam test' ]; then echo 'simulated validation failure' >&2; exit 1; fi\n"
+        <> "case \"$*\" in\n"
+        <> "  'exec . selfci check '*) if [ \"${SCHERZO_FAKE_DIRENV_SELFCI_FAIL:-}\" = 1 ] || [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ]; then echo 'simulated SelfCI validation failure' >&2; exit 1; fi;;\n"
+        <> "  'exec . gleam test') if [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ]; then echo 'simulated validation failure' >&2; exit 1; fi;;\n"
+        <> "esac\n"
         <> "exit 0\n",
     )
   Nil

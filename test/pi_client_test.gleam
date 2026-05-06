@@ -1,3 +1,5 @@
+import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -89,8 +91,10 @@ pub fn continuation_reopen_validation_failure_sends_no_prompt_test() {
       ],
     )
 
-  let assert Error(error.PiProtocolError(_)) =
+  let reopen_result =
     client.reopen_session_for_continuation(spec, abs_cwd, session_file, 1000)
+  terminate_if_launch_succeeded(reopen_result)
+  let assert Error(error.PiProtocolError(_)) = reopen_result
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "get_state")
   assert !string.contains(contents, "prompt")
@@ -123,7 +127,9 @@ pub fn stepwise_prompt_read_and_stats_with_fake_pi_test() {
       agent_end.type_,
     ]
     == ["agent_start", "turn_start", "message_update", "turn_end", "agent_end"]
-  let assert Ok(#(_, totals)) = client.get_session_stats(session, 1000)
+  let stats_result = client.get_session_stats(session, 1000)
+  let _ = client.terminate(session)
+  let assert Ok(#(_session, totals)) = stats_result
   assert totals.total == 3
 }
 
@@ -133,15 +139,17 @@ pub fn read_turn_record_uses_absolute_deadlines_test() {
   let command = "FAKE_PI_NO_OUTPUT_AFTER_PROMPT=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let assert Ok(#(session, _)) = client.send_prompt(session, "prompt", 1000)
-  let assert Error(error.PiTurnTimeout) =
+  let turn_result =
     client.read_turn_record(session, 10, -9_999_999_999_999, 9_999_999_999)
   let _ = client.terminate(session)
+  let assert Error(error.PiTurnTimeout) = turn_result
 
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let assert Ok(#(session, _)) = client.send_prompt(session, "prompt", 1000)
-  let assert Error(error.PiStallTimeout) =
+  let stall_result =
     client.read_turn_record(session, 10, 9_999_999_999, -9_999_999_999_999)
   let _ = client.terminate(session)
+  let assert Error(error.PiStallTimeout) = stall_result
 }
 
 pub fn send_abort_and_ui_response_helpers_test() {
@@ -179,7 +187,9 @@ pub fn launch_prompt_and_stats_with_fake_pi_test() {
     collect_prompt(session, "Do work", 1000, 5000, 300_000)
   assert list_types(events)
     == ["agent_start", "turn_start", "message_update", "turn_end", "agent_end"]
-  let assert Ok(#(_, totals)) = client.get_session_stats(session, 1000)
+  let stats_result = client.get_session_stats(session, 1000)
+  let _ = client.terminate(session)
+  let assert Ok(#(_session, totals)) = stats_result
   assert totals.total == 3
 }
 
@@ -189,8 +199,9 @@ pub fn prompt_with_fake_tool_events_surfaces_tool_records_test() {
   let assert Ok(Nil) = simplifile.write(cwd <> "/POPULATED", "yes")
   let command = "FAKE_PI_TOOL=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
-  let assert Ok(#(_, events)) =
+  let assert Ok(#(session, events)) =
     collect_prompt(session, "Do work", 1000, 5000, 300_000)
+  let _ = client.terminate(session)
 
   assert list_types(events)
     == [
@@ -227,10 +238,33 @@ pub fn probe_launches_without_prompt_test() {
 pub fn malformed_json_and_timeout_fail_test() {
   let cwd = "test/tmp/pi-rpc-failure"
   reset_dir(cwd)
-  let assert Error(_) =
+  let malformed_result =
     client.launch("FAKE_PI_MALFORMED=1 " <> fake_pi(), cwd, "name", False, 1000)
-  let assert Error(_) =
+  terminate_if_launch_succeeded(malformed_result)
+  let assert Error(_) = malformed_result
+
+  let timeout_result =
     client.launch("FAKE_PI_DELAY_MS=2000 " <> fake_pi(), cwd, "name", False, 10)
+  terminate_if_launch_succeeded(timeout_result)
+  let assert Error(_) = timeout_result
+}
+
+pub fn launch_spec_terminates_fake_pi_after_handshake_failure_test() {
+  let cwd = "test/tmp/pi-rpc-launch-handshake-failure"
+  reset_dir(cwd)
+  let assert Ok(abs_cwd) = path.absolute(cwd)
+  let assert Ok(pid_file) = path.absolute(cwd <> "/fake-pi.pid")
+  let spec =
+    pi_command.ArgvLaunch(fake_pi(), ["--mode", "rpc"], [
+      #("FAKE_PI_GET_STATE_FAIL", "1"),
+      #("FAKE_PI_PID_FILE", pid_file),
+    ])
+
+  let launch_result = client.launch_spec(spec, abs_cwd, "name", False, 1000)
+  terminate_if_launch_succeeded(launch_result)
+  let assert Error(error.PiProtocolError(_)) = launch_result
+  let assert Ok(fake_pid) = read_pid_file(pid_file)
+  assert wait_until_dead(fake_pid, 50)
 }
 
 pub fn prompt_allows_short_read_timeouts_until_event_test() {
@@ -240,8 +274,9 @@ pub fn prompt_allows_short_read_timeouts_until_event_test() {
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
   let assert Ok(#(session, events)) =
     collect_prompt(session, "prompt", 20, 1000, 500)
-  let assert Ok(#(session, _)) = client.get_session_stats(session, 1000)
+  let stats_result = client.get_session_stats(session, 1000)
   let _ = client.terminate(session)
+  let assert Ok(#(_session, _)) = stats_result
   assert list_types(events)
     == ["agent_start", "turn_start", "message_update", "turn_end", "agent_end"]
 }
@@ -251,9 +286,9 @@ pub fn prompt_fails_when_stall_timeout_expires_test() {
   reset_dir(cwd)
   let command = "FAKE_PI_NO_OUTPUT_AFTER_PROMPT=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
-  let assert Error(error.PiStallTimeout) =
-    collect_prompt(session, "prompt", 1000, 1000, 50)
+  let prompt_result = collect_prompt(session, "prompt", 1000, 1000, 50)
   let _ = client.terminate(session)
+  let assert Error(error.PiStallTimeout) = prompt_result
 }
 
 pub fn prompt_fails_when_turn_timeout_expires_before_agent_end_test() {
@@ -261,9 +296,9 @@ pub fn prompt_fails_when_turn_timeout_expires_before_agent_end_test() {
   reset_dir(cwd)
   let command = "FAKE_PI_NO_AGENT_END=1 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
-  let assert Error(error.PiTurnTimeout) =
-    collect_prompt(session, "prompt", 1000, 80, 1000)
+  let prompt_result = collect_prompt(session, "prompt", 1000, 80, 1000)
   let _ = client.terminate(session)
+  let assert Error(error.PiTurnTimeout) = prompt_result
 }
 
 pub fn turn_timeout_and_failed_stats_are_errors_test() {
@@ -271,9 +306,9 @@ pub fn turn_timeout_and_failed_stats_are_errors_test() {
   reset_dir(cwd)
   let command = "FAKE_PI_STALL_AFTER_PROMPT=200 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
-  let assert Error(error.PiTurnTimeout) =
-    collect_prompt(session, "prompt", 1000, 20, 300_000)
+  let prompt_result = collect_prompt(session, "prompt", 1000, 20, 300_000)
   let _ = client.terminate(session)
+  let assert Error(error.PiTurnTimeout) = prompt_result
 
   let cwd = "test/tmp/pi-rpc-stats-fail"
   reset_dir(cwd)
@@ -285,8 +320,9 @@ pub fn turn_timeout_and_failed_stats_are_errors_test() {
       False,
       1000,
     )
-  let assert Error(error.PiProtocolError(_)) =
-    client.get_session_stats(session, 1000)
+  let stats_result = client.get_session_stats(session, 1000)
+  let _ = client.terminate(session)
+  let assert Error(error.PiProtocolError(_)) = stats_result
 }
 
 fn collect_prompt(
@@ -394,6 +430,60 @@ fn try_pi(
     Error(err) -> Error(err)
   }
 }
+
+fn terminate_if_launch_succeeded(
+  result: Result(client.Session, error.PiRpcError),
+) -> Nil {
+  case result {
+    Ok(session) -> {
+      let _ = client.terminate(session)
+      Nil
+    }
+    Error(_) -> Nil
+  }
+}
+
+fn read_pid_file(path: String) -> Result(Int, Nil) {
+  read_pid_file_attempts(path, 50)
+}
+
+fn read_pid_file_attempts(path: String, attempts: Int) -> Result(Int, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case simplifile.read(path) {
+        Ok(contents) -> int.parse(string.trim(contents)) |> result_nil_error
+        Error(_) -> {
+          process.sleep(20)
+          read_pid_file_attempts(path, attempts - 1)
+        }
+      }
+  }
+}
+
+fn result_nil_error(result: Result(Int, a)) -> Result(Int, Nil) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(Nil)
+  }
+}
+
+fn wait_until_dead(pid: Int, attempts: Int) -> Bool {
+  case pid_alive(pid) {
+    False -> True
+    True ->
+      case attempts <= 0 {
+        True -> False
+        False -> {
+          process.sleep(20)
+          wait_until_dead(pid, attempts - 1)
+        }
+      }
+  }
+}
+
+@external(erlang, "scherzo_test_ffi", "pid_alive")
+fn pid_alive(pid: Int) -> Bool
 
 @external(erlang, "scherzo_time_ffi", "monotonic_ms")
 fn monotonic_ms() -> Int

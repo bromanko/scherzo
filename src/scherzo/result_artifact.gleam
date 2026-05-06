@@ -22,13 +22,9 @@ pub fn from_records(
   max_chars: Int,
 ) -> ResultArtifact {
   case last_non_empty(assistant_messages(records)) {
-    Some(text) -> build_result(text, "agent_end_messages", secrets, max_chars)
-    None ->
-      case concatenated_deltas(records) {
-        Some(text) ->
-          build_result(text, "message_update_delta", secrets, max_chars)
-        None -> empty()
-      }
+    Some(text) ->
+      build_result(text, "completed_assistant_messages", secrets, max_chars)
+    None -> empty()
   }
 }
 
@@ -88,33 +84,6 @@ fn assistant_messages(records: List(protocol.RpcRecord)) -> List(String) {
     [] -> []
     [record, ..rest] ->
       list.append(record.assistant_messages, assistant_messages(rest))
-  }
-}
-
-fn concatenated_deltas(records: List(protocol.RpcRecord)) -> Option(String) {
-  let values = delta_values(records)
-  case list.is_empty(values) {
-    True -> None
-    False -> {
-      let text = string.join(values, with: "")
-      case string.length(text) == 0 {
-        True -> None
-        False -> Some(text)
-      }
-    }
-  }
-}
-
-fn delta_values(records: List(protocol.RpcRecord)) -> List(String) {
-  case records {
-    [] -> []
-    [record, ..rest] -> {
-      let rest = delta_values(rest)
-      case record.type_, record.delta {
-        "message_update", Some(delta) -> [delta, ..rest]
-        _, _ -> rest
-      }
-    }
   }
 }
 
