@@ -35,6 +35,7 @@ fn handoff_config() -> config_types.HandoffConfig {
     comment_on_claim: True,
     comment_on_success: True,
     comment_on_failure: True,
+    comment_on_park: True,
     claim_state_id: Some("claim-state"),
     success_state_id: None,
     failure_state_id: None,
@@ -177,6 +178,21 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   assert string.contains(failure_comment, "pi_protocol_error")
   assert string.contains(failure_comment, "blocked UI request")
   assert !string.contains(failure_comment, "secret-key")
+
+  assert client.report_park(handoff.ParkReport(
+      issue_id: "issue-id",
+      issue_identifier: "ABC-1",
+      reason: "operator secret-key hold",
+      release_policy: Some("explicit_unpark_only"),
+      run_id: Some("run-4"),
+    ))
+    == Ok(Nil)
+  let assert Ok(park_comment) = process.receive(subject, within: 100)
+  assert string.contains(park_comment, "Scherzo parked ABC-1")
+  assert string.contains(park_comment, "Reason: operator [REDACTED] hold")
+  assert string.contains(park_comment, "Release policy: explicit_unpark_only")
+  assert string.contains(park_comment, "Run id: run-4")
+  assert !string.contains(park_comment, "secret-key")
 }
 
 pub fn failure_handoff_includes_nested_pi_diagnostics_test() {
@@ -468,6 +484,14 @@ pub fn disabled_handoff_performs_no_transport_calls_test() {
 
   assert client.claim_issue(issue(), "run-1") == Ok(Nil)
   assert client.report_success(issue(), success(), "run-2") == Ok(Nil)
+  assert client.report_park(handoff.ParkReport(
+      issue_id: "issue-id",
+      issue_identifier: "ABC-1",
+      reason: "operator_hold",
+      release_policy: Some("explicit_unpark_only"),
+      run_id: None,
+    ))
+    == Ok(Nil)
   assert process.receive(subject, within: 20) == Error(Nil)
 }
 

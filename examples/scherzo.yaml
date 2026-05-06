@@ -55,6 +55,7 @@ handoff:
   comment_on_claim: true
   comment_on_success: true
   comment_on_failure: true
+  comment_on_park: true
   include_result_on_success: true
   result_max_chars: 8000
 routing:

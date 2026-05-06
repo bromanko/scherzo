@@ -49,6 +49,7 @@ pub type Effect {
     run_id: String,
     client: handoff.Client,
   )
+  ReportPark(report: handoff.ParkReport, client: handoff.Client)
   PostLinearCommandAck(
     issue_id: String,
     source_comment_id: String,
@@ -106,6 +107,7 @@ pub type EffectResult {
   HandoffClaimFinished(String, String, Result(Nil, error.TrackerError))
   HandoffSuccessFinished(String, String, Result(Nil, error.TrackerError))
   HandoffFailureFinished(String, String, Result(Nil, error.TrackerError))
+  HandoffParkFinished(String, Result(Nil, error.TrackerError))
   LinearCommandAckFinished(String, String, Result(Nil, error.TrackerError))
   InvalidWorkflowReportFinished(
     issue_id: String,
@@ -235,6 +237,7 @@ pub fn effect_kind(effect: Effect) -> String {
     ClaimIssue(_, _, _, _) -> "claim_issue"
     ReportSuccess(_, _, _, _, _) -> "report_success"
     ReportFailure(_, _, _, _, _) -> "report_failure"
+    ReportPark(_, _) -> "report_park"
     PostLinearCommandAck(_, _, _, _) -> "post_linear_command_ack"
     ReportInvalidWorkflow(_, _, _, _, _) -> "report_invalid_workflow"
     CleanupWorkspace(_, _, _, _) -> "cleanup_workspace"
@@ -454,6 +457,8 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         run_id,
         client.report_failure(issue, failure, run_id),
       )
+    ReportPark(report, client) ->
+      HandoffParkFinished(report.issue_id, client.report_park(report))
     PostLinearCommandAck(issue_id, source_comment_id, body, client) ->
       LinearCommandAckFinished(
         issue_id,

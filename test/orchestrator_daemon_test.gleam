@@ -927,6 +927,7 @@ pub fn daemon_final_validation_blocks_new_dependency_test() {
           },
           report_success: fn(_, _, _) { Ok(Nil) },
           report_failure: fn(_, _, _) { Ok(Nil) },
+          report_park: fn(_) { Ok(Nil) },
         )
       },
     )
@@ -1328,6 +1329,7 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
             )
             Ok(Nil)
           },
+          report_park: fn(_) { Ok(Nil) },
         )
       },
       start_event_hub: fn() { Ok(event_hub) },

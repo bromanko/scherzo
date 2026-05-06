@@ -287,6 +287,7 @@ pub fn handoff_defaults_and_parsing_test() {
     )
   assert defaulted.handoff.enabled == False
   assert defaulted.handoff.comment_on_claim == False
+  assert defaulted.handoff.comment_on_park == False
   assert defaulted.handoff.attach_result_on_success == False
   assert defaulted.handoff.attachment_fallback_to_markdown_link == True
 
@@ -301,10 +302,11 @@ pub fn handoff_defaults_and_parsing_test() {
   assert enabled.handoff.comment_on_claim == True
   assert enabled.handoff.comment_on_success == True
   assert enabled.handoff.comment_on_failure == True
+  assert enabled.handoff.comment_on_park == True
 
   let with_states =
     minimal_front()
-    <> "handoff:\n  enabled: true\n  comment_on_failure: false\n  claim_state_id: state-claim\n  success_state_id: state-success\n  failure_state_id: state-fail\n  attach_result_on_success: true\n  attachment_fallback_to_markdown_link: false\n"
+    <> "handoff:\n  enabled: true\n  comment_on_failure: false\n  comment_on_park: false\n  claim_state_id: state-claim\n  success_state_id: state-success\n  failure_state_id: state-fail\n  attach_result_on_success: true\n  attachment_fallback_to_markdown_link: false\n"
   let assert Ok(parsed) =
     config.resolve_with_env(
       definition(with_states),
@@ -312,6 +314,7 @@ pub fn handoff_defaults_and_parsing_test() {
       env,
     )
   assert parsed.handoff.comment_on_failure == False
+  assert parsed.handoff.comment_on_park == False
   assert parsed.handoff.claim_state_id == Some("state-claim")
   assert parsed.handoff.success_state_id == Some("state-success")
   assert parsed.handoff.failure_state_id == Some("state-fail")

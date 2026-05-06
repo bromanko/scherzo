@@ -187,3 +187,37 @@ pub fn success_result_attachment_markdown_returns_none_without_result_test() {
     )
     == None
 }
+
+pub fn park_comment_includes_context_redacts_and_sanitizes_reason_test() {
+  let body =
+    handoff_format.park_comment(
+      "ABC-1",
+      "operator secret-key hold\nnext line",
+      Some("explicit_unpark_only"),
+      Some("run-park"),
+      ["secret-key"],
+    )
+
+  assert string.contains(body, "Scherzo parked ABC-1.")
+  assert string.contains(body, "Reason: operator [REDACTED] hold next line")
+  assert string.contains(body, "Release policy: explicit_unpark_only")
+  assert string.contains(body, "Run id: run-park")
+  assert string.contains(body, "`scherzoctl unpark ABC-1`")
+  assert !string.contains(body, "secret-key")
+}
+
+pub fn park_comment_truncates_long_reason_test() {
+  let long_reason = string.repeat("x", times: 800) <> "SHOULD_NOT_APPEAR"
+  let body =
+    handoff_format.park_comment(
+      "ABC-1",
+      long_reason,
+      Some("auto_unpark_on_issue_change"),
+      None,
+      [],
+    )
+
+  assert string.contains(body, "Reason: ")
+  assert string.contains(body, "truncated")
+  assert !string.contains(body, "SHOULD_NOT_APPEAR")
+}

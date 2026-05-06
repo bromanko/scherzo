@@ -85,6 +85,7 @@ pub type HandoffConfig {
     comment_on_claim: Bool,
     comment_on_success: Bool,
     comment_on_failure: Bool,
+    comment_on_park: Bool,
     claim_state_id: Option(String),
     success_state_id: Option(String),
     failure_state_id: Option(String),

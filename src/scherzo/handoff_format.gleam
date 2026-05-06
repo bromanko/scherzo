@@ -70,6 +70,53 @@ pub fn failure_comment(
   log.redact("failure_comment", body, secrets)
 }
 
+pub fn park_comment(
+  issue_identifier: String,
+  reason: String,
+  release_policy: Option(String),
+  run_id: Option(String),
+  secrets: List(String),
+) -> String {
+  let reason =
+    inline_value(reason, "unspecified")
+    |> truncate_detail
+  let lines =
+    [
+      "Scherzo parked " <> issue_identifier <> ".",
+      "",
+      "Reason: " <> reason,
+    ]
+    |> list.append(optional_line("Release policy", release_policy))
+    |> list.append(optional_line("Run id", run_id))
+    |> list.append([
+      "Next action: inspect recent Scherzo/Linear failure details, then run `scherzoctl unpark "
+      <> issue_identifier
+      <> "` or retry when safe.",
+    ])
+  let body = lines |> string.join(with: "\n") |> sanitize_comment_body
+  log.redact("park_comment", body, secrets)
+}
+
+fn optional_line(label: String, value: Option(String)) -> List(String) {
+  case value {
+    None -> []
+    Some(value) -> [label <> ": " <> inline_value(value, "unspecified")]
+  }
+}
+
+fn inline_value(value: String, fallback: String) -> String {
+  let value =
+    value
+    |> sanitize_comment_body
+    |> string.split(on: "\n")
+    |> string.join(with: " ")
+    |> string.trim
+  case value == "" {
+    True -> fallback
+    False -> value
+  }
+}
+
 fn sanitize_comment_body(body: String) -> String {
   body
   |> terminal_sanitize.block_lines

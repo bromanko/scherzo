@@ -12,6 +12,16 @@ import scherzo/linear_attachment
 import scherzo/result_artifact
 import scherzo/tracker/issue as tracker_issue
 
+pub type ParkReport {
+  ParkReport(
+    issue_id: String,
+    issue_identifier: String,
+    reason: String,
+    release_policy: Option(String),
+    run_id: Option(String),
+  )
+}
+
 pub type Client {
   Client(
     claim_issue: fn(tracker_issue.Issue, String) ->
@@ -20,6 +30,7 @@ pub type Client {
       Result(Nil, error.TrackerError),
     report_failure: fn(tracker_issue.Issue, agent_types.WorkerFailure, String) ->
       Result(Nil, error.TrackerError),
+    report_park: fn(ParkReport) -> Result(Nil, error.TrackerError),
   )
 }
 
@@ -28,6 +39,7 @@ pub fn disabled_client() -> Client {
     claim_issue: fn(_, _) { Ok(Nil) },
     report_success: fn(_, _, _) { Ok(Nil) },
     report_failure: fn(_, _, _) { Ok(Nil) },
+    report_park: fn(_) { Ok(Nil) },
   )
 }
 
@@ -79,6 +91,14 @@ pub fn linear_client_with_attachment_dependencies(
             issue,
             failure,
             run_id,
+          )
+        },
+        report_park: fn(report) {
+          report_park(
+            tracker_config,
+            handoff_config,
+            dependencies.graphql_transport,
+            report,
           )
         },
       )
@@ -191,6 +211,27 @@ fn report_failure(
     transport,
     issue.id,
     handoff_config.failure_state_id,
+  )
+}
+
+fn report_park(
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
+  transport: linear.Transport,
+  report: ParkReport,
+) -> Result(Nil, error.TrackerError) {
+  run_comment(
+    handoff_config.comment_on_park,
+    tracker_config,
+    transport,
+    report.issue_id,
+    handoff_format.park_comment(
+      report.issue_identifier,
+      report.reason,
+      report.release_policy,
+      report.run_id,
+      tracker_secrets(tracker_config),
+    ),
   )
 }
 

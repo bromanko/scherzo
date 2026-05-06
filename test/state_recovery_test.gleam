@@ -509,6 +509,7 @@ fn config() -> config_types.EffectiveConfig {
       comment_on_claim: False,
       comment_on_success: False,
       comment_on_failure: False,
+      comment_on_park: False,
       claim_state_id: None,
       success_state_id: None,
       failure_state_id: None,

@@ -107,6 +107,7 @@ pub fn default_handoff_config() -> config_types.HandoffConfig {
     comment_on_claim: False,
     comment_on_success: False,
     comment_on_failure: False,
+    comment_on_park: False,
     claim_state_id: None,
     success_state_id: None,
     failure_state_id: None,
@@ -593,6 +594,8 @@ fn resolve_handoff(
               |> bool_default(default_comment),
             comment_on_success: comment_on_success,
             comment_on_failure: get_bool(handoff, "comment_on_failure")
+              |> bool_default(default_comment),
+            comment_on_park: get_bool(handoff, "comment_on_park")
               |> bool_default(default_comment),
             claim_state_id: get_non_empty_string(handoff, "claim_state_id"),
             success_state_id: get_non_empty_string(handoff, "success_state_id"),

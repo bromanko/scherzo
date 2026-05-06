@@ -53,6 +53,7 @@ fn handoff_config(
     comment_on_claim: enabled,
     comment_on_success: enabled,
     comment_on_failure: enabled,
+    comment_on_park: enabled,
     claim_state_id: claim,
     success_state_id: success,
     failure_state_id: failure,

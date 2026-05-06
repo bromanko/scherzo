@@ -17,6 +17,8 @@ import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
+import scherzo/state/ledger
+import scherzo/state/record
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
@@ -255,6 +257,38 @@ fn disabled_handoff() -> handoff.Client {
   handoff.disabled_client()
 }
 
+fn park_reporting_handoff(subject: process.Subject(String)) -> handoff.Client {
+  handoff.Client(
+    claim_issue: fn(_, _) { Ok(Nil) },
+    report_success: fn(_, _, _) { Ok(Nil) },
+    report_failure: fn(_, _, _) { Ok(Nil) },
+    report_park: fn(report) {
+      process.send(subject, park_report_message(report))
+      Ok(Nil)
+    },
+  )
+}
+
+fn park_report_message(report: handoff.ParkReport) -> String {
+  "park:"
+  <> report.issue_id
+  <> ":"
+  <> report.issue_identifier
+  <> ":"
+  <> report.reason
+  <> ":"
+  <> option_string(report.release_policy)
+  <> ":"
+  <> option_string(report.run_id)
+}
+
+fn option_string(value: Option(String)) -> String {
+  case value {
+    None -> ""
+    Some(value) -> value
+  }
+}
+
 fn blocking_handoff(log_subject: process.Subject(String)) -> handoff.Client {
   handoff.Client(
     claim_issue: fn(_, _) {
@@ -264,6 +298,7 @@ fn blocking_handoff(log_subject: process.Subject(String)) -> handoff.Client {
     },
     report_success: fn(_, _, _) { Ok(Nil) },
     report_failure: fn(_, _, _) { Ok(Nil) },
+    report_park: fn(_) { Ok(Nil) },
   )
 }
 
@@ -400,11 +435,13 @@ pub fn daemon_park_and_unpark_commands_mutate_runtime_state_test() {
     )
   let #(workflow_path, _root) = write_workflow("test/tmp/daemon-control-park")
   let log_subject = process.new_subject()
-  let assert Ok(started) =
-    daemon.start(
-      Some(workflow_path),
-      dependencies_with_tracker(log_subject, tracker_client),
+  let park_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies_with_tracker(log_subject, tracker_client),
+      make_handoff: fn(_, _) { park_reporting_handoff(park_subject) },
     )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let assert Ok(path) = process.receive(log_subject, within: 1000)
   let assert Ok(control) = control_file.read(path)
 
@@ -418,6 +455,8 @@ pub fn daemon_park_and_unpark_commands_mutate_runtime_state_test() {
   assert dict.has_key(snapshot_after_park.parked, "issue-1")
   let assert Ok(parked_entry) = dict.get(snapshot_after_park.parked, "issue-1")
   assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
+  assert process.receive(park_subject, within: 1000)
+    == Ok("park:issue-1:ABC-1:manual:explicit_unpark_only:")
 
   let assert Ok(unparked) =
     client.apply_command(
@@ -640,12 +679,13 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   let #(workflow_path, _root) =
     write_workflow_with_limits("test/tmp/daemon-control-auto-park", 1, 1, 3)
   let log_subject = process.new_subject()
+  let park_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
       log_subject,
       dynamic_control_tracker(tracker_server),
-      disabled_handoff(),
+      park_reporting_handoff(park_subject),
       hub_subject,
       fail_original_then_block_agent(log_subject),
     )
@@ -660,6 +700,10 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
     == orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(
       candidate,
     ))
+  assert process.receive(park_subject, within: 1000)
+    == Ok(
+      "park:auto-park:ABC-AUTO:max_retry_attempts:auto_unpark_on_issue_change:ABC-AUTO-42-1",
+    )
   drain_logs(log_subject)
 
   process.send(tracker_server, SetControlTrackerCandidate(changed))
@@ -669,6 +713,97 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   assert dict.has_key(running_snapshot.running, "auto-park")
   assert !dict.has_key(running_snapshot.parked, "auto-park")
   assert !dict.has_key(running_snapshot.retry_attempts, "auto-park")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn startup_recovery_of_parked_issue_does_not_repost_park_comment_test() {
+  let candidate = issue("recovered-park", "ABC-RECOVER", "Todo")
+  let dir = "test/tmp/daemon-control-park-recovery"
+  let #(workflow_path, root) = write_workflow_with_limits(dir, 1, 3, 3)
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(dir <> "/" <> root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.new(
+          1,
+          1,
+          record.IssueParkedV2(
+            "recovered-park",
+            "ABC-RECOVER",
+            "operator_hold",
+            "explicit_unpark_only",
+            "",
+            1,
+          ),
+        ),
+      ],
+      True,
+    )
+  let log_subject = process.new_subject()
+  let park_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_with(candidate),
+      park_reporting_handoff(park_subject),
+      hub_subject,
+      failing_agent(log_subject),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(snapshot.parked, "recovered-park")
+  assert process.receive(park_subject, within: 100) == Error(Nil)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn startup_recovery_new_park_posts_park_comment_test() {
+  let candidate = issue("recovery-new-park", "ABC-NEWREC", "Todo")
+  let dir = "test/tmp/daemon-control-park-recovery-new"
+  let #(workflow_path, root) = write_workflow_with_limits(dir, 1, 1, 3)
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(dir <> "/" <> root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.new(
+          1,
+          1,
+          record.RunStarted(
+            "ABC-NEWREC-42-1",
+            "recovery-new-park",
+            "ABC-NEWREC",
+            "test/tmp/recovery-new-park-workspace",
+          ),
+        ),
+      ],
+      True,
+    )
+  let log_subject = process.new_subject()
+  let park_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_with(candidate),
+      park_reporting_handoff(park_subject),
+      hub_subject,
+      failing_agent(log_subject),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(snapshot.parked, "recovery-new-park")
+  assert process.receive(park_subject, within: 1000)
+    == Ok(
+      "park:recovery-new-park:ABC-NEWREC:max_retry_attempts:auto_unpark_on_issue_change:ABC-NEWREC-42-1",
+    )
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)

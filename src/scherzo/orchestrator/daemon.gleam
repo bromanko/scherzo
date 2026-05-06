@@ -137,6 +137,7 @@ type StartupRecovery {
     retry_timers: List(recovery.RecoveredRetry),
     cleanup_workspaces: List(recovery.CleanupRequest),
     outbox_to_replay: List(recovery.OutboxReplay),
+    park_reports: List(handoff.ParkReport),
     command_receipts: Dict(String, projection.CommandReceiptState),
     recovery_by_issue: Dict(String, session_event.RecoveryInfo),
     warnings: List(String),
@@ -469,6 +470,9 @@ pub fn start(
                     |> enqueue_startup_recovery_outbox(
                       startup_recovery.outbox_to_replay,
                     )
+                    |> enqueue_startup_park_reports(
+                      startup_recovery.park_reports,
+                    )
                     |> spawn_recovered_workflow_resumptions(
                       startup_recovery.workflow_resumptions,
                     )
@@ -594,6 +598,7 @@ fn load_startup_recovery(
     retry_timers: recovery_plan.retry_timers,
     cleanup_workspaces: recovery_plan.cleanup_workspaces,
     outbox_to_replay: recovery_plan.outbox_to_replay,
+    park_reports: startup_park_reports(records_to_append),
     command_receipts: replayed.projection.command_receipts,
     recovery_by_issue: startup_recovery_by_issue(
       replayed.projection,
@@ -605,6 +610,120 @@ fn load_startup_recovery(
     ),
     workflow_resumptions: workflow_finalization.resumptions,
   ))
+}
+
+fn startup_park_reports(
+  records: List(record.LedgerRecord),
+) -> List(handoff.ParkReport) {
+  let run_ids = startup_park_report_run_ids(records)
+  startup_park_reports_loop(records, run_ids, [], [])
+}
+
+fn startup_park_reports_loop(
+  records: List(record.LedgerRecord),
+  run_ids: Dict(String, String),
+  seen_issue_ids: List(String),
+  reports: List(handoff.ParkReport),
+) -> List(handoff.ParkReport) {
+  case records {
+    [] -> list.reverse(reports)
+    [ledger_record, ..rest] ->
+      case ledger_record.body {
+        record.IssueParked(issue_id, issue_identifier, reason_text, _) ->
+          add_startup_park_report(
+            rest,
+            run_ids,
+            seen_issue_ids,
+            reports,
+            issue_id,
+            issue_identifier,
+            reason_text,
+            None,
+          )
+        record.IssueParkedV2(
+          issue_id,
+          issue_identifier,
+          reason_text,
+          release_policy,
+          _,
+          _,
+        ) ->
+          add_startup_park_report(
+            rest,
+            run_ids,
+            seen_issue_ids,
+            reports,
+            issue_id,
+            issue_identifier,
+            reason_text,
+            Some(release_policy),
+          )
+        _ -> startup_park_reports_loop(rest, run_ids, seen_issue_ids, reports)
+      }
+  }
+}
+
+fn add_startup_park_report(
+  rest: List(record.LedgerRecord),
+  run_ids: Dict(String, String),
+  seen_issue_ids: List(String),
+  reports: List(handoff.ParkReport),
+  issue_id: String,
+  issue_identifier: String,
+  reason_text: String,
+  release_policy: Option(String),
+) -> List(handoff.ParkReport) {
+  case list.contains(seen_issue_ids, issue_id) {
+    True -> startup_park_reports_loop(rest, run_ids, seen_issue_ids, reports)
+    False ->
+      startup_park_reports_loop(rest, run_ids, [issue_id, ..seen_issue_ids], [
+        handoff.ParkReport(
+          issue_id: issue_id,
+          issue_identifier: issue_identifier,
+          reason: reason_text,
+          release_policy: release_policy,
+          run_id: optional_run_id(run_ids, issue_id),
+        ),
+        ..reports
+      ])
+  }
+}
+
+fn startup_park_report_run_ids(
+  records: List(record.LedgerRecord),
+) -> Dict(String, String) {
+  list.fold(records, dict.new(), fn(run_ids, ledger_record) {
+    case ledger_record.body {
+      record.RunInterrupted(run_id, issue_id, _) ->
+        insert_run_id_if_missing(run_ids, issue_id, run_id)
+      record.WorkflowRunInterrupted(run_id, _, issue_id, _) ->
+        insert_run_id_if_missing(run_ids, issue_id, run_id)
+      record.IssueCounterUpdated(issue_id, _, _, _, _, Some(run_id)) ->
+        insert_run_id_if_missing(run_ids, issue_id, run_id)
+      _ -> run_ids
+    }
+  })
+}
+
+fn insert_run_id_if_missing(
+  run_ids: Dict(String, String),
+  issue_id: String,
+  run_id: String,
+) -> Dict(String, String) {
+  case string.trim(run_id) == "" || dict.has_key(run_ids, issue_id) {
+    True -> run_ids
+    False -> dict.insert(run_ids, issue_id, run_id)
+  }
+}
+
+fn optional_run_id(
+  run_ids: Dict(String, String),
+  issue_id: String,
+) -> Option(String) {
+  case dict.get(run_ids, issue_id) {
+    Ok(run_id) -> Some(run_id)
+    Error(_) -> None
+  }
 }
 
 fn workflow_recovery_observations(
@@ -917,6 +1036,18 @@ fn enqueue_startup_recovery_outbox(
           }
         }
     }
+  })
+}
+
+fn enqueue_startup_park_reports(
+  state: State,
+  reports: List(handoff.ParkReport),
+) -> State {
+  list.fold(reports, state, fn(state, report) {
+    enqueue_side_effect(
+      state,
+      effect_runner.ReportPark(report, state.handoff_client),
+    )
   })
 }
 
@@ -1979,9 +2110,10 @@ fn stop_session_for_operator(
         worker_registry.remove_worker_handle(state.registry, handle)
       let state =
         State(..state, registry: registry)
-        |> park_issue_state(
+        |> park_issue_state_with_run(
           handle.issue,
           orchestrator_reason.ParkOperator(reason_text),
+          Some(handle.run_id),
         )
       #(state, command.applied(operator_command, Some(reason_text)))
     }
@@ -2188,6 +2320,15 @@ fn park_issue_state(
   issue: tracker_issue.Issue,
   reason: orchestrator_reason.ParkReason,
 ) -> State {
+  park_issue_state_with_run(state, issue, reason, None)
+}
+
+fn park_issue_state_with_run(
+  state: State,
+  issue: tracker_issue.Issue,
+  reason: orchestrator_reason.ParkReason,
+  source_run_id: Option(String),
+) -> State {
   let parked =
     orchestrator_state.ParkedEntry(
       issue_id: issue.id,
@@ -2207,12 +2348,15 @@ fn park_issue_state(
     )
   let state = State(..state, runtime: runtime) |> cancel_retry_timer(issue.id)
   let reason_text = orchestrator_reason.park_to_string(reason)
-  let _ = append_parked_record_for_runtime(state, issue.id, reason_text)
+  let appended = append_parked_record_for_runtime(state, issue.id, reason_text)
   log_state(state, "warn", "issue_parked", [
     #("issue_id", issue.id),
     #("reason", reason_text),
   ])
-  state
+  case appended {
+    False -> state
+    True -> enqueue_park_report_for_runtime(state, issue.id, source_run_id)
+  }
 }
 
 fn unpark_issue_state(state: State, issue_id: String) -> State {
@@ -4293,7 +4437,7 @@ fn finish_worker_success(
             client: state.handoff_client,
           ),
         )
-      apply_effects(state, transition.effects)
+      apply_effects_with_run(state, transition.effects, Some(handle.run_id))
     }
   }
 }
@@ -4429,7 +4573,7 @@ fn finish_standard_worker_failure(
             client: state.handoff_client,
           ),
         )
-      apply_effects(state, transition.effects)
+      apply_effects_with_run(state, transition.effects, Some(handle.run_id))
     }
   }
 }
@@ -4463,10 +4607,11 @@ fn finish_recovery_resume_validation_failure(
   case append_worker_failure_records(state, handle, failure, baseline_issue) {
     False -> state
     True ->
-      park_issue_state(
+      park_issue_state_with_run(
         state,
         baseline_issue,
         orchestrator_reason.ParkOperator(reason),
+        Some(handle.run_id),
       )
   }
 }
@@ -4565,9 +4710,10 @@ fn finish_operator_worker_exit(
       ),
     )
   State(..state, runtime: runtime)
-  |> park_issue_state(
+  |> park_issue_state_with_run(
     final_issue,
     orchestrator_reason.ParkOperator(reason_text),
+    Some(handle.run_id),
   )
 }
 
@@ -4763,6 +4909,8 @@ fn handle_side_effect_result(
       handle_handoff_success_finished(state, issue_id, result)
     effect_runner.HandoffFailureFinished(issue_id, _run_id, result) ->
       handle_handoff_failure_finished(state, issue_id, result)
+    effect_runner.HandoffParkFinished(issue_id, result) ->
+      handle_handoff_park_finished(state, issue_id, result)
     effect_runner.LinearCommandAckFinished(issue_id, comment_id, result) ->
       handle_linear_command_ack_finished(state, issue_id, comment_id, result)
     effect_runner.InvalidWorkflowReportFinished(
@@ -4844,6 +4992,11 @@ fn crash_result_for_effect(
       effect_runner.HandoffFailureFinished(
         issue_id,
         run_id,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.ReportPark(report, _) ->
+      effect_runner.HandoffParkFinished(
+        report.issue_id,
         Error(error.LinearApiRequest(reason)),
       )
     effect_runner.PostLinearCommandAck(issue_id, source_comment_id, _, _) ->
@@ -5208,6 +5361,23 @@ fn handle_handoff_failure_finished(
   }
 }
 
+fn handle_handoff_park_finished(
+  state: State,
+  issue_id: String,
+  result: Result(Nil, error.TrackerError),
+) -> State {
+  case result {
+    Ok(Nil) -> state
+    Error(err) -> {
+      log_state(state, "warn", "handoff_park_failed", [
+        #("issue_id", issue_id),
+        #("error", error.tracker_code(err)),
+      ])
+      state
+    }
+  }
+}
+
 fn handle_linear_command_ack_finished(
   state: State,
   issue_id: String,
@@ -5442,13 +5612,30 @@ fn ledger_records_for_bodies_loop(
 }
 
 fn apply_effects(state: State, effects: List(core.Effect)) -> State {
+  apply_effects_with_run(state, effects, None)
+}
+
+fn apply_effects_with_run(
+  state: State,
+  effects: List(core.Effect),
+  source_run_id: Option(String),
+) -> State {
   case effects {
     [] -> state
-    [effect, ..rest] -> apply_effects(apply_effect(state, effect), rest)
+    [effect, ..rest] ->
+      apply_effects_with_run(
+        apply_effect(state, effect, source_run_id),
+        rest,
+        source_run_id,
+      )
   }
 }
 
-fn apply_effect(state: State, effect: core.Effect) -> State {
+fn apply_effect(
+  state: State,
+  effect: core.Effect,
+  source_run_id: Option(String),
+) -> State {
   case effect {
     core.Dispatch(issue) -> dispatch_issue(state, issue)
     core.ScheduleRetry(issue_id, delay_ms, generation, reason) -> {
@@ -5578,8 +5765,10 @@ fn apply_effect(state: State, effect: core.Effect) -> State {
         #("issue_id", issue_id),
         #("reason", reason_text),
       ])
-      let _ = append_parked_record_for_runtime(state, issue_id, reason_text)
-      state
+      case append_parked_record_for_runtime(state, issue_id, reason_text) {
+        False -> state
+        True -> enqueue_park_report_for_runtime(state, issue_id, source_run_id)
+      }
     }
   }
 }
@@ -5612,18 +5801,54 @@ fn identifier_for_runtime(
   }
 }
 
+fn enqueue_park_report_for_runtime(
+  state: State,
+  issue_id: String,
+  source_run_id: Option(String),
+) -> State {
+  case dict.get(state.runtime.parked, issue_id) {
+    Error(_) -> state
+    Ok(parked) ->
+      enqueue_side_effect(
+        state,
+        effect_runner.ReportPark(
+          handoff.ParkReport(
+            issue_id: parked.issue_id,
+            issue_identifier: parked.identifier,
+            reason: orchestrator_reason.park_to_string(parked.reason),
+            release_policy: Some(park_release_policy_to_string(
+              parked.release_policy,
+            )),
+            run_id: source_run_id,
+          ),
+          state.handoff_client,
+        ),
+      )
+  }
+}
+
+fn park_release_policy_to_string(
+  release_policy: orchestrator_state.ParkReleasePolicy,
+) -> String {
+  case release_policy {
+    orchestrator_state.ExplicitUnparkOnly -> "explicit_unpark_only"
+    orchestrator_state.AutoUnparkOnIssueChange(_) ->
+      "auto_unpark_on_issue_change"
+  }
+}
+
 fn append_parked_record_for_runtime(
   state: State,
   issue_id: String,
   reason_text: String,
 ) -> Bool {
   case dict.get(state.runtime.parked, issue_id) {
-    Error(_) -> True
+    Error(_) -> False
     Ok(parked) -> {
       let #(release_policy, issue_fingerprint) = case parked.release_policy {
         orchestrator_state.ExplicitUnparkOnly -> #("explicit_unpark_only", "")
         orchestrator_state.AutoUnparkOnIssueChange(fingerprint) -> #(
-          "auto_unpark_on_issue_change",
+          park_release_policy_to_string(parked.release_policy),
           fingerprint,
         )
       }
