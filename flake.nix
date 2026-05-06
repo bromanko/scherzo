@@ -5,7 +5,8 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
-  outputs = { self, nixpkgs }:
+  outputs =
+    { self, nixpkgs }:
     let
       systems = [
         "aarch64-darwin"
@@ -16,27 +17,52 @@
 
       forAllSystems = nixpkgs.lib.genAttrs systems;
 
-      pkgsFor = system: import nixpkgs {
-        inherit system;
-      };
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+        };
 
-      scherzoFor = system:
+      sourceRevision = self.shortRev or (self.dirtyShortRev or "unknown");
+
+      sourceDate =
+        let
+          raw = self.lastModifiedDate or "";
+        in
+        if builtins.stringLength raw >= 8 then
+          "${builtins.substring 0 4 raw}-${builtins.substring 4 2 raw}-${builtins.substring 6 2 raw}"
+        else
+          "unknown";
+
+      sourceDirty =
+        if (self ? dirtyRev) || (self ? dirtyShortRev) then
+          "true"
+        else if (self ? rev) || (self ? shortRev) then
+          "false"
+        else
+          "unknown";
+
+      scherzoFor =
+        system:
         let
           pkgs = pkgsFor system;
         in
         pkgs.callPackage ./nix/scherzo.nix {
           src = self;
+          inherit sourceRevision sourceDate sourceDirty;
         };
     in
     {
-      packages = forAllSystems (system:
+      packages = forAllSystems (
+        system:
         let
           scherzo = scherzoFor system;
         in
         {
           default = scherzo;
           scherzo = scherzo;
-        });
+        }
+      );
 
       apps = forAllSystems (system: {
         default = self.apps.${system}.scherzo;
@@ -68,10 +94,12 @@
         };
       };
 
-      formatter = forAllSystems (system:
+      formatter = forAllSystems (
+        system:
         let
           pkgs = pkgsFor system;
         in
-        pkgs.nixpkgs-fmt);
+        pkgs.nixpkgs-fmt
+      );
     };
 }

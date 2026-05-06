@@ -10,6 +10,9 @@ Legacy Markdown runtime workflows (`WORKFLOW.md` or `.scherzo/workflows/*.md`) a
 direnv allow
 direnv exec . gleam test
 
+# Report the source/build identity to include in bug reports and operator logs
+direnv exec . gleam run -- --version
+
 # Readiness validation before dispatching work
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml
 
@@ -70,9 +73,10 @@ in
 }
 ```
 
-Then run it from the consuming repository so relative config and workflow paths resolve there:
+Then run it from the consuming repository so relative config and workflow paths resolve there. Use `scherzo --version` to report the packaged source/build identity in bug reports and operator logs:
 
 ```sh
+direnv exec . scherzo --version
 LINEAR_API_KEY=lin_api_... direnv exec . scherzo doctor .scherzo/scherzo.yaml
 LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
 direnv exec . scherzoctl ps

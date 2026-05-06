@@ -6,6 +6,7 @@ import scherzo/ctl
 import scherzo/doctor
 import scherzo/log
 import scherzo/orchestrator/service
+import scherzo/version
 
 pub type RunMode {
   Daemon
@@ -20,6 +21,7 @@ pub type CliResult {
   LinearAttachCommentFile(String, String, Option(String))
   Control(List(String))
   Doctor(doctor.Options)
+  Version
   Help
 }
 
@@ -31,6 +33,7 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
   case args {
     [] -> Ok(Run(Daemon, None))
     ["--help"] | ["-h"] -> Ok(Help)
+    ["--version"] -> Ok(Version)
     ["ctl", ..rest] -> Ok(Control(rest))
     ["doctor", ..rest] ->
       parse_doctor_args(rest, doctor.Options(None, [], False, doctor.Human))
@@ -89,12 +92,13 @@ fn parse_doctor_args(
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo [mode] [path-to-scherzo.yaml]\n       scherzo --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n       scherzo doctor [options] [path-to-scherzo.yaml]\n       scherzo ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, linear-contract, linear-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke          Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --linear-contract-check Compare workflow state/label policy to the Linear project board; read-only.\n  --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n                          Upload a local Markdown file to Linear and attach it to an existing comment; mutates Linear.\n  --pi-probe              Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                     Inspect a running daemon through the local read-only control API.\n  --help, -h              Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace.hooks that create or verify each step workspace.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. The repository scherzo-start helper translates Ctrl-C/SIGINT into SIGTERM for this path; direct gleam run Ctrl-C may still terminate abruptly, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
+  "Usage: scherzo [mode] [path-to-scherzo.yaml]\n       scherzo --version\n       scherzo --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n       scherzo doctor [options] [path-to-scherzo.yaml]\n       scherzo ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, linear-contract, linear-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke          Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --linear-contract-check Compare workflow state/label policy to the Linear project board; read-only.\n  --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n                          Upload a local Markdown file to Linear and attach it to an existing comment; mutates Linear.\n  --pi-probe              Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                     Inspect a running daemon through the local read-only control API.\n  --version               Print source/build identity for logs and bug reports.\n  --help, -h              Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace.hooks that create or verify each step workspace.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. The repository scherzo-start helper translates Ctrl-C/SIGINT into SIGTERM for this path; direct gleam run Ctrl-C may still terminate abruptly, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
 }
 
 pub fn main() -> Nil {
   case parse_args(args()) {
     Ok(Help) -> io.println(usage())
+    Ok(Version) -> io.println(version.string())
     Ok(Control(args)) ->
       case ctl.main(args) {
         Ok(Nil) -> Nil

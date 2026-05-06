@@ -1,13 +1,16 @@
-{
-  lib,
-  stdenvNoCC,
-  gleam,
-  erlang,
-  rebar3,
-  cacert,
-  coreutils,
-  makeWrapper,
-  src,
+{ lib
+, stdenvNoCC
+, gleam
+, erlang
+, rebar3
+, cacert
+, coreutils
+, makeWrapper
+, src
+, sourceRevision ? "unknown"
+, sourceDate ? "unknown"
+, sourceDirty ? "unknown"
+,
 }:
 
 let
@@ -121,6 +124,9 @@ stdenvNoCC.mkDerivation {
     patchShebangs "$out/libexec/${pname}/scherzo-start-runner"
     makeWrapper "$out/lib/${pname}/entrypoint.sh" "$out/bin/scherzo" \
       --add-flags run \
+      --set-default SCHERZO_SOURCE_REVISION "${sourceRevision}" \
+      --set-default SCHERZO_SOURCE_DATE "${sourceDate}" \
+      --set-default SCHERZO_SOURCE_DIRTY "${sourceDirty}" \
       --prefix PATH : ${runtimePath}
     makeWrapper "$out/bin/scherzo" "$out/bin/scherzoctl" \
       --add-flags ctl
@@ -141,6 +147,11 @@ stdenvNoCC.mkDerivation {
 
     PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" --help > scherzo-help
     grep -q "Usage: scherzo" scherzo-help
+
+    PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" --version > scherzo-version
+    grep -q "^scherzo revision=" scherzo-version
+    grep -q " date=" scherzo-version
+    grep -q " dirty=" scherzo-version
 
     PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo-start" --help > scherzo-start-help
     grep -q "Usage: scherzo" scherzo-start-help
