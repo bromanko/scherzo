@@ -8,6 +8,7 @@ Legacy Markdown runtime workflows (`WORKFLOW.md` or `.scherzo/workflows/*.md`) a
 
 ```sh
 direnv allow
+# Fast deterministic unit suite (default; run for every PR and before pushing)
 direnv exec . gleam test
 
 # Report the source/build identity to include in bug reports and operator logs
@@ -26,6 +27,26 @@ LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.ya
 LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
 ```
 
+## Test suites
+
+Scherzo keeps the default Gleam test command as the fast unit suite. It must be deterministic, must not contact external services, and is the suite run by SelfCI for every PR:
+
+```sh
+direnv exec . gleam test
+# equivalent helper when you want the suite name to be explicit
+direnv exec . scherzo-test-unit
+```
+
+Longer validations live in explicit suites and are not selected by default:
+
+| Suite | Command | When to run | Required dependencies |
+| --- | --- | --- | --- |
+| Unit | `direnv exec . gleam test` or `direnv exec . scherzo-test-unit` | Every PR, before pushing, and during normal implementation feedback | Devenv Gleam/Erlang toolchain only; no network or real Linear/pi calls |
+| Local integration | `direnv exec . scherzo-test-local-integration` or `direnv exec . gleam test -- --suite local-integration` | Before changing workspace hooks, workflow-run workspace behavior, pre-release checks, and scheduled/nightly local infrastructure validation | Local shell tools plus `jj`; creates temporary repositories under `test/tmp/` |
+| External real-pi validation | `direnv exec . scherzo-test-real-pi-validation` or `direnv exec . gleam test -- --suite real-pi-validation` | Manual operator validation before releases or after pi session-persistence changes | `pi` on `PATH`, model/provider credentials, network access, and enough time for live RPC turns |
+
+Use `direnv exec . gleam test -- --suite all` only for an explicit full local sweep; it includes the external real-pi validation and will fail if those dependencies are absent.
+
 ## Local final validation with SelfCI
 
 Scherzo dogfood implementation workflows use SelfCI as the canonical final validation gate. To run the same validation locally against the configured pull-request base:
@@ -35,7 +56,7 @@ direnv allow .
 direnv exec . selfci check --base main@origin --candidate @ --print-output
 ```
 
-`selfci check` runs the checked-in `.config/selfci/ci.sh`, which performs format checks, tests, and `nix flake check --print-build-logs`, and `--print-output` surfaces the failing step output for repair. The workflow helper resolves the base from `tmp/scherzo-implementation-refresh-base-latest.json` when present; otherwise it uses `${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin}`.
+`selfci check` runs the checked-in `.config/selfci/ci.sh`, which performs format checks, the default unit suite, and `nix flake check --print-build-logs`, and `--print-output` surfaces the failing step output for repair. The workflow helper resolves the base from `tmp/scherzo-implementation-refresh-base-latest.json` when present; otherwise it uses `${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin}`.
 
 Bootstrap caveat: the `--base` revision must already contain this repository's SelfCI configuration and local development tooling. If a branch is based before the SelfCI bootstrap landed, first refresh or rebase onto a SelfCI-capable `main`, or use the raw bootstrap checks only long enough to reach a base that can run `selfci check`.
 

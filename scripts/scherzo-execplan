@@ -370,8 +370,10 @@ create_implementation_issue_command() {
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 plan_path, pr_url, source_identifier, implementation_state = sys.argv[1:5]
@@ -486,11 +488,21 @@ def issue_contains_plan(issue: dict[str, Any]) -> bool:
     return plan_path in text and workflow_label.lower() in issue_labels_lower(issue)
 
 
+def issue_nodes(payload: Any, command_name: str) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        nodes = payload.get("nodes")
+        if isinstance(nodes, list):
+            return nodes
+    fail(f"Linear {command_name} payload did not contain an issue list")
+
+
 def find_existing(team_key: str, project_name: str) -> dict[str, Any] | None:
     args = [
         "lc",
         "issue",
-        "list",
+        "query",
         "--team",
         team_key,
         "--search",
@@ -501,9 +513,7 @@ def find_existing(team_key: str, project_name: str) -> dict[str, Any] | None:
     ]
     if project_name:
         args.extend(["--project", project_name])
-    issues = load_json_from_command(args)
-    if not isinstance(issues, list):
-        fail("Linear issue list payload was not a list")
+    issues = issue_nodes(load_json_from_command(args), "issue query")
     for issue in issues:
         if isinstance(issue, dict) and issue_contains_plan(issue):
             return issue
@@ -562,51 +572,48 @@ def issue_url(issue: dict[str, Any]) -> str:
     return str(issue.get("url") or "")
 
 
-def resolve_label_id(team_key: str, label_name: str) -> str:
-    labels = load_json_from_command([
-        "lc",
-        "label",
-        "list",
-        "--team",
-        team_key,
-        "--json",
-        "--limit",
-        "250",
-    ])
-    if not isinstance(labels, list):
-        fail("Linear label list payload was not a list")
-    for label in labels:
-        if not isinstance(label, dict):
-            continue
-        name = str(label.get("name") or "")
-        if name.lower() == label_name.lower():
-            value = str(label.get("id") or "")
-            if value:
-                return value
-    fail(f"could not find Linear label {label_name!r} for team {team_key}")
+def source_team_key(issue: dict[str, Any]) -> str:
+    team = issue.get("team") or {}
+    if isinstance(team, dict):
+        value = str(team.get("key") or team.get("name") or team.get("id") or "")
+        if value:
+            return value.upper()
+    identifier = str(issue.get("identifier") or source_identifier)
+    if "-" in identifier:
+        return identifier.split("-", 1)[0].upper()
+    fail(f"could not infer source issue team from {identifier!r}")
+
+
+def created_issue_from_output(output: str) -> dict[str, Any]:
+    urls = re.findall(r"https?://[^\s]+", output)
+    issue_url = ""
+    for url in reversed(urls):
+        if "/issue/" in url or re.search(r"\b[A-Za-z][A-Za-z0-9]*-[0-9]+\b", url):
+            issue_url = url.rstrip(".,;)")
+            break
+    if not issue_url:
+        fail("could not find created Linear issue URL in issue create output")
+    match = re.search(r"/issue/([A-Za-z][A-Za-z0-9]*-[0-9]+)(?:/|$)", issue_url)
+    if match is None:
+        match = re.search(r"\b([A-Za-z][A-Za-z0-9]*-[0-9]+)\b", issue_url)
+    if match is None:
+        fail(f"could not infer created issue identifier from URL: {issue_url}")
+    return {"identifier": match.group(1).upper(), "url": issue_url}
 
 
 source_issue = normalize_issue(load_json_from_command([
     "lc",
     "issue",
-    "get",
+    "view",
     source_identifier,
     "--json",
 ]))
-team = source_issue.get("team") or {}
-team_key = str(team.get("key") or team.get("name") or team.get("id") or "") if isinstance(team, dict) else ""
-if not team_key:
-    fail(f"source issue {source_identifier} did not include a team")
+team_key = source_team_key(source_issue)
 project_name = nested_name(source_issue, "project")
-source_issue_id = str(source_issue.get("id") or source_identifier)
 priority = source_issue.get("priority")
 plan_title = first_heading(plan_path)
 title = implementation_title(plan_title)
 labels = domain_labels_for_followup(source_issue)
-workflow_label_id = resolve_label_id(team_key, workflow_label)
-labels_for_create = [
-    label for label in labels if label.lower() != workflow_label.lower()
-] + [workflow_label_id]
 description = render_description(source_issue)
 
 existing = find_existing(team_key, project_name)
@@ -619,46 +626,60 @@ if existing is not None:
     print(f"PR_URL={pr_url}")
     sys.exit(0)
 
-create_args = [
-    "lc",
-    "issue",
-    "create",
-    "--team",
-    team_key,
-    "--title",
-    title,
-    "--description",
-    description,
-    "--labels",
-    ",".join(labels_for_create),
-    "--state",
-    implementation_state,
-    "--json",
-]
-if project_name:
-    create_args.extend(["--project", project_name])
-if priority is not None:
-    create_args.extend(["--priority", str(priority)])
-if source_issue_id:
-    create_args.extend(["--parent", source_issue_id])
-created = normalize_issue(load_json_from_command(create_args))
+description_file = ""
+try:
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        prefix="scherzo-execplan-implementation-",
+        suffix=".md",
+        delete=False,
+    ) as handle:
+        handle.write(description)
+        description_file = handle.name
+
+    create_args = [
+        "lc",
+        "issue",
+        "create",
+        "--team",
+        team_key,
+        "--title",
+        title,
+        "--description-file",
+        description_file,
+        "--state",
+        implementation_state,
+        "--no-interactive",
+    ]
+    for label in labels:
+        create_args.extend(["--label", label])
+    if project_name:
+        create_args.extend(["--project", project_name])
+    if priority is not None:
+        create_args.extend(["--priority", str(priority)])
+    if source_identifier:
+        create_args.extend(["--parent", source_identifier])
+    created = created_issue_from_output(run(create_args).stdout)
+finally:
+    if description_file:
+        try:
+            os.unlink(description_file)
+        except OSError:
+            pass
+
 created_ref = issue_ref(created)
 created_url = issue_url(created)
 
 if created_ref and pr_url:
     attach = run([
         "lc",
-        "attachment",
-        "add",
-        "--issue",
+        "issue",
+        "link",
         created_ref,
-        "--url",
         pr_url,
         "--title",
         "ExecPlan PR",
-        "--subtitle",
-        plan_path,
-        "--json",
     ], check=False)
     if attach.returncode != 0:
         details = attach.stderr.strip() or attach.stdout.strip() or f"exit code {attach.returncode}"

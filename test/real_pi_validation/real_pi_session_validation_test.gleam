@@ -1,4 +1,3 @@
-import gleam/io
 import gleam/option.{Some}
 import gleam/string
 import scherzo/error
@@ -14,16 +13,6 @@ fn reset_dir(path: String) -> Nil {
 }
 
 pub fn real_pi_session_file_can_be_reopened_from_recorded_workspace_test() {
-  case getenv("SCHERZO_REAL_PI_VALIDATION") {
-    Ok("1") -> run_real_pi_session_validation()
-    _ ->
-      io.println(
-        "real pi session validation skipped; set SCHERZO_REAL_PI_VALIDATION=1 to run",
-      )
-  }
-}
-
-fn run_real_pi_session_validation() -> Nil {
   let cwd = "test/tmp/real-pi-session-validation"
   reset_dir(cwd)
   let assert Ok(abs_cwd) = path.absolute(cwd)
@@ -107,6 +96,3 @@ fn try_pi(
     Error(err) -> Error(err)
   }
 }
-
-@external(erlang, "scherzo_test_ffi", "getenv")
-fn getenv(name: String) -> Result(String, Nil)

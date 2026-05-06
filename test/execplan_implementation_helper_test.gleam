@@ -624,7 +624,10 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
   write_created_issue(dir)
   write_fake_execplan_handoff_jj(dir <> "/bin/jj")
   write_fake_execplan_handoff_gh(dir <> "/bin/gh")
-  write_fake_execplan_handoff_lc(dir <> "/bin/lc", "[]")
+  write_fake_execplan_handoff_lc(
+    dir <> "/bin/lc",
+    "{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
+  )
   chmod_executable(dir <> "/bin/jj")
   chmod_executable(dir <> "/bin/gh")
   chmod_executable(dir <> "/bin/lc")
@@ -650,11 +653,17 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
   )
 
   let assert Ok(lc_log) = simplifile.read(dir <> "/lc.log")
+  assert string.contains(lc_log, "ARG=issue\nARG=query")
   assert string.contains(lc_log, "ARG=issue\nARG=create")
   assert string.contains(lc_log, "ARG=Backlog")
-  assert string.contains(lc_log, "ARG=Improvement,workflow-label-uuid")
-  assert string.contains(lc_log, "ARG=source-uuid")
+  assert string.contains(lc_log, "ARG=--label\nARG=Improvement")
+  assert string.contains(
+    lc_log,
+    "ARG=--label\nARG=workflow:execplan-implementation",
+  )
+  assert string.contains(lc_log, "ARG=--parent\nARG=LIV-123")
   assert string.contains(lc_log, "docs/plans/LIV-123-example.md")
+  assert string.contains(lc_log, "ARG=issue\nARG=link")
   assert string.contains(lc_log, "ARG=ExecPlan PR")
 }
 
@@ -670,7 +679,7 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
   write_fake_execplan_handoff_gh(dir <> "/bin/gh")
   write_fake_execplan_handoff_lc(
     dir <> "/bin/lc",
-    "[{\"identifier\":\"LIV-200\",\"url\":\"https://linear.example/LIV-200\",\"title\":\"Implement: Add queued plan\",\"description\":\"Plan path: `docs/plans/LIV-123-example.md`\",\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan-implementation\"}]}}]",
+    "{\"nodes\":[{\"identifier\":\"LIV-200\",\"url\":\"https://linear.example/LIV-200\",\"title\":\"Implement: Add queued plan\",\"description\":\"Plan path: `docs/plans/LIV-123-example.md`\",\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan-implementation\"}]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
   )
   chmod_executable(dir <> "/bin/jj")
   chmod_executable(dir <> "/bin/gh")
@@ -1291,13 +1300,12 @@ fn write_fake_execplan_handoff_lc(path: String, existing_json: String) -> Nil {
       "#!/bin/sh\n"
         <> "for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\"; done >> lc.log\n"
         <> "printf '%s\\n' '---' >> lc.log\n"
-        <> "if [ \"$1 $2\" = 'issue get' ]; then cat source-issue.json; exit 0; fi\n"
-        <> "if [ \"$1 $2\" = 'issue list' ]; then printf '%s\\n' '"
+        <> "if [ \"$1 $2\" = 'issue view' ]; then cat source-issue.json; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'issue query' ]; then printf '%s\\n' '"
         <> existing_json
         <> "'; exit 0; fi\n"
-        <> "if [ \"$1 $2\" = 'label list' ]; then echo '[{\"id\":\"workflow-label-uuid\",\"name\":\"workflow:execplan-implementation\"}]'; exit 0; fi\n"
-        <> "if [ \"$1 $2\" = 'issue create' ]; then cat created-issue.json; exit 0; fi\n"
-        <> "if [ \"$1 $2\" = 'attachment add' ]; then echo '{\"id\":\"attachment-uuid\"}'; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'issue create' ]; then printf '%s\\n' 'Creating issue in LIV' '' 'https://linear.app/living-systems/issue/LIV-124/add-queued-plan'; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'issue link' ]; then echo '✓ Linked to LIV-124: ExecPlan PR'; exit 0; fi\n"
         <> "exit 1\n",
     )
   Nil
