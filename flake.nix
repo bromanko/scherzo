@@ -51,6 +51,13 @@
           src = self;
           inherit sourceRevision sourceDate sourceDirty;
         };
+
+      linearCliFor =
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        pkgs.callPackage ./nix/linear-cli.nix { };
     in
     {
       packages = forAllSystems (
@@ -60,6 +67,7 @@
         in
         {
           default = scherzo;
+          linear-cli = linearCliFor system;
           scherzo = scherzo;
         }
       );
@@ -89,6 +97,7 @@
       });
 
       overlays.default = final: _prev: {
+        linear-cli = final.callPackage ./nix/linear-cli.nix { };
         scherzo = final.callPackage ./nix/scherzo.nix {
           src = self;
         };

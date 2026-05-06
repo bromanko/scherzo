@@ -1,17 +1,17 @@
 { pkgs, ... }:
 
 let
-  linearctlPackage = "linearctl@0.1.10";
+  linearCli = pkgs.callPackage ./nix/linear-cli.nix { };
 
-  linearctlCommand = binName: pkgs.writeShellScriptBin binName ''
-    export NODE_NO_WARNINGS=1
+  linearCommand =
+    binName:
+    pkgs.writeShellScriptBin binName ''
+      if [ -z "''${LINEAR_API_KEY:-}" ] && [ -n "''${SCHERZO_AGENT_LINEAR_API_KEY:-}" ]; then
+        export LINEAR_API_KEY="$SCHERZO_AGENT_LINEAR_API_KEY"
+      fi
 
-    if [ -z "''${LINEAR_API_KEY:-}" ] && [ -n "''${SCHERZO_AGENT_LINEAR_API_KEY:-}" ]; then
-      export LINEAR_API_KEY="$SCHERZO_AGENT_LINEAR_API_KEY"
-    fi
-
-    exec ${pkgs.nodejs_22}/bin/npx --yes --package ${linearctlPackage} ${binName} "$@"
-  '';
+      exec ${linearCli}/bin/linear "$@"
+    '';
 
   projectScript = scriptName: ''
     exec ${pkgs.bash}/bin/bash "''${DEVENV_ROOT:-$PWD}/scripts/${scriptName}" "$@"
@@ -26,8 +26,8 @@ in
     pkgs.git
     pkgs.jq
     pkgs.selfci
-    (linearctlCommand "lc")
-    (linearctlCommand "linearctl")
+    (linearCommand "linear")
+    (linearCommand "lc")
   ];
 
   scripts.check.exec = ''
@@ -41,16 +41,18 @@ in
 
   scripts."scherzo-start".exec = projectScript "scherzo-start";
 
-  profiles."scherzo-agent".module = { pkgs, ... }: {
-    packages = [
-      pkgs.gh
-      pkgs.openssh
-      pkgs.jujutsu
-      pkgs.curl
-    ];
+  profiles."scherzo-agent".module =
+    { pkgs, ... }:
+    {
+      packages = [
+        pkgs.gh
+        pkgs.openssh
+        pkgs.jujutsu
+        pkgs.curl
+      ];
 
-    scripts."scherzo-agent-env-check".exec = projectScript "scherzo-agent-env-check";
-    scripts."scherzo-agent-whoami".exec = projectScript "scherzo-agent-whoami";
-    scripts."scherzo-agent-run".exec = projectScript "scherzo-agent-run";
-  };
+      scripts."scherzo-agent-env-check".exec = projectScript "scherzo-agent-env-check";
+      scripts."scherzo-agent-whoami".exec = projectScript "scherzo-agent-whoami";
+      scripts."scherzo-agent-run".exec = projectScript "scherzo-agent-run";
+    };
 }
