@@ -13,6 +13,7 @@ import scherzo/session/hub
 import scherzo/signal
 import scherzo/tracker
 import simplifile
+import test_async
 
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
@@ -189,7 +190,7 @@ pub fn start_daemon_cleans_signal_and_releases_lock_when_daemon_start_fails_test
   let assert Error(_) =
     service.start_daemon_with_lifecycle(Some(workflow_path), deps)
   assert process.receive(cleanup_subject, within: 1000) == Ok("cleanup")
-  assert process.receive(cleanup_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cleanup_subject, 50)
   let assert Ok(lock) = instance_lock.acquire(root)
   instance_lock.release(lock)
 }
@@ -227,7 +228,7 @@ pub fn graceful_service_stop_removes_control_file_and_releases_lock_test() {
 
   let assert Ok(Ok(Nil)) = process.receive(result_subject, within: 5000)
   assert process.receive(cleanup_subject, within: 1000) == Ok("cleanup")
-  assert process.receive(cleanup_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cleanup_subject, 50)
   assert wait_for_log(log_subject, "daemon_shutdown", 20)
   assert wait_for_log(log_subject, "daemon_shutdown_complete", 20)
   assert simplifile.is_file(control_path) != Ok(True)
@@ -263,7 +264,7 @@ pub fn daemon_shutdown_timeout_returns_error_and_releases_lock_test() {
   let assert Ok(Error(err)) = process.receive(result_subject, within: 5000)
   assert err.code == "daemon_shutdown_timeout"
   assert process.receive(cleanup_subject, within: 1000) == Ok("cleanup")
-  assert process.receive(cleanup_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cleanup_subject, 50)
   assert wait_for_log(log_subject, "daemon_shutdown_timeout", 20)
   let assert Ok(lock) = instance_lock.acquire(root)
   instance_lock.release(lock)
