@@ -78,23 +78,6 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
   }
 }
 
-pub fn inline_agent_step(prompt: String) -> WorkflowStep {
-  WorkflowStep(
-    id: "main",
-    kind: AgentStep(PromptInline(prompt)),
-    depends_on: [],
-    workspace: WorkspaceRef(name: "main", from: None),
-    on_failure: FailWorkflow,
-    model_settings: model_config.default_settings(),
-  )
-}
-
-pub fn legacy_inline(id: String, prompt: String) -> WorkflowDag {
-  WorkflowDag(id: id, description: None, max_parallel_steps: 1, steps: [
-    inline_agent_step(prompt),
-  ])
-}
-
 pub fn step_by_id(dag: WorkflowDag, id: String) -> Result(WorkflowStep, Nil) {
   case dag.steps {
     [] -> Error(Nil)
