@@ -142,7 +142,3 @@ pub fn allowed_label_names_and_message_test() {
   assert string.contains(custom_body, "Ready for Robots")
   assert !string.contains(custom_body, "Ready for Agent")
 }
-
-pub fn config_record_update_keeps_dict_import_live_test() {
-  assert dict.size(enforcing_config().required_states) == 0
-}
