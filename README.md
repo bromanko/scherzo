@@ -4,6 +4,8 @@ Scherzo is a Gleam/Erlang orchestration daemon for running pi coding-agent workf
 
 Legacy Markdown runtime workflows (`WORKFLOW.md` or `.scherzo/workflows/*.md`) are no longer supported. Markdown remains supported for prompt templates only.
 
+Agents making architecture or workflow changes should start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the current module map, invariants, change checklists, and validation guidance.
+
 ## Quick start
 
 ```sh
