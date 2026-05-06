@@ -15,6 +15,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workspace_run
 import simplifile
+import test_async
 
 pub type DoctorAction {
   LockAcquired(String)
@@ -407,7 +408,7 @@ pub fn doctor_lock_failure_reports_only_selected_checks_test() {
   assert workspace_result.status == doctor.Fail
   assert pi_result.status == doctor.Skip
   assert doctor.has_failures(report) == True
-  assert process.receive(subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn doctor_pi_probe_lock_failure_reports_only_pi_probe_test() {
@@ -440,7 +441,7 @@ pub fn doctor_pi_probe_lock_failure_reports_only_pi_probe_test() {
   assert pi_result.status == doctor.Fail
   assert pi_result.code == "instance_lock_failed"
   assert doctor.has_failures(report) == True
-  assert process.receive(subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn doctor_workspace_and_pi_share_one_prepared_workspace_test() {

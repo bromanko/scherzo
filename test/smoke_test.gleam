@@ -4,6 +4,7 @@ import gleam/option.{None, Some}
 import scherzo/smoke
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import test_async
 
 fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
@@ -100,5 +101,5 @@ pub fn linear_smoke_reads_empty_samples_once_and_skips_refresh_test() {
   assert result.refreshed_count == 0
   assert process.receive(subject, within: 20) == Ok("candidate")
   assert process.receive(subject, within: 20) == Ok("terminal")
-  assert process.receive(subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 20)
 }

@@ -20,6 +20,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
+import test_async
 
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
@@ -468,7 +469,7 @@ pub fn linear_contract_check_fetch_error_maps_to_startup_failure_test() {
       contract_deps(Error(error.LinearApiStatus(500)), log_subject),
     )
   assert err.code == "linear_api_status"
-  assert process.receive(log_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(log_subject, 50)
 }
 
 pub fn yaml_once_runs_command_workflow_test() {

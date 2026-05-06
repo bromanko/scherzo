@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import scherzo/lifecycle
 import scherzo/signal
+import test_async
 
 pub fn install_with_ffi_reports_metadata_and_cleans_up_once_test() {
   let stop_subject = process.new_subject()
@@ -20,7 +21,7 @@ pub fn install_with_ffi_reports_metadata_and_cleans_up_once_test() {
   installation.cleanup()
 
   assert process.receive(cleanup_subject, within: 1000) == Ok("fake-handle")
-  assert process.receive(cleanup_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cleanup_subject, 50)
 }
 
 pub fn install_with_ffi_maps_install_failure_test() {
@@ -33,5 +34,5 @@ pub fn install_with_ffi_maps_install_failure_test() {
       fn(handle) { process.send(cleanup_subject, handle) },
     )
     == Error("boom")
-  assert process.receive(cleanup_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cleanup_subject, 50)
 }

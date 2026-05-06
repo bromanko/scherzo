@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/agent/worker_command
 import scherzo/control/command
 import scherzo/orchestrator/control_command_handler
+import test_async
 
 type TestState {
   TestState(paused: Bool, pending: Int, routed: Int)
@@ -258,7 +259,7 @@ pub fn control_command_handler_delegates_abort_timeout_to_callback_test() {
   assert result.status == command.Applied
   assert process.receive(callback_subject, within: 100)
     == Ok(AbortCalled(command.AbortSession("session-1"), "session-1", 913))
-  assert process.receive(worker_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(worker_subject, 50)
 }
 
 pub fn control_command_handler_rejects_too_large_prompt_without_routing_test() {
@@ -283,7 +284,7 @@ pub fn control_command_handler_rejects_too_large_prompt_without_routing_test() {
   assert state.routed == 0
   assert result.command == "prompt"
   assert result.status == command.Rejected("prompt_too_large")
-  assert process.receive(route_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(route_subject, 50)
   let assert Ok(#("prompt", "rejected", [])) =
     process.receive(log_subject, within: 100)
 }
@@ -310,7 +311,7 @@ pub fn control_command_handler_rejects_too_large_ui_response_without_routing_tes
   assert state.routed == 0
   assert result.command == "respond_ui"
   assert result.status == command.Rejected("ui_response_too_large")
-  assert process.receive(route_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(route_subject, 50)
   let assert Ok(#("respond_ui", "rejected", [])) =
     process.receive(log_subject, within: 100)
 }

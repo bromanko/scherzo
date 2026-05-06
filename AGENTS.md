@@ -28,3 +28,7 @@ direnv exec . lc issue comment add LIV-123 --body "Done"
 ```
 
 The wrappers use `LINEAR_API_KEY` and fall back to `SCHERZO_AGENT_LINEAR_API_KEY` when `LINEAR_API_KEY` is unset. Keep tokens out of logs. Use direct `curl https://api.linear.app/graphql` only when `lc`/`linear` lacks the required operation or for low-level Scherzo transport diagnostics.
+
+## Async Gleam tests
+
+Prefer deterministic handshakes over ad hoc sleeps. For fake actors/workers that need to stay alive, use `test/test_async.gleam` barriers (`new_barrier`, `block_until_released`, `release_barrier`) rather than long `process.sleep` calls. Use `release_barrier_if_waiting` for cleanup when the test intentionally kills the worker first. After a synchronization point, use `drain_subject` or `assert_no_extra_message(_within)` for no-extra-message checks instead of raw `process.receive(..., within: 20) == Error(Nil)`. See `test/README.md` for the full pattern.
