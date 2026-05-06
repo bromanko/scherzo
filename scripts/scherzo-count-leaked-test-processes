@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Count Scherzo test fixture processes that are known to leak when port/pi
+# lifecycle cleanup regresses. The orphan root counts are the most useful signal:
+# PPID=1 means the BEAM/test parent that launched the fixture has already exited.
+
+ps -u "${USER:?}" -o pid=,ppid=,command= | awk '
+  {
+    pid = $1
+    ppid = $2
+    command = $0
+    sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]*/, "", command)
+
+    if (command ~ /test\/fixtures\/fake_pi_rpc\.sh/) {
+      fake_total += 1
+      if (ppid == 1) fake_orphan_roots += 1
+    }
+
+    if (command ~ /scherzo-port-.*while true; do sleep 60; done/) {
+      port_total += 1
+      if (ppid == 1) port_orphan_roots += 1
+    }
+  }
+  END {
+    printf "fake_pi_total=%d\n", fake_total + 0
+    printf "fake_pi_orphan_roots=%d\n", fake_orphan_roots + 0
+    printf "port_holder_total=%d\n", port_total + 0
+    printf "port_holder_orphan_roots=%d\n", port_orphan_roots + 0
+  }
+'

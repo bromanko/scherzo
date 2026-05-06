@@ -6,6 +6,10 @@ if [[ -n "${FAKE_PI_STDERR:-}" ]]; then
   echo "fake pi diagnostic: ${FAKE_PI_STDERR}" >&2
 fi
 
+if [[ -n "${FAKE_PI_PID_FILE:-}" ]]; then
+  printf '%s\n' "$$" > "$FAKE_PI_PID_FILE"
+fi
+
 if [[ -n "${FAKE_PI_NEVER_END:-}" ]]; then
   while true; do sleep 60; done
 fi
