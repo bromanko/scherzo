@@ -23,6 +23,19 @@ LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.ya
 LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
 ```
 
+## Local final validation with SelfCI
+
+Scherzo dogfood implementation workflows use SelfCI as the canonical final validation gate. To run the same validation locally against the configured pull-request base:
+
+```sh
+direnv allow .
+direnv exec . selfci check --base main@origin --candidate @ --print-output
+```
+
+`selfci check` runs the checked-in `.config/selfci/ci.sh`, which performs format checks, tests, and `nix flake check --print-build-logs`, and `--print-output` surfaces the failing step output for repair. The workflow helper resolves the base from `tmp/scherzo-implementation-refresh-base-latest.json` when present; otherwise it uses `${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin}`.
+
+Bootstrap caveat: the `--base` revision must already contain this repository's SelfCI configuration and local development tooling. If a branch is based before the SelfCI bootstrap landed, first refresh or rebase onto a SelfCI-capable `main`, or use the raw bootstrap checks only long enough to reach a base that can run `selfci check`.
+
 ## Using Scherzo from another devenv
 
 This repository is also a Nix flake. The default package builds a precompiled Erlang shipment and exposes these commands:
