@@ -70,6 +70,7 @@ The main rollback risk is that this is a breaking removal. The rollback is strai
 - [x] (2026-04-30 21:53Z) Removed the remaining Markdown-specific migration UX from `runtime_bundle`: `.md` paths now return `unsupported_config_path`, and default config discovery ignores `WORKFLOW.md` completely.
 - [x] (2026-04-30 22:05Z) Ran real read-only/manual validations using Linear credentials sourced from the owner's main clone `.env.local`: Linear smoke, Linear contract check, pi probe, and a paused once-mode load all succeeded.
 - [x] (2026-04-30 22:17Z) Ran one unpaused dogfood once-mode dispatch against `.scherzo/scherzo.yaml`; Scherzo dispatched `workflow_id=research` for `LIV-11`, the worker exited normally, workspace cleanup ran, and the Linear claim was released.
+- [x] (2026-05-06 16:29Z) Removed the remaining legacy inline DAG helper functions from `src/scherzo/workflow_dag.gleam` after source and test grep showed no callers.
 
 ## Surprises & Discoveries
 
@@ -165,7 +166,7 @@ The current legacy Markdown path starts in `src/scherzo/workflow.gleam`. That mo
 
 The current YAML path starts in `src/scherzo/runtime_bundle.gleam`. YAML config files are parsed by `config.resolve_orchestrator_root` into `domain.OrchestratorConfig`. Workflow DAG files are parsed by `src/scherzo/workflow_dag.gleam`. The DAG runtime is `src/scherzo/workflow_run.gleam`, which prepares step workspaces through `src/scherzo/workspace_run.gleam`, executes command and agent steps, records step artifacts, and cleans up the run root. YAML agent steps use `runner.run_prompt_in_workspace`, which runs pi in a workspace prepared by the workflow runner.
 
-The current runtime bundle still carries both worlds. It has a `BundleMode` with `LegacyMarkdown` and `OrchestratorYaml`. The `RuntimeBundle` constructor has `orchestrator: Option(domain.OrchestratorConfig)`, `workflows: Dict(String, workflow_dag.WorkflowDag)`, and `legacy_workflow: Option(domain.WorkflowDefinition)`. Legacy Markdown is adapted to a one-step DAG through `workflow_dag.legacy_inline`, but daemon and service code still branch on the mode.
+At plan authoring time, the runtime bundle still carried both worlds. It had a `BundleMode` with `LegacyMarkdown` and `OrchestratorYaml`. The `RuntimeBundle` constructor had `orchestrator: Option(domain.OrchestratorConfig)`, `workflows: Dict(String, workflow_dag.WorkflowDag)`, and `legacy_workflow: Option(domain.WorkflowDefinition)`. Legacy Markdown was adapted to a one-step DAG through a legacy inline DAG helper, but daemon and service code still branched on the mode.
 
 The current CLI is `src/scherzo/main.gleam`. It accepts an optional positional path for daemon mode and the same optional path for `--once`, `--linear-smoke`, `--linear-contract-check`, and `--pi-probe`. Its usage string still says `path-to-WORKFLOW.md`. After this plan, the positional path remains optional, but the usage string must say YAML config path, for example `path-to-scherzo.yaml`.
 
@@ -178,7 +179,7 @@ At plan authoring time, the current tree has these relevant files and functions:
 - `src/scherzo/workflow.gleam` defines `choose_path`, `load`, and `parse` for Markdown with optional YAML front matter.
 - `src/scherzo/domain.gleam` defines `WorkflowDefinition(config: yay.Node, prompt_template: String)`.
 - `src/scherzo/error.gleam` defines `WorkflowError`, `workflow_code`, and a `ScherzoError.Workflow` variant.
-- `src/scherzo/workflow_dag.gleam` defines `inline_agent_step` and `legacy_inline`; current grep shows only `runtime_bundle.load_legacy` calls `legacy_inline`.
+- `src/scherzo/workflow_dag.gleam` defined legacy inline DAG adapter helpers; grep showed only `runtime_bundle.load_legacy` used that adapter.
 - `src/scherzo/orchestrator/service.gleam` has separate once-mode functions `run_tick`, `run_tick_yaml`, `dispatch_candidates`, `dispatch_candidates_yaml`, `dispatch_yaml_issue`, `apply_dag_success_state`, and `apply_dag_failure_state`.
 - `src/scherzo/orchestrator/daemon.gleam` defines `YamlRunHandle`, stores `definition: domain.WorkflowDefinition` in daemon state, defines `workflow_definition_from_bundle`, branches on `state.bundle.mode`, and defines `finish_yaml_worker_success`.
 - `src/scherzo/agent/runner.gleam` defines legacy `run_attempt`, `run_attempt_with_commands`, `run_attempt_with_command_ready`, and lower-level `run_prompt_in_workspace`.
@@ -224,7 +225,7 @@ Milestone 3 consolidates once-mode around YAML workflow execution. At the end, `
 
 Milestone 4 consolidates daemon execution around YAML workflow runs. At the end, `src/scherzo/orchestrator/daemon.gleam` no longer stores a fake `WorkflowDefinition`, no longer has `workflow_definition_from_bundle`, no longer branches on `LegacyMarkdown` or `OrchestratorYaml`, and no longer has separate legacy/YAML worker registries. YAML workflow success uses a core transition that preserves workflow-terminal semantics, and YAML workflow failure uses the shared core retry/backoff/park transition.
 
-Milestone 5 removes dead legacy modules, types, and tests. At the end, `src/scherzo/workflow.gleam` and `test/workflow_test.gleam` are deleted, `domain.WorkflowDefinition` is removed, legacy runner entry points that take `WorkflowDefinition` are removed, `workflow_dag.legacy_inline` is removed, and `error.WorkflowError` is removed if no longer used. Tests are updated to exercise `run_prompt_in_workspace` and YAML runtime bundle behavior instead of legacy Markdown parsing.
+Milestone 5 removes dead legacy modules, types, and tests. At the end, `src/scherzo/workflow.gleam` and `test/workflow_test.gleam` are deleted, `domain.WorkflowDefinition` is removed, legacy runner entry points that take `WorkflowDefinition` are removed, the legacy inline DAG adapter helpers are removed, and `error.WorkflowError` is removed if no longer used. Tests are updated to exercise `run_prompt_in_workspace` and YAML runtime bundle behavior instead of legacy Markdown parsing.
 
 Milestone 6 performs final documentation, structural checks, and validation. At the end, docs no longer describe Markdown as production or supported, source grep no longer finds legacy runtime symbols, examples use YAML config paths, and `direnv exec . gleam format --check src test` plus `direnv exec . gleam test` pass.
 
@@ -244,7 +245,7 @@ Then simplify daemon dispatch and worker spawning. `can_route_issue_for_dispatch
 
 Then route workflow success and failure through core. Add a core helper in `src/scherzo/orchestrator/core.gleam`, for example `apply_workflow_success`, that updates `running`, `claimed`, `completed`, and aggregate token totals, releases the claim, and optionally emits cleanup effects. For YAML DAG success, call it with a cleanup policy that does not delete the run root again because `workflow_run.execute` already cleaned it. Add tests in `test/orchestrator_core_test.gleam` proving a workflow-level success with a final issue in an active state completes without scheduling a retry, releases the claim, records tokens, and does not emit cleanup when cleanup is marked already done. For YAML DAG failure, use `core.apply_worker_failure` with the same baseline-issue selection used by legacy worker failures so daemon and once-mode failure semantics remain retry/backoff/park through the core transition instead of a YAML-local release-only mutation.
 
-Then remove legacy types and parser. Delete `src/scherzo/workflow.gleam` and `test/workflow_test.gleam`. Remove `WorkflowDefinition` from `src/scherzo/domain.gleam`. Remove `WorkflowError`, `workflow_code`, and `ScherzoError.Workflow` from `src/scherzo/error.gleam` if grep proves they are unused. Remove `workflow_dag.inline_agent_step` and `workflow_dag.legacy_inline` if grep proves they are unused. Remove `runner.run_attempt`, `runner.run_attempt_with_commands`, and `runner.run_attempt_with_command_ready` from `src/scherzo/agent/runner.gleam` after updating tests to call `runner.run_prompt_in_workspace` with a prepared test workspace.
+Then remove legacy types and parser. Delete `src/scherzo/workflow.gleam` and `test/workflow_test.gleam`. Remove `WorkflowDefinition` from `src/scherzo/domain.gleam`. Remove `WorkflowError`, `workflow_code`, and `ScherzoError.Workflow` from `src/scherzo/error.gleam` if grep proves they are unused. Remove the legacy inline DAG adapter helpers from `src/scherzo/workflow_dag.gleam` if grep proves they are unused. Remove `runner.run_attempt`, `runner.run_attempt_with_commands`, and `runner.run_attempt_with_command_ready` from `src/scherzo/agent/runner.gleam` after updating tests to call `runner.run_prompt_in_workspace` with a prepared test workspace.
 
 Finally, update all tests and docs. Replace legacy runtime bundle tests with YAML-only tests. Delete tests whose only purpose was Markdown frontmatter parsing. Update service and daemon tests to create YAML configs rather than Markdown workflows. Update README, `.scherzo/README.md`, `docs/SYMPHONY_SPEC.md`, and the retrospective in `docs/plans/simple-dag-workflows.md` so they do not claim legacy Markdown remains supported. Run structural grep checks for removed symbols.
 
@@ -384,7 +385,7 @@ Finally, update all tests and docs. Replace legacy runtime bundle tests with YAM
 
 51. Remove `WorkflowError`, `workflow_code`, and `ScherzoError.Workflow` from `src/scherzo/error.gleam` if grep proves there are no remaining uses. If `ScherzoError` itself becomes unused, remove it in the same cleanup commit only after grep proves no code or tests refer to it.
 
-52. Remove `inline_agent_step` and `legacy_inline` from `src/scherzo/workflow_dag.gleam` if grep proves no remaining uses.
+52. Remove the legacy inline DAG helper functions from `src/scherzo/workflow_dag.gleam` if grep proves no remaining uses.
 
 53. Remove direct imports of `yay` that existed only for `WorkflowDefinition` or Markdown parsing.
 
