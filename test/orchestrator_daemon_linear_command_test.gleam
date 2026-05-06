@@ -381,6 +381,110 @@ fn linear_client(
   )
 }
 
+type LinearCommandHarness {
+  LinearCommandHarness(
+    workflow_path: String,
+    log_subject: process.Subject(String),
+    fetch_subject: process.Subject(List(String)),
+    ack_subject: process.Subject(String),
+    linear_server: process.Subject(LinearServerMessage),
+    deps: daemon.RuntimeDependencies,
+  )
+}
+
+fn linear_command_harness(workflow_dir: String) -> LinearCommandHarness {
+  let candidate = issue("issue-1", "ABC-1", "Todo")
+  let workflow_path = write_workflow(workflow_dir, 1)
+  let log_subject = process.new_subject()
+  let fetch_subject = process.new_subject()
+  let ack_subject = process.new_subject()
+  let linear_server = start_linear_server(fetch_subject, ack_subject)
+  let deps =
+    dependencies(
+      tracker_with(candidate),
+      linear_client(linear_server),
+      log_subject,
+      unused_agent,
+    )
+  LinearCommandHarness(
+    workflow_path: workflow_path,
+    log_subject: log_subject,
+    fetch_subject: fetch_subject,
+    ack_subject: ack_subject,
+    linear_server: linear_server,
+    deps: deps,
+  )
+}
+
+fn prompt_linear_command_harness(workflow_dir: String) -> LinearCommandHarness {
+  let candidate = issue("issue-1", "ABC-1", "Todo")
+  let workflow_path = write_workflow(workflow_dir, 1)
+  let log_subject = process.new_subject()
+  let fetch_subject = process.new_subject()
+  let ack_subject = process.new_subject()
+  let linear_server = start_linear_server(fetch_subject, ack_subject)
+  let deps =
+    dependencies(
+      tracker_with(candidate),
+      linear_client(linear_server),
+      log_subject,
+      prompt_agent(log_subject),
+    )
+  LinearCommandHarness(
+    workflow_path: workflow_path,
+    log_subject: log_subject,
+    fetch_subject: fetch_subject,
+    ack_subject: ack_subject,
+    linear_server: linear_server,
+    deps: deps,
+  )
+}
+
+fn expect_linear_fetch(
+  harness: LinearCommandHarness,
+  expected_issue_ids: List(String),
+) -> Nil {
+  let assert Ok(fetched_ids) =
+    process.receive(harness.fetch_subject, within: 1000)
+  assert fetched_ids == expected_issue_ids
+}
+
+fn expect_issue_parked(
+  subject: process.Subject(daemon.Message),
+  issue_id: String,
+) -> orchestrator_state.RuntimeState {
+  let assert Ok(snapshot) = wait_for_parked(subject, issue_id, 20)
+  assert dict.has_key(snapshot.parked, issue_id)
+  snapshot
+}
+
+fn expect_explicit_unpark_only(
+  snapshot: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> Nil {
+  let assert Ok(parked_entry) = dict.get(snapshot.parked, issue_id)
+  assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
+}
+
+fn expect_ack_contains(
+  harness: LinearCommandHarness,
+  fragments: List(String),
+) -> String {
+  let assert Ok(ack) = process.receive(harness.ack_subject, within: 1000)
+  expect_string_contains_all(ack, fragments)
+  ack
+}
+
+fn expect_string_contains_all(text: String, fragments: List(String)) -> Nil {
+  case fragments {
+    [] -> Nil
+    [fragment, ..rest] -> {
+      assert string.contains(text, fragment)
+      expect_string_contains_all(text, rest)
+    }
+  }
+}
+
 fn dependencies(
   tracker_client: tracker.Client,
   linear_command_client: linear.CommandClient,
@@ -547,37 +651,22 @@ fn prompt_agent(log_subject: process.Subject(String)) {
 }
 
 pub fn linear_commands_run_before_candidate_dispatch_test() {
-  let candidate = issue("issue-1", "ABC-1", "Todo")
-  let workflow_path = write_workflow("test/tmp/daemon-linear-park", 1)
-  let log_subject = process.new_subject()
-  let fetch_subject = process.new_subject()
-  let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
-  let deps =
-    dependencies(
-      tracker_with(candidate),
-      linear_client(linear_server),
-      log_subject,
-      unused_agent,
-    )
+  let harness = linear_command_harness("test/tmp/daemon-linear-park")
   process.send(
-    linear_server,
+    harness.linear_server,
     SetNext([
       linear_comment("c1", "issue-1", "/scherzo park --reason hold"),
     ]),
   )
-  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(started) =
+    daemon.start(Some(harness.workflow_path), harness.deps)
 
   process.send(started.data, daemon.PollTick(1))
-  let assert Ok(fetched_ids) = process.receive(fetch_subject, within: 1000)
-  assert fetched_ids == ["issue-1"]
-  let assert Ok(snapshot) = wait_for_parked(started.data, "issue-1", 20)
-  assert dict.has_key(snapshot.parked, "issue-1")
-  let assert Ok(parked_entry) = dict.get(snapshot.parked, "issue-1")
-  assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
+  expect_linear_fetch(harness, ["issue-1"])
+  let snapshot = expect_issue_parked(started.data, "issue-1")
+  expect_explicit_unpark_only(snapshot, "issue-1")
   assert dict.size(snapshot.running) == 0
-  let assert Ok(ack) = process.receive(ack_subject, within: 1000)
-  assert string.contains(ack, "Status: applied")
+  let _ack = expect_ack_contains(harness, ["Status: applied"])
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
@@ -620,40 +709,29 @@ pub fn park_command_suppresses_invalid_workflow_triage_test() {
 }
 
 pub fn linear_runtime_issue_commands_poll_when_candidate_dispatch_skipped_test() {
-  let candidate = issue("issue-1", "ABC-1", "Todo")
-  let workflow_path = write_workflow("test/tmp/daemon-linear-prompt", 1)
-  let log_subject = process.new_subject()
-  let fetch_subject = process.new_subject()
-  let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
-  let deps =
-    dependencies(
-      tracker_with(candidate),
-      linear_client(linear_server),
-      log_subject,
-      prompt_agent(log_subject),
-    )
-  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let harness = prompt_linear_command_harness("test/tmp/daemon-linear-prompt")
+  let assert Ok(started) =
+    daemon.start(Some(harness.workflow_path), harness.deps)
 
   process.send(started.data, daemon.PollTick(1))
-  let assert Ok(first_fetch_ids) = process.receive(fetch_subject, within: 1000)
-  assert first_fetch_ids == ["issue-1"]
-  assert wait_for_log(log_subject, "agent_running:issue-1", 20)
+  expect_linear_fetch(harness, ["issue-1"])
+  assert wait_for_log(harness.log_subject, "agent_running:issue-1", 20)
 
   process.send(
-    linear_server,
+    harness.linear_server,
     SetNext([
       linear_comment("c2", "issue-1", "/scherzo prompt continue"),
     ]),
   )
   process.send(started.data, daemon.PollTick(2))
-  let assert Ok(second_fetch_ids) = process.receive(fetch_subject, within: 1000)
-  assert second_fetch_ids == ["issue-1"]
-  assert wait_for_log(log_subject, "prompt:continue", 20)
-  assert wait_for_log(log_subject, "linear_operator_command:prompt:queued", 20)
-  let assert Ok(ack) = process.receive(ack_subject, within: 1000)
-  assert string.contains(ack, "Command: prompt")
-  assert string.contains(ack, "Status: queued")
+  expect_linear_fetch(harness, ["issue-1"])
+  assert wait_for_log(harness.log_subject, "prompt:continue", 20)
+  assert wait_for_log(
+    harness.log_subject,
+    "linear_operator_command:prompt:queued",
+    20,
+  )
+  let ack = expect_ack_contains(harness, ["Command: prompt", "Status: queued"])
   let canonical_session_id = "ABC-1-1000-1"
   let display_name = session_name.generate("ABC-1", canonical_session_id)
   assert string.contains(ack, "Target: " <> display_name)
@@ -716,34 +794,22 @@ pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
 }
 
 pub fn linear_command_receipts_are_persisted_in_order_test() {
-  let candidate = issue("issue-1", "ABC-1", "Todo")
   let workflow_dir = "test/tmp/daemon-linear-receipts"
   let workspace_root = effective_workspace_root(workflow_dir)
-  let workflow_path = write_workflow(workflow_dir, 1)
-  let log_subject = process.new_subject()
-  let fetch_subject = process.new_subject()
-  let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
-  let deps =
-    dependencies(
-      tracker_with(candidate),
-      linear_client(linear_server),
-      log_subject,
-      unused_agent,
-    )
+  let harness = linear_command_harness(workflow_dir)
   process.send(
-    linear_server,
+    harness.linear_server,
     SetNext([
       linear_comment("c-receipt", "issue-1", "/scherzo park --reason hold"),
     ]),
   )
-  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(started) =
+    daemon.start(Some(harness.workflow_path), harness.deps)
 
   process.send(started.data, daemon.PollTick(1))
-  let assert Ok(_) = process.receive(fetch_subject, within: 1000)
-  let assert Ok(_) = wait_for_parked(started.data, "issue-1", 20)
-  let assert Ok(ack) = process.receive(ack_subject, within: 1000)
-  assert string.contains(ack, "Status: applied")
+  expect_linear_fetch(harness, ["issue-1"])
+  let _snapshot = expect_issue_parked(started.data, "issue-1")
+  let _ack = expect_ack_contains(harness, ["Status: applied"])
   assert wait_for_command_record_kinds(
     workspace_root,
     "c-receipt",
@@ -754,53 +820,48 @@ pub fn linear_command_receipts_are_persisted_in_order_test() {
 }
 
 pub fn linear_command_ack_failure_retries_on_later_poll_test() {
-  let candidate = issue("issue-1", "ABC-1", "Todo")
   let workflow_dir = "test/tmp/daemon-linear-ack-retry"
   let workspace_root = effective_workspace_root(workflow_dir)
-  let workflow_path = write_workflow(workflow_dir, 1)
-  let log_subject = process.new_subject()
-  let fetch_subject = process.new_subject()
-  let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
-  let deps =
-    dependencies(
-      tracker_with(candidate),
-      linear_client(linear_server),
-      log_subject,
-      unused_agent,
-    )
+  let harness = linear_command_harness(workflow_dir)
   process.send(
-    linear_server,
+    harness.linear_server,
     SetAckResults([Error(error.LinearApiRequest("temporary")), Ok(Nil)]),
   )
   process.send(
-    linear_server,
+    harness.linear_server,
     SetNext([
       linear_comment("c-retry-ack", "issue-1", "/scherzo park --reason hold"),
     ]),
   )
-  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(started) =
+    daemon.start(Some(harness.workflow_path), harness.deps)
 
   process.send(started.data, daemon.PollTick(1))
-  let assert Ok(_) = process.receive(fetch_subject, within: 1000)
-  let assert Ok(_) = wait_for_parked(started.data, "issue-1", 20)
-  assert wait_for_log(log_subject, "linear_operator_command:park:applied", 20)
-  let assert Ok(first_ack) = process.receive(ack_subject, within: 1000)
-  assert string.contains(first_ack, "Status: applied")
-  assert wait_for_log(log_subject, "linear_command_ack_failed", 20)
-  drain_logs(log_subject)
+  expect_linear_fetch(harness, ["issue-1"])
+  let _snapshot = expect_issue_parked(started.data, "issue-1")
+  assert wait_for_log(
+    harness.log_subject,
+    "linear_operator_command:park:applied",
+    20,
+  )
+  let _first_ack = expect_ack_contains(harness, ["Status: applied"])
+  assert wait_for_log(harness.log_subject, "linear_command_ack_failed", 20)
+  drain_logs(harness.log_subject)
 
   process.send(
-    linear_server,
+    harness.linear_server,
     SetNext([
       linear_comment("c-retry-ack", "issue-1", "/scherzo park --reason hold"),
     ]),
   )
   process.send(started.data, daemon.PollTick(2))
-  let assert Ok(_) = process.receive(fetch_subject, within: 1000)
-  let assert Ok(second_ack) = process.receive(ack_subject, within: 1000)
-  assert string.contains(second_ack, "Status: applied")
-  assert !wait_for_log(log_subject, "linear_operator_command:park:applied", 3)
+  expect_linear_fetch(harness, ["issue-1"])
+  let _second_ack = expect_ack_contains(harness, ["Status: applied"])
+  assert !wait_for_log(
+    harness.log_subject,
+    "linear_operator_command:park:applied",
+    3,
+  )
   assert wait_for_command_record_kinds(
     workspace_root,
     "c-retry-ack",
@@ -811,10 +872,9 @@ pub fn linear_command_ack_failure_retries_on_later_poll_test() {
 }
 
 pub fn completed_unacked_command_replays_ack_without_reapplying_test() {
-  let candidate = issue("issue-1", "ABC-1", "Todo")
   let workflow_dir = "test/tmp/daemon-linear-completed-unacked"
   let workspace_root = effective_workspace_root(workflow_dir)
-  let workflow_path = write_workflow(workflow_dir, 1)
+  let harness = linear_command_harness(workflow_dir)
   append_ledger_bodies_for_root(workspace_root, [
     record.IssueParkedV2(
       issue_id: "issue-1",
@@ -843,31 +903,23 @@ pub fn completed_unacked_command_replays_ack_without_reapplying_test() {
       message_excerpt: "issue parked",
     ),
   ])
-  let log_subject = process.new_subject()
-  let fetch_subject = process.new_subject()
-  let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
-  let deps =
-    dependencies(
-      tracker_with(candidate),
-      linear_client(linear_server),
-      log_subject,
-      unused_agent,
-    )
   process.send(
-    linear_server,
+    harness.linear_server,
     SetNext([
       linear_comment("c-replay", "issue-1", "/scherzo park --reason hold"),
     ]),
   )
-  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(started) =
+    daemon.start(Some(harness.workflow_path), harness.deps)
 
   process.send(started.data, daemon.PollTick(1))
-  let assert Ok(_) = process.receive(fetch_subject, within: 1000)
-  let assert Ok(ack) = process.receive(ack_subject, within: 1000)
-  assert string.contains(ack, "Command: park")
-  assert string.contains(ack, "Status: applied")
-  assert !wait_for_log(log_subject, "linear_operator_command:park:applied", 3)
+  expect_linear_fetch(harness, ["issue-1"])
+  let _ack = expect_ack_contains(harness, ["Command: park", "Status: applied"])
+  assert !wait_for_log(
+    harness.log_subject,
+    "linear_operator_command:park:applied",
+    3,
+  )
   assert wait_for_command_record_kinds(
     workspace_root,
     "c-replay",
@@ -878,10 +930,9 @@ pub fn completed_unacked_command_replays_ack_without_reapplying_test() {
 }
 
 pub fn startup_ack_outbox_replay_suppresses_duplicate_receipt_ack_test() {
-  let candidate = issue("issue-1", "ABC-1", "Todo")
   let workflow_dir = "test/tmp/daemon-linear-outbox-ack-dedupe"
   let workspace_root = effective_workspace_root(workflow_dir)
-  let workflow_path = write_workflow(workflow_dir, 1)
+  let harness = linear_command_harness(workflow_dir)
   append_ledger_bodies_for_root(workspace_root, [
     record.LinearCommandSeen(
       comment_id: "c-replay",
@@ -909,40 +960,34 @@ pub fn startup_ack_outbox_replay_suppresses_duplicate_receipt_ack_test() {
       payload_json: "{\"type\":\"linear_command_ack\",\"source_comment_id\":\"c-replay\",\"body\":\"pending ack\"}",
     ),
   ])
-  let log_subject = process.new_subject()
-  let fetch_subject = process.new_subject()
-  let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
-  let deps =
-    dependencies(
-      tracker_with(candidate),
-      linear_client(linear_server),
-      log_subject,
-      unused_agent,
-    )
-  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(started) =
+    daemon.start(Some(harness.workflow_path), harness.deps)
 
-  let assert Ok(startup_ack) = process.receive(ack_subject, within: 1000)
+  let assert Ok(startup_ack) =
+    process.receive(harness.ack_subject, within: 1000)
   assert startup_ack == "pending ack"
   process.send(
-    linear_server,
+    harness.linear_server,
     SetNext([
       linear_comment("c-replay", "issue-1", "/scherzo park --reason hold"),
     ]),
   )
   process.send(started.data, daemon.PollTick(1))
-  let assert Ok(_) = process.receive(fetch_subject, within: 1000)
-  assert process.receive(ack_subject, within: 200) == Error(Nil)
-  assert !wait_for_log(log_subject, "linear_operator_command:park:applied", 3)
+  expect_linear_fetch(harness, ["issue-1"])
+  assert process.receive(harness.ack_subject, within: 200) == Error(Nil)
+  assert !wait_for_log(
+    harness.log_subject,
+    "linear_operator_command:park:applied",
+    3,
+  )
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
 pub fn started_uncompleted_command_gets_unknown_ack_without_reapplying_test() {
-  let candidate = issue("issue-1", "ABC-1", "Todo")
   let workflow_dir = "test/tmp/daemon-linear-started-uncompleted"
   let workspace_root = effective_workspace_root(workflow_dir)
-  let workflow_path = write_workflow(workflow_dir, 1)
+  let harness = linear_command_harness(workflow_dir)
   append_ledger_bodies_for_root(workspace_root, [
     record.LinearCommandSeen(
       comment_id: "c-unknown",
@@ -957,30 +1002,23 @@ pub fn started_uncompleted_command_gets_unknown_ack_without_reapplying_test() {
       command_name: "park",
     ),
   ])
-  let log_subject = process.new_subject()
-  let fetch_subject = process.new_subject()
-  let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
-  let deps =
-    dependencies(
-      tracker_with(candidate),
-      linear_client(linear_server),
-      log_subject,
-      unused_agent,
-    )
   process.send(
-    linear_server,
+    harness.linear_server,
     SetNext([
       linear_comment("c-unknown", "issue-1", "/scherzo park --reason hold"),
     ]),
   )
-  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(started) =
+    daemon.start(Some(harness.workflow_path), harness.deps)
 
   process.send(started.data, daemon.PollTick(1))
-  let assert Ok(_) = process.receive(fetch_subject, within: 1000)
-  let assert Ok(ack) = process.receive(ack_subject, within: 1000)
-  assert string.contains(ack, "Status: unknown_after_restart")
-  assert !wait_for_log(log_subject, "linear_operator_command:park:applied", 3)
+  expect_linear_fetch(harness, ["issue-1"])
+  let _ack = expect_ack_contains(harness, ["Status: unknown_after_restart"])
+  assert !wait_for_log(
+    harness.log_subject,
+    "linear_operator_command:park:applied",
+    3,
+  )
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert !dict.has_key(snapshot.parked, "issue-1")
   assert wait_for_command_record_kinds(
@@ -993,21 +1031,9 @@ pub fn started_uncompleted_command_gets_unknown_ack_without_reapplying_test() {
 }
 
 pub fn old_unseen_comment_posted_while_down_is_processed_when_observed_test() {
-  let candidate = issue("issue-1", "ABC-1", "Todo")
-  let workflow_path = write_workflow("test/tmp/daemon-linear-old-unseen", 1)
-  let log_subject = process.new_subject()
-  let fetch_subject = process.new_subject()
-  let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
-  let deps =
-    dependencies(
-      tracker_with(candidate),
-      linear_client(linear_server),
-      log_subject,
-      unused_agent,
-    )
+  let harness = linear_command_harness("test/tmp/daemon-linear-old-unseen")
   process.send(
-    linear_server,
+    harness.linear_server,
     SetNext([
       linear_comment_at(
         "c-old",
@@ -1017,14 +1043,13 @@ pub fn old_unseen_comment_posted_while_down_is_processed_when_observed_test() {
       ),
     ]),
   )
-  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(started) =
+    daemon.start(Some(harness.workflow_path), harness.deps)
 
   process.send(started.data, daemon.PollTick(1))
-  let assert Ok(_) = process.receive(fetch_subject, within: 1000)
-  let assert Ok(snapshot) = wait_for_parked(started.data, "issue-1", 20)
-  assert dict.has_key(snapshot.parked, "issue-1")
-  let assert Ok(ack) = process.receive(ack_subject, within: 1000)
-  assert string.contains(ack, "Status: applied")
+  expect_linear_fetch(harness, ["issue-1"])
+  let _snapshot = expect_issue_parked(started.data, "issue-1")
+  let _ack = expect_ack_contains(harness, ["Status: applied"])
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
