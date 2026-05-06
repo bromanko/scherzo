@@ -92,13 +92,14 @@ def run_proc(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_and_print(args: list[str]) -> None:
+def run_and_print(args: list[str], *, env: dict[str, str] | None = None) -> None:
     print("$ " + " ".join(shell_display(arg) for arg in args), flush=True)
     proc = subprocess.run(
         args,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
     if proc.stdout:
         print(proc.stdout, end="")
@@ -843,6 +844,16 @@ def project_validation_skipped_by_env() -> bool:
     }
 
 
+def validation_env() -> dict[str, str]:
+    env = os.environ.copy()
+    # Project validation runs the repository test suite, and some tests execute
+    # Scherzo helper scripts against fixture directories. SCHERZO_RUN_ROOT is a
+    # workflow-run-scoped setting; inheriting it makes nested helper invocations
+    # read/write the outer merge-conflict run artifacts instead of fixture data.
+    env.pop("SCHERZO_RUN_ROOT", None)
+    return env
+
+
 def run_project_validation() -> list[str]:
     require_command("direnv")
     commands = [
@@ -851,8 +862,9 @@ def run_project_validation() -> list[str]:
         ["direnv", "exec", ".", "gleam", "format", "--check", "src", "test"],
         ["direnv", "exec", ".", "gleam", "test"],
     ]
+    env = validation_env()
     for command in commands:
-        run_and_print(command)
+        run_and_print(command, env=env)
     return [" ".join(command) for command in commands]
 
 
