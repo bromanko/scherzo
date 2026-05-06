@@ -1,26 +1,37 @@
-{ lib
-, stdenvNoCC
-, gleam
-, erlang
-, rebar3
-, cacert
-, coreutils
-, makeWrapper
-, src
+{
+  lib,
+  stdenvNoCC,
+  gleam,
+  erlang,
+  rebar3,
+  cacert,
+  coreutils,
+  makeWrapper,
+  src,
+  sourceRevision ? "unknown",
+  sourceDate ? "unknown",
+  sourceDirty ? "unknown",
 }:
 
 let
   manifest = builtins.fromTOML (builtins.readFile "${src}/gleam.toml");
   pname = manifest.name;
   version = manifest.version;
-  runtimePath = lib.makeBinPath [ erlang coreutils ];
+  runtimePath = lib.makeBinPath [
+    erlang
+    coreutils
+  ];
   startRunnerPath = lib.makeBinPath [ coreutils ];
 
   deps = stdenvNoCC.mkDerivation {
     pname = "${pname}-gleam-deps";
     inherit version src;
 
-    nativeBuildInputs = [ gleam rebar3 cacert ];
+    nativeBuildInputs = [
+      gleam
+      rebar3
+      cacert
+    ];
 
     # This fixed-output derivation lets Gleam fetch Hex packages once while the
     # main package build remains sandboxed and offline. If manifest.toml changes,
@@ -28,7 +39,7 @@ let
     # recursive hash.
     outputHashAlgo = "sha256";
     outputHashMode = "recursive";
-    outputHash = "sha256-2v58C0llK5X9H/Xdoz8vgJjkkcML5HlFfrKc12OWkKk=";
+    outputHash = "sha256-bSNCw1RRmAXroZY29w/W3a2h+nzgkkbfwvz/HlJTClg=";
 
     dontConfigure = true;
 
@@ -42,6 +53,18 @@ let
       mkdir -p "$HOME" "$HEX_HOME" "$REBAR_CACHE_DIR"
 
       gleam deps download
+
+      # Gleam writes build/packages/packages.toml from an unordered package map.
+      # This derivation is fixed-output and recursively hashed, so normalize that
+      # file to avoid semantically identical dependency downloads producing a
+      # different Nix hash on each build.
+      if [ -f build/packages/packages.toml ]; then
+        {
+          echo '[packages]'
+          grep -v '^\[packages\]$' build/packages/packages.toml | LC_ALL=C sort
+        } > build/packages/packages.toml.sorted
+        mv build/packages/packages.toml.sorted build/packages/packages.toml
+      fi
 
       runHook postBuild
     '';
@@ -60,7 +83,12 @@ in
 stdenvNoCC.mkDerivation {
   inherit pname version src;
 
-  nativeBuildInputs = [ gleam erlang rebar3 makeWrapper ];
+  nativeBuildInputs = [
+    gleam
+    erlang
+    rebar3
+    makeWrapper
+  ];
 
   dontConfigure = true;
 
@@ -96,6 +124,9 @@ stdenvNoCC.mkDerivation {
     patchShebangs "$out/libexec/${pname}/scherzo-start-runner"
     makeWrapper "$out/lib/${pname}/entrypoint.sh" "$out/bin/scherzo" \
       --add-flags run \
+      --set-default SCHERZO_SOURCE_REVISION "${sourceRevision}" \
+      --set-default SCHERZO_SOURCE_DATE "${sourceDate}" \
+      --set-default SCHERZO_SOURCE_DIRTY "${sourceDirty}" \
       --prefix PATH : ${runtimePath}
     makeWrapper "$out/bin/scherzo" "$out/bin/scherzoctl" \
       --add-flags ctl
@@ -116,6 +147,11 @@ stdenvNoCC.mkDerivation {
 
     PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" --help > scherzo-help
     grep -q "Usage: scherzo" scherzo-help
+
+    PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" --version > scherzo-version
+    grep -q "^scherzo revision=" scherzo-version
+    grep -q " date=" scherzo-version
+    grep -q " dirty=" scherzo-version
 
     PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo-start" --help > scherzo-start-help
     grep -q "Usage: scherzo" scherzo-start-help
