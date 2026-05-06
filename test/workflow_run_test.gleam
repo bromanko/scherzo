@@ -22,6 +22,7 @@ import scherzo/workflow_dag
 import scherzo/workflow_run
 import scherzo/workflow_scheduler
 import scherzo/workspace_run
+import support/expected_crash
 import test_async
 
 type CommandStart {
@@ -1054,6 +1055,11 @@ pub fn workflow_run_after_step_runs_in_dag_order_for_ready_batch_test() {
 }
 
 pub fn workflow_run_step_worker_crash_returns_failure_test() {
+  use <- expected_crash.suppressing([
+    "test/workflow_run_test.gleam",
+    "workflow_run_step_worker_crash_returns_failure_test",
+    "command crashed",
+  ])
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: crash\n    kind: command\n    run: crash\n    workspace: main\n",

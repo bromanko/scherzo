@@ -36,6 +36,7 @@ import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
+import support/expected_crash
 import test_async
 
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
@@ -1226,6 +1227,11 @@ pub fn daemon_yaml_parent_abort_kills_active_step_worker_test() {
 }
 
 pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
+  use <- expected_crash.suppressing([
+    "test/orchestrator_daemon_test.gleam",
+    "crashing_command_ready_workflow_run_dependencies",
+    "yaml agent crashed",
+  ])
   let dir = "test/tmp/daemon-yaml-agent-command-crash"
   let workflow_path = write_yaml_agent_workflow(dir)
   let candidate =
@@ -1394,6 +1400,11 @@ pub fn daemon_poll_dispatches_fake_worker_routes_update_and_shutdown_test() {
 }
 
 pub fn daemon_side_effect_crash_does_not_stall_future_polls_test() {
+  use <- expected_crash.suppressing([
+    "test/orchestrator_daemon_test.gleam",
+    "daemon_side_effect_crash_does_not_stall_future_polls_test",
+    "candidate fetch crashed",
+  ])
   let workflow_path = write_workflow("test/tmp/daemon-side-effect-crash", 1)
   let fetch_subject = process.new_subject()
   let client =
