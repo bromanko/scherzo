@@ -153,13 +153,6 @@ fn setup_jj_repo(root: String) -> String {
 }
 
 pub fn workflow_jj_workspace_reuses_main_and_cleans_up_smoke_test() {
-  case path.env("SCHERZO_RUN_JJ_SMOKE") {
-    Some("1") -> run_workflow_jj_workspace_reuses_main_and_cleans_up_smoke()
-    _ -> Nil
-  }
-}
-
-fn run_workflow_jj_workspace_reuses_main_and_cleans_up_smoke() -> Nil {
   let root = "test/tmp/workflow-jj-workspace-smoke"
   reset_dir(root)
   let repo = setup_jj_repo(root)
