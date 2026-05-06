@@ -1,5 +1,6 @@
 import gleam/int
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/log
@@ -116,7 +117,7 @@ fn read_loop(
       )
     }
     Error(port.ProcessExited(status)) -> {
-      let stderr = port.read_diagnostics(process) |> result_unwrap("")
+      let stderr = port.read_diagnostics(process) |> result.unwrap("")
       finish_command(
         step_id,
         command,
@@ -133,7 +134,7 @@ fn read_loop(
       )
     }
     Error(port.PortClosed) -> {
-      let stderr = port.read_diagnostics(process) |> result_unwrap("")
+      let stderr = port.read_diagnostics(process) |> result.unwrap("")
       finish_command(
         step_id,
         command,
@@ -151,7 +152,7 @@ fn read_loop(
     }
     Error(port.ReadTimeout) -> {
       let _ = port.terminate(process)
-      let stderr = port.read_diagnostics(process) |> result_unwrap("")
+      let stderr = port.read_diagnostics(process) |> result.unwrap("")
       finish_command(
         step_id,
         command,
@@ -168,7 +169,7 @@ fn read_loop(
       )
     }
     Error(err) -> {
-      let stderr = port.read_diagnostics(process) |> result_unwrap("")
+      let stderr = port.read_diagnostics(process) |> result.unwrap("")
       finish_command(
         step_id,
         command,
@@ -193,7 +194,7 @@ fn prepare_diagnostics(
 ) -> Option(DiagnosticsCapture) {
   let relative_dir =
     path.join(path.join(workspace_path, ".scherzo"), "command-step-diagnostics")
-  let dir = path.absolute(relative_dir) |> result_unwrap(relative_dir)
+  let dir = path.absolute(relative_dir) |> result.unwrap(relative_dir)
   case simplifile.create_directory_all(dir) {
     Error(_) -> None
     Ok(Nil) -> {
@@ -287,7 +288,7 @@ fn captured_stdout(
   case diagnostics {
     None -> fallback
     Some(DiagnosticsCapture(stdout_path: stdout_path, ..)) ->
-      simplifile.read(stdout_path) |> result_unwrap(fallback)
+      simplifile.read(stdout_path) |> result.unwrap(fallback)
   }
 }
 
@@ -433,13 +434,6 @@ fn port_error_to_string(err: port.PortError) -> String {
     port.TerminateFailed(message) -> message
     port.AwaitTimeout -> "await timeout"
     port.AwaitFailed(message) -> message
-  }
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
   }
 }
 

@@ -7,6 +7,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
@@ -142,7 +143,7 @@ pub fn http_transport(
 ) -> Result(Response, error.TrackerError) {
   use http_req <- try_tracker(
     http_request.to(request.endpoint)
-    |> result_map_error(fn(_) { error.LinearApiRequest("invalid endpoint") }),
+    |> result.map_error(fn(_) { error.LinearApiRequest("invalid endpoint") }),
   )
   let http_req =
     http_req
@@ -1413,12 +1414,5 @@ fn try_tracker(
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)
-  }
-}
-
-fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(mapper(err))
   }
 }

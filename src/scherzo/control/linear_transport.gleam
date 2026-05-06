@@ -287,7 +287,7 @@ fn process_command_like_comment(
     }
     True -> {
       let current_session_id =
-        dict.get(issue_sessions, comment.issue_id) |> result_to_option
+        dict.get(issue_sessions, comment.issue_id) |> option.from_result
       case
         linear_parser.parse_comment(
           config.prefix,
@@ -535,12 +535,5 @@ fn optional_non_empty(value: String) -> Option(String) {
   case string.trim(value) == "" {
     True -> None
     False -> Some(value)
-  }
-}
-
-fn result_to_option(result: Result(a, b)) -> Option(a) {
-  case result {
-    Ok(value) -> Some(value)
-    Error(_) -> None
   }
 }

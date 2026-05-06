@@ -247,20 +247,13 @@ fn has_parent_segment(value: String) -> Bool {
 }
 
 fn ensure_parent(final_path: String) -> Result(Nil, ArtifactError) {
-  let dir = path.dirname(final_path) |> result_unwrap(final_path)
+  let dir = path.dirname(final_path) |> result.unwrap(final_path)
   simplifile.create_directory_all(dir)
   |> result.map_error(fn(error) {
     ArtifactIo(
       "create artifact directory: " <> simplifile.describe_error(error),
     )
   })
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
-  }
 }
 
 @external(erlang, "scherzo_artifact_store_ffi", "write_atomic")

@@ -1,4 +1,5 @@
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
@@ -33,7 +34,7 @@ pub fn build_launch(
             "pi.session_persistence requires a non-empty session file",
           ))
         False -> {
-          use launch <- result_try(argv_launch(pi.argv_command))
+          use launch <- result.try(argv_launch(pi.argv_command))
           case launch {
             ShellLaunch(_) ->
               Error(error.InvalidConfig(
@@ -90,15 +91,5 @@ fn list_append(left: List(a), right: List(a)) -> List(a) {
   case left {
     [] -> right
     [item, ..rest] -> [item, ..list_append(rest, right)]
-  }
-}
-
-fn result_try(
-  result: Result(a, e),
-  next: fn(a) -> Result(b, e),
-) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
   }
 }

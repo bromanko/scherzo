@@ -1,6 +1,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/log
 
@@ -474,21 +475,11 @@ fn parse_selected_checks(
   case raw {
     [] -> Ok(list.reverse(acc))
     [name, ..rest] -> {
-      use check <- result_try(parse_check_name(name))
+      use check <- result.try(parse_check_name(name))
       case contains_check(acc, check) {
         True -> parse_selected_checks(rest, acc)
         False -> parse_selected_checks(rest, [check, ..acc])
       }
     }
-  }
-}
-
-fn result_try(
-  result: Result(a, e),
-  next: fn(a) -> Result(b, e),
-) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
   }
 }

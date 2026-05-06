@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
@@ -36,9 +37,9 @@ pub fn workspace_path(
   identifier: String,
 ) -> Result(#(String, String), error.WorkspaceError) {
   use key <- try_workspace(sanitize(identifier))
-  let root_abs = path.absolute(root) |> result_unwrap(root)
+  let root_abs = path.absolute(root) |> result.unwrap(root)
   let joined = path.join(root_abs, key)
-  let workspace_abs = path.absolute(joined) |> result_unwrap(joined)
+  let workspace_abs = path.absolute(joined) |> result.unwrap(joined)
   case path.contains(root_abs, workspace_abs) {
     True -> Ok(#(key, workspace_abs))
     False -> Error(error.WorkspaceOutsideRoot(workspace_abs))
@@ -55,7 +56,7 @@ pub fn prepare(
     identifier,
   ))
   let #(key, workspace_path) = key_and_path
-  let root_abs = path.absolute(workspace.root) |> result_unwrap(workspace.root)
+  let root_abs = path.absolute(workspace.root) |> result.unwrap(workspace.root)
   let marker = population_marker(root_abs, key)
   let marker_exists = file_exists(marker)
 
@@ -215,9 +216,9 @@ fn safe_cleanup(
     True -> Error(error.WorkspaceOutsideRoot(workspace_path))
     False -> {
       let root_abs =
-        path.absolute(workspace_root) |> result_unwrap(workspace_root)
+        path.absolute(workspace_root) |> result.unwrap(workspace_root)
       let target_abs =
-        path.absolute(workspace_path) |> result_unwrap(workspace_path)
+        path.absolute(workspace_path) |> result.unwrap(workspace_path)
       case path.contains(root_abs, target_abs) && target_abs != root_abs {
         False -> Error(error.WorkspaceOutsideRoot(target_abs))
         True -> {
@@ -235,7 +236,7 @@ fn safe_cleanup(
             None -> Nil
           }
           simplifile.delete(target_abs)
-          |> result_map_error(fn(_) { error.WorkspaceIo("delete failed") })
+          |> result.map_error(fn(_) { error.WorkspaceIo("delete failed") })
         }
       }
     }
@@ -246,12 +247,12 @@ fn safe_delete(
   root_abs: String,
   target: String,
 ) -> Result(Nil, error.WorkspaceError) {
-  let target_abs = path.absolute(target) |> result_unwrap(target)
+  let target_abs = path.absolute(target) |> result.unwrap(target)
   case path.contains(root_abs, target_abs) {
     False -> Error(error.WorkspaceOutsideRoot(target_abs))
     True ->
       simplifile.delete(target_abs)
-      |> result_map_error(fn(_) { error.WorkspaceIo("delete failed") })
+      |> result.map_error(fn(_) { error.WorkspaceIo("delete failed") })
   }
 }
 
@@ -291,20 +292,6 @@ fn is_allowed(grapheme: String) -> Bool {
 
 fn is_between(value: String, low: String, high: String) -> Bool {
   string.compare(value, low) != Lt && string.compare(value, high) != Gt
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
-  }
-}
-
-fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(mapper(err))
-  }
 }
 
 fn try_workspace(

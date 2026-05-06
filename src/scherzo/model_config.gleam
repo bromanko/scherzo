@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import yay
 
@@ -38,9 +39,9 @@ pub fn read_settings(
   paths: SettingsPaths,
   error: fn(String, String) -> e,
 ) -> Result(Settings, e) {
-  use _ <- result_try(reject_provider_field(node, paths, error))
-  use model <- result_try(read_optional_model(node, paths.model_path, error))
-  use thinking <- result_try(read_optional_thinking(
+  use _ <- result.try(reject_provider_field(node, paths, error))
+  use model <- result.try(read_optional_model(node, paths.model_path, error))
+  use thinking <- result.try(read_optional_thinking(
     node,
     paths.thinking_path,
     error,
@@ -50,8 +51,8 @@ pub fn read_settings(
 
 pub fn resolve(defaults: Settings, overrides: Settings) -> Settings {
   Settings(
-    model: option_or(overrides.model, defaults.model),
-    thinking: option_or(overrides.thinking, defaults.thinking),
+    model: option.or(overrides.model, defaults.model),
+    thinking: option.or(overrides.thinking, defaults.thinking),
   )
 }
 
@@ -348,21 +349,4 @@ fn has_thinking_suffix(value: String) -> Bool {
   || string.ends_with(value, ":medium")
   || string.ends_with(value, ":high")
   || string.ends_with(value, ":xhigh")
-}
-
-fn option_or(value: Option(a), fallback: Option(a)) -> Option(a) {
-  case value {
-    Some(_) -> value
-    None -> fallback
-  }
-}
-
-fn result_try(
-  result: Result(a, e),
-  next: fn(a) -> Result(b, e),
-) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
-  }
 }

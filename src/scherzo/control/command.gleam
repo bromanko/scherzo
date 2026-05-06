@@ -98,9 +98,9 @@ pub fn status_from_string(
   case name {
     "applied" -> Applied
     "queued" -> Queued
-    "rejected" -> Rejected(option_unwrap(reason, "rejected"))
+    "rejected" -> Rejected(option.unwrap(reason, "rejected"))
     "not_found" -> NotFound
-    "not_allowed" -> NotAllowed(option_unwrap(reason, "not_allowed"))
+    "not_allowed" -> NotAllowed(option.unwrap(reason, "not_allowed"))
     _ -> Rejected("unknown_status:" <> name)
   }
 }
@@ -153,11 +153,4 @@ pub fn not_allowed(
   message: Option(String),
 ) -> CommandResult {
   result_for(operator_command, NotAllowed(reason), message)
-}
-
-fn option_unwrap(value: Option(String), default: String) -> String {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
 }

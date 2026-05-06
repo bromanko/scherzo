@@ -302,8 +302,8 @@ pub fn execute_with_resume(
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   let scheduler_state =
     scheduler_with_artifacts(workflow_scheduler.init(dag), resume.artifacts)
-  let run_root = option_or(first_run_root(resume.workspaces), resume.run_root)
-  let run_root_value = option_unwrap(run_root, "")
+  let run_root = option.or(first_run_root(resume.workspaces), resume.run_root)
+  let run_root_value = option.unwrap(run_root, "")
   execute_with_context(
     issue,
     dag,
@@ -493,8 +493,8 @@ fn loop(
           artifacts,
           orchestrator.artifact_limits,
         )
-      let final_issue = option_unwrap(final_issue, issue)
-      let workspace_path = option_unwrap(run_root, "")
+      let final_issue = option.unwrap(final_issue, issue)
+      let workspace_path = option.unwrap(run_root, "")
       use Nil <- result_try_checkpoint(
         dependencies.checkpoint.workflow_finished(
           workflow_checkpoint.WorkflowFinished(
@@ -629,7 +629,7 @@ fn loop(
             )
           {
             Error(PrepareReadyFailure(reason, agent_reason, prepared_run_root)) -> {
-              let failure_run_root = option_or(prepared_run_root, run_root)
+              let failure_run_root = option.or(prepared_run_root, run_root)
               mark_workflow_failed_terminal(
                 dependencies,
                 run_id,
@@ -796,7 +796,7 @@ fn prepare_ready_steps(
 ) {
   case steps {
     [] -> {
-      let run_root = option_or(prepared_run_root(acc), current_run_root)
+      let run_root = option.or(prepared_run_root(acc), current_run_root)
       Ok(#(list.reverse(acc), prepared_workspaces, run_root, attempt_indexes))
     }
     [step, ..rest] -> {
@@ -824,13 +824,13 @@ fn prepare_ready_steps(
           Error(PrepareReadyFailure(
             "workspace_failed:" <> error.workspace_code(err),
             None,
-            option_or(prepared_run_root(acc), current_run_root),
+            option.or(prepared_run_root(acc), current_run_root),
           ))
         Error(workspace_run.HookFailure(err)) ->
           Error(PrepareReadyFailure(
             hook_failure_report(err, secrets),
             Some(error.WorkflowHookFailed(err)),
-            option_or(prepared_run_root(acc), current_run_root),
+            option.or(prepared_run_root(acc), current_run_root),
           ))
         Ok(prepared) -> {
           case
@@ -1866,7 +1866,7 @@ fn run_step(
   case step.kind {
     workflow_dag.CommandStep(run, timeout_ms) -> {
       let timeout_ms =
-        option_unwrap(timeout_ms, orchestrator.dag_hooks.timeout_ms)
+        option.unwrap(timeout_ms, orchestrator.dag_hooks.timeout_ms)
       #(
         dependencies.command_step(
           context,
@@ -2309,20 +2309,6 @@ fn result_try_checkpoint(
         run_root: run_root,
         failed_step_id: failed_step_id,
       ))
-  }
-}
-
-fn option_unwrap(value: Option(a), default: a) -> a {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
-}
-
-fn option_or(value: Option(a), fallback: Option(a)) -> Option(a) {
-  case value {
-    Some(_) -> value
-    None -> fallback
   }
 }
 
