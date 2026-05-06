@@ -373,7 +373,7 @@ fn all_text_content(items: List(ContentItem)) -> Option(String) {
   let texts =
     list.filter_map(items, fn(item) {
       case item.text {
-        Some(text) -> non_empty(text) |> option_to_result
+        Some(text) -> non_empty(text) |> option.to_result(Nil)
         None -> Error(Nil)
       }
     })
@@ -386,17 +386,11 @@ fn all_text_content(items: List(ContentItem)) -> Option(String) {
 fn assistant_message_texts(messages: List(AgentEndMessage)) -> List(String) {
   list.filter_map(messages, fn(message) {
     case message.role, message.content {
-      Some("assistant"), Some(content) -> non_empty(content) |> option_to_result
+      Some("assistant"), Some(content) ->
+        non_empty(content) |> option.to_result(Nil)
       _, _ -> Error(Nil)
     }
   })
-}
-
-fn option_to_result(value: Option(a)) -> Result(a, Nil) {
-  case value {
-    Some(value) -> Ok(value)
-    None -> Error(Nil)
-  }
 }
 
 fn message_object_decoder() -> decode.Decoder(MessageObject) {

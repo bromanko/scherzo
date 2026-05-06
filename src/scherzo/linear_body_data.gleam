@@ -3,6 +3,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{None}
+import gleam/result
 import gleam/string
 
 pub type JsonValue {
@@ -38,7 +39,7 @@ pub fn parse_json(body_data_json: String) -> Result(JsonValue, String) {
 }
 
 pub fn parse_document(body_data_json: String) -> Result(JsonValue, String) {
-  use value <- result_try(parse_json(body_data_json))
+  use value <- result.try(parse_json(body_data_json))
   validate_document(value)
 }
 
@@ -60,7 +61,7 @@ pub fn append_file_node(
   attrs: FileNodeAttrs,
   dedupe_by_filename: Bool,
 ) -> Result(AppendResult, String) {
-  use document <- result_try(parse_document(body_data_json))
+  use document <- result.try(parse_document(body_data_json))
   Ok(append_file_node_to_document(document, attrs, dedupe_by_filename))
 }
 
@@ -249,14 +250,4 @@ fn escape_markdown_link_label(filename: String) -> String {
   |> string.replace("\\", "\\\\")
   |> string.replace("[", "\\[")
   |> string.replace("]", "\\]")
-}
-
-fn result_try(
-  result: Result(a, e),
-  next: fn(a) -> Result(b, e),
-) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
-  }
 }

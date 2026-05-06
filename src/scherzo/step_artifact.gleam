@@ -4,6 +4,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
@@ -361,7 +362,7 @@ pub fn command_failure_details(artifact: StepArtifact) -> String {
     <> artifact.step_id
     <> failure_code_detail(artifact.failure_code)
     <> "\ncommand: "
-    <> option_string(artifact.command, "<not recorded>")
+    <> option.unwrap(artifact.command, "<not recorded>")
     <> "\n"
     <> exit_detail(artifact.exit_code)
     <> "\n"
@@ -531,7 +532,7 @@ fn cwd_relative_path(value: String) -> Option(String) {
 }
 
 fn relative_to_root(value: String, root: String) -> Option(String) {
-  let root_abs = path.absolute(root) |> result_unwrap(root)
+  let root_abs = path.absolute(root) |> result.unwrap(root)
   let root_abs = trim_trailing_slash(root_abs)
   case path.contains(root_abs, value) {
     True ->
@@ -807,13 +808,6 @@ fn cap_with_truncation(
   }
 }
 
-fn option_string(value: Option(String), default: String) -> String {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
-}
-
 fn option_string_value(value: Option(String)) -> template.Value {
   case value {
     Some(value) -> template.VString(value)
@@ -825,13 +819,6 @@ fn option_int_value(value: Option(Int)) -> template.Value {
   case value {
     Some(value) -> template.VInt(value)
     None -> template.VNil
-  }
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
   }
 }
 

@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
@@ -156,15 +157,15 @@ pub fn resolve_root(
   config_path: String,
   env: Env,
 ) -> Result(config_types.EffectiveConfig, error.ConfigError) {
-  use tracker <- result_try(resolve_tracker(root, env))
-  use polling <- result_try(resolve_polling(root))
-  use workspace <- result_try(resolve_workspace(root, config_path, env))
-  use hooks <- result_try(resolve_hooks(root))
-  use agent <- result_try(resolve_agent(root))
-  use pi <- result_try(resolve_pi(root))
-  use handoff <- result_try(resolve_handoff(root))
-  use linear_contract <- result_try(resolve_linear_contract(root))
-  use linear_commands <- result_try(resolve_linear_commands(root))
+  use tracker <- result.try(resolve_tracker(root, env))
+  use polling <- result.try(resolve_polling(root))
+  use workspace <- result.try(resolve_workspace(root, config_path, env))
+  use hooks <- result.try(resolve_hooks(root))
+  use agent <- result.try(resolve_agent(root))
+  use pi <- result.try(resolve_pi(root))
+  use handoff <- result.try(resolve_handoff(root))
+  use linear_contract <- result.try(resolve_linear_contract(root))
+  use linear_commands <- result.try(resolve_linear_commands(root))
   Ok(config_types.EffectiveConfig(
     tracker:,
     polling:,
@@ -183,12 +184,12 @@ pub fn resolve_orchestrator_root(
   config_path: String,
   env: Env,
 ) -> Result(config_types.OrchestratorConfig, error.ConfigError) {
-  use effective <- result_try(resolve_root(root, config_path, env))
-  use routing <- result_try(resolve_routing(root, config_path))
-  use dag_hooks <- result_try(resolve_dag_hooks(root))
-  use artifact_limits <- result_try(resolve_artifact_limits(root))
-  use model_settings <- result_try(resolve_workflow_model_settings(root))
-  use linear_contract <- result_try(resolve_orchestrator_linear_contract(
+  use effective <- result.try(resolve_root(root, config_path, env))
+  use routing <- result.try(resolve_routing(root, config_path))
+  use dag_hooks <- result.try(resolve_dag_hooks(root))
+  use artifact_limits <- result.try(resolve_artifact_limits(root))
+  use model_settings <- result.try(resolve_workflow_model_settings(root))
+  use linear_contract <- result.try(resolve_orchestrator_linear_contract(
     root,
     effective.linear_contract,
     routing,
@@ -197,9 +198,9 @@ pub fn resolve_orchestrator_root(
   Ok(config_types.OrchestratorConfig(
     effective: effective,
     config_dir: dirname(config_path)
-      |> result_unwrap(".")
+      |> result.unwrap(".")
       |> absname
-      |> result_unwrap(dirname(config_path) |> result_unwrap(".")),
+      |> result.unwrap(dirname(config_path) |> result.unwrap(".")),
     routing: routing,
     dag_hooks: dag_hooks,
     artifact_limits: artifact_limits,
@@ -282,14 +283,14 @@ fn resolve_tracker(
       "kind",
       error.UnsupportedTrackerKind("missing"),
     )
-  use kind <- result_try(kind)
+  use kind <- result.try(kind)
   let normalized_kind = kind |> string.trim |> string.lowercase
   case tracker_kind.from_string(normalized_kind) {
     Ok(kind) -> {
       let endpoint =
         get_string(tracker_node, "endpoint")
-        |> option_unwrap("https://api.linear.app/graphql")
-      use endpoint <- result_try(validate_https_endpoint(endpoint))
+        |> option.unwrap("https://api.linear.app/graphql")
+      use endpoint <- result.try(validate_https_endpoint(endpoint))
       let active_states =
         get_string_list(tracker_node, "active_states")
         |> list_default(["Todo", "In Progress"])
@@ -299,15 +300,15 @@ fn resolve_tracker(
       let raw_api_key = get_string(tracker_node, "api_key")
       let api_key =
         resolve_optional_env(raw_api_key, env)
-        |> option_or_else(fn() { env("LINEAR_API_KEY") })
+        |> option.lazy_or(fn() { env("LINEAR_API_KEY") })
       let project_slug =
         get_string(tracker_node, "project_slug")
         |> resolve_optional_env(env)
-      use project_slug <- result_try(required_option(
+      use project_slug <- result.try(required_option(
         project_slug,
         error.MissingTrackerProjectSlug,
       ))
-      use api_key <- result_try(required_option(
+      use api_key <- result.try(required_option(
         api_key,
         error.MissingTrackerApiKey,
       ))
@@ -355,7 +356,7 @@ fn resolve_workspace(
   let root =
     raw
     |> resolve_optional_env(env)
-    |> option_unwrap(default_workspace_root(workflow_path))
+    |> option.unwrap(default_workspace_root(workflow_path))
   Ok(config_types.WorkspaceConfig(root: resolve_path(root, workflow_path)))
 }
 
@@ -426,7 +427,7 @@ fn resolve_pi(
 ) -> Result(config_types.PiConfig, error.ConfigError) {
   let pi = get_map(root, "pi")
   let command =
-    get_string(pi, "command") |> option_unwrap("pi --mode rpc --no-session")
+    get_string(pi, "command") |> option.unwrap("pi --mode rpc --no-session")
   let turn_timeout_ms = get_int(pi, "turn_timeout_ms") |> int_default(3_600_000)
   let read_timeout_ms = get_int(pi, "read_timeout_ms") |> int_default(5000)
   let stall_timeout_ms = get_int(pi, "stall_timeout_ms") |> int_default(300_000)
@@ -441,12 +442,12 @@ fn resolve_pi(
   {
     True -> Error(error.InvalidConfig("invalid pi config"))
     False -> {
-      use ui_request_policy <- result_try(
+      use ui_request_policy <- result.try(
         ui_policy(get_string(pi, "ui_request_policy")),
       )
-      use argv_command <- result_try(resolve_pi_argv(pi))
-      use session_persistence <- result_try(resolve_pi_session_persistence(pi))
-      use _ <- result_try(validate_pi_session_persistence(
+      use argv_command <- result.try(resolve_pi_argv(pi))
+      use session_persistence <- result.try(resolve_pi_session_persistence(pi))
+      use _ <- result.try(validate_pi_session_persistence(
         argv_command,
         session_persistence,
       ))
@@ -474,11 +475,11 @@ fn resolve_pi_argv(
   case get_node(pi, "argv") {
     None -> Ok(None)
     Some(yay.NodeSeq(values)) -> {
-      use argv <- result_try(read_string_values(values, "pi.argv", []))
+      use argv <- result.try(read_string_values(values, "pi.argv", []))
       case argv {
         [] -> Error(error.InvalidConfig("pi.argv must be non-empty"))
         [executable, ..args] -> {
-          use env <- result_try(get_string_map_strict(
+          use env <- result.try(get_string_map_strict(
             pi,
             "argv_env",
             "pi.argv_env",
@@ -510,12 +511,12 @@ fn resolve_pi_session_persistence(
     Some(node) ->
       case node {
         yay.NodeMap(_) -> {
-          use enabled_option <- result_try(get_bool_strict(
+          use enabled_option <- result.try(get_bool_strict(
             node,
             "enabled",
             "pi.session_persistence.enabled",
           ))
-          use prompt_option <- result_try(get_optional_string_strict(
+          use prompt_option <- result.try(get_optional_string_strict(
             node,
             "recovery_prompt",
             "pi.session_persistence.recovery_prompt",
@@ -524,7 +525,7 @@ fn resolve_pi_session_persistence(
             enabled: enabled_option |> bool_default(defaults.enabled),
             recovery_prompt: prompt_option
               |> optional_non_empty_string
-              |> option_unwrap(defaults.recovery_prompt),
+              |> option.unwrap(defaults.recovery_prompt),
           ))
         }
         _ -> Error(error.InvalidConfig("pi.session_persistence must be a map"))
@@ -539,7 +540,7 @@ fn validate_pi_session_persistence(
   case session_persistence.enabled {
     False -> Ok(Nil)
     True -> {
-      use argv <- result_try(required_option(
+      use argv <- result.try(required_option(
         argv_command,
         error.InvalidConfig("pi.session_persistence requires pi.argv"),
       ))
@@ -623,33 +624,33 @@ fn resolve_linear_contract(
     Some(node) -> {
       case node {
         yay.NodeMap(_) -> {
-          use enabled_option <- result_try(get_bool_strict(
+          use enabled_option <- result.try(get_bool_strict(
             node,
             "enabled",
             "linear_contract.enabled",
           ))
-          use prefix_option <- result_try(get_string_strict(
+          use prefix_option <- result.try(get_string_strict(
             node,
             "workflow_label_prefix",
             "linear_contract.workflow_label_prefix",
           ))
-          use workflow_labels_option <- result_try(get_contract_string_list(
+          use workflow_labels_option <- result.try(get_contract_string_list(
             node,
             "workflow_labels",
             "linear_contract.workflow_labels",
           ))
-          use support_labels_option <- result_try(get_contract_string_list(
+          use support_labels_option <- result.try(get_contract_string_list(
             node,
             "support_labels",
             "linear_contract.support_labels",
           ))
-          use required_states_option <- result_try(get_contract_string_map(
+          use required_states_option <- result.try(get_contract_string_map(
             node,
             "required_states",
             "linear_contract.required_states",
             string.trim,
           ))
-          use handoff_bindings_option <- result_try(
+          use handoff_bindings_option <- result.try(
             get_contract_string_map(
               node,
               "handoff_state_bindings",
@@ -657,17 +658,17 @@ fn resolve_linear_contract(
               fn(value) { value |> string.trim |> string.lowercase },
             ),
           )
-          use enforce_option <- result_try(get_bool_strict(
+          use enforce_option <- result.try(get_bool_strict(
             node,
             "enforce_issue_workflow_labels",
             "linear_contract.enforce_issue_workflow_labels",
           ))
-          use invalid_state_option <- result_try(get_optional_string_strict(
+          use invalid_state_option <- result.try(get_optional_string_strict(
             node,
             "invalid_workflow_state_id",
             "linear_contract.invalid_workflow_state_id",
           ))
-          use comment_option <- result_try(get_bool_strict(
+          use comment_option <- result.try(get_bool_strict(
             node,
             "comment_on_invalid_workflow",
             "linear_contract.comment_on_invalid_workflow",
@@ -676,7 +677,7 @@ fn resolve_linear_contract(
           let enabled = enabled_option |> bool_default(defaults.enabled)
           let workflow_label_prefix =
             prefix_option
-            |> option_unwrap(defaults.workflow_label_prefix)
+            |> option.unwrap(defaults.workflow_label_prefix)
             |> normalize_label
           let workflow_labels =
             workflow_labels_option
@@ -688,21 +689,21 @@ fn resolve_linear_contract(
             |> normalize_label_list
           let required_states =
             required_states_option
-            |> option_unwrap(defaults.required_states)
+            |> option.unwrap(defaults.required_states)
           let handoff_state_bindings =
             handoff_bindings_option
-            |> option_unwrap(defaults.handoff_state_bindings)
+            |> option.unwrap(defaults.handoff_state_bindings)
           let enforce_issue_workflow_labels =
             enforce_option
             |> bool_default(defaults.enforce_issue_workflow_labels)
           let invalid_workflow_state_id =
             invalid_state_option
             |> optional_non_empty_string
-            |> option_or_else(fn() { defaults.invalid_workflow_state_id })
+            |> option.lazy_or(fn() { defaults.invalid_workflow_state_id })
           let comment_on_invalid_workflow =
             comment_option
             |> bool_default(defaults.comment_on_invalid_workflow)
-          use handoff_state_bindings <- result_try(validate_handoff_bindings(
+          use handoff_state_bindings <- result.try(validate_handoff_bindings(
             handoff_state_bindings,
             required_states,
           ))
@@ -742,7 +743,7 @@ fn resolve_linear_commands(
   let node = get_map(root, "linear_commands")
   let defaults = default_linear_command_config()
   let enabled = get_bool(node, "enabled") |> bool_default(defaults.enabled)
-  let prefix = get_string(node, "prefix") |> option_unwrap(defaults.prefix)
+  let prefix = get_string(node, "prefix") |> option.unwrap(defaults.prefix)
   let prefix = string.trim(prefix)
   let authorized_user_ids =
     get_string_list(node, "authorized_user_ids")
@@ -797,16 +798,16 @@ fn resolve_routing(
   let routing = get_map(root, "routing")
   let prefix =
     get_string(routing, "workflow_label_prefix")
-    |> option_unwrap("workflow:")
+    |> option.unwrap("workflow:")
     |> normalize_label
   let require_exactly_one =
     get_bool(routing, "require_exactly_one_workflow_label")
     |> bool_default(False)
   let default_workflow =
     get_non_empty_string(routing, "default_workflow")
-    |> option_map(normalize_label)
-  use workflows <- result_try(read_routing_workflows(routing, config_path))
-  use _ <- result_try(validate_default_workflow(default_workflow, workflows))
+    |> option.map(normalize_label)
+  use workflows <- result.try(read_routing_workflows(routing, config_path))
+  use _ <- result.try(validate_default_workflow(default_workflow, workflows))
   Ok(config_types.RoutingConfig(
     workflow_label_prefix: prefix,
     require_exactly_one_workflow_label: require_exactly_one,
@@ -867,7 +868,7 @@ fn read_routing_workflow_entries(
             "routing.workflows has invalid workflow id: " <> key,
           ))
         True -> {
-          use path <- result_try(resolve_relative_config_path(
+          use path <- result.try(resolve_relative_config_path(
             value,
             config_path,
             "routing.workflows." <> key,
@@ -1133,7 +1134,7 @@ fn validate_handoff_bindings(
   required_states: dict.Dict(String, String),
 ) -> Result(dict.Dict(String, String), error.ConfigError) {
   validate_handoff_binding_entries(dict.to_list(bindings), required_states)
-  |> result_map(fn(_) { bindings })
+  |> result.map(fn(_) { bindings })
 }
 
 fn validate_handoff_binding_entries(
@@ -1361,7 +1362,7 @@ fn get_contract_string_list(
   case get_node(node, key) {
     None -> Ok(None)
     Some(yay.NodeSeq(values)) -> {
-      use strings <- result_try(read_contract_string_list(values, path, []))
+      use strings <- result.try(read_contract_string_list(values, path, []))
       Ok(Some(list.reverse(strings)))
     }
     Some(_) -> Error(error.InvalidConfig(path <> " must be a string list"))
@@ -1390,7 +1391,7 @@ fn get_contract_string_map(
   case get_node(node, key) {
     None -> Ok(None)
     Some(yay.NodeMap(entries)) -> {
-      use pairs <- result_try(
+      use pairs <- result.try(
         read_contract_string_map(entries, path, normalize_value, []),
       )
       Ok(Some(dict.from_list(list.reverse(pairs))))
@@ -1488,46 +1489,25 @@ fn resolve_path(path: String, workflow_path: String) -> String {
       case home() {
         Ok(home) ->
           absname(home <> "/" <> string.drop_start(path, 2))
-          |> result_unwrap(path)
+          |> result.unwrap(path)
         Error(_) -> path
       }
     False ->
       case string.starts_with(path, "/") {
-        True -> absname(path) |> result_unwrap(path)
+        True -> absname(path) |> result.unwrap(path)
         False -> {
-          let dir = dirname(workflow_path) |> result_unwrap(".")
-          absname(dir <> "/" <> path) |> result_unwrap(path)
+          let dir = dirname(workflow_path) |> result.unwrap(".")
+          absname(dir <> "/" <> path) |> result.unwrap(path)
         }
       }
   }
 }
 
 fn default_workspace_root(workflow_path: String) -> String {
-  let tmp = tmpdir() |> result_unwrap("/tmp")
+  let tmp = tmpdir() |> result.unwrap("/tmp")
   let _ = workflow_path
   absname(tmp <> "/scherzo_workspaces")
-  |> result_unwrap(tmp <> "/scherzo_workspaces")
-}
-
-fn option_unwrap(value: Option(a), default: a) -> a {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
-}
-
-fn option_or_else(value: Option(a), fallback: fn() -> Option(a)) -> Option(a) {
-  case value {
-    Some(_) -> value
-    None -> fallback()
-  }
-}
-
-fn option_map(value: Option(a), mapper: fn(a) -> b) -> Option(b) {
-  case value {
-    Some(value) -> Some(mapper(value))
-    None -> None
-  }
+  |> result.unwrap(tmp <> "/scherzo_workspaces")
 }
 
 fn required_option(
@@ -1548,43 +1528,19 @@ fn non_empty_option(value: Option(String)) -> Bool {
 }
 
 fn int_default(value: Option(Int), default: Int) -> Int {
-  option_unwrap(value, default)
+  option.unwrap(value, default)
 }
 
 fn bool_default(value: Option(Bool), default: Bool) -> Bool {
-  option_unwrap(value, default)
+  option.unwrap(value, default)
 }
 
 fn list_default(value: Option(List(a)), default: List(a)) -> List(a) {
-  option_unwrap(value, default)
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
-  }
-}
-
-fn result_map(result: Result(a, e), mapper: fn(a) -> b) -> Result(b, e) {
-  case result {
-    Ok(value) -> Ok(mapper(value))
-    Error(err) -> Error(err)
-  }
+  option.unwrap(value, default)
 }
 
 fn config_error_message(err: error.ConfigError) -> String {
   error.config_code(err)
-}
-
-fn result_try(
-  result: Result(a, e),
-  next: fn(a) -> Result(b, e),
-) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
-  }
 }
 
 @external(erlang, "scherzo_config_ffi", "home")

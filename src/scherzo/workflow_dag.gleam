@@ -2,6 +2,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
+import gleam/result
 import gleam/string
 import scherzo/model_config
 import yay
@@ -60,11 +61,11 @@ pub fn parse(content: String) -> Result(WorkflowDag, DagError) {
 pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
   case root {
     yay.NodeMap(_) -> {
-      use _ <- result_try(require_version(root))
-      use id <- result_try(required_string(root, "id", "missing_workflow_id"))
-      use _ <- result_try(validate_workflow_id(id))
-      use max_parallel_steps <- result_try(read_max_parallel_steps(root))
-      use steps <- result_try(read_steps(root))
+      use _ <- result.try(require_version(root))
+      use id <- result.try(required_string(root, "id", "missing_workflow_id"))
+      use _ <- result.try(validate_workflow_id(id))
+      use max_parallel_steps <- result.try(read_max_parallel_steps(root))
+      use steps <- result.try(read_steps(root))
       let dag =
         WorkflowDag(
           id: id,
@@ -109,11 +110,11 @@ pub fn with_prompt(step: WorkflowStep, prompt: PromptRef) -> WorkflowStep {
 }
 
 fn validate(dag: WorkflowDag) -> Result(WorkflowDag, DagError) {
-  use _ <- result_try(validate_unique_step_ids(dag.steps))
-  use _ <- result_try(validate_dependencies_exist(dag.steps))
-  use _ <- result_try(validate_acyclic(dag.steps))
-  use _ <- result_try(validate_workspace_sources(dag.steps))
-  use _ <- result_try(validate_single_terminal_sink(dag.steps))
+  use _ <- result.try(validate_unique_step_ids(dag.steps))
+  use _ <- result.try(validate_dependencies_exist(dag.steps))
+  use _ <- result.try(validate_acyclic(dag.steps))
+  use _ <- result.try(validate_workspace_sources(dag.steps))
+  use _ <- result.try(validate_single_terminal_sink(dag.steps))
   Ok(dag)
 }
 
@@ -126,7 +127,7 @@ fn require_version(root: yay.Node) -> Result(Nil, DagError) {
 }
 
 fn read_max_parallel_steps(root: yay.Node) -> Result(Int, DagError) {
-  let value = optional_int(root, "max_parallel_steps") |> option_unwrap(1)
+  let value = optional_int(root, "max_parallel_steps") |> option.unwrap(1)
   case value >= 1 {
     True -> Ok(value)
     False ->
@@ -152,7 +153,7 @@ fn read_step_list(
   case values {
     [] -> Ok(list.reverse(acc))
     [value, ..rest] -> {
-      use step <- result_try(read_step(value))
+      use step <- result.try(read_step(value))
       read_step_list(rest, [step, ..acc])
     }
   }
@@ -161,13 +162,13 @@ fn read_step_list(
 fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
   case node {
     yay.NodeMap(_) -> {
-      use id <- result_try(required_string(node, "id", "missing_step_id"))
-      use _ <- result_try(validate_step_id(id))
-      use kind <- result_try(read_step_kind(node))
-      use depends_on <- result_try(read_depends_on(node))
-      use workspace <- result_try(read_workspace(node))
-      use on_failure <- result_try(read_failure_policy(node))
-      use model_settings <- result_try(read_model_settings(kind, node))
+      use id <- result.try(required_string(node, "id", "missing_step_id"))
+      use _ <- result.try(validate_step_id(id))
+      use kind <- result.try(read_step_kind(node))
+      use depends_on <- result.try(read_depends_on(node))
+      use workspace <- result.try(read_workspace(node))
+      use on_failure <- result.try(read_failure_policy(node))
+      use model_settings <- result.try(read_model_settings(kind, node))
       Ok(WorkflowStep(
         id: id,
         kind: kind,
@@ -187,7 +188,7 @@ fn read_step_kind(node: yay.Node) -> Result(StepKind, DagError) {
     Some(raw) -> {
       case string.trim(raw) |> string.lowercase {
         "agent" -> {
-          use prompt <- result_try(required_string(
+          use prompt <- result.try(required_string(
             node,
             "prompt",
             "missing_prompt",
@@ -195,7 +196,7 @@ fn read_step_kind(node: yay.Node) -> Result(StepKind, DagError) {
           Ok(AgentStep(PromptFile(prompt)))
         }
         "command" -> {
-          use run <- result_try(required_string(node, "run", "missing_run"))
+          use run <- result.try(required_string(node, "run", "missing_run"))
           Ok(CommandStep(run: run, timeout_ms: optional_int(node, "timeout_ms")))
         }
         other ->
@@ -233,19 +234,19 @@ fn read_workspace(node: yay.Node) -> Result(WorkspaceRef, DagError) {
   case get_node(node, "workspace") {
     None -> Ok(WorkspaceRef(name: "main", from: None))
     Some(yay.NodeStr(name)) -> {
-      use _ <- result_try(validate_workspace_name(name))
+      use _ <- result.try(validate_workspace_name(name))
       Ok(WorkspaceRef(name: name, from: None))
     }
     Some(workspace_node) ->
       case workspace_node {
         yay.NodeMap(_) -> {
-          use name <- result_try(required_string(
+          use name <- result.try(required_string(
             workspace_node,
             "name",
             "missing_workspace_name",
           ))
-          use _ <- result_try(validate_workspace_name(name))
-          use source <- result_try(read_workspace_source(workspace_node))
+          use _ <- result.try(validate_workspace_name(name))
+          use source <- result.try(read_workspace_source(workspace_node))
           Ok(WorkspaceRef(name: name, from: source))
         }
         _ ->
@@ -261,7 +262,7 @@ fn read_workspace_source(node: yay.Node) -> Result(Option(String), DagError) {
   case optional_string(node, "from") {
     None -> Ok(None)
     Some(source) -> {
-      use _ <- result_try(validate_workspace_name(source))
+      use _ <- result.try(validate_workspace_name(source))
       Ok(Some(source))
     }
   }
@@ -373,7 +374,7 @@ fn validate_dependencies_exist_loop(
   case steps {
     [] -> Ok(Nil)
     [step, ..rest] -> {
-      use _ <- result_try(validate_dependency_ids(step.depends_on, ids, step.id))
+      use _ <- result.try(validate_dependency_ids(step.depends_on, ids, step.id))
       validate_dependencies_exist_loop(rest, ids)
     }
   }
@@ -410,7 +411,7 @@ fn validate_acyclic_loop(
   case steps {
     [] -> Ok(Nil)
     [step, ..rest] -> {
-      use _ <- result_try(detect_cycle(step.id, by_id, []))
+      use _ <- result.try(detect_cycle(step.id, by_id, []))
       validate_acyclic_loop(rest, by_id)
     }
   }
@@ -440,7 +441,7 @@ fn detect_cycle_deps(
   case deps {
     [] -> Ok(Nil)
     [dep, ..rest] -> {
-      use _ <- result_try(detect_cycle(dep, by_id, path))
+      use _ <- result.try(detect_cycle(dep, by_id, path))
       detect_cycle_deps(rest, by_id, path)
     }
   }
@@ -675,22 +676,5 @@ fn get_node(node: yay.Node, key: String) -> Option(yay.Node) {
         Error(_) -> None
       }
     _ -> None
-  }
-}
-
-fn option_unwrap(value: Option(a), default: a) -> a {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
-}
-
-fn result_try(
-  result: Result(a, e),
-  next: fn(a) -> Result(b, e),
-) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
   }
 }

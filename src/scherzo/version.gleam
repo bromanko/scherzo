@@ -73,7 +73,7 @@ fn identity_from_env(
       Some(SourceIdentity(
         revision: field_or_unknown(revision),
         date: env_field_or_unknown(env, source_date_env),
-        dirty: env(source_dirty_env) |> option_then(parse_dirty),
+        dirty: env(source_dirty_env) |> option.then(parse_dirty),
       ))
     None -> None
   }
@@ -129,13 +129,6 @@ fn vcs_dirty(
   case run_vcs(query) {
     Ok(value) -> Some(string.trim(value) != "")
     Error(_) -> None
-  }
-}
-
-fn option_then(option: Option(a), next: fn(a) -> Option(b)) -> Option(b) {
-  case option {
-    Some(value) -> next(value)
-    None -> None
   }
 }
 

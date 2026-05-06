@@ -1,3 +1,4 @@
+import gleam/result
 import gleam/string
 import scherzo/error
 import scherzo/log
@@ -72,7 +73,7 @@ fn wait_for_hook(
     Ok(status) -> {
       let diagnostics =
         port.read_diagnostics(process)
-        |> result_unwrap("")
+        |> result.unwrap("")
         |> log.truncate(4000)
       Error(error.HookFailed(name, status, diagnostics))
     }
@@ -105,13 +106,6 @@ fn port_error_to_string(err: port.PortError) -> String {
     port.TerminateFailed(message) -> message
     port.AwaitTimeout -> "await timeout"
     port.AwaitFailed(message) -> message
-  }
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
   }
 }
 
