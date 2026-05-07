@@ -99,8 +99,8 @@ pub fn issue_fingerprint(issue: tracker_issue.Issue) -> String {
 pub fn workflow_fingerprint(
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
-) -> Result(String, fingerprint.FingerprintError) {
-  fingerprint.fingerprint_for_execution(dag, orchestrator)
+) -> String {
+  fingerprint.for_execution(dag.id, dag, orchestrator)
 }
 
 pub fn render_recovery_prompt(

@@ -1,4 +1,3 @@
-import gleam/result
 import gleam/string
 import scherzo/error
 import scherzo/log
@@ -72,8 +71,7 @@ fn wait_for_hook(
     Ok(0) -> Ok(Nil)
     Ok(status) -> {
       let diagnostics =
-        port.read_diagnostics(process)
-        |> result.unwrap("")
+        read_diagnostics_or_error(process)
         |> log.truncate(4000)
       Error(error.HookFailed(name, status, diagnostics))
     }
@@ -82,6 +80,14 @@ fn wait_for_hook(
       Error(error.HookTimedOut(name))
     }
     Error(err) -> Error(error.HookIo(port_error_to_string(err)))
+  }
+}
+
+fn read_diagnostics_or_error(process: port.Process) -> String {
+  case port.read_diagnostics(process) {
+    Ok(diagnostics) -> diagnostics
+    Error(err) ->
+      "could not read hook diagnostics: " <> port_error_to_string(err)
   }
 }
 

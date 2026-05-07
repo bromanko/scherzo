@@ -1,6 +1,6 @@
 # Glinter baseline, rule tiers, and ratchet policy
 
-This note records the LIV-101 rollout baseline, the LIV-102 ratchet decision, and how agents should treat the warning set. The checked gate is:
+This note records the LIV-101 rollout baseline, the LIV-102 ratchet decision, the LIV-131 `unwrap_used` audit, and how agents should treat the warning set. The checked gate is:
 
 ```sh
 direnv exec . gleam run -m glinter
@@ -30,12 +30,13 @@ These rules are release-blocking in production `src/` code:
 
 ### Warning
 
-These rules remain visible but non-blocking because the baseline is still too broad for a safe one-shot cleanup:
+These rules remain visible but non-blocking because the baseline is still too broad for a safe one-shot cleanup. Note: glinter 2.16.0 renders explicitly enabled rules at their built-in default severity, so `unwrap_used` findings currently display as `[off]` even though `gleam.toml` configures the rule as warning inventory.
 
 | Rule | Current count | Why it stays warning |
 | --- | ---: | --- |
 | `thrown_away_error` | 178 | Many findings are parser/decoder fallback chains or boundary checks that need case-by-case review before blocking. |
 | `discarded_result` | 119 | Safety-relevant, but current findings include process sends, cleanup, and command-boundary best-effort work that must be triaged by subsystem. |
+| `unwrap_used` | 79 | LIV-131 audit: mostly intentional defaults, path canonicalization fallbacks, and domain-map defaults. Keep visible as warning-equivalent inventory, but do not block until the remaining patterns have narrower helpers or suppressions. |
 | `stringly_typed_error` | 60 | Mostly FFI and boundary modules. Prefer typed errors for durable/domain APIs, but migrate gradually to avoid large interface churn. |
 
 ### Off
@@ -44,7 +45,7 @@ These rules are deliberately disabled until focused follow-up work can reduce no
 
 - Message/style rules: `echo`, `panic_without_message`, `todo_without_message`, `string_inspect`, `short_variable_name`, `unnecessary_variable`, `redundant_case`, `prefer_guard_clause`, `unnecessary_string_concatenation`, `trailing_underscore`, `label_possible`, `missing_labels`, `unqualified_import`, `duplicate_import`.
 - Structural/churn-heavy rules: `unused_exports`, `deep_nesting`, `function_complexity`, `module_complexity`.
-- Safety-relevant but not yet triaged broadly enough: `unwrap_used` and `ffi_usage`.
+- Safety-relevant but not yet triaged broadly enough: `ffi_usage`.
 
 ## Baseline commands
 
@@ -58,25 +59,41 @@ A broader exploratory baseline was captured during LIV-101 with a temporary proj
 
 ## Production warning baseline
 
-After the LIV-102 ratchet and the schedule parser `error_context_lost` fix, the checked `src/` gate scans 101 files and reports 357 warnings with no errors:
+After the LIV-131 `unwrap_used` inventory promotion, the checked `src/` gate scans 101 files and reports 436 findings with no errors: 357 warning-severity findings plus 79 `unwrap_used` findings that glinter currently prints as `[off]` despite the `warning` config override.
 
 | Rule | Count | Classification |
 | --- | ---: | --- |
 | `thrown_away_error` | 178 | Keep as warning only; many are parser/decoder fallback chains that need case-by-case review. |
 | `discarded_result` | 119 | Keep as warning only; prioritize process sends, filesystem cleanup, and command boundary handling when touching related code. |
+| `unwrap_used` | 79 | Keep as warning-equivalent inventory only; the audit found mostly intentional defaults and domain fallbacks, with a few high-signal cases fixed before enabling the rule. |
 | `stringly_typed_error` | 60 | Keep as warning only; mostly FFI and boundary modules that should move to typed error variants gradually. |
 | `error_context_lost` | 0 | Promoted to error in LIV-102 after fixing the only current finding. |
 | `missing_type_annotation` | 0 | Promoted to error in LIV-102 after a clean `src/` baseline. |
 
-No `// nolint:` suppressions were added for the LIV-101 or LIV-102 rollout.
+No `// nolint:` suppressions were added for the LIV-101, LIV-102, or LIV-131 rollouts.
 
 ## Triage summary
 
 - **Promoted to error:** `error_context_lost` and `missing_type_annotation`.
-- **Fixed for promotion:** one new `error_context_lost` finding in schedule parsing was changed from `result.map_error(fn(_) { ... })` to `result.replace_error(...)`, making the intentional context replacement explicit.
+- **Promoted to visible warning-equivalent inventory:** `unwrap_used` after the LIV-131 audit. It has useful signal when touching nearby code, but the remaining baseline is not appropriate for blocking PRs. In glinter 2.16.0, these findings still display as `[off]` because the rule's built-in default severity is `Off`.
+- **Fixed for promotion:** one new `error_context_lost` finding in schedule parsing was changed from `result.map_error(fn(_) { ... })` to `result.replace_error(...)`, making the intentional context replacement explicit. LIV-131 also fixed high-signal `unwrap_used` cases in command/hook diagnostics, prompt-file path resolution, and workflow fingerprint representation before enabling the warning.
 - **Suppress:** none. Future suppressions must be narrow `// nolint:` comments with reasons, as described below.
-- **Keep as warning only:** `discarded_result`, `thrown_away_error`, and `stringly_typed_error`.
-- **Keep off:** style, complexity, broad export, `unwrap_used`, and FFI rules until a separate rollout proves acceptable signal.
+- **Keep as warning only:** `discarded_result`, `thrown_away_error`, and `stringly_typed_error`; keep `unwrap_used` as visible warning-equivalent inventory.
+- **Keep off:** style, complexity, broad export, and FFI rules until a separate rollout proves acceptable signal.
+
+## LIV-131 `unwrap_used` audit
+
+The initial LIV-131 inventory found 88 production `unwrap_used` findings across 19 files. After fixing high-signal cases, the enabled baseline is 79 findings across 17 files. The main categories are:
+
+| Category | Examples | Classification | Policy |
+| --- | --- | --- | --- |
+| Explicit optional defaults | Config defaults in `config.gleam`, command status reasons, terminal/render empty message defaults, command timeout defaults, source-workspace env defaults. | Acceptable explicit defaults. | Leave visible for ratcheting; do not rewrite mechanically. Prefer small domain helpers when already touching the parser or renderer. |
+| Domain-map defaults | Missing attempt indexes default to `1`; missing command receipts are `CommandReceiptUnseen`; missing recovery states are `StepUnattempted`; missing counters allocate a fresh counter. | Domain defaults / invariants. | Keep warning-equivalent only until these maps gain named lookup helpers or narrow suppressions that document the invariant. |
+| Path canonicalization fallbacks | `path.absolute`/`path.dirname` fallbacks in workspace path construction, recovery validation, handoff/result formatting, and config path resolution. | Mostly intentional fallback, but higher-risk around filesystem boundaries. | Do not promote to error until path helpers distinguish safe fallback from recoverable path-resolution failure. LIV-131 changed prompt-file loading to return `BundleError` instead of falling back silently. |
+| Best-effort diagnostics/artifacts | Command/hook diagnostic reads and captured stdout artifact reads. | Best-effort fallback. | Use explicit fallback only when preserving the primary failure is more important than failing on diagnostics. LIV-131 changed command and hook diagnostics to report a diagnostics-read failure instead of replacing it with an empty string. |
+| Infallible/future-proofed `Result` APIs | Workflow fingerprint calculation used a `Result` wrapper that always succeeded in the attempt context path. | Invariant needing better representation. | Prefer an infallible API where the operation cannot currently fail; LIV-131 changed the attempt-context helper to return `String`. |
+
+Recommended future policy: keep `unwrap_used = "warning"` as visible ratchet inventory. It should not become an error until the path-boundary and domain-map default clusters are reduced or documented with narrow suppressions. If glinter starts applying severity overrides to default-off module rules, the same baseline should be treated as ordinary warnings, not errors.
 
 ## Historical LIV-101 broad `src/` exploratory baseline
 
@@ -89,7 +106,7 @@ With all built-in rules enabled for measurement, `src/` produced 3,734 findings.
 | `unused_exports` | 153 | Ignore/off for now; public API and tests need a separate export policy. |
 | `prefer_guard_clause` | 136 | Ignore/off for now; style preference. |
 | `discarded_result` | 121 | Keep warning; safety-relevant but too broad to block yet. |
-| `unwrap_used` | 85 | Ignore/off for now; safety-relevant but needs manual triage of defaults and path fallbacks. |
+| `unwrap_used` | 85 | Audited in LIV-131 and promoted to warning after high-signal fixes; do not promote to error until the remaining defaults and path fallbacks are reduced or documented. |
 | `deep_nesting` | 75 | Ignore/off for now; mostly orchestration/state-machine structure. |
 | `stringly_typed_error` | 60 | Keep warning; gradual typed-error migration. |
 | `function_complexity` | 14 | Ignore/off; defer to planned module decomposition. |
@@ -135,5 +152,5 @@ Decision: keep `test/` excluded from the checked glinter gate. If tests are lint
 
 1. Reduce `discarded_result` and `thrown_away_error` by subsystem (`orchestrator/daemon`, `orchestrator/service`, `workflow_run`, and `control/server` are large clusters) before considering promotion.
 2. Gradually migrate durable/domain `Result(_, String)` APIs to typed errors before promoting `stringly_typed_error`.
-3. Audit `unwrap_used` separately before enabling it; many current uses provide explicit defaults and should not be churned without domain review.
+3. Reduce the remaining `unwrap_used` path-boundary and domain-map default clusters before considering error promotion; many current uses provide explicit defaults and should not be churned without domain review.
 4. If tests are linted, create a separate test policy instead of applying the production gate directly to `test/`.

@@ -363,13 +363,29 @@ fn read_relative_prompt(
   case validate_relative_path(prompt_path, "invalid_prompt_path") {
     Error(err) -> Error(err)
     Ok(Nil) -> {
-      let workflow_dir = path.dirname(workflow_path) |> result.unwrap(".")
-      let full_path =
-        path.join(workflow_dir, string.trim(prompt_path))
-        |> path.absolute
-        |> result.unwrap(path.join(workflow_dir, string.trim(prompt_path)))
-      let workflow_dir_abs =
-        path.absolute(workflow_dir) |> result.unwrap(workflow_dir)
+      let prompt_path = string.trim(prompt_path)
+      use workflow_dir <- result.try(
+        path.dirname(workflow_path)
+        |> result.replace_error(BundleError(
+          "invalid_prompt_path",
+          "could not resolve workflow directory for " <> workflow_path,
+        )),
+      )
+      let joined_path = path.join(workflow_dir, prompt_path)
+      use full_path <- result.try(
+        path.absolute(joined_path)
+        |> result.replace_error(BundleError(
+          "invalid_prompt_path",
+          "could not resolve prompt path: " <> prompt_path,
+        )),
+      )
+      use workflow_dir_abs <- result.try(
+        path.absolute(workflow_dir)
+        |> result.replace_error(BundleError(
+          "invalid_prompt_path",
+          "could not resolve workflow directory for " <> workflow_path,
+        )),
+      )
       case path.contains(workflow_dir_abs, full_path) {
         False ->
           Error(BundleError(
