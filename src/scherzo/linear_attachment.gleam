@@ -83,9 +83,7 @@ pub fn real_upload_transport(
     True -> {
       use request <- try_tracker(
         http_request.to(upload_request.url)
-        |> result.map_error(fn(_) {
-          error.LinearApiRequest("invalid upload URL")
-        }),
+        |> result.replace_error(error.LinearApiRequest("invalid upload URL")),
       )
       let request =
         request

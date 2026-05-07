@@ -171,7 +171,7 @@ fn append_bounded_codepoint(
   current: String,
   current_truncated: Bool,
   max_chars: Int,
-  codepoint,
+  codepoint: UtfCodepoint,
 ) -> #(String, Bool) {
   case current_truncated {
     True -> #(current, True)
@@ -199,7 +199,7 @@ fn bounded_line(
   }
 }
 
-fn escape_codepoint(codepoint) -> String {
+fn escape_codepoint(codepoint: UtfCodepoint) -> String {
   let code = string.utf_codepoint_to_int(codepoint)
   case code {
     code if code >= 0 && code <= 31 -> control_picture(9216 + code)

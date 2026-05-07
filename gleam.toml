@@ -30,17 +30,26 @@ gleeunit = ">= 1.0.0 and < 2.0.0"
 glinter = ">= 2.16.0 and < 3.0.0"
 
 [tools.glinter]
+# Production gate only. Tests are intentionally excluded from the checked
+# glinter run; see docs/runbooks/glinter.md for the test baseline and policy.
 include = ["src/"]
+exclude = ["test/"]
 
 [tools.glinter.rules]
+# Blocking production safety gate from LIV-95.
 assert_ok_pattern = "error"
 avoid_panic = "error"
 avoid_todo = "error"
 division_by_zero = "error"
+
+# Agent-safety warnings tracked by the LIV-101 baseline.
 discarded_result = "warning"
 error_context_lost = "warning"
 thrown_away_error = "warning"
 stringly_typed_error = "warning"
+missing_type_annotation = "warning"
+
+# Deliberately disabled until a follow-up can reduce or scope the noise.
 echo = "off"
 panic_without_message = "off"
 todo_without_message = "off"
@@ -51,7 +60,6 @@ redundant_case = "off"
 prefer_guard_clause = "off"
 unnecessary_string_concatenation = "off"
 trailing_underscore = "off"
-missing_type_annotation = "off"
 label_possible = "off"
 missing_labels = "off"
 unqualified_import = "off"
