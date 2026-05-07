@@ -9,9 +9,10 @@ direnv exec . gleam run -m glinter
 ## Checked policy
 
 - The checked glinter run is a production-source gate: `gleam.toml` includes `src/` and explicitly excludes `test/`.
-- Tests are excluded intentionally. Test code uses `let assert`, fixture helpers, and deliberately crashing paths that are useful for concise deterministic tests but would swamp the production policy.
+- Tests are excluded intentionally from that checked command. Test code uses `let assert`, fixture helpers, helper processes, and deliberately crashing paths that are useful for concise deterministic tests but conflict with several production-only rules.
+- The repository now has a documented test-source policy below, but it is not wired into `gleam.toml` or SelfCI. Do not add `test/` to the production gate; a future rollout should use a separate test lint command or project config so test severities can differ from production severities.
 - `direnv exec . gleam run -m glinter` must continue to exit successfully. Errors are blocking. Warnings are tracked debt and should not be converted wholesale to `warnings_as_errors = true`; instead, promote individual high-signal rules after a clean baseline.
-- SelfCI already runs the same glinter command via `.config/selfci/ci.sh`, so rule promotions in `gleam.toml` automatically become PR-blocking validation failures.
+- SelfCI already runs the same glinter command via `.config/selfci/ci.sh`, so rule promotions in `gleam.toml` automatically become PR-blocking validation failures for production source.
 
 ## Current rule tiers
 
@@ -98,22 +99,77 @@ With all built-in rules enabled for measurement, `src/` produced 3,734 findings.
 | `error_context_lost` | 0 | Fixed in LIV-101; later promoted by LIV-102. |
 | `missing_type_annotation` | 0 | Fixed in LIV-101 for `src/`; later promoted by LIV-102. |
 
-## Test-file evaluation
+## Test-source lint policy
 
-Including `test/` in the broad exploratory run produced 3,805 test findings, dominated by rules that conflict with current test style:
+Current enforcement remains: `test/` is formatted and executed by `direnv exec . gleam format --check src test` and `direnv exec . gleam test`, but it is not linted by the checked `direnv exec . gleam run -m glinter` production gate. The policy in this section is the contract for a future separate test lint command; it should not be implemented by directly adding `test/` to the existing production-source gate.
+
+### Test errors
+
+These rules should be blocking for a test-specific glinter profile:
+
+| Rule | Rationale in tests |
+| --- | --- |
+| `avoid_todo` | A committed `todo` is unfinished test behavior. Use an explicit fixture, a skipped/manual runbook note, or a tracked follow-up instead of a runtime placeholder. |
+| `division_by_zero` | Literal zero division is deterministic invalid behavior, not a useful test idiom. A test that intentionally documents runtime/compiler behavior must use a narrow `// nolint:` with a reason. |
+| `error_context_lost` | Test helpers should preserve error context so failures explain the bad fixture, decoder, process, or filesystem boundary. Intentional replacement should use `result.replace_error`, as in production. |
+| `panic_without_message` | Tests may use controlled panics for forbidden callbacks or expected crash paths, but a bare panic makes failures opaque. Panic in tests must say what invariant was violated. |
+
+### Test warnings
+
+These rules should remain visible but non-blocking in a test-specific profile:
+
+| Rule | Rationale in tests |
+| --- | --- |
+| `discarded_result` | Async probes, process sends, cleanup, and fixture setup sometimes intentionally ignore results, but an ignored `Result` can hide a broken barrier, failed cleanup, or missed message. Review warnings when touching nearby tests. |
+| `thrown_away_error` | Negative-path assertions and parser fallback fixtures may only care that an error occurred, but discarded error details can make failed tests harder to diagnose. |
+| `stringly_typed_error` | Local test helpers may use `Result(_, String)` for compact fixtures. Shared or durable test helper APIs should prefer typed errors when the type improves assertions. |
+
+### Disabled in tests
+
+These rules should be off for test source unless a later issue proves a narrower, low-noise variant:
+
+| Rule(s) | Why disabled for tests |
+| --- | --- |
+| `assert_ok_pattern` | `let assert Ok(...)`, `let assert Error(...)`, and shape assertions are the standard way tests fail at the exact setup or assertion line. Applying the production crash-avoidance rule would obscure failures and generated most of the test findings. |
+| `avoid_panic` | Test doubles intentionally panic for “should not be called” branches and crash-path coverage. Message quality is covered by `panic_without_message`; banning all panics would block clear sentinel failures. |
+| `missing_type_annotation` | Test functions and local fixture helpers benefit from inference and concise setup. Add explicit types for shared helpers when they clarify a contract, not as a blanket lint requirement. |
+| `unused_exports` | Gleeunit discovers public `_test` functions, and test modules expose fixtures/helpers differently from production APIs. Production export hygiene does not map cleanly to `test/`. |
+| `label_possible`, `missing_labels` | Test fixtures and assertions prioritize compact data setup. Public API call-site clarity is a production and shared-library concern, not a blanket test-source rule. |
+| `todo_without_message` | Covered by `avoid_todo`; a more specific message rule adds no value once all test `todo` usage is blocking. |
+| `echo`, `string_inspect`, `short_variable_name`, `unnecessary_variable`, `redundant_case`, `prefer_guard_clause`, `unnecessary_string_concatenation`, `trailing_underscore`, `unqualified_import`, `duplicate_import` | Style-only cleanup in tests is review guidance, not a lint gate. Current tests use compact names, constructor-heavy assertions, and fixture strings where these rules are noisy. |
+| `deep_nesting`, `function_complexity`, `module_complexity` | Test scenarios often encode setup, action, and assertions together for readability. Split tests when humans cannot follow them; do not use broad complexity rules as a gate. |
+| `unwrap_used` | Prefer `let assert` for new tests, but current unwrap/default helper uses need a targeted audit before enabling even a warning. |
+| `ffi_usage` | The production FFI policy is handled separately. Test source may exercise FFI boundaries without inheriting a broad FFI lint gate. |
+
+### Production-only rule decisions
+
+- Apply unchanged to tests: `avoid_todo`, `division_by_zero`, and `error_context_lost` are high-signal failure-quality rules in both production and tests.
+- Change severity or disable for tests: `assert_ok_pattern`, `avoid_panic`, and `missing_type_annotation` are production safety/API rules that conflict with clear test idioms, fixture setup, and expected-crash helpers.
+- Keep warning-only in tests: `discarded_result`, `thrown_away_error`, and `stringly_typed_error` can reveal real async or helper-quality issues, but the current suite needs case-by-case triage before any blocking rollout.
+
+## LIV-132 test-file evaluation
+
+A LIV-132 scratch recheck with all built-in rules enabled against current `test/` scanned 100 files / 32,412 lines and produced 4,023 findings. The largest groups are the rules intentionally disabled by the test policy:
 
 | Test rule | Count |
 | --- | ---: |
-| `assert_ok_pattern` | 1,632 |
-| `missing_type_annotation` | 774 |
-| `unused_exports` | 772 |
-| `label_possible` | 330 |
-| `unnecessary_string_concatenation` | 132 |
-| `discarded_result` | 79 |
+| `assert_ok_pattern` | 1,731 |
+| `missing_type_annotation` | 820 |
+| `unused_exports` | 820 |
+| `label_possible` | 335 |
+| `unnecessary_string_concatenation` | 136 |
+| `discarded_result` | 87 |
 | `thrown_away_error` | 37 |
+| `prefer_guard_clause` | 26 |
 | `avoid_panic` | 15 |
+| `stringly_typed_error` | 8 |
+| `function_complexity` | 3 |
+| `short_variable_name` | 2 |
+| `deep_nesting` | 1 |
+| `module_complexity` | 1 |
+| `unwrap_used` | 1 |
 
-Decision: keep `test/` excluded from the checked glinter gate. If tests are linted later, add a separate test-specific config that allows `let assert`, fixtures, and expected-crash helpers while still considering targeted safety rules such as `discarded_result` in async tests.
+The documented test profile above currently reduces that to 132 non-blocking warnings (`discarded_result`: 87, `thrown_away_error`: 37, `stringly_typed_error`: 8) and no blocking findings. It is still not enforced because the repository does not yet have a separate checked test lint command and the warning inventory should be triaged by async/process/filesystem subsystem before becoming a PR signal.
 
 ## Agent guidance
 
@@ -136,4 +192,4 @@ Decision: keep `test/` excluded from the checked glinter gate. If tests are lint
 1. Reduce `discarded_result` and `thrown_away_error` by subsystem (`orchestrator/daemon`, `orchestrator/service`, `workflow_run`, and `control/server` are large clusters) before considering promotion.
 2. Gradually migrate durable/domain `Result(_, String)` APIs to typed errors before promoting `stringly_typed_error`.
 3. Audit `unwrap_used` separately before enabling it; many current uses provide explicit defaults and should not be churned without domain review.
-4. If tests are linted, create a separate test policy instead of applying the production gate directly to `test/`.
+4. If tests are linted, implement the documented test-source policy as a separate command/profile instead of applying the production gate directly to `test/`.
