@@ -624,13 +624,13 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
   write_created_issue(dir)
   write_fake_execplan_handoff_jj(dir <> "/bin/jj")
   write_fake_execplan_handoff_gh(dir <> "/bin/gh")
-  write_fake_execplan_handoff_lc(
-    dir <> "/bin/lc",
+  write_fake_execplan_handoff_linear(
+    dir <> "/bin/linear",
     "{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
   )
   chmod_executable(dir <> "/bin/jj")
   chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/lc")
+  chmod_executable(dir <> "/bin/linear")
 
   let artifact =
     run_helper_in(
@@ -652,19 +652,19 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
     "PR_URL=https://github.com/example/repo/pull/123",
   )
 
-  let assert Ok(lc_log) = simplifile.read(dir <> "/lc.log")
-  assert string.contains(lc_log, "ARG=issue\nARG=query")
-  assert string.contains(lc_log, "ARG=issue\nARG=create")
-  assert string.contains(lc_log, "ARG=Backlog")
-  assert string.contains(lc_log, "ARG=--label\nARG=Improvement")
+  let assert Ok(linear_log) = simplifile.read(dir <> "/linear.log")
+  assert string.contains(linear_log, "ARG=issue\nARG=query")
+  assert string.contains(linear_log, "ARG=issue\nARG=create")
+  assert string.contains(linear_log, "ARG=Backlog")
+  assert string.contains(linear_log, "ARG=--label\nARG=Improvement")
   assert string.contains(
-    lc_log,
+    linear_log,
     "ARG=--label\nARG=workflow:execplan-implementation",
   )
-  assert string.contains(lc_log, "ARG=--parent\nARG=LIV-123")
-  assert string.contains(lc_log, "docs/plans/LIV-123-example.md")
-  assert string.contains(lc_log, "ARG=issue\nARG=link")
-  assert string.contains(lc_log, "ARG=ExecPlan PR")
+  assert string.contains(linear_log, "ARG=--parent\nARG=LIV-123")
+  assert string.contains(linear_log, "docs/plans/LIV-123-example.md")
+  assert string.contains(linear_log, "ARG=issue\nARG=link")
+  assert string.contains(linear_log, "ARG=ExecPlan PR")
 }
 
 pub fn create_implementation_issue_reuses_existing_ticket_test() {
@@ -677,13 +677,13 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
   write_created_issue(dir)
   write_fake_execplan_handoff_jj(dir <> "/bin/jj")
   write_fake_execplan_handoff_gh(dir <> "/bin/gh")
-  write_fake_execplan_handoff_lc(
-    dir <> "/bin/lc",
+  write_fake_execplan_handoff_linear(
+    dir <> "/bin/linear",
     "{\"nodes\":[{\"identifier\":\"LIV-200\",\"url\":\"https://linear.example/LIV-200\",\"title\":\"Implement: Add queued plan\",\"description\":\"Plan path: `docs/plans/LIV-123-example.md`\",\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan-implementation\"}]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
   )
   chmod_executable(dir <> "/bin/jj")
   chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/lc")
+  chmod_executable(dir <> "/bin/linear")
 
   let artifact =
     run_helper_in(
@@ -698,8 +698,8 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
     "IMPLEMENTATION_ISSUE_STATUS=existing",
   )
   assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE=LIV-200")
-  let assert Ok(lc_log) = simplifile.read(dir <> "/lc.log")
-  assert !string.contains(lc_log, "ARG=create")
+  let assert Ok(linear_log) = simplifile.read(dir <> "/linear.log")
+  assert !string.contains(linear_log, "ARG=create")
 }
 
 pub fn refresh_base_reports_fresh_base_test() {
@@ -1293,13 +1293,16 @@ fn write_fake_execplan_handoff_gh(path: String) -> Nil {
   Nil
 }
 
-fn write_fake_execplan_handoff_lc(path: String, existing_json: String) -> Nil {
+fn write_fake_execplan_handoff_linear(
+  path: String,
+  existing_json: String,
+) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       path,
       "#!/bin/sh\n"
-        <> "for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\"; done >> lc.log\n"
-        <> "printf '%s\\n' '---' >> lc.log\n"
+        <> "for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\"; done >> linear.log\n"
+        <> "printf '%s\\n' '---' >> linear.log\n"
         <> "if [ \"$1 $2\" = 'issue view' ]; then cat source-issue.json; exit 0; fi\n"
         <> "if [ \"$1 $2\" = 'issue query' ]; then printf '%s\\n' '"
         <> existing_json

@@ -426,7 +426,7 @@ In a second terminal from the repository root, start pi and load the skill with 
 pi --skill .pi/skills/scherzo-operator
 ```
 
-Ask pi for read-only summaries first, for example `summarize current Scherzo sessions`. The skill should begin with `scripts/scherzoctl ps --json`, then use `session --json` or bounded `events --json` calls for detail. Before `pause`, `resume`, `reload`, `retry`, `park`, `unpark`, `abort`, `stop-after-turn`, `prompt`, `ui respond`, or any command using `--yes`, pi must ask you to confirm the exact target and action.
+Ask pi for read-only summaries first, for example `summarize current Scherzo sessions`. The skill should begin with `scripts/scherzoctl ps --json`, then use `session --json` or bounded `events --json` calls for detail. For controls such as `pause`, `resume`, `reload`, `retry`, `park`, `unpark`, `abort`, `stop-after-turn`, `prompt`, `ui respond`, or any command using `--yes`, pi should use exact issue ids, session ids, and request ids from JSON inspection.
 
 ## Doctor readiness checks
 

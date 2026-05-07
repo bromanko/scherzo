@@ -44,24 +44,12 @@ pub fn scherzo_operator_skill_requires_safe_operating_rules_test() {
   assert_contains(skill, ".scherzo-keep-workspace")
   assert_contains(skill, "command-step-diagnostics")
   assert_contains(skill, "cleanup --json --dry-run")
-  assert_contains(
-    skill,
-    "Require confirmation before every state-changing command",
-  )
-  assert_contains(
-    skill,
-    "Ask the user to confirm the exact target id and action",
-  )
-  assert_contains(skill, "any command that uses `--yes`")
-  assert_contains(skill, "cleanup --yes")
-  assert_contains(skill, "state archive-old")
-  assert_contains(skill, "any Linear mutation")
   assert_contains(skill, "never reveal")
   assert_contains(skill, "token")
   assert_contains(skill, "LINEAR_API_KEY")
   assert_contains(skill, "SCHERZO_AGENT_LINEAR_API_KEY")
-  assert_contains(skill, "direnv exec . lc issue view")
-  assert_contains(skill, "direnv exec . lc issue comment list")
+  assert_contains(skill, "direnv exec . linear issue view")
+  assert_contains(skill, "direnv exec . linear issue comment list")
   assert_contains(skill, "raw GraphQL")
   assert_contains(skill, "pause")
   assert_contains(skill, "resume")
@@ -132,20 +120,20 @@ pub fn scherzo_operator_reference_documents_artifacts_and_linear_cli_test() {
   assert_contains(reference, "command-step-diagnostics")
   assert_contains(reference, ".scherzo-state/artifacts/runs")
   assert_contains(reference, "scripts/scherzo-jj-workspace before-remove")
-  assert_contains(reference, "direnv exec . lc issue view LIV-104 --json")
+  assert_contains(reference, "direnv exec . linear issue view LIV-104 --json")
   assert_contains(
     reference,
-    "direnv exec . lc issue comment list LIV-104 --json",
+    "direnv exec . linear issue comment list LIV-104 --json",
   )
-  assert_contains(reference, "direnv exec . lc issue comment add LIV-104")
-  assert_contains(reference, "direnv exec . lc issue update LIV-104")
-  assert_contains(reference, "direnv exec . lc api")
+  assert_contains(reference, "direnv exec . linear issue comment add LIV-104")
+  assert_contains(reference, "direnv exec . linear issue update LIV-104")
+  assert_contains(reference, "direnv exec . linear api")
   assert_contains(reference, "curl https://api.linear.app/graphql")
   assert_contains(reference, "LINEAR_API_KEY")
   assert_contains(reference, "SCHERZO_AGENT_LINEAR_API_KEY")
-  assert_contains(reference, "direnv exec . lc issue get")
-  assert_contains(reference, "lc comment list/add")
-  assert_contains(reference, "top-level `lc comment")
+  assert_contains(reference, "linear issue get")
+  assert_contains(reference, "linear comment list/add")
+  assert_contains(reference, "top-level `linear comment")
 }
 
 pub fn scherzo_operator_reference_explains_response_statuses_test() {
@@ -169,5 +157,5 @@ pub fn readme_documents_pi_operator_skill_test() {
   assert_contains(readme, "SCHERZO_CONTROL_FILE")
   assert_contains(readme, "scripts/scherzoctl ps --json")
   assert_contains(readme, "read-only summaries first")
-  assert_contains(readme, "confirm the exact target and action")
+  assert_contains(readme, "exact issue ids")
 }

@@ -46,15 +46,15 @@ scripts/scherzoctl attach --json --no-follow <session-id>
 
 Use full session ids from `ps --json` or `session --json`; human tables shorten long ids. Top-level issue sessions are workflow run ids such as `ABC-123-1700000000000-1`. Workflow DAG steps create step sessions whose ids start with `workflow-step-`, for example `workflow-step-ABC-123-1700000000000-1-implement-a1-<hash>`.
 
-Before sending `prompt`, `stop-after-turn`, `abort`, or `ui respond`, confirm whether the user means the top-level issue run or a concrete step session:
+Before sending `prompt`, `stop-after-turn`, `abort`, or `ui respond`, disambiguate whether the user means the top-level issue run or a concrete step session:
 
 - `prompt`, `stop-after-turn`, and `ui respond` sent to a top-level YAML workflow session route to the active step only when exactly one step currently accepts operator commands; if multiple step sessions are active, target the step session.
 - `abort` on a top-level issue session stops the whole workflow run and its step sessions. `abort` on a step session sends the abort to that step command subject when available.
 - Command steps do not run pi, but they still get `workflow-step-...` sessions and failure events.
 
-## Confirmed operator controls
+## Operator controls
 
-Ask the user to confirm the exact action and target before running any command in this section. Commands with `--yes` are destructive confirmations at the CLI layer, but the skill still needs user confirmation before invoking them.
+Use exact issue ids, session ids, and request ids from JSON inspection. Commands with `--yes` are destructive confirmations at the CLI layer.
 
 ```sh
 scripts/scherzoctl pause --json
@@ -74,7 +74,7 @@ scripts/scherzoctl ui respond <session-id> <request-id> --value "approved" --jso
 
 For daemon inspection/control commands, `--json` returns one protocol JSON document. `ok: true` means the control server accepted and decoded the request. `ok: false` means the request failed before a command result could be applied, such as authentication failure, timeout, malformed request, or protocol error; report `error.code` and `error.message` without exposing secrets.
 
-Confirmed daemon controls return command data with one of these statuses:
+Daemon controls return command data with one of these statuses:
 
 - `applied`: the daemon applied the action immediately.
 - `queued`: the daemon accepted the action and queued it for a worker or session.
@@ -94,7 +94,7 @@ scripts/scherzoctl events <session-id> --json
 scripts/scherzoctl attach --json --no-follow <session-id>
 ```
 
-A retained implementation or execplan-implementation run has a `.scherzo-keep-workspace` marker under its run root, for example `.scherzo/workspaces/<workflow>/<issue>/<run>/.scherzo-keep-workspace`. Do not remove that marker or delete the run unless the user explicitly confirms that unpushed work is disposable or already published.
+A retained implementation or execplan-implementation run has a `.scherzo-keep-workspace` marker under its run root, for example `.scherzo/workspaces/<workflow>/<issue>/<run>/.scherzo-keep-workspace`. Do not remove that marker or delete the run until inspection shows that unpushed work is disposable or already published.
 
 Failed command steps publish a `workflow command <step-id>` failure event. The event `tool_output` contains bounded diagnostics; if the output was truncated, the step artifact may include `diagnostic_path`, usually below the step workspace as `.scherzo/command-step-diagnostics/<step-id>.txt`. Durable step artifacts are stored under `.scherzo/workspaces/.scherzo-state/artifacts/runs/<run-id>/<step-component>/attempt-<n>.json`.
 
@@ -116,7 +116,7 @@ scripts/scherzoctl state status --root .scherzo/workspaces --json
 
 `cleanup --dry-run` reports `would_delete`, `retained`, `warnings`, `roots`, and `transcript_root_status` and deletes nothing. `state status` is read-only and reports `current`, `unsupported`, `corrupt`, `missing`, or `archived`. Cleanup/state JSON is local maintenance output, not a daemon protocol envelope with `ok`.
 
-Run confirmed mutations only after the user approves the exact operation:
+Run local cleanup or offline state mutations with explicit `--yes` so the CLI receives an intentional destructive-operation acknowledgement:
 
 ```sh
 scripts/scherzoctl cleanup --json --yes
@@ -125,7 +125,7 @@ scripts/scherzoctl state discard-old --root .scherzo/workspaces --yes --json
 scripts/scherzoctl state reinitialize --root .scherzo/workspaces --yes --json
 ```
 
-For dangling jj workflow workspaces, prefer letting Scherzo publish/cleanup run the configured remove hook. If manual cleanup is confirmed, run the remove hook before deleting a run root so jj workspace records are forgotten first:
+For dangling jj workflow workspaces, prefer letting Scherzo publish/cleanup run the configured remove hook. If manual cleanup is chosen, run the remove hook before deleting a run root so jj workspace records are forgotten first:
 
 ```sh
 repo_root=$(pwd -P)
@@ -139,24 +139,24 @@ Do not use manual deletion as a substitute for inspecting recovery, checking `.s
 
 ## Linear CLI operations
 
-Use the repository `lc` wrapper through `direnv exec .` when Linear needs to be read or updated. The wrapper uses `LINEAR_API_KEY` and falls back to `SCHERZO_AGENT_LINEAR_API_KEY`; never print either token.
+Use the repository `linear` wrapper through `direnv exec .` when Linear needs to be read or updated. The wrapper uses `LINEAR_API_KEY` and falls back to `SCHERZO_AGENT_LINEAR_API_KEY`; never print either token.
 
 Read-only examples:
 
 ```sh
-direnv exec . lc issue view LIV-104 --json --no-download
-direnv exec . lc issue comment list LIV-104 --json
-direnv exec . lc issue query --team LIV --json
+direnv exec . linear issue view LIV-104 --json --no-download
+direnv exec . linear issue comment list LIV-104 --json
+direnv exec . linear issue query --team LIV --json
 ```
 
-Confirmed Linear mutations:
+Linear mutations:
 
 ```sh
-direnv exec . lc issue comment add LIV-104 --body-file tmp/operator-comment.md
-direnv exec . lc issue update LIV-104 --state "Triage"
-direnv exec . lc issue update LIV-104 --label needs-clarification
+direnv exec . linear issue comment add LIV-104 --body-file tmp/operator-comment.md
+direnv exec . linear issue update LIV-104 --state "Triage"
+direnv exec . linear issue update LIV-104 --label needs-clarification
 ```
 
-Current `linear-cli` v2 uses `issue view` for issue reads and `issue comment list/add` for comments. If you see older notes saying `direnv exec . lc issue get` or `lc comment list/add`, translate them to `direnv exec . lc issue view ... --json` and `direnv exec . lc issue comment list/add ...`. Do not assume stale forms such as top-level `lc comment ...` or `lc issue get ...` exist; check `direnv exec . lc issue --help` if unsure.
+Current `linear-cli` v2 uses `issue view` for issue reads and `issue comment list/add` for comments. If you see older notes saying `linear issue get` or `linear comment list/add`, translate them to `direnv exec . linear issue view ... --json` and `direnv exec . linear issue comment list/add ...`. Do not assume stale forms such as top-level `linear comment ...` or `linear issue get ...` exist; check `direnv exec . linear issue --help` if unsure.
 
-Use `direnv exec . lc api ...` or direct `curl https://api.linear.app/graphql` only when the CLI lacks the needed operation. Prefer `lc api` over hand-written `curl`, keep GraphQL variables in files when practical, and keep API keys out of logs.
+Use `direnv exec . linear api ...` or direct `curl https://api.linear.app/graphql` only when the CLI lacks the needed operation. Prefer `linear api` over hand-written `curl`, keep GraphQL variables in files when practical, and keep API keys out of logs.

@@ -345,7 +345,7 @@ EOF_BODY
 create_implementation_issue_command() {
   require_command jj
   require_command gh
-  require_command lc
+  require_command linear
   require_command python3
 
   plan=$(find_plan_path)
@@ -500,7 +500,7 @@ def issue_nodes(payload: Any, command_name: str) -> list[Any]:
 
 def find_existing(team_key: str, project_name: str) -> dict[str, Any] | None:
     args = [
-        "lc",
+        "linear",
         "issue",
         "query",
         "--team",
@@ -602,7 +602,7 @@ def created_issue_from_output(output: str) -> dict[str, Any]:
 
 
 source_issue = normalize_issue(load_json_from_command([
-    "lc",
+    "linear",
     "issue",
     "view",
     source_identifier,
@@ -639,7 +639,7 @@ try:
         description_file = handle.name
 
     create_args = [
-        "lc",
+        "linear",
         "issue",
         "create",
         "--team",
@@ -673,7 +673,7 @@ created_url = issue_url(created)
 
 if created_ref and pr_url:
     attach = run([
-        "lc",
+        "linear",
         "issue",
         "link",
         created_ref,

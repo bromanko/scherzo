@@ -29,15 +29,15 @@ Do not add production `let assert`, `panic`, or `todo`; glinter enforces these a
 
 ## Linear CLI
 
-The devenv provides `linear` and `lc` wrappers for `linear-cli`. When an agent needs to read or update Linear, prefer the CLI over hand-written `curl` GraphQL calls:
+The devenv provides the `linear` wrapper for `linear-cli`. When an agent needs to read or update Linear, prefer the CLI over hand-written `curl` GraphQL calls:
 
 ```sh
-direnv exec . lc issue view LIV-123 --json
-direnv exec . lc issue query --team LIV --json
-direnv exec . lc issue comment add LIV-123 --body "Done"
+direnv exec . linear issue view LIV-123 --json
+direnv exec . linear issue query --team LIV --json
+direnv exec . linear issue comment add LIV-123 --body "Done"
 ```
 
-The wrappers use `LINEAR_API_KEY` and fall back to `SCHERZO_AGENT_LINEAR_API_KEY` when `LINEAR_API_KEY` is unset. Keep tokens out of logs. Use direct `curl https://api.linear.app/graphql` only when `lc`/`linear` lacks the required operation or for low-level Scherzo transport diagnostics.
+The wrapper uses `LINEAR_API_KEY` and falls back to `SCHERZO_AGENT_LINEAR_API_KEY` when `LINEAR_API_KEY` is unset. Keep tokens out of logs. Use direct `curl https://api.linear.app/graphql` only when `linear` lacks the required operation or for low-level Scherzo transport diagnostics.
 
 ## Async Gleam tests
 
