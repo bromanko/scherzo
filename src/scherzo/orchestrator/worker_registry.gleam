@@ -23,6 +23,7 @@ pub type ScheduledWorkerHandle {
   ScheduledWorkerHandle(
     job_id: String,
     workflow_id: String,
+    due_at_ms: Int,
     run_id: String,
     pid: process.Pid,
     monitor: process.Monitor,
