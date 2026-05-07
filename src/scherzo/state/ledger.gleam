@@ -18,8 +18,20 @@ pub type LedgerPath {
   )
 }
 
+pub type LedgerFfiError {
+  OpenFailed(reason: String)
+  WriteFailed(reason: String)
+  SyncFailed(reason: String)
+  CloseFailed(reason: String)
+  ReadFailed(reason: String)
+  StepFailed(reason: String)
+  LockFailed(reason: String)
+  UnexpectedFfiFailure(function: String, detail: String)
+}
+
 pub type LedgerError {
   Io(String)
+  LedgerFfiFailed(LedgerFfiError)
   UnsupportedVersion(Int)
   CorruptRecord(line: Int, reason: String)
 }
@@ -165,10 +177,8 @@ fn append_prepared(
         |> list.map(record.to_string)
         |> string.join(with: "\n")
 
-      case append_lines(current_path, contents <> "\n", fsync) {
-        Ok(Nil) -> Ok(Nil)
-        Error(reason) -> Error(Io("append current ledger: " <> reason))
-      }
+      append_lines(current_path, contents <> "\n", fsync)
+      |> result.map_error(fn(error) { LedgerFfiFailed(error) })
     }
   }
 }
@@ -185,8 +195,9 @@ fn read_records_unlocked(
       ))
     Ok(JsonlFold(value: _, error: Some(error), truncated_tail: _)) ->
       Error(error)
-    Error("enoent") -> Ok(ReadRecordsResult(records: [], truncated_tail: False))
-    Error(reason) -> Error(Io("read current ledger: " <> reason))
+    Error(OpenFailed("enoent")) ->
+      Ok(ReadRecordsResult(records: [], truncated_tail: False))
+    Error(error) -> Error(LedgerFfiFailed(error))
   }
 }
 
@@ -200,8 +211,8 @@ fn fold_current_segment_streaming(
     Ok(JsonlFold(value: folded, error: None, truncated_tail: _)) -> Ok(folded)
     Ok(JsonlFold(value: _, error: Some(error), truncated_tail: _)) ->
       Error(error)
-    Error("enoent") -> Ok(snapshot_projection)
-    Error(reason) -> Error(Io("read current ledger: " <> reason))
+    Error(OpenFailed("enoent")) -> Ok(snapshot_projection)
+    Error(error) -> Error(LedgerFfiFailed(error))
   }
 }
 
@@ -406,15 +417,69 @@ fn file_error(operation: String, error: simplifile.FileError) -> String {
   operation <> ": " <> simplifile.describe_error(error)
 }
 
-@external(erlang, "scherzo_state_ffi", "append_lines")
 fn append_lines(
+  path: String,
+  contents: String,
+  fsync: Bool,
+) -> Result(Nil, LedgerFfiError) {
+  ffi_append_lines(path, contents, fsync)
+  |> result.map_error(fn(error) { raw_ledger_error("append_lines", error) })
+}
+
+fn fold_lines(
+  path: String,
+  initial: a,
+  step: fn(a, String, Int, Bool) -> a,
+) -> Result(a, LedgerFfiError) {
+  ffi_fold_lines(path, initial, step)
+  |> result.map_error(fn(error) { raw_ledger_error("fold_lines", error) })
+}
+
+pub fn ledger_ffi_error_to_string(error: LedgerFfiError) -> String {
+  case error {
+    OpenFailed(reason) -> "open failed: " <> reason
+    WriteFailed(reason) -> "write failed: " <> reason
+    SyncFailed(reason) -> "sync failed: " <> reason
+    CloseFailed(reason) -> "close failed: " <> reason
+    ReadFailed(reason) -> "read failed: " <> reason
+    StepFailed(reason) -> "step callback failed: " <> reason
+    LockFailed(reason) -> "ledger lock failed: " <> reason
+    UnexpectedFfiFailure(function, detail) ->
+      function <> " failed unexpectedly: " <> detail
+  }
+}
+
+fn raw_ledger_error(function: String, error: String) -> LedgerFfiError {
+  let #(tag, detail) = split_tag(error)
+  case tag {
+    "open" -> OpenFailed(detail)
+    "write" -> WriteFailed(detail)
+    "sync" -> SyncFailed(detail)
+    "close" -> CloseFailed(detail)
+    "read" -> ReadFailed(detail)
+    "step" -> StepFailed(detail)
+    "lock" -> LockFailed(detail)
+    "unexpected_ffi_failure" -> UnexpectedFfiFailure(function, detail)
+    _ -> UnexpectedFfiFailure(function, error)
+  }
+}
+
+fn split_tag(error: String) -> #(String, String) {
+  case string.split_once(error, on: ":") {
+    Ok(#(tag, detail)) -> #(tag, detail)
+    Error(Nil) -> #(error, "")
+  }
+}
+
+@external(erlang, "scherzo_state_ffi", "append_lines")
+fn ffi_append_lines(
   path: String,
   contents: String,
   fsync: Bool,
 ) -> Result(Nil, String)
 
 @external(erlang, "scherzo_state_ffi", "fold_lines")
-fn fold_lines(
+fn ffi_fold_lines(
   path: String,
   initial: a,
   step: fn(a, String, Int, Bool) -> a,

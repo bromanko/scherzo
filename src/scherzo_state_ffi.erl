@@ -10,39 +10,40 @@ append_lines(Path, Contents, Fsync) ->
         PathList = to_list(Path),
         ContentsBin = to_binary(Contents),
         case file:open(PathList, [append, binary]) of
-            {ok, IoDevice} ->
-                Result = write_and_maybe_sync(IoDevice, ContentsBin, Fsync),
-                CloseResult = file:close(IoDevice),
-                case {Result, CloseResult} of
-                    {ok, ok} -> {ok, nil};
-                    {{error, Reason}, _} -> {error, reason_to_binary(Reason)};
-                    {ok, {error, Reason}} -> {error, reason_to_binary(Reason)}
-                end;
-            {error, Reason} -> {error, reason_to_binary(Reason)}
+            {ok, IoDevice} -> append_open_device(IoDevice, ContentsBin, Fsync);
+            {error, Reason} -> {error, tagged_error(open, reason_to_binary(Reason))}
         end
     catch
-        Class:CatchReason -> {error, format_error(Class, CatchReason)}
+        Class:CatchReason -> {error, tagged_error(unexpected_ffi_failure, format_error(Class, CatchReason))}
+    end.
+
+append_open_device(IoDevice, ContentsBin, Fsync) ->
+    Result = write_and_maybe_sync(IoDevice, ContentsBin, Fsync),
+    CloseResult = file:close(IoDevice),
+    case {Result, CloseResult} of
+        {ok, ok} -> {ok, nil};
+        {{error, Phase, Reason}, _} -> {error, tagged_error(Phase, reason_to_binary(Reason))};
+        {ok, {error, Reason}} -> {error, tagged_error(close, reason_to_binary(Reason))}
     end.
 
 fold_lines(Path, Initial, Step) ->
     try
         PathList = to_list(Path),
         case file:open(PathList, [read, binary]) of
-            {ok, IoDevice} ->
-                try
-                    case fold_lines_loop(IoDevice, Initial, Step, none, 1) of
-                        {ok, Acc} -> {ok, Acc};
-                        {error, Reason} -> {error, reason_to_binary(Reason)}
-                    end
-                catch
-                    InnerClass:InnerReason -> {error, format_error(InnerClass, InnerReason)}
-                after
-                    _ = file:close(IoDevice)
-                end;
-            {error, Reason} -> {error, reason_to_binary(Reason)}
+            {ok, IoDevice} -> fold_open_device(IoDevice, Initial, Step);
+            {error, Reason} -> {error, tagged_error(open, reason_to_binary(Reason))}
         end
     catch
-        OuterClass:OuterReason -> {error, format_error(OuterClass, OuterReason)}
+        Class:CatchReason -> {error, tagged_error(unexpected_ffi_failure, format_error(Class, CatchReason))}
+    end.
+
+fold_open_device(IoDevice, Initial, Step) ->
+    Result = fold_lines_loop(IoDevice, Initial, Step, none, 1),
+    CloseResult = file:close(IoDevice),
+    case {Result, CloseResult} of
+        {{ok, Acc}, ok} -> {ok, Acc};
+        {{error, Phase, Reason}, _} -> {error, tagged_error(Phase, reason_to_binary(Reason))};
+        {{ok, _Acc}, {error, Reason}} -> {error, tagged_error(close, reason_to_binary(Reason))}
     end.
 
 with_ledger_lock(Key, Operation) ->
@@ -55,10 +56,14 @@ write_and_maybe_sync(IoDevice, ContentsBin, Fsync) ->
     case file:write(IoDevice, ContentsBin) of
         ok ->
             case Fsync of
-                true -> file:sync(IoDevice);
+                true ->
+                    case file:sync(IoDevice) of
+                        ok -> ok;
+                        {error, Reason} -> {error, sync, Reason}
+                    end;
                 _ -> ok
             end;
-        {error, Reason} -> {error, Reason}
+        {error, Reason} -> {error, write, Reason}
     end.
 
 fold_lines_loop(IoDevice, Acc, Step, none, NextLineNumber) ->
@@ -72,21 +77,30 @@ fold_lines_loop(IoDevice, Acc, Step, none, NextLineNumber) ->
                 {strip_trailing_newline(Line), NextLineNumber},
                 NextLineNumber + 1
             );
-        {error, Reason} -> {error, Reason}
+        {error, Reason} -> {error, read, Reason}
     end;
 fold_lines_loop(IoDevice, Acc, Step, {PreviousLine, PreviousLineNumber}, NextLineNumber) ->
     case file:read_line(IoDevice) of
-        eof -> {ok, Step(Acc, PreviousLine, PreviousLineNumber, true)};
+        eof -> call_step(Step, Acc, PreviousLine, PreviousLineNumber, true);
         {ok, Line} ->
-            NextAcc = Step(Acc, PreviousLine, PreviousLineNumber, false),
-            fold_lines_loop(
-                IoDevice,
-                NextAcc,
-                Step,
-                {strip_trailing_newline(Line), NextLineNumber},
-                NextLineNumber + 1
-            );
-        {error, Reason} -> {error, Reason}
+            case call_step(Step, Acc, PreviousLine, PreviousLineNumber, false) of
+                {ok, NextAcc} ->
+                    fold_lines_loop(
+                        IoDevice,
+                        NextAcc,
+                        Step,
+                        {strip_trailing_newline(Line), NextLineNumber},
+                        NextLineNumber + 1
+                    );
+                {error, step, Reason} -> {error, step, Reason}
+            end;
+        {error, Reason} -> {error, read, Reason}
+    end.
+
+call_step(Step, Acc, Line, LineNumber, IsLast) ->
+    try {ok, Step(Acc, Line, LineNumber, IsLast)}
+    catch
+        Class:Reason -> {error, step, format_error(Class, Reason)}
     end.
 
 strip_trailing_newline(<<>>) -> <<>>;
@@ -96,6 +110,11 @@ strip_trailing_newline(Line) ->
         $\n -> binary:part(Line, 0, Size - 1);
         _ -> Line
     end.
+
+tagged_error(Phase, Reason) when is_atom(Phase) ->
+    PhaseBin = atom_to_binary(Phase, utf8),
+    ReasonBin = reason_to_binary(Reason),
+    <<PhaseBin/binary, ":", ReasonBin/binary>>.
 
 reason_to_binary(Reason) when is_atom(Reason) -> atom_to_binary(Reason, utf8);
 reason_to_binary(Reason) when is_binary(Reason) -> Reason;

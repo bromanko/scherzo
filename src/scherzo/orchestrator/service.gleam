@@ -48,7 +48,7 @@ pub type DaemonLifecycleDependencies {
   DaemonLifecycleDependencies(
     daemon_dependencies: daemon.RuntimeDependencies,
     install_stop_source: fn(process.Subject(lifecycle.StopReason)) ->
-      Result(signal.Installation, String),
+      Result(signal.Installation, signal.SignalError),
     shutdown_timeout_ms: Int,
     lifecycle_logger: fn(String, String, List(log.Field)) -> Nil,
   )
@@ -1005,9 +1005,9 @@ pub fn start_daemon_with_lifecycle(
   use lock <- try_startup(acquire_lock_for_workflow(workflow_path, True))
   let stop_subject = process.new_subject()
   case dependencies.install_stop_source(stop_subject) {
-    Error(message) -> {
+    Error(error) -> {
       instance_lock.release(lock)
-      Error(StartupError("signal_handler_failed", message))
+      Error(StartupError("signal_handler_failed", signal.error_message(error)))
     }
     Ok(installation) -> {
       dependencies.lifecycle_logger("info", "signal_handler_installed", [
@@ -1805,8 +1805,8 @@ fn map_lock_error(
     Ok(value) -> Ok(value)
     Error(instance_lock.LockAlreadyHeld(message)) ->
       Error(StartupError("instance_lock_held", message))
-    Error(instance_lock.LockIo(message)) ->
-      Error(StartupError("instance_lock_io", message))
+    Error(error) ->
+      Error(StartupError("instance_lock_io", instance_lock.error_message(error)))
   }
 }
 

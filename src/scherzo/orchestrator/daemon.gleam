@@ -1346,6 +1346,7 @@ fn map_ledger_error(
 fn ledger_error_message(error: ledger.LedgerError) -> String {
   case error {
     ledger.Io(message) -> message
+    ledger.LedgerFfiFailed(error) -> ledger.ledger_ffi_error_to_string(error)
     ledger.UnsupportedVersion(version) ->
       "unsupported ledger schema version " <> int.to_string(version)
     ledger.CorruptRecord(line, reason) ->

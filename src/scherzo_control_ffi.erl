@@ -75,15 +75,34 @@ connect(Host, Port, TimeoutMs) ->
         Class:CatchReason -> {error, format_error(Class, CatchReason)}
     end.
 
-send_line(Socket, Line, _TimeoutMs) ->
+send_line(Socket, Line, TimeoutMs) ->
     try
-        case gen_tcp:send(Socket, [Line, <<"\n">>]) of
+        Timeout = normalize_timeout(TimeoutMs),
+        PreviousTimeout = current_send_timeout(Socket),
+        _ = inet:setopts(Socket, [
+            {send_timeout, Timeout},
+            {send_timeout_close, true}
+        ]),
+        Result = gen_tcp:send(Socket, [Line, <<"\n">>]),
+        _ = restore_send_timeout(Socket, PreviousTimeout),
+        case Result of
             ok -> {ok, nil};
             {error, Reason} -> {error, atom_to_binary(Reason, utf8)}
         end
     catch
         Class:CatchReason -> {error, format_error(Class, CatchReason)}
     end.
+
+current_send_timeout(Socket) ->
+    case inet:getopts(Socket, [send_timeout]) of
+        {ok, [{send_timeout, Timeout}]} -> {ok, Timeout};
+        _ -> error
+    end.
+
+restore_send_timeout(Socket, {ok, Timeout}) ->
+    catch inet:setopts(Socket, [{send_timeout, Timeout}]),
+    ok;
+restore_send_timeout(_Socket, error) -> ok.
 
 recv_line(Socket, TimeoutMs) ->
     try

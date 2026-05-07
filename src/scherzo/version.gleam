@@ -209,7 +209,10 @@ fn read_first_stdout(process: port.Process) -> Result(String, Nil) {
       let _ = port.terminate(process)
       Ok(string.trim(line))
     }
-    Error(port.ProcessExited(0)) -> Ok("")
+    Error(port.ProcessExited(0)) -> {
+      let _cleanup_result = port.terminate(process)
+      Ok("")
+    }
     Error(_) -> {
       let _ = port.terminate(process)
       Error(Nil)

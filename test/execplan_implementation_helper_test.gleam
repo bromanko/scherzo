@@ -635,7 +635,7 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
+      "env -u SCHERZO_ISSUE_IDENTIFIER PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -688,7 +688,7 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
   let artifact =
     run_helper_in(
       dir,
-      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
+      "env -u SCHERZO_ISSUE_IDENTIFIER PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
     )
 
   assert artifact.status == step_artifact.StepSucceeded

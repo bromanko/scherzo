@@ -1,5 +1,6 @@
 import gleam/int
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/control/command
 import scherzo/control/file
@@ -12,8 +13,19 @@ pub type StreamAction {
   Stop
 }
 
+pub type ControlTransportError {
+  NonLoopbackHostRejected(host: String)
+  Timeout
+  Closed
+  LineTooLong(max_bytes: Int)
+  SendFailed(reason: String)
+  ReceiveFailed(reason: String)
+  ConnectFailed(reason: String)
+  UnexpectedFfiFailure(function: String, detail: String)
+}
+
 pub type ControlError {
-  ConnectionFailed(message: String)
+  ConnectionFailed(error: ControlTransportError)
   RequestFailed(code: String, message: String)
   ProtocolFailed(message: String)
 }
@@ -35,13 +47,13 @@ pub fn raw_request(
   use socket <- try_control(connect(control_file))
   let request = authenticate(control_file, request)
   let result = case
-    ffi_send_line(socket, protocol.request_to_string(request), 5000)
+    send_line(socket, protocol.request_to_string(request), 5000)
   {
-    Error(message) -> Error(ConnectionFailed(message))
+    Error(error) -> Error(ConnectionFailed(error))
     Ok(Nil) ->
-      case ffi_recv_line(socket, 5000) {
+      case recv_line(socket, 5000) {
         Ok(line) -> Ok(line)
-        Error(message) -> Error(ConnectionFailed(message))
+        Error(error) -> Error(ConnectionFailed(error))
       }
   }
   ffi_close_socket(socket)
@@ -114,16 +126,16 @@ pub fn stream_events(
   use socket <- try_control(connect(control_file))
   let request =
     protocol.StreamEvents("1", control_file.token, session_id, after)
-  case ffi_send_line(socket, protocol.request_to_string(request), 5000) {
-    Error(message) -> {
+  case send_line(socket, protocol.request_to_string(request), 5000) {
+    Error(error) -> {
       ffi_close_socket(socket)
-      Error(ConnectionFailed(message))
+      Error(ConnectionFailed(error))
     }
     Ok(Nil) ->
-      case ffi_recv_line(socket, 5000) {
-        Error(message) -> {
+      case recv_line(socket, 5000) {
+        Error(error) -> {
           ffi_close_socket(socket)
-          Error(ConnectionFailed(message))
+          Error(ConnectionFailed(error))
         }
         Ok(line) ->
           case protocol.decode_response(line) {
@@ -148,12 +160,15 @@ fn stream_loop(
   socket: Socket,
   on_event: fn(event.SessionEvent) -> StreamAction,
 ) -> Result(Nil, ControlError) {
-  case ffi_recv_line(socket, 1000) {
-    Error("timeout") -> stream_loop(socket, on_event)
-    Error("closed") -> Ok(Nil)
-    Error(message) -> {
+  case recv_line(socket, 1000) {
+    Error(Timeout) -> stream_loop(socket, on_event)
+    Error(Closed) -> {
       ffi_close_socket(socket)
-      Error(ConnectionFailed(message))
+      Ok(Nil)
+    }
+    Error(error) -> {
+      ffi_close_socket(socket)
+      Error(ConnectionFailed(error))
     }
     Ok(line) ->
       case protocol.decode_stream_event(line) {
@@ -175,7 +190,9 @@ fn stream_loop(
 
 fn connect(control_file: file.ControlFile) -> Result(Socket, ControlError) {
   ffi_connect(control_file.host, control_file.port, 5000)
-  |> result_map_error_connection
+  |> result.map_error(fn(error) {
+    ConnectionFailed(raw_connect_error(control_file.host, error))
+  })
 }
 
 fn authenticate(
@@ -235,15 +252,6 @@ fn map_error_body(
   }
 }
 
-fn result_map_error_connection(
-  result: Result(Socket, String),
-) -> Result(Socket, ControlError) {
-  case result {
-    Ok(socket) -> Ok(socket)
-    Error(message) -> Error(ConnectionFailed(message))
-  }
-}
-
 fn try_control(
   result: Result(a, ControlError),
   next: fn(a) -> Result(b, ControlError),
@@ -264,7 +272,7 @@ pub fn error_code(error: ControlError) -> String {
 
 pub fn error_message(error: ControlError) -> String {
   case error {
-    ConnectionFailed(message) -> message
+    ConnectionFailed(error) -> transport_error_message(error)
     RequestFailed(_, message) -> message
     ProtocolFailed(message) -> message
   }
@@ -345,6 +353,64 @@ fn compact_message(message: Option(String)) -> String {
   case message {
     Some(value) -> " " <> string.replace(value, each: "\n", with: " ")
     None -> ""
+  }
+}
+
+fn send_line(
+  socket: Socket,
+  line: String,
+  timeout_ms: Int,
+) -> Result(Nil, ControlTransportError) {
+  ffi_send_line(socket, line, timeout_ms)
+  |> result.map_error(fn(error) { raw_transport_error("send_line", error) })
+}
+
+fn recv_line(
+  socket: Socket,
+  timeout_ms: Int,
+) -> Result(String, ControlTransportError) {
+  ffi_recv_line(socket, timeout_ms)
+  |> result.map_error(fn(error) { raw_transport_error("recv_line", error) })
+}
+
+fn raw_connect_error(host: String, error: String) -> ControlTransportError {
+  case error {
+    "non_loopback_host_rejected" -> NonLoopbackHostRejected(host)
+    _ -> raw_transport_error("connect", error)
+  }
+}
+
+fn raw_transport_error(
+  function: String,
+  error: String,
+) -> ControlTransportError {
+  case error {
+    "non_loopback_host_rejected" -> NonLoopbackHostRejected("")
+    "timeout" -> Timeout
+    "closed" -> Closed
+    "line_too_long" -> LineTooLong(8_388_608)
+    _ ->
+      case function {
+        "connect" -> ConnectFailed(error)
+        "send_line" -> SendFailed(error)
+        "recv_line" -> ReceiveFailed(error)
+        _ -> UnexpectedFfiFailure(function, error)
+      }
+  }
+}
+
+fn transport_error_message(error: ControlTransportError) -> String {
+  case error {
+    NonLoopbackHostRejected(host) -> "non-loopback host rejected: " <> host
+    Timeout -> "timeout"
+    Closed -> "closed"
+    LineTooLong(max_bytes) ->
+      "line too long (max " <> int.to_string(max_bytes) <> " bytes)"
+    SendFailed(reason) -> reason
+    ReceiveFailed(reason) -> reason
+    ConnectFailed(reason) -> reason
+    UnexpectedFfiFailure(function, detail) ->
+      function <> " failed unexpectedly: " <> detail
   }
 }
 

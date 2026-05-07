@@ -1,9 +1,10 @@
-//// Small Erlang port wrapper used by hooks and pi RPC.
+//// Small Erlang port wrapper used by hooks, command steps, version discovery,
+//// and pi RPC.
 ////
 //// The wrapper keeps child stderr out of the stdout JSONL stream by redirecting
-//// stderr to a temporary diagnostics file. `read_diagnostics` reads the current
-//// contents of that file; diagnostics are therefore available after the child
-//// writes them and are most reliable after exit.
+//// stderr to private per-process diagnostics storage. `read_diagnostics` reads
+//// the current file before cleanup and cached diagnostics after `await_exit` or
+//// `terminate` removes the private temp directory.
 
 import gleam/int
 import gleam/result
@@ -14,21 +15,25 @@ pub const max_stdout_line_length = 10_000_000
 pub type Process
 
 pub type PortError {
-  StartFailed(String)
-  SendFailed(String)
+  CwdNotDirectory
+  InvalidCommand(reason: String)
+  InvalidExecutable(reason: String)
+  InvalidArgument(reason: String)
+  InvalidEnvironment(reason: String)
+  SpawnFailed(reason: String)
+  SendFailed(reason: String)
   ReadTimeout
-  LineTooLong
-  ProcessExited(Int)
-  PortClosed
-  DiagnosticsFailed(String)
-  TerminateFailed(String)
-  AwaitTimeout
-  AwaitFailed(String)
+  LineTooLong(max_bytes: Int)
+  ProcessExited(status: Int)
+  Closed
+  DiagnosticsFailed(reason: String)
+  CleanupFailed(reason: String)
+  UnexpectedFfiFailure(function: String, detail: String)
 }
 
 pub fn start(command: String, cwd: String) -> Result(Process, PortError) {
   ffi_start(command, cwd)
-  |> result.map_error(StartFailed)
+  |> result.map_error(fn(error) { raw_error("start", error) })
 }
 
 pub fn start_with_env(
@@ -37,7 +42,7 @@ pub fn start_with_env(
   env: List(#(String, String)),
 ) -> Result(Process, PortError) {
   ffi_start_with_env(command, cwd, env)
-  |> result.map_error(StartFailed)
+  |> result.map_error(fn(error) { raw_error("start_with_env", error) })
 }
 
 pub fn start_argv(
@@ -47,71 +52,96 @@ pub fn start_argv(
   env: List(#(String, String)),
 ) -> Result(Process, PortError) {
   ffi_start_argv(executable, args, cwd, env)
-  |> result.map_error(StartFailed)
+  |> result.map_error(fn(error) { raw_error("start_argv", error) })
 }
 
 pub fn send_line(process: Process, line: String) -> Result(Nil, PortError) {
   ffi_send_line(process, line)
-  |> result.map_error(fn(error) { SendFailed(error) })
+  |> result.map_error(fn(error) { raw_error("send_line", error) })
 }
 
 pub fn read_stdout_line(
   process: Process,
   timeout_ms: Int,
 ) -> Result(String, PortError) {
-  case ffi_read_stdout_line(process, timeout_ms) {
-    Ok(line) -> Ok(line)
-    Error(error) -> Error(read_error(error))
-  }
+  ffi_read_stdout_line(process, timeout_ms)
+  |> result.map_error(fn(error) { raw_error("read_stdout_line", error) })
 }
 
 pub fn read_diagnostics(process: Process) -> Result(String, PortError) {
   ffi_read_diagnostics(process)
-  |> result.map_error(fn(error) { DiagnosticsFailed(error) })
+  |> result.map_error(fn(error) { raw_error("read_diagnostics", error) })
 }
 
 pub fn terminate(process: Process) -> Result(Nil, PortError) {
   ffi_terminate(process)
-  |> result.map_error(fn(error) { TerminateFailed(error) })
+  |> result.map_error(fn(error) { raw_error("terminate", error) })
 }
 
 pub fn await_exit(process: Process, timeout_ms: Int) -> Result(Int, PortError) {
-  case ffi_await_exit(process, timeout_ms) {
-    Ok(status) -> Ok(status)
-    Error(error) -> Error(await_error(error))
+  ffi_await_exit(process, timeout_ms)
+  |> result.map_error(fn(error) { raw_error("await_exit", error) })
+}
+
+pub fn port_error_to_string(error: PortError) -> String {
+  case error {
+    CwdNotDirectory -> "working directory is not a directory"
+    InvalidCommand(reason) -> "invalid command: " <> reason
+    InvalidExecutable(reason) -> "invalid executable: " <> reason
+    InvalidArgument(reason) -> "invalid argument: " <> reason
+    InvalidEnvironment(reason) -> "invalid environment: " <> reason
+    SpawnFailed(reason) -> "spawn failed: " <> reason
+    SendFailed(reason) -> "send failed: " <> reason
+    ReadTimeout -> "read timeout"
+    LineTooLong(max_bytes) ->
+      "line too long (max " <> int.to_string(max_bytes) <> " bytes)"
+    ProcessExited(status) -> "process exited " <> int.to_string(status)
+    Closed -> "port closed"
+    DiagnosticsFailed(reason) -> "diagnostics failed: " <> reason
+    CleanupFailed(reason) -> "cleanup failed: " <> reason
+    UnexpectedFfiFailure(function, detail) ->
+      function <> " failed unexpectedly: " <> detail
   }
 }
 
-fn read_error(error: String) -> PortError {
-  case error {
+pub fn temp_dir_for_test(process: Process) -> Result(String, PortError) {
+  ffi_temp_dir_for_test(process)
+  |> result.map_error(fn(error) { raw_error("temp_dir_for_test", error) })
+}
+
+fn raw_error(function: String, error: String) -> PortError {
+  let #(tag, detail) = split_tag(error)
+  case tag {
+    "cwd_not_directory" -> CwdNotDirectory
+    "invalid_command" -> InvalidCommand(detail)
+    "invalid_executable" -> InvalidExecutable(detail)
+    "invalid_arg" -> InvalidArgument(detail)
+    "invalid_env" -> InvalidEnvironment(detail)
+    "spawn_failed" -> SpawnFailed(detail)
+    "send_failed" -> SendFailed(detail)
     "timeout" -> ReadTimeout
-    "line_too_long" -> LineTooLong
-    "closed" -> PortClosed
-    _ ->
-      case string.starts_with(error, "exit_status:") {
-        True -> {
-          let status =
-            error
-            |> string.drop_start(string.length("exit_status:"))
-            |> parse_int_or_zero
-          ProcessExited(status)
-        }
-        False -> AwaitFailed(error)
-      }
+    "line_too_long" ->
+      LineTooLong(parse_int_or_default(detail, max_stdout_line_length))
+    "exit_status" -> ProcessExited(parse_int_or_default(detail, 0))
+    "closed" -> Closed
+    "diagnostics_failed" -> DiagnosticsFailed(detail)
+    "cleanup_failed" -> CleanupFailed(detail)
+    "unexpected_ffi_failure" -> UnexpectedFfiFailure(function, detail)
+    _ -> UnexpectedFfiFailure(function, error)
   }
 }
 
-fn await_error(error: String) -> PortError {
-  case error {
-    "timeout" -> AwaitTimeout
-    _ -> AwaitFailed(error)
+fn split_tag(error: String) -> #(String, String) {
+  case string.split_once(error, on: ":") {
+    Ok(#(tag, detail)) -> #(tag, detail)
+    Error(Nil) -> #(error, "")
   }
 }
 
-fn parse_int_or_zero(value: String) -> Int {
+fn parse_int_or_default(value: String, default: Int) -> Int {
   case int.parse(value) {
     Ok(i) -> i
-    Error(_) -> 0
+    Error(Nil) -> default
   }
 }
 
@@ -150,3 +180,6 @@ fn ffi_terminate(process: Process) -> Result(Nil, String)
 
 @external(erlang, "scherzo_port_ffi", "await_exit")
 fn ffi_await_exit(process: Process, timeout_ms: Int) -> Result(Int, String)
+
+@external(erlang, "scherzo_port_ffi", "temp_dir_for_test")
+fn ffi_temp_dir_for_test(process: Process) -> Result(String, String)

@@ -10,16 +10,18 @@ type LockHandle
 
 pub type LockError {
   LockAlreadyHeld(String)
-  LockIo(String)
+  LockOpenFailed(reason: String)
+  LockWriteFailed(reason: String)
+  LockUnexpectedFfiFailure(function: String, detail: String)
 }
 
 pub fn acquire(workspace_root: String) -> Result(Lock, LockError) {
   case path.absolute(workspace_root) {
-    Error(_) -> Error(LockIo("canonicalize workspace root failed"))
+    Error(_) -> Error(LockOpenFailed("canonicalize workspace root failed"))
     Ok(canonical_root) -> {
       let state_dir = path.join(canonical_root, ".scherzo-state")
       case simplifile.create_directory_all(state_dir) {
-        Error(_) -> Error(LockIo("create lock directory failed"))
+        Error(_) -> Error(LockOpenFailed("create lock directory failed"))
         Ok(Nil) -> {
           let lock_path = path.join(state_dir, "instance.lock")
           let body =
@@ -32,7 +34,7 @@ pub fn acquire(workspace_root: String) -> Result(Lock, LockError) {
                 <> lock_path
                 <> "; another Scherzo process may be running, or this is a stale lock that must be removed manually after verifying no Scherzo process is active",
               ))
-            Error(message) -> Error(LockIo(redact_empty(message)))
+            Error(message) -> Error(raw_lock_error("acquire", message))
           }
         }
       }
@@ -42,6 +44,33 @@ pub fn acquire(workspace_root: String) -> Result(Lock, LockError) {
 
 pub fn release(lock: Lock) -> Nil {
   ffi_release(lock.handle, lock.path)
+}
+
+pub fn error_message(error: LockError) -> String {
+  case error {
+    LockAlreadyHeld(message) -> message
+    LockOpenFailed(reason) -> "open lock failed: " <> reason
+    LockWriteFailed(reason) -> "write lock failed: " <> reason
+    LockUnexpectedFfiFailure(function, detail) ->
+      function <> " failed unexpectedly: " <> detail
+  }
+}
+
+fn raw_lock_error(function: String, message: String) -> LockError {
+  let #(tag, detail) = split_tag(redact_empty(message))
+  case tag {
+    "open" -> LockOpenFailed(detail)
+    "write" -> LockWriteFailed(detail)
+    "unexpected_ffi_failure" -> LockUnexpectedFfiFailure(function, detail)
+    _ -> LockUnexpectedFfiFailure(function, message)
+  }
+}
+
+fn split_tag(error: String) -> #(String, String) {
+  case string.split_once(error, on: ":") {
+    Ok(#(tag, detail)) -> #(tag, detail)
+    Error(Nil) -> #(error, "")
+  }
 }
 
 fn redact_empty(message: String) -> String {
