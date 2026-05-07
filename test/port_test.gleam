@@ -39,6 +39,7 @@ pub fn port_keeps_stderr_out_of_stdout_test() {
   assert stdout == "{\"ok\":true}"
   let assert Error(port.ProcessExited(0)) = port.read_stdout_line(process, 1000)
   let assert Ok(diagnostics) = port.read_diagnostics(process)
+  let _ = port.terminate(process)
   assert string.contains(diagnostics, "diagnostic")
   assert !string.contains(stdout, "diagnostic")
 }
@@ -54,6 +55,7 @@ pub fn port_start_with_env_applies_environment_test() {
   let assert Ok(stdout) = port.read_stdout_line(process, 1000)
   assert stdout == "hello from env"
   let assert Error(port.ProcessExited(0)) = port.read_stdout_line(process, 1000)
+  let _ = port.terminate(process)
 }
 
 pub fn port_terminate_exits_child_test() {
@@ -88,7 +90,7 @@ pub fn port_await_exit_times_out_while_descendant_survives_test() {
   let terminate_result = port.terminate(process)
   let child_dead = wait_until_dead(child_pid, 50)
 
-  let assert Error(port.AwaitTimeout) = await_result
+  let assert Error(port.ReadTimeout) = await_result
   assert survived_before_terminate
   let assert Ok(Nil) = terminate_result
   assert child_dead
@@ -119,7 +121,50 @@ pub fn port_max_line_handling_test() {
     )
   let over_result = port.read_stdout_line(process_over, 5000)
   let _ = port.terminate(process_over)
-  let assert Error(port.LineTooLong) = over_result
+  let assert Error(port.LineTooLong(_)) = over_result
+}
+
+pub fn port_returns_typed_launch_errors_test() {
+  let assert Error(port.CwdNotDirectory) =
+    port.start("echo should not run", "test/tmp/port-missing-cwd")
+
+  let cwd = "test/tmp/port-invalid-launch"
+  reset_dir(cwd)
+  let assert Error(port.InvalidCommand(_)) = port.start("   ", cwd)
+  let assert Error(port.InvalidExecutable(_)) = port.start_argv("", [], cwd, [])
+}
+
+pub fn port_read_timeout_leaves_process_terminable_test() {
+  let cwd = "test/tmp/port-read-timeout"
+  reset_dir(cwd)
+
+  let assert Ok(process) = port.start("sleep 1", cwd)
+  let assert Error(port.ReadTimeout) = port.read_stdout_line(process, 20)
+  let assert Ok(Nil) = port.terminate(process)
+}
+
+pub fn port_diagnostics_survive_await_cleanup_test() {
+  let cwd = "test/tmp/port-diagnostics-cleanup"
+  reset_dir(cwd)
+
+  let assert Ok(process) = port.start("echo diagnostic >&2", cwd)
+  let assert Ok(temp_dir) = port.temp_dir_for_test(process)
+  let assert Ok(True) = simplifile.is_directory(temp_dir)
+  let assert Ok(0) = port.await_exit(process, 1000)
+  let assert Ok(False) = simplifile.is_directory(temp_dir)
+  let assert Ok(diagnostics) = port.read_diagnostics(process)
+  assert string.contains(diagnostics, "diagnostic")
+}
+
+pub fn port_terminate_cleans_temp_storage_test() {
+  let cwd = "test/tmp/port-terminate-cleanup"
+  reset_dir(cwd)
+
+  let assert Ok(process) = port.start("sleep 60", cwd)
+  let assert Ok(temp_dir) = port.temp_dir_for_test(process)
+  let assert Ok(True) = simplifile.is_directory(temp_dir)
+  let assert Ok(Nil) = port.terminate(process)
+  let assert Ok(False) = simplifile.is_directory(temp_dir)
 }
 
 fn read_pid_file(path: String) -> Result(Int, Nil) {

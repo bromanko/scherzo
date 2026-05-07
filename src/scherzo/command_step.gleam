@@ -118,6 +118,7 @@ fn read_loop(
     }
     Error(port.ProcessExited(status)) -> {
       let stderr = port.read_diagnostics(process) |> result.unwrap("")
+      let _cleanup_result = port.terminate(process)
       finish_command(
         step_id,
         command,
@@ -133,8 +134,9 @@ fn read_loop(
         diagnostics,
       )
     }
-    Error(port.PortClosed) -> {
+    Error(port.Closed) -> {
       let stderr = port.read_diagnostics(process) |> result.unwrap("")
+      let _cleanup_result = port.terminate(process)
       finish_command(
         step_id,
         command,
@@ -170,6 +172,7 @@ fn read_loop(
     }
     Error(err) -> {
       let stderr = port.read_diagnostics(process) |> result.unwrap("")
+      let _cleanup_result = port.terminate(process)
       finish_command(
         step_id,
         command,
@@ -423,18 +426,7 @@ fn append_capped(
 }
 
 fn port_error_to_string(err: port.PortError) -> String {
-  case err {
-    port.StartFailed(message) -> message
-    port.SendFailed(message) -> message
-    port.ReadTimeout -> "read timeout"
-    port.LineTooLong -> "line too long"
-    port.ProcessExited(status) -> "process exited " <> int.to_string(status)
-    port.PortClosed -> "port closed"
-    port.DiagnosticsFailed(message) -> message
-    port.TerminateFailed(message) -> message
-    port.AwaitTimeout -> "await timeout"
-    port.AwaitFailed(message) -> message
-  }
+  port.port_error_to_string(err)
 }
 
 @external(erlang, "scherzo_time_ffi", "monotonic_ms")

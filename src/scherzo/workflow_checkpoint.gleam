@@ -282,6 +282,7 @@ fn append_body(
 fn describe_ledger_error(error: ledger.LedgerError) -> String {
   case error {
     ledger.Io(message) -> message
+    ledger.LedgerFfiFailed(error) -> ledger.ledger_ffi_error_to_string(error)
     ledger.UnsupportedVersion(version) ->
       "unsupported ledger schema version " <> int.to_string(version)
     ledger.CorruptRecord(line, reason) ->
@@ -292,6 +293,8 @@ fn describe_ledger_error(error: ledger.LedgerError) -> String {
 fn describe_artifact_error(error: artifact_store.ArtifactError) -> String {
   case error {
     artifact_store.ArtifactIo(message) -> message
+    artifact_store.ArtifactWriteFailed(error) ->
+      artifact_store.artifact_write_error_to_string(error)
     artifact_store.MissingStepArtifact(ref) -> "missing_step_artifact:" <> ref
     artifact_store.CorruptStepArtifact(ref) -> "corrupt_step_artifact:" <> ref
     artifact_store.InvalidArtifactRef(ref) -> "invalid_artifact_ref:" <> ref

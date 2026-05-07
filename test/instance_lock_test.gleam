@@ -42,3 +42,14 @@ pub fn instance_lock_allows_different_roots_test() {
   instance_lock.release(lock_a)
   instance_lock.release(lock_b)
 }
+
+pub fn instance_lock_release_is_idempotent_best_effort_test() {
+  let root = "test/tmp/instance-lock/idempotent-release"
+  reset_dir(root)
+
+  let assert Ok(lock) = instance_lock.acquire(root)
+  instance_lock.release(lock)
+  instance_lock.release(lock)
+  let assert Ok(lock) = instance_lock.acquire(root)
+  instance_lock.release(lock)
+}

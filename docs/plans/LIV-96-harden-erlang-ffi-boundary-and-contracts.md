@@ -48,11 +48,12 @@ The fifth risk is weakening fail-closed redaction while trying to type errors. T
 ## Progress
 
 - [x] (2026-05-06 00:00Z) Drafted this ExecPlan for LIV-96 after inspecting source-control status, FFI exports, Gleam external references, and the highest-risk Erlang FFI modules.
-- [ ] Create the agent-visible FFI contract document and shared typed-error vocabulary.
-- [ ] Harden and test `src/scherzo_port_ffi.erl` and its Gleam wrapper first, without redoing LIV-82 process-tree work unless regression coverage fails.
-- [ ] Harden and test ledger, lock, and artifact-store FFI behavior.
-- [ ] Harden and test control socket and redaction FFI behavior.
-- [ ] Document stable low-risk FFI modules and run full validation on supported platforms.
+- [x] (2026-05-07 16:08Z) Created `docs/ffi.md` as the agent-visible FFI contract inventory and linked it from `docs/ARCHITECTURE.md`.
+- [x] (2026-05-07 16:40Z) Hardened `src/scherzo_port_ffi.erl` and `src/scherzo/port.gleam` with finite raw error tags, typed `PortError`, private per-process temp directories, cached diagnostics after cleanup, and port lifecycle regression tests.
+- [x] (2026-05-07 17:05Z) Hardened artifact, ledger, and lock persistence boundaries with typed wrapper errors, unique same-directory artifact temp files, phase-tagged ledger and lock errors, and persistence regression tests.
+- [x] (2026-05-07 17:26Z) Hardened control and redaction coverage by honoring `send_line/3` send timeouts, mapping client transport failures to typed errors, adding raw control FFI tests, and adding a redaction fail-closed fallback test.
+- [x] (2026-05-07 17:34Z) Documented stable low-risk FFI modules, added low-risk FFI smoke tests, and ran local formatting, test, and glinter validation on the primary development platform. Linux validation remains a reviewer or CI follow-up.
+- [x] (2026-05-07 17:45Z) Applied review feedback by terminating subprocesses on generic non-timeout port read errors, closing control event stream sockets on remote `Closed`, preserving rejected control hosts in `NonLoopbackHostRejected`, and rerunning targeted formatting, full test, and glinter validation.
 
 ## Surprises & Discoveries
 
@@ -62,8 +63,14 @@ The fifth risk is weakening fail-closed redaction while trying to type errors. T
   Evidence: `stderr_path/0` and `child_pid_path/0` call a shared `tmp_path/2` helper that joins the OS temp base with prefixed unique filenames.
 - Observation: `src/scherzo_artifact_store_ffi.erl` writes through a deterministic temp path formed by appending `.tmp` to the final artifact path.
   Evidence: `write_atomic/2` assigns `Temp = Final ++ ".tmp"` before writing and renaming.
-- Observation: `src/scherzo_control_ffi.erl` accepts a timeout argument in `send_line/3` but the function body ignores it.
-  Evidence: the implementation names the third argument `_TimeoutMs` and calls `gen_tcp:send/2` directly.
+- Observation: `src/scherzo_control_ffi.erl` accepts a timeout argument in `send_line/3` but the function body ignored it before this implementation.
+  Evidence: the original implementation named the third argument `_TimeoutMs` and called `gen_tcp:send/2` directly; the implemented version temporarily applies `{send_timeout, Timeout}` for the call and restores the previous socket option when possible.
+- Observation: A raw accepted TCP socket used in a test closes when the short-lived accepting process exits, because the Erlang socket remains owned by its accepting process unless ownership is transferred.
+  Evidence: an initial control FFI test received `Error("closed")` after passing an accepted socket from a spawned accept process back to the test process; the passing test now performs `recv_line` inside the accepting process instead.
+- Observation: The local development platform completed the full Gleam test suite with 800 passing tests after the FFI hardening changes.
+  Evidence: `direnv exec . gleam test` reported `800 passed, no failures` on 2026-05-07.
+- Observation: Review feedback showed that typed error handling must also preserve cleanup on less common terminal paths, not only on normal exit and timeouts.
+  Evidence: `src/scherzo/command_step.gleam` now calls `port.terminate` after generic `read_stdout_line` errors such as `LineTooLong`, and `src/scherzo/control/client.gleam` closes stream sockets when `recv_line` returns `Closed`.
 
 ## Decision Log
 
@@ -79,10 +86,36 @@ The fifth risk is weakening fail-closed redaction while trying to type errors. T
 - Decision: Treat LIV-82 process cleanup as prior context and add regression tests instead of redesigning it up front.
   Rationale: The ticket asks for a broader FFI contract pass and explicitly says not to duplicate completed process-leak work.
   Date: 2026-05-06
+- Decision: Keep Erlang raw FFI returns as finite strings or phase-prefixed strings, then map them in the closest Gleam wrapper rather than constructing Gleam custom values directly in Erlang.
+  Rationale: This preserves maintainable Erlang wire terms while making public high-risk wrappers typed for Gleam callers.
+  Date: 2026-05-07
+- Decision: Expose `port.temp_dir_for_test` as a narrow inspection helper backed by `scherzo_port_ffi:temp_dir_for_test/1` instead of exposing temp storage in normal subprocess APIs.
+  Rationale: The port cleanup contract needs direct regression coverage, but production callers should continue treating temp storage as an implementation detail.
+  Date: 2026-05-07
+- Decision: Treat unsupported parent-directory sync in artifact writes as best effort while still returning `sync_parent` if an opened parent directory fails to sync.
+  Rationale: Directory sync support differs by platform; preserving successful writes on unsupported platforms is safer than turning platform limitations into artifact write failures.
+  Date: 2026-05-07
+- Decision: Add typed signal installation errors in `src/scherzo/signal.gleam` while keeping the test injection hook string-based at the raw FFI seam.
+  Rationale: The production application boundary should be typed, but tests still need to simulate exact raw FFI failures without constructing Erlang handler state.
+  Date: 2026-05-07
+- Decision: Treat generic port read errors and remote stream closure as resource cleanup edges before returning typed errors.
+  Rationale: The FFI boundary hardening target includes resource ownership guarantees on every finite error tag, not just converting the tags to Gleam types.
+  Date: 2026-05-07
+- Decision: Preserve the attempted control host when mapping connect-time `non_loopback_host_rejected` failures.
+  Rationale: Operators need the rejected value in diagnostics; the empty-host fallback remains only for unexpected non-connect contexts where no host is available.
+  Date: 2026-05-07
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The implementation established `docs/ffi.md` as the durable contract for every Erlang FFI export, linked it from `docs/ARCHITECTURE.md`, and brought the highest-risk wrappers closer to the plan's typed-error target. Port, artifact, ledger, lock, signal, and client control transport failures now map to typed Gleam errors at their wrapper boundaries while raw Erlang returns remain finite and documented.
+
+The highest-risk resource ownership changes are in place. Port stderr and child-pid files now live in private per-process temp directories. `await_exit/2` and `terminate/1` cache diagnostics before removing those directories, and tests prove diagnostics remain readable after cleanup. Artifact writes now use unique same-directory temp files and cleanup failure paths instead of deterministic `.tmp` paths.
+
+Regression coverage now includes port launch errors, read timeout, line-too-long, process-tree termination, temp cleanup, diagnostics-after-cleanup, artifact atomic write and concurrent writer behavior, lock release idempotence, raw control socket send/receive/timeout/closed behavior, redaction fail-closed fallback, and low-risk hash/time/config/terminal smoke behavior. Local validation passed on the current development platform: formatting, the full Gleam test suite, and glinter's production gate all completed with zero failures or errors.
+
+A review-feedback pass tightened the ownership and diagnostics outcomes: uncommon port read failures now terminate the subprocess after diagnostics capture, remote stream closure closes the client socket, and connect-time non-loopback rejection messages include the rejected host. After that pass, targeted formatting for the changed Gleam files passed, the full Gleam test suite still reported 800 passed, no failures, and glinter reported 0 errors with the existing 358-warning ratchet.
+
+The main remaining validation gap is cross-platform execution. This workspace ran on the local primary platform only; Linux or the other supported platform should be covered by CI or reviewer validation before final acceptance of platform-sensitive subprocess, signal, socket, and filesystem behavior.
 
 ## Context and Orientation
 

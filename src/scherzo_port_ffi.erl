@@ -1,6 +1,18 @@
 -module(scherzo_port_ffi).
 
--export([start/2, start_with_env/3, start_argv/4, send_line/2, read_stdout_line/2, read_diagnostics/1, terminate/1, await_exit/2]).
+-include_lib("kernel/include/file.hrl").
+
+-export([
+    start/2,
+    start_with_env/3,
+    start_argv/4,
+    send_line/2,
+    read_stdout_line/2,
+    read_diagnostics/1,
+    terminate/1,
+    await_exit/2,
+    temp_dir_for_test/1
+]).
 
 -define(MAX_LINE, 10000000).
 -define(TERM_GRACE_MS, 300).
@@ -13,51 +25,84 @@ start(Command, Cwd) ->
 
 start_with_env(Command, Cwd, Env) ->
     try
-        Cmd = to_list(Command),
-        Dir = to_list(Cwd),
-        case filelib:is_dir(Dir) of
-            true ->
-                ErrPath = stderr_path(),
-                ChildPidPath = child_pid_path(),
+        case validate_command(Command) of
+            {ok, Cmd} ->
+                case validate_cwd(Cwd) of
+                    {ok, Dir} ->
+                        case normalize_env_checked(Env) of
+                            {ok, NormalizedEnv} -> start_shell(Cmd, Dir, NormalizedEnv);
+                            {error, Error} -> {error, Error}
+                        end;
+                    {error, Error} -> {error, Error}
+                end;
+            {error, Error} -> {error, Error}
+        end
+    catch
+        Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
+    end.
+
+start_argv(Executable, Args, Cwd, Env) ->
+    try
+        case validate_executable(Executable) of
+            {ok, Exe} ->
+                case validate_args(Args) of
+                    {ok, ArgList} ->
+                        case validate_cwd(Cwd) of
+                            {ok, Dir} ->
+                                case normalize_env_checked(Env) of
+                                    {ok, NormalizedEnv} -> start_argv_checked(Exe, ArgList, Dir, NormalizedEnv);
+                                    {error, Error} -> {error, Error}
+                                end;
+                            {error, Error} -> {error, Error}
+                        end;
+                    {error, Error} -> {error, Error}
+                end;
+            {error, Error} -> {error, Error}
+        end
+    catch
+        Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
+    end.
+
+start_shell(Cmd, Dir, Env) ->
+    case new_temp_storage() of
+        {ok, TmpDir, ErrPath, ChildPidPath} ->
+            try
                 Port = open_port({spawn_executable, "/bin/bash"}, [
                     binary,
                     exit_status,
                     use_stdio,
                     {args, ["-c", shell_launch_wrapper(), "scherzo-shell", ErrPath, ChildPidPath, Cmd]},
                     {cd, Dir},
-                    {env, normalize_env(Env)}
+                    {env, Env}
                 ]),
-                {ok, {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath}};
-            false ->
-                {error, <<"cwd_not_directory">>}
-        end
-    catch
-        Class:Reason -> {error, unicode:characters_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
+                {ok, {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir}}
+            catch
+                Class:CatchReason ->
+                    _ = cleanup_private_temp_dir(TmpDir),
+                    {error, tagged_error(spawn_failed, format_error(Class, CatchReason))}
+            end;
+        {error, Error} -> {error, Error}
     end.
 
-start_argv(Executable, Args, Cwd, Env) ->
-    try
-        Exe = to_list(Executable),
-        ArgList = [to_list(Arg) || Arg <- Args],
-        Dir = to_list(Cwd),
-        case filelib:is_dir(Dir) of
-            true ->
-                ErrPath = stderr_path(),
-                ChildPidPath = child_pid_path(),
+start_argv_checked(Exe, ArgList, Dir, Env) ->
+    case new_temp_storage() of
+        {ok, TmpDir, ErrPath, ChildPidPath} ->
+            try
                 Port = open_port({spawn_executable, "/bin/bash"}, [
                     binary,
                     exit_status,
                     use_stdio,
                     {args, ["-c", argv_launch_wrapper(), "scherzo-argv", ErrPath, ChildPidPath, Exe | ArgList]},
                     {cd, Dir},
-                    {env, normalize_env(Env)}
+                    {env, Env}
                 ]),
-                {ok, {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath}};
-            false ->
-                {error, <<"cwd_not_directory">>}
-        end
-    catch
-        Class:Reason -> {error, unicode:characters_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
+                {ok, {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir}}
+            catch
+                Class:CatchReason ->
+                    _ = cleanup_private_temp_dir(TmpDir),
+                    {error, tagged_error(spawn_failed, format_error(Class, CatchReason))}
+            end;
+        {error, Error} -> {error, Error}
     end.
 
 shell_launch_wrapper() ->
@@ -87,34 +132,51 @@ argv_launch_wrapper() ->
     "exit \"$status\"\n".
 
 send_line(Process, Line) ->
-    Port = process_port(Process),
-    try
-        true = erlang:port_command(Port, [Line, <<"\n">>]),
-        {ok, nil}
-    catch
-        Class:Reason -> {error, unicode:characters_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
+    case process_port_result(Process) of
+        {ok, Port} ->
+            try
+                case erlang:port_info(Port) of
+                    undefined -> {error, <<"closed">>};
+                    _ ->
+                        case erlang:port_command(Port, [Line, <<"\n">>]) of
+                            true -> {ok, nil};
+                            false -> {error, <<"closed">>}
+                        end
+                end
+            catch
+                error:badarg -> {error, <<"closed">>};
+                Class:CatchReason -> {error, tagged_error(send_failed, format_error(Class, CatchReason))}
+            end;
+        error -> {error, <<"closed">>}
     end.
 
 read_stdout_line(Process, TimeoutMs) ->
-    Port = process_port(Process),
-    Timeout = normalize_timeout(TimeoutMs),
-    Key = {scherzo_port_stdout_state, Port},
-    State = get_stdout_state(Key),
-    case pop_stdout_state(State) of
-        {line, Line, NextState} ->
-            put_stdout_state(Key, NextState),
-            {ok, Line};
-        line_too_long ->
-            erase_stdout_state(Key),
-            {error, <<"line_too_long">>};
-        {exit_status, Status} ->
-            erase_stdout_state(Key),
-            {error, <<"exit_status:", (integer_to_binary(Status))/binary>>};
-        closed ->
-            erase_stdout_state(Key),
-            {error, <<"closed">>};
-        wait ->
-            read_stdout_line_loop(Port, Key, State, Timeout)
+    case process_port_result(Process) of
+        {ok, Port} ->
+            try
+                Timeout = normalize_timeout(TimeoutMs),
+                Key = {scherzo_port_stdout_state, Port},
+                State = get_stdout_state(Key),
+                case pop_stdout_state(State) of
+                    {line, Line, NextState} ->
+                        put_stdout_state(Key, NextState),
+                        {ok, Line};
+                    line_too_long ->
+                        erase_stdout_state(Key),
+                        {error, line_too_long_error()};
+                    {exit_status, Status} ->
+                        erase_stdout_state(Key),
+                        {error, exit_status_error(Status)};
+                    closed ->
+                        erase_stdout_state(Key),
+                        {error, <<"closed">>};
+                    wait ->
+                        read_stdout_line_loop(Port, Key, State, Timeout)
+                end
+            catch
+                Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
+            end;
+        error -> {error, <<"closed">>}
     end.
 
 read_stdout_line_loop(Port, Key, State, Timeout) ->
@@ -128,10 +190,10 @@ read_stdout_line_loop(Port, Key, State, Timeout) ->
                     {ok, Line};
                 line_too_long ->
                     erase_stdout_state(Key),
-                    {error, <<"line_too_long">>};
+                    {error, line_too_long_error()};
                 {exit_status, Status} ->
                     erase_stdout_state(Key),
-                    {error, <<"exit_status:", (integer_to_binary(Status))/binary>>};
+                    {error, exit_status_error(Status)};
                 closed ->
                     erase_stdout_state(Key),
                     {error, <<"closed">>};
@@ -147,10 +209,10 @@ read_stdout_line_loop(Port, Key, State, Timeout) ->
                     {ok, Line};
                 line_too_long ->
                     erase_stdout_state(Key),
-                    {error, <<"line_too_long">>};
+                    {error, line_too_long_error()};
                 {exit_status, ExitStatus} ->
                     erase_stdout_state(Key),
-                    {error, <<"exit_status:", (integer_to_binary(ExitStatus))/binary>>};
+                    {error, exit_status_error(ExitStatus)};
                 closed ->
                     erase_stdout_state(Key),
                     {error, <<"closed">>};
@@ -166,10 +228,10 @@ read_stdout_line_loop(Port, Key, State, Timeout) ->
                     {ok, Line};
                 line_too_long ->
                     erase_stdout_state(Key),
-                    {error, <<"line_too_long">>};
+                    {error, line_too_long_error()};
                 {exit_status, Status} ->
                     erase_stdout_state(Key),
-                    {error, <<"exit_status:", (integer_to_binary(Status))/binary>>};
+                    {error, exit_status_error(Status)};
                 closed ->
                     erase_stdout_state(Key),
                     {error, <<"closed">>};
@@ -231,47 +293,73 @@ pop_stdout_status(State, Buffer) ->
     end.
 
 read_diagnostics(Process) ->
-    ErrPath = process_err_path(Process),
-    case file:read_file(ErrPath) of
-        {ok, Bytes} -> {ok, Bytes};
-        {error, enoent} -> {ok, <<>>};
-        {error, Reason} -> {error, atom_to_binary(Reason, utf8)}
+    try
+        ErrPath = process_err_path(Process),
+        case file:read_file(ErrPath) of
+            {ok, Bytes} ->
+                put_cached_diagnostics(Process, Bytes),
+                {ok, Bytes};
+            {error, enoent} -> {ok, cached_diagnostics(Process)};
+            {error, Reason} -> {error, tagged_error(diagnostics_failed, reason_to_binary(Reason))}
+        end
+    catch
+        Class:CatchReason -> {error, tagged_error(diagnostics_failed, format_error(Class, CatchReason))}
     end.
 
 terminate(Process) ->
-    Port = process_port(Process),
-    OsPid = process_os_pid(Process),
-    ChildPidPath = process_child_pid_path(Process),
     try
+        _ = cache_diagnostics(Process),
+        OsPid = process_os_pid(Process),
+        ChildPidPath = process_child_pid_path(Process),
         terminate_launched_process(OsPid, ChildPidPath),
-        catch erlang:port_close(Port),
-        {ok, nil}
+        case process_port_result(Process) of
+            {ok, Port} -> catch erlang:port_close(Port);
+            error -> ok
+        end,
+        case cleanup_process_storage(Process) of
+            ok -> {ok, nil};
+            {error, Reason} -> {error, tagged_error(cleanup_failed, Reason)}
+        end
     catch
-        Class:Reason -> {error, unicode:characters_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
+        Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
     end.
 
 await_exit(Process, TimeoutMs) ->
-    Port = process_port(Process),
-    OsPid = process_os_pid(Process),
-    ChildPidPath = process_child_pid_path(Process),
-    Timeout = normalize_timeout(TimeoutMs),
-    Deadline = now_ms() + Timeout,
-    receive
-        {Port, {exit_status, Status}} ->
-            await_os_exit(Status, OsPid, ChildPidPath, remaining_ms(Deadline));
-        {'EXIT', Port, _Reason} ->
-            await_os_exit(0, OsPid, ChildPidPath, remaining_ms(Deadline))
-    after Timeout ->
-        case erlang:port_info(Port) of
-            undefined -> await_os_exit(0, OsPid, ChildPidPath, 0);
-            _ -> {error, <<"timeout">>}
-        end
+    case process_port_result(Process) of
+        {ok, Port} ->
+            try
+                OsPid = process_os_pid(Process),
+                ChildPidPath = process_child_pid_path(Process),
+                Timeout = normalize_timeout(TimeoutMs),
+                Deadline = now_ms() + Timeout,
+                receive
+                    {Port, {exit_status, Status}} ->
+                        await_os_exit(Process, Status, OsPid, ChildPidPath, remaining_ms(Deadline));
+                    {'EXIT', Port, _Reason} ->
+                        await_os_exit(Process, 0, OsPid, ChildPidPath, remaining_ms(Deadline))
+                after Timeout ->
+                    case erlang:port_info(Port) of
+                        undefined -> await_os_exit(Process, 0, OsPid, ChildPidPath, 0);
+                        _ -> {error, <<"timeout">>}
+                    end
+                end
+            catch
+                Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
+            end;
+        error -> {error, <<"closed">>}
     end.
 
-await_os_exit(Status, OsPid, ChildPidPath, Timeout) ->
+await_os_exit(Process, Status, OsPid, ChildPidPath, Timeout) ->
     case wait_for_launched_process_gone(OsPid, ChildPidPath, Timeout) of
-        ok -> {ok, Status};
+        ok -> finish_process_exit(Process, Status);
         timeout -> {error, <<"timeout">>}
+    end.
+
+finish_process_exit(Process, Status) ->
+    _ = cache_diagnostics(Process),
+    case cleanup_process_storage(Process) of
+        ok -> {ok, Status};
+        {error, Reason} -> {error, tagged_error(cleanup_failed, Reason)}
     end.
 
 terminate_launched_process(undefined, ChildPidPath) ->
@@ -475,17 +563,26 @@ now_ms() -> erlang:monotonic_time(millisecond).
 min_int(A, B) when A =< B -> A;
 min_int(_A, B) -> B.
 
-process_port({scherzo_process, Port, _ErrPath}) -> Port;
-process_port({scherzo_process, Port, _ErrPath, _OsPid, _ChildPidPath}) -> Port.
+process_port_result({scherzo_process, Port, _ErrPath}) -> {ok, Port};
+process_port_result({scherzo_process, Port, _ErrPath, _OsPid, _ChildPidPath}) -> {ok, Port};
+process_port_result({scherzo_process, Port, _ErrPath, _OsPid, _ChildPidPath, _TmpDir}) -> {ok, Port};
+process_port_result(_Other) -> error.
 
 process_err_path({scherzo_process, _Port, ErrPath}) -> ErrPath;
-process_err_path({scherzo_process, _Port, ErrPath, _OsPid, _ChildPidPath}) -> ErrPath.
+process_err_path({scherzo_process, _Port, ErrPath, _OsPid, _ChildPidPath}) -> ErrPath;
+process_err_path({scherzo_process, _Port, ErrPath, _OsPid, _ChildPidPath, _TmpDir}) -> ErrPath.
 
 process_os_pid({scherzo_process, Port, _ErrPath}) -> port_os_pid(Port);
-process_os_pid({scherzo_process, _Port, _ErrPath, OsPid, _ChildPidPath}) -> OsPid.
+process_os_pid({scherzo_process, _Port, _ErrPath, OsPid, _ChildPidPath}) -> OsPid;
+process_os_pid({scherzo_process, _Port, _ErrPath, OsPid, _ChildPidPath, _TmpDir}) -> OsPid.
 
 process_child_pid_path({scherzo_process, _Port, _ErrPath}) -> undefined;
-process_child_pid_path({scherzo_process, _Port, _ErrPath, _OsPid, ChildPidPath}) -> ChildPidPath.
+process_child_pid_path({scherzo_process, _Port, _ErrPath, _OsPid, ChildPidPath}) -> ChildPidPath;
+process_child_pid_path({scherzo_process, _Port, _ErrPath, _OsPid, ChildPidPath, _TmpDir}) -> ChildPidPath.
+
+process_tmp_dir({scherzo_process, _Port, _ErrPath}) -> undefined;
+process_tmp_dir({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath}) -> undefined;
+process_tmp_dir({scherzo_process, _Port, _ErrPath, _OsPid, _ChildPidPath, TmpDir}) -> TmpDir.
 
 port_os_pid(Port) ->
     case catch erlang:port_info(Port, os_pid) of
@@ -496,22 +593,203 @@ port_os_pid(Port) ->
 normalize_timeout(TimeoutMs) when is_integer(TimeoutMs), TimeoutMs >= 0 -> TimeoutMs;
 normalize_timeout(_) -> 0.
 
-stderr_path() ->
-    tmp_path("scherzo-port-", ".stderr").
-
-child_pid_path() ->
-    tmp_path("scherzo-port-", ".child.pid").
-
-tmp_path(Prefix, Suffix) ->
-    Base = case os:getenv("TMPDIR") of
-        false -> "/tmp";
-        Value -> Value
-    end,
+new_temp_storage() ->
+    Base = tmp_base(),
     Unique = integer_to_list(erlang:unique_integer([positive, monotonic])),
-    filename:join(Base, Prefix ++ Unique ++ Suffix).
+    TmpDir = filename:join(Base, "scherzo-port-" ++ Unique),
+    case file:make_dir(TmpDir) of
+        ok -> {ok, TmpDir, filename:join(TmpDir, "stderr.log"), filename:join(TmpDir, "child.pid")};
+        {error, eexist} -> new_temp_storage();
+        {error, Reason} -> {error, tagged_error(spawn_failed, <<"create_temp_dir:", (reason_to_binary(Reason))/binary>>)}
+    end.
 
-normalize_env(Env) ->
-    [{to_list(Key), to_list(Value)} || {Key, Value} <- Env].
+tmp_base() ->
+    case os:getenv("TMPDIR") of
+        false -> "/tmp";
+        "" -> "/tmp";
+        Value -> Value
+    end.
 
-to_list(Value) when is_binary(Value) -> binary_to_list(Value);
-to_list(Value) when is_list(Value) -> Value.
+cache_diagnostics(Process) ->
+    try
+        ErrPath = process_err_path(Process),
+        case file:read_file(ErrPath) of
+            {ok, Bytes} ->
+                put_cached_diagnostics(Process, Bytes),
+                ok;
+            {error, enoent} -> ok;
+            {error, Reason} -> {error, reason_to_binary(Reason)}
+        end
+    catch
+        _Class:_Reason -> ok
+    end.
+
+put_cached_diagnostics(Process, Bytes) ->
+    erlang:put(diagnostics_key(Process), Bytes),
+    ok.
+
+cached_diagnostics(Process) ->
+    case erlang:get(diagnostics_key(Process)) of
+        Bytes when is_binary(Bytes) -> Bytes;
+        _ -> <<>>
+    end.
+
+diagnostics_key(Process) ->
+    case process_port_result(Process) of
+        {ok, Port} -> {scherzo_port_diagnostics, Port};
+        error -> {scherzo_port_diagnostics, process_err_path(Process)}
+    end.
+
+cleanup_process_storage(Process) ->
+    case process_tmp_dir(Process) of
+        undefined -> cleanup_legacy_storage(Process);
+        TmpDir -> cleanup_private_temp_dir(TmpDir)
+    end.
+
+cleanup_legacy_storage(Process) ->
+    _ = delete_file_if_present(process_err_path(Process)),
+    case process_child_pid_path(Process) of
+        undefined -> ok;
+        ChildPidPath -> delete_file_if_present(ChildPidPath)
+    end.
+
+cleanup_private_temp_dir(undefined) -> ok;
+cleanup_private_temp_dir(TmpDir) ->
+    case safe_private_temp_dir(TmpDir) of
+        true -> remove_path(TmpDir);
+        false -> {error, <<"refusing_to_remove_unexpected_temp_dir">>}
+    end.
+
+safe_private_temp_dir(TmpDir) when is_list(TmpDir) ->
+    lists:prefix("scherzo-port-", filename:basename(TmpDir));
+safe_private_temp_dir(_TmpDir) -> false.
+
+remove_path(Path) ->
+    case file:read_file_info(Path) of
+        {ok, Info} ->
+            case Info#file_info.type of
+                directory -> remove_directory(Path);
+                _ -> delete_file_if_present(Path)
+            end;
+        {error, enoent} -> ok;
+        {error, Reason} -> {error, reason_to_binary(Reason)}
+    end.
+
+remove_directory(Path) ->
+    case file:list_dir(Path) of
+        {ok, Entries} ->
+            case remove_entries(Path, Entries) of
+                ok ->
+                    case file:del_dir(Path) of
+                        ok -> ok;
+                        {error, enoent} -> ok;
+                        {error, Reason} -> {error, reason_to_binary(Reason)}
+                    end;
+                {error, Reason} -> {error, Reason}
+            end;
+        {error, enoent} -> ok;
+        {error, Reason} -> {error, reason_to_binary(Reason)}
+    end.
+
+remove_entries(_Dir, []) -> ok;
+remove_entries(Dir, [Entry | Rest]) ->
+    case remove_path(filename:join(Dir, Entry)) of
+        ok -> remove_entries(Dir, Rest);
+        {error, Reason} -> {error, Reason}
+    end.
+
+delete_file_if_present(Path) ->
+    case file:delete(Path) of
+        ok -> ok;
+        {error, enoent} -> ok;
+        {error, Reason} -> {error, reason_to_binary(Reason)}
+    end.
+
+temp_dir_for_test(Process) ->
+    case process_tmp_dir(Process) of
+        undefined -> {error, <<"not_available">>};
+        TmpDir -> {ok, unicode:characters_to_binary(TmpDir)}
+    end.
+
+validate_command(Value) ->
+    case safe_to_list(Value) of
+        {ok, Command} ->
+            case string:trim(Command) of
+                "" -> {error, tagged_error(invalid_command, <<"empty">>)};
+                _ -> {ok, Command}
+            end;
+        error -> {error, tagged_error(invalid_command, <<"not_string">>)}
+    end.
+
+validate_executable(Value) ->
+    case safe_to_list(Value) of
+        {ok, Executable} ->
+            case string:trim(Executable) of
+                "" -> {error, tagged_error(invalid_executable, <<"empty">>)};
+                _ -> {ok, Executable}
+            end;
+        error -> {error, tagged_error(invalid_executable, <<"not_string">>)}
+    end.
+
+validate_args(Args) when is_list(Args) ->
+    validate_args(Args, []);
+validate_args(_Args) ->
+    {error, tagged_error(invalid_arg, <<"args_not_list">>)}.
+
+validate_args([], Acc) -> {ok, lists:reverse(Acc)};
+validate_args([Arg | Rest], Acc) ->
+    case safe_to_list(Arg) of
+        {ok, ArgList} -> validate_args(Rest, [ArgList | Acc]);
+        error -> {error, tagged_error(invalid_arg, <<"arg_not_string">>)}
+    end.
+
+validate_cwd(Value) ->
+    case safe_to_list(Value) of
+        {ok, Dir} ->
+            case filelib:is_dir(Dir) of
+                true -> {ok, Dir};
+                false -> {error, <<"cwd_not_directory">>}
+            end;
+        error -> {error, <<"cwd_not_directory">>}
+    end.
+
+normalize_env_checked(Env) when is_list(Env) ->
+    normalize_env_checked(Env, []);
+normalize_env_checked(_Env) ->
+    {error, tagged_error(invalid_env, <<"env_not_list">>)}.
+
+normalize_env_checked([], Acc) -> {ok, lists:reverse(Acc)};
+normalize_env_checked([{Key, Value} | Rest], Acc) ->
+    case {safe_to_list(Key), safe_to_list(Value)} of
+        {{ok, ""}, _} -> {error, tagged_error(invalid_env, <<"empty_key">>)};
+        {{ok, KeyList}, {ok, ValueList}} -> normalize_env_checked(Rest, [{KeyList, ValueList} | Acc]);
+        {error, _} -> {error, tagged_error(invalid_env, <<"key_not_string">>)};
+        {_, error} -> {error, tagged_error(invalid_env, <<"value_not_string">>)}
+    end;
+normalize_env_checked([_Entry | _Rest], _Acc) ->
+    {error, tagged_error(invalid_env, <<"entry_not_pair">>)}.
+
+safe_to_list(Value) when is_binary(Value) -> {ok, binary_to_list(Value)};
+safe_to_list(Value) when is_list(Value) -> {ok, Value};
+safe_to_list(_Value) -> error.
+
+line_too_long_error() ->
+    <<"line_too_long:", (integer_to_binary(?MAX_LINE))/binary>>.
+
+exit_status_error(Status) ->
+    <<"exit_status:", (integer_to_binary(Status))/binary>>.
+
+tagged_error(Tag, Reason) when is_atom(Tag) ->
+    TagBin = atom_to_binary(Tag, utf8),
+    ReasonBin = reason_to_binary(Reason),
+    <<TagBin/binary, ":", ReasonBin/binary>>.
+
+unexpected_error(Class, Reason) ->
+    tagged_error(unexpected_ffi_failure, format_error(Class, Reason)).
+
+reason_to_binary(Reason) when is_atom(Reason) -> atom_to_binary(Reason, utf8);
+reason_to_binary(Reason) when is_binary(Reason) -> Reason;
+reason_to_binary(Reason) -> unicode:characters_to_binary(io_lib:format("~p", [Reason])).
+
+format_error(Class, Reason) ->
+    unicode:characters_to_binary(io_lib:format("~p:~p", [Class, Reason])).

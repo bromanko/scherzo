@@ -19,8 +19,21 @@ pub type ArtifactRef {
   ArtifactRef(ref: String, sha256: String, bytes: Int)
 }
 
+pub type ArtifactWriteError {
+  InvalidPath(reason: String)
+  OpenTempFailed(reason: String)
+  WriteTempFailed(reason: String)
+  SyncTempFailed(reason: String)
+  CloseTempFailed(reason: String)
+  RenameFailed(reason: String)
+  SyncParentFailed(reason: String)
+  CleanupTempFailed(reason: String)
+  UnexpectedFfiFailure(function: String, detail: String)
+}
+
 pub type ArtifactError {
   ArtifactIo(String)
+  ArtifactWriteFailed(ArtifactWriteError)
   MissingStepArtifact(String)
   CorruptStepArtifact(String)
   InvalidArtifactRef(String)
@@ -63,7 +76,7 @@ pub fn write_step_artifact(
     ))
   use Nil <- result.try(
     write_atomic(final_path, bytes)
-    |> result.map_error(fn(reason) { ArtifactIo("write artifact: " <> reason) }),
+    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
   )
   use final <- result.try(
     simplifile.read(final_path)
@@ -256,5 +269,51 @@ fn ensure_parent(final_path: String) -> Result(Nil, ArtifactError) {
   })
 }
 
+pub fn write_atomic(
+  final_path: String,
+  contents: String,
+) -> Result(Nil, ArtifactWriteError) {
+  ffi_write_atomic(final_path, contents)
+  |> result.map_error(fn(error) { raw_write_error("write_atomic", error) })
+}
+
+pub fn artifact_write_error_to_string(error: ArtifactWriteError) -> String {
+  case error {
+    InvalidPath(reason) -> "invalid artifact path: " <> reason
+    OpenTempFailed(reason) -> "open temporary artifact failed: " <> reason
+    WriteTempFailed(reason) -> "write temporary artifact failed: " <> reason
+    SyncTempFailed(reason) -> "sync temporary artifact failed: " <> reason
+    CloseTempFailed(reason) -> "close temporary artifact failed: " <> reason
+    RenameFailed(reason) -> "rename artifact failed: " <> reason
+    SyncParentFailed(reason) -> "sync artifact parent failed: " <> reason
+    CleanupTempFailed(reason) -> "cleanup temporary artifact failed: " <> reason
+    UnexpectedFfiFailure(function, detail) ->
+      function <> " failed unexpectedly: " <> detail
+  }
+}
+
+fn raw_write_error(function: String, error: String) -> ArtifactWriteError {
+  let #(tag, detail) = split_tag(error)
+  case tag {
+    "invalid_path" -> InvalidPath(detail)
+    "open_temp" -> OpenTempFailed(detail)
+    "write_temp" -> WriteTempFailed(detail)
+    "sync_temp" -> SyncTempFailed(detail)
+    "close_temp" -> CloseTempFailed(detail)
+    "rename" -> RenameFailed(detail)
+    "sync_parent" -> SyncParentFailed(detail)
+    "cleanup_temp" -> CleanupTempFailed(detail)
+    "unexpected_ffi_failure" -> UnexpectedFfiFailure(function, detail)
+    _ -> UnexpectedFfiFailure(function, error)
+  }
+}
+
+fn split_tag(error: String) -> #(String, String) {
+  case string.split_once(error, on: ":") {
+    Ok(#(tag, detail)) -> #(tag, detail)
+    Error(Nil) -> #(error, "")
+  }
+}
+
 @external(erlang, "scherzo_artifact_store_ffi", "write_atomic")
-fn write_atomic(final_path: String, contents: String) -> Result(Nil, String)
+fn ffi_write_atomic(final_path: String, contents: String) -> Result(Nil, String)

@@ -68,6 +68,8 @@ fn map_read_error(
 fn describe_artifact_error(error: artifact_store.ArtifactError) -> String {
   case error {
     artifact_store.ArtifactIo(message) -> message
+    artifact_store.ArtifactWriteFailed(error) ->
+      artifact_store.artifact_write_error_to_string(error)
     artifact_store.MissingStepArtifact(ref) -> "missing_step_artifact:" <> ref
     artifact_store.CorruptStepArtifact(ref) -> "corrupt_step_artifact:" <> ref
     artifact_store.InvalidArtifactRef(ref) -> "invalid_artifact_ref:" <> ref
