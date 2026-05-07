@@ -7,6 +7,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order.{type Order}
 import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
@@ -143,7 +144,7 @@ pub fn http_transport(
 ) -> Result(Response, error.TrackerError) {
   use http_req <- try_tracker(
     http_request.to(request.endpoint)
-    |> result.map_error(fn(_) { error.LinearApiRequest("invalid endpoint") }),
+    |> result.replace_error(error.LinearApiRequest("invalid endpoint")),
   )
   let http_req =
     http_req
@@ -265,7 +266,7 @@ pub fn post_ack(
   parse_mutation_response(response, "commentCreate")
 }
 
-fn compare_comments(a: LinearComment, b: LinearComment) {
+fn compare_comments(a: LinearComment, b: LinearComment) -> Order {
   int.compare(a.created_at_ms, b.created_at_ms)
 }
 

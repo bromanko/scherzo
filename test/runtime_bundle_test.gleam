@@ -131,6 +131,28 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   assert prompt == "Implement {{ issue.identifier }}"
 }
 
+pub fn scheduled_workflow_rejects_issue_context_references_test() {
+  let dir = "test/tmp/runtime-bundle-scheduled-issue-context"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/repair.yaml",
+      "version: 1\nid: repair\nsteps:\n  - id: inspect\n    kind: command\n    run: echo {{ issue.identifier }}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\nrouting:\n  workflows:\n    repair: workflows/repair.yaml\nscheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n",
+    )
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "scheduled_workflow_requires_issue_context"
+  assert string.contains(message, "repair")
+  assert string.contains(message, "inspect")
+  assert string.contains(message, "issue.identifier")
+}
+
 pub fn rejects_absolute_prompt_paths_test() {
   let dir = "test/tmp/runtime-bundle-absolute-prompt"
   reset_dir(dir)

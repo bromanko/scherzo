@@ -30,12 +30,18 @@ pub fn install_with_ffi(
   case ffi_install(subject) {
     Error(message) -> Error(message)
     Ok(#(handle, os_pid)) -> {
-      let cleanup_subject = start_cleanup_server(handle, ffi_cleanup)
-      Ok(Installation(
-        cleanup: fn() { cleanup_once(cleanup_subject) },
-        installed_signals: [lifecycle.Sigterm],
-        os_pid: os_pid,
-      ))
+      case start_cleanup_server(handle, ffi_cleanup) {
+        Error(message) -> {
+          ffi_cleanup(handle)
+          Error(message)
+        }
+        Ok(cleanup_subject) ->
+          Ok(Installation(
+            cleanup: fn() { cleanup_once(cleanup_subject) },
+            installed_signals: [lifecycle.Sigterm],
+            os_pid: os_pid,
+          ))
+      }
     }
   }
 }
@@ -43,16 +49,21 @@ pub fn install_with_ffi(
 fn start_cleanup_server(
   handle: handle,
   ffi_cleanup: fn(handle) -> Nil,
-) -> process.Subject(CleanupMessage) {
+) -> Result(process.Subject(CleanupMessage), String) {
   let ready = process.new_subject()
-  let _pid =
+  let pid =
     process.spawn_unlinked(fn() {
       let subject = process.new_subject()
       process.send(ready, subject)
       cleanup_loop(subject, handle, ffi_cleanup)
     })
-  let assert Ok(subject) = process.receive(ready, within: 1000)
-  subject
+  case process.receive(ready, within: 1000) {
+    Error(Nil) -> {
+      process.kill(pid)
+      Error("signal_cleanup_server_start_timeout")
+    }
+    Ok(subject) -> Ok(subject)
+  }
 }
 
 fn cleanup_once(subject: process.Subject(CleanupMessage)) -> Nil {

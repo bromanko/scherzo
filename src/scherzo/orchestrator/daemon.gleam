@@ -1588,6 +1588,23 @@ fn handle_registry_down_resolution(
       log_state(state, "warn", "worker_down_stale", [])
       State(..state, registry: registry)
     }
+    worker_registry.ScheduledWorkerDown(registry, run_id, handle) -> {
+      log_state(state, "warn", "scheduled_worker_down", [
+        #("job_id", handle.job_id),
+        #("run_id", run_id),
+      ])
+      event_publisher.lifecycle(
+        state.event_hub,
+        handle.session_id,
+        session_event.WorkerDown,
+        None,
+      )
+      State(..state, registry: registry)
+    }
+    worker_registry.ScheduledWorkerDownStale(registry, _run_id) -> {
+      log_state(state, "warn", "scheduled_worker_down_stale", [])
+      State(..state, registry: registry)
+    }
   }
 }
 
@@ -3685,7 +3702,7 @@ fn workflow_run_started_body_for_claim(
           dag,
           state.workflow.bundle.orchestrator,
         )
-        |> result.map_error(fn(_) { "workflow_fingerprint_failed" }),
+        |> result.replace_error("workflow_fingerprint_failed"),
       )
       use run_root <- result_try_string(
         workspace_run.run_root_for(

@@ -71,7 +71,7 @@ fn find_attempt_segment(segments: List(String)) -> Result(Int, Nil) {
           segment
           |> string.drop_start(8)
           |> int.parse
-          |> result.map_error(fn(_) { Nil })
+          |> result.replace_error(Nil)
         False -> find_attempt_segment(rest)
       }
   }

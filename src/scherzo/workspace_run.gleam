@@ -379,6 +379,43 @@ pub fn workspace_path_for_attempt(
   Ok(workspace_path)
 }
 
+pub fn scheduled_workspace_path_for_attempt(
+  job_id: String,
+  workflow_id: String,
+  run_id: String,
+  _step_id: String,
+  _attempt_index: Int,
+  workspace_name: String,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(String, error.WorkspaceError) {
+  use paths <- try_workspace(scheduled_workspace_paths(
+    job_id,
+    workflow_id,
+    run_id,
+    workspace_name,
+    orchestrator,
+  ))
+  let #(_, workspace_path) = paths
+  Ok(workspace_path)
+}
+
+pub fn scheduled_run_root_for(
+  job_id: String,
+  workflow_id: String,
+  run_id: String,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(String, error.WorkspaceError) {
+  use paths <- try_workspace(scheduled_workspace_paths(
+    job_id,
+    workflow_id,
+    run_id,
+    "main",
+    orchestrator,
+  ))
+  let #(run_root, _) = paths
+  Ok(run_root)
+}
+
 pub fn run_root_for(
   issue: tracker_issue.Issue,
   workflow_id: String,
@@ -530,6 +567,37 @@ fn workspace_paths(
   }
 }
 
+fn scheduled_workspace_paths(
+  job_id: String,
+  workflow_id: String,
+  run_id: String,
+  workspace_name: String,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(#(String, String), error.WorkspaceError) {
+  use job_key <- try_workspace(workspace.sanitize(job_id))
+  use workflow_key <- try_workspace(workspace.sanitize(workflow_id))
+  use run_key <- try_workspace(workspace.sanitize(run_id))
+  use workspace_key <- try_workspace(workspace.sanitize(workspace_name))
+  let root_abs =
+    path.absolute(orchestrator.effective.workspace.root)
+    |> result.unwrap(orchestrator.effective.workspace.root)
+  let scheduled_root = path.join(path.join(root_abs, workflow_key), "scheduled")
+  let job_root = path.join(scheduled_root, job_key)
+  let run_root = path.join(job_root, run_key)
+  let workspace_path =
+    path.join(path.join(run_root, "workspaces"), workspace_key)
+  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
+  let workspace_abs =
+    path.absolute(workspace_path) |> result.unwrap(workspace_path)
+  case
+    path.contains(root_abs, run_root_abs)
+    && path.contains(root_abs, workspace_abs)
+  {
+    True -> Ok(#(run_root_abs, workspace_abs))
+    False -> Error(error.WorkspaceOutsideRoot(workspace_abs))
+  }
+}
+
 fn retain_cleanup(run_root: String) -> Bool {
   case simplifile.is_file(cleanup_retention_marker(run_root)) {
     Ok(True) -> True
@@ -635,19 +703,43 @@ fn run_before_step_hook(
   }
 }
 
+pub fn scheduled_hook_env(
+  job_id: String,
+  due_at: String,
+  started_at: String,
+  run_attempt: Int,
+  step_id: String,
+  prepared: PreparedStepWorkspace,
+  orchestrator: config_types.OrchestratorConfig,
+) -> List(#(String, String)) {
+  base_hook_env(step_id, prepared, orchestrator, "", "")
+  |> append_scheduled_hook_env(job_id, due_at, started_at, run_attempt)
+}
+
 fn hook_env(
   issue: tracker_issue.Issue,
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
 ) -> List(#(String, String)) {
+  base_hook_env(step_id, prepared, orchestrator, issue.id, issue.identifier)
+  |> append_issue_hook_env
+}
+
+fn base_hook_env(
+  step_id: String,
+  prepared: PreparedStepWorkspace,
+  orchestrator: config_types.OrchestratorConfig,
+  issue_id: String,
+  issue_identifier: String,
+) -> List(#(String, String)) {
   [
     #("SCHERZO_CONFIG_DIR", orchestrator.config_dir),
     #("SCHERZO_WORKFLOW_ID", prepared.workflow_id),
     #("SCHERZO_RUN_ID", prepared.run_id),
     #("SCHERZO_RUN_ROOT", prepared.run_root),
-    #("SCHERZO_ISSUE_ID", issue.id),
-    #("SCHERZO_ISSUE_IDENTIFIER", issue.identifier),
+    #("SCHERZO_ISSUE_ID", issue_id),
+    #("SCHERZO_ISSUE_IDENTIFIER", issue_identifier),
     #("SCHERZO_STEP_ID", step_id),
     #("SCHERZO_ATTEMPT_INDEX", int.to_string(prepared.attempt_index)),
     #(
@@ -676,9 +768,32 @@ fn hook_env(
   ]
 }
 
+fn append_issue_hook_env(
+  env: List(#(String, String)),
+) -> List(#(String, String)) {
+  [#("SCHERZO_RUN_KIND", "issue"), ..env]
+}
+
+fn append_scheduled_hook_env(
+  env: List(#(String, String)),
+  job_id: String,
+  due_at: String,
+  started_at: String,
+  run_attempt: Int,
+) -> List(#(String, String)) {
+  [
+    #("SCHERZO_RUN_KIND", "scheduled"),
+    #("SCHERZO_SCHEDULED_JOB_ID", job_id),
+    #("SCHERZO_SCHEDULE_DUE_AT", due_at),
+    #("SCHERZO_SCHEDULE_STARTED_AT", started_at),
+    #("SCHERZO_RUN_ATTEMPT", int.to_string(run_attempt)),
+    ..env
+  ]
+}
+
 fn create_directory(path: String) -> Result(Nil, error.WorkspaceError) {
   simplifile.create_directory_all(path)
-  |> result.map_error(fn(_) { error.WorkspaceIo("create directory failed") })
+  |> result.replace_error(error.WorkspaceIo("create directory failed"))
 }
 
 fn ensure_directory_after_create(

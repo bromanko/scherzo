@@ -174,6 +174,63 @@ pub fn hook_receives_step_environment_and_config_cwd_test() {
   assert next_main.source_workspace_path == Some(main.path)
 }
 
+pub fn scheduled_run_paths_and_hook_env_are_issue_free_test() {
+  let dir = "test/tmp/workspace-run-scheduled"
+  reset_dir(dir)
+  let orchestrator =
+    orchestrator(dir, "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"", "")
+  let run_id = "schedule-pr-conflict-repair-20260505T120000Z"
+  let assert Ok(run_root) =
+    workspace_run.scheduled_run_root_for(
+      "pr-conflict-repair",
+      "pr-conflict-repair",
+      run_id,
+      orchestrator,
+    )
+  let assert Ok(workspace_path) =
+    workspace_run.scheduled_workspace_path_for_attempt(
+      "pr-conflict-repair",
+      "pr-conflict-repair",
+      run_id,
+      "inspect",
+      1,
+      "main",
+      orchestrator,
+    )
+  assert string.ends_with(
+    run_root,
+    "/workspaces/pr-conflict-repair/scheduled/pr-conflict-repair/" <> run_id,
+  )
+  assert string.ends_with(workspace_path, "/workspaces/main")
+
+  let prepared =
+    workspace_run.PreparedStepWorkspace(
+      workflow_id: "pr-conflict-repair",
+      run_id: run_id,
+      run_root: run_root,
+      attempt_index: 1,
+      workspace_name: "main",
+      path: workspace_path,
+      source_workspace_name: None,
+      source_workspace_path: None,
+    )
+  let env =
+    workspace_run.scheduled_hook_env(
+      "pr-conflict-repair",
+      "2026-05-05T12:00:00Z",
+      "2026-05-05T12:00:03Z",
+      1,
+      "inspect",
+      prepared,
+      orchestrator,
+    )
+  assert dict.get(dict.from_list(env), "SCHERZO_RUN_KIND") == Ok("scheduled")
+  assert dict.get(dict.from_list(env), "SCHERZO_SCHEDULED_JOB_ID")
+    == Ok("pr-conflict-repair")
+  assert dict.get(dict.from_list(env), "SCHERZO_ISSUE_ID") == Ok("")
+  assert dict.get(dict.from_list(env), "SCHERZO_ISSUE_IDENTIFIER") == Ok("")
+}
+
 pub fn recovered_workspace_validation_rejects_paths_outside_run_root_test() {
   let dir = "test/tmp/workspace-run-recovered-validation"
   reset_dir(dir)

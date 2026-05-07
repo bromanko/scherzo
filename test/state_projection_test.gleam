@@ -1,4 +1,6 @@
 import gleam/dict
+import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import scherzo/state/projection
 import scherzo/state/record
@@ -213,6 +215,223 @@ pub fn pending_outbox_replays_are_chronological_test() {
     projection.OutboxReplay(outbox_id: "outbox-b", ..),
     projection.OutboxReplay(outbox_id: "outbox-a", ..),
   ]) = projection.pending_outbox_replays(folded)
+}
+
+pub fn scheduled_records_fold_into_status_test() {
+  let run_id = "schedule-repair-20260505T120000Z"
+  let folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-due",
+        1000,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          trigger: "automatic",
+        ),
+      ),
+      record.with_id(
+        "scheduled-pending",
+        1001,
+        record.ScheduledRunPending(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          trigger: "automatic",
+          requested_at_ms: 1001,
+        ),
+      ),
+      record.with_id(
+        "scheduled-blocked",
+        1002,
+        record.ScheduledRunPendingBlocked(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          reason: "waiting_for_global_slot",
+          observed_at_ms: 1002,
+        ),
+      ),
+      record.with_id(
+        "scheduled-skip",
+        1003,
+        record.ScheduledJobSkipped(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 1_800_000,
+          run_id: "schedule-repair-20260505T121500Z",
+          reason: "overlap_running",
+          skipped_count: 2,
+        ),
+      ),
+      record.with_id(
+        "scheduled-started",
+        1004,
+        record.ScheduledRunStarted(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          started_at_ms: 1004,
+          run_id: run_id,
+          attempt: 1,
+          session_id: "scheduled-session",
+          run_root: "workspaces/repair/scheduled/repair/" <> run_id,
+        ),
+      ),
+      record.with_id(
+        "scheduled-failed",
+        1005,
+        record.ScheduledRunFailed(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          attempt: 1,
+          finished_at_ms: 1005,
+          reason: "workflow_step_failed",
+          retry_exhausted: False,
+          run_root: Some("workspaces/repair/scheduled/repair/" <> run_id),
+        ),
+      ),
+      record.with_id(
+        "scheduled-retry",
+        1006,
+        record.ScheduledRunRetryScheduled(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          next_attempt: 2,
+          delay_ms: 10_000,
+          generation: 1,
+          reason: "workflow_step_failed",
+        ),
+      ),
+      record.with_id(
+        "scheduled-report-failed",
+        1007,
+        record.ScheduledFailureReportFailed(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          attempt: 2,
+          dedupe_key: "scheduled-job:repair",
+          error_code: "linear_api_request",
+          error_message: "network",
+          next_retry_at_ms: 20_000,
+          generation: 1,
+        ),
+      ),
+      record.with_id(
+        "scheduled-reported",
+        1008,
+        record.ScheduledFailureReported(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          attempt: 2,
+          dedupe_key: "scheduled-job:repair",
+          linear_issue_id: "linear-issue",
+          action: "created",
+        ),
+      ),
+    ])
+
+  let assert Ok(status) = projection.scheduled_status_for(folded, "repair")
+  assert status.state == projection.ScheduledTerminalFailure
+  assert status.last_due_at_ms == Some(1_800_000)
+  assert status.last_failure_at_ms == Some(1005)
+  assert status.last_failure_reason == Some("workflow_step_failed")
+  assert status.retry_count == 1
+  assert status.skipped_overlap_count == 2
+  assert status.failure_issue_id == Some("linear-issue")
+  assert status.failure_dedupe_key == Some("scheduled-job:repair")
+  assert status.report_retry == None
+  assert status.recent_run_ids == ["schedule-repair-20260505T121500Z", run_id]
+  let assert Ok(decoded) =
+    projection.decode_string(projection.to_string(folded))
+  assert decoded == folded
+}
+
+pub fn scheduled_due_preserves_existing_history_test() {
+  let first_run = "schedule-repair-20260505T120000Z"
+  let second_run = "schedule-repair-20260505T121500Z"
+  let folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-due-1",
+        1000,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: first_run,
+          trigger: "automatic",
+        ),
+      ),
+      record.with_id(
+        "scheduled-started-1",
+        1001,
+        record.ScheduledRunStarted(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          started_at_ms: 1001,
+          run_id: first_run,
+          attempt: 1,
+          session_id: "session-1",
+          run_root: "workspaces/repair/scheduled/repair/" <> first_run,
+        ),
+      ),
+      record.with_id(
+        "scheduled-succeeded-1",
+        1002,
+        record.ScheduledRunSucceeded(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: first_run,
+          attempt: 1,
+          finished_at_ms: 1002,
+          token_total: 42,
+          turns: 3,
+        ),
+      ),
+      record.with_id(
+        "scheduled-due-2",
+        1003,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 1_800_000,
+          run_id: second_run,
+          trigger: "automatic",
+        ),
+      ),
+    ])
+
+  let assert Ok(status) = projection.scheduled_status_for(folded, "repair")
+  assert status.state == projection.ScheduledDuePending
+  assert status.last_success_at_ms == Some(1002)
+  assert status.last_success_run_id == Some(first_run)
+  assert status.last_due_at_ms == Some(1_800_000)
+  assert status.recent_run_ids == [second_run, first_run]
+}
+
+pub fn scheduled_recent_run_ids_are_capped_test() {
+  let folded = projection.fold(scheduled_due_records(30, []))
+
+  let assert Ok(status) = projection.scheduled_status_for(folded, "repair")
+  assert list.length(status.recent_run_ids) == 25
+  let assert Ok("run-30") = list.first(status.recent_run_ids)
+  let assert Ok("run-6") = list.last(status.recent_run_ids)
+  assert !list.contains(status.recent_run_ids, "run-5")
 }
 
 pub fn projection_snapshot_roundtrips_test() {
@@ -725,6 +944,30 @@ fn snapshot_json(
   <> ",\"outbox\":"
   <> outbox
   <> "}"
+}
+
+fn scheduled_due_records(
+  next_index: Int,
+  records: List(record.LedgerRecord),
+) -> List(record.LedgerRecord) {
+  case next_index {
+    0 -> records
+    index ->
+      scheduled_due_records(index - 1, [
+        record.with_id(
+          "scheduled-due-" <> int.to_string(index),
+          index,
+          record.ScheduledJobDue(
+            job_id: "repair",
+            workflow_id: "repair",
+            due_at_ms: index * 1000,
+            run_id: "run-" <> int.to_string(index),
+            trigger: "automatic",
+          ),
+        ),
+        ..records
+      ])
+  }
 }
 
 fn sample_records() -> List(record.LedgerRecord) {

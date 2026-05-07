@@ -236,7 +236,7 @@ fn safe_cleanup(
             None -> Nil
           }
           simplifile.delete(target_abs)
-          |> result.map_error(fn(_) { error.WorkspaceIo("delete failed") })
+          |> result.replace_error(error.WorkspaceIo("delete failed"))
         }
       }
     }
@@ -252,7 +252,7 @@ fn safe_delete(
     False -> Error(error.WorkspaceOutsideRoot(target_abs))
     True ->
       simplifile.delete(target_abs)
-      |> result.map_error(fn(_) { error.WorkspaceIo("delete failed") })
+      |> result.replace_error(error.WorkspaceIo("delete failed"))
   }
 }
 

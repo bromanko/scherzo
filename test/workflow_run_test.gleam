@@ -99,6 +99,7 @@ fn orchestrator() -> config_types.OrchestratorConfig {
       workflow_summary_max_chars: 4000,
     ),
     model_settings: model_config.default_settings(),
+    scheduled_jobs: [],
   )
 }
 

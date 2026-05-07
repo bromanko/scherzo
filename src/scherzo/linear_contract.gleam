@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order.{type Order}
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/tracker/state as issue_state
@@ -515,7 +516,7 @@ fn team_keys(teams: List(RemoteTeam)) -> List(String) {
   |> list.sort(by: string.compare)
 }
 
-fn compare_string_pairs(a: #(String, String), b: #(String, String)) {
+fn compare_string_pairs(a: #(String, String), b: #(String, String)) -> Order {
   let #(a_key, _) = a
   let #(b_key, _) = b
   string.compare(a_key, b_key)
