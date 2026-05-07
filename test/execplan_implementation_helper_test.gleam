@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
@@ -282,6 +283,119 @@ pub fn ticket_brief_renders_linear_context_test() {
     artifact.stdout,
     "### Comment 2 — 2026-05-02T12:00:00Z — Bob",
   )
+}
+
+pub fn plan_completion_gate_passes_fresh_pass_verdict_test() {
+  let dir = "test/tmp/plan-completion-gate-pass"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(dir, "pass", fingerprint, "[]")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion --final",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE_MODE=final")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_VERDICT=pass")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=passed")
+}
+
+pub fn plan_completion_gate_blocks_fail_verdict_test() {
+  let dir = "test/tmp/plan-completion-gate-fail"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(
+    dir,
+    "fail",
+    fingerprint,
+    "[\"Acceptance criterion remains unchecked.\"]",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("plan_completion_failed")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_VERDICT=fail")
+  assert string.contains(
+    artifact.stdout,
+    "Acceptance criterion remains unchecked.",
+  )
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=plan_completion_failed",
+  )
+}
+
+pub fn plan_completion_gate_blocks_malformed_verdict_test() {
+  let dir = "test/tmp/plan-completion-gate-malformed"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-plan-completion-verdict.json",
+      "{not json}\n",
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion --final",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("plan_completion_verdict_malformed")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=failed")
+  assert string.contains(artifact.stderr, "invalid JSON")
+}
+
+pub fn plan_completion_gate_blocks_missing_verdict_test() {
+  let dir = "test/tmp/plan-completion-gate-missing"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion --final",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("plan_completion_verdict_missing")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=failed")
+  assert string.contains(
+    artifact.stderr,
+    "missing tmp/scherzo-plan-completion-verdict.json",
+  )
+}
+
+pub fn plan_completion_gate_blocks_stale_verdict_test() {
+  let dir = "test/tmp/plan-completion-gate-stale"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(
+    dir,
+    "pass",
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "[]",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation gate-plan-completion --final",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("plan_completion_verdict_stale")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=failed")
+  assert string.contains(artifact.stderr, "stale verdict fingerprint")
 }
 
 pub fn jj_workspace_hook_prefers_configured_remote_base_for_new_root_workspaces_test() {
@@ -635,7 +749,7 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
   let artifact =
     run_helper_in(
       dir,
-      "env -u SCHERZO_ISSUE_IDENTIFIER PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -688,7 +802,7 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
   let artifact =
     run_helper_in(
       dir,
-      "env -u SCHERZO_ISSUE_IDENTIFIER PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1145,13 +1259,69 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
     "prepare_context",
     "implement",
     "apply_feedback",
+    "final_validate",
   )
   assert_workflow_refresh_ordering(
     execplan,
     "prepare_plan",
     "implement_plan",
     "apply_review_feedback",
+    "final_plan_completion_gate",
   )
+}
+
+pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
+  let assert Ok(workflow) =
+    simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
+
+  assert string.contains(workflow, "- id: verify_plan_completion")
+  assert string.contains(workflow, "depends_on: [analyze_changes]")
+  assert string.contains(
+    workflow,
+    "prompts/execplan-implementation-verify-completion.md",
+  )
+  assert string.contains(workflow, "- id: apply_plan_completion_feedback")
+  assert string.contains(workflow, "depends_on: [verify_plan_completion]")
+  assert string.contains(workflow, "- id: analyze_changes_after_plan_feedback")
+  assert string.contains(
+    workflow,
+    "depends_on: [apply_plan_completion_feedback]",
+  )
+  assert string.contains(
+    workflow,
+    "- id: verify_plan_completion_after_feedback",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [analyze_changes_after_plan_feedback]",
+  )
+  assert string.contains(workflow, "- id: gate_plan_completion")
+  assert string.contains(
+    workflow,
+    "depends_on: [verify_plan_completion_after_feedback]",
+  )
+  assert string.contains(workflow, "gate-plan-completion")
+  assert string.contains(workflow, "- id: review_changes")
+  assert string.contains(workflow, "depends_on: [gate_plan_completion]")
+  assert string.contains(
+    workflow,
+    "- id: verify_plan_completion_before_final_validation",
+  )
+  assert string.contains(workflow, "depends_on: [repair_base_drift]")
+  assert string.contains(
+    workflow,
+    "prompts/execplan-implementation-verify-completion-before-final-validation.md",
+  )
+  assert string.contains(workflow, "- id: final_validate")
+  assert string.contains(
+    workflow,
+    "depends_on: [verify_plan_completion_before_final_validation]",
+  )
+  assert string.contains(workflow, "- id: final_plan_completion_gate")
+  assert string.contains(workflow, "depends_on: [final_validate]")
+  assert string.contains(workflow, "gate-plan-completion --final")
+  assert string.contains(workflow, "- id: publish_pr")
+  assert string.contains(workflow, "depends_on: [final_plan_completion_gate]")
 }
 
 fn assert_workflow_refresh_ordering(
@@ -1159,6 +1329,7 @@ fn assert_workflow_refresh_ordering(
   prepare_step: String,
   implement_step: String,
   feedback_step: String,
+  publish_dependency: String,
 ) -> Nil {
   assert string.contains(workflow, "- id: refresh_base_before_implementation")
   assert string.contains(workflow, "depends_on: [" <> prepare_step <> "]")
@@ -1182,7 +1353,80 @@ fn assert_workflow_refresh_ordering(
   assert string.contains(workflow, "- id: final_validate")
   assert string.contains(workflow, "depends_on: [repair_base_drift]")
   assert string.contains(workflow, "- id: publish_pr")
-  assert string.contains(workflow, "depends_on: [final_validate]")
+  assert string.contains(workflow, "depends_on: [" <> publish_dependency <> "]")
+}
+
+fn setup_plan_completion_gate_fixture(dir: String) -> String {
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/example.md",
+      "# Example ExecPlan\n\n## Progress\n\n- [x] Required work.\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation.json",
+      "{\n"
+        <> "  \"source_kind\": \"execplan\",\n"
+        <> "  \"issue_identifier\": \"LIV-128\",\n"
+        <> "  \"issue_title\": \"Implement example plan\",\n"
+        <> "  \"issue_url\": \"https://linear.example/LIV-128\",\n"
+        <> "  \"plan_path\": \"docs/plans/example.md\",\n"
+        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "}\n",
+    )
+  write_fake_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let context =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation plan-completion-context",
+    )
+  assert context.status == step_artifact.StepSucceeded
+  assert context.exit_code == Some(0)
+  output_value(context.stdout, "PLAN_COMPLETION_DIFF_FINGERPRINT=")
+}
+
+fn output_value(stdout: String, prefix: String) -> String {
+  let assert Ok(line) =
+    string.split(stdout, on: "\n")
+    |> list.find(fn(line) { string.starts_with(line, prefix) })
+  string.drop_start(line, string.length(prefix))
+}
+
+fn write_plan_completion_verdict(
+  dir: String,
+  verdict: String,
+  fingerprint: String,
+  blocking_findings_json: String,
+) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-plan-completion-verdict.json",
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"verdict\": \""
+        <> verdict
+        <> "\",\n"
+        <> "  \"blocking_findings\": "
+        <> blocking_findings_json
+        <> ",\n"
+        <> "  \"evidence\": [\"Required behavior is present.\"],\n"
+        <> "  \"checked_acceptance_criteria\": [\"Required work.\"],\n"
+        <> "  \"plan_path\": \"docs/plans/example.md\",\n"
+        <> "  \"verified_base_change_id\": \"local-start\",\n"
+        <> "  \"verified_change_id\": \"publishchange\",\n"
+        <> "  \"verified_diff_fingerprint\": \""
+        <> fingerprint
+        <> "\",\n"
+        <> "  \"changed_files\": [\"scripts/scherzo-implementation\"]\n"
+        <> "}\n",
+    )
+  Nil
 }
 
 fn write_publish_fixture_metadata(dir: String) -> Nil {

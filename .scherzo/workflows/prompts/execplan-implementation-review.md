@@ -6,8 +6,11 @@ Issue description:
 Implementation step response:
 {{ steps.implement_plan.final_response }}
 
-Change analysis output:
-{{ steps.analyze_changes.stdout }}
+Post-plan-feedback change analysis output:
+{{ steps.analyze_changes_after_plan_feedback.stdout }}
+
+Plan-completion gate output:
+{{ steps.gate_plan_completion.stdout }}
 
 Review contract:
 
@@ -23,7 +26,7 @@ Review contract:
 
 Review process:
 
-1. Read the change analysis output and identify the review commands to run.
+1. Read the post-plan-feedback change analysis output and identify the review commands to run.
 2. Run the supported project-local review(s), currently Gleam.
 3. Apply safe and relevant medium-or-smaller fixes if the review tooling or your manual review identifies them.
 4. Leave risky, broad, or ambiguous findings for the feedback step with a clear explanation.
