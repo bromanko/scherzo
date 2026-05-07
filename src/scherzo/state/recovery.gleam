@@ -170,29 +170,32 @@ pub fn workflow_candidates(
   projection: projection.Projection,
 ) -> List(WorkflowRecoveryCandidate) {
   projection.active_workflow_runs(projection)
-  |> list.map(fn(entry) {
+  |> list.filter_map(fn(entry) {
     let #(run_id, status) = entry
-    let assert projection.WorkflowRunActive(
-      workflow_id,
-      workflow_fingerprint,
-      issue_id,
-      issue_identifier,
-      issue_fingerprint,
-      observed_updated_at_ms,
-      run_root,
-      _,
-    ) = status
-    WorkflowRecoveryCandidate(
-      run_id: run_id,
-      workflow_id: workflow_id,
-      workflow_fingerprint: workflow_fingerprint,
-      issue_id: issue_id,
-      issue_identifier: issue_identifier,
-      issue_fingerprint: issue_fingerprint,
-      observed_updated_at_ms: observed_updated_at_ms,
-      run_root: run_root,
-      attempts: attempts_for_run(projection, run_id),
-    )
+    case status {
+      projection.WorkflowRunActive(
+        workflow_id,
+        workflow_fingerprint,
+        issue_id,
+        issue_identifier,
+        issue_fingerprint,
+        observed_updated_at_ms,
+        run_root,
+        _,
+      ) ->
+        Ok(WorkflowRecoveryCandidate(
+          run_id: run_id,
+          workflow_id: workflow_id,
+          workflow_fingerprint: workflow_fingerprint,
+          issue_id: issue_id,
+          issue_identifier: issue_identifier,
+          issue_fingerprint: issue_fingerprint,
+          observed_updated_at_ms: observed_updated_at_ms,
+          run_root: run_root,
+          attempts: attempts_for_run(projection, run_id),
+        ))
+      _ -> Error(Nil)
+    }
   })
 }
 

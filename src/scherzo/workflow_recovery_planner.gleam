@@ -537,8 +537,10 @@ fn classify_step(
     [] -> StepUnattempted(step_id)
     _ -> {
       let sorted = list.sort(attempts, by: compare_attempts)
-      let assert Ok(latest) = last(sorted)
-      classify_latest_attempt(latest)
+      case last(sorted) {
+        Error(Nil) -> StepUnattempted(step_id)
+        Ok(latest) -> classify_latest_attempt(latest)
+      }
     }
   }
 }
