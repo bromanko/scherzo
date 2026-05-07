@@ -308,7 +308,7 @@ fn render_assistant(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  let delta = option_string(payload.message, "")
+  let delta = option.unwrap(payload.message, "")
   case delta == "" {
     True -> #(observe_pass(state, payload), [])
     False -> {
@@ -1054,14 +1054,7 @@ fn has_text(value: Option(String)) -> Bool {
 }
 
 fn safe_option_string(value: Option(String), default: String) -> String {
-  sanitize.text(option_string(value, default))
-}
-
-fn option_string(value: Option(String), default: String) -> String {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
+  sanitize.text(option.unwrap(value, default))
 }
 
 fn token_line(tokens: session_tokens.TokenTotals, pass: Option(Int)) -> String {

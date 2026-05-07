@@ -5,6 +5,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/result
 import gleam/string
 import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
@@ -3684,7 +3685,7 @@ fn workflow_run_started_body_for_claim(
           dag,
           state.workflow.bundle.orchestrator,
         )
-        |> result_map_error(fn(_) { "workflow_fingerprint_failed" }),
+        |> result.map_error(fn(_) { "workflow_fingerprint_failed" }),
       )
       use run_root <- result_try_string(
         workspace_run.run_root_for(
@@ -3693,7 +3694,7 @@ fn workflow_run_started_body_for_claim(
           pending.run_id,
           state.workflow.bundle.orchestrator,
         )
-        |> result_map_error(fn(err) { error.workspace_code(err) }),
+        |> result.map_error(fn(err) { error.workspace_code(err) }),
       )
       Ok(record.WorkflowRunStarted(
         pending.run_id,
@@ -5578,13 +5579,6 @@ fn result_try_string(
   case result {
     Ok(value) -> next(value)
     Error(reason) -> Error(reason)
-  }
-}
-
-fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(error) -> Error(mapper(error))
   }
 }
 

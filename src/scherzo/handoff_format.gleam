@@ -1,6 +1,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/error
@@ -396,7 +397,7 @@ fn cwd_relative_path(raw_path: String) -> Option(String) {
 }
 
 fn relative_to_root(raw_path: String, root: String) -> Option(String) {
-  let root_abs = path.absolute(root) |> result_unwrap(root)
+  let root_abs = path.absolute(root) |> result.unwrap(root)
   let root_abs = trim_trailing_slash(root_abs)
   case path.contains(root_abs, raw_path) {
     True ->
@@ -481,12 +482,5 @@ fn classification_to_string(
     agent_types.FinalActive -> "active"
     agent_types.FinalTerminal -> "terminal"
     agent_types.FinalNonActive -> "non_active"
-  }
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
   }
 }

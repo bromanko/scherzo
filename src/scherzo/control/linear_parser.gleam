@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/control/command
 
@@ -33,7 +34,7 @@ pub fn parse_comment(
   case command_lines {
     [] -> Ok(None)
     [line] -> {
-      use parsed <- result_try(parse_line(
+      use parsed <- result.try(parse_line(
         string.trim(prefix),
         source_issue_id,
         current_session_id,
@@ -126,7 +127,7 @@ fn parse_line(
       })
     "abort" ->
       no_args(rest, name, fn() {
-        use session_id <- result_try(require_session(current_session_id, name))
+        use session_id <- result.try(require_session(current_session_id, name))
         parsed(
           source_issue_id,
           comment_id,
@@ -136,7 +137,7 @@ fn parse_line(
       })
     "stop-after-turn" ->
       no_args(rest, name, fn() {
-        use session_id <- result_try(require_session(current_session_id, name))
+        use session_id <- result.try(require_session(current_session_id, name))
         parsed(
           source_issue_id,
           comment_id,
@@ -182,7 +183,7 @@ fn parse_prompt(
   current_session_id: Option(String),
   rest: String,
 ) -> Result(ParsedLinearCommand, ParseError) {
-  use session_id <- result_try(require_session(current_session_id, "prompt"))
+  use session_id <- result.try(require_session(current_session_id, "prompt"))
   let message = string.trim(rest)
   case message == "" {
     True -> Error(MissingArgument("prompt"))
@@ -202,7 +203,7 @@ fn parse_ui(
   current_session_id: Option(String),
   rest: String,
 ) -> Result(ParsedLinearCommand, ParseError) {
-  use session_id <- result_try(require_session(current_session_id, "ui respond"))
+  use session_id <- result.try(require_session(current_session_id, "ui respond"))
   let #(subcommand, rest) = split_first_token(rest)
   case subcommand {
     "respond" -> parse_ui_respond(source_issue_id, comment_id, session_id, rest)
@@ -307,14 +308,4 @@ fn split_first_token_loop(value: String, index: Int) -> #(String, String) {
 
 fn is_space(value: String) -> Bool {
   value == " " || value == "\t"
-}
-
-fn result_try(
-  result: Result(a, e),
-  next: fn(a) -> Result(b, e),
-) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
-  }
 }

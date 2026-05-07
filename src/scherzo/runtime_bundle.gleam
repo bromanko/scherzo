@@ -1,6 +1,7 @@
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
@@ -125,17 +126,17 @@ fn load_orchestrator(
   selected: String,
   env: config.Env,
 ) -> Result(RuntimeBundle, BundleError) {
-  use content <- result_try(read_file(selected, "missing_config_file"))
-  use root <- result_try(parse_yaml_root(content))
-  use orchestrator <- result_try(
+  use content <- result.try(read_file(selected, "missing_config_file"))
+  use root <- result.try(parse_yaml_root(content))
+  use orchestrator <- result.try(
     config.resolve_orchestrator_root(root, selected, env)
     |> map_config_error,
   )
-  use workflows <- result_try(load_workflow_map(
+  use workflows <- result.try(load_workflow_map(
     dict.to_list(orchestrator.routing.workflows),
     dict.new(),
   ))
-  use _ <- result_try(validate_workflow_model_settings(
+  use _ <- result.try(validate_workflow_model_settings(
     orchestrator.model_settings,
     dict.to_list(workflows),
   ))
@@ -156,7 +157,7 @@ fn load_workflow_map(
   case entries {
     [] -> Ok(acc)
     [#(id, workflow_path), ..rest] -> {
-      use dag <- result_try(load_workflow_dag(workflow_path))
+      use dag <- result.try(load_workflow_dag(workflow_path))
       case dag.id == id {
         True -> load_workflow_map(rest, dict.insert(acc, id, dag))
         False ->
@@ -172,8 +173,8 @@ fn load_workflow_map(
 fn load_workflow_dag(
   workflow_path: String,
 ) -> Result(workflow_dag.WorkflowDag, BundleError) {
-  use content <- result_try(read_file(workflow_path, "missing_workflow_file"))
-  use dag <- result_try(workflow_dag.parse(content) |> map_dag_error)
+  use content <- result.try(read_file(workflow_path, "missing_workflow_file"))
+  use dag <- result.try(workflow_dag.parse(content) |> map_dag_error)
   resolve_prompt_files(dag, workflow_path)
 }
 
@@ -181,7 +182,7 @@ fn resolve_prompt_files(
   dag: workflow_dag.WorkflowDag,
   workflow_path: String,
 ) -> Result(workflow_dag.WorkflowDag, BundleError) {
-  use steps <- result_try(resolve_step_prompts(dag.steps, workflow_path, []))
+  use steps <- result.try(resolve_step_prompts(dag.steps, workflow_path, []))
   Ok(workflow_dag.WorkflowDag(..dag, steps: steps))
 }
 
@@ -195,7 +196,7 @@ fn resolve_step_prompts(
     [step, ..rest] -> {
       case step.kind {
         workflow_dag.AgentStep(workflow_dag.PromptFile(prompt_path)) -> {
-          use prompt <- result_try(read_relative_prompt(
+          use prompt <- result.try(read_relative_prompt(
             prompt_path,
             workflow_path,
           ))
@@ -216,7 +217,7 @@ fn validate_workflow_model_settings(
   defaults: model_config.Settings,
   workflows: List(#(String, workflow_dag.WorkflowDag)),
 ) -> Result(Nil, BundleError) {
-  use _ <- result_try(
+  use _ <- result.try(
     model_config.validate_resolved(defaults, "pi") |> map_model_error,
   )
   validate_workflow_model_entries(workflows, defaults)
@@ -229,7 +230,7 @@ fn validate_workflow_model_entries(
   case workflows {
     [] -> Ok(Nil)
     [#(id, dag), ..rest] -> {
-      use _ <- result_try(validate_step_model_settings(id, dag.steps, defaults))
+      use _ <- result.try(validate_step_model_settings(id, dag.steps, defaults))
       validate_workflow_model_entries(rest, defaults)
     }
   }
@@ -246,7 +247,7 @@ fn validate_step_model_settings(
       case step.kind {
         workflow_dag.AgentStep(_) -> {
           let resolved = model_config.resolve(defaults, step.model_settings)
-          use _ <- result_try(
+          use _ <- result.try(
             model_config.validate_resolved(
               resolved,
               "workflow " <> workflow_id <> " step " <> step.id,
@@ -269,13 +270,13 @@ fn read_relative_prompt(
   case validate_relative_path(prompt_path, "invalid_prompt_path") {
     Error(err) -> Error(err)
     Ok(Nil) -> {
-      let workflow_dir = path.dirname(workflow_path) |> result_unwrap(".")
+      let workflow_dir = path.dirname(workflow_path) |> result.unwrap(".")
       let full_path =
         path.join(workflow_dir, string.trim(prompt_path))
         |> path.absolute
-        |> result_unwrap(path.join(workflow_dir, string.trim(prompt_path)))
+        |> result.unwrap(path.join(workflow_dir, string.trim(prompt_path)))
       let workflow_dir_abs =
-        path.absolute(workflow_dir) |> result_unwrap(workflow_dir)
+        path.absolute(workflow_dir) |> result.unwrap(workflow_dir)
       case path.contains(workflow_dir_abs, full_path) {
         False ->
           Error(BundleError(
@@ -402,21 +403,4 @@ fn map_model_error(
 
 fn real_env(name: String) -> Option(String) {
   path.env(name)
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
-  }
-}
-
-fn result_try(
-  result: Result(a, e),
-  next: fn(a) -> Result(b, e),
-) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
-  }
 }

@@ -862,7 +862,7 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         attempt_index,
         operator_session_id,
         fields.external_session_ref,
-        option_bool(fields.continuation_capable, False),
+        option.unwrap(fields.continuation_capable, False),
       ))
     }
     "step_attempt_continuation_started" -> {
@@ -1550,13 +1550,6 @@ fn required_int(value: Option(Int), field: String) -> Result(Int, DecodeError) {
   case value {
     Some(value) -> Ok(value)
     None -> Error(InvalidRecord("missing " <> field))
-  }
-}
-
-fn option_bool(value: Option(Bool), default: Bool) -> Bool {
-  case value {
-    Some(value) -> value
-    None -> default
   }
 }
 

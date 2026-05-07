@@ -21,6 +21,7 @@ import scherzo/tracker/state as issue_state
 import scherzo/turn_telemetry
 import scherzo/workflow_attempt
 import simplifile
+import test_async
 
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
@@ -691,7 +692,7 @@ pub fn runner_streams_update_before_agent_end_test() {
   let assert Ok(update) =
     receive_update_named(update_subject, "message_update", 8)
   assert update.message == Some("POPULATED")
-  assert process.receive(finished_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(finished_subject, 50)
   process.kill(pid)
 }
 

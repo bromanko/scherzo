@@ -5,6 +5,7 @@ import gleam/httpc
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
@@ -82,7 +83,7 @@ pub fn real_upload_transport(
     True -> {
       use request <- try_tracker(
         http_request.to(upload_request.url)
-        |> result_map_error(fn(_) {
+        |> result.map_error(fn(_) {
           error.LinearApiRequest("invalid upload URL")
         }),
       )
@@ -161,7 +162,7 @@ pub fn attach_markdown_file_to_comment(
   use filename <- try_tracker(validate_markdown_filename(filename))
   use info <- try_tracker(
     simplifile.file_info(path)
-    |> result_map_error(fn(err) {
+    |> result.map_error(fn(err) {
       error.LinearAttachmentError(
         "failed to stat attachment file "
         <> path
@@ -175,7 +176,7 @@ pub fn attach_markdown_file_to_comment(
       use _ <- try_tracker(validate_attachment_size(info.size))
       use bits <- try_tracker(
         simplifile.read_bits(path)
-        |> result_map_error(fn(err) {
+        |> result.map_error(fn(err) {
           error.LinearAttachmentError(
             "failed to read attachment file "
             <> path
@@ -458,13 +459,6 @@ fn try_tracker(
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)
-  }
-}
-
-fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(mapper(err))
   }
 }
 

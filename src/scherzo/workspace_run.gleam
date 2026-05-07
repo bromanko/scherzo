@@ -1,6 +1,7 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
@@ -231,9 +232,9 @@ fn finish_prepare_step(
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(PreparedStepWorkspace, PrepareError) {
-  use _ <- result_try(run_create_hook(issue, step_id, prepared, orchestrator))
+  use _ <- result.try(run_create_hook(issue, step_id, prepared, orchestrator))
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
-  use _ <- result_try(run_before_step_hook(
+  use _ <- result.try(run_before_step_hook(
     issue,
     step_id,
     prepared,
@@ -270,8 +271,8 @@ pub fn cleanup_run(
 ) -> Result(Nil, error.WorkspaceError) {
   let root_abs =
     path.absolute(orchestrator.effective.workspace.root)
-    |> result_unwrap(orchestrator.effective.workspace.root)
-  let target_abs = path.absolute(run_root) |> result_unwrap(run_root)
+    |> result.unwrap(orchestrator.effective.workspace.root)
+  let target_abs = path.absolute(run_root) |> result.unwrap(run_root)
   case
     string.trim(target_abs) == ""
     || !path.contains(root_abs, target_abs)
@@ -389,10 +390,10 @@ pub fn run_root_for(
   use run_key <- try_workspace(workspace.sanitize(run_id))
   let root_abs =
     path.absolute(orchestrator.effective.workspace.root)
-    |> result_unwrap(orchestrator.effective.workspace.root)
+    |> result.unwrap(orchestrator.effective.workspace.root)
   let issue_root = path.join(path.join(root_abs, workflow_key), issue_key)
   let run_root = path.join(issue_root, run_key)
-  let run_root_abs = path.absolute(run_root) |> result_unwrap(run_root)
+  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
   case path.contains(root_abs, run_root_abs) {
     True -> Ok(run_root_abs)
     False -> Error(error.WorkspaceOutsideRoot(run_root_abs))
@@ -413,7 +414,7 @@ fn validate_expected_run_root(
     orchestrator,
   ))
   let expected_abs =
-    path.absolute(expected_run_root) |> result_unwrap(expected_run_root)
+    path.absolute(expected_run_root) |> result.unwrap(expected_run_root)
   case computed == expected_abs {
     True -> Ok(Nil)
     False -> Error(error.WorkspaceIo("recovered run root mismatch"))
@@ -429,14 +430,14 @@ fn validate_recovered_workspace(
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   let expected_abs =
-    path.absolute(expected_run_root) |> result_unwrap(expected_run_root)
+    path.absolute(expected_run_root) |> result.unwrap(expected_run_root)
   let prepared_run_root_abs =
-    path.absolute(prepared.run_root) |> result_unwrap(prepared.run_root)
+    path.absolute(prepared.run_root) |> result.unwrap(prepared.run_root)
   let root_abs =
     path.absolute(orchestrator.effective.workspace.root)
-    |> result_unwrap(orchestrator.effective.workspace.root)
+    |> result.unwrap(orchestrator.effective.workspace.root)
   let prepared_path_abs =
-    path.absolute(prepared.path) |> result_unwrap(prepared.path)
+    path.absolute(prepared.path) |> result.unwrap(prepared.path)
   case
     prepared.workflow_id == workflow_id
     && prepared.run_id == run_id
@@ -512,14 +513,14 @@ fn workspace_paths(
   use workspace_key <- try_workspace(workspace.sanitize(workspace_name))
   let root_abs =
     path.absolute(orchestrator.effective.workspace.root)
-    |> result_unwrap(orchestrator.effective.workspace.root)
+    |> result.unwrap(orchestrator.effective.workspace.root)
   let issue_root = path.join(path.join(root_abs, workflow_key), issue_key)
   let run_root = path.join(issue_root, run_key)
   let workspace_path =
     path.join(path.join(run_root, "workspaces"), workspace_key)
-  let run_root_abs = path.absolute(run_root) |> result_unwrap(run_root)
+  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
   let workspace_abs =
-    path.absolute(workspace_path) |> result_unwrap(workspace_path)
+    path.absolute(workspace_path) |> result.unwrap(workspace_path)
   case
     path.contains(root_abs, run_root_abs)
     && path.contains(root_abs, workspace_abs)
@@ -569,7 +570,7 @@ fn reuse_prepared_workspace(
       source_workspace_path: Some(prepared.path),
     )
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
-  use _ <- result_try(run_before_step_hook(
+  use _ <- result.try(run_before_step_hook(
     issue,
     step_id,
     prepared,
@@ -601,7 +602,7 @@ fn run_create_hook(
 ) -> Result(Nil, PrepareError) {
   case orchestrator.dag_hooks.create {
     None ->
-      create_directory(prepared.path) |> result_map_error(WorkspaceFailure)
+      create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
     Some(script) ->
       hooks.run_hook_with_env(
         "create",
@@ -610,7 +611,7 @@ fn run_create_hook(
         orchestrator.dag_hooks.timeout_ms,
         hook_env(issue, step_id, prepared, orchestrator),
       )
-      |> result_map_error(HookFailure)
+      |> result.map_error(HookFailure)
   }
 }
 
@@ -630,7 +631,7 @@ fn run_before_step_hook(
         orchestrator.dag_hooks.timeout_ms,
         hook_env(issue, step_id, prepared, orchestrator),
       )
-      |> result_map_error(HookFailure)
+      |> result.map_error(HookFailure)
   }
 }
 
@@ -666,18 +667,18 @@ fn hook_env(
     #("SCHERZO_WORKSPACE_PATH", prepared.path),
     #(
       "SCHERZO_SOURCE_WORKSPACE_NAME",
-      option_unwrap(prepared.source_workspace_name, ""),
+      option.unwrap(prepared.source_workspace_name, ""),
     ),
     #(
       "SCHERZO_SOURCE_WORKSPACE_PATH",
-      option_unwrap(prepared.source_workspace_path, ""),
+      option.unwrap(prepared.source_workspace_path, ""),
     ),
   ]
 }
 
 fn create_directory(path: String) -> Result(Nil, error.WorkspaceError) {
   simplifile.create_directory_all(path)
-  |> result_map_error(fn(_) { error.WorkspaceIo("create directory failed") })
+  |> result.map_error(fn(_) { error.WorkspaceIo("create directory failed") })
 }
 
 fn ensure_directory_after_create(
@@ -687,37 +688,6 @@ fn ensure_directory_after_create(
     Ok(True) -> Ok(Nil)
     Ok(False) -> Error(error.PartialWorkspace(path))
     Error(_) -> Error(error.PartialWorkspace(path))
-  }
-}
-
-fn option_unwrap(value: Option(a), default: a) -> a {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
-  }
-}
-
-fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(mapper(err))
-  }
-}
-
-fn result_try(
-  result: Result(a, e),
-  next: fn(a) -> Result(b, e),
-) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
   }
 }
 

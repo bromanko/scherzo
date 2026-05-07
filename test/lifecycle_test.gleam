@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import scherzo/lifecycle
 import scherzo/log
+import test_async
 
 type LogEntry {
   LogEntry(level: String, event: String, fields: List(log.Field))
@@ -45,9 +46,9 @@ pub fn run_until_stop_calls_shutdown_cleanup_and_release_once_test() {
     == Ok(lifecycle.ShutdownComplete)
   assert has_log_event(log_subject, "daemon_stop_requested", 5)
   assert has_log_event(log_subject, "daemon_shutdown_complete", 5)
-  assert process.receive(shutdown_called, within: 20) == Error(Nil)
-  assert process.receive(cleanup_called, within: 20) == Error(Nil)
-  assert process.receive(release_called, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(shutdown_called, 20)
+  test_async.assert_no_extra_message_within(cleanup_called, 20)
+  test_async.assert_no_extra_message_within(release_called, 20)
 }
 
 pub fn run_until_stop_ignores_duplicate_stop_messages_test() {
@@ -92,9 +93,9 @@ pub fn run_until_stop_ignores_duplicate_stop_messages_test() {
   assert process.receive(release_called, within: 1000) == Ok("release")
   assert process.receive(result_subject, within: 1000)
     == Ok(lifecycle.ShutdownComplete)
-  assert process.receive(shutdown_called, within: 50) == Error(Nil)
-  assert process.receive(cleanup_called, within: 20) == Error(Nil)
-  assert process.receive(release_called, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(shutdown_called, 50)
+  test_async.assert_no_extra_message_within(cleanup_called, 20)
+  test_async.assert_no_extra_message_within(release_called, 20)
 }
 
 pub fn shutdown_timeout_returns_error_test() {
@@ -120,8 +121,8 @@ pub fn shutdown_timeout_returns_error_test() {
   assert process.receive(release_called, within: 1000) == Ok("release")
   assert has_log_event(log_subject, "daemon_stop_requested", 5)
   assert has_log_event(log_subject, "daemon_shutdown_timeout", 5)
-  assert process.receive(cleanup_called, within: 20) == Error(Nil)
-  assert process.receive(release_called, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(cleanup_called, 20)
+  test_async.assert_no_extra_message_within(release_called, 20)
 }
 
 pub fn shutdown_crash_still_cleans_up_and_releases_test() {

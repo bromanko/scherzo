@@ -36,6 +36,8 @@ import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
+import support/expected_crash
+import test_async
 
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
@@ -450,6 +452,7 @@ fn fake_workflow_run_dependencies(
 
 fn blocking_command_ready_workflow_run_dependencies(
   log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
 ) -> workflow_run.Dependencies {
   let base = fake_workflow_run_dependencies(log_subject)
   workflow_run.Dependencies(
@@ -468,7 +471,7 @@ fn blocking_command_ready_workflow_run_dependencies(
       let command_subject = process.new_subject()
       command_ready(command_subject)
       process.send(log_subject, "agent_ready")
-      process.sleep(5000)
+      test_async.block_until_released(barrier)
       Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError(
           "stopped:" <> context.step_id,
@@ -483,6 +486,7 @@ fn blocking_command_ready_workflow_run_dependencies(
 
 fn surviving_agent_workflow_run_dependencies(
   log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
 ) -> workflow_run.Dependencies {
   let base = fake_workflow_run_dependencies(log_subject)
   workflow_run.Dependencies(
@@ -499,7 +503,7 @@ fn surviving_agent_workflow_run_dependencies(
       _record_pi_session,
     ) {
       process.send(log_subject, "agent_started")
-      process.sleep(500)
+      test_async.block_until_released(barrier)
       process.send(log_subject, "agent_survived")
       Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError("survived_abort")),
@@ -729,19 +733,15 @@ fn wait_for_monitor_down(monitor: process.Monitor, timeout_ms: Int) -> Bool {
 
 fn start_stuck_event_hub() -> process.Subject(hub.Message) {
   let ready = process.new_subject()
+  let barrier = test_async.new_barrier()
   let _pid =
     process.spawn_unlinked(fn() {
       let subject = process.new_subject()
       process.send(ready, subject)
-      sleep_forever()
+      test_async.block_until_released(barrier)
     })
   let assert Ok(subject) = process.receive(ready, within: 1000)
   subject
-}
-
-fn sleep_forever() -> Nil {
-  process.sleep(60_000)
-  sleep_forever()
 }
 
 pub fn daemon_shutdown_stops_event_hub_test() {
@@ -824,7 +824,7 @@ pub fn daemon_skips_invalid_workflow_candidate_and_reports_once_test() {
   assert dict.has_key(snapshot.invalid_workflow_reports, "issue-id")
 
   process.send(started.data, daemon.PollTick(2))
-  assert process.receive(triage_subject, within: 200) == Error(Nil)
+  test_async.assert_no_extra_message_within(triage_subject, 200)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -881,7 +881,7 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "dispatch_started", 10)
-  assert process.receive(triage_subject, within: 100) == Error(Nil)
+  test_async.assert_no_extra_message_within(triage_subject, 100)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -942,7 +942,7 @@ pub fn daemon_final_validation_blocks_new_dependency_test() {
     "linear_dependency_claim_validation_blocked",
     20,
   )
-  assert process.receive(claim_subject, within: 100) == Error(Nil)
+  test_async.assert_no_extra_message_within(claim_subject, 100)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.size(snapshot.running) == 0
   assert !dict.has_key(snapshot.claimed, candidate.id)
@@ -1151,11 +1151,13 @@ pub fn daemon_yaml_parent_prompt_rejects_multiple_active_step_routes_test() {
       fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
       workflow_run_dependencies: blocking_command_ready_workflow_run_dependencies(
         log_subject,
+        worker_barrier,
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -1171,6 +1173,8 @@ pub fn daemon_yaml_parent_prompt_rejects_multiple_active_step_routes_test() {
       1000,
     )
   assert result.status == command.NotAllowed("multiple_step_command_subjects")
+  test_async.release_barrier(worker_barrier)
+  test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -1188,12 +1192,14 @@ pub fn daemon_yaml_parent_abort_kills_active_step_worker_test() {
       fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
     )
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(event_hub) = hub.start(20, fn() { 42 })
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
       workflow_run_dependencies: surviving_agent_workflow_run_dependencies(
         log_subject,
+        worker_barrier,
       ),
       start_event_hub: fn() { Ok(event_hub) },
     )
@@ -1208,18 +1214,25 @@ pub fn daemon_yaml_parent_abort_kills_active_step_worker_test() {
       1000,
     )
   assert result.status == command.Applied
-  assert !wait_for_event(log_subject, "agent_survived", 10)
+  test_async.release_barrier_if_waiting_within(worker_barrier, 100)
   assert wait_for_session_status(
     event_hub,
     "workflow-step-ABC-1-42-1-implement-a1-f9bb818d8483",
     event.Exited(reason.OperatorAbort),
     20,
   )
+  let post_abort_logs = test_async.drain_subject(log_subject)
+  assert !list.contains(post_abort_logs, "agent_survived")
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(event_hub)
 }
 
 pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
+  use <- expected_crash.suppressing([
+    "test/orchestrator_daemon_test.gleam",
+    "crashing_command_ready_workflow_run_dependencies",
+    "yaml agent crashed",
+  ])
   let dir = "test/tmp/daemon-yaml-agent-command-crash"
   let workflow_path = write_yaml_agent_workflow(dir)
   let candidate =
@@ -1389,6 +1402,11 @@ pub fn daemon_poll_dispatches_fake_worker_routes_update_and_shutdown_test() {
 }
 
 pub fn daemon_side_effect_crash_does_not_stall_future_polls_test() {
+  use <- expected_crash.suppressing([
+    "test/orchestrator_daemon_test.gleam",
+    "daemon_side_effect_crash_does_not_stall_future_polls_test",
+    "candidate fetch crashed",
+  ])
   let workflow_path = write_workflow("test/tmp/daemon-side-effect-crash", 1)
   let fetch_subject = process.new_subject()
   let client =

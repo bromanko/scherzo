@@ -3,6 +3,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{type Order, Eq, Gt, Lt}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/orchestrator/reason
@@ -745,7 +746,7 @@ fn park(
   let issue_id = baseline_issue.id
   let identifier =
     dict.get(state.claimed, issue_id)
-    |> result_unwrap(baseline_issue.identifier)
+    |> result.unwrap(baseline_issue.identifier)
   let parked =
     orchestrator_state.ParkedEntry(
       issue_id: issue_id,
@@ -1089,7 +1090,7 @@ fn get_counter(
   issue_id: String,
 ) -> orchestrator_state.IssueCounter {
   dict.get(state.issue_counters, issue_id)
-  |> result_unwrap(orchestrator_state.new_issue_counter())
+  |> result.unwrap(orchestrator_state.new_issue_counter())
 }
 
 fn put_counter(
@@ -1108,11 +1109,4 @@ fn contains_normalized(
   state: issue_state.IssueState,
 ) -> Bool {
   list.any(states, fn(s) { issue_state.equals_normalized(s, state) })
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
-  }
 }
