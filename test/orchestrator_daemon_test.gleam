@@ -24,6 +24,7 @@ import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/step_artifact
 import scherzo/tracker
@@ -197,6 +198,36 @@ steps:
   config_path
 }
 
+fn write_scheduled_command_workflow(
+  dir: String,
+  max_concurrent: Int,
+) -> String {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      workflow_text(root, max_concurrent)
+        <> "scheduled_jobs:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: scheduled_command
+    kind: command
+    run: echo scheduled
+    workspace: main
+",
+    )
+  config_path
+}
+
 fn write_real_failing_command_workflow(dir: String) -> String {
   reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
@@ -313,6 +344,50 @@ fn disabled_linear_commands() -> linear.CommandClient {
   linear.CommandClient(fetch_comments: fn(_, _) { Ok([]) }, post_ack: fn(_, _) {
     Ok(Nil)
   })
+}
+
+type TestClockMessage {
+  GetNow(process.Subject(Int))
+  SetNow(Int)
+  StopClock
+}
+
+fn start_test_clock(initial_ms: Int) -> process.Subject(TestClockMessage) {
+  let ready = process.new_subject()
+  let _ =
+    process.spawn(fn() {
+      let subject = process.new_subject()
+      process.send(ready, subject)
+      test_clock_loop(subject, initial_ms)
+    })
+  let assert Ok(subject) = process.receive(ready, within: 1000)
+  subject
+}
+
+fn test_clock_loop(
+  subject: process.Subject(TestClockMessage),
+  now_ms: Int,
+) -> Nil {
+  case process.receive(subject, within: 5000) {
+    Ok(GetNow(reply)) -> {
+      process.send(reply, now_ms)
+      test_clock_loop(subject, now_ms)
+    }
+    Ok(SetNow(next_ms)) -> test_clock_loop(subject, next_ms)
+    Ok(StopClock) -> Nil
+    Error(_) -> Nil
+  }
+}
+
+fn clock_now(clock: process.Subject(TestClockMessage)) -> Int {
+  let reply = process.new_subject()
+  process.send(clock, GetNow(reply))
+  let assert Ok(now_ms) = process.receive(reply, within: 1000)
+  now_ms
+}
+
+fn set_clock(clock: process.Subject(TestClockMessage), now_ms: Int) -> Nil {
+  process.send(clock, SetNow(now_ms))
 }
 
 type FetchRequest {
@@ -447,6 +522,35 @@ fn fake_workflow_run_dependencies(
       ))
     },
     checkpoint: workflow_checkpoint.noop_writer(),
+  )
+}
+
+fn blocking_command_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    command_step: fn(
+      context: workflow_run.StepContext,
+      _command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
+      process.send(log_subject, "yaml_command:" <> context.step_id)
+      test_async.block_until_released(barrier)
+      step_artifact.from_command_result(
+        context.step_id,
+        0,
+        "stdout:" <> context.step_id,
+        "",
+        False,
+        secrets,
+        limits,
+      )
+    },
   )
 }
 
@@ -728,6 +832,303 @@ fn wait_for_monitor_down(monitor: process.Monitor, timeout_ms: Int) -> Bool {
     Ok(True) -> True
     Ok(False) -> False
     Error(_) -> False
+  }
+}
+
+fn load_test_projection(root: String) -> projection.Projection {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(projected) = ledger.load_projection(ledger_path)
+  projected
+}
+
+fn load_test_records(root: String) -> List(record.LedgerRecord) {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(read) = ledger.read_records(ledger_path)
+  read.records
+}
+
+fn append_test_ledger_bodies(
+  root: String,
+  bodies: List(record.RecordBody),
+) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let records = test_records_for_bodies(bodies, 100, 1)
+  let assert Ok(Nil) = ledger.append_many(ledger_path, records, True)
+  Nil
+}
+
+fn test_records_for_bodies(
+  bodies: List(record.RecordBody),
+  at_ms: Int,
+  sequence: Int,
+) -> List(record.LedgerRecord) {
+  case bodies {
+    [] -> []
+    [body, ..rest] -> [
+      record.new(at_ms, sequence, body),
+      ..test_records_for_bodies(rest, at_ms + 100, sequence + 1)
+    ]
+  }
+}
+
+fn append_started_scheduled_run(root: String, run_id: String) -> Nil {
+  append_test_ledger_bodies(root, [
+    record.ScheduledJobDue(
+      "scheduled-job",
+      "implementation",
+      1000,
+      run_id,
+      "automatic",
+    ),
+    record.ScheduledRunPending(
+      "scheduled-job",
+      "implementation",
+      1000,
+      run_id,
+      "automatic",
+      1000,
+    ),
+    record.ScheduledRunStarted(
+      "scheduled-job",
+      "implementation",
+      1000,
+      1100,
+      run_id,
+      1,
+      run_id <> "-a1",
+      root <> "/implementation/scheduled/scheduled-job/" <> run_id,
+    ),
+  ])
+}
+
+fn append_retry_waiting_scheduled_run(root: String, run_id: String) -> Nil {
+  append_test_ledger_bodies(root, [
+    record.ScheduledJobDue(
+      "scheduled-job",
+      "implementation",
+      1000,
+      run_id,
+      "automatic",
+    ),
+    record.ScheduledRunPending(
+      "scheduled-job",
+      "implementation",
+      1000,
+      run_id,
+      "automatic",
+      1000,
+    ),
+    record.ScheduledRunStarted(
+      "scheduled-job",
+      "implementation",
+      1000,
+      1100,
+      run_id,
+      1,
+      run_id <> "-a1",
+      root <> "/implementation/scheduled/scheduled-job/" <> run_id,
+    ),
+    record.ScheduledRunFailed(
+      "scheduled-job",
+      "implementation",
+      1000,
+      run_id,
+      1,
+      1200,
+      "workflow_command_failed",
+      False,
+      Some(root <> "/implementation/scheduled/scheduled-job/" <> run_id),
+    ),
+    record.ScheduledRunRetryScheduled(
+      "scheduled-job",
+      "implementation",
+      1000,
+      run_id,
+      2,
+      10_000,
+      1,
+      "workflow_command_failed",
+    ),
+  ])
+}
+
+fn has_scheduled_due(
+  records: List(record.LedgerRecord),
+  run_id: String,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledJobDue(_, _, _, body_run_id, _) -> body_run_id == run_id
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_pending(
+  records: List(record.LedgerRecord),
+  run_id: String,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledRunPending(_, _, _, body_run_id, _, _) ->
+        body_run_id == run_id
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_started(
+  records: List(record.LedgerRecord),
+  run_id: String,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledRunStarted(_, _, _, _, body_run_id, _, _, _) ->
+        body_run_id == run_id
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_succeeded(
+  records: List(record.LedgerRecord),
+  run_id: String,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledRunSucceeded(_, _, _, body_run_id, _, _, _, _) ->
+        body_run_id == run_id
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_started_attempt(
+  records: List(record.LedgerRecord),
+  run_id: String,
+  attempt: Int,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledRunStarted(_, _, _, _, body_run_id, body_attempt, _, _) ->
+        body_run_id == run_id && body_attempt == attempt
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_failed(
+  records: List(record.LedgerRecord),
+  run_id: String,
+  reason: String,
+  retry_exhausted: Bool,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledRunFailed(
+        _,
+        _,
+        _,
+        body_run_id,
+        _,
+        _,
+        body_reason,
+        body_retry_exhausted,
+        _,
+      ) ->
+        body_run_id == run_id
+        && body_reason == reason
+        && body_retry_exhausted == retry_exhausted
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_retry_scheduled(
+  records: List(record.LedgerRecord),
+  run_id: String,
+  next_attempt: Int,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledRunRetryScheduled(
+        _,
+        _,
+        _,
+        body_run_id,
+        body_next_attempt,
+        _,
+        _,
+        _,
+      ) -> body_run_id == run_id && body_next_attempt == next_attempt
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_skip(
+  records: List(record.LedgerRecord),
+  reason: String,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledJobSkipped(_, _, _, _, body_reason, _) ->
+        body_reason == reason
+      _ -> False
+    }
+  })
+}
+
+fn has_step_success(
+  records: List(record.LedgerRecord),
+  step_id: String,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.StepAttemptFinished(
+        _,
+        _,
+        body_step_id,
+        _,
+        outcome,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+      ) -> body_step_id == step_id && outcome == "completed"
+      _ -> False
+    }
+  })
+}
+
+fn wait_for_records(
+  root: String,
+  predicate: fn(List(record.LedgerRecord)) -> Bool,
+  attempts: Int,
+) -> Bool {
+  case attempts <= 0 {
+    True -> False
+    False -> {
+      let records = load_test_records(root)
+      case predicate(records) {
+        True -> True
+        False -> {
+          process.sleep(50)
+          wait_for_records(root, predicate, attempts - 1)
+        }
+      }
+    }
   }
 }
 
@@ -1270,6 +1671,182 @@ pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
     )
   assert result.status == command.NotFound
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_scheduled_due_tick_runs_command_workflow_test() {
+  let dir = "test/tmp/daemon-scheduled-due"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: fake_workflow_run_dependencies(command_subject),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
+  assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_succeeded(records, run_id) },
+    20,
+  )
+  let records = load_test_records(root)
+  assert has_scheduled_due(records, run_id)
+  assert has_scheduled_pending(records, run_id)
+  assert has_scheduled_started(records, run_id)
+  assert has_scheduled_succeeded(records, run_id)
+  assert has_step_success(records, "scheduled_command")
+  let projected = load_test_projection(root)
+  let assert Ok(status) =
+    projection.scheduled_status_for(projected, "scheduled-job")
+  assert status.state == projection.ScheduledTerminalSuccess
+  assert status.last_success_run_id == Some(run_id)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_overlap_records_skip_without_second_start_test() {
+  let dir = "test/tmp/daemon-scheduled-overlap"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let barrier = test_async.new_barrier()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: blocking_command_workflow_run_dependencies(
+        command_subject,
+        barrier,
+      ),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
+  let _ = test_async.drain_subject(command_subject)
+  let _ = test_async.drain_subject(log_subject)
+
+  set_clock(clock, 2000)
+  process.send(started.data, daemon.PollTick(2))
+  assert wait_for_event(log_subject, "tick_started", 20)
+  test_async.assert_no_extra_message_within(command_subject, 100)
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_skip(records, "overlap_running") },
+    20,
+  )
+  let records = load_test_records(root)
+  assert has_scheduled_skip(records, "overlap_running")
+
+  test_async.release_barrier(barrier)
+  assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_startup_recovers_active_run_with_retry_test() {
+  let dir = "test/tmp/daemon-scheduled-recover-active"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  append_started_scheduled_run(root, run_id)
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let clock = start_test_clock(1500)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: fake_workflow_run_dependencies(command_subject),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert wait_for_records(
+    root,
+    fn(records) {
+      has_scheduled_failed(records, run_id, "daemon_restart", False)
+      && has_scheduled_retry_scheduled(records, run_id, 2)
+    },
+    20,
+  )
+
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
+  assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_started_attempt(records, run_id, 2) },
+    20,
+  )
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_startup_restores_retry_waiting_timer_test() {
+  let dir = "test/tmp/daemon-scheduled-recover-retry"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  append_retry_waiting_scheduled_run(root, run_id)
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let clock = start_test_clock(1500)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: fake_workflow_run_dependencies(command_subject),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
+  assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_started_attempt(records, run_id, 2) },
+    20,
+  )
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
 }
 
 pub fn daemon_yaml_poll_dispatches_command_workflow_test() {

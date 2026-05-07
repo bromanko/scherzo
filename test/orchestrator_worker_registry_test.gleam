@@ -51,6 +51,7 @@ fn scheduled_handle(
   worker_registry.ScheduledWorkerHandle(
     job_id: "repair",
     workflow_id: "repair",
+    due_at_ms: 1_746_101_600_000,
     run_id: run_id,
     pid: process.self(),
     monitor: monitor,

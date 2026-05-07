@@ -233,6 +233,8 @@ fn authenticate(
         request_id,
         response,
       )
+    protocol.RunScheduleNow(id, _, job_id) ->
+      protocol.RunScheduleNow(id, control_file.token, job_id)
   }
 }
 

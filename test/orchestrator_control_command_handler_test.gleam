@@ -17,6 +17,7 @@ type DispatcherCall {
   RetryCalled(command.OperatorCommand, command.IssueRef)
   ParkCalled(command.OperatorCommand, command.IssueRef, String)
   UnparkCalled(command.OperatorCommand, command.IssueRef)
+  RunScheduleCalled(command.OperatorCommand, String)
   AbortCalled(command.OperatorCommand, String, Int)
   RouteCalled(command.OperatorCommand, String, Int)
 }
@@ -41,6 +42,9 @@ fn base_context(
     },
     unpark_issue: fn(state, operator_command, _) {
       #(state, command.applied(operator_command, Some("unparked")))
+    },
+    run_schedule_now: fn(state, operator_command, _) {
+      #(state, command.applied(operator_command, Some("scheduled")))
     },
     abort_session: fn(state, operator_command, _, _) {
       #(state, command.applied(operator_command, Some("aborted")))
@@ -102,6 +106,13 @@ fn recording_context(
     unpark_issue: fn(state, operator_command, issue_ref) {
       process.send(callback_subject, UnparkCalled(operator_command, issue_ref))
       #(state, command.applied(operator_command, Some("unparked")))
+    },
+    run_schedule_now: fn(state, operator_command, job_id) {
+      process.send(
+        callback_subject,
+        RunScheduleCalled(operator_command, job_id),
+      )
+      #(state, command.applied(operator_command, Some("scheduled")))
     },
     abort_session: fn(state, operator_command, session_id, timeout_ms) {
       process.send(

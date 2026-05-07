@@ -229,6 +229,12 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     == Ok(ctl.Cleanup(None, Some("work"), True, True, False))
   assert ctl.parse(["cleanup", "--yes", "--root", "work"])
     == Ok(ctl.Cleanup(None, Some("work"), False, False, True))
+  assert ctl.parse(["schedules", "status", "--root", "work", "--json"])
+    == Ok(ctl.SchedulesStatus(None, Some("work"), True, None))
+  assert ctl.parse(["schedules", "status", "nightly", "--root", "work"])
+    == Ok(ctl.SchedulesStatus(None, Some("work"), False, Some("nightly")))
+  assert ctl.parse(["schedules", "history", "nightly", "--root", "work"])
+    == Ok(ctl.SchedulesHistory(None, Some("work"), False, "nightly"))
   assert ctl.parse(["state", "status", "--root", "work", "--json"])
     == Ok(ctl.StateStatus("work", True))
   assert ctl.parse(["state", "archive-old", "--root", "work", "--yes"])
@@ -285,6 +291,10 @@ pub fn parse_operator_commands_test() {
       False,
       command.RespondUi("session-1", "ui-1", command.UiValue("ok")),
     ))
+  assert ctl.parse(["schedules", "run", "nightly", "--now"])
+    == Ok(ctl.Operator(None, False, command.RunScheduleNow("nightly")))
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["schedules", "run", "nightly"])
 }
 
 pub fn parse_rejects_usage_errors_test() {
@@ -317,6 +327,8 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "abort <session-ref> --yes")
   assert string.contains(usage, "ui respond")
   assert string.contains(usage, "cleanup")
+  assert string.contains(usage, "schedules status")
+  assert string.contains(usage, "schedules run <job> --now")
   assert string.contains(usage, "state status")
   assert string.contains(usage, "--control-file <path>")
   assert string.contains(usage, "--root <workspace-root>")
