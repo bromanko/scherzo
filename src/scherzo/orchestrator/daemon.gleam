@@ -29,6 +29,7 @@ import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/retry_scheduler
+import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
@@ -66,8 +67,13 @@ pub type StartupError {
 pub type Message {
   PollTick(Int)
   RetryTick(String, Int)
+  ScheduledRetryTick(String, Int)
   WorkerFinished(
     String,
+    String,
+    Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
+  )
+  ScheduledWorkerFinished(
     String,
     Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
   )
@@ -132,10 +138,30 @@ type PendingLinearCommandAck {
   PendingLinearCommandAck(issue_id: String, body: String)
 }
 
+type RecoveredScheduledRetry {
+  RecoveredScheduledRetry(
+    run_id: String,
+    job_id: String,
+    delay_ms: Int,
+    generation: Int,
+    reason: String,
+  )
+}
+
+type ScheduledStartupRecovery {
+  ScheduledStartupRecovery(
+    bodies: List(record.RecordBody),
+    retry_timers: List(RecoveredScheduledRetry),
+  )
+}
+
 type StartupRecovery {
   StartupRecovery(
     runtime: orchestrator_state.RuntimeState,
+    scheduled_projection: projection.Projection,
+    scheduled_next_due: Dict(String, Int),
     retry_timers: List(recovery.RecoveredRetry),
+    scheduled_retry_timers: List(RecoveredScheduledRetry),
     cleanup_workspaces: List(recovery.CleanupRequest),
     outbox_to_replay: List(recovery.OutboxReplay),
     park_reports: List(handoff.ParkReport),
@@ -184,6 +210,9 @@ type State {
     pending_linear_command_acks: Dict(String, PendingLinearCommandAck),
     in_flight_linear_command_acks: Dict(String, Bool),
     runtime: orchestrator_state.RuntimeState,
+    scheduled_projection: projection.Projection,
+    scheduled_next_due: Dict(String, Int),
+    scheduled_retry_generations: Dict(String, Int),
     poll: poll_scheduler.State(TimerHandle),
     retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
@@ -447,6 +476,9 @@ pub fn start(
                       pending_linear_command_acks: dict.new(),
                       in_flight_linear_command_acks: dict.new(),
                       runtime: runtime,
+                      scheduled_projection: startup_recovery.scheduled_projection,
+                      scheduled_next_due: startup_recovery.scheduled_next_due,
+                      scheduled_retry_generations: dict.new(),
                       poll: poll,
                       retry: retry_scheduler.new(),
                       registry: worker_registry.new(),
@@ -464,6 +496,9 @@ pub fn start(
                     )
                     |> schedule_recovered_retry_timers(
                       startup_recovery.retry_timers,
+                    )
+                    |> schedule_recovered_scheduled_retry_timers(
+                      startup_recovery.scheduled_retry_timers,
                     )
                     |> enqueue_recovered_cleanups(
                       startup_recovery.cleanup_workspaces,
@@ -558,13 +593,9 @@ fn load_startup_recovery(
     tracker_client,
     recovery.known_issue_ids(replayed.projection),
   ))
+  let now_ms = dependencies.now_ms()
   use recovery_plan <- try_startup(
-    recovery.plan(
-      replayed.projection,
-      effective,
-      refreshed_issues,
-      dependencies.now_ms(),
-    )
+    recovery.plan(replayed.projection, effective, refreshed_issues, now_ms)
     |> map_recovery_error,
   )
   let workflow_candidates = recovery.workflow_candidates(replayed.projection)
@@ -580,7 +611,7 @@ fn load_startup_recovery(
       workflow_candidates,
       observations,
       artifact_store.new(effective.workspace.root),
-      dependencies.now_ms(),
+      now_ms,
       effective,
     )
     |> map_recovery_error,
@@ -590,13 +621,38 @@ fn load_startup_recovery(
       recovery_plan.records_to_append,
       workflow_finalization.records_to_append,
     )
+  let scheduled_recovery =
+    scheduled_startup_recovery(
+      replayed.projection,
+      bundle.orchestrator.scheduled_jobs,
+      now_ms,
+      effective.agent.max_retry_attempts,
+    )
+  let scheduled_recovery_records =
+    ledger_records_for_bodies_loop(
+      scheduled_recovery.bodies,
+      now_ms,
+      list.length(records_to_append) + 1,
+      [],
+    )
+  let records_to_append =
+    list.append(records_to_append, scheduled_recovery_records)
+  let recovered_projection =
+    projection.fold_from(replayed.projection, records_to_append)
   use Nil <- try_startup(
     ledger.append_many(ledger_path, records_to_append, True)
     |> map_ledger_error("ledger_recovery_append_failed"),
   )
   Ok(StartupRecovery(
     runtime: recovery_plan.runtime,
+    scheduled_projection: recovered_projection,
+    scheduled_next_due: initial_scheduled_next_due(
+      bundle.orchestrator.scheduled_jobs,
+      recovered_projection,
+      now_ms,
+    ),
     retry_timers: recovery_plan.retry_timers,
+    scheduled_retry_timers: scheduled_recovery.retry_timers,
     cleanup_workspaces: recovery_plan.cleanup_workspaces,
     outbox_to_replay: recovery_plan.outbox_to_replay,
     park_reports: startup_park_reports(records_to_append),
@@ -611,6 +667,374 @@ fn load_startup_recovery(
     ),
     workflow_resumptions: workflow_finalization.resumptions,
   ))
+}
+
+fn scheduled_startup_recovery(
+  scheduled_projection: projection.Projection,
+  jobs: List(config_types.ScheduledJobConfig),
+  now_ms: Int,
+  max_retry_attempts: Int,
+) -> ScheduledStartupRecovery {
+  scheduled_startup_recovery_loop(
+    projection.scheduled_statuses(scheduled_projection),
+    scheduled_projection,
+    jobs,
+    now_ms,
+    max_retry_attempts,
+    ScheduledStartupRecovery(bodies: [], retry_timers: []),
+  )
+}
+
+fn scheduled_startup_recovery_loop(
+  statuses: List(projection.ScheduledJobStatus),
+  scheduled_projection: projection.Projection,
+  jobs: List(config_types.ScheduledJobConfig),
+  now_ms: Int,
+  max_retry_attempts: Int,
+  acc: ScheduledStartupRecovery,
+) -> ScheduledStartupRecovery {
+  case statuses {
+    [] ->
+      ScheduledStartupRecovery(
+        bodies: list.reverse(acc.bodies),
+        retry_timers: list.reverse(acc.retry_timers),
+      )
+    [status, ..rest] ->
+      scheduled_startup_recovery_loop(
+        rest,
+        scheduled_projection,
+        jobs,
+        now_ms,
+        max_retry_attempts,
+        merge_scheduled_startup_recovery(
+          acc,
+          scheduled_startup_recovery_for_status(
+            status,
+            scheduled_projection,
+            jobs,
+            now_ms,
+            max_retry_attempts,
+          ),
+        ),
+      )
+  }
+}
+
+fn merge_scheduled_startup_recovery(
+  acc: ScheduledStartupRecovery,
+  next: ScheduledStartupRecovery,
+) -> ScheduledStartupRecovery {
+  ScheduledStartupRecovery(
+    bodies: prepend_all_bodies(next.bodies, acc.bodies),
+    retry_timers: prepend_all_scheduled_retries(
+      next.retry_timers,
+      acc.retry_timers,
+    ),
+  )
+}
+
+fn prepend_all_bodies(
+  items: List(record.RecordBody),
+  acc: List(record.RecordBody),
+) -> List(record.RecordBody) {
+  case items {
+    [] -> acc
+    [item, ..rest] -> prepend_all_bodies(rest, [item, ..acc])
+  }
+}
+
+fn prepend_all_scheduled_retries(
+  items: List(RecoveredScheduledRetry),
+  acc: List(RecoveredScheduledRetry),
+) -> List(RecoveredScheduledRetry) {
+  case items {
+    [] -> acc
+    [item, ..rest] -> prepend_all_scheduled_retries(rest, [item, ..acc])
+  }
+}
+
+fn scheduled_startup_recovery_for_status(
+  status: projection.ScheduledJobStatus,
+  scheduled_projection: projection.Projection,
+  jobs: List(config_types.ScheduledJobConfig),
+  now_ms: Int,
+  max_retry_attempts: Int,
+) -> ScheduledStartupRecovery {
+  case status.current_run {
+    None -> empty_scheduled_startup_recovery()
+    Some(run) ->
+      case scheduled_job_by_id(jobs, status.job_id) {
+        Error(_) ->
+          scheduled_startup_unavailable_job_records(
+            status,
+            scheduled_projection,
+            run,
+            now_ms,
+            "job_unavailable",
+          )
+        Ok(job) ->
+          case job.enabled {
+            False ->
+              scheduled_startup_unavailable_job_records(
+                status,
+                scheduled_projection,
+                run,
+                now_ms,
+                "job_disabled",
+              )
+            True ->
+              scheduled_startup_enabled_job_records(
+                status,
+                scheduled_projection,
+                run,
+                now_ms,
+                max_retry_attempts,
+              )
+          }
+      }
+  }
+}
+
+fn scheduled_startup_enabled_job_records(
+  status: projection.ScheduledJobStatus,
+  scheduled_projection: projection.Projection,
+  run: projection.ScheduledRunSummary,
+  now_ms: Int,
+  max_retry_attempts: Int,
+) -> ScheduledStartupRecovery {
+  case status.state {
+    projection.ScheduledActive ->
+      scheduled_startup_interrupted_active_recovery(
+        status,
+        scheduled_projection,
+        run,
+        now_ms,
+        max_retry_attempts,
+      )
+    projection.ScheduledRetryWaiting ->
+      scheduled_startup_retry_waiting_recovery(status.job_id, run.run_id)
+    _ -> empty_scheduled_startup_recovery()
+  }
+}
+
+fn scheduled_startup_unavailable_job_records(
+  status: projection.ScheduledJobStatus,
+  scheduled_projection: projection.Projection,
+  run: projection.ScheduledRunSummary,
+  now_ms: Int,
+  reason: String,
+) -> ScheduledStartupRecovery {
+  case status.state {
+    projection.ScheduledDuePending
+    | projection.ScheduledPaused
+    | projection.ScheduledWaitingForGlobalSlot ->
+      scheduled_startup_recovery_with_bodies([
+        record.ScheduledRunPendingCancelled(
+          status.job_id,
+          status.workflow_id,
+          run.due_at_ms,
+          run.run_id,
+          reason,
+          now_ms,
+        ),
+      ])
+    projection.ScheduledActive ->
+      scheduled_startup_recovery_with_bodies(
+        list.append(
+          step_attempt_interruption_bodies(
+            scheduled_projection,
+            run.run_id,
+            "daemon_restart",
+          ),
+          [
+            scheduled_startup_failed_record(
+              status,
+              run,
+              now_ms,
+              "daemon_restart",
+              True,
+            ),
+          ],
+        ),
+      )
+    projection.ScheduledRetryWaiting ->
+      scheduled_startup_recovery_with_bodies([
+        record.ScheduledRunRetryCancelled(status.job_id, run.run_id, 0, reason),
+      ])
+    _ -> empty_scheduled_startup_recovery()
+  }
+}
+
+fn scheduled_startup_interrupted_active_recovery(
+  status: projection.ScheduledJobStatus,
+  scheduled_projection: projection.Projection,
+  run: projection.ScheduledRunSummary,
+  now_ms: Int,
+  max_retry_attempts: Int,
+) -> ScheduledStartupRecovery {
+  let attempt = scheduled_attempt(run)
+  let interrupted_steps =
+    step_attempt_interruption_bodies(
+      scheduled_projection,
+      run.run_id,
+      "daemon_restart",
+    )
+  case attempt < max_retry_attempts {
+    True -> {
+      let next_attempt = attempt + 1
+      let generation = 1
+      let delay_ms = 0
+      ScheduledStartupRecovery(
+        bodies: list.append(interrupted_steps, [
+          scheduled_startup_failed_record(
+            status,
+            run,
+            now_ms,
+            "daemon_restart",
+            False,
+          ),
+          record.ScheduledRunRetryScheduled(
+            status.job_id,
+            status.workflow_id,
+            run.due_at_ms,
+            run.run_id,
+            next_attempt,
+            delay_ms,
+            generation,
+            "daemon_restart",
+          ),
+        ]),
+        retry_timers: [
+          RecoveredScheduledRetry(
+            run_id: run.run_id,
+            job_id: status.job_id,
+            delay_ms: delay_ms,
+            generation: generation,
+            reason: "daemon_restart",
+          ),
+        ],
+      )
+    }
+    False ->
+      scheduled_startup_recovery_with_bodies(
+        list.append(interrupted_steps, [
+          scheduled_startup_failed_record(
+            status,
+            run,
+            now_ms,
+            "daemon_restart",
+            True,
+          ),
+        ]),
+      )
+  }
+}
+
+fn scheduled_startup_retry_waiting_recovery(
+  job_id: String,
+  run_id: String,
+) -> ScheduledStartupRecovery {
+  ScheduledStartupRecovery(bodies: [], retry_timers: [
+    RecoveredScheduledRetry(
+      run_id: run_id,
+      job_id: job_id,
+      delay_ms: 0,
+      generation: 1,
+      reason: "daemon_restart",
+    ),
+  ])
+}
+
+fn scheduled_startup_recovery_with_bodies(
+  bodies: List(record.RecordBody),
+) -> ScheduledStartupRecovery {
+  ScheduledStartupRecovery(bodies: bodies, retry_timers: [])
+}
+
+fn empty_scheduled_startup_recovery() -> ScheduledStartupRecovery {
+  ScheduledStartupRecovery(bodies: [], retry_timers: [])
+}
+
+fn scheduled_startup_failed_record(
+  status: projection.ScheduledJobStatus,
+  run: projection.ScheduledRunSummary,
+  now_ms: Int,
+  reason: String,
+  retry_exhausted: Bool,
+) -> record.RecordBody {
+  record.ScheduledRunFailed(
+    status.job_id,
+    status.workflow_id,
+    run.due_at_ms,
+    run.run_id,
+    scheduled_attempt(run),
+    now_ms,
+    reason,
+    retry_exhausted,
+    run.run_root,
+  )
+}
+
+fn scheduled_attempt(run: projection.ScheduledRunSummary) -> Int {
+  case run.attempt <= 0 {
+    True -> 1
+    False -> run.attempt
+  }
+}
+
+fn initial_scheduled_next_due(
+  jobs: List(config_types.ScheduledJobConfig),
+  scheduled_projection: projection.Projection,
+  now_ms: Int,
+) -> Dict(String, Int) {
+  list.fold(jobs, dict.new(), fn(acc, job) {
+    case job.enabled {
+      False -> acc
+      True -> {
+        let next_due = case
+          projection.scheduled_status_for(scheduled_projection, job.id)
+        {
+          Ok(status) ->
+            case status.last_due_at_ms {
+              Some(last_due) ->
+                schedule_core.next_due_after(last_due, job.every_ms)
+              None -> schedule_core.initial_next_due(now_ms, job.every_ms)
+            }
+          Error(_) -> schedule_core.initial_next_due(now_ms, job.every_ms)
+        }
+        dict.insert(acc, job.id, next_due)
+      }
+    }
+  })
+}
+
+fn merge_scheduled_next_due_after_reload(
+  existing: Dict(String, Int),
+  scheduled_projection: projection.Projection,
+  jobs: List(config_types.ScheduledJobConfig),
+  now_ms: Int,
+) -> Dict(String, Int) {
+  list.fold(jobs, dict.new(), fn(acc, job) {
+    case job.enabled {
+      False -> acc
+      True -> {
+        let next_due = case dict.get(existing, job.id) {
+          Ok(value) -> value
+          Error(_) ->
+            case projection.scheduled_status_for(scheduled_projection, job.id) {
+              Ok(status) ->
+                case status.last_due_at_ms {
+                  Some(last_due) ->
+                    schedule_core.next_due_after(last_due, job.every_ms)
+                  None -> schedule_core.initial_next_due(now_ms, job.every_ms)
+                }
+              Error(_) -> schedule_core.initial_next_due(now_ms, job.every_ms)
+            }
+        }
+        dict.insert(acc, job.id, next_due)
+      }
+    }
+  })
 }
 
 fn startup_park_reports(
@@ -944,6 +1368,48 @@ fn schedule_recovered_retry_timers(
         issue_id,
         timer,
         state.dependencies.cancel_timer,
+      ),
+    )
+  })
+}
+
+fn schedule_recovered_scheduled_retry_timers(
+  state: State,
+  retries: List(RecoveredScheduledRetry),
+) -> State {
+  list.fold(retries, state, fn(state, retry) {
+    let RecoveredScheduledRetry(
+      run_id,
+      job_id,
+      delay_ms,
+      generation,
+      reason_text,
+    ) = retry
+    let safe_reason =
+      log.truncate(
+        log.redact("recovery_reason", reason_text, state.workflow.secrets),
+        200,
+      )
+    log_state(state, "info", "scheduled_recovered_retry_scheduled", [
+      #("job_id", job_id),
+      #("run_id", run_id),
+      #("delay_ms", int.to_string(delay_ms)),
+      #("generation", int.to_string(generation)),
+      #("reason", safe_reason),
+    ])
+    let timer =
+      state.dependencies.send_after(
+        state.subject,
+        delay_ms,
+        ScheduledRetryTick(run_id, generation),
+      )
+    let _ = timer
+    State(
+      ..state,
+      scheduled_retry_generations: dict.insert(
+        state.scheduled_retry_generations,
+        run_id,
+        generation,
       ),
     )
   })
@@ -1375,8 +1841,12 @@ fn handle_message(
     PollTick(generation) -> actor.continue(handle_poll_tick(state, generation))
     RetryTick(issue_id, generation) ->
       actor.continue(handle_retry_tick(state, issue_id, generation))
+    ScheduledRetryTick(run_id, generation) ->
+      actor.continue(handle_scheduled_retry_tick(state, run_id, generation))
     WorkerFinished(issue_id, run_id, result) ->
       actor.continue(handle_worker_finished(state, issue_id, run_id, result))
+    ScheduledWorkerFinished(run_id, result) ->
+      actor.continue(handle_scheduled_worker_finished(state, run_id, result))
     WorkerUpdate(issue_id, update) ->
       actor.continue(handle_worker_update(state, issue_id, update))
     WorkerCommandReady(issue_id, run_id, command_subject) ->
@@ -1502,7 +1972,21 @@ fn handle_yaml_step_started(
               run_id,
             ),
           )
-        Error(_) -> state
+        Error(_) ->
+          case
+            worker_registry.scheduled_worker_for_run(state.registry, run_id)
+          {
+            Ok(_) ->
+              State(
+                ..state,
+                registry: worker_registry.register_yaml_step_started(
+                  state.registry,
+                  session_id,
+                  run_id,
+                ),
+              )
+            Error(_) -> state
+          }
       }
   }
 }
@@ -1590,6 +2074,7 @@ fn handle_registry_down_resolution(
       State(..state, registry: registry)
     }
     worker_registry.ScheduledWorkerDown(registry, run_id, handle) -> {
+      let state = State(..state, registry: registry)
       log_state(state, "warn", "scheduled_worker_down", [
         #("job_id", handle.job_id),
         #("run_id", run_id),
@@ -1600,7 +2085,14 @@ fn handle_registry_down_resolution(
         session_event.WorkerDown,
         None,
       )
-      State(..state, registry: registry)
+      let failure =
+        agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("worker_down")),
+          workspace_path: Some(handle.run_root),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        )
+      finish_scheduled_worker_failure(state, handle, failure)
     }
     worker_registry.ScheduledWorkerDownStale(registry, _run_id) -> {
       log_state(state, "warn", "scheduled_worker_down_stale", [])
@@ -1632,6 +2124,7 @@ fn apply_operator_command_to_state(
       pending_claim_count: fn(state) { dict.size(state.pending_claims) },
       set_paused: fn(state, paused) { State(..state, operator_paused: paused) },
       reload_workflow: reload_workflow_for_operator,
+      run_schedule_now: run_schedule_now_for_operator,
       retry_issue: retry_issue_for_operator,
       park_issue: park_issue_for_operator,
       unpark_issue: unpark_issue_for_operator,
@@ -1671,6 +2164,90 @@ fn reload_workflow_for_operator(
       state,
       command.rejected(operator_command, reason, Some("workflow reload failed")),
     )
+  }
+}
+
+fn run_schedule_now_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  job_id: String,
+) -> #(State, command.CommandResult) {
+  case
+    scheduled_job_by_id(
+      state.workflow.bundle.orchestrator.scheduled_jobs,
+      job_id,
+    )
+  {
+    Error(_) -> #(
+      state,
+      command.not_found(operator_command, Some("scheduled job not found")),
+    )
+    Ok(job) ->
+      case job.enabled {
+        False -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "job_disabled",
+            Some("scheduled job is disabled"),
+          ),
+        )
+        True ->
+          case state.operator_paused {
+            True -> #(
+              state,
+              command.rejected(
+                operator_command,
+                "dispatch_paused",
+                Some("dispatch is paused"),
+              ),
+            )
+            False ->
+              case scheduled_job_has_unfinished_run(state, job.id) {
+                True -> #(
+                  state,
+                  command.rejected(
+                    operator_command,
+                    "overlap_running",
+                    Some("scheduled job already has pending or active work"),
+                  ),
+                )
+                False -> {
+                  let now_ms = state.dependencies.now_ms()
+                  let run_id = schedule_core.manual_run_id(job.id, now_ms)
+                  let state =
+                    admit_manual_scheduled_run(state, job, now_ms, run_id)
+                  case scheduled_start_slot_available(state, job.id) {
+                    True -> {
+                      let state = start_pending_scheduled_job(state, job)
+                      #(
+                        state,
+                        command.applied(
+                          operator_command,
+                          Some("scheduled run started"),
+                        ),
+                      )
+                    }
+                    False -> {
+                      let state =
+                        block_pending_scheduled_job(
+                          state,
+                          job,
+                          "waiting_for_global_slot",
+                        )
+                      #(
+                        state,
+                        command.queued(
+                          operator_command,
+                          Some("scheduled run queued"),
+                        ),
+                      )
+                    }
+                  }
+                }
+              }
+          }
+      }
   }
 }
 
@@ -2483,6 +3060,7 @@ fn handle_poll_tick(state: State, generation: Int) -> State {
         #("generation", int.to_string(generation)),
       ])
       let state = reload_if_changed(state)
+      let state = process_schedules(state, state.dependencies.now_ms())
       begin_running_refresh(state, generation)
     }
   }
@@ -2539,6 +3117,12 @@ fn apply_reloaded_workflow(
         effective.linear_contract,
       ),
       runtime: runtime,
+      scheduled_next_due: merge_scheduled_next_due_after_reload(
+        state.scheduled_next_due,
+        state.scheduled_projection,
+        workflow.bundle.orchestrator.scheduled_jobs,
+        state.dependencies.now_ms(),
+      ),
     )
   log_state(state, "info", "workflow_reloaded", [])
   state
@@ -2765,6 +3349,7 @@ fn operator_command_targets_session(
     command.PauseDispatch
     | command.ResumeDispatch
     | command.ReloadWorkflow
+    | command.RunScheduleNow(_)
     | command.RetryIssue(_)
     | command.ParkIssue(_, _)
     | command.UnparkIssue(_) -> False
@@ -3261,6 +3846,1129 @@ fn schedule_next_poll(state: State) -> State {
   State(..state, poll: poll)
 }
 
+fn process_schedules(state: State, now_ms: Int) -> State {
+  case config.can_dispatch(state.workflow.reload_state) {
+    False -> state
+    True ->
+      process_scheduled_jobs(
+        state.workflow.bundle.orchestrator.scheduled_jobs,
+        state,
+        now_ms,
+      )
+  }
+}
+
+fn process_scheduled_jobs(
+  jobs: List(config_types.ScheduledJobConfig),
+  state: State,
+  now_ms: Int,
+) -> State {
+  case jobs {
+    [] -> state
+    [job, ..rest] ->
+      process_scheduled_jobs(
+        rest,
+        process_scheduled_job(state, job, now_ms),
+        now_ms,
+      )
+  }
+}
+
+fn process_scheduled_job(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+  now_ms: Int,
+) -> State {
+  case job.enabled {
+    False -> state
+    True -> {
+      let state = ensure_scheduled_next_due(state, job, now_ms)
+      let next_due =
+        dict.get(state.scheduled_next_due, job.id)
+        |> result.unwrap(schedule_core.initial_next_due(now_ms, job.every_ms))
+      let mode = scheduled_mode(state, job.id)
+      let decisions =
+        schedule_core.admit_due_boundaries(
+          schedule_core.ScheduleState(
+            job_id: job.id,
+            workflow_id: job.workflow,
+            every_ms: job.every_ms,
+            next_due_at_ms: next_due,
+            mode: mode,
+          ),
+          now_ms,
+        )
+      let state = apply_schedule_decisions(state, job, decisions)
+      case state.operator_paused {
+        True -> block_pending_scheduled_job(state, job, "paused")
+        False ->
+          case scheduled_start_slot_available(state, job.id) {
+            True -> start_pending_scheduled_job(state, job)
+            False ->
+              block_pending_scheduled_job(state, job, "waiting_for_global_slot")
+          }
+      }
+    }
+  }
+}
+
+fn ensure_scheduled_next_due(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+  now_ms: Int,
+) -> State {
+  case dict.has_key(state.scheduled_next_due, job.id) {
+    True -> state
+    False -> {
+      let next_due = case
+        projection.scheduled_status_for(state.scheduled_projection, job.id)
+      {
+        Ok(status) ->
+          case status.last_due_at_ms {
+            Some(last_due) ->
+              schedule_core.next_due_after(last_due, job.every_ms)
+            None -> schedule_core.initial_next_due(now_ms, job.every_ms)
+          }
+        Error(_) -> schedule_core.initial_next_due(now_ms, job.every_ms)
+      }
+      State(
+        ..state,
+        scheduled_next_due: dict.insert(
+          state.scheduled_next_due,
+          job.id,
+          next_due,
+        ),
+      )
+    }
+  }
+}
+
+fn scheduled_mode(state: State, job_id: String) -> schedule_core.ScheduleMode {
+  case projection.scheduled_status_for(state.scheduled_projection, job_id) {
+    Error(_) -> schedule_core.Idle
+    Ok(status) ->
+      case status.state {
+        projection.ScheduledDuePending ->
+          schedule_core.Pending("overlap_running")
+        projection.ScheduledPaused -> schedule_core.Pending("schedule_paused")
+        projection.ScheduledWaitingForGlobalSlot ->
+          schedule_core.Pending("waiting_for_global_slot")
+        projection.ScheduledActive -> schedule_core.Active
+        projection.ScheduledRetryWaiting -> schedule_core.RetryWaiting
+        projection.ScheduledIdle
+        | projection.ScheduledReportRetryWaiting
+        | projection.ScheduledTerminalSuccess
+        | projection.ScheduledTerminalFailure -> schedule_core.Idle
+      }
+  }
+}
+
+fn apply_schedule_decisions(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+  decisions: List(schedule_core.ScheduleDecision),
+) -> State {
+  let #(bodies, next_due) = schedule_decision_records(job, decisions, [], None)
+  let state =
+    append_scheduled_bodies(state, list.reverse(bodies), "ledger_append_failed")
+  case next_due {
+    Some(next_due) ->
+      State(
+        ..state,
+        scheduled_next_due: dict.insert(
+          state.scheduled_next_due,
+          job.id,
+          next_due,
+        ),
+      )
+    None -> state
+  }
+}
+
+fn schedule_decision_records(
+  job: config_types.ScheduledJobConfig,
+  decisions: List(schedule_core.ScheduleDecision),
+  bodies: List(record.RecordBody),
+  next_due: Option(Int),
+) -> #(List(record.RecordBody), Option(Int)) {
+  case decisions {
+    [] -> #(bodies, next_due)
+    [decision, ..rest] ->
+      case decision {
+        schedule_core.ScheduledDue(due_at_ms, run_id, trigger) ->
+          schedule_decision_records(
+            job,
+            rest,
+            [
+              record.ScheduledJobDue(
+                job.id,
+                job.workflow,
+                due_at_ms,
+                run_id,
+                trigger,
+              ),
+              ..bodies
+            ],
+            next_due,
+          )
+        schedule_core.ScheduledPending(
+          due_at_ms,
+          run_id,
+          trigger,
+          requested_at_ms,
+        ) ->
+          schedule_decision_records(
+            job,
+            rest,
+            [
+              record.ScheduledRunPending(
+                job.id,
+                job.workflow,
+                due_at_ms,
+                run_id,
+                trigger,
+                requested_at_ms,
+              ),
+              ..bodies
+            ],
+            next_due,
+          )
+        schedule_core.ScheduledSkipped(due_at_ms, run_id, reason, skipped_count) ->
+          schedule_decision_records(
+            job,
+            rest,
+            [
+              record.ScheduledJobSkipped(
+                job.id,
+                job.workflow,
+                due_at_ms,
+                run_id,
+                reason,
+                skipped_count,
+              ),
+              ..bodies
+            ],
+            next_due,
+          )
+        schedule_core.ScheduledNextDue(next_due_at_ms) ->
+          schedule_decision_records(job, rest, bodies, Some(next_due_at_ms))
+      }
+  }
+}
+
+fn block_pending_scheduled_job(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+  reason: String,
+) -> State {
+  case projection.scheduled_status_for(state.scheduled_projection, job.id) {
+    Ok(status) ->
+      case status.current_run, status.state {
+        Some(run), projection.ScheduledDuePending
+        | Some(run), projection.ScheduledPaused
+        | Some(run), projection.ScheduledWaitingForGlobalSlot
+        -> {
+          let already_blocked = case run.reason {
+            Some(existing) -> existing == reason
+            None -> False
+          }
+          case already_blocked {
+            True -> state
+            False ->
+              append_scheduled_bodies(
+                state,
+                [
+                  record.ScheduledRunPendingBlocked(
+                    job.id,
+                    job.workflow,
+                    run.due_at_ms,
+                    run.run_id,
+                    reason,
+                    state.dependencies.now_ms(),
+                  ),
+                ],
+                "ledger_append_failed",
+              )
+          }
+        }
+        _, _ -> state
+      }
+    Error(_) -> state
+  }
+}
+
+fn start_pending_scheduled_job(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+) -> State {
+  case projection.scheduled_status_for(state.scheduled_projection, job.id) {
+    Ok(status) ->
+      case status.current_run, status.state {
+        Some(run), projection.ScheduledDuePending
+        | Some(run), projection.ScheduledPaused
+        | Some(run), projection.ScheduledWaitingForGlobalSlot
+        -> {
+          let attempt = case run.attempt <= 0 {
+            True -> 1
+            False -> run.attempt
+          }
+          start_scheduled_run(
+            state,
+            job,
+            run.run_id,
+            run.due_at_ms,
+            attempt,
+            run.trigger,
+          )
+        }
+        _, _ -> state
+      }
+    Error(_) -> state
+  }
+}
+
+fn start_scheduled_run(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+  run_id: String,
+  due_at_ms: Int,
+  attempt: Int,
+  trigger: String,
+) -> State {
+  let started_at_ms = state.dependencies.now_ms()
+  case
+    workspace_run.scheduled_run_root_for(
+      job.id,
+      job.workflow,
+      run_id,
+      state.workflow.bundle.orchestrator,
+    )
+  {
+    Error(err) ->
+      append_scheduled_bodies(
+        state,
+        [
+          record.ScheduledRunFailed(
+            job.id,
+            job.workflow,
+            due_at_ms,
+            run_id,
+            attempt,
+            started_at_ms,
+            "workspace_failed:" <> error.workspace_code(err),
+            True,
+            None,
+          ),
+        ],
+        "ledger_append_failed",
+      )
+    Ok(run_root) -> {
+      let #(registry, session_sequence) =
+        worker_registry.reserve_session_sequence(state.registry)
+      let state = State(..state, registry: registry)
+      let session_id =
+        make_scheduled_session_id(run_id, attempt, session_sequence)
+      let state =
+        append_scheduled_bodies(
+          state,
+          [
+            record.ScheduledRunStarted(
+              job.id,
+              job.workflow,
+              due_at_ms,
+              started_at_ms,
+              run_id,
+              attempt,
+              session_id,
+              run_root,
+            ),
+          ],
+          "ledger_append_failed",
+        )
+      spawn_scheduled_worker(
+        state,
+        job,
+        run_id,
+        due_at_ms,
+        started_at_ms,
+        attempt,
+        trigger,
+        run_root,
+        session_id,
+      )
+    }
+  }
+}
+
+fn spawn_scheduled_worker(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+  run_id: String,
+  due_at_ms: Int,
+  started_at_ms: Int,
+  attempt: Int,
+  trigger: String,
+  run_root: String,
+  session_id: String,
+) -> State {
+  hub.register_session(
+    state.event_hub,
+    session_event.SessionSummary(
+      session_id: session_id,
+      display_name: session_name.generate(job.id, session_id),
+      issue_id: "",
+      issue_identifier: job.id,
+      issue_title: "Scheduled job " <> job.id,
+      workspace_path: run_root,
+      pi_session_id: None,
+      status: session_event.Preparing,
+      recovery: None,
+      current_turn: 0,
+      current_turn_status: None,
+      current_turn_started_at_ms: None,
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
+      started_at_ms: started_at_ms,
+      last_event_at_ms: started_at_ms,
+      token_totals: session_tokens.zero_token_totals(),
+    ),
+  )
+  event_publisher.lifecycle(
+    state.event_hub,
+    session_id,
+    session_event.DispatchStarted,
+    Some("scheduled"),
+  )
+  log_state(state, "info", "scheduled_dispatch_started", [
+    #("job_id", job.id),
+    #("workflow_id", job.workflow),
+    #("run_id", run_id),
+    #("run_root", run_root),
+  ])
+  let subject = state.subject
+  let dependencies = state.dependencies
+  let bundle = state.workflow.bundle
+  let secrets = state.workflow.secrets
+  let event_hub = state.event_hub
+  let pid =
+    process.spawn_unlinked(fn() {
+      let result =
+        run_scheduled_workflow_worker(
+          job,
+          run_id,
+          due_at_ms,
+          started_at_ms,
+          attempt,
+          trigger,
+          bundle,
+          secrets,
+          dependencies.workflow_run_dependencies,
+          subject,
+          event_hub,
+          dependencies.now_ms,
+        )
+      process.send(subject, ScheduledWorkerFinished(run_id, result))
+    })
+  let monitor = process.monitor(pid)
+  event_publisher.lifecycle(
+    state.event_hub,
+    session_id,
+    session_event.WorkerStarted,
+    None,
+  )
+  hub.update_status(state.event_hub, session_id, session_event.Running)
+  let handle =
+    worker_registry.ScheduledWorkerHandle(
+      job_id: job.id,
+      workflow_id: job.workflow,
+      run_id: run_id,
+      pid: pid,
+      monitor: monitor,
+      run_root: run_root,
+      session_id: session_id,
+      attempt: attempt,
+      command_subject: None,
+    )
+  State(
+    ..state,
+    registry: worker_registry.register_scheduled_worker(state.registry, handle),
+  )
+}
+
+fn run_scheduled_workflow_worker(
+  job: config_types.ScheduledJobConfig,
+  run_id: String,
+  due_at_ms: Int,
+  started_at_ms: Int,
+  attempt: Int,
+  trigger: String,
+  bundle: runtime_bundle.RuntimeBundle,
+  secrets: List(String),
+  workflow_dependencies: workflow_run.Dependencies,
+  daemon_subject: process.Subject(Message),
+  event_hub: process.Subject(hub.Message),
+  now_ms: fn() -> Int,
+) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
+  case dict.get(bundle.workflows, job.workflow) {
+    Error(_) ->
+      Error(scheduled_yaml_worker_failure("scheduled_workflow_missing", None))
+    Ok(dag) -> {
+      let scheduled =
+        schedule_core.ScheduledRunContext(
+          job_id: job.id,
+          workflow_id: job.workflow,
+          due_at_ms: due_at_ms,
+          started_at_ms: started_at_ms,
+          run_id: run_id,
+          attempt: attempt,
+          trigger: trigger,
+        )
+      let workflow_dependencies =
+        workflow_run.Dependencies(
+          ..workflow_dependencies,
+          checkpoint: workflow_checkpoint.ledger_writer(
+            bundle.effective.workspace.root,
+            now_ms,
+          ),
+        )
+      case
+        workflow_run.execute_scheduled(
+          scheduled,
+          dag,
+          bundle.orchestrator,
+          secrets,
+          yaml_scheduled_workflow_dependencies(
+            workflow_dependencies,
+            job.id,
+            run_id,
+            daemon_subject,
+            event_hub,
+            now_ms,
+          ),
+        )
+      {
+        Ok(success) -> Ok(success.worker_success)
+        Error(failure) -> Error(yaml_scheduled_workflow_failure(failure))
+      }
+    }
+  }
+}
+
+fn yaml_scheduled_workflow_dependencies(
+  base: workflow_run.Dependencies,
+  job_id: String,
+  run_id: String,
+  daemon_subject: process.Subject(Message),
+  event_hub: process.Subject(hub.Message),
+  now_ms: fn() -> Int,
+) -> workflow_run.Dependencies {
+  workflow_run.Dependencies(
+    ..base,
+    command_step: fn(context, command, timeout_ms, secrets, limits) {
+      run_yaml_scheduled_command_step(
+        base,
+        job_id,
+        run_id,
+        context,
+        command,
+        timeout_ms,
+        secrets,
+        limits,
+        daemon_subject,
+        event_hub,
+        now_ms,
+      )
+    },
+  )
+}
+
+fn run_yaml_scheduled_command_step(
+  base: workflow_run.Dependencies,
+  job_id: String,
+  run_id: String,
+  context: workflow_run.StepContext,
+  command: String,
+  timeout_ms: Int,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  daemon_subject: process.Subject(Message),
+  event_hub: process.Subject(hub.Message),
+  now_ms: fn() -> Int,
+) -> step_artifact.StepArtifact {
+  let session_id =
+    yaml_step_session.id(run_id, context.step_id, context.attempt_index)
+  register_yaml_scheduled_step_session(
+    event_hub,
+    session_id,
+    job_id,
+    context.workspace_path,
+    context.step_id,
+    context.attempt_index,
+    now_ms,
+  )
+  process.send(daemon_subject, YamlStepStarted(session_id, run_id))
+  let artifact =
+    base.command_step(context, command, timeout_ms, secrets, limits)
+  case step_artifact.succeeded(artifact.status) {
+    True -> Nil
+    False -> publish_yaml_command_failure(event_hub, session_id, artifact)
+  }
+  let reason = case step_artifact.succeeded(artifact.status) {
+    True -> session_reason.Normal
+    False -> session_reason.Failed
+  }
+  hub.finish_session(event_hub, session_id, reason)
+  process.send(daemon_subject, YamlStepFinished(session_id))
+  artifact
+}
+
+fn register_yaml_scheduled_step_session(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  job_id: String,
+  workspace_path: String,
+  step_id: String,
+  attempt_index: Int,
+  now_ms: fn() -> Int,
+) -> Nil {
+  let started_at_ms = now_ms()
+  hub.register_session(
+    event_hub,
+    session_event.SessionSummary(
+      session_id: session_id,
+      display_name: session_name.generate(job_id, session_id),
+      issue_id: "",
+      issue_identifier: job_id,
+      issue_title: "Scheduled job " <> job_id,
+      workspace_path: workspace_path,
+      pi_session_id: None,
+      status: session_event.Preparing,
+      recovery: None,
+      current_turn: 0,
+      current_turn_status: None,
+      current_turn_started_at_ms: None,
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
+      started_at_ms: started_at_ms,
+      last_event_at_ms: started_at_ms,
+      token_totals: session_tokens.zero_token_totals(),
+    ),
+  )
+  hub.update_status(event_hub, session_id, session_event.Running)
+  hub.publish(
+    event_hub,
+    session_id,
+    session_event.EventPayload(
+      ..session_event.empty_payload(
+        session_event.Lifecycle,
+        session_event.LifecycleName(session_event.StepStarted),
+      ),
+      message: Some(step_id <> " attempt " <> int.to_string(attempt_index)),
+    ),
+  )
+}
+
+fn yaml_scheduled_workflow_failure(
+  failure: workflow_run.WorkflowRunFailure,
+) -> agent_types.WorkerFailure {
+  let report = workflow_run.failure_report(failure)
+  case workflow_run.failed_command_failure(failure) {
+    Some(#(code, step_id)) ->
+      agent_types.WorkerFailure(
+        reason: error.WorkflowCommandFailed(
+          code: code,
+          step_id: step_id,
+          detail: report,
+        ),
+        workspace_path: failure.run_root,
+        tokens: session_tokens.zero_token_totals(),
+        final_issue: None,
+      )
+    None ->
+      case failure.agent_reason {
+        Some(reason) ->
+          agent_types.WorkerFailure(
+            reason: reason,
+            workspace_path: failure.run_root,
+            tokens: session_tokens.zero_token_totals(),
+            final_issue: None,
+          )
+        None -> scheduled_yaml_worker_failure(report, failure.run_root)
+      }
+  }
+}
+
+fn scheduled_yaml_worker_failure(
+  reason: String,
+  workspace_path: Option(String),
+) -> agent_types.WorkerFailure {
+  agent_types.WorkerFailure(
+    reason: error.PiFailed(error.PiProtocolError(reason)),
+    workspace_path: workspace_path,
+    tokens: session_tokens.zero_token_totals(),
+    final_issue: None,
+  )
+}
+
+fn handle_scheduled_worker_finished(
+  state: State,
+  run_id: String,
+  result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
+) -> State {
+  case worker_registry.scheduled_worker_for_run(state.registry, run_id) {
+    Error(_) -> {
+      log_state(state, "warn", "scheduled_worker_finished_stale", [
+        #("run_id", run_id),
+      ])
+      state
+    }
+    Ok(handle) -> {
+      process.demonitor_process(handle.monitor)
+      let state =
+        State(
+          ..state,
+          registry: worker_registry.remove_scheduled_worker_handle(
+            state.registry,
+            handle,
+          ),
+        )
+      let state = case result {
+        Ok(success) -> finish_scheduled_worker_success(state, handle, success)
+        Error(failure) ->
+          finish_scheduled_worker_failure(state, handle, failure)
+      }
+      process_schedules(state, state.dependencies.now_ms())
+    }
+  }
+}
+
+fn finish_scheduled_worker_success(
+  state: State,
+  handle: worker_registry.ScheduledWorkerHandle,
+  success: agent_types.WorkerSuccess,
+) -> State {
+  case success.final_classification {
+    agent_types.FinalTerminal -> {
+      log_state(state, "info", "scheduled_worker_exited", [
+        #("job_id", handle.job_id),
+        #("run_id", handle.run_id),
+        #("reason", "normal"),
+      ])
+      hub.update_tokens(state.event_hub, handle.session_id, success.tokens)
+      event_publisher.lifecycle(
+        state.event_hub,
+        handle.session_id,
+        session_event.WorkerExited,
+        Some("normal"),
+      )
+      hub.finish_session(
+        state.event_hub,
+        handle.session_id,
+        session_reason.Normal,
+      )
+      append_scheduled_bodies(
+        state,
+        [
+          record.ScheduledRunSucceeded(
+            handle.job_id,
+            handle.workflow_id,
+            scheduled_due_at_for_run(state, handle.run_id),
+            handle.run_id,
+            handle.attempt,
+            state.dependencies.now_ms(),
+            success.tokens.total,
+            success.turns,
+          ),
+        ],
+        "ledger_append_failed",
+      )
+    }
+    agent_types.FinalActive | agent_types.FinalNonActive -> {
+      hub.finish_session(
+        state.event_hub,
+        handle.session_id,
+        session_reason.Failed,
+      )
+      append_scheduled_terminal_failure(state, handle, "needs_human")
+    }
+  }
+}
+
+fn finish_scheduled_worker_failure(
+  state: State,
+  handle: worker_registry.ScheduledWorkerHandle,
+  failure: agent_types.WorkerFailure,
+) -> State {
+  let reason = worker_failure_message(failure, state.workflow.secrets)
+  log_state(state, "warn", "scheduled_worker_exited", [
+    #("job_id", handle.job_id),
+    #("run_id", handle.run_id),
+    #("reason", reason),
+  ])
+  event_publisher.lifecycle(
+    state.event_hub,
+    handle.session_id,
+    session_event.WorkerExited,
+    Some(reason),
+  )
+  hub.finish_session(state.event_hub, handle.session_id, session_reason.Failed)
+  case handle.attempt < state.workflow.effective.agent.max_retry_attempts {
+    True ->
+      schedule_scheduled_retry(state, handle, reason, failure.workspace_path)
+    False -> append_scheduled_terminal_failure(state, handle, reason)
+  }
+}
+
+fn schedule_scheduled_retry(
+  state: State,
+  handle: worker_registry.ScheduledWorkerHandle,
+  reason: String,
+  run_root: Option(String),
+) -> State {
+  let next_attempt = handle.attempt + 1
+  let delay_ms =
+    schedule_core.retry_delay(
+      handle.attempt,
+      state.workflow.effective.agent.max_retry_backoff_ms,
+    )
+  let generation =
+    dict.get(state.scheduled_retry_generations, handle.run_id)
+    |> result.unwrap(0)
+    |> int_plus(1)
+  let due_at_ms = scheduled_due_at_for_run(state, handle.run_id)
+  let state =
+    append_scheduled_bodies(
+      state,
+      [
+        record.ScheduledRunFailed(
+          handle.job_id,
+          handle.workflow_id,
+          due_at_ms,
+          handle.run_id,
+          handle.attempt,
+          state.dependencies.now_ms(),
+          reason,
+          False,
+          run_root,
+        ),
+        record.ScheduledRunRetryScheduled(
+          handle.job_id,
+          handle.workflow_id,
+          due_at_ms,
+          handle.run_id,
+          next_attempt,
+          delay_ms,
+          generation,
+          reason,
+        ),
+      ],
+      "ledger_append_failed",
+    )
+  let timer =
+    state.dependencies.send_after(
+      state.subject,
+      delay_ms,
+      ScheduledRetryTick(handle.run_id, generation),
+    )
+  let _ = timer
+  State(
+    ..state,
+    scheduled_retry_generations: dict.insert(
+      state.scheduled_retry_generations,
+      handle.run_id,
+      generation,
+    ),
+  )
+}
+
+fn append_scheduled_terminal_failure(
+  state: State,
+  handle: worker_registry.ScheduledWorkerHandle,
+  reason: String,
+) -> State {
+  append_scheduled_bodies(
+    state,
+    [
+      record.ScheduledRunFailed(
+        handle.job_id,
+        handle.workflow_id,
+        scheduled_due_at_for_run(state, handle.run_id),
+        handle.run_id,
+        handle.attempt,
+        state.dependencies.now_ms(),
+        reason,
+        True,
+        Some(handle.run_root),
+      ),
+    ],
+    "ledger_append_failed",
+  )
+}
+
+fn handle_scheduled_retry_tick(
+  state: State,
+  run_id: String,
+  generation: Int,
+) -> State {
+  case dict.get(state.scheduled_retry_generations, run_id) {
+    Ok(current) ->
+      case current == generation {
+        False -> state
+        True -> retry_scheduled_run_now(state, run_id, generation)
+      }
+    Error(_) -> state
+  }
+}
+
+fn retry_scheduled_run_now(
+  state: State,
+  run_id: String,
+  generation: Int,
+) -> State {
+  case scheduled_status_for_run(state, run_id) {
+    Error(_) -> state
+    Ok(status) ->
+      case
+        scheduled_job_by_id(
+          state.workflow.bundle.orchestrator.scheduled_jobs,
+          status.job_id,
+        ),
+        status.current_run
+      {
+        Ok(job), Some(run) ->
+          case
+            state.operator_paused
+            || !config.can_dispatch(state.workflow.reload_state)
+            || !scheduled_start_slot_available(state, job.id)
+          {
+            True -> {
+              let timer =
+                state.dependencies.send_after(
+                  state.subject,
+                  1000,
+                  ScheduledRetryTick(run_id, generation),
+                )
+              let _ = timer
+              state
+            }
+            False -> {
+              let state =
+                append_scheduled_bodies(
+                  state,
+                  [
+                    record.ScheduledRunRetryCancelled(
+                      job.id,
+                      run_id,
+                      generation,
+                      "retry_started",
+                    ),
+                  ],
+                  "ledger_append_failed",
+                )
+              let state =
+                State(
+                  ..state,
+                  scheduled_retry_generations: dict.delete(
+                    state.scheduled_retry_generations,
+                    run_id,
+                  ),
+                )
+              start_scheduled_run(
+                state,
+                job,
+                run_id,
+                run.due_at_ms,
+                run.attempt,
+                run.trigger,
+              )
+            }
+          }
+        _, _ -> state
+      }
+  }
+}
+
+fn scheduled_due_at_for_run(state: State, run_id: String) -> Int {
+  case scheduled_status_for_run(state, run_id) {
+    Ok(status) ->
+      case status.current_run {
+        Some(run) -> run.due_at_ms
+        None -> 0
+      }
+    Error(_) -> 0
+  }
+}
+
+fn scheduled_status_for_run(
+  state: State,
+  run_id: String,
+) -> Result(projection.ScheduledJobStatus, Nil) {
+  state.scheduled_projection
+  |> projection.scheduled_statuses
+  |> list.filter(fn(status) {
+    case status.current_run {
+      Some(run) -> run.run_id == run_id
+      None -> False
+    }
+  })
+  |> first_scheduled_status
+}
+
+fn first_scheduled_status(
+  statuses: List(projection.ScheduledJobStatus),
+) -> Result(projection.ScheduledJobStatus, Nil) {
+  case statuses {
+    [status, ..] -> Ok(status)
+    [] -> Error(Nil)
+  }
+}
+
+fn scheduled_job_by_id(
+  jobs: List(config_types.ScheduledJobConfig),
+  job_id: String,
+) -> Result(config_types.ScheduledJobConfig, Nil) {
+  case jobs {
+    [] -> Error(Nil)
+    [job, ..rest] ->
+      case job.id == job_id {
+        True -> Ok(job)
+        False -> scheduled_job_by_id(rest, job_id)
+      }
+  }
+}
+
+fn scheduled_job_has_unfinished_run(state: State, job_id: String) -> Bool {
+  case projection.scheduled_status_for(state.scheduled_projection, job_id) {
+    Error(_) -> False
+    Ok(status) ->
+      case status.state {
+        projection.ScheduledDuePending
+        | projection.ScheduledPaused
+        | projection.ScheduledWaitingForGlobalSlot
+        | projection.ScheduledActive
+        | projection.ScheduledRetryWaiting -> True
+        projection.ScheduledIdle
+        | projection.ScheduledReportRetryWaiting
+        | projection.ScheduledTerminalSuccess
+        | projection.ScheduledTerminalFailure -> False
+      }
+  }
+}
+
+fn admit_manual_scheduled_run(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+  now_ms: Int,
+  run_id: String,
+) -> State {
+  append_scheduled_bodies(
+    state,
+    [
+      record.ScheduledJobDue(job.id, job.workflow, now_ms, run_id, "manual"),
+      record.ScheduledRunPending(
+        job.id,
+        job.workflow,
+        now_ms,
+        run_id,
+        "manual",
+        now_ms,
+      ),
+    ],
+    "ledger_append_failed",
+  )
+}
+
+fn scheduled_start_slot_available(state: State, job_id: String) -> Bool {
+  state.workflow.effective.agent.max_concurrent_agents != 0
+  && scheduled_start_slots_used(state, job_id)
+  < state.workflow.effective.agent.max_concurrent_agents
+}
+
+fn scheduled_start_slots_used(state: State, starting_job_id: String) -> Int {
+  active_run_count(state)
+  + dict.size(state.pending_claims)
+  + scheduled_active_count(state)
+  + scheduled_pending_count_excluding(state, starting_job_id)
+}
+
+fn scheduled_active_count(state: State) -> Int {
+  state.registry
+  |> worker_registry.scheduled_worker_handles
+  |> list.length
+}
+
+fn scheduled_pending_count_excluding(state: State, job_id: String) -> Int {
+  state.scheduled_projection
+  |> projection.scheduled_statuses
+  |> list.filter(fn(status) {
+    status.job_id != job_id && scheduled_status_is_pending_start(status)
+  })
+  |> list.length
+}
+
+fn scheduled_pending_count(state: State) -> Int {
+  state.scheduled_projection
+  |> projection.scheduled_statuses
+  |> list.filter(scheduled_status_is_pending_start)
+  |> list.length
+}
+
+fn scheduled_status_is_pending_start(
+  status: projection.ScheduledJobStatus,
+) -> Bool {
+  case status.state {
+    projection.ScheduledDuePending
+    | projection.ScheduledPaused
+    | projection.ScheduledWaitingForGlobalSlot -> True
+    _ -> False
+  }
+}
+
+fn make_scheduled_session_id(
+  run_id: String,
+  attempt: Int,
+  session_sequence: Int,
+) -> String {
+  run_id
+  <> "-a"
+  <> int.to_string(attempt)
+  <> "-"
+  <> int.to_string(session_sequence)
+}
+
+fn append_scheduled_bodies(
+  state: State,
+  bodies: List(record.RecordBody),
+  event: String,
+) -> State {
+  case bodies {
+    [] -> state
+    _ -> {
+      let records =
+        ledger_records_for_bodies(state.dependencies.now_ms(), bodies)
+      case append_ledger_records(state, records, event) {
+        False -> state
+        True ->
+          State(
+            ..state,
+            scheduled_projection: projection.fold_from(
+              state.scheduled_projection,
+              records,
+            ),
+          )
+      }
+    }
+  }
+}
+
+fn int_plus(value: Int, increment: Int) -> Int {
+  value + increment
+}
+
 fn handle_retry_tick(state: State, issue_id: String, generation: Int) -> State {
   case dict.get(state.runtime.retry_attempts, issue_id) {
     Error(_) -> {
@@ -3529,7 +5237,10 @@ fn can_reserve_dispatch_slot(state: State, issue: tracker_issue.Issue) -> Bool {
 }
 
 fn dispatch_slots_used(state: State) -> Int {
-  active_run_count(state) + dict.size(state.pending_claims)
+  active_run_count(state)
+  + dict.size(state.pending_claims)
+  + scheduled_active_count(state)
+  + scheduled_pending_count(state)
 }
 
 fn per_state_dispatch_slot_available(
@@ -5554,6 +7265,22 @@ fn append_ledger_bodies(
   case bodies {
     [] -> True
     _ ->
+      append_ledger_records(
+        state,
+        ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
+        event,
+      )
+  }
+}
+
+fn append_ledger_records(
+  state: State,
+  records: List(record.LedgerRecord),
+  event: String,
+) -> Bool {
+  case records {
+    [] -> True
+    _ ->
       case
         ledger.path_for_workspace_root(state.workflow.effective.workspace.root)
       {
@@ -5564,13 +7291,7 @@ fn append_ledger_bodies(
           False
         }
         Ok(ledger_path) ->
-          case
-            ledger.append_many(
-              ledger_path,
-              ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
-              True,
-            )
-          {
+          case ledger.append_many(ledger_path, records, True) {
             Ok(Nil) -> True
             Error(err) -> {
               log_state(state, "error", event, [
@@ -5933,6 +7654,17 @@ fn stop_worker(handle: worker_registry.WorkerHandle) -> Nil {
   process.kill(handle.pid)
 }
 
+fn stop_scheduled_worker(handle: worker_registry.ScheduledWorkerHandle) -> Nil {
+  case handle.command_subject {
+    Some(subject) -> {
+      let reply = process.new_subject()
+      process.send(subject, worker_command.Abort(reply))
+    }
+    None -> Nil
+  }
+  process.kill(handle.pid)
+}
+
 fn shutdown_state(state: State) -> State {
   shutdown_state_internal(state, True)
 }
@@ -5952,9 +7684,22 @@ fn append_shutdown_step_attempt_interruptions(state: State) -> Nil {
             worker_registry.worker_handles(state.registry)
             |> list.fold([], fn(bodies, handle) {
               list.append(
-                shutdown_step_attempt_interruption_bodies(
+                step_attempt_interruption_bodies(
                   projection,
                   handle.run_id,
+                  "daemon_shutdown",
+                ),
+                bodies,
+              )
+            })
+          let bodies =
+            worker_registry.scheduled_worker_handles(state.registry)
+            |> list.fold(bodies, fn(bodies, handle) {
+              list.append(
+                step_attempt_interruption_bodies(
+                  projection,
+                  handle.run_id,
+                  "daemon_shutdown",
                 ),
                 bodies,
               )
@@ -5976,9 +7721,10 @@ fn append_shutdown_step_attempt_interruptions(state: State) -> Nil {
   }
 }
 
-fn shutdown_step_attempt_interruption_bodies(
+fn step_attempt_interruption_bodies(
   projection: projection.Projection,
   run_id: String,
+  reason: String,
 ) -> List(record.RecordBody) {
   projection.step_attempts
   |> dict.values
@@ -5998,7 +7744,7 @@ fn shutdown_step_attempt_interruption_bodies(
               workflow_id,
               step_id,
               attempt_index,
-              "daemon_shutdown",
+              reason,
             ),
             ..bodies
           ]
@@ -6018,7 +7764,7 @@ fn shutdown_step_attempt_interruption_bodies(
               workflow_id,
               step_id,
               attempt_index,
-              "daemon_shutdown",
+              reason,
             ),
             ..bodies
           ]
@@ -6050,6 +7796,8 @@ fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
   append_shutdown_step_attempt_interruptions(state)
   worker_registry.worker_handles(state.registry)
   |> list.each(fn(handle) { stop_worker(handle) })
+  worker_registry.scheduled_worker_handles(state.registry)
+  |> list.each(fn(handle) { stop_scheduled_worker(handle) })
   let event_hub_shutdown_timeout_ms = 1000
   case hub.stop_and_wait(state.event_hub, event_hub_shutdown_timeout_ms) {
     Ok(Nil) -> Nil

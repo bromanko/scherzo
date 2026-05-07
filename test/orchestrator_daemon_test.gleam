@@ -197,6 +197,28 @@ steps:
   config_path
 }
 
+fn write_scheduled_command_workflow(dir: String, command: String) -> String {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let root = dir <> "/workspaces"
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      workflow_text(root, 1)
+        <> "scheduled_jobs:\n  - id: scheduled-repair\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: scheduled_command\n    kind: command\n    run: |\n      "
+        <> command
+        <> "\n    workspace: main\n",
+    )
+  config_path
+}
+
 fn write_real_failing_command_workflow(dir: String) -> String {
   reset_dir(dir)
   let config_path = dir <> "/scherzo.yaml"
@@ -313,6 +335,48 @@ fn disabled_linear_commands() -> linear.CommandClient {
   linear.CommandClient(fetch_comments: fn(_, _) { Ok([]) }, post_ack: fn(_, _) {
     Ok(Nil)
   })
+}
+
+type TestClockMessage {
+  ClockGet(process.Subject(Int))
+  ClockSet(Int)
+}
+
+fn start_test_clock(initial: Int) -> process.Subject(TestClockMessage) {
+  let ready = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let subject = process.new_subject()
+      process.send(ready, subject)
+      test_clock_loop(initial, subject)
+    })
+  let assert Ok(subject) = process.receive(ready, within: 1000)
+  subject
+}
+
+fn test_clock_loop(
+  now_ms: Int,
+  subject: process.Subject(TestClockMessage),
+) -> Nil {
+  case process.receive(subject, within: 60_000) {
+    Ok(ClockGet(reply)) -> {
+      process.send(reply, now_ms)
+      test_clock_loop(now_ms, subject)
+    }
+    Ok(ClockSet(next)) -> test_clock_loop(next, subject)
+    Error(_) -> Nil
+  }
+}
+
+fn clock_now(subject: process.Subject(TestClockMessage)) -> Int {
+  let reply = process.new_subject()
+  process.send(subject, ClockGet(reply))
+  let assert Ok(now_ms) = process.receive(reply, within: 1000)
+  now_ms
+}
+
+fn clock_set(subject: process.Subject(TestClockMessage), now_ms: Int) -> Nil {
+  process.send(subject, ClockSet(now_ms))
 }
 
 type FetchRequest {
@@ -447,6 +511,71 @@ fn fake_workflow_run_dependencies(
       ))
     },
     checkpoint: workflow_checkpoint.noop_writer(),
+  )
+}
+
+fn scheduled_command_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    command_step: fn(
+      context: workflow_run.StepContext,
+      command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
+      process.send(log_subject, "scheduled_command:" <> command)
+      process.send(
+        log_subject,
+        "scheduled_context:"
+          <> context.run_kind
+          <> ":"
+          <> context.scheduled_job_id
+          <> ":"
+          <> context.issue_id,
+      )
+      step_artifact.from_command_result(
+        context.step_id,
+        0,
+        "stdout:" <> context.step_id,
+        "",
+        False,
+        secrets,
+        limits,
+      )
+    },
+  )
+}
+
+fn blocking_scheduled_command_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+) -> workflow_run.Dependencies {
+  let base = scheduled_command_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    command_step: fn(
+      context: workflow_run.StepContext,
+      command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
+      process.send(log_subject, "scheduled_command_started:" <> command)
+      test_async.block_until_released(barrier)
+      step_artifact.from_command_result(
+        context.step_id,
+        0,
+        "stdout:" <> context.step_id,
+        "",
+        False,
+        secrets,
+        limits,
+      )
+    },
   )
 }
 
@@ -718,6 +847,46 @@ fn wait_for_event_without_event(
         Error(_) -> False
       }
   }
+}
+
+fn scheduled_record_bodies(root: String) -> List(record.RecordBody) {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(replayed) = ledger.replay(ledger_path)
+  replayed.records
+  |> list.map(fn(ledger_record) { ledger_record.body })
+  |> list.filter(fn(body) {
+    case body {
+      record.ScheduledJobDue(..)
+      | record.ScheduledJobSkipped(..)
+      | record.ScheduledRunPending(..)
+      | record.ScheduledRunPendingBlocked(..)
+      | record.ScheduledRunPendingCancelled(..)
+      | record.ScheduledRunStarted(..)
+      | record.ScheduledRunSucceeded(..)
+      | record.ScheduledRunFailed(..)
+      | record.ScheduledRunRetryScheduled(..)
+      | record.ScheduledRunRetryCancelled(..)
+      | record.ScheduledFailureReported(..)
+      | record.ScheduledFailureReportFailed(..) -> True
+      _ -> False
+    }
+  })
+}
+
+fn scheduled_record_kind_names(root: String) -> List(String) {
+  scheduled_record_bodies(root)
+  |> list.map(record.kind)
+}
+
+fn count_scheduled_started(records: List(record.RecordBody)) -> Int {
+  records
+  |> list.filter(fn(body) {
+    case body {
+      record.ScheduledRunStarted(..) -> True
+      _ -> False
+    }
+  })
+  |> list.length
 }
 
 fn wait_for_monitor_down(monitor: process.Monitor, timeout_ms: Int) -> Bool {
@@ -1308,6 +1477,239 @@ pub fn daemon_yaml_poll_dispatches_command_workflow_test() {
   )
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.has_key(snapshot.completed, "issue-id")
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_scheduled_due_tick_runs_command_workflow_test() {
+  let dir = "test/tmp/daemon-scheduled-success"
+  let workflow_path = write_scheduled_command_workflow(dir, "echo {{ run.id }}")
+  let root = dir <> "/" <> dir <> "/workspaces"
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let clock = start_test_clock(42)
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      now_ms: fn() { clock_now(clock) },
+      workflow_run_dependencies: scheduled_command_workflow_run_dependencies(
+        log_subject,
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  clock_set(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(
+    log_subject,
+    "scheduled_command:echo schedule-scheduled-repair-19700101T000001Z\n",
+    20,
+  )
+  assert wait_for_event(
+    log_subject,
+    "scheduled_context:scheduled:scheduled-repair:",
+    20,
+  )
+  assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  let assert Ok(_) = daemon.get_snapshot(started.data, 1000)
+  let kinds = scheduled_record_kind_names(root)
+  assert list.contains(kinds, "scheduled_job_due")
+  assert list.contains(kinds, "scheduled_run_pending")
+  assert list.contains(kinds, "scheduled_run_started")
+  assert list.contains(kinds, "scheduled_run_succeeded")
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_scheduled_startup_marks_interrupted_active_run_failed_test() {
+  let dir = "test/tmp/daemon-scheduled-recovery"
+  let workflow_path = write_scheduled_command_workflow(dir, "echo recovered")
+  let root = dir <> "/" <> dir <> "/workspaces"
+  let run_id = "schedule-scheduled-repair-19700101T000001Z"
+  let run_root = root <> "/implementation/scheduled/scheduled-repair/" <> run_id
+  let workspace_path = run_root <> "/workspaces/main"
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.new(
+          1000,
+          1,
+          record.ScheduledJobDue(
+            "scheduled-repair",
+            "implementation",
+            1000,
+            run_id,
+            "automatic",
+          ),
+        ),
+        record.new(
+          1000,
+          2,
+          record.ScheduledRunPending(
+            "scheduled-repair",
+            "implementation",
+            1000,
+            run_id,
+            "automatic",
+            1000,
+          ),
+        ),
+        record.new(
+          1000,
+          3,
+          record.ScheduledRunStarted(
+            "scheduled-repair",
+            "implementation",
+            1000,
+            1000,
+            run_id,
+            1,
+            run_id <> "-a1-1",
+            run_root,
+          ),
+        ),
+        record.new(
+          1000,
+          4,
+          record.StepAttemptPrepared(
+            run_id,
+            "implementation",
+            "scheduled_command",
+            1,
+            "main",
+            workspace_path,
+            run_root,
+            None,
+            None,
+          ),
+        ),
+        record.new(
+          1000,
+          5,
+          record.StepAttemptStarted(
+            run_id,
+            "implementation",
+            "scheduled_command",
+            1,
+            run_id <> "-scheduled_command-a1",
+            None,
+            False,
+          ),
+        ),
+      ],
+      True,
+    )
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      now_ms: fn() { 2000 },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let records = scheduled_record_bodies(root)
+  let assert Ok(replayed_after_recovery) = ledger.replay(ledger_path)
+  let all_records =
+    replayed_after_recovery.records
+    |> list.map(fn(ledger_record) { ledger_record.body })
+  assert list.any(records, fn(body) {
+    case body {
+      record.ScheduledRunFailed(
+        run_id: failed_run_id,
+        reason: "daemon_restart",
+        retry_exhausted: False,
+        run_root: Some(failed_run_root),
+        ..,
+      ) -> failed_run_id == run_id && failed_run_root == run_root
+      _ -> False
+    }
+  })
+  assert list.any(records, fn(body) {
+    case body {
+      record.ScheduledRunRetryScheduled(
+        run_id: retry_run_id,
+        next_attempt: 2,
+        generation: 1,
+        reason: "daemon_restart",
+        ..,
+      ) -> retry_run_id == run_id
+      _ -> False
+    }
+  })
+  assert list.any(all_records, fn(body) {
+    case body {
+      record.StepAttemptInterrupted(
+        run_id: interrupted_run_id,
+        workflow_id: "implementation",
+        step_id: "scheduled_command",
+        attempt_index: 1,
+        reason: "daemon_restart",
+      ) -> interrupted_run_id == run_id
+      _ -> False
+    }
+  })
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_scheduled_overlap_skip_does_not_start_second_run_test() {
+  let dir = "test/tmp/daemon-scheduled-overlap"
+  let workflow_path = write_scheduled_command_workflow(dir, "echo blocked")
+  let root = dir <> "/" <> dir <> "/workspaces"
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let clock = start_test_clock(42)
+  let log_subject = process.new_subject()
+  let barrier = test_async.new_barrier()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      now_ms: fn() { clock_now(clock) },
+      workflow_run_dependencies: blocking_scheduled_command_workflow_run_dependencies(
+        log_subject,
+        barrier,
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  clock_set(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_event(
+    log_subject,
+    "scheduled_command_started:echo blocked\n",
+    20,
+  )
+
+  clock_set(clock, 2000)
+  process.send(started.data, daemon.PollTick(2))
+  let assert Ok(_) = daemon.get_snapshot(started.data, 1000)
+  let records_during_overlap = scheduled_record_bodies(root)
+  assert count_scheduled_started(records_during_overlap) == 1
+  assert list.any(records_during_overlap, fn(body) {
+    case body {
+      record.ScheduledJobSkipped(reason: "overlap_running", ..) -> True
+      _ -> False
+    }
+  })
+
+  test_async.release_barrier(barrier)
+  assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 

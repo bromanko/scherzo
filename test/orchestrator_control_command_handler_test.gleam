@@ -14,6 +14,7 @@ type TestState {
 
 type DispatcherCall {
   ReloadCalled(command.OperatorCommand)
+  ScheduleRunCalled(command.OperatorCommand, String)
   RetryCalled(command.OperatorCommand, command.IssueRef)
   ParkCalled(command.OperatorCommand, command.IssueRef, String)
   UnparkCalled(command.OperatorCommand, command.IssueRef)
@@ -32,6 +33,9 @@ fn base_context(
     set_paused: fn(state, paused) { TestState(..state, paused: paused) },
     reload_workflow: fn(state, operator_command) {
       #(state, command.applied(operator_command, Some("reloaded")))
+    },
+    run_schedule_now: fn(state, operator_command, _) {
+      #(state, command.applied(operator_command, Some("schedule started")))
     },
     retry_issue: fn(state, operator_command, _) {
       #(state, command.applied(operator_command, Some("retried")))
@@ -87,6 +91,13 @@ fn recording_context(
     reload_workflow: fn(state, operator_command) {
       process.send(callback_subject, ReloadCalled(operator_command))
       #(state, command.applied(operator_command, Some("reloaded")))
+    },
+    run_schedule_now: fn(state, operator_command, job_id) {
+      process.send(
+        callback_subject,
+        ScheduleRunCalled(operator_command, job_id),
+      )
+      #(state, command.applied(operator_command, Some("schedule started")))
     },
     retry_issue: fn(state, operator_command, issue_ref) {
       process.send(callback_subject, RetryCalled(operator_command, issue_ref))

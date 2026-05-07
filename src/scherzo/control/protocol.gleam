@@ -29,6 +29,7 @@ pub type Request {
   Pause(id: String, token: String)
   Resume(id: String, token: String)
   ReloadWorkflow(id: String, token: String)
+  ScheduleRunNow(id: String, token: String, job_id: String)
   RetryIssue(id: String, token: String, issue_ref: command.IssueRef)
   ParkIssue(
     id: String,
@@ -82,6 +83,7 @@ type RequestFields {
     request_id: Option(String),
     cancel: Option(Bool),
     value: Option(String),
+    job_id: Option(String),
   )
 }
 
@@ -95,6 +97,7 @@ pub fn request_id(request: Request) -> String {
     Pause(id, _) -> id
     Resume(id, _) -> id
     ReloadWorkflow(id, _) -> id
+    ScheduleRunNow(id, _, _) -> id
     RetryIssue(id, _, _) -> id
     ParkIssue(id, _, _, _) -> id
     UnparkIssue(id, _, _) -> id
@@ -115,6 +118,7 @@ pub fn request_token(request: Request) -> String {
     Pause(_, token) -> token
     Resume(_, token) -> token
     ReloadWorkflow(_, token) -> token
+    ScheduleRunNow(_, token, _) -> token
     RetryIssue(_, token, _) -> token
     ParkIssue(_, token, _, _) -> token
     UnparkIssue(_, token, _) -> token
@@ -160,6 +164,12 @@ pub fn request_to_json(request: Request) -> json.Json {
       base_request_entries(id, token, "resume") |> json.object
     ReloadWorkflow(id, token) ->
       base_request_entries(id, token, "reload") |> json.object
+    ScheduleRunNow(id, token, job_id) ->
+      [
+        #("job_id", json.string(job_id)),
+        ..base_request_entries(id, token, "schedule_run_now")
+      ]
+      |> json.object
     RetryIssue(id, token, issue_ref) ->
       list.append(
         issue_ref_entries(issue_ref),
@@ -310,6 +320,11 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
     "pause" -> Ok(Pause(fields.id, fields.token))
     "resume" -> Ok(Resume(fields.id, fields.token))
     "reload" | "reload_workflow" -> Ok(ReloadWorkflow(fields.id, fields.token))
+    "schedule_run_now" | "schedules_run_now" ->
+      case required_job_id(fields) {
+        Ok(job_id) -> Ok(ScheduleRunNow(fields.id, fields.token, job_id))
+        Error(err) -> Error(err)
+      }
     "retry" | "retry_issue" ->
       case required_issue_ref(fields) {
         Ok(issue_ref) -> Ok(RetryIssue(fields.id, fields.token, issue_ref))
@@ -373,6 +388,19 @@ fn required_session_id(fields: RequestFields) -> Result(String, RequestError) {
     Some("") -> invalid(fields.id, "session_id must not be empty")
     Some(session_id) -> Ok(session_id)
     None -> invalid(fields.id, "missing session_id")
+  }
+}
+
+fn required_job_id(fields: RequestFields) -> Result(String, RequestError) {
+  case fields.job_id {
+    Some(job_id) -> {
+      let job_id = string.trim(job_id)
+      case job_id == "" {
+        True -> invalid(fields.id, "job_id must not be empty")
+        False -> Ok(job_id)
+      }
+    }
+    None -> invalid(fields.id, "missing job_id")
   }
 }
 
@@ -512,6 +540,11 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.string),
   )
+  use job_id <- decode.optional_field(
+    "job_id",
+    None,
+    decode.optional(decode.string),
+  )
   decode.success(RequestFields(
     version: version,
     id: id,
@@ -527,6 +560,7 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     request_id: request_id,
     cancel: cancel,
     value: value,
+    job_id: job_id,
   ))
 }
 
@@ -643,6 +677,7 @@ pub fn command_request(
     command.PauseDispatch -> Pause(id, token)
     command.ResumeDispatch -> Resume(id, token)
     command.ReloadWorkflow -> ReloadWorkflow(id, token)
+    command.RunScheduleNow(job_id) -> ScheduleRunNow(id, token, job_id)
     command.RetryIssue(issue_ref) -> RetryIssue(id, token, issue_ref)
     command.ParkIssue(issue_ref, reason) ->
       ParkIssue(id, token, issue_ref, reason)
@@ -664,6 +699,7 @@ pub fn request_operator_command(
     Pause(_, _) -> Some(command.PauseDispatch)
     Resume(_, _) -> Some(command.ResumeDispatch)
     ReloadWorkflow(_, _) -> Some(command.ReloadWorkflow)
+    ScheduleRunNow(_, _, job_id) -> Some(command.RunScheduleNow(job_id))
     RetryIssue(_, _, issue_ref) -> Some(command.RetryIssue(issue_ref))
     ParkIssue(_, _, issue_ref, reason) ->
       Some(command.ParkIssue(issue_ref, reason))

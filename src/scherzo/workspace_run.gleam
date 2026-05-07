@@ -76,6 +76,35 @@ pub fn prepare_step_attempt(
   )
 }
 
+pub fn prepare_scheduled_step_attempt(
+  job_id: String,
+  due_at: String,
+  started_at: String,
+  run_attempt: Int,
+  workflow_id: String,
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  workspace_ref: workflow_dag.WorkspaceRef,
+  orchestrator: config_types.OrchestratorConfig,
+  known_workspaces: Dict(String, PreparedStepWorkspace),
+) -> Result(PreparedStepWorkspace, PrepareError) {
+  prepare_scheduled_step_attempt_with_cleanup(
+    job_id,
+    due_at,
+    started_at,
+    run_attempt,
+    workflow_id,
+    run_id,
+    step_id,
+    attempt_index,
+    workspace_ref,
+    orchestrator,
+    known_workspaces,
+    True,
+  )
+}
+
 pub fn prepare_recovered_step(
   issue: tracker_issue.Issue,
   workflow_id: String,
@@ -226,6 +255,86 @@ fn prepare_step_attempt_with_cleanup(
   }
 }
 
+fn prepare_scheduled_step_attempt_with_cleanup(
+  job_id: String,
+  due_at: String,
+  started_at: String,
+  run_attempt: Int,
+  workflow_id: String,
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  workspace_ref: workflow_dag.WorkspaceRef,
+  orchestrator: config_types.OrchestratorConfig,
+  known_workspaces: Dict(String, PreparedStepWorkspace),
+  cleanup_on_error: Bool,
+) -> Result(PreparedStepWorkspace, PrepareError) {
+  case reusable_workspace(workspace_ref, known_workspaces) {
+    Some(prepared) ->
+      reuse_scheduled_prepared_workspace(
+        job_id,
+        due_at,
+        started_at,
+        run_attempt,
+        step_id,
+        prepared,
+        attempt_index,
+        orchestrator,
+      )
+    None -> {
+      use paths <- try_prepare(scheduled_workspace_paths(
+        job_id,
+        workflow_id,
+        run_id,
+        workspace_ref.name,
+        orchestrator,
+      ))
+      let #(run_root, workspace_path) = paths
+      use source <- try_prepare(source_workspace(
+        workspace_ref.from,
+        known_workspaces,
+      ))
+      let #(source_name, source_path) = source
+      use _ <- try_prepare(validate_source_directory(source_path))
+      use _ <- try_prepare(create_directory(run_root))
+      let prepared =
+        PreparedStepWorkspace(
+          workflow_id: workflow_id,
+          run_id: run_id,
+          run_root: run_root,
+          attempt_index: attempt_index,
+          workspace_name: workspace_ref.name,
+          path: workspace_path,
+          source_workspace_name: source_name,
+          source_workspace_path: source_path,
+        )
+      case
+        finish_prepare_scheduled_step(
+          job_id,
+          due_at,
+          started_at,
+          run_attempt,
+          step_id,
+          prepared,
+          orchestrator,
+        )
+      {
+        Ok(prepared) -> Ok(prepared)
+        Error(err) -> {
+          case cleanup_on_error {
+            True -> {
+              let _ = cleanup_run(run_root, orchestrator)
+              Nil
+            }
+            False -> Nil
+          }
+          Error(err)
+        }
+      }
+    }
+  }
+}
+
 fn finish_prepare_step(
   issue: tracker_issue.Issue,
   step_id: String,
@@ -236,6 +345,37 @@ fn finish_prepare_step(
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
   use _ <- result.try(run_before_step_hook(
     issue,
+    step_id,
+    prepared,
+    orchestrator,
+  ))
+  Ok(prepared)
+}
+
+fn finish_prepare_scheduled_step(
+  job_id: String,
+  due_at: String,
+  started_at: String,
+  run_attempt: Int,
+  step_id: String,
+  prepared: PreparedStepWorkspace,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(PreparedStepWorkspace, PrepareError) {
+  use _ <- result.try(run_scheduled_create_hook(
+    job_id,
+    due_at,
+    started_at,
+    run_attempt,
+    step_id,
+    prepared,
+    orchestrator,
+  ))
+  use _ <- try_prepare(ensure_directory_after_create(prepared.path))
+  use _ <- result.try(run_scheduled_before_step_hook(
+    job_id,
+    due_at,
+    started_at,
+    run_attempt,
     step_id,
     prepared,
     orchestrator,
@@ -259,6 +399,39 @@ pub fn after_step(
           orchestrator.config_dir,
           orchestrator.dag_hooks.timeout_ms,
           hook_env(issue, step_id, prepared, orchestrator),
+        )
+      Nil
+    }
+  }
+}
+
+pub fn after_scheduled_step(
+  job_id: String,
+  due_at: String,
+  started_at: String,
+  run_attempt: Int,
+  step_id: String,
+  prepared: PreparedStepWorkspace,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Nil {
+  case orchestrator.dag_hooks.after_step {
+    None -> Nil
+    Some(script) -> {
+      let _ =
+        hooks.run_best_effort_with_env(
+          "after_step",
+          script,
+          orchestrator.config_dir,
+          orchestrator.dag_hooks.timeout_ms,
+          scheduled_hook_env(
+            job_id,
+            due_at,
+            started_at,
+            run_attempt,
+            step_id,
+            prepared,
+            orchestrator,
+          ),
         )
       Nil
     }
@@ -647,6 +820,36 @@ fn reuse_prepared_workspace(
   Ok(prepared)
 }
 
+fn reuse_scheduled_prepared_workspace(
+  job_id: String,
+  due_at: String,
+  started_at: String,
+  run_attempt: Int,
+  step_id: String,
+  prepared: PreparedStepWorkspace,
+  attempt_index: Int,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(PreparedStepWorkspace, PrepareError) {
+  let prepared =
+    PreparedStepWorkspace(
+      ..prepared,
+      attempt_index: attempt_index,
+      source_workspace_name: Some(prepared.workspace_name),
+      source_workspace_path: Some(prepared.path),
+    )
+  use _ <- try_prepare(ensure_directory_after_create(prepared.path))
+  use _ <- result.try(run_scheduled_before_step_hook(
+    job_id,
+    due_at,
+    started_at,
+    run_attempt,
+    step_id,
+    prepared,
+    orchestrator,
+  ))
+  Ok(prepared)
+}
+
 fn source_workspace(
   from: Option(String),
   known_workspaces: Dict(String, PreparedStepWorkspace),
@@ -698,6 +901,69 @@ fn run_before_step_hook(
         orchestrator.config_dir,
         orchestrator.dag_hooks.timeout_ms,
         hook_env(issue, step_id, prepared, orchestrator),
+      )
+      |> result.map_error(HookFailure)
+  }
+}
+
+fn run_scheduled_create_hook(
+  job_id: String,
+  due_at: String,
+  started_at: String,
+  run_attempt: Int,
+  step_id: String,
+  prepared: PreparedStepWorkspace,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(Nil, PrepareError) {
+  case orchestrator.dag_hooks.create {
+    None ->
+      create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
+    Some(script) ->
+      hooks.run_hook_with_env(
+        "create",
+        script,
+        orchestrator.config_dir,
+        orchestrator.dag_hooks.timeout_ms,
+        scheduled_hook_env(
+          job_id,
+          due_at,
+          started_at,
+          run_attempt,
+          step_id,
+          prepared,
+          orchestrator,
+        ),
+      )
+      |> result.map_error(HookFailure)
+  }
+}
+
+fn run_scheduled_before_step_hook(
+  job_id: String,
+  due_at: String,
+  started_at: String,
+  run_attempt: Int,
+  step_id: String,
+  prepared: PreparedStepWorkspace,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(Nil, PrepareError) {
+  case orchestrator.dag_hooks.before_step {
+    None -> Ok(Nil)
+    Some(script) ->
+      hooks.run_hook_with_env(
+        "before_step",
+        script,
+        orchestrator.config_dir,
+        orchestrator.dag_hooks.timeout_ms,
+        scheduled_hook_env(
+          job_id,
+          due_at,
+          started_at,
+          run_attempt,
+          step_id,
+          prepared,
+          orchestrator,
+        ),
       )
       |> result.map_error(HookFailure)
   }

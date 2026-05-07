@@ -61,7 +61,8 @@ Ledger schema changes can make rollback unsafe. The implementation should keep t
 - [x] (2026-05-06 00:45Z) Added scheduled ledger record encoding/decoding, a lightweight scheduled projection, pure schedule-core boundary/run-ID helpers, scheduled workspace path helpers, scheduled hook environment helpers, and focused unit tests for those foundations.
 - [x] (2026-05-06 01:00Z) Added scheduled worker registry handles, run/session lookup, down-resolution support, and daemon down-resolution stubs that log scheduled worker exits without affecting issue worker behavior.
 - [x] (2026-05-06 01:20Z) Applied review hardening for scheduled projection history by bounding per-job `recent_run_ids` retention to the latest 25 entries while leaving full detailed history in the ledger.
-- [ ] Complete durable schedule projection semantics and startup recovery. Completed: ledger record schema, basic projection folding with bounded recent-run retention, and scheduled worker registry bookkeeping. Remaining: `next_due_at_ms` projection from config, unfinished-run recovery planning, retry/report timer recovery, and state-status rollback warning for scheduled records.
+- [x] (2026-05-07 00:00Z) Applied post-review startup recovery polish so pending or running scheduled step attempts in an interrupted active scheduled run are recorded as `StepAttemptInterrupted(reason: "daemon_restart")` before the scheduled run is failed and retried.
+- [ ] Complete durable schedule projection semantics and startup recovery. Completed: ledger record schema, basic projection folding with bounded recent-run retention, scheduled worker registry bookkeeping, and daemon startup interruption recording for active scheduled runs. Remaining: complete `next_due_at_ms` projection from config, broader unfinished-run recovery planning, report timer recovery, and state-status rollback warning for scheduled records.
 - [ ] Integrate scheduler dispatch, retry, overlap, and local schedule controls into the daemon.
 - [ ] Implement Linear failure reporting after local scheduler tests are green.
 - [ ] Implement remaining `scherzoctl schedules` diagnostics, examples, tests, and rollout documentation.
@@ -88,6 +89,9 @@ Ledger schema changes can make rollback unsafe. The implementation should keep t
 
 - Observation: Storing every scheduled run ID in projection snapshots would make snapshots grow forever for high-frequency jobs.
   Evidence: Review identified unbounded `recent_run_ids` insertion in `src/scherzo/state/projection.gleam`; the projection now trims the list to 25 IDs and tests cover the cap.
+
+- Observation: Scheduled workflow attempts already use the generic step-attempt ledger records, so crash recovery can mark scheduled command attempts interrupted without adding scheduled-specific step record kinds.
+  Evidence: `src/scherzo/workflow_run.gleam` writes `StepAttemptPrepared` and `StepAttemptStarted` for scheduled command steps, and `src/scherzo/orchestrator/daemon.gleam` now folds pending/running attempts for the scheduled run into `StepAttemptInterrupted(reason: "daemon_restart")` during startup recovery.
 
 
 ## Decision Log
@@ -152,9 +156,15 @@ Ledger schema changes can make rollback unsafe. The implementation should keep t
   Rationale: `scherzoctl schedules status` needs quick recent context, not unbounded detailed history. Keeping only the latest 25 IDs bounds projection snapshot size for frequent schedules, while the append-only ledger remains the source for full `scherzoctl schedules history` details.
   Date: 2026-05-06
 
+- Decision: Reuse `StepAttemptInterrupted` for scheduled startup crash recovery instead of introducing scheduled-specific step interruption records.
+  Rationale: Scheduled and issue workflow executions already share checkpoint step-attempt records. Reusing the same interruption record keeps crash diagnostics consistent and makes scheduled recovery observable without expanding the ledger schema further.
+  Date: 2026-05-07
+
 ## Outcomes & Retrospective
 
 Foundational milestones are partially complete as of 2026-05-06. The code now understands scheduled job configuration, rejects schedule-level arbitrary input payloads, renders scheduled template variables without fabricating a Linear issue, rejects enabled scheduled workflows that reference `issue.*`, records and decodes scheduled ledger event kinds, folds basic scheduled history into projection state, bounds projected recent run ID retention to prevent snapshot growth, computes fixed-interval boundaries and deterministic run IDs, can build issue-free scheduled workspace paths and hook environments, and can track scheduled worker handles in the worker registry. The remaining product outcome is not yet observable because daemon dispatch, startup recovery, `scherzoctl schedules`, and Linear failure triage still need to be implemented. Validation for the foundation pass used `direnv exec . gleam format --check src test` and `direnv exec . gleam test --target erlang -- --suite unit`, with the unit suite reporting 780 passed and no failures. Review hardening added the recent-run retention cap and targeted projection coverage, then reran `direnv exec . gleam format --check src test` and `direnv exec . gleam test --target erlang -- --suite unit`; the unit suite reported 783 passed and no failures.
+
+Post-review hardening on 2026-05-07 closed the scheduled crash-recovery diagnostic gap for active scheduled runs: daemon startup recovery now records `StepAttemptInterrupted(reason: "daemon_restart")` for any pending or running step attempts attached to the interrupted scheduled run before appending the scheduled run failure and retry records. The regression coverage lives in `test/orchestrator_daemon_test.gleam`. A targeted format check for the touched Gleam files passed. The unit suite compiled and ran far enough to show this new regression passing, but the overall unit command still reported one unrelated failure in `execplan_implementation_helper_test.create_implementation_issue_creates_backlog_linear_ticket_test` caused by the ambient LIV-127 workspace path being inferred as the helper's parent issue instead of the fixture's LIV-123.
 
 ## Context and Orientation
 

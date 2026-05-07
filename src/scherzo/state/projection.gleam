@@ -1570,6 +1570,10 @@ fn scheduled_due_status(
   run_id: String,
   trigger: String,
 ) -> ScheduledJobStatus {
+  let last_due_at_ms = case trigger {
+    "automatic" -> Some(due_at_ms)
+    _ -> status.last_due_at_ms
+  }
   ScheduledJobStatus(
     ..status,
     state: ScheduledDuePending,
@@ -1583,7 +1587,7 @@ fn scheduled_due_status(
       session_id: None,
       run_root: None,
     )),
-    last_due_at_ms: Some(due_at_ms),
+    last_due_at_ms: last_due_at_ms,
     recent_run_ids: insert_recent_run(status.recent_run_ids, run_id),
   )
 }

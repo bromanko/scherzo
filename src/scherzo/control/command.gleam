@@ -14,6 +14,7 @@ pub type OperatorCommand {
   PauseDispatch
   ResumeDispatch
   ReloadWorkflow
+  RunScheduleNow(job_id: String)
   RetryIssue(IssueRef)
   ParkIssue(IssueRef, reason: String)
   UnparkIssue(IssueRef)
@@ -45,6 +46,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     PauseDispatch -> "pause"
     ResumeDispatch -> "resume"
     ReloadWorkflow -> "reload"
+    RunScheduleNow(_) -> "schedule_run_now"
     RetryIssue(_) -> "retry"
     ParkIssue(_, _) -> "park"
     UnparkIssue(_) -> "unpark"
@@ -58,6 +60,7 @@ pub fn command_name(command: OperatorCommand) -> String {
 pub fn command_target(command: OperatorCommand) -> Option(String) {
   case command {
     PauseDispatch | ResumeDispatch | ReloadWorkflow -> None
+    RunScheduleNow(job_id) -> Some(job_id)
     RetryIssue(issue_ref) | ParkIssue(issue_ref, _) | UnparkIssue(issue_ref) ->
       Some(issue_ref_to_string(issue_ref))
     AbortSession(session_id)

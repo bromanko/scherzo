@@ -213,6 +213,8 @@ fn authenticate(
     protocol.Resume(id, _) -> protocol.Resume(id, control_file.token)
     protocol.ReloadWorkflow(id, _) ->
       protocol.ReloadWorkflow(id, control_file.token)
+    protocol.ScheduleRunNow(id, _, job_id) ->
+      protocol.ScheduleRunNow(id, control_file.token, job_id)
     protocol.RetryIssue(id, _, issue_ref) ->
       protocol.RetryIssue(id, control_file.token, issue_ref)
     protocol.ParkIssue(id, _, issue_ref, reason) ->

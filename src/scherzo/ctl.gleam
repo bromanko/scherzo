@@ -4,6 +4,7 @@ import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/control/client
 import scherzo/control/command as control_command
@@ -11,7 +12,10 @@ import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/session/event
 import scherzo/session/reason as session_reason
+import scherzo/state/ledger
 import scherzo/state/local_artifacts
+import scherzo/state/projection
+import scherzo/state/record
 import scherzo/terminal/render
 import scherzo/terminal/style
 import scherzo/turn_telemetry
@@ -60,6 +64,18 @@ pub type Command {
     json: Bool,
     dry_run: Bool,
     yes: Bool,
+  )
+  SchedulesStatus(
+    control_file: Option(String),
+    root: Option(String),
+    json: Bool,
+    job_id: Option(String),
+  )
+  SchedulesHistory(
+    control_file: Option(String),
+    root: Option(String),
+    json: Bool,
+    job_id: String,
   )
   StateStatus(root: String, json: Bool)
   StateArchiveOld(root: String, json: Bool, yes: Bool)
@@ -113,6 +129,7 @@ type Flags {
     reason: Option(String),
     cancel: Bool,
     value: Option(String),
+    now: Bool,
     no_follow: Bool,
     since_cursor: Int,
     color: style.ColorMode,
@@ -155,6 +172,7 @@ fn default_flags() -> Flags {
     reason: None,
     cancel: False,
     value: None,
+    now: False,
     no_follow: False,
     since_cursor: 0,
     color: style.ColorAuto,
@@ -164,7 +182,7 @@ fn default_flags() -> Flags {
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  schedules status [job]      Inspect local scheduled job status from the ledger.\n  schedules history <job>     Show local scheduled job ledger history.\n  schedules run <job> --now   Ask the daemon to run a scheduled job now.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --now                        Required for schedules run <job> --now.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -204,6 +222,7 @@ fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
     ["--value", value, ..rest] ->
       parse_flags(rest, Flags(..flags, value: Some(value)))
     ["--value"] -> Error(UsageError("--value requires text"))
+    ["--now", ..rest] -> parse_flags(rest, Flags(..flags, now: True))
     ["--help", ..] | ["-h", ..] -> Ok(Flags(..flags, positional: ["--help"]))
     [arg, ..rest] ->
       case string.starts_with(arg, "--color=") {
@@ -336,6 +355,26 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
         False, None ->
           Error(UsageError("ui respond requires --cancel or --value <text>"))
       }
+    "schedules", ["status"] ->
+      Ok(SchedulesStatus(flags.control_file, flags.root, flags.json, None))
+    "schedules", ["status", job_id] ->
+      Ok(SchedulesStatus(
+        flags.control_file,
+        flags.root,
+        flags.json,
+        Some(job_id),
+      ))
+    "schedules", ["history", job_id] ->
+      Ok(SchedulesHistory(flags.control_file, flags.root, flags.json, job_id))
+    "schedules", ["run", job_id] ->
+      case flags.now {
+        True -> Ok(operator(flags, control_command.RunScheduleNow(job_id)))
+        False -> Error(UsageError("schedules run requires --now"))
+      }
+    "schedules", _ ->
+      Error(UsageError(
+        "schedules usage: schedules status [job]|history <job>|run <job> --now",
+      ))
     "cleanup", [] ->
       case flags.yes, flags.dry_run {
         True, True ->
@@ -562,6 +601,10 @@ pub fn run_with_deps(
     }
     Cleanup(control_path, root, json, dry_run, yes) ->
       run_cleanup(control_path, root, json, dry_run, yes, output)
+    SchedulesStatus(control_path, root, json, job_id) ->
+      run_schedules_status(control_path, root, json, job_id, output)
+    SchedulesHistory(control_path, root, json, job_id) ->
+      run_schedules_history(control_path, root, json, job_id, output)
     StateStatus(root, json) -> run_state_status(root, json, output)
     StateArchiveOld(root, json, yes) ->
       run_state_archive_old(root, json, yes, output)
@@ -652,6 +695,287 @@ fn print_decision_group(
         )
         output.line("    reason: " <> decision.reason)
       })
+  }
+}
+
+fn run_schedules_status(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  json_output: Bool,
+  job_id: Option(String),
+  output: Output,
+) -> Result(Nil, Error) {
+  use root <- try_ctl(cleanup_workspace_root(control_path, explicit_root))
+  use replayed <- try_ctl(replay_local_ledger(root))
+  let statuses = case job_id {
+    None -> projection.scheduled_statuses(replayed.projection)
+    Some(job_id) ->
+      case projection.scheduled_status_for(replayed.projection, job_id) {
+        Ok(status) -> [status]
+        Error(_) -> []
+      }
+  }
+  case json_output {
+    True ->
+      output.line(
+        json.object([
+          #("schedules", json.array(statuses, of: scheduled_status_to_json)),
+        ])
+        |> json.to_string,
+      )
+    False -> print_scheduled_statuses(statuses, output)
+  }
+  Ok(Nil)
+}
+
+fn run_schedules_history(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  json_output: Bool,
+  job_id: String,
+  output: Output,
+) -> Result(Nil, Error) {
+  use root <- try_ctl(cleanup_workspace_root(control_path, explicit_root))
+  use replayed <- try_ctl(replay_local_ledger(root))
+  let records =
+    replayed.records
+    |> list.reverse
+    |> list.filter(fn(ledger_record) {
+      scheduled_record_job_id(ledger_record.body) == Some(job_id)
+    })
+  case json_output {
+    True ->
+      output.line(
+        json.object([
+          #("job_id", json.string(job_id)),
+          #("records", json.array(records, of: scheduled_record_to_json)),
+        ])
+        |> json.to_string,
+      )
+    False -> print_scheduled_history(job_id, records, output)
+  }
+  Ok(Nil)
+}
+
+fn replay_local_ledger(root: String) -> Result(ledger.ReplayResult, Error) {
+  use ledger_path <- try_ctl(
+    ledger.path_for_workspace_root(root)
+    |> result.map_error(fn(err) {
+      Failed("ledger_path_failed", ledger_error_message_for_ctl(err))
+    }),
+  )
+  ledger.replay(ledger_path)
+  |> result.map_error(fn(err) {
+    Failed("ledger_replay_failed", ledger_error_message_for_ctl(err))
+  })
+}
+
+fn print_scheduled_statuses(
+  statuses: List(projection.ScheduledJobStatus),
+  output: Output,
+) -> Nil {
+  case statuses {
+    [] -> output.line("No scheduled job history found.")
+    _ ->
+      list.each(statuses, fn(status) {
+        output.line("job: " <> status.job_id)
+        output.line("workflow: " <> status.workflow_id)
+        output.line("status: " <> scheduled_state_to_string(status.state))
+        output.line(
+          "last_due_at_ms: " <> option_int_string(status.last_due_at_ms),
+        )
+        output.line(
+          "last_success_at_ms: " <> option_int_string(status.last_success_at_ms),
+        )
+        output.line(
+          "last_failure_at_ms: " <> option_int_string(status.last_failure_at_ms),
+        )
+        output.line(
+          "last_failure_reason: " <> option_string(status.last_failure_reason),
+        )
+        output.line(
+          "skipped_overlap_count: "
+          <> int.to_string(status.skipped_overlap_count),
+        )
+        output.line(
+          "skipped_catch_up_count: "
+          <> int.to_string(status.skipped_catch_up_count),
+        )
+        output.line(
+          "skipped_paused_count: " <> int.to_string(status.skipped_paused_count),
+        )
+        output.line(
+          "skipped_capacity_count: "
+          <> int.to_string(status.skipped_capacity_count),
+        )
+        output.line(
+          "recent_run_ids: " <> string.join(status.recent_run_ids, with: ","),
+        )
+      })
+  }
+}
+
+fn print_scheduled_history(
+  job_id: String,
+  records: List(record.LedgerRecord),
+  output: Output,
+) -> Nil {
+  output.line("job: " <> job_id)
+  case records {
+    [] -> output.line("  no scheduled history")
+    _ ->
+      list.each(records, fn(ledger_record) {
+        output.line(
+          "  "
+          <> int.to_string(ledger_record.at_ms)
+          <> " "
+          <> record.kind(ledger_record.body)
+          <> " "
+          <> option_string(scheduled_record_run_id(ledger_record.body))
+          <> scheduled_record_reason_suffix(ledger_record.body),
+        )
+      })
+  }
+}
+
+fn scheduled_status_to_json(
+  status: projection.ScheduledJobStatus,
+) -> json.Json {
+  json.object([
+    #("job_id", json.string(status.job_id)),
+    #("workflow_id", json.string(status.workflow_id)),
+    #("state", json.string(scheduled_state_to_string(status.state))),
+    #("last_due_at_ms", option_int_json(status.last_due_at_ms)),
+    #("last_success_at_ms", option_int_json(status.last_success_at_ms)),
+    #("last_success_run_id", option_string_json(status.last_success_run_id)),
+    #("last_failure_at_ms", option_int_json(status.last_failure_at_ms)),
+    #("last_failure_run_id", option_string_json(status.last_failure_run_id)),
+    #("last_failure_reason", option_string_json(status.last_failure_reason)),
+    #("skipped_overlap_count", json.int(status.skipped_overlap_count)),
+    #("skipped_catch_up_count", json.int(status.skipped_catch_up_count)),
+    #("skipped_paused_count", json.int(status.skipped_paused_count)),
+    #("skipped_capacity_count", json.int(status.skipped_capacity_count)),
+    #("recent_run_ids", json.array(status.recent_run_ids, of: json.string)),
+  ])
+}
+
+fn scheduled_record_to_json(ledger_record: record.LedgerRecord) -> json.Json {
+  json.object([
+    #("at_ms", json.int(ledger_record.at_ms)),
+    #("kind", json.string(record.kind(ledger_record.body))),
+    #("run_id", option_string_json(scheduled_record_run_id(ledger_record.body))),
+    #("reason", option_string_json(scheduled_record_reason(ledger_record.body))),
+  ])
+}
+
+fn scheduled_state_to_string(state: projection.ScheduledRunState) -> String {
+  case state {
+    projection.ScheduledIdle -> "idle"
+    projection.ScheduledDuePending -> "due_pending"
+    projection.ScheduledPaused -> "paused"
+    projection.ScheduledWaitingForGlobalSlot -> "waiting_for_global_slot"
+    projection.ScheduledActive -> "active"
+    projection.ScheduledRetryWaiting -> "retry_waiting"
+    projection.ScheduledReportRetryWaiting -> "report_retry_waiting"
+    projection.ScheduledTerminalSuccess -> "terminal_success"
+    projection.ScheduledTerminalFailure -> "terminal_failure"
+  }
+}
+
+fn scheduled_record_job_id(body: record.RecordBody) -> Option(String) {
+  case body {
+    record.ScheduledJobDue(job_id, ..)
+    | record.ScheduledJobSkipped(job_id, ..)
+    | record.ScheduledRunPending(job_id, ..)
+    | record.ScheduledRunPendingBlocked(job_id, ..)
+    | record.ScheduledRunPendingCancelled(job_id, ..)
+    | record.ScheduledRunStarted(job_id, ..)
+    | record.ScheduledRunSucceeded(job_id, ..)
+    | record.ScheduledRunFailed(job_id, ..)
+    | record.ScheduledRunRetryScheduled(job_id, ..)
+    | record.ScheduledRunRetryCancelled(job_id, ..)
+    | record.ScheduledFailureReported(job_id, ..)
+    | record.ScheduledFailureReportFailed(job_id, ..) -> Some(job_id)
+    _ -> None
+  }
+}
+
+fn scheduled_record_run_id(body: record.RecordBody) -> Option(String) {
+  case body {
+    record.ScheduledJobDue(_, _, _, run_id, _)
+    | record.ScheduledJobSkipped(_, _, _, run_id, _, _)
+    | record.ScheduledRunPending(_, _, _, run_id, _, _)
+    | record.ScheduledRunPendingBlocked(_, _, _, run_id, _, _)
+    | record.ScheduledRunPendingCancelled(_, _, _, run_id, _, _)
+    | record.ScheduledRunStarted(_, _, _, _, run_id, _, _, _)
+    | record.ScheduledRunSucceeded(_, _, _, run_id, _, _, _, _)
+    | record.ScheduledRunFailed(_, _, _, run_id, _, _, _, _, _)
+    | record.ScheduledRunRetryScheduled(_, _, _, run_id, _, _, _, _)
+    | record.ScheduledRunRetryCancelled(_, run_id, _, _)
+    | record.ScheduledFailureReported(_, _, _, run_id, _, _, _, _)
+    | record.ScheduledFailureReportFailed(_, _, _, run_id, _, _, _, _, _, _) ->
+      Some(run_id)
+    _ -> None
+  }
+}
+
+fn scheduled_record_reason(body: record.RecordBody) -> Option(String) {
+  case body {
+    record.ScheduledJobSkipped(_, _, _, _, reason, _)
+    | record.ScheduledRunPendingBlocked(_, _, _, _, reason, _)
+    | record.ScheduledRunPendingCancelled(_, _, _, _, reason, _)
+    | record.ScheduledRunFailed(_, _, _, _, _, _, reason, _, _)
+    | record.ScheduledRunRetryScheduled(_, _, _, _, _, _, _, reason)
+    | record.ScheduledRunRetryCancelled(_, _, _, reason) -> Some(reason)
+    record.ScheduledFailureReportFailed(_, _, _, _, _, _, error_code, _, _, _) ->
+      Some(error_code)
+    _ -> None
+  }
+}
+
+fn scheduled_record_reason_suffix(body: record.RecordBody) -> String {
+  case scheduled_record_reason(body) {
+    Some(reason) -> " reason=" <> reason
+    None -> ""
+  }
+}
+
+fn option_int_string(value: Option(Int)) -> String {
+  case value {
+    Some(value) -> int.to_string(value)
+    None -> "-"
+  }
+}
+
+fn option_string(value: Option(String)) -> String {
+  case value {
+    Some(value) -> value
+    None -> "-"
+  }
+}
+
+fn option_int_json(value: Option(Int)) -> json.Json {
+  case value {
+    Some(value) -> json.int(value)
+    None -> json.null()
+  }
+}
+
+fn option_string_json(value: Option(String)) -> json.Json {
+  case value {
+    Some(value) -> json.string(value)
+    None -> json.null()
+  }
+}
+
+fn ledger_error_message_for_ctl(error: ledger.LedgerError) -> String {
+  case error {
+    ledger.Io(message) -> message
+    ledger.LedgerFfiFailed(error) -> ledger.ledger_ffi_error_to_string(error)
+    ledger.UnsupportedVersion(version) ->
+      "unsupported ledger schema version " <> int.to_string(version)
+    ledger.CorruptRecord(line, reason) ->
+      "corrupt ledger record at line " <> int.to_string(line) <> ": " <> reason
   }
 }
 

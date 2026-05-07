@@ -15,6 +15,8 @@ pub type Context(state) {
     set_paused: fn(state, Bool) -> state,
     reload_workflow: fn(state, command.OperatorCommand) ->
       #(state, command.CommandResult),
+    run_schedule_now: fn(state, command.OperatorCommand, String) ->
+      #(state, command.CommandResult),
     retry_issue: fn(state, command.OperatorCommand, command.IssueRef) ->
       #(state, command.CommandResult),
     park_issue: fn(state, command.OperatorCommand, command.IssueRef, String) ->
@@ -66,6 +68,11 @@ pub fn apply(
       log_transition(
         context,
         context.reload_workflow(context.state, operator_command),
+      )
+    command.RunScheduleNow(job_id) ->
+      log_transition(
+        context,
+        context.run_schedule_now(context.state, operator_command, job_id),
       )
     command.RetryIssue(issue_ref) ->
       log_transition(
