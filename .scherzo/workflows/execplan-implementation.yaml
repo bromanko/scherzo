@@ -1,6 +1,6 @@
 version: 1
 id: execplan-implementation
-description: Implement an existing ExecPlan, review the changed Gleam code, validate, publish a PR, and clean up safely.
+description: Implement an existing ExecPlan, verify the plan is complete, review the changed Gleam code, validate, publish a PR, and clean up safely.
 max_parallel_steps: 1
 steps:
   - id: prepare_plan
@@ -28,9 +28,39 @@ steps:
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" analyze'
     workspace: main
 
-  - id: review_changes
+  - id: verify_plan_completion
     kind: agent
     depends_on: [analyze_changes]
+    prompt: prompts/execplan-implementation-verify-completion.md
+    workspace: main
+
+  - id: apply_plan_completion_feedback
+    kind: agent
+    depends_on: [verify_plan_completion]
+    prompt: prompts/execplan-implementation-apply-plan-completion-feedback.md
+    workspace: main
+
+  - id: analyze_changes_after_plan_feedback
+    kind: command
+    depends_on: [apply_plan_completion_feedback]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" analyze'
+    workspace: main
+
+  - id: verify_plan_completion_after_feedback
+    kind: agent
+    depends_on: [analyze_changes_after_plan_feedback]
+    prompt: prompts/execplan-implementation-verify-completion-after-feedback.md
+    workspace: main
+
+  - id: gate_plan_completion
+    kind: command
+    depends_on: [verify_plan_completion_after_feedback]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" gate-plan-completion'
+    workspace: main
+
+  - id: review_changes
+    kind: agent
+    depends_on: [gate_plan_completion]
     prompt: prompts/execplan-implementation-review.md
     workspace: main
 
@@ -62,16 +92,28 @@ steps:
     prompt: prompts/repair-base-drift.md
     workspace: main
 
+  - id: verify_plan_completion_before_final_validation
+    kind: agent
+    depends_on: [repair_base_drift]
+    prompt: prompts/execplan-implementation-verify-completion-before-final-validation.md
+    workspace: main
+
   - id: final_validate
     kind: command
-    depends_on: [repair_base_drift]
+    depends_on: [verify_plan_completion_before_final_validation]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" validate'
     timeout_ms: 1200000
     workspace: main
 
-  - id: publish_pr
+  - id: final_plan_completion_gate
     kind: command
     depends_on: [final_validate]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" gate-plan-completion --final'
+    workspace: main
+
+  - id: publish_pr
+    kind: command
+    depends_on: [final_plan_completion_gate]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" publish'
     timeout_ms: 300000
     workspace: main

@@ -6,8 +6,11 @@ Issue description:
 Implementation summary:
 {{ steps.implement_plan.final_response }}
 
-Change analysis output:
-{{ steps.analyze_changes.stdout }}
+Post-plan-feedback change analysis output:
+{{ steps.analyze_changes_after_plan_feedback.stdout }}
+
+Plan-completion gate output:
+{{ steps.gate_plan_completion.stdout }}
 
 Review summary:
 {{ steps.review_changes.final_response }}
@@ -20,6 +23,7 @@ Feedback contract:
 - Fix blocking review findings, safe medium-or-smaller findings, and obvious validation risks.
 - If a finding is invalid, too risky, too broad, or intentionally deferred, explain why in the final response.
 - Keep the ExecPlan's living-document sections current if you make implementation changes after review.
+- Do not try to refresh `tmp/scherzo-plan-completion-verdict.json` yourself; the workflow runs a final plan-completion verifier before final validation so any tracked review fixes are checked before publish.
 - Keep changes focused; do not start unrelated cleanup.
 
 Process:
