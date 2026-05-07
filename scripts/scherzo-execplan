@@ -184,6 +184,13 @@ infer_source_issue_identifier() {
     return
   fi
 
+  stem=$(basename "$plan" .md)
+  issue=$(printf '%s\n' "$stem" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p')
+  if [ -n "$issue" ]; then
+    printf '%s\n' "$issue"
+    return
+  fi
+
   cwd=$(pwd -P)
   case "$cwd" in
     */.scherzo/workspaces/*)
@@ -197,10 +204,7 @@ infer_source_issue_identifier() {
       ;;
   esac
 
-  stem=$(basename "$plan" .md)
-  issue=$(printf '%s\n' "$stem" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p')
-  [ -n "$issue" ] || fail "could not infer source Linear issue identifier from cwd or plan filename: $plan"
-  printf '%s\n' "$issue"
+  fail "could not infer source Linear issue identifier from cwd or plan filename: $plan"
 }
 
 fetch_publish_base() {

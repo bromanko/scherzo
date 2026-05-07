@@ -42,12 +42,14 @@ avoid_panic = "error"
 avoid_todo = "error"
 division_by_zero = "error"
 
-# Agent-safety warnings tracked by the LIV-101 baseline.
+# Ratcheted high-signal production rules from LIV-102.
+error_context_lost = "error"
+missing_type_annotation = "error"
+
+# Agent-safety warnings tracked by the LIV-101 baseline, still too broad to block.
 discarded_result = "warning"
-error_context_lost = "warning"
 thrown_away_error = "warning"
 stringly_typed_error = "warning"
-missing_type_annotation = "warning"
 
 # Deliberately disabled until a follow-up can reduce or scope the noise.
 echo = "off"

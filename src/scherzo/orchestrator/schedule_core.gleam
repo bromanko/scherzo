@@ -82,9 +82,9 @@ fn parse_every_non_empty(value: String) -> Result(Int, String) {
         number_text
         |> string.trim
         |> int.parse
-        |> result.map_error(fn(_) {
-          "scheduled job every must start with an integer"
-        }),
+        |> result.replace_error(
+          "scheduled job every must start with an integer",
+        ),
       )
       case number <= 0 {
         True -> Error("scheduled job every must be positive")
