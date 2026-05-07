@@ -26,6 +26,8 @@ pub fn parse_every_accepts_mvp_units_and_rejects_invalid_values_test() {
   assert schedule_core.parse_every("30s") == Ok(30_000)
   assert schedule_core.parse_every("15m") == Ok(900_000)
   assert schedule_core.parse_every("2h") == Ok(7_200_000)
+  assert schedule_core.parse_every("abcms")
+    == Error("scheduled job every must start with an integer")
   let assert Error(_) = schedule_core.parse_every("0s")
   let assert Error(_) = schedule_core.parse_every("-1m")
   let assert Error(_) = schedule_core.parse_every("15")
