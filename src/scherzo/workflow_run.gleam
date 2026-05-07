@@ -2279,7 +2279,6 @@ fn workflow_attempt_context(
 ) -> workflow_attempt.StepAttemptContext {
   let workflow_fingerprint =
     workflow_attempt.workflow_fingerprint(dag, orchestrator)
-    |> result.unwrap("")
   workflow_attempt.StepAttemptContext(
     run_id: context.run_id,
     issue_id: context.issue_id,

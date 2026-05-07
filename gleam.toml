@@ -46,10 +46,11 @@ division_by_zero = "error"
 error_context_lost = "error"
 missing_type_annotation = "error"
 
-# Agent-safety warnings tracked by the LIV-101 baseline, still too broad to block.
+# Agent-safety warning/inventory rules tracked by the LIV-101/LIV-131 baselines, still too broad to block.
 discarded_result = "warning"
 thrown_away_error = "warning"
 stringly_typed_error = "warning"
+unwrap_used = "warning"
 
 # Deliberately disabled until a follow-up can reduce or scope the noise.
 echo = "off"
@@ -68,7 +69,6 @@ unqualified_import = "off"
 duplicate_import = "off"
 unused_exports = "off"
 deep_nesting = "off"
-unwrap_used = "off"
 function_complexity = "off"
 module_complexity = "off"
 ffi_usage = "off"
