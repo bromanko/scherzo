@@ -3558,7 +3558,7 @@ fn workflow_run_started_body_for_claim(
           dag,
           state.workflow.bundle.orchestrator,
         )
-        |> result.map_error(fn(_) { "workflow_fingerprint_failed" }),
+        |> result.replace_error("workflow_fingerprint_failed"),
       )
       use run_root <- result_try_string(
         workspace_run.run_root_for(

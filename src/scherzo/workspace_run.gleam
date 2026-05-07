@@ -793,7 +793,7 @@ fn append_scheduled_hook_env(
 
 fn create_directory(path: String) -> Result(Nil, error.WorkspaceError) {
   simplifile.create_directory_all(path)
-  |> result.map_error(fn(_) { error.WorkspaceIo("create directory failed") })
+  |> result.replace_error(error.WorkspaceIo("create directory failed"))
 }
 
 fn ensure_directory_after_create(

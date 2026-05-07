@@ -67,7 +67,7 @@ pub fn write_step_artifact(
   )
   use final <- result.try(
     simplifile.read(final_path)
-    |> result.map_error(fn(_) { MissingStepArtifact(ref) }),
+    |> result.replace_error(MissingStepArtifact(ref)),
   )
   let sha = hash.sha256_hex(final)
   case final == bytes {
