@@ -112,6 +112,7 @@ fn orchestrator(
     ),
     artifact_limits: limits(),
     model_settings: model_config.default_settings(),
+    scheduled_jobs: [],
   )
 }
 

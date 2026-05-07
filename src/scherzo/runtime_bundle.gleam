@@ -8,6 +8,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
 import scherzo/path
+import scherzo/template
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 import simplifile
@@ -140,6 +141,10 @@ fn load_orchestrator(
     orchestrator.model_settings,
     dict.to_list(workflows),
   ))
+  use _ <- result.try(validate_scheduled_workflows(
+    orchestrator.scheduled_jobs,
+    workflows,
+  ))
   Ok(RuntimeBundle(
     config_path: selected,
     config_contents: content,
@@ -210,6 +215,94 @@ fn resolve_step_prompts(
         _ -> resolve_step_prompts(rest, workflow_path, [step, ..acc])
       }
     }
+  }
+}
+
+fn validate_scheduled_workflows(
+  jobs: List(config_types.ScheduledJobConfig),
+  workflows: Dict(String, workflow_dag.WorkflowDag),
+) -> Result(Nil, BundleError) {
+  case jobs {
+    [] -> Ok(Nil)
+    [job, ..rest] ->
+      case job.enabled {
+        False -> validate_scheduled_workflows(rest, workflows)
+        True ->
+          case dict.get(workflows, job.workflow) {
+            Error(_) ->
+              Error(BundleError(
+                "scheduled_workflow_missing",
+                "scheduled job "
+                  <> job.id
+                  <> " references missing workflow "
+                  <> job.workflow,
+              ))
+            Ok(dag) -> {
+              use _ <- result.try(validate_scheduled_workflow(job, dag))
+              validate_scheduled_workflows(rest, workflows)
+            }
+          }
+      }
+  }
+}
+
+fn validate_scheduled_workflow(
+  job: config_types.ScheduledJobConfig,
+  dag: workflow_dag.WorkflowDag,
+) -> Result(Nil, BundleError) {
+  validate_scheduled_steps(job, dag.id, dag.steps)
+}
+
+fn validate_scheduled_steps(
+  job: config_types.ScheduledJobConfig,
+  workflow_id: String,
+  steps: List(workflow_dag.WorkflowStep),
+) -> Result(Nil, BundleError) {
+  case steps {
+    [] -> Ok(Nil)
+    [step, ..rest] -> {
+      use _ <- result.try(validate_scheduled_step(job, workflow_id, step))
+      validate_scheduled_steps(job, workflow_id, rest)
+    }
+  }
+}
+
+fn validate_scheduled_step(
+  job: config_types.ScheduledJobConfig,
+  workflow_id: String,
+  step: workflow_dag.WorkflowStep,
+) -> Result(Nil, BundleError) {
+  let source = case step.kind {
+    workflow_dag.AgentStep(workflow_dag.PromptInline(prompt)) -> prompt
+    workflow_dag.AgentStep(workflow_dag.PromptFile(path)) -> path
+    workflow_dag.CommandStep(run, _) -> run
+  }
+  case first_issue_reference(template.referenced_variables(source)) {
+    None -> Ok(Nil)
+    Some(variable) ->
+      Error(BundleError(
+        "scheduled_workflow_requires_issue_context",
+        "scheduled job "
+          <> job.id
+          <> " workflow "
+          <> workflow_id
+          <> " step "
+          <> step.id
+          <> " references issue variable "
+          <> variable
+          <> "; scheduled workflows must use scheduled_job.*, schedule.*, or run.* variables",
+      ))
+  }
+}
+
+fn first_issue_reference(variables: List(String)) -> Option(String) {
+  case variables {
+    [] -> None
+    [variable, ..rest] ->
+      case variable == "issue" || string.starts_with(variable, "issue.") {
+        True -> Some(variable)
+        False -> first_issue_reference(rest)
+      }
   }
 }
 

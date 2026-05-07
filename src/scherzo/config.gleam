@@ -7,6 +7,7 @@ import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
+import scherzo/orchestrator/schedule_core
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import yay
@@ -144,6 +145,17 @@ pub fn default_linear_command_config() -> config_types.LinearCommandConfig {
   )
 }
 
+pub fn default_scheduled_failure_config() -> config_types.ScheduledFailureConfig {
+  config_types.ScheduledFailureConfig(
+    linear: config_types.ScheduledLinearFailureConfig(
+      enabled: False,
+      state: None,
+      labels: [],
+      dedupe: config_types.OpenIssuePerJob,
+    ),
+  )
+}
+
 pub fn resolve_with_env(
   root: yay.Node,
   config_path: String,
@@ -189,6 +201,7 @@ pub fn resolve_orchestrator_root(
   use dag_hooks <- result.try(resolve_dag_hooks(root))
   use artifact_limits <- result.try(resolve_artifact_limits(root))
   use model_settings <- result.try(resolve_workflow_model_settings(root))
+  use scheduled_jobs <- result.try(resolve_scheduled_jobs(root, routing))
   use linear_contract <- result.try(resolve_orchestrator_linear_contract(
     root,
     effective.linear_contract,
@@ -205,6 +218,7 @@ pub fn resolve_orchestrator_root(
     dag_hooks: dag_hooks,
     artifact_limits: artifact_limits,
     model_settings: model_settings,
+    scheduled_jobs: scheduled_jobs,
   ))
 }
 
@@ -947,6 +961,320 @@ fn resolve_workflow_model_settings(
     ),
     fn(_code, message) { error.InvalidConfig(message) },
   )
+}
+
+fn resolve_scheduled_jobs(
+  root: yay.Node,
+  routing: config_types.RoutingConfig,
+) -> Result(List(config_types.ScheduledJobConfig), error.ConfigError) {
+  case get_node(root, "scheduled_jobs") {
+    None -> Ok([])
+    Some(yay.NodeSeq(values)) ->
+      read_scheduled_job_values(values, routing, [], [])
+    Some(_) -> Error(error.InvalidConfig("scheduled_jobs must be a list"))
+  }
+}
+
+fn read_scheduled_job_values(
+  values: List(yay.Node),
+  routing: config_types.RoutingConfig,
+  seen_ids: List(String),
+  acc: List(config_types.ScheduledJobConfig),
+) -> Result(List(config_types.ScheduledJobConfig), error.ConfigError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeMap(_) as node, ..rest] -> {
+      use job <- result.try(resolve_scheduled_job(node, routing))
+      case list.contains(seen_ids, job.id) {
+        True ->
+          Error(error.InvalidConfig(
+            "scheduled_jobs has duplicate job id: " <> job.id,
+          ))
+        False ->
+          read_scheduled_job_values(rest, routing, [job.id, ..seen_ids], [
+            job,
+            ..acc
+          ])
+      }
+    }
+    [_, ..] -> Error(error.InvalidConfig("scheduled_jobs entries must be maps"))
+  }
+}
+
+fn resolve_scheduled_job(
+  node: yay.Node,
+  routing: config_types.RoutingConfig,
+) -> Result(config_types.ScheduledJobConfig, error.ConfigError) {
+  use _ <- result.try(reject_schedule_payload_fields(node))
+  use id_raw <- result.try(get_required_string(
+    node,
+    "id",
+    error.InvalidConfig("scheduled_jobs entries require id"),
+  ))
+  let id = normalize_label(id_raw)
+  use _ <- result.try(validate_scheduled_id(id, "scheduled_jobs.id"))
+  use workflow_raw <- result.try(get_required_string(
+    node,
+    "workflow",
+    error.InvalidConfig("scheduled_jobs." <> id <> " requires workflow"),
+  ))
+  let workflow = normalize_label(workflow_raw)
+  use _ <- result.try(validate_scheduled_id(
+    workflow,
+    "scheduled_jobs." <> id <> ".workflow",
+  ))
+  use enabled_option <- result.try(get_bool_strict(
+    node,
+    "enabled",
+    "scheduled_jobs." <> id <> ".enabled",
+  ))
+  let enabled = enabled_option |> bool_default(True)
+  use every_ms <- result.try(resolve_scheduled_every(node, id, enabled))
+  use overlap <- result.try(resolve_scheduled_overlap(node, id))
+  use catch_up <- result.try(resolve_scheduled_catch_up(node, id))
+  use on_failure <- result.try(resolve_scheduled_failure(node, id))
+  case enabled && !dict.has_key(routing.workflows, workflow) {
+    True ->
+      Error(error.InvalidConfig(
+        "scheduled_jobs."
+        <> id
+        <> ".workflow references unknown workflow: "
+        <> workflow,
+      ))
+    False ->
+      Ok(config_types.ScheduledJobConfig(
+        id: id,
+        workflow: workflow,
+        enabled: enabled,
+        every_ms: every_ms,
+        overlap: overlap,
+        catch_up: catch_up,
+        on_failure: on_failure,
+      ))
+  }
+}
+
+fn validate_scheduled_id(
+  value: String,
+  path: String,
+) -> Result(Nil, error.ConfigError) {
+  case valid_workflow_name(value) {
+    True -> Ok(Nil)
+    False -> Error(error.InvalidConfig(path <> " has invalid id: " <> value))
+  }
+}
+
+fn resolve_scheduled_every(
+  node: yay.Node,
+  id: String,
+  enabled: Bool,
+) -> Result(Int, error.ConfigError) {
+  case get_string_strict(node, "every", "scheduled_jobs." <> id <> ".every") {
+    Error(err) -> Error(err)
+    Ok(None) ->
+      case enabled {
+        True ->
+          Error(error.InvalidConfig(
+            "scheduled_jobs." <> id <> ".every is required when enabled",
+          ))
+        False -> Ok(0)
+      }
+    Ok(Some(value)) -> {
+      use every_ms <- result.try(
+        schedule_core.parse_every(value)
+        |> result.map_error(fn(message) {
+          error.InvalidConfig("scheduled_jobs." <> id <> ".every: " <> message)
+        }),
+      )
+      case enabled && every_ms < 1000 {
+        True ->
+          Error(error.InvalidConfig(
+            "scheduled_jobs."
+            <> id
+            <> ".every must be at least 1000ms when enabled",
+          ))
+        False -> Ok(every_ms)
+      }
+    }
+  }
+}
+
+fn resolve_scheduled_overlap(
+  node: yay.Node,
+  id: String,
+) -> Result(config_types.ScheduledOverlap, error.ConfigError) {
+  case
+    get_string_strict(node, "overlap", "scheduled_jobs." <> id <> ".overlap")
+  {
+    Error(err) -> Error(err)
+    Ok(None) -> Ok(config_types.SkipOverlap)
+    Ok(Some(value)) ->
+      case value |> string.trim |> string.lowercase {
+        "skip" -> Ok(config_types.SkipOverlap)
+        other ->
+          Error(error.InvalidScheduledJobOverlap(
+            "scheduled_jobs."
+            <> id
+            <> ".overlap unsupported value "
+            <> other
+            <> "; the MVP accepts only skip",
+          ))
+      }
+  }
+}
+
+fn resolve_scheduled_catch_up(
+  node: yay.Node,
+  id: String,
+) -> Result(Bool, error.ConfigError) {
+  use catch_up <- result.try(get_bool_strict(
+    node,
+    "catch_up",
+    "scheduled_jobs." <> id <> ".catch_up",
+  ))
+  case catch_up |> bool_default(False) {
+    False -> Ok(False)
+    True ->
+      Error(error.ScheduledJobCatchUpUnsupported(
+        "scheduled_jobs." <> id <> ".catch_up=true is not supported in the MVP",
+      ))
+  }
+}
+
+fn resolve_scheduled_failure(
+  node: yay.Node,
+  id: String,
+) -> Result(config_types.ScheduledFailureConfig, error.ConfigError) {
+  case get_node(node, "on_failure") {
+    None -> Ok(default_scheduled_failure_config())
+    Some(yay.NodeMap(_)) ->
+      resolve_scheduled_on_failure_map(get_map(node, "on_failure"), id)
+    Some(_) ->
+      Error(error.InvalidConfig(
+        "scheduled_jobs." <> id <> ".on_failure must be a map",
+      ))
+  }
+}
+
+fn resolve_scheduled_on_failure_map(
+  node: yay.Node,
+  id: String,
+) -> Result(config_types.ScheduledFailureConfig, error.ConfigError) {
+  case get_node(node, "linear") {
+    None -> Ok(default_scheduled_failure_config())
+    Some(yay.NodeMap(_)) -> {
+      use linear <- result.try(resolve_scheduled_linear_failure(
+        get_map(node, "linear"),
+        id,
+      ))
+      Ok(config_types.ScheduledFailureConfig(linear: linear))
+    }
+    Some(_) ->
+      Error(error.InvalidConfig(
+        "scheduled_jobs." <> id <> ".on_failure.linear must be a map",
+      ))
+  }
+}
+
+fn resolve_scheduled_linear_failure(
+  node: yay.Node,
+  id: String,
+) -> Result(config_types.ScheduledLinearFailureConfig, error.ConfigError) {
+  let path = "scheduled_jobs." <> id <> ".on_failure.linear"
+  use enabled_option <- result.try(get_bool_strict(
+    node,
+    "enabled",
+    path <> ".enabled",
+  ))
+  let enabled = enabled_option |> bool_default(False)
+  use state_option <- result.try(get_optional_string_strict(
+    node,
+    "state",
+    path <> ".state",
+  ))
+  let state = state_option |> optional_non_empty_string
+  use labels <- result.try(get_optional_string_list_strict(
+    node,
+    "labels",
+    path <> ".labels",
+  ))
+  use dedupe <- result.try(resolve_scheduled_failure_dedupe(node, path))
+  case enabled, state {
+    True, None ->
+      Error(error.InvalidConfig(
+        path <> ".state is required when Linear failure reporting is enabled",
+      ))
+    _, _ ->
+      Ok(config_types.ScheduledLinearFailureConfig(
+        enabled: enabled,
+        state: state,
+        labels: labels |> normalize_string_list,
+        dedupe: dedupe,
+      ))
+  }
+}
+
+fn resolve_scheduled_failure_dedupe(
+  node: yay.Node,
+  path: String,
+) -> Result(config_types.ScheduledFailureDedupe, error.ConfigError) {
+  case get_string_strict(node, "dedupe", path <> ".dedupe") {
+    Error(err) -> Error(err)
+    Ok(None) -> Ok(config_types.OpenIssuePerJob)
+    Ok(Some(value)) ->
+      case value |> string.trim |> string.lowercase {
+        "open_issue_per_job" -> Ok(config_types.OpenIssuePerJob)
+        other ->
+          Error(error.InvalidConfig(
+            path
+            <> ".dedupe unsupported value "
+            <> other
+            <> "; the MVP accepts only open_issue_per_job",
+          ))
+      }
+  }
+}
+
+fn reject_schedule_payload_fields(
+  node: yay.Node,
+) -> Result(Nil, error.ConfigError) {
+  case node {
+    yay.NodeMap(entries) -> reject_schedule_payload_entries(entries)
+    _ -> Ok(Nil)
+  }
+}
+
+fn reject_schedule_payload_entries(
+  entries: List(#(yay.Node, yay.Node)),
+) -> Result(Nil, error.ConfigError) {
+  case entries {
+    [] -> Ok(Nil)
+    [#(yay.NodeStr(key), _), ..rest] ->
+      case
+        list.contains(["input", "inputs", "vars", "variables", "payload"], key)
+      {
+        True ->
+          Error(error.ScheduledJobUnsupportedInputs(
+            "scheduled_jobs."
+            <> key
+            <> " is intentionally deferred; put job-specific details in workflow YAML, prompt files, scripts, environment, or repository config",
+          ))
+        False -> reject_schedule_payload_entries(rest)
+      }
+    [_, ..rest] -> reject_schedule_payload_entries(rest)
+  }
+}
+
+fn get_optional_string_list_strict(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(List(String), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok([])
+    Some(yay.NodeSeq(values)) -> read_string_values(values, path, [])
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a string list"))
+  }
 }
 
 fn resolve_orchestrator_linear_contract(

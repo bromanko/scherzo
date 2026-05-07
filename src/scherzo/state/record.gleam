@@ -182,6 +182,114 @@ pub type RecordBody {
     message_excerpt: String,
   )
   LinearCommandAcked(comment_id: String, issue_id: String)
+  ScheduledJobDue(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    trigger: String,
+  )
+  ScheduledJobSkipped(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    reason: String,
+    skipped_count: Int,
+  )
+  ScheduledRunPending(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    trigger: String,
+    requested_at_ms: Int,
+  )
+  ScheduledRunPendingBlocked(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    reason: String,
+    observed_at_ms: Int,
+  )
+  ScheduledRunPendingCancelled(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    reason: String,
+    cancelled_at_ms: Int,
+  )
+  ScheduledRunStarted(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    started_at_ms: Int,
+    run_id: String,
+    attempt: Int,
+    session_id: String,
+    run_root: String,
+  )
+  ScheduledRunSucceeded(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    attempt: Int,
+    finished_at_ms: Int,
+    token_total: Int,
+    turns: Int,
+  )
+  ScheduledRunFailed(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    attempt: Int,
+    finished_at_ms: Int,
+    reason: String,
+    retry_exhausted: Bool,
+    run_root: Option(String),
+  )
+  ScheduledRunRetryScheduled(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    next_attempt: Int,
+    delay_ms: Int,
+    generation: Int,
+    reason: String,
+  )
+  ScheduledRunRetryCancelled(
+    job_id: String,
+    run_id: String,
+    generation: Int,
+    reason: String,
+  )
+  ScheduledFailureReported(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    attempt: Int,
+    dedupe_key: String,
+    linear_issue_id: String,
+    action: String,
+  )
+  ScheduledFailureReportFailed(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    attempt: Int,
+    dedupe_key: String,
+    error_code: String,
+    error_message: String,
+    next_retry_at_ms: Int,
+    generation: Int,
+  )
   OutboxPending(
     outbox_id: String,
     issue_id: String,
@@ -262,6 +370,22 @@ type RecordFields {
     dedupe_key: Option(String),
     payload_json: Option(String),
     error_code: Option(String),
+    job_id: Option(String),
+    due_at_ms: Option(Int),
+    trigger: Option(String),
+    skipped_count: Option(Int),
+    requested_at_ms: Option(Int),
+    observed_at_ms: Option(Int),
+    cancelled_at_ms: Option(Int),
+    started_at_ms: Option(Int),
+    finished_at_ms: Option(Int),
+    attempt: Option(Int),
+    retry_exhausted: Option(Bool),
+    next_attempt: Option(Int),
+    linear_issue_id: Option(String),
+    action: Option(String),
+    error_message: Option(String),
+    next_retry_at_ms: Option(Int),
   )
 }
 
@@ -312,6 +436,18 @@ pub fn kind(body: RecordBody) -> String {
     LinearCommandStarted(..) -> "linear_command_started"
     LinearCommandCompleted(..) -> "linear_command_completed"
     LinearCommandAcked(..) -> "linear_command_acked"
+    ScheduledJobDue(..) -> "scheduled_job_due"
+    ScheduledJobSkipped(..) -> "scheduled_job_skipped"
+    ScheduledRunPending(..) -> "scheduled_run_pending"
+    ScheduledRunPendingBlocked(..) -> "scheduled_run_pending_blocked"
+    ScheduledRunPendingCancelled(..) -> "scheduled_run_pending_cancelled"
+    ScheduledRunStarted(..) -> "scheduled_run_started"
+    ScheduledRunSucceeded(..) -> "scheduled_run_succeeded"
+    ScheduledRunFailed(..) -> "scheduled_run_failed"
+    ScheduledRunRetryScheduled(..) -> "scheduled_run_retry_scheduled"
+    ScheduledRunRetryCancelled(..) -> "scheduled_run_retry_cancelled"
+    ScheduledFailureReported(..) -> "scheduled_failure_reported"
+    ScheduledFailureReportFailed(..) -> "scheduled_failure_report_failed"
     OutboxPending(..) -> "outbox_pending"
     OutboxPendingV2(..) -> "outbox_pending_v2"
     OutboxCompleted(..) -> "outbox_completed"
@@ -638,6 +774,175 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("comment_id", json.string(comment_id)),
       #("issue_id", json.string(issue_id)),
     ]
+    ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([#("trigger", json.string(trigger))])
+    ScheduledJobSkipped(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      reason,
+      skipped_count,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("reason", json.string(reason)),
+        #("skipped_count", json.int(skipped_count)),
+      ])
+    ScheduledRunPending(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      trigger,
+      requested_at_ms,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("trigger", json.string(trigger)),
+        #("requested_at_ms", json.int(requested_at_ms)),
+      ])
+    ScheduledRunPendingBlocked(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      reason,
+      observed_at_ms,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("reason", json.string(reason)),
+        #("observed_at_ms", json.int(observed_at_ms)),
+      ])
+    ScheduledRunPendingCancelled(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      reason,
+      cancelled_at_ms,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("reason", json.string(reason)),
+        #("cancelled_at_ms", json.int(cancelled_at_ms)),
+      ])
+    ScheduledRunStarted(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      started_at_ms,
+      run_id,
+      attempt,
+      session_id,
+      run_root,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("started_at_ms", json.int(started_at_ms)),
+        #("attempt", json.int(attempt)),
+        #("session_id", json.string(session_id)),
+        #("run_root", json.string(run_root)),
+      ])
+    ScheduledRunSucceeded(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      attempt,
+      finished_at_ms,
+      token_total,
+      turns,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("attempt", json.int(attempt)),
+        #("finished_at_ms", json.int(finished_at_ms)),
+        #("token_total", json.int(token_total)),
+        #("turns", json.int(turns)),
+      ])
+    ScheduledRunFailed(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      attempt,
+      finished_at_ms,
+      reason,
+      retry_exhausted,
+      run_root,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("attempt", json.int(attempt)),
+        #("finished_at_ms", json.int(finished_at_ms)),
+        #("reason", json.string(reason)),
+        #("retry_exhausted", json.bool(retry_exhausted)),
+        #("run_root", option_string_to_json(run_root)),
+      ])
+    ScheduledRunRetryScheduled(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      next_attempt,
+      delay_ms,
+      generation,
+      reason,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("next_attempt", json.int(next_attempt)),
+        #("delay_ms", json.int(delay_ms)),
+        #("generation", json.int(generation)),
+        #("reason", json.string(reason)),
+      ])
+    ScheduledRunRetryCancelled(job_id, run_id, generation, reason) -> [
+      #("job_id", json.string(job_id)),
+      #("run_id", json.string(run_id)),
+      #("generation", json.int(generation)),
+      #("reason", json.string(reason)),
+    ]
+    ScheduledFailureReported(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      attempt,
+      dedupe_key,
+      linear_issue_id,
+      action,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("attempt", json.int(attempt)),
+        #("dedupe_key", json.string(dedupe_key)),
+        #("linear_issue_id", json.string(linear_issue_id)),
+        #("action", json.string(action)),
+      ])
+    ScheduledFailureReportFailed(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      attempt,
+      dedupe_key,
+      error_code,
+      error_message,
+      next_retry_at_ms,
+      generation,
+    ) ->
+      scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
+      |> append_json_entries([
+        #("attempt", json.int(attempt)),
+        #("dedupe_key", json.string(dedupe_key)),
+        #("error_code", json.string(error_code)),
+        #("error_message", json.string(error_message)),
+        #("next_retry_at_ms", json.int(next_retry_at_ms)),
+        #("generation", json.int(generation)),
+      ])
     OutboxPending(outbox_id, issue_id, outbox_kind, dedupe_key) -> [
       #("outbox_id", json.string(outbox_id)),
       #("issue_id", json.string(issue_id)),
@@ -662,6 +967,34 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("outbox_kind", json.string(outbox_kind)),
       #("error_code", json.string(error_code)),
     ]
+  }
+}
+
+fn scheduled_base_entries(
+  job_id: String,
+  workflow_id: String,
+  due_at_ms: Int,
+  run_id: String,
+) -> List(#(String, json.Json)) {
+  [
+    #("job_id", json.string(job_id)),
+    #("workflow_id", json.string(workflow_id)),
+    #("due_at_ms", json.int(due_at_ms)),
+    #("run_id", json.string(run_id)),
+  ]
+}
+
+fn append_json_entries(
+  base: List(#(String, json.Json)),
+  extra: List(#(String, json.Json)),
+) -> List(#(String, json.Json)) {
+  list_append(base, extra)
+}
+
+fn list_append(left: List(a), right: List(a)) -> List(a) {
+  case left {
+    [] -> right
+    [first, ..rest] -> [first, ..list_append(rest, right)]
   }
 }
 
@@ -1195,6 +1528,239 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
       Ok(LinearCommandAcked(comment_id, issue_id))
     }
+    "scheduled_job_due" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use trigger <- result.try(required_string(fields.trigger, "trigger"))
+      Ok(ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger))
+    }
+    "scheduled_job_skipped" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      use skipped_count <- result.try(required_int(
+        fields.skipped_count,
+        "skipped_count",
+      ))
+      Ok(ScheduledJobSkipped(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        reason,
+        skipped_count,
+      ))
+    }
+    "scheduled_run_pending" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use trigger <- result.try(required_string(fields.trigger, "trigger"))
+      use requested_at_ms <- result.try(required_int(
+        fields.requested_at_ms,
+        "requested_at_ms",
+      ))
+      Ok(ScheduledRunPending(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        trigger,
+        requested_at_ms,
+      ))
+    }
+    "scheduled_run_pending_blocked" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      use observed_at_ms <- result.try(required_int(
+        fields.observed_at_ms,
+        "observed_at_ms",
+      ))
+      Ok(ScheduledRunPendingBlocked(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        reason,
+        observed_at_ms,
+      ))
+    }
+    "scheduled_run_pending_cancelled" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      use cancelled_at_ms <- result.try(required_int(
+        fields.cancelled_at_ms,
+        "cancelled_at_ms",
+      ))
+      Ok(ScheduledRunPendingCancelled(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        reason,
+        cancelled_at_ms,
+      ))
+    }
+    "scheduled_run_started" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use started_at_ms <- result.try(required_int(
+        fields.started_at_ms,
+        "started_at_ms",
+      ))
+      use attempt <- result.try(required_int(fields.attempt, "attempt"))
+      use session_id <- result.try(required_string(
+        fields.session_id,
+        "session_id",
+      ))
+      use run_root <- result.try(required_string(fields.run_root, "run_root"))
+      Ok(ScheduledRunStarted(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        started_at_ms,
+        run_id,
+        attempt,
+        session_id,
+        run_root,
+      ))
+    }
+    "scheduled_run_succeeded" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use attempt <- result.try(required_int(fields.attempt, "attempt"))
+      use finished_at_ms <- result.try(required_int(
+        fields.finished_at_ms,
+        "finished_at_ms",
+      ))
+      use token_total <- result.try(required_int(
+        fields.token_total,
+        "token_total",
+      ))
+      use turns <- result.try(required_int(fields.turns, "turns"))
+      Ok(ScheduledRunSucceeded(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        finished_at_ms,
+        token_total,
+        turns,
+      ))
+    }
+    "scheduled_run_failed" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use attempt <- result.try(required_int(fields.attempt, "attempt"))
+      use finished_at_ms <- result.try(required_int(
+        fields.finished_at_ms,
+        "finished_at_ms",
+      ))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      use retry_exhausted <- result.try(required_bool(
+        fields.retry_exhausted,
+        "retry_exhausted",
+      ))
+      Ok(ScheduledRunFailed(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        finished_at_ms,
+        reason,
+        retry_exhausted,
+        fields.run_root,
+      ))
+    }
+    "scheduled_run_retry_scheduled" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use next_attempt <- result.try(required_int(
+        fields.next_attempt,
+        "next_attempt",
+      ))
+      use delay_ms <- result.try(required_int(fields.delay_ms, "delay_ms"))
+      use generation <- result.try(required_int(fields.generation, "generation"))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(ScheduledRunRetryScheduled(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        next_attempt,
+        delay_ms,
+        generation,
+        reason,
+      ))
+    }
+    "scheduled_run_retry_cancelled" -> {
+      use job_id <- result.try(required_string(fields.job_id, "job_id"))
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use generation <- result.try(required_int(fields.generation, "generation"))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(ScheduledRunRetryCancelled(job_id, run_id, generation, reason))
+    }
+    "scheduled_failure_reported" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use attempt <- result.try(required_int(fields.attempt, "attempt"))
+      use dedupe_key <- result.try(required_string(
+        fields.dedupe_key,
+        "dedupe_key",
+      ))
+      use linear_issue_id <- result.try(required_string(
+        fields.linear_issue_id,
+        "linear_issue_id",
+      ))
+      use action <- result.try(required_string(fields.action, "action"))
+      Ok(ScheduledFailureReported(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        dedupe_key,
+        linear_issue_id,
+        action,
+      ))
+    }
+    "scheduled_failure_report_failed" -> {
+      use base <- result.try(required_scheduled_base(fields))
+      let #(job_id, workflow_id, due_at_ms, run_id) = base
+      use attempt <- result.try(required_int(fields.attempt, "attempt"))
+      use dedupe_key <- result.try(required_string(
+        fields.dedupe_key,
+        "dedupe_key",
+      ))
+      use error_code <- result.try(required_string(
+        fields.error_code,
+        "error_code",
+      ))
+      use error_message <- result.try(required_string(
+        fields.error_message,
+        "error_message",
+      ))
+      use next_retry_at_ms <- result.try(required_int(
+        fields.next_retry_at_ms,
+        "next_retry_at_ms",
+      ))
+      use generation <- result.try(required_int(fields.generation, "generation"))
+      Ok(ScheduledFailureReportFailed(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        dedupe_key,
+        error_code,
+        error_message,
+        next_retry_at_ms,
+        generation,
+      ))
+    }
     "outbox_pending" -> {
       use outbox_id <- result.try(required_string(fields.outbox_id, "outbox_id"))
       use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
@@ -1483,6 +2049,86 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use job_id <- decode.optional_field(
+    "job_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use due_at_ms <- decode.optional_field(
+    "due_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use trigger <- decode.optional_field(
+    "trigger",
+    None,
+    decode.optional(decode.string),
+  )
+  use skipped_count <- decode.optional_field(
+    "skipped_count",
+    None,
+    decode.optional(decode.int),
+  )
+  use requested_at_ms <- decode.optional_field(
+    "requested_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use observed_at_ms <- decode.optional_field(
+    "observed_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use cancelled_at_ms <- decode.optional_field(
+    "cancelled_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use started_at_ms <- decode.optional_field(
+    "started_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use finished_at_ms <- decode.optional_field(
+    "finished_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use attempt <- decode.optional_field(
+    "attempt",
+    None,
+    decode.optional(decode.int),
+  )
+  use retry_exhausted <- decode.optional_field(
+    "retry_exhausted",
+    None,
+    decode.optional(decode.bool),
+  )
+  use next_attempt <- decode.optional_field(
+    "next_attempt",
+    None,
+    decode.optional(decode.int),
+  )
+  use linear_issue_id <- decode.optional_field(
+    "linear_issue_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use action <- decode.optional_field(
+    "action",
+    None,
+    decode.optional(decode.string),
+  )
+  use error_message <- decode.optional_field(
+    "error_message",
+    None,
+    decode.optional(decode.string),
+  )
+  use next_retry_at_ms <- decode.optional_field(
+    "next_retry_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
   decode.success(RecordFields(
     schema_version: schema_version,
     record_id: record_id,
@@ -1533,6 +2179,22 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     dedupe_key: dedupe_key,
     payload_json: payload_json,
     error_code: error_code,
+    job_id: job_id,
+    due_at_ms: due_at_ms,
+    trigger: trigger,
+    skipped_count: skipped_count,
+    requested_at_ms: requested_at_ms,
+    observed_at_ms: observed_at_ms,
+    cancelled_at_ms: cancelled_at_ms,
+    started_at_ms: started_at_ms,
+    finished_at_ms: finished_at_ms,
+    attempt: attempt,
+    retry_exhausted: retry_exhausted,
+    next_attempt: next_attempt,
+    linear_issue_id: linear_issue_id,
+    action: action,
+    error_message: error_message,
+    next_retry_at_ms: next_retry_at_ms,
   ))
 }
 
@@ -1551,6 +2213,29 @@ fn required_int(value: Option(Int), field: String) -> Result(Int, DecodeError) {
     Some(value) -> Ok(value)
     None -> Error(InvalidRecord("missing " <> field))
   }
+}
+
+fn required_bool(
+  value: Option(Bool),
+  field: String,
+) -> Result(Bool, DecodeError) {
+  case value {
+    Some(value) -> Ok(value)
+    None -> Error(InvalidRecord("missing " <> field))
+  }
+}
+
+fn required_scheduled_base(
+  fields: RecordFields,
+) -> Result(#(String, String, Int, String), DecodeError) {
+  use job_id <- result.try(required_string(fields.job_id, "job_id"))
+  use workflow_id <- result.try(required_string(
+    fields.workflow_id,
+    "workflow_id",
+  ))
+  use due_at_ms <- result.try(required_int(fields.due_at_ms, "due_at_ms"))
+  use run_id <- result.try(required_string(fields.run_id, "run_id"))
+  Ok(#(job_id, workflow_id, due_at_ms, run_id))
 }
 
 fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
@@ -1577,6 +2262,30 @@ fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
         outbox_kind,
         dedupe_key,
         safe_payload(payload_json, secrets),
+      )
+    ScheduledFailureReportFailed(
+      job_id,
+      workflow_id,
+      due_at_ms,
+      run_id,
+      attempt,
+      dedupe_key,
+      error_code,
+      error_message,
+      next_retry_at_ms,
+      generation,
+    ) ->
+      ScheduledFailureReportFailed(
+        job_id,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        dedupe_key,
+        error_code,
+        safe_excerpt(error_message, secrets),
+        next_retry_at_ms,
+        generation,
       )
     StepAttemptPiSessionRecorded(
       run_id,

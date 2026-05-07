@@ -148,6 +148,39 @@ pub type ArtifactLimits {
   )
 }
 
+pub type ScheduledOverlap {
+  SkipOverlap
+}
+
+pub type ScheduledFailureDedupe {
+  OpenIssuePerJob
+}
+
+pub type ScheduledLinearFailureConfig {
+  ScheduledLinearFailureConfig(
+    enabled: Bool,
+    state: Option(String),
+    labels: List(String),
+    dedupe: ScheduledFailureDedupe,
+  )
+}
+
+pub type ScheduledFailureConfig {
+  ScheduledFailureConfig(linear: ScheduledLinearFailureConfig)
+}
+
+pub type ScheduledJobConfig {
+  ScheduledJobConfig(
+    id: String,
+    workflow: String,
+    enabled: Bool,
+    every_ms: Int,
+    overlap: ScheduledOverlap,
+    catch_up: Bool,
+    on_failure: ScheduledFailureConfig,
+  )
+}
+
 pub type OrchestratorConfig {
   OrchestratorConfig(
     effective: EffectiveConfig,
@@ -156,6 +189,7 @@ pub type OrchestratorConfig {
     dag_hooks: DagHooksConfig,
     artifact_limits: ArtifactLimits,
     model_settings: model_config.Settings,
+    scheduled_jobs: List(ScheduledJobConfig),
   )
 }
 

@@ -3,6 +3,9 @@ pub type ConfigError {
   MissingTrackerApiKey
   MissingTrackerProjectSlug
   InvalidConfig(String)
+  InvalidScheduledJobOverlap(String)
+  ScheduledJobCatchUpUnsupported(String)
+  ScheduledJobUnsupportedInputs(String)
   DispatchValidationFailed(String)
 }
 
@@ -103,6 +106,9 @@ pub fn config_code(error: ConfigError) -> String {
     MissingTrackerApiKey -> "missing_tracker_api_key"
     MissingTrackerProjectSlug -> "missing_tracker_project_slug"
     InvalidConfig(_) -> "invalid_config"
+    InvalidScheduledJobOverlap(_) -> "invalid_scheduled_job_overlap"
+    ScheduledJobCatchUpUnsupported(_) -> "scheduled_job_catch_up_unsupported"
+    ScheduledJobUnsupportedInputs(_) -> "scheduled_job_unsupported_inputs"
     DispatchValidationFailed(_) -> "dispatch_validation_failed"
   }
 }
