@@ -1630,35 +1630,15 @@ fn apply_prepared_results(
         pi_session_continuations,
       )
     [PreparedStart(step: step, workspace: workspace), ..rest] -> {
-      let assert Ok(result) = dict.get(result_by_step, step.id)
-      let outcome =
-        workflow_checkpoint.step_outcome(
-          result.artifact,
-          step.on_failure == workflow_dag.ContinueWorkflow,
-        )
-      let finished =
-        workflow_checkpoint.StepFinished(
-          run_id: run_id,
-          workflow_id: dag.id,
-          step_id: step.id,
-          attempt_index: workspace.attempt_index,
-          outcome: outcome,
-          workspace_name: workspace.workspace_name,
-          workspace_path: workspace.path,
-          token_total: result.tokens.total,
-          turns: result.turns,
-        )
-      case
-        dependencies.checkpoint.write_step_artifact(finished, result.artifact)
-      {
-        Error(error) -> {
+      case dict.get(result_by_step, step.id) {
+        Error(Nil) -> {
           mark_workflow_failed_terminal(
             dependencies,
             run_id,
             dag.id,
             issue.id,
-            tokens.total + result.tokens.total,
-            turns + result.turns,
+            tokens.total,
+            turns,
           )
           let _ =
             cleanup_if_allowed(
@@ -1668,25 +1648,38 @@ fn apply_prepared_results(
               cleanup_allowed,
             )
           Error(WorkflowRunFailure(
-            reason: "checkpoint_failed:"
-              <> workflow_checkpoint.describe_error(error),
+            reason: "missing_prepared_step_result:" <> step.id,
             agent_reason: None,
             artifacts: artifacts,
             run_root: run_root,
             failed_step_id: Some(step.id),
           ))
         }
-        Ok(artifact_ref) ->
+        Ok(result) -> {
+          let outcome =
+            workflow_checkpoint.step_outcome(
+              result.artifact,
+              step.on_failure == workflow_dag.ContinueWorkflow,
+            )
+          let finished =
+            workflow_checkpoint.StepFinished(
+              run_id: run_id,
+              workflow_id: dag.id,
+              step_id: step.id,
+              attempt_index: workspace.attempt_index,
+              outcome: outcome,
+              workspace_name: workspace.workspace_name,
+              workspace_path: workspace.path,
+              token_total: result.tokens.total,
+              turns: result.turns,
+            )
           case
-            run_after_step(
-              dependencies,
-              issue,
-              step.id,
-              workspace,
-              orchestrator,
+            dependencies.checkpoint.write_step_artifact(
+              finished,
+              result.artifact,
             )
           {
-            Error(reason) -> {
+            Error(error) -> {
               mark_workflow_failed_terminal(
                 dependencies,
                 run_id,
@@ -1703,18 +1696,25 @@ fn apply_prepared_results(
                   cleanup_allowed,
                 )
               Error(WorkflowRunFailure(
-                reason: reason,
+                reason: "checkpoint_failed:"
+                  <> workflow_checkpoint.describe_error(error),
                 agent_reason: None,
                 artifacts: artifacts,
                 run_root: run_root,
                 failed_step_id: Some(step.id),
               ))
             }
-            Ok(Nil) ->
+            Ok(artifact_ref) ->
               case
-                dependencies.checkpoint.step_finished(finished, artifact_ref)
+                run_after_step(
+                  dependencies,
+                  issue,
+                  step.id,
+                  workspace,
+                  orchestrator,
+                )
               {
-                Error(error) -> {
+                Error(reason) -> {
                   mark_workflow_failed_terminal(
                     dependencies,
                     run_id,
@@ -1731,53 +1731,86 @@ fn apply_prepared_results(
                       cleanup_allowed,
                     )
                   Error(WorkflowRunFailure(
-                    reason: "checkpoint_failed:"
-                      <> workflow_checkpoint.describe_error(error),
+                    reason: reason,
                     agent_reason: None,
                     artifacts: artifacts,
                     run_root: run_root,
                     failed_step_id: Some(step.id),
                   ))
                 }
-                Ok(Nil) -> {
-                  let artifacts =
-                    dict.insert(artifacts, step.id, result.artifact)
-                  let scheduler_state =
-                    workflow_scheduler.mark_finished(
-                      scheduler_state,
-                      step.id,
-                      result.artifact,
+                Ok(Nil) ->
+                  case
+                    dependencies.checkpoint.step_finished(
+                      finished,
+                      artifact_ref,
                     )
-                  let tokens = add_tokens(tokens, result.tokens)
-                  let final_issue = case result.final_issue {
-                    Some(_) -> result.final_issue
-                    None -> final_issue
+                  {
+                    Error(error) -> {
+                      mark_workflow_failed_terminal(
+                        dependencies,
+                        run_id,
+                        dag.id,
+                        issue.id,
+                        tokens.total + result.tokens.total,
+                        turns + result.turns,
+                      )
+                      let _ =
+                        cleanup_if_allowed(
+                          run_root,
+                          orchestrator,
+                          dependencies,
+                          cleanup_allowed,
+                        )
+                      Error(WorkflowRunFailure(
+                        reason: "checkpoint_failed:"
+                          <> workflow_checkpoint.describe_error(error),
+                        agent_reason: None,
+                        artifacts: artifacts,
+                        run_root: run_root,
+                        failed_step_id: Some(step.id),
+                      ))
+                    }
+                    Ok(Nil) -> {
+                      let artifacts =
+                        dict.insert(artifacts, step.id, result.artifact)
+                      let scheduler_state =
+                        workflow_scheduler.mark_finished(
+                          scheduler_state,
+                          step.id,
+                          result.artifact,
+                        )
+                      let tokens = add_tokens(tokens, result.tokens)
+                      let final_issue = case result.final_issue {
+                        Some(_) -> result.final_issue
+                        None -> final_issue
+                      }
+                      apply_prepared_results(
+                        rest,
+                        result_by_step,
+                        issue,
+                        dag,
+                        orchestrator,
+                        tracker_client,
+                        secrets,
+                        run_id,
+                        dependencies,
+                        scheduler_state,
+                        artifacts,
+                        prepared_workspaces,
+                        run_root,
+                        attempt_indexes,
+                        tokens,
+                        final_issue,
+                        turns + result.turns,
+                        cleanup_allowed,
+                        recovered_execution,
+                        pi_session_continuations,
+                      )
+                    }
                   }
-                  apply_prepared_results(
-                    rest,
-                    result_by_step,
-                    issue,
-                    dag,
-                    orchestrator,
-                    tracker_client,
-                    secrets,
-                    run_id,
-                    dependencies,
-                    scheduler_state,
-                    artifacts,
-                    prepared_workspaces,
-                    run_root,
-                    attempt_indexes,
-                    tokens,
-                    final_issue,
-                    turns + result.turns,
-                    cleanup_allowed,
-                    recovered_execution,
-                    pi_session_continuations,
-                  )
-                }
               }
           }
+        }
       }
     }
   }
