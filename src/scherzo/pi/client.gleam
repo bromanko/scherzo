@@ -532,18 +532,7 @@ fn map_port_error(
 }
 
 fn port_error_to_string(err: port.PortError) -> String {
-  case err {
-    port.StartFailed(message) -> message
-    port.SendFailed(message) -> message
-    port.ReadTimeout -> "read timeout"
-    port.LineTooLong -> "line too long"
-    port.ProcessExited(status) -> "process exited " <> int_to_string(status)
-    port.PortClosed -> "port closed"
-    port.DiagnosticsFailed(message) -> message
-    port.TerminateFailed(message) -> message
-    port.AwaitTimeout -> "await timeout"
-    port.AwaitFailed(message) -> message
-  }
+  port.port_error_to_string(err)
 }
 
 fn try_pi(

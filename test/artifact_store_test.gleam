@@ -1,4 +1,6 @@
 import gleam/bit_array
+import gleam/erlang/process
+import gleam/list
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/state/artifact_store
@@ -84,4 +86,58 @@ pub fn artifact_store_fails_closed_for_missing_and_corrupt_artifacts_test() {
   let assert Ok(Nil) = simplifile.delete_file(at: full_path)
   let assert Error(artifact_store.MissingStepArtifact(_)) =
     artifact_store.read_step_artifact(store, ref.ref, ref.sha256)
+}
+
+pub fn write_atomic_uses_unique_temp_and_leaves_no_success_temp_test() {
+  let root = "test/tmp/artifact-store/write-atomic-success"
+  reset_dir(root)
+  let final_path = root <> "/artifact.json"
+
+  let assert Ok(Nil) = artifact_store.write_atomic(final_path, "payload")
+
+  let assert Ok(contents) = simplifile.read(final_path)
+  assert contents == "payload"
+  assert temp_entries(root) == []
+}
+
+pub fn write_atomic_reports_open_temp_phase_for_missing_parent_test() {
+  let root = "test/tmp/artifact-store/write-atomic-missing-parent"
+  reset_dir(root)
+
+  let result =
+    artifact_store.write_atomic(root <> "/missing/artifact.json", "payload")
+
+  let assert Error(artifact_store.OpenTempFailed(_)) = result
+  assert temp_entries(root) == []
+}
+
+pub fn write_atomic_concurrent_writers_leave_one_complete_payload_test() {
+  let root = "test/tmp/artifact-store/write-atomic-concurrent"
+  reset_dir(root)
+  let final_path = root <> "/artifact.json"
+  let payload_a = string.repeat("a", times: 10_000)
+  let payload_b = string.repeat("b", times: 10_000)
+  let subject = process.new_subject()
+
+  let _ =
+    process.spawn(fn() {
+      process.send(subject, artifact_store.write_atomic(final_path, payload_a))
+    })
+  let _ =
+    process.spawn(fn() {
+      process.send(subject, artifact_store.write_atomic(final_path, payload_b))
+    })
+
+  let assert Ok(Ok(Nil)) = process.receive(subject, within: 1000)
+  let assert Ok(Ok(Nil)) = process.receive(subject, within: 1000)
+  let assert Ok(final) = simplifile.read(final_path)
+  assert final == payload_a || final == payload_b
+  assert temp_entries(root) == []
+}
+
+fn temp_entries(dir: String) -> List(String) {
+  let assert Ok(entries) = simplifile.read_directory(dir)
+  list.filter(entries, fn(entry) {
+    string.contains(entry, ".scherzo-") && string.ends_with(entry, ".tmp")
+  })
 }

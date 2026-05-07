@@ -114,7 +114,7 @@ fn no_control_dependencies(
 fn lifecycle_dependencies(
   daemon_dependencies: daemon.RuntimeDependencies,
   install_stop_source: fn(process.Subject(lifecycle.StopReason)) ->
-    Result(signal.Installation, String),
+    Result(signal.Installation, signal.SignalError),
   shutdown_timeout_ms: Int,
   log_subject: process.Subject(String),
 ) -> service.DaemonLifecycleDependencies {
@@ -132,7 +132,7 @@ fn fake_install(
   ready: process.Subject(process.Subject(lifecycle.StopReason)),
   cleanup_subject: process.Subject(String),
 ) -> fn(process.Subject(lifecycle.StopReason)) ->
-  Result(signal.Installation, String) {
+  Result(signal.Installation, signal.SignalError) {
   fn(stop_subject) {
     process.send(ready, stop_subject)
     Ok(signal.Installation(
@@ -150,7 +150,7 @@ pub fn start_daemon_releases_lock_when_signal_install_fails_test() {
   let deps =
     lifecycle_dependencies(
       no_control_dependencies(log_subject),
-      fn(_) { Error("boom") },
+      fn(_) { Error(signal.InstallFailed("boom")) },
       1000,
       log_subject,
     )

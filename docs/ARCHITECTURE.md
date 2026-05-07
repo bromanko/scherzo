@@ -68,7 +68,7 @@ scripts/scherzoctl / scherzo ctl
 | Command execution | `src/scherzo/command_step.gleam`, `src/scherzo/step_artifact.gleam`, `src/scherzo/template.gleam` | Run shell command steps in prepared workspaces, cap/redact artifacts, expose `steps.*` fields to downstream prompts. |
 | Durable state/recovery | `src/scherzo/state/record.gleam`, `ledger.gleam`, `projection.gleam`, `recovery.gleam`, `artifact_store.gleam`, `local_artifacts.gleam`, `src/scherzo/workflow_checkpoint.gleam` | Append-only ledger, projection snapshots, artifact storage, startup recovery, cleanup/retention. |
 | Control API/CLI | `src/scherzo/control/*`, `src/scherzo/ctl.gleam`, `scripts/scherzoctl`, `src/scherzo/session/*`, `src/scherzo/terminal/*` | Local loopback control protocol, EventHub queries, attach rendering, mutating operator commands, offline state commands. |
-| FFI | `src/*_ffi.erl` plus `@external` declarations in Gleam files | Erlang boundaries for ports, TCP, filesystem sync/locking, signals, terminal, hashing, paths/env, shutdown, time. |
+| FFI | `src/*_ffi.erl` plus `@external` declarations in Gleam files | Erlang boundaries for ports, TCP, filesystem sync/locking, signals, terminal, hashing, paths/env, shutdown, time. See `docs/ffi.md` for the contract every FFI export and wrapper must preserve. |
 | Examples/docs | `.scherzo/scherzo.yaml`, `.scherzo/workflows/*.yaml`, `examples/`, `README.md`, `docs/runbooks/`, `docs/plans/` | Dogfood workflows and reusable examples must track user-visible config/schema changes. |
 
 ## Core invariants

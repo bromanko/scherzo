@@ -1,4 +1,5 @@
 import gleam/erlang/process
+import gleam/string
 import scherzo/lifecycle
 
 type CleanupMessage {
@@ -6,6 +7,13 @@ type CleanupMessage {
 }
 
 pub type SignalHandle
+
+pub type SignalError {
+  SignalServerUnavailable(reason: String)
+  InstallFailed(reason: String)
+  HandlerVerificationFailed(reason: String)
+  UnexpectedFfiFailure(function: String, detail: String)
+}
 
 pub type Installation {
   Installation(
@@ -17,7 +25,7 @@ pub type Installation {
 
 pub fn install(
   subject: process.Subject(lifecycle.StopReason),
-) -> Result(Installation, String) {
+) -> Result(Installation, SignalError) {
   install_with_ffi(subject, ffi_install_sigterm, ffi_cleanup_sigterm)
 }
 
@@ -26,9 +34,9 @@ pub fn install_with_ffi(
   ffi_install: fn(process.Subject(lifecycle.StopReason)) ->
     Result(#(handle, String), String),
   ffi_cleanup: fn(handle) -> Nil,
-) -> Result(Installation, String) {
+) -> Result(Installation, SignalError) {
   case ffi_install(subject) {
-    Error(message) -> Error(message)
+    Error(message) -> Error(raw_signal_error("install_sigterm", message))
     Ok(#(handle, os_pid)) -> {
       case start_cleanup_server(handle, ffi_cleanup) {
         Error(message) -> {
@@ -49,7 +57,7 @@ pub fn install_with_ffi(
 fn start_cleanup_server(
   handle: handle,
   ffi_cleanup: fn(handle) -> Nil,
-) -> Result(process.Subject(CleanupMessage), String) {
+) -> Result(process.Subject(CleanupMessage), SignalError) {
   let ready = process.new_subject()
   let pid =
     process.spawn_unlinked(fn() {
@@ -60,7 +68,7 @@ fn start_cleanup_server(
   case process.receive(ready, within: 1000) {
     Error(Nil) -> {
       process.kill(pid)
-      Error("signal_cleanup_server_start_timeout")
+      Error(InstallFailed("signal_cleanup_server_start_timeout"))
     }
     Ok(subject) -> Ok(subject)
   }
@@ -90,6 +98,35 @@ fn cleanup_once(subject: process.Subject(CleanupMessage)) -> Nil {
       }
     }
   }
+}
+
+pub fn error_message(error: SignalError) -> String {
+  case error {
+    SignalServerUnavailable(reason) -> reason
+    InstallFailed(reason) -> reason
+    HandlerVerificationFailed(reason) -> reason
+    UnexpectedFfiFailure(function, detail) ->
+      function <> " failed unexpectedly: " <> detail
+  }
+}
+
+fn raw_signal_error(function: String, message: String) -> SignalError {
+  case string_contains(message, "erl_signal_server unavailable") {
+    True -> SignalServerUnavailable(message)
+    False ->
+      case string_contains(message, "remained installed") {
+        True -> HandlerVerificationFailed(message)
+        False ->
+          case string_contains(message, "unexpected_ffi_failure:") {
+            True -> UnexpectedFfiFailure(function, message)
+            False -> InstallFailed(message)
+          }
+      }
+  }
+}
+
+fn string_contains(value: String, needle: String) -> Bool {
+  string.contains(value, needle)
 }
 
 fn cleanup_loop(

@@ -58,3 +58,26 @@ pub fn raw_json_redaction_fails_closed_for_malformed_payload_test() {
   assert string.contains(redacted.value, "unavailable")
   assert !string.contains(redacted.value, "tok-123")
 }
+
+pub fn raw_json_redaction_fail_closed_fallback_never_returns_raw_input_test() {
+  let raw = "{\"message\":\"secret-value\"}"
+  let #(value, truncated) =
+    redact_raw_json_fail_closed_ffi(
+      raw,
+      ["secret-value"],
+      -1,
+      "[safe fallback]",
+    )
+
+  assert value == "[safe fallback]"
+  assert truncated == False
+  assert !string.contains(value, "secret-value")
+}
+
+@external(erlang, "scherzo_redaction_ffi", "redact_raw_json_fail_closed")
+fn redact_raw_json_fail_closed_ffi(
+  raw: String,
+  secrets: List(String),
+  max_bytes: Int,
+  failure_placeholder: String,
+) -> #(String, Bool)

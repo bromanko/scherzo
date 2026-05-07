@@ -77,7 +77,7 @@ fn wait_for_hook(
         |> log.truncate(4000)
       Error(error.HookFailed(name, status, diagnostics))
     }
-    Error(port.AwaitTimeout) -> {
+    Error(port.ReadTimeout) -> {
       let _ = port.terminate(process)
       Error(error.HookTimedOut(name))
     }
@@ -95,18 +95,7 @@ fn hook_error_to_string(err: error.HookError) -> String {
 }
 
 fn port_error_to_string(err: port.PortError) -> String {
-  case err {
-    port.StartFailed(message) -> message
-    port.SendFailed(message) -> message
-    port.ReadTimeout -> "read timeout"
-    port.LineTooLong -> "line too long"
-    port.ProcessExited(status) -> "process exited " <> int_to_string(status)
-    port.PortClosed -> "port closed"
-    port.DiagnosticsFailed(message) -> message
-    port.TerminateFailed(message) -> message
-    port.AwaitTimeout -> "await timeout"
-    port.AwaitFailed(message) -> message
-  }
+  port.port_error_to_string(err)
 }
 
 @external(erlang, "erlang", "integer_to_binary")

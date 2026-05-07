@@ -33,6 +33,6 @@ pub fn install_with_ffi_maps_install_failure_test() {
       fn(_) { Error("boom") },
       fn(handle) { process.send(cleanup_subject, handle) },
     )
-    == Error("boom")
+    == Error(signal.InstallFailed("boom"))
   test_async.assert_no_extra_message_within(cleanup_subject, 50)
 }
