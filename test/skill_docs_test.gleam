@@ -39,6 +39,11 @@ pub fn scherzo_operator_skill_requires_safe_operating_rules_test() {
   assert_contains(skill, "SCHERZO_CONTROL_FILE")
   assert_contains(skill, "--control-file")
   assert_contains(skill, "events --json")
+  assert_contains(skill, "workflow-step-")
+  assert_contains(skill, "top-level issue")
+  assert_contains(skill, ".scherzo-keep-workspace")
+  assert_contains(skill, "command-step-diagnostics")
+  assert_contains(skill, "cleanup --json --dry-run")
   assert_contains(
     skill,
     "Require confirmation before every state-changing command",
@@ -48,8 +53,16 @@ pub fn scherzo_operator_skill_requires_safe_operating_rules_test() {
     "Ask the user to confirm the exact target id and action",
   )
   assert_contains(skill, "any command that uses `--yes`")
+  assert_contains(skill, "cleanup --yes")
+  assert_contains(skill, "state archive-old")
+  assert_contains(skill, "any Linear mutation")
   assert_contains(skill, "never reveal")
   assert_contains(skill, "token")
+  assert_contains(skill, "LINEAR_API_KEY")
+  assert_contains(skill, "SCHERZO_AGENT_LINEAR_API_KEY")
+  assert_contains(skill, "direnv exec . lc issue view")
+  assert_contains(skill, "direnv exec . lc issue comment list")
+  assert_contains(skill, "raw GraphQL")
   assert_contains(skill, "pause")
   assert_contains(skill, "resume")
   assert_contains(skill, "reload")
@@ -99,7 +112,40 @@ pub fn scherzo_operator_reference_matches_current_ctl_surface_test() {
     reference,
     "scripts/scherzoctl ui respond <session-id> <request-id> --value \"approved\" --json",
   )
+  assert_contains(reference, "scripts/scherzoctl cleanup --json --dry-run")
+  assert_contains(
+    reference,
+    "scripts/scherzoctl state status --root .scherzo/workspaces --json",
+  )
+  assert_contains(
+    reference,
+    "scripts/scherzoctl state archive-old --root .scherzo/workspaces --yes --json",
+  )
   assert_not_contains(reference, "scripts/scherzoctl " <> "--control-file")
+}
+
+pub fn scherzo_operator_reference_documents_artifacts_and_linear_cli_test() {
+  let reference = read_file(reference_path)
+
+  assert_contains(reference, "workflow-step-")
+  assert_contains(reference, ".scherzo-keep-workspace")
+  assert_contains(reference, "command-step-diagnostics")
+  assert_contains(reference, ".scherzo-state/artifacts/runs")
+  assert_contains(reference, "scripts/scherzo-jj-workspace before-remove")
+  assert_contains(reference, "direnv exec . lc issue view LIV-104 --json")
+  assert_contains(
+    reference,
+    "direnv exec . lc issue comment list LIV-104 --json",
+  )
+  assert_contains(reference, "direnv exec . lc issue comment add LIV-104")
+  assert_contains(reference, "direnv exec . lc issue update LIV-104")
+  assert_contains(reference, "direnv exec . lc api")
+  assert_contains(reference, "curl https://api.linear.app/graphql")
+  assert_contains(reference, "LINEAR_API_KEY")
+  assert_contains(reference, "SCHERZO_AGENT_LINEAR_API_KEY")
+  assert_contains(reference, "direnv exec . lc issue get")
+  assert_contains(reference, "lc comment list/add")
+  assert_contains(reference, "top-level `lc comment")
 }
 
 pub fn scherzo_operator_reference_explains_response_statuses_test() {

@@ -25,6 +25,7 @@ import scherzo/workflow_attempt
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import simplifile
+import test_async
 
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
@@ -416,10 +417,13 @@ fn linear_command_harness(workflow_dir: String) -> LinearCommandHarness {
   )
 }
 
-fn prompt_linear_command_harness(workflow_dir: String) -> LinearCommandHarness {
+fn prompt_linear_command_harness(
+  workflow_dir: String,
+) -> #(LinearCommandHarness, test_async.Barrier) {
   let candidate = issue("issue-1", "ABC-1", "Todo")
   let workflow_path = write_workflow(workflow_dir, 1)
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let fetch_subject = process.new_subject()
   let ack_subject = process.new_subject()
   let linear_server = start_linear_server(fetch_subject, ack_subject)
@@ -428,15 +432,18 @@ fn prompt_linear_command_harness(workflow_dir: String) -> LinearCommandHarness {
       tracker_with(candidate),
       linear_client(linear_server),
       log_subject,
-      prompt_agent(log_subject),
+      prompt_agent(log_subject, worker_barrier),
     )
-  LinearCommandHarness(
-    workflow_path: workflow_path,
-    log_subject: log_subject,
-    fetch_subject: fetch_subject,
-    ack_subject: ack_subject,
-    linear_server: linear_server,
-    deps: deps,
+  #(
+    LinearCommandHarness(
+      workflow_path: workflow_path,
+      log_subject: log_subject,
+      fetch_subject: fetch_subject,
+      ack_subject: ack_subject,
+      linear_server: linear_server,
+      deps: deps,
+    ),
+    worker_barrier,
   )
 }
 
@@ -605,7 +612,10 @@ fn unused_agent(
   ))
 }
 
-fn prompt_agent(log_subject: process.Subject(String)) {
+fn prompt_agent(
+  log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+) {
   fn(
     issue: tracker_issue.Issue,
     _attempt: Option(Int),
@@ -622,7 +632,7 @@ fn prompt_agent(log_subject: process.Subject(String)) {
       Ok(worker_command.QueuePrompt(message, reply)) -> {
         process.send(log_subject, "prompt:" <> message)
         process.send(reply, worker_command.Queued(Some("queued")))
-        process.sleep(5000)
+        test_async.block_until_released(barrier)
         Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("stopped")),
           workspace_path: None,
@@ -703,13 +713,14 @@ pub fn park_command_suppresses_invalid_workflow_triage_test() {
   assert fetched_ids == ["issue-1"]
   let assert Ok(snapshot) = wait_for_parked(started.data, "issue-1", 20)
   assert dict.has_key(snapshot.parked, "issue-1")
-  assert process.receive(triage_subject, within: 100) == Error(Nil)
+  test_async.assert_no_extra_message_within(triage_subject, 100)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
 pub fn linear_runtime_issue_commands_poll_when_candidate_dispatch_skipped_test() {
-  let harness = prompt_linear_command_harness("test/tmp/daemon-linear-prompt")
+  let #(harness, worker_barrier) =
+    prompt_linear_command_harness("test/tmp/daemon-linear-prompt")
   let assert Ok(started) =
     daemon.start(Some(harness.workflow_path), harness.deps)
 
@@ -737,6 +748,7 @@ pub fn linear_runtime_issue_commands_poll_when_candidate_dispatch_skipped_test()
   assert string.contains(ack, "Target: " <> display_name)
   assert !string.contains(ack, "Target: " <> canonical_session_id)
 
+  test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -750,6 +762,7 @@ pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
     tracker_issue.Issue(..candidate, updated_at: Some(birl.from_unix(1)))
   let workflow_path = write_workflow("test/tmp/daemon-linear-abort", 1)
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let fetch_subject = process.new_subject()
   let ack_subject = process.new_subject()
   let tracker_server = start_tracker_server(candidate)
@@ -759,7 +772,7 @@ pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
       dynamic_tracker(tracker_server),
       linear_client(linear_server),
       log_subject,
-      prompt_agent(log_subject),
+      prompt_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
@@ -767,7 +780,7 @@ pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
   let assert Ok(first_fetch_ids) = process.receive(fetch_subject, within: 1000)
   assert first_fetch_ids == ["issue-1"]
   assert wait_for_log(log_subject, "agent_running:issue-1", 20)
-  drain_logs(log_subject)
+  let _ = test_async.drain_subject(log_subject)
 
   process.send(tracker_server, SetTrackerCandidate(updated_candidate))
   process.send(
@@ -788,8 +801,10 @@ pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
   let assert Ok(parked_entry) = dict.get(snapshot.parked, "issue-1")
   assert parked_entry.release_policy == orchestrator_state.ExplicitUnparkOnly
   assert dict.size(snapshot.running) == 0
-  assert !wait_for_log(log_subject, "dispatch_started", 3)
+  let post_abort_logs = test_async.drain_subject(log_subject)
+  assert !list.contains(post_abort_logs, "dispatch_started")
 
+  test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
@@ -846,7 +861,7 @@ pub fn linear_command_ack_failure_retries_on_later_poll_test() {
   )
   let _first_ack = expect_ack_contains(harness, ["Status: applied"])
   assert wait_for_log(harness.log_subject, "linear_command_ack_failed", 20)
-  drain_logs(harness.log_subject)
+  let _ = test_async.drain_subject(harness.log_subject)
 
   process.send(
     harness.linear_server,
@@ -857,11 +872,8 @@ pub fn linear_command_ack_failure_retries_on_later_poll_test() {
   process.send(started.data, daemon.PollTick(2))
   expect_linear_fetch(harness, ["issue-1"])
   let _second_ack = expect_ack_contains(harness, ["Status: applied"])
-  assert !wait_for_log(
-    harness.log_subject,
-    "linear_operator_command:park:applied",
-    3,
-  )
+  let command_logs = test_async.drain_subject(harness.log_subject)
+  assert !list.contains(command_logs, "linear_operator_command:park:applied")
   assert wait_for_command_record_kinds(
     workspace_root,
     "c-retry-ack",
@@ -915,11 +927,8 @@ pub fn completed_unacked_command_replays_ack_without_reapplying_test() {
   process.send(started.data, daemon.PollTick(1))
   expect_linear_fetch(harness, ["issue-1"])
   let _ack = expect_ack_contains(harness, ["Command: park", "Status: applied"])
-  assert !wait_for_log(
-    harness.log_subject,
-    "linear_operator_command:park:applied",
-    3,
-  )
+  let command_logs = test_async.drain_subject(harness.log_subject)
+  assert !list.contains(command_logs, "linear_operator_command:park:applied")
   assert wait_for_command_record_kinds(
     workspace_root,
     "c-replay",
@@ -974,12 +983,9 @@ pub fn startup_ack_outbox_replay_suppresses_duplicate_receipt_ack_test() {
   )
   process.send(started.data, daemon.PollTick(1))
   expect_linear_fetch(harness, ["issue-1"])
-  assert process.receive(harness.ack_subject, within: 200) == Error(Nil)
-  assert !wait_for_log(
-    harness.log_subject,
-    "linear_operator_command:park:applied",
-    3,
-  )
+  test_async.assert_no_extra_message_within(harness.ack_subject, 200)
+  let command_logs = test_async.drain_subject(harness.log_subject)
+  assert !list.contains(command_logs, "linear_operator_command:park:applied")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
@@ -1014,11 +1020,8 @@ pub fn started_uncompleted_command_gets_unknown_ack_without_reapplying_test() {
   process.send(started.data, daemon.PollTick(1))
   expect_linear_fetch(harness, ["issue-1"])
   let _ack = expect_ack_contains(harness, ["Status: unknown_after_restart"])
-  assert !wait_for_log(
-    harness.log_subject,
-    "linear_operator_command:park:applied",
-    3,
-  )
+  let command_logs = test_async.drain_subject(harness.log_subject)
+  assert !list.contains(command_logs, "linear_operator_command:park:applied")
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert !dict.has_key(snapshot.parked, "issue-1")
   assert wait_for_command_record_kinds(
@@ -1178,13 +1181,6 @@ fn wait_for_parked(
         }
       }
     }
-  }
-}
-
-fn drain_logs(subject: process.Subject(String)) -> Nil {
-  case process.receive(subject, within: 10) {
-    Ok(_) -> drain_logs(subject)
-    Error(_) -> Nil
   }
 }
 

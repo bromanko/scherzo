@@ -11,6 +11,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
+import test_async
 
 fn tracker_config() -> config_types.TrackerConfig {
   config_types.TrackerConfig(
@@ -103,7 +104,7 @@ pub fn noop_report_builds_no_mutation_test() {
       workflow_policy.MissingWorkflowLabel,
     )
     == Ok(linear_triage.InvalidWorkflowReportNoop)
-  assert process.receive(observed, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(observed, 50)
 }
 
 pub fn comment_report_builds_one_comment_test() {
@@ -124,7 +125,7 @@ pub fn comment_report_builds_one_comment_test() {
   assert string.contains(comment_body, "workflow:surprise")
   assert string.contains(comment_body, "workflow:bugfix")
   assert !string.contains(comment_body, "description must not appear")
-  assert process.receive(observed, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(observed, 50)
 }
 
 pub fn state_only_and_comment_then_state_reports_test() {

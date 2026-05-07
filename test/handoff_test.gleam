@@ -17,6 +17,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import simplifile
+import test_async
 
 fn tracker_config() -> config_types.TrackerConfig {
   config_types.TrackerConfig(
@@ -359,7 +360,7 @@ pub fn success_handoff_posts_single_structured_result_comment_test() {
 
   assert client.report_success(issue(), success(), "run-structured") == Ok(Nil)
   let assert Ok(success_comment) = process.receive(subject, within: 100)
-  assert process.receive(subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 20)
   assert string.contains(success_comment, "commentCreate")
   assert string.contains(success_comment, "run-structured")
   assert string.contains(success_comment, "Result:")
@@ -386,7 +387,7 @@ pub fn success_handoff_with_attachment_uploads_result_to_created_comment_test() 
   let assert Ok(file_upload) = process.receive(graphql_subject, within: 100)
   let assert Ok(upload_request) = process.receive(upload_subject, within: 100)
   let assert Ok(comment_update) = process.receive(graphql_subject, within: 100)
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
   assert string.contains(comment_create, "ScherzoCommentCreate")
   assert string.contains(comment_create, "run-attach")
   assert string.contains(comment_fetch, "created-comment")
@@ -454,7 +455,7 @@ pub fn success_handoff_attachment_failure_stops_before_state_update_test() {
   assert string.contains(comment_create, "ScherzoCommentCreate")
   assert string.contains(comment_fetch, "ScherzoCommentFetch")
   assert string.contains(file_upload, "ScherzoFileUpload")
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
 }
 
 pub fn disabled_handoff_performs_no_transport_calls_test() {
@@ -468,7 +469,7 @@ pub fn disabled_handoff_performs_no_transport_calls_test() {
 
   assert client.claim_issue(issue(), "run-1") == Ok(Nil)
   assert client.report_success(issue(), success(), "run-2") == Ok(Nil)
-  assert process.receive(subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 20)
 }
 
 fn attachment_deps(

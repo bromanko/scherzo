@@ -1,5 +1,6 @@
 import gleam/erlang/process
 import scherzo/orchestrator/retry_scheduler
+import test_async
 
 pub fn retry_scheduler_schedules_and_cancels_timer_test() {
   let cancelled = process.new_subject()
@@ -31,7 +32,7 @@ pub fn retry_scheduler_replaces_existing_timer_when_scheduling_test() {
 
   assert process.receive(cancelled, within: 100) == Ok(123)
   assert retry_scheduler.timer_for_issue(state, "issue-1") == Ok(456)
-  assert process.receive(cancelled, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cancelled, 50)
 }
 
 pub fn retry_scheduler_tracks_one_refresh_per_issue_test() {
@@ -58,7 +59,7 @@ pub fn retry_scheduler_remove_timer_does_not_cancel_test() {
     |> retry_scheduler.remove_timer("issue-1")
 
   assert retry_scheduler.timer_for_issue(state, "issue-1") == Error(Nil)
-  assert process.receive(cancelled, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cancelled, 50)
 }
 
 pub fn retry_scheduler_cancel_all_clears_timers_and_refreshes_test() {

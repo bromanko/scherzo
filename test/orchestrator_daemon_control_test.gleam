@@ -23,6 +23,7 @@ import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
 import scherzo/workflow_run
 import simplifile
+import test_async
 
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
@@ -255,11 +256,14 @@ fn disabled_handoff() -> handoff.Client {
   handoff.disabled_client()
 }
 
-fn blocking_handoff(log_subject: process.Subject(String)) -> handoff.Client {
+fn blocking_handoff(
+  log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+) -> handoff.Client {
   handoff.Client(
     claim_issue: fn(_, _) {
       process.send(log_subject, "claim_started")
-      process.sleep(1000)
+      test_async.block_until_released(barrier)
       Ok(Nil)
     },
     report_success: fn(_, _, _) { Ok(Nil) },
@@ -269,6 +273,7 @@ fn blocking_handoff(log_subject: process.Subject(String)) -> handoff.Client {
 
 fn long_running_agent(
   log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
 ) -> fn(
   tracker_issue.Issue,
   Option(Int),
@@ -281,7 +286,7 @@ fn long_running_agent(
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
   fn(issue: tracker_issue.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.id)
-    process.sleep(5000)
+    test_async.block_until_released(barrier)
     Error(agent_types.WorkerFailure(
       reason: error.PiFailed(error.PiProtocolError("stopped")),
       workspace_path: None,
@@ -316,6 +321,7 @@ fn failing_agent(
 
 fn fail_original_then_block_agent(
   log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
 ) -> fn(
   tracker_issue.Issue,
   Option(Int),
@@ -329,7 +335,7 @@ fn fail_original_then_block_agent(
   fn(issue: tracker_issue.Issue, _, _, _, _, _, _, _) {
     process.send(log_subject, "agent_run:" <> issue.title)
     case issue.title == "Changed title" {
-      True -> process.sleep(5000)
+      True -> test_async.block_until_released(barrier)
       False -> Nil
     }
     Error(agent_types.WorkerFailure(
@@ -437,6 +443,7 @@ pub fn pause_command_suppresses_dispatch_and_resume_allows_it_test() {
   let #(workflow_path, _root) =
     write_workflow_with_limits("test/tmp/daemon-control-pause", 1, 3, 3)
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
@@ -444,19 +451,20 @@ pub fn pause_command_suppresses_dispatch_and_resume_allows_it_test() {
       tracker_client,
       disabled_handoff(),
       hub_subject,
-      long_running_agent(log_subject),
+      long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   let assert Ok(paused) =
     daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
   assert command.status_to_string(paused.status) == "applied"
-  drain_logs(log_subject)
+  let _ = test_async.drain_subject(log_subject)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "tick_started", 10)
-  assert !wait_for_log(log_subject, "dispatch_started", 3)
   let assert Ok(paused_snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.size(paused_snapshot.running) == 0
+  let paused_logs = test_async.drain_subject(log_subject)
+  assert !list.contains(paused_logs, "dispatch_started")
 
   let assert Ok(resumed) =
     daemon.apply_operator_command(started.data, command.ResumeDispatch, 1000)
@@ -464,6 +472,7 @@ pub fn pause_command_suppresses_dispatch_and_resume_allows_it_test() {
   process.send(started.data, daemon.PollTick(2))
   assert wait_for_log(log_subject, "dispatch_started", 20)
 
+  test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -474,6 +483,7 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
   let #(workflow_path, _root) =
     write_workflow_with_limits("test/tmp/daemon-control-retry", 1, 3, 3)
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
@@ -481,7 +491,7 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
       tracker_client,
       disabled_handoff(),
       hub_subject,
-      long_running_agent(log_subject),
+      long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
@@ -506,6 +516,7 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
   assert command.status_to_string(dispatched_retry.status) == "applied"
   assert wait_for_log(log_subject, "dispatch_started", 20)
 
+  test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -516,6 +527,7 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
   let #(workflow_path, _root) =
     write_workflow_with_limits("test/tmp/daemon-control-retry-active", 1, 3, 3)
   let log_subject = process.new_subject()
+  let active_worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
@@ -523,7 +535,7 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
       tracker_client,
       disabled_handoff(),
       hub_subject,
-      long_running_agent(log_subject),
+      long_running_agent(log_subject, active_worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
@@ -536,6 +548,7 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
       1000,
     )
   assert command.status_to_string(active_retry.status) == "rejected"
+  test_async.release_barrier(active_worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 
@@ -544,14 +557,16 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
   let #(workflow_path, _root) =
     write_workflow_with_limits("test/tmp/daemon-control-retry-pending", 1, 3, 3)
   let log_subject = process.new_subject()
+  let claim_barrier = test_async.new_barrier()
+  let pending_worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
       log_subject,
       tracker_client,
-      blocking_handoff(log_subject),
+      blocking_handoff(log_subject, claim_barrier),
       hub_subject,
-      long_running_agent(log_subject),
+      long_running_agent(log_subject, pending_worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
@@ -564,6 +579,8 @@ pub fn retry_rejects_active_pending_and_claimed_issues_test() {
       1000,
     )
   assert command.status_to_string(pending_retry.status) == "rejected"
+  test_async.release_barrier(claim_barrier)
+  test_async.release_barrier(pending_worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 
@@ -640,6 +657,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   let #(workflow_path, _root) =
     write_workflow_with_limits("test/tmp/daemon-control-auto-park", 1, 1, 3)
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
@@ -647,7 +665,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
       dynamic_control_tracker(tracker_server),
       disabled_handoff(),
       hub_subject,
-      fail_original_then_block_agent(log_subject),
+      fail_original_then_block_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
@@ -660,7 +678,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
     == orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(
       candidate,
     ))
-  drain_logs(log_subject)
+  let _ = test_async.drain_subject(log_subject)
 
   process.send(tracker_server, SetControlTrackerCandidate(changed))
   process.send(started.data, daemon.PollTick(2))
@@ -670,6 +688,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   assert !dict.has_key(running_snapshot.parked, "auto-park")
   assert !dict.has_key(running_snapshot.retry_attempts, "auto-park")
 
+  test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -717,6 +736,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
   let #(workflow_path, _root) =
     write_workflow_with_limits("test/tmp/daemon-control-live-prompt", 1, 3, 3)
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
@@ -731,7 +751,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
           process.receive(command_subject, within: 1000)
         assert message == "status?"
         process.send(reply, worker_command.Applied(Some("prompt accepted")))
-        process.sleep(1000)
+        test_async.block_until_released(worker_barrier)
         Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("stopped")),
           workspace_path: None,
@@ -754,6 +774,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
   assert prompt_result.target == Some("ABC-LIVE-42-1")
   assert prompt_result.message == Some("prompt accepted")
 
+  test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -764,6 +785,7 @@ pub fn prompt_and_respond_ui_commands_reject_workers_without_command_subject_tes
   let #(workflow_path, _root) =
     write_workflow_with_limits("test/tmp/daemon-control-prompt", 1, 3, 3)
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
@@ -771,7 +793,7 @@ pub fn prompt_and_respond_ui_commands_reject_workers_without_command_subject_tes
       tracker_client,
       disabled_handoff(),
       hub_subject,
-      long_running_agent(log_subject),
+      long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
@@ -798,6 +820,7 @@ pub fn prompt_and_respond_ui_commands_reject_workers_without_command_subject_tes
   assert command.status_reason(ui_result.status)
     == Some("worker_command_subject_unavailable")
 
+  test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -825,6 +848,7 @@ fn assert_session_stop_command(
   let tracker_client = tracker_with(candidate)
   let #(workflow_path, _root) = write_workflow_with_limits(dir, 1, 3, 3)
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
@@ -832,7 +856,7 @@ fn assert_session_stop_command(
       tracker_client,
       disabled_handoff(),
       hub_subject,
-      long_running_agent(log_subject),
+      long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
@@ -849,6 +873,7 @@ fn assert_session_stop_command(
     wait_for_session_exit(hub_subject, candidate.identifier <> "-42-1", 20)
   assert summary.status == event.Exited(reason)
 
+  test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -956,13 +981,6 @@ fn wait_for_log(
           }
         Error(_) -> wait_for_log(subject, expected, attempts - 1)
       }
-  }
-}
-
-fn drain_logs(subject: process.Subject(String)) -> Nil {
-  case process.receive(subject, within: 10) {
-    Ok(_) -> drain_logs(subject)
-    Error(_) -> Nil
   }
 }
 

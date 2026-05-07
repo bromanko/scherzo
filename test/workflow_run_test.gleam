@@ -23,6 +23,7 @@ import scherzo/workflow_run
 import scherzo/workflow_scheduler
 import scherzo/workspace_run
 import support/expected_crash
+import test_async
 
 type CommandStart {
   CommandStart(step_id: String, release: process.Subject(String))
@@ -402,7 +403,7 @@ pub fn recovered_completed_upstream_step_is_not_rerun_test() {
   assert receive_event(subject) == "after:summarize"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
-  assert process.receive(subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn recovered_failed_continued_artifact_feeds_downstream_prompt_test() {
@@ -535,7 +536,7 @@ pub fn recovered_pi_resume_validation_failure_is_fatal_even_with_continue_policy
   assert receive_event(subject) == "after:resume"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
-  assert process.receive(subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test() {
@@ -572,7 +573,7 @@ pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test()
   assert failure.run_root
     == Some("test/tmp/workflow-run/workspaces/implementation/ABC-123")
   assert receive_event(subject) == "prepare_recovered:build:main:"
-  assert process.receive(subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn parallel_recovery_runs_only_interrupted_branch_test() {
@@ -730,7 +731,7 @@ pub fn workflow_run_prepare_failure_cleans_partial_ready_batch_test() {
   assert receive_event(subject) == "prepare_failed:code_review"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
-  assert process.receive(subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn workflow_run_prepare_hook_failure_is_first_class_test() {
@@ -892,7 +893,7 @@ pub fn workflow_run_ready_steps_sharing_workspace_are_serialized_test() {
   let assert Ok(first_start) = process.receive(command_subject, within: 1000)
   let CommandStart(step_id: first_id, release: release_first) = first_start
   assert first_id == "first"
-  assert process.receive(command_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(command_subject, 50)
 
   process.send(release_first, "go")
   let assert Ok(second_start) = process.receive(command_subject, within: 1000)
@@ -971,7 +972,7 @@ pub fn workflow_run_fatal_ready_step_cancels_active_siblings_test() {
   assert receive_event(subject) == "after:fail"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
-  assert process.receive(subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn workflow_run_after_step_runs_in_dag_order_for_ready_batch_test() {
@@ -1095,7 +1096,7 @@ pub fn workflow_run_step_worker_crash_returns_failure_test() {
   assert receive_event(subject) == "run:crash"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
-  assert process.receive(subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn workflow_run_fatal_failure_stops_remaining_steps_test() {
@@ -1120,7 +1121,7 @@ pub fn workflow_run_fatal_failure_stops_remaining_steps_test() {
   assert receive_event(subject) == "after:implement"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
-  assert process.receive(subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn workflow_run_failure_report_promotes_command_failure_code_test() {

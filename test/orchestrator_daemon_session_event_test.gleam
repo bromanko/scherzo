@@ -27,6 +27,7 @@ import scherzo/workflow_attempt
 import scherzo/workflow_run
 import scherzo/workspace
 import simplifile
+import test_async
 
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
@@ -392,6 +393,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
     write_workflow("test/tmp/daemon-live-session-event")
   let candidate = issue("issue-id", "ABC-123", "Todo")
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(20, fn() { 100 })
   let deps =
     dependencies(
@@ -400,7 +402,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
       hub_subject,
       fn(issue, _, _, _, _, emit_update, _, _) {
         emit_update(issue.id, update("message_update", Some("hello")))
-        process.sleep(800)
+        test_async.block_until_released(worker_barrier)
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(
@@ -436,6 +438,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
     "worker_exited",
   )
 
+  test_async.release_barrier(worker_barrier)
   assert wait_for_log(log_subject, "worker_exited", 30)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -679,6 +682,7 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
     )
   let log_subject = process.new_subject()
   let refresh_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
   let client =
     tracker.Client(
@@ -701,7 +705,7 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
       fn(issue, _, _, _, _, _, _, _) {
         let assert Ok(#(_, _expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
-        process.sleep(2000)
+        test_async.block_until_released(worker_barrier)
         Ok(success(
           tracker_issue.Issue(
             ..issue,
@@ -731,6 +735,7 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
   assert list.contains(event_names(page.events), "stop_requested")
   assert !list.contains(event_names(page.events), "retry_scheduled")
 
+  test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
