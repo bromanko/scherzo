@@ -144,3 +144,45 @@ pub fn optional_none_renders_empty_test() {
     template.render("{{ issue.description }}", issue, None)
   assert string.trim(rendered) == ""
 }
+
+pub fn renders_scheduled_context_variables_test() {
+  let scheduled =
+    template.ScheduledTemplateContext(
+      job_id: "pr-conflict-repair",
+      workflow_id: "pr-conflict-repair",
+      due_at: "2026-05-05T12:00:00Z",
+      started_at: "2026-05-05T12:00:03Z",
+      run_id: "schedule-pr-conflict-repair-20260505T120000Z",
+      attempt: 2,
+    )
+  let assert Ok(rendered) =
+    template.render_scheduled(
+      "{{ scheduled_job.id }} {{ scheduled_job.workflow }} {{ schedule.due_at }} {{ schedule.started_at }} {{ run.id }} {{ run.attempt }} {{ attempt }}",
+      scheduled,
+    )
+  assert rendered
+    == "pr-conflict-repair pr-conflict-repair 2026-05-05T12:00:00Z 2026-05-05T12:00:03Z schedule-pr-conflict-repair-20260505T120000Z 2 2"
+}
+
+pub fn scheduled_context_does_not_expose_issue_variables_test() {
+  let scheduled =
+    template.ScheduledTemplateContext(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at: "2026-05-05T12:00:00Z",
+      started_at: "2026-05-05T12:00:00Z",
+      run_id: "schedule-repair-20260505T120000Z",
+      attempt: 1,
+    )
+  let assert Error(_) =
+    template.render_scheduled("{{ issue.identifier }}", scheduled)
+}
+
+pub fn referenced_variables_scans_variables_if_and_for_tags_test() {
+  let variables =
+    template.referenced_variables(
+      "{{ issue.title }}{% if issue.description %}x{% endif %}{% for label in issue.labels %}{{ label }}{% endfor %}",
+    )
+  assert variables
+    == ["issue.title", "issue.description", "issue.labels", "label"]
+}

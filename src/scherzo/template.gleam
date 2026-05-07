@@ -13,9 +13,25 @@ pub type Value {
   VNil
 }
 
+pub type InvocationContext {
+  IssueInvocation(issue: tracker_issue.Issue)
+  ScheduledInvocation(run: ScheduledTemplateContext)
+}
+
+pub type ScheduledTemplateContext {
+  ScheduledTemplateContext(
+    job_id: String,
+    workflow_id: String,
+    due_at: String,
+    started_at: String,
+    run_id: String,
+    attempt: Int,
+  )
+}
+
 pub type Context {
   Context(
-    issue: tracker_issue.Issue,
+    invocation: InvocationContext,
     attempt: Option(Int),
     locals: List(#(String, Value)),
   )
@@ -41,7 +57,37 @@ pub fn render_with_locals(
   }
   render_section(
     template,
-    Context(issue: issue, attempt: attempt, locals: locals),
+    Context(
+      invocation: IssueInvocation(issue),
+      attempt: attempt,
+      locals: locals,
+    ),
+  )
+}
+
+pub fn render_scheduled(
+  template: String,
+  scheduled: ScheduledTemplateContext,
+) -> Result(String, error.TemplateError) {
+  render_scheduled_with_locals(template, scheduled, [])
+}
+
+pub fn render_scheduled_with_locals(
+  template: String,
+  scheduled: ScheduledTemplateContext,
+  locals: List(#(String, Value)),
+) -> Result(String, error.TemplateError) {
+  let template = case string.trim(template) {
+    "" -> "You are running a scheduled Scherzo job."
+    _ -> template
+  }
+  render_section(
+    template,
+    Context(
+      invocation: ScheduledInvocation(scheduled),
+      attempt: Some(scheduled.attempt),
+      locals: locals,
+    ),
   )
 }
 
@@ -381,18 +427,112 @@ fn eval_no_filter(
             Some(value) -> Ok(VInt(value))
             None -> Ok(VNil)
           }
-        "issue.id" -> Ok(VString(context.issue.id))
-        "issue.identifier" -> Ok(VString(context.issue.identifier))
-        "issue.title" -> Ok(VString(context.issue.title))
-        "issue.description" -> Ok(option_to_value(context.issue.description))
-        "issue.priority" -> Ok(option_int_to_value(context.issue.priority))
-        "issue.state" -> Ok(VString(issue_state.to_string(context.issue.state)))
-        "issue.branch_name" -> Ok(option_to_value(context.issue.branch_name))
-        "issue.url" -> Ok(option_to_value(context.issue.url))
-        "issue.labels" -> Ok(VList(list.map(context.issue.labels, VString)))
-        "issue.created_at" -> Ok(VNil)
-        "issue.updated_at" -> Ok(VNil)
-        _ -> Error(error.TemplateRenderError("unknown variable " <> expr))
+        _ -> eval_invocation(expr, context.invocation)
+      }
+  }
+}
+
+fn eval_invocation(
+  expr: String,
+  invocation: InvocationContext,
+) -> Result(Value, error.TemplateError) {
+  case invocation {
+    IssueInvocation(issue) -> eval_issue(expr, issue)
+    ScheduledInvocation(scheduled) -> eval_scheduled(expr, scheduled)
+  }
+}
+
+fn eval_issue(
+  expr: String,
+  issue: tracker_issue.Issue,
+) -> Result(Value, error.TemplateError) {
+  case expr {
+    "issue.id" -> Ok(VString(issue.id))
+    "issue.identifier" -> Ok(VString(issue.identifier))
+    "issue.title" -> Ok(VString(issue.title))
+    "issue.description" -> Ok(option_to_value(issue.description))
+    "issue.priority" -> Ok(option_int_to_value(issue.priority))
+    "issue.state" -> Ok(VString(issue_state.to_string(issue.state)))
+    "issue.branch_name" -> Ok(option_to_value(issue.branch_name))
+    "issue.url" -> Ok(option_to_value(issue.url))
+    "issue.labels" -> Ok(VList(list.map(issue.labels, VString)))
+    "issue.created_at" -> Ok(VNil)
+    "issue.updated_at" -> Ok(VNil)
+    _ -> Error(error.TemplateRenderError("unknown variable " <> expr))
+  }
+}
+
+fn eval_scheduled(
+  expr: String,
+  scheduled: ScheduledTemplateContext,
+) -> Result(Value, error.TemplateError) {
+  case expr {
+    "scheduled_job.id" -> Ok(VString(scheduled.job_id))
+    "scheduled_job.workflow" -> Ok(VString(scheduled.workflow_id))
+    "schedule.due_at" -> Ok(VString(scheduled.due_at))
+    "schedule.started_at" -> Ok(VString(scheduled.started_at))
+    "run.id" -> Ok(VString(scheduled.run_id))
+    "run.attempt" -> Ok(VInt(scheduled.attempt))
+    _ -> Error(error.TemplateRenderError("unknown variable " <> expr))
+  }
+}
+
+pub fn referenced_variables(template: String) -> List(String) {
+  referenced_variables_loop(template, [])
+  |> list.reverse
+  |> dedupe_preserving_first
+}
+
+fn referenced_variables_loop(
+  source: String,
+  acc: List(String),
+) -> List(String) {
+  case next_token(source) {
+    None -> acc
+    Some(#(_, token, after)) -> {
+      let acc = case token.kind {
+        Variable(expr) -> [reference_expr(expr), ..acc]
+        Tag(tag) -> tag_references(tag, acc)
+      }
+      referenced_variables_loop(after, acc)
+    }
+  }
+}
+
+fn tag_references(tag: String, acc: List(String)) -> List(String) {
+  let tag = string.trim(tag)
+  case string.starts_with(tag, "if ") {
+    True -> [reference_expr(string.drop_start(tag, 3)), ..acc]
+    False ->
+      case string.starts_with(tag, "for ") {
+        True ->
+          case string.split_once(string.drop_start(tag, 4), on: " in ") {
+            Ok(#(_, expr)) -> [reference_expr(expr), ..acc]
+            Error(_) -> acc
+          }
+        False -> acc
+      }
+  }
+}
+
+fn reference_expr(expr: String) -> String {
+  case string.split_once(expr, on: "|") {
+    Ok(#(left, _)) -> string.trim(left)
+    Error(_) -> string.trim(expr)
+  }
+}
+
+fn dedupe_preserving_first(values: List(String)) -> List(String) {
+  dedupe_loop(values, []) |> list.reverse
+}
+
+fn dedupe_loop(values: List(String), acc: List(String)) -> List(String) {
+  case values {
+    [] -> acc
+    [value, ..rest] ->
+      case list.contains(acc, value) || value == "" {
+        True -> dedupe_loop(rest, acc)
+        False -> dedupe_loop(rest, [value, ..acc])
       }
   }
 }
