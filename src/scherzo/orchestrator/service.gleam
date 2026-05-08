@@ -181,17 +181,16 @@ pub fn start_linear_smoke(
     smoke.linear_read_smoke(reader, effective.tracker.terminal_states)
     |> map_tracker_error,
   )
-  let _ =
-    log_stderr(
-      "info",
-      "linear_smoke_ok",
-      [
-        #("candidate_count", int_to_string(result.candidate_count)),
-        #("terminal_count", int_to_string(result.terminal_count)),
-        #("refreshed_count", int_to_string(result.refreshed_count)),
-      ],
-      secrets,
-    )
+  log_stderr_best_effort(
+    "info",
+    "linear_smoke_ok",
+    [
+      #("candidate_count", int_to_string(result.candidate_count)),
+      #("terminal_count", int_to_string(result.terminal_count)),
+      #("refreshed_count", int_to_string(result.refreshed_count)),
+    ],
+    secrets,
+  )
   Ok(Nil)
 }
 
@@ -229,13 +228,12 @@ pub fn start_linear_attach_comment_file(
     )
     |> map_attachment_tracker_error,
   )
-  let _ =
-    log_stderr(
-      "info",
-      "linear_comment_attachment_ok",
-      attachment_log_fields(outcome),
-      bundle.secrets,
-    )
+  log_stderr_best_effort(
+    "info",
+    "linear_comment_attachment_ok",
+    attachment_log_fields(outcome),
+    bundle.secrets,
+  )
   Ok(Nil)
 }
 
@@ -257,29 +255,27 @@ pub fn start_linear_contract_check_with_dependencies(
   let diagnostics = linear_contract.check(effective, remote)
   case linear_contract.is_ok(diagnostics) {
     True -> {
-      let _ =
-        dependencies.logger(
-          "info",
-          "linear_contract_ok",
-          [
-            #("project_slug", remote.project_slug),
-            #("project_id", remote.project_id),
-            #("team_count", int_to_string(list.length(remote.teams))),
-            #("state_count", int_to_string(total_state_count(remote.teams))),
-            #("label_count", int_to_string(total_label_count(remote))),
-          ],
-          secrets,
-        )
+      emit_best_effort_output(dependencies.logger(
+        "info",
+        "linear_contract_ok",
+        [
+          #("project_slug", remote.project_slug),
+          #("project_id", remote.project_id),
+          #("team_count", int_to_string(list.length(remote.teams))),
+          #("state_count", int_to_string(total_state_count(remote.teams))),
+          #("label_count", int_to_string(total_label_count(remote))),
+        ],
+        secrets,
+      ))
       Ok(Nil)
     }
     False -> {
-      let _ =
-        dependencies.logger(
-          "error",
-          "linear_contract_mismatch",
-          [#("diagnostic_count", int_to_string(list.length(diagnostics)))],
-          secrets,
-        )
+      emit_best_effort_output(dependencies.logger(
+        "error",
+        "linear_contract_mismatch",
+        [#("diagnostic_count", int_to_string(list.length(diagnostics)))],
+        secrets,
+      ))
       log_contract_diagnostics(diagnostics, dependencies, secrets)
       Error(StartupError(
         "linear_contract_mismatch",
@@ -300,8 +296,7 @@ pub fn start_doctor_with_dependencies(
   case options.list_checks {
     True -> {
       list.each(doctor.list_check_names(), fn(name) {
-        let _ = dependencies.list_writer(name)
-        Nil
+        emit_best_effort_output(dependencies.list_writer(name))
       })
       Ok(Nil)
     }
@@ -938,11 +933,10 @@ fn write_doctor_report(
   secrets: List(String),
 ) -> Nil {
   case options.output {
-    doctor.Human -> {
-      let _ =
-        dependencies.list_writer(doctor.human_report(report, options.path))
-      Nil
-    }
+    doctor.Human ->
+      emit_best_effort_output(
+        dependencies.list_writer(doctor.human_report(report, options.path)),
+      )
     doctor.Logfmt -> log_doctor_report(report, dependencies, secrets)
   }
 }
@@ -953,23 +947,19 @@ fn log_doctor_report(
   secrets: List(String),
 ) -> Nil {
   list.each(report.results, fn(result) {
-    let _ =
-      dependencies.logger(
-        doctor_result_level(result),
-        doctor.result_event(result),
-        doctor.result_log_fields(result),
-        secrets,
-      )
-    Nil
-  })
-  let _ =
-    dependencies.logger(
-      "info",
-      "doctor_summary",
-      doctor.summary_log_fields(doctor.summary(report)),
+    emit_best_effort_output(dependencies.logger(
+      doctor_result_level(result),
+      doctor.result_event(result),
+      doctor.result_log_fields(result),
       secrets,
-    )
-  Nil
+    ))
+  })
+  emit_best_effort_output(dependencies.logger(
+    "info",
+    "doctor_summary",
+    doctor.summary_log_fields(doctor.summary(report)),
+    secrets,
+  ))
 }
 
 fn doctor_result_level(result: doctor.CheckResult) -> String {
@@ -991,8 +981,7 @@ pub fn start_daemon(
       install_stop_source: signal.install,
       shutdown_timeout_ms: 10_000,
       lifecycle_logger: fn(level, event, fields) {
-        let _ = log_stderr(level, event, fields, [])
-        Nil
+        log_stderr_best_effort(level, event, fields, [])
       },
     ),
   )
@@ -1066,13 +1055,12 @@ fn log_contract_diagnostics(
   case diagnostics {
     [] -> Nil
     [diagnostic, ..rest] -> {
-      let _ =
-        dependencies.logger(
-          "error",
-          "linear_contract_diagnostic",
-          diagnostic_log_fields(diagnostic),
-          secrets,
-        )
+      emit_best_effort_output(dependencies.logger(
+        "error",
+        "linear_contract_diagnostic",
+        diagnostic_log_fields(diagnostic),
+        secrets,
+      ))
       log_contract_diagnostics(rest, dependencies, secrets)
     }
   }
@@ -1168,6 +1156,22 @@ pub fn log_stderr(
   Ok(Nil)
 }
 
+fn emit_best_effort_output(result: Result(Nil, Nil)) -> Nil {
+  case result {
+    Ok(Nil) -> Nil
+    Error(Nil) -> Nil
+  }
+}
+
+fn log_stderr_best_effort(
+  level: String,
+  event: String,
+  fields: List(log.Field),
+  secrets: List(String),
+) -> Nil {
+  emit_best_effort_output(log_stderr(level, event, fields, secrets))
+}
+
 fn acquire_lock_for_workflow(
   workflow_path: Option(String),
   _require_dispatch: Bool,
@@ -1227,20 +1231,43 @@ fn run_pi_probe_orchestrator(
           prepared.path,
           orchestrator.effective.pi.read_timeout_ms,
         )
-      let _ = workspace_run.cleanup_run(prepared.run_root, orchestrator)
+      let cleanup_result =
+        workspace_run.cleanup_run(prepared.run_root, orchestrator)
       case probe_result {
-        Ok(Nil) -> {
-          let _ =
-            log_stderr(
-              "info",
-              "pi_probe_ok",
-              [#("workspace_path", prepared.path)],
-              secrets,
-            )
-          Ok(Nil)
-        }
-        Error(err) ->
+        Ok(Nil) ->
+          case cleanup_result {
+            Ok(Nil) -> {
+              log_stderr_best_effort(
+                "info",
+                "pi_probe_ok",
+                [#("workspace_path", prepared.path)],
+                secrets,
+              )
+              Ok(Nil)
+            }
+            Error(err) ->
+              Error(StartupError(
+                error.workspace_code(err),
+                "probe workspace cleanup error",
+              ))
+          }
+        Error(err) -> {
+          case cleanup_result {
+            Ok(Nil) -> Nil
+            Error(cleanup_err) ->
+              log_stderr_best_effort(
+                "warn",
+                "pi_probe_cleanup_failed",
+                [
+                  #("run_root", prepared.run_root),
+                  #("workspace_path", prepared.path),
+                  #("error", error.workspace_code(cleanup_err)),
+                ],
+                secrets,
+              )
+          }
           Error(StartupError(error.pi_rpc_code(err), "pi probe error"))
+        }
       }
     }
   }
@@ -1276,7 +1303,7 @@ fn run_once_loaded(
     ]),
   ]
   list.each(logs, fn(line) {
-    let _ = dependencies.logger(line)
+    emit_best_effort_output(dependencies.logger(line))
   })
   case effective.agent.max_concurrent_agents == 0 {
     True ->
@@ -1297,12 +1324,12 @@ fn run_tick(
   logs: List(String),
 ) -> Result(ServiceResult, StartupError) {
   let tick_log = log.info("tick_started", [])
-  let _ = dependencies.logger(tick_log)
+  emit_best_effort_output(dependencies.logger(tick_log))
   case tracker_client.fetch_candidate_issues() {
     Error(err) -> {
       let line =
         log.warn("candidate_fetch_failed", [#("error", error.tracker_code(err))])
-      let _ = dependencies.logger(line)
+      emit_best_effort_output(dependencies.logger(line))
       Ok(ServiceResult(
         logs: [line, tick_log, ..logs],
         dispatched: 0,
@@ -1314,7 +1341,7 @@ fn run_tick(
         log.info("candidates_fetched", [
           #("count", int_to_string(list.length(candidates))),
         ])
-      let _ = dependencies.logger(fetched)
+      emit_best_effort_output(dependencies.logger(fetched))
       dispatch_candidates(
         core.sort_candidates(candidates),
         bundle,
@@ -1348,7 +1375,7 @@ fn dispatch_candidates(
               #("issue_id", issue.id),
               #("issue_identifier", issue.identifier),
             ])
-          let _ = dependencies.logger(line)
+          emit_best_effort_output(dependencies.logger(line))
           dispatch_candidates(
             rest,
             bundle,
@@ -1380,7 +1407,7 @@ fn dispatch_candidates(
                       #("issue_identifier", issue.identifier),
                       #("error", code),
                     ])
-                  let _ = dependencies.logger(skipped)
+                  emit_best_effort_output(dependencies.logger(skipped))
                   dispatch_candidates(
                     rest,
                     bundle,
@@ -1453,7 +1480,7 @@ fn dispatch_issue(
           #("issue_id", issue.id),
           #("reason", reason),
         ])
-      let _ = dependencies.logger(line)
+      emit_best_effort_output(dependencies.logger(line))
       dispatch_candidates(
         remaining,
         bundle,
@@ -1478,7 +1505,7 @@ fn dispatch_issue(
                 bool_string(core.blocker_decision_incomplete(decision)),
               ),
             ])
-          let _ = dependencies.logger(line)
+          emit_best_effort_output(dependencies.logger(line))
           dispatch_candidates(
             remaining,
             bundle,
@@ -1510,7 +1537,7 @@ fn dispatch_issue(
                       #("issue_identifier", refreshed_issue.identifier),
                       #("error", code),
                     ])
-                  let _ = dependencies.logger(skipped)
+                  emit_best_effort_output(dependencies.logger(skipped))
                   dispatch_candidates(
                     remaining,
                     bundle,
@@ -1560,7 +1587,7 @@ fn execute_dispatch_issue(
       #("issue_identifier", issue.identifier),
       #("workflow_id", workflow_id),
     ])
-  let _ = dependencies.logger(started)
+  emit_best_effort_output(dependencies.logger(started))
   let state = core.apply_worker_start(state, issue, "")
   let run_id = issue.identifier <> "-once"
   case
@@ -1586,8 +1613,8 @@ fn execute_dispatch_issue(
         log.info("workspace_cleaned", [
           #("workspace_path", success.run_root),
         ])
-      let _ = dependencies.logger(exited)
-      let _ = dependencies.logger(cleaned)
+      emit_best_effort_output(dependencies.logger(exited))
+      emit_best_effort_output(dependencies.logger(cleaned))
       let final_issue = case success.worker_success.final_issue {
         Some(i) -> i
         None -> issue
@@ -1627,7 +1654,7 @@ fn execute_dispatch_issue(
           #("reason", "failed"),
           #("error", failure.reason),
         ])
-      let _ = dependencies.logger(failed)
+      emit_best_effort_output(dependencies.logger(failed))
       let transition =
         core.apply_worker_failure(
           state,
@@ -1665,7 +1692,7 @@ fn interpret_effects(
     [] -> logs
     [effect, ..rest] -> {
       let line = interpret_effect(effect, effective, dependencies)
-      let _ = dependencies.logger(line)
+      emit_best_effort_output(dependencies.logger(line))
       interpret_effects(rest, effective, dependencies, [line, ..logs])
     }
   }
