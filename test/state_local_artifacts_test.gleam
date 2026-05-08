@@ -233,7 +233,7 @@ pub fn offline_state_status_archive_discard_and_reinitialize_test() {
   assert archived.status == "applied"
   let assert Ok(False) = simplifile.is_directory(ledger_dir)
 
-  let reinitialized = local_artifacts.reinitialize_state(root, True)
+  let reinitialized = local_artifacts.reinitialize_state(root, yes: True)
   assert reinitialized.status == "applied"
   let assert Ok(True) = simplifile.is_file(ledger_dir <> "/current.jsonl")
 

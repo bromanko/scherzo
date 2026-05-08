@@ -17,8 +17,8 @@ pub fn encode_set_session_name(id: String, name: String) -> String {
   protocol.encode_set_session_name(id, name)
 }
 
-pub fn encode_set_auto_retry(id: String, enabled: Bool) -> String {
-  protocol.encode_set_auto_retry(id, enabled)
+pub fn encode_set_auto_retry(id: String, enabled enabled: Bool) -> String {
+  protocol.encode_set_auto_retry(id, enabled: enabled)
 }
 
 pub fn encode_get_state(id: String) -> String {

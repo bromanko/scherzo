@@ -246,7 +246,7 @@ fn finish_command(
   let stderr_truncated =
     stream_will_be_truncated(stderr, stderr_truncated, secrets, limits)
   let diagnostic_path = case
-    step_artifact.status_from_exit(exit_code, timed_out)
+    step_artifact.status_from_exit(exit_code, timed_out: timed_out)
   {
     step_artifact.StepSucceeded -> {
       cleanup_stdout_capture(diagnostics)

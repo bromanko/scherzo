@@ -38,7 +38,7 @@ pub fn encode_set_session_name(id: String, name: String) -> String {
   |> json.to_string
 }
 
-pub fn encode_set_auto_retry(id: String, enabled: Bool) -> String {
+pub fn encode_set_auto_retry(id: String, enabled enabled: Bool) -> String {
   json.object([
     #("id", json.string(id)),
     #("type", json.string("set_auto_retry")),

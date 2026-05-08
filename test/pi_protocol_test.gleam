@@ -9,7 +9,7 @@ pub fn codec_helpers_encode_commands_test() {
     "set_session_name",
   )
   assert string.contains(
-    protocol.encode_set_auto_retry("2", True),
+    protocol.encode_set_auto_retry("2", enabled: True),
     "set_auto_retry",
   )
   assert string.contains(protocol.encode_prompt("3", "hello"), "prompt")

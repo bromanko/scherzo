@@ -28,6 +28,7 @@ birl = ">= 2.0.0 and < 3.0.0"
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
 glinter = ">= 2.16.0 and < 3.0.0"
+glance = ">= 6.0.0 and < 7.0.0"
 
 [tools.glinter]
 # Production gate only. Tests are intentionally excluded from the checked
@@ -45,6 +46,9 @@ division_by_zero = "error"
 # Ratcheted high-signal production rules from LIV-102.
 error_context_lost = "error"
 missing_type_annotation = "error"
+
+# Scherzo-specific production style gate from LIV-123.
+scherzo_public_function_labels = "error"
 
 # Agent-safety warning/inventory rules tracked by the LIV-101/LIV-131 baselines, still too broad to block.
 discarded_result = "warning"

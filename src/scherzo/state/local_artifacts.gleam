@@ -952,7 +952,7 @@ fn discard_ledger(status: StateStatusResult) -> StateMutationResult {
 
 pub fn reinitialize_state(
   workspace_root: String,
-  yes: Bool,
+  yes yes: Bool,
 ) -> StateMutationResult {
   case yes {
     False ->

@@ -13,6 +13,10 @@ direnv allow
 # Fast deterministic unit suite (default; run for every PR and before pushing)
 direnv exec . gleam test
 
+# Production lint gates: normal Glinter plus Scherzo-specific style rules
+direnv exec . gleam run -m glinter
+direnv exec . gleam run -m scherzo_lint
+
 # Report the source/build identity to include in bug reports and operator logs
 direnv exec . gleam run -- --version
 
@@ -58,7 +62,7 @@ direnv allow .
 direnv exec . selfci check --base main@origin --candidate @ --print-output
 ```
 
-`selfci check` runs the checked-in `.config/selfci/ci.sh`, which performs format checks, the glinter production safety gate, the default unit suite, and `nix flake check --print-build-logs`, and `--print-output` surfaces the failing step output for repair. The workflow helper resolves the base from `tmp/scherzo-implementation-refresh-base-latest.json` when present; otherwise it uses `${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin}`.
+`selfci check` runs the checked-in `.config/selfci/ci.sh`, which performs format checks, the Glinter production safety gate, the Scherzo-specific custom lint gate, the default unit suite, and `nix flake check --print-build-logs`, and `--print-output` surfaces the failing step output for repair. See [`docs/LINTING.md`](docs/LINTING.md) for the production lint policy and suppression syntax. The workflow helper resolves the base from `tmp/scherzo-implementation-refresh-base-latest.json` when present; otherwise it uses `${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin}`.
 
 Bootstrap caveat: the `--base` revision must already contain this repository's SelfCI configuration and local development tooling. If a branch is based before the SelfCI bootstrap landed, first refresh or rebase onto a SelfCI-capable `main`, or use the raw bootstrap checks only long enough to reach a base that can run `selfci check`.
 
