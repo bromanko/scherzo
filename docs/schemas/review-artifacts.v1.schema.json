@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bromanko/scherzo/docs/schemas/review-artifacts.v1.schema.json",
+  "title": "Scherzo review artifacts v1",
+  "description": "Shared artifact contract for staged Scherzo code-review workflows.",
+  "oneOf": [
+    { "$ref": "#/$defs/ReviewBrief" },
+    { "$ref": "#/$defs/ReviewFinding" },
+    { "$ref": "#/$defs/ReviewLaneResult" }
+  ],
+  "$defs": {
+    "ArtifactHeader": {
+      "type": "object",
+      "required": ["schema_version", "artifact_type"],
+      "properties": {
+        "$schema": { "type": "string" },
+        "schema_version": { "const": 1 },
+        "artifact_type": { "type": "string" },
+        "generated_at_utc": { "type": "string", "minLength": 1 },
+        "producer": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" },
+            "mode": { "type": "string" }
+          }
+        }
+      }
+    },
+    "ReviewBrief": {
+      "allOf": [
+        { "$ref": "#/$defs/ArtifactHeader" },
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "generated_at_utc",
+            "producer",
+            "source",
+            "implementation_summary",
+            "changed_areas",
+            "inferred_acceptance_criteria",
+            "risk_profile",
+            "suggested_review_lanes",
+            "test_build_status"
+          ],
+          "properties": {
+            "artifact_type": { "const": "review_brief" },
+            "source": { "$ref": "#/$defs/ReviewSource" },
+            "implementation_summary": { "type": "string", "minLength": 1 },
+            "changed_areas": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ChangedArea" }
+            },
+            "inferred_acceptance_criteria": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "risk_profile": { "$ref": "#/$defs/RiskProfile" },
+            "suggested_review_lanes": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/SuggestedReviewLane" }
+            },
+            "test_build_status": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/TestBuildStatus" }
+            },
+            "notes": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "ReviewSource": {
+      "type": "object",
+      "required": ["kind", "label", "diff_sha256", "changed_file_count"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["diff_file", "jj_diff", "github_pr"]
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "diff_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "changed_file_count": { "type": "integer", "minimum": 0 },
+        "diff_file": { "type": "string" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "repo": { "type": ["string", "null"] },
+        "pr": { "type": "string" },
+        "pr_number": { "type": ["integer", "null"] },
+        "title": { "type": ["string", "null"] },
+        "url": { "type": ["string", "null"] },
+        "base_ref": { "type": ["string", "null"] },
+        "head_ref": { "type": ["string", "null"] },
+        "author": { "type": ["string", "null"] },
+        "metadata_note": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ChangedArea": {
+      "type": "object",
+      "required": ["path", "subsystem", "language", "change_kind", "additions", "deletions", "hunks"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "previous_path": { "type": ["string", "null"] },
+        "subsystem": { "type": "string", "minLength": 1 },
+        "language": { "type": "string", "minLength": 1 },
+        "change_kind": {
+          "type": "string",
+          "enum": ["added", "modified", "deleted", "renamed"]
+        },
+        "additions": { "type": "integer", "minimum": 0 },
+        "deletions": { "type": "integer", "minimum": 0 },
+        "hunks": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "RiskProfile": {
+      "type": "object",
+      "required": ["level", "rationale", "risk_areas"],
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "unknown"]
+        },
+        "rationale": { "type": "string", "minLength": 1 },
+        "risk_areas": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SuggestedReviewLane": {
+      "type": "object",
+      "required": ["id", "name", "reason"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "TestBuildStatus": {
+      "type": "object",
+      "required": ["name", "status", "summary", "source"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["passed", "failed", "skipped", "not_run", "unknown"]
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "ReviewFinding": {
+      "allOf": [
+        { "$ref": "#/$defs/ArtifactHeader" },
+        { "$ref": "#/$defs/ReviewFindingCore" },
+        {
+          "type": "object",
+          "properties": {
+            "artifact_type": { "const": "review_finding" }
+          }
+        }
+      ]
+    },
+    "ReviewFindingCore": {
+      "type": "object",
+      "required": [
+        "id",
+        "category",
+        "severity",
+        "evidence_type",
+        "verified",
+        "blocking",
+        "locations",
+        "summary",
+        "details",
+        "suggested_fix"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "category": {
+          "type": "string",
+          "enum": [
+            "correctness",
+            "maintainability",
+            "security",
+            "performance",
+            "testing",
+            "workflow",
+            "documentation",
+            "artifact_contract",
+            "other"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high", "critical"]
+        },
+        "evidence_type": {
+          "type": "string",
+          "enum": ["static", "test", "runtime", "reproduction", "manual", "spec", "unknown"]
+        },
+        "verified": { "type": "boolean" },
+        "blocking": { "type": "boolean" },
+        "locations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/LocationReference" }
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "details": { "type": "string", "minLength": 1 },
+        "suggested_fix": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "LocationReference": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "start_line": { "type": ["integer", "null"], "minimum": 1 },
+        "end_line": { "type": ["integer", "null"], "minimum": 1 },
+        "symbol": { "type": ["string", "null"] },
+        "diff_hunk": { "type": ["string", "null"] },
+        "url": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "ReviewLaneResult": {
+      "allOf": [
+        { "$ref": "#/$defs/ArtifactHeader" },
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "lane",
+            "execution_status",
+            "findings"
+          ],
+          "properties": {
+            "artifact_type": { "const": "review_lane_result" },
+            "lane": { "$ref": "#/$defs/ReviewLaneMetadata" },
+            "execution_status": { "$ref": "#/$defs/ReviewLaneExecutionStatus" },
+            "input_brief_ref": {
+              "type": ["object", "null"],
+              "properties": {
+                "path": { "type": "string" },
+                "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+              },
+              "additionalProperties": true
+            },
+            "findings": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ReviewFindingCore" }
+            },
+            "artifacts": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ArtifactReference" }
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "ReviewLaneMetadata": {
+      "type": "object",
+      "required": ["id", "name", "category", "version"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "category": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "tool": { "type": "string" },
+        "model": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ReviewLaneExecutionStatus": {
+      "type": "object",
+      "required": ["state", "started_at_utc", "completed_at_utc", "summary"],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["succeeded", "failed", "skipped", "blocked"]
+        },
+        "started_at_utc": { "type": "string", "minLength": 1 },
+        "completed_at_utc": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "error": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "ArtifactReference": {
+      "type": "object",
+      "required": ["artifact_type", "path"],
+      "properties": {
+        "artifact_type": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

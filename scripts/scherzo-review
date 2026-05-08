@@ -1,0 +1,808 @@
+#!/usr/bin/env python3
+"""Review artifact helpers for Scherzo dogfood workflows.
+
+This script is intentionally outside the Scherzo runtime. It provides a
+no-side-effect entrypoint for the staged code-review workflow: inspect a PR or
+local diff, generate a structured ReviewBrief artifact, and write inspectable
+local artifacts that later review lanes can consume.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _datetime
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+SCHEMA_VERSION = 1
+CONTRACT_SCHEMA_REF = "docs/schemas/review-artifacts.v1.schema.json"
+DEFAULT_OUTPUT_DIR = Path("tmp/scherzo-review-dry-run")
+
+
+class ReviewError(Exception):
+    pass
+
+
+def usage_error(message: str) -> None:
+    print(f"scherzo-review: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-review: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def now_utc() -> str:
+    return (
+        _datetime.datetime.now(_datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def run_read_only(args: list[str]) -> str:
+    proc = subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        stdout = proc.stdout.strip()
+        details = stderr or stdout or f"exit code {proc.returncode}"
+        raise ReviewError(f"command failed: {' '.join(args)}\n{details}")
+    return proc.stdout
+
+
+def require_command(command: str) -> None:
+    if shutil.which(command) is None:
+        raise ReviewError(f"required command not found on PATH: {command}")
+
+
+class DiffFile:
+    def __init__(
+        self,
+        path: str,
+        *,
+        old_path: str | None = None,
+        change_kind: str = "modified",
+    ) -> None:
+        self.path = path
+        self.old_path = old_path
+        self.change_kind = change_kind
+        self.additions = 0
+        self.deletions = 0
+        self.hunks = 0
+
+    def to_changed_area(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "previous_path": self.old_path,
+            "subsystem": subsystem_for_path(self.path),
+            "language": language_for_path(self.path),
+            "change_kind": self.change_kind,
+            "additions": self.additions,
+            "deletions": self.deletions,
+            "hunks": self.hunks,
+        }
+
+
+def normalize_diff_path(path: str) -> str:
+    path = path.strip()
+    if path == "/dev/null":
+        return path
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path
+
+
+def parse_diff_files(diff: str) -> list[DiffFile]:
+    files: list[DiffFile] = []
+    current: DiffFile | None = None
+    pending_old_path: str | None = None
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            if len(parts) >= 4:
+                old_path = normalize_diff_path(parts[2])
+                new_path = normalize_diff_path(parts[3])
+                current = DiffFile(new_path, old_path=old_path if old_path != new_path else None)
+                files.append(current)
+                pending_old_path = old_path
+            continue
+
+        if current is None:
+            if line.startswith("+++ ") and not line.startswith("+++ /dev/null"):
+                path = normalize_diff_path(line.removeprefix("+++ "))
+                current = DiffFile(path)
+                files.append(current)
+            continue
+
+        if line.startswith("new file mode"):
+            current.change_kind = "added"
+        elif line.startswith("deleted file mode"):
+            current.change_kind = "deleted"
+        elif line.startswith("rename from "):
+            pending_old_path = line.removeprefix("rename from ").strip()
+            current.old_path = pending_old_path
+            current.change_kind = "renamed"
+        elif line.startswith("rename to "):
+            current.path = line.removeprefix("rename to ").strip()
+            current.change_kind = "renamed"
+        elif line.startswith("--- "):
+            old_path = normalize_diff_path(line.removeprefix("--- "))
+            if old_path != "/dev/null":
+                pending_old_path = old_path
+        elif line.startswith("+++ "):
+            new_path = normalize_diff_path(line.removeprefix("+++ "))
+            if new_path == "/dev/null":
+                current.change_kind = "deleted"
+                if pending_old_path and pending_old_path != "/dev/null":
+                    current.path = pending_old_path
+            else:
+                current.path = new_path
+                if current.change_kind != "renamed" and pending_old_path == "/dev/null":
+                    current.change_kind = "added"
+        elif line.startswith("@@"):
+            current.hunks += 1
+        elif line.startswith("+") and not line.startswith("+++"):
+            current.additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            current.deletions += 1
+
+    return files
+
+
+def language_for_path(path: str) -> str:
+    lower = path.lower()
+    suffixes = {
+        ".gleam": "gleam",
+        ".erl": "erlang",
+        ".hrl": "erlang",
+        ".py": "python",
+        ".ts": "typescript",
+        ".tsx": "typescript",
+        ".js": "javascript",
+        ".jsx": "javascript",
+        ".rs": "rust",
+        ".go": "go",
+        ".fs": "fsharp",
+        ".fsx": "fsharp",
+        ".elm": "elm",
+        ".md": "markdown",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+        ".json": "json",
+        ".toml": "toml",
+        ".nix": "nix",
+        ".sh": "shell",
+    }
+    for suffix, language in suffixes.items():
+        if lower.endswith(suffix):
+            return language
+    if path.startswith("scripts/"):
+        return "shell-or-script"
+    return "unknown"
+
+
+def subsystem_for_path(path: str) -> str:
+    lower = path.lower()
+    if lower.startswith(".scherzo/workflows/"):
+        return "dogfood workflow"
+    if lower.startswith(".pi/skills/"):
+        return "pi review skills"
+    if lower.startswith("src/"):
+        return "scherzo runtime source"
+    if lower.startswith("test/"):
+        return "tests"
+    if lower.startswith("scripts/"):
+        return "workflow helper scripts"
+    if lower.startswith("docs/schemas/"):
+        return "artifact schema documentation"
+    if lower.startswith("docs/"):
+        return "documentation"
+    if lower.startswith("examples/workflows/"):
+        return "example workflows"
+    if lower.startswith("examples/"):
+        return "examples"
+    if lower.startswith(".config/"):
+        return "ci configuration"
+    if lower.startswith("nix/") or lower in {"flake.nix", "flake.lock", "devenv.nix", "devenv.yaml"}:
+        return "developer tooling"
+    if lower in {"gleam.toml", "manifest.toml"}:
+        return "gleam package configuration"
+    return "repository root"
+
+
+def source_from_diff_file(path: Path) -> tuple[str, dict[str, Any]]:
+    if not path.exists():
+        raise ReviewError(f"diff file does not exist: {path}")
+    diff = path.read_text()
+    return diff, {
+        "kind": "diff_file",
+        "label": str(path),
+        "diff_file": str(path),
+    }
+
+
+def source_from_jj(from_rev: str, to_rev: str) -> tuple[str, dict[str, Any]]:
+    require_command("jj")
+    diff = run_read_only([
+        "jj",
+        "diff",
+        "--from",
+        from_rev,
+        "--to",
+        to_rev,
+        "--git",
+        "--color=never",
+    ])
+    return diff, {
+        "kind": "jj_diff",
+        "label": f"{from_rev}..{to_rev}",
+        "from": from_rev,
+        "to": to_rev,
+    }
+
+
+def source_from_pr(pr: str, repo: str | None) -> tuple[str, dict[str, Any]]:
+    require_command("gh")
+    args = ["gh", "pr", "diff", pr, "--color=never"]
+    if repo:
+        args.extend(["--repo", repo])
+    diff = run_read_only(args)
+
+    metadata: dict[str, Any] = {
+        "kind": "github_pr",
+        "label": f"PR {pr}" if not repo else f"{repo} PR {pr}",
+        "pr": pr,
+        "repo": repo,
+    }
+    view_args = [
+        "gh",
+        "pr",
+        "view",
+        pr,
+        "--json",
+        "number,title,url,baseRefName,headRefName,author",
+    ]
+    if repo:
+        view_args.extend(["--repo", repo])
+    try:
+        view = json.loads(run_read_only(view_args))
+        metadata.update({
+            "pr_number": view.get("number"),
+            "title": view.get("title"),
+            "url": view.get("url"),
+            "base_ref": view.get("baseRefName"),
+            "head_ref": view.get("headRefName"),
+            "author": (view.get("author") or {}).get("login"),
+        })
+    except (ReviewError, json.JSONDecodeError):
+        metadata["metadata_note"] = "gh pr view metadata was unavailable; diff was still read-only"
+    return diff, metadata
+
+
+def primary_subsystems(files: list[DiffFile]) -> list[str]:
+    seen: list[str] = []
+    for file in files:
+        subsystem = subsystem_for_path(file.path)
+        if subsystem not in seen:
+            seen.append(subsystem)
+    return seen
+
+
+def summarize_change(files: list[DiffFile], source: dict[str, Any]) -> str:
+    if not files:
+        return f"No changed files were detected in {source.get('label', 'the supplied diff')}."
+    subsystems = primary_subsystems(files)
+    total_additions = sum(file.additions for file in files)
+    total_deletions = sum(file.deletions for file in files)
+    subsystem_text = ", ".join(subsystems[:4])
+    if len(subsystems) > 4:
+        subsystem_text += f", and {len(subsystems) - 4} more"
+    return (
+        f"The supplied {source.get('kind', 'diff')} changes {len(files)} file(s) "
+        f"across {subsystem_text}. The parsed patch contains "
+        f"{total_additions} added line(s) and {total_deletions} deleted line(s)."
+    )
+
+
+def infer_acceptance_criteria(files: list[DiffFile]) -> list[str]:
+    subsystems = set(primary_subsystems(files))
+    criteria: list[str] = []
+    if "artifact schema documentation" in subsystems:
+        criteria.append(
+            "Review artifacts should declare schema_version 1 and follow the documented contract."
+        )
+    if "workflow helper scripts" in subsystems:
+        criteria.append(
+            "Helper scripts should have deterministic local output and avoid PR, Linear, or remote mutation in dry-run paths."
+        )
+    if "dogfood workflow" in subsystems or "example workflows" in subsystems:
+        criteria.append(
+            "Workflow changes should preserve existing review behavior while making the new artifacts easy to locate."
+        )
+    if "scherzo runtime source" in subsystems:
+        criteria.append(
+            "Runtime source changes should preserve Scherzo daemon behavior and pass the relevant Gleam validation."
+        )
+    if "tests" in subsystems:
+        criteria.append("Updated or added tests should cover the changed contract and pass deterministically.")
+    if "documentation" in subsystems:
+        criteria.append("Documentation should be sufficient for later review lanes to implement against the artifact contract.")
+    if not criteria:
+        criteria.append("Reviewers should confirm that the observed diff matches the implementation intent and has appropriate validation.")
+    return criteria
+
+
+def has_path(files: list[DiffFile], predicate: Any) -> bool:
+    return any(predicate(file.path.lower()) for file in files)
+
+
+def build_risk_profile(files: list[DiffFile]) -> dict[str, Any]:
+    if not files:
+        return {
+            "level": "low",
+            "rationale": "No changed files were detected.",
+            "risk_areas": [],
+        }
+
+    risk_areas: list[str] = []
+    level = "low"
+
+    if has_path(files, lambda p: p.startswith("src/") and ("state" in p or "linear" in p or "control" in p)):
+        level = "high"
+        risk_areas.append("runtime state, Linear, or control-plane code changed")
+    elif has_path(files, lambda p: p.startswith("src/")):
+        level = "medium"
+        risk_areas.append("runtime source changed")
+
+    if has_path(files, lambda p: p.startswith("scripts/")):
+        if level == "low":
+            level = "medium"
+        risk_areas.append("workflow helper script changed")
+
+    if has_path(files, lambda p: p.startswith(".scherzo/workflows/") or p.startswith("examples/workflows/")):
+        if level == "low":
+            level = "medium"
+        risk_areas.append("workflow definition or prompt changed")
+
+    if has_path(files, lambda p: "lock" in p or p.startswith("nix/") or p in {"flake.nix", "devenv.nix"}):
+        if level == "low":
+            level = "medium"
+        risk_areas.append("tooling or dependency surface changed")
+
+    if has_path(files, lambda p: p.startswith("docs/schemas/")):
+        risk_areas.append("artifact schema contract changed")
+
+    if not risk_areas:
+        risk_areas.append("limited to documentation or tests")
+
+    rationale = {
+        "low": "The diff appears limited to low-risk documentation/test areas or has no changed files.",
+        "medium": "The diff touches workflow, script, tooling, or runtime-adjacent files that can affect automation behavior.",
+        "high": "The diff touches high-impact runtime state, Linear, or control-plane areas that need careful validation.",
+    }[level]
+    return {
+        "level": level,
+        "rationale": rationale,
+        "risk_areas": risk_areas,
+    }
+
+
+def suggested_review_lanes(files: list[DiffFile]) -> list[dict[str, str]]:
+    lanes: list[dict[str, str]] = []
+
+    def add(lane_id: str, name: str, reason: str) -> None:
+        if not any(lane["id"] == lane_id for lane in lanes):
+            lanes.append({"id": lane_id, "name": name, "reason": reason})
+
+    if not files:
+        add("change-intent", "Change intent review", "No file changes were parsed; confirm the diff source and intent.")
+        return lanes
+
+    if has_path(files, lambda p: p.endswith(".gleam") or p.startswith("src/") or p.startswith("test/")):
+        add("gleam-code-review", "Gleam code review", "Gleam source or tests changed.")
+        add("test-review", "Test review", "Source or test changes should have deterministic coverage.")
+
+    if has_path(files, lambda p: p.startswith("scripts/") or p.startswith(".scherzo/workflows/")):
+        add("workflow-contract-review", "Workflow contract review", "Workflow scripts or DAG prompts changed.")
+
+    if has_path(files, lambda p: p.startswith("docs/schemas/") or "review-artifact" in p):
+        add("artifact-contract-review", "Artifact contract review", "Review artifact schema or documentation changed.")
+
+    if has_path(files, lambda p: p.startswith("scripts/") or "linear" in p or "github" in p or "token" in p or "secret" in p):
+        add("security-review", "Security review", "The diff may affect shell execution, external services, or secret handling.")
+
+    if has_path(files, lambda p: p.startswith("src/scherzo/orchestrator") or p.startswith("src/scherzo/state") or p.startswith("src/scherzo/workflow_run")):
+        add("performance-review", "Performance review", "Runtime orchestration/state paths can affect daemon throughput or recovery cost.")
+
+    if not lanes:
+        add("general-code-review", "General review", "No specialized lane was inferred from file paths.")
+    return lanes
+
+
+def parse_test_status(values: list[str]) -> list[dict[str, str]]:
+    statuses: list[dict[str, str]] = []
+    allowed = {"passed", "failed", "skipped", "not_run", "unknown"}
+    for value in values:
+        name, sep, rest = value.partition("=")
+        if not sep or not name.strip() or not rest.strip():
+            raise ReviewError("--test-status must be NAME=STATUS[:SUMMARY]")
+        status, _sep, summary = rest.partition(":")
+        status = status.strip()
+        if status not in allowed:
+            raise ReviewError(
+                "--test-status status must be one of " + ", ".join(sorted(allowed))
+            )
+        statuses.append({
+            "name": name.strip(),
+            "status": status,
+            "summary": summary.strip() or f"Reported as {status} by dry-run caller.",
+            "source": "cli",
+        })
+    if statuses:
+        return statuses
+    return [{
+        "name": "unspecified",
+        "status": "unknown",
+        "summary": "No test or build status was supplied to the review dry-run entrypoint.",
+        "source": "not_supplied",
+    }]
+
+
+def build_review_brief(
+    *,
+    source: dict[str, Any],
+    diff: str,
+    files: list[DiffFile],
+    test_status: list[dict[str, str]],
+    generated_at: str,
+) -> dict[str, Any]:
+    return {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_brief",
+        "generated_at_utc": generated_at,
+        "producer": {
+            "name": "scripts/scherzo-review",
+            "version": "1",
+            "mode": "dry-run",
+        },
+        "source": {
+            **source,
+            "diff_sha256": sha256_text(diff),
+            "changed_file_count": len(files),
+        },
+        "implementation_summary": summarize_change(files, source),
+        "changed_areas": [file.to_changed_area() for file in files],
+        "inferred_acceptance_criteria": infer_acceptance_criteria(files),
+        "risk_profile": build_risk_profile(files),
+        "suggested_review_lanes": suggested_review_lanes(files),
+        "test_build_status": test_status,
+        "notes": [
+            "Generated from a local dry-run. It did not post PR comments, update Linear, push branches, or mutate remote state.",
+            "The brief is heuristic and should orient later review lanes rather than replace direct diff inspection.",
+        ],
+    }
+
+
+def validate_string_field(value: dict[str, Any], field: str) -> None:
+    if not isinstance(value.get(field), str) or not value.get(field):
+        raise ReviewError(f"artifact field {field!r} must be a non-empty string")
+
+
+def validate_bool_field(value: dict[str, Any], field: str) -> None:
+    if not isinstance(value.get(field), bool):
+        raise ReviewError(f"artifact field {field!r} must be a boolean")
+
+
+def validate_list_field(value: dict[str, Any], field: str) -> list[Any]:
+    field_value = value.get(field)
+    if not isinstance(field_value, list):
+        raise ReviewError(f"artifact field {field!r} must be a list")
+    return field_value
+
+
+def validate_review_finding_core(value: dict[str, Any]) -> None:
+    for field in ["id", "category", "severity", "evidence_type", "summary", "details", "suggested_fix"]:
+        validate_string_field(value, field)
+    validate_bool_field(value, "verified")
+    validate_bool_field(value, "blocking")
+    locations = validate_list_field(value, "locations")
+    for location in locations:
+        if not isinstance(location, dict):
+            raise ReviewError("finding locations must be objects")
+        validate_string_field(location, "path")
+
+
+def validate_review_brief(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("review brief schema_version must be 1")
+    if value.get("artifact_type") != "review_brief":
+        raise ReviewError("review brief artifact_type must be review_brief")
+    for field in ["generated_at_utc", "implementation_summary"]:
+        validate_string_field(value, field)
+    for field in [
+        "changed_areas",
+        "inferred_acceptance_criteria",
+        "suggested_review_lanes",
+        "test_build_status",
+        "notes",
+    ]:
+        validate_list_field(value, field)
+    if not isinstance(value.get("source"), dict):
+        raise ReviewError("review brief source must be an object")
+    if not isinstance(value.get("producer"), dict):
+        raise ReviewError("review brief producer must be an object")
+    risk_profile = value.get("risk_profile")
+    if not isinstance(risk_profile, dict):
+        raise ReviewError("review brief risk_profile must be an object")
+    validate_string_field(risk_profile, "level")
+    validate_string_field(risk_profile, "rationale")
+    validate_list_field(risk_profile, "risk_areas")
+
+    for area in value["changed_areas"]:
+        if not isinstance(area, dict):
+            raise ReviewError("changed_areas items must be objects")
+        for field in ["path", "subsystem", "language", "change_kind"]:
+            validate_string_field(area, field)
+
+
+def validate_review_finding(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("review finding schema_version must be 1")
+    if value.get("artifact_type") != "review_finding":
+        raise ReviewError("review finding artifact_type must be review_finding")
+    validate_review_finding_core(value)
+
+
+def validate_review_lane_result(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("review lane result schema_version must be 1")
+    if value.get("artifact_type") != "review_lane_result":
+        raise ReviewError("review lane result artifact_type must be review_lane_result")
+    lane = value.get("lane")
+    if not isinstance(lane, dict):
+        raise ReviewError("review lane result lane must be an object")
+    for field in ["id", "name", "category", "version"]:
+        validate_string_field(lane, field)
+    status = value.get("execution_status")
+    if not isinstance(status, dict):
+        raise ReviewError("review lane result execution_status must be an object")
+    for field in ["state", "started_at_utc", "completed_at_utc", "summary"]:
+        validate_string_field(status, field)
+    findings = validate_list_field(value, "findings")
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise ReviewError("review lane findings must be objects")
+        validate_review_finding_core(finding)
+    validate_list_field(value, "artifacts")
+
+
+def validate_artifact(value: dict[str, Any]) -> None:
+    artifact_type = value.get("artifact_type")
+    if artifact_type == "review_brief":
+        validate_review_brief(value)
+    elif artifact_type == "review_finding":
+        validate_review_finding(value)
+    elif artifact_type == "review_lane_result":
+        validate_review_lane_result(value)
+    else:
+        raise ReviewError("artifact_type must be review_brief, review_finding, or review_lane_result")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ReviewError(f"invalid JSON in {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ReviewError(f"artifact JSON must be an object: {path}")
+    return value
+
+
+def dry_run_command(args: argparse.Namespace) -> None:
+    started_at = now_utc()
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.diff_file:
+        diff, source = source_from_diff_file(Path(args.diff_file))
+    elif args.pr:
+        diff, source = source_from_pr(args.pr, args.repo)
+    else:
+        diff, source = source_from_jj(args.from_rev, args.to_rev)
+
+    if args.source_label:
+        source["label"] = args.source_label
+
+    files = parse_diff_files(diff)
+    generated_at = now_utc()
+    test_status = parse_test_status(args.test_status)
+    brief = build_review_brief(
+        source=source,
+        diff=diff,
+        files=files,
+        test_status=test_status,
+        generated_at=generated_at,
+    )
+    validate_review_brief(brief)
+
+    brief_path = output_dir / "review-brief.v1.json"
+    write_json(brief_path, brief)
+
+    completed_at = now_utc()
+    log_path = output_dir / "review-dry-run.log"
+    log_path.write_text(
+        "scherzo-review dry-run\n"
+        f"started_at_utc={started_at}\n"
+        f"completed_at_utc={completed_at}\n"
+        f"source_kind={source.get('kind')}\n"
+        f"changed_file_count={len(files)}\n"
+        "remote_mutations=none\n"
+        f"review_brief_path={brief_path}\n"
+    )
+
+    lane_result = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_lane_result",
+        "generated_at_utc": completed_at,
+        "lane": {
+            "id": "review_brief",
+            "name": "Review brief generation",
+            "category": "brief",
+            "version": "1",
+        },
+        "execution_status": {
+            "state": "succeeded",
+            "started_at_utc": started_at,
+            "completed_at_utc": completed_at,
+            "summary": f"Generated ReviewBrief for {len(files)} changed file(s).",
+        },
+        "input_brief_ref": None,
+        "findings": [],
+        "artifacts": [
+            {
+                "artifact_type": "review_brief",
+                "path": brief_path.name,
+                "sha256": sha256_file(brief_path),
+            },
+            {
+                "artifact_type": "log",
+                "path": log_path.name,
+                "sha256": sha256_file(log_path),
+            },
+        ],
+    }
+    validate_review_lane_result(lane_result)
+    lane_result_path = output_dir / "review-lane-result.v1.json"
+    write_json(lane_result_path, lane_result)
+
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_dry_run_manifest",
+        "generated_at_utc": completed_at,
+        "remote_mutations": "none",
+        "artifacts": [
+            {"path": brief_path.name, "sha256": sha256_file(brief_path)},
+            {"path": lane_result_path.name, "sha256": sha256_file(lane_result_path)},
+            {"path": log_path.name, "sha256": sha256_file(log_path)},
+        ],
+    }
+    manifest_path = output_dir / "manifest.v1.json"
+    write_json(manifest_path, manifest)
+
+    print("REVIEW_DRY_RUN=ok")
+    print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
+    print(f"REVIEW_ARTIFACT_DIR={output_dir}")
+    print(f"REVIEW_BRIEF_PATH={brief_path}")
+    print(f"REVIEW_LANE_RESULT_PATH={lane_result_path}")
+    print(f"REVIEW_LOG_PATH={log_path}")
+    print("REVIEW_REMOTE_MUTATIONS=none")
+    print(f"REVIEW_CHANGED_FILES={len(files)}")
+
+
+def validate_command(args: argparse.Namespace) -> None:
+    artifact_path = Path(args.artifact)
+    value = load_json(artifact_path)
+    validate_artifact(value)
+    print("REVIEW_ARTIFACT_VALID=ok")
+    print(f"REVIEW_SCHEMA_VERSION={value.get('schema_version')}")
+    print(f"REVIEW_ARTIFACT_TYPE={value.get('artifact_type')}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="scherzo-review",
+        description="Generate and validate no-side-effect Scherzo review artifacts.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    dry_run = subparsers.add_parser(
+        "dry-run",
+        help="Generate a ReviewBrief from a PR or diff without mutating remote state.",
+    )
+    source = dry_run.add_mutually_exclusive_group()
+    source.add_argument("--diff-file", help="Read a unified git diff from this file.")
+    source.add_argument("--pr", help="Read a GitHub PR diff with gh pr diff (read-only).")
+    dry_run.add_argument("--repo", help="GitHub owner/repo for --pr.")
+    dry_run.add_argument(
+        "--from",
+        dest="from_rev",
+        default="@-",
+        help="jj revision for the left side of the local diff (default: @-).",
+    )
+    dry_run.add_argument(
+        "--to",
+        dest="to_rev",
+        default="@",
+        help="jj revision for the right side of the local diff (default: @).",
+    )
+    dry_run.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for local review artifacts (default: tmp/scherzo-review-dry-run).",
+    )
+    dry_run.add_argument(
+        "--source-label",
+        help="Human label to record in the ReviewBrief source object.",
+    )
+    dry_run.add_argument(
+        "--test-status",
+        action="append",
+        default=[],
+        help="Record available validation as NAME=STATUS[:SUMMARY]. STATUS is passed, failed, skipped, not_run, or unknown.",
+    )
+    dry_run.set_defaults(func=dry_run_command)
+
+    validate = subparsers.add_parser("validate", help="Validate a review artifact JSON object.")
+    validate.add_argument("--artifact", required=True, help="Artifact path to validate.")
+    validate.set_defaults(func=validate_command)
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "dry-run" and args.repo and not args.pr:
+        usage_error("--repo can only be used with --pr")
+    try:
+        args.func(args)
+    except ReviewError as exc:
+        fail(str(exc))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

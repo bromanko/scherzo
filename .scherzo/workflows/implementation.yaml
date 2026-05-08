@@ -28,9 +28,16 @@ steps:
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" analyze'
     workspace: main
 
+  - id: generate_review_brief
+    kind: command
+    depends_on: [analyze_changes]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-review" dry-run --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief"'
+    on_failure: continue
+    workspace: main
+
   - id: code_review
     kind: agent
-    depends_on: [analyze_changes]
+    depends_on: [generate_review_brief]
     prompt: prompts/code-review.md
     workspace: main
 
