@@ -25,6 +25,7 @@ pub type PreparedStepWorkspace {
     path: String,
     source_workspace_name: Option(String),
     source_workspace_path: Option(String),
+    workspace_profile: String,
   )
 }
 
@@ -40,6 +41,7 @@ pub fn prepare_step(
   step_id: String,
   workspace_ref: workflow_dag.WorkspaceRef,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
   known_workspaces: Dict(String, PreparedStepWorkspace),
 ) -> Result(PreparedStepWorkspace, PrepareError) {
   prepare_step_attempt(
@@ -50,6 +52,7 @@ pub fn prepare_step(
     1,
     workspace_ref,
     orchestrator,
+    profile,
     known_workspaces,
   )
 }
@@ -62,6 +65,7 @@ pub fn prepare_step_attempt(
   attempt_index: Int,
   workspace_ref: workflow_dag.WorkspaceRef,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
   known_workspaces: Dict(String, PreparedStepWorkspace),
 ) -> Result(PreparedStepWorkspace, PrepareError) {
   prepare_step_attempt_with_cleanup(
@@ -72,6 +76,7 @@ pub fn prepare_step_attempt(
     attempt_index,
     workspace_ref,
     orchestrator,
+    profile,
     known_workspaces,
     True,
   )
@@ -85,6 +90,7 @@ pub fn prepare_recovered_step(
   step_id: String,
   workspace_ref: workflow_dag.WorkspaceRef,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
   known_workspaces: Dict(String, PreparedStepWorkspace),
 ) -> Result(PreparedStepWorkspace, PrepareError) {
   prepare_recovered_step_attempt(
@@ -96,6 +102,7 @@ pub fn prepare_recovered_step(
     1,
     workspace_ref,
     orchestrator,
+    profile,
     known_workspaces,
   )
 }
@@ -109,6 +116,7 @@ pub fn prepare_recovered_step_attempt(
   attempt_index: Int,
   workspace_ref: workflow_dag.WorkspaceRef,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
   known_workspaces: Dict(String, PreparedStepWorkspace),
 ) -> Result(PreparedStepWorkspace, PrepareError) {
   use _ <- try_prepare(validate_expected_run_root(
@@ -127,6 +135,7 @@ pub fn prepare_recovered_step_attempt(
         run_id,
         expected_run_root,
         workspace_ref.name,
+        profile.name,
         orchestrator,
       ))
       reuse_prepared_workspace(
@@ -135,6 +144,7 @@ pub fn prepare_recovered_step_attempt(
         prepared,
         attempt_index,
         orchestrator,
+        profile,
       )
     }
     None -> {
@@ -144,6 +154,7 @@ pub fn prepare_recovered_step_attempt(
         workflow_id,
         run_id,
         expected_run_root,
+        profile.name,
         orchestrator,
       ))
       prepare_step_attempt_with_cleanup(
@@ -154,6 +165,7 @@ pub fn prepare_recovered_step_attempt(
         attempt_index,
         workspace_ref,
         orchestrator,
+        profile,
         known_workspaces,
         False,
       )
@@ -169,6 +181,7 @@ fn prepare_step_attempt_with_cleanup(
   attempt_index: Int,
   workspace_ref: workflow_dag.WorkspaceRef,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
   known_workspaces: Dict(String, PreparedStepWorkspace),
   cleanup_on_error: Bool,
 ) -> Result(PreparedStepWorkspace, PrepareError) {
@@ -180,6 +193,7 @@ fn prepare_step_attempt_with_cleanup(
         prepared,
         attempt_index,
         orchestrator,
+        profile,
       )
     None -> {
       use paths <- try_prepare(workspace_paths(
@@ -195,6 +209,7 @@ fn prepare_step_attempt_with_cleanup(
       use source <- try_prepare(source_workspace(
         workspace_ref.from,
         known_workspaces,
+        profile.name,
       ))
       let #(source_name, source_path) = source
       use _ <- try_prepare(validate_source_directory(source_path))
@@ -209,13 +224,16 @@ fn prepare_step_attempt_with_cleanup(
           path: workspace_path,
           source_workspace_name: source_name,
           source_workspace_path: source_path,
+          workspace_profile: profile.name,
         )
-      case finish_prepare_step(issue, step_id, prepared, orchestrator) {
+      case
+        finish_prepare_step(issue, step_id, prepared, orchestrator, profile)
+      {
         Ok(prepared) -> Ok(prepared)
         Error(err) -> {
           case cleanup_on_error {
             True -> {
-              let _ = cleanup_run(run_root, orchestrator)
+              let _ = cleanup_run(run_root, orchestrator, profile)
               Nil
             }
             False -> Nil
@@ -232,14 +250,22 @@ fn finish_prepare_step(
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(PreparedStepWorkspace, PrepareError) {
-  use _ <- result.try(run_create_hook(issue, step_id, prepared, orchestrator))
+  use _ <- result.try(run_create_hook(
+    issue,
+    step_id,
+    prepared,
+    orchestrator,
+    profile,
+  ))
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
   use _ <- result.try(run_before_step_hook(
     issue,
     step_id,
     prepared,
     orchestrator,
+    profile,
   ))
   Ok(prepared)
 }
@@ -249,12 +275,14 @@ fn finish_prepare_scheduled_step(
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(PreparedStepWorkspace, PrepareError) {
   use _ <- result.try(run_scheduled_create_hook(
     scheduled,
     step_id,
     prepared,
     orchestrator,
+    profile,
   ))
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
   use _ <- result.try(run_scheduled_before_step_hook(
@@ -262,6 +290,7 @@ fn finish_prepare_scheduled_step(
     step_id,
     prepared,
     orchestrator,
+    profile,
   ))
   Ok(prepared)
 }
@@ -271,8 +300,9 @@ pub fn after_step(
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Nil {
-  case orchestrator.dag_hooks.after_step {
+  case profile.hooks.after_step {
     None -> Nil
     Some(script) -> {
       let _ =
@@ -280,7 +310,7 @@ pub fn after_step(
           "after_step",
           script,
           orchestrator.config_dir,
-          orchestrator.dag_hooks.timeout_ms,
+          profile.hooks.timeout_ms,
           hook_env(issue, step_id, prepared, orchestrator),
         )
       Nil
@@ -293,8 +323,9 @@ pub fn scheduled_after_step(
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Nil {
-  case orchestrator.dag_hooks.after_step {
+  case profile.hooks.after_step {
     None -> Nil
     Some(script) -> {
       let _ =
@@ -302,7 +333,7 @@ pub fn scheduled_after_step(
           "after_step",
           script,
           orchestrator.config_dir,
-          orchestrator.dag_hooks.timeout_ms,
+          profile.hooks.timeout_ms,
           scheduled_hook_env(
             scheduled.job_id,
             schedule_core.iso_utc(scheduled.due_at_ms),
@@ -321,6 +352,7 @@ pub fn scheduled_after_step(
 pub fn cleanup_run(
   run_root: String,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, error.WorkspaceError) {
   let root_abs =
     path.absolute(orchestrator.effective.workspace.root)
@@ -336,7 +368,7 @@ pub fn cleanup_run(
       case retain_cleanup(target_abs) {
         True -> Ok(Nil)
         False -> {
-          case orchestrator.dag_hooks.remove {
+          case profile.hooks.remove {
             None -> Nil
             Some(script) -> {
               let dummy_issue =
@@ -365,13 +397,14 @@ pub fn cleanup_run(
                   path: target_abs,
                   source_workspace_name: None,
                   source_workspace_path: None,
+                  workspace_profile: profile.name,
                 )
               let _ =
                 hooks.run_best_effort_with_env(
                   "remove",
                   script,
                   orchestrator.config_dir,
-                  orchestrator.dag_hooks.timeout_ms,
+                  profile.hooks.timeout_ms,
                   hook_env(dummy_issue, "", prepared, orchestrator),
                 )
               Nil
@@ -437,6 +470,7 @@ pub fn prepare_scheduled_step_attempt(
   step_id: String,
   workspace_ref: workflow_dag.WorkspaceRef,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
   known_workspaces: Dict(String, PreparedStepWorkspace),
 ) -> Result(PreparedStepWorkspace, PrepareError) {
   case reusable_workspace(workspace_ref, known_workspaces) {
@@ -446,6 +480,7 @@ pub fn prepare_scheduled_step_attempt(
         step_id,
         prepared,
         orchestrator,
+        profile,
       )
     None -> {
       use paths <- try_prepare(scheduled_workspace_paths(
@@ -459,6 +494,7 @@ pub fn prepare_scheduled_step_attempt(
       use source <- try_prepare(source_workspace(
         workspace_ref.from,
         known_workspaces,
+        profile.name,
       ))
       let #(source_name, source_path) = source
       use _ <- try_prepare(validate_source_directory(source_path))
@@ -473,6 +509,7 @@ pub fn prepare_scheduled_step_attempt(
           path: workspace_path,
           source_workspace_name: source_name,
           source_workspace_path: source_path,
+          workspace_profile: profile.name,
         )
       case
         finish_prepare_scheduled_step(
@@ -480,11 +517,12 @@ pub fn prepare_scheduled_step_attempt(
           step_id,
           prepared,
           orchestrator,
+          profile,
         )
       {
         Ok(prepared) -> Ok(prepared)
         Error(err) -> {
-          let _ = cleanup_run(run_root, orchestrator)
+          let _ = cleanup_run(run_root, orchestrator, profile)
           Error(err)
         }
       }
@@ -577,6 +615,7 @@ fn validate_recovered_workspace(
   run_id: String,
   expected_run_root: String,
   workspace_name: String,
+  profile_name: String,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   let expected_abs =
@@ -592,6 +631,7 @@ fn validate_recovered_workspace(
     prepared.workflow_id == workflow_id
     && prepared.run_id == run_id
     && prepared.workspace_name == workspace_name
+    && prepared.workspace_profile == profile_name
     && prepared_run_root_abs == expected_abs
     && prepared_path_abs != expected_abs
     && path.contains(expected_abs, prepared_path_abs)
@@ -609,6 +649,7 @@ fn validate_recovered_source_workspace(
   workflow_id: String,
   run_id: String,
   expected_run_root: String,
+  profile_name: String,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   case source_name {
@@ -623,6 +664,7 @@ fn validate_recovered_source_workspace(
             run_id,
             expected_run_root,
             name,
+            profile_name,
             orchestrator,
           )
       }
@@ -742,7 +784,12 @@ fn reuse_prepared_workspace(
   prepared: PreparedStepWorkspace,
   attempt_index: Int,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(PreparedStepWorkspace, PrepareError) {
+  use _ <- try_prepare(validate_prepared_workspace_profile(
+    prepared,
+    profile.name,
+  ))
   let prepared =
     PreparedStepWorkspace(
       ..prepared,
@@ -756,6 +803,7 @@ fn reuse_prepared_workspace(
     step_id,
     prepared,
     orchestrator,
+    profile,
   ))
   Ok(prepared)
 }
@@ -765,7 +813,12 @@ fn reuse_scheduled_prepared_workspace(
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(PreparedStepWorkspace, PrepareError) {
+  use _ <- try_prepare(validate_prepared_workspace_profile(
+    prepared,
+    profile.name,
+  ))
   let prepared =
     PreparedStepWorkspace(
       ..prepared,
@@ -779,6 +832,7 @@ fn reuse_scheduled_prepared_workspace(
     step_id,
     prepared,
     orchestrator,
+    profile,
   ))
   Ok(prepared)
 }
@@ -786,15 +840,32 @@ fn reuse_scheduled_prepared_workspace(
 fn source_workspace(
   from: Option(String),
   known_workspaces: Dict(String, PreparedStepWorkspace),
+  profile_name: String,
 ) -> Result(#(Option(String), Option(String)), error.WorkspaceError) {
   case from {
     None -> Ok(#(None, None))
     Some(name) ->
       case dict.get(known_workspaces, name) {
-        Ok(prepared) -> Ok(#(Some(name), Some(prepared.path)))
+        Ok(prepared) -> {
+          use _ <- try_workspace(validate_prepared_workspace_profile(
+            prepared,
+            profile_name,
+          ))
+          Ok(#(Some(name), Some(prepared.path)))
+        }
         Error(_) ->
           Error(error.WorkspaceIo("source workspace is not prepared: " <> name))
       }
+  }
+}
+
+fn validate_prepared_workspace_profile(
+  prepared: PreparedStepWorkspace,
+  profile_name: String,
+) -> Result(Nil, error.WorkspaceError) {
+  case prepared.workspace_profile == profile_name {
+    True -> Ok(Nil)
+    False -> Error(error.WorkspaceIo("prepared workspace profile mismatch"))
   }
 }
 
@@ -803,8 +874,9 @@ fn run_create_hook(
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
-  case orchestrator.dag_hooks.create {
+  case profile.hooks.create {
     None ->
       create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
     Some(script) ->
@@ -812,7 +884,7 @@ fn run_create_hook(
         "create",
         script,
         orchestrator.config_dir,
-        orchestrator.dag_hooks.timeout_ms,
+        profile.hooks.timeout_ms,
         hook_env(issue, step_id, prepared, orchestrator),
       )
       |> result.map_error(HookFailure)
@@ -824,15 +896,16 @@ fn run_before_step_hook(
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
-  case orchestrator.dag_hooks.before_step {
+  case profile.hooks.before_step {
     None -> Ok(Nil)
     Some(script) ->
       hooks.run_hook_with_env(
         "before_step",
         script,
         orchestrator.config_dir,
-        orchestrator.dag_hooks.timeout_ms,
+        profile.hooks.timeout_ms,
         hook_env(issue, step_id, prepared, orchestrator),
       )
       |> result.map_error(HookFailure)
@@ -844,8 +917,9 @@ fn run_scheduled_create_hook(
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
-  case orchestrator.dag_hooks.create {
+  case profile.hooks.create {
     None ->
       create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
     Some(script) ->
@@ -853,7 +927,7 @@ fn run_scheduled_create_hook(
         "create",
         script,
         orchestrator.config_dir,
-        orchestrator.dag_hooks.timeout_ms,
+        profile.hooks.timeout_ms,
         scheduled_hook_env(
           scheduled.job_id,
           schedule_core.iso_utc(scheduled.due_at_ms),
@@ -873,15 +947,16 @@ fn run_scheduled_before_step_hook(
   step_id: String,
   prepared: PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
-  case orchestrator.dag_hooks.before_step {
+  case profile.hooks.before_step {
     None -> Ok(Nil)
     Some(script) ->
       hooks.run_hook_with_env(
         "before_step",
         script,
         orchestrator.config_dir,
-        orchestrator.dag_hooks.timeout_ms,
+        profile.hooks.timeout_ms,
         scheduled_hook_env(
           scheduled.job_id,
           schedule_core.iso_utc(scheduled.due_at_ms),
@@ -948,6 +1023,7 @@ fn base_hook_env(
       workflow_identity.hook_idempotency_key(prepared.run_id, step_id),
     ),
     #("SCHERZO_WORKSPACE_ROOT", orchestrator.effective.workspace.root),
+    #("SCHERZO_WORKSPACE_PROFILE", prepared.workspace_profile),
     #("SCHERZO_WORKSPACE_NAME", prepared.workspace_name),
     #("SCHERZO_WORKSPACE_PATH", prepared.path),
     #(

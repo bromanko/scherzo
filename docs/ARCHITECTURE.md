@@ -106,7 +106,9 @@ scripts/scherzoctl / scherzo ctl
 - Workflow runner executes a ready batch concurrently, then applies artifacts in
   DAG order so downstream template rendering is deterministic.
 - Workspaces are hook-owned. Scherzo computes safe paths and hook environment;
-  hooks create/copy/validate/remove content.
+  orchestrator-defined workspace hook profiles create/copy/validate/remove
+  content. A workflow may select one trusted profile with top-level
+  `workspace_profile`; omitted selectors use the orchestrator default profile.
 
 ### Orchestrator dispatch
 

@@ -1,15 +1,18 @@
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/hash
 import scherzo/model_config
 import scherzo/workflow_dag
+import scherzo/workspace_profile
 
 pub type FingerprintError {
   PromptFileReadFailed(path: String)
   UnsupportedWorkflowShape(reason: String)
+  WorkspaceProfileUnavailable(profile_name: String)
 }
 
 pub fn fingerprint(
@@ -22,7 +25,7 @@ pub fn fingerprint_for_execution(
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(String, FingerprintError) {
-  Ok(for_execution(dag.id, dag, orchestrator))
+  for_execution(dag.id, dag, orchestrator)
 }
 
 pub fn for_dag(workflow_id: String, dag: workflow_dag.WorkflowDag) -> String {
@@ -33,14 +36,18 @@ pub fn for_execution(
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
-) -> String {
-  for_execution_options(
+) -> Result(String, FingerprintError) {
+  use profile <- result.try(
+    workspace_profile.resolve(dag, orchestrator)
+    |> result.map_error(workspace_profile_error_to_fingerprint_error),
+  )
+  Ok(for_execution_profile_options(
     workflow_id,
     dag,
-    orchestrator.dag_hooks,
+    profile,
     orchestrator.artifact_limits,
     orchestrator.model_settings,
-  )
+  ))
 }
 
 pub fn for_execution_options(
@@ -50,10 +57,32 @@ pub fn for_execution_options(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
-  hash.sha256_hex(canonical_execution_input_for(
+  let profile =
+    config_types.WorkspaceHookProfile(
+      name: "default",
+      hooks: dag_hooks,
+      source: config_types.LegacyWorkspaceHooks,
+    )
+  for_execution_profile_options(
     workflow_id,
     dag,
-    dag_hooks,
+    profile,
+    artifact_limits,
+    model_settings,
+  )
+}
+
+pub fn for_execution_profile_options(
+  workflow_id: String,
+  dag: workflow_dag.WorkflowDag,
+  profile: config_types.WorkspaceHookProfile,
+  artifact_limits: config_types.ArtifactLimits,
+  model_settings: model_config.Settings,
+) -> String {
+  hash.sha256_hex(canonical_execution_input_for_profile(
+    workflow_id,
+    dag,
+    profile,
     artifact_limits,
     model_settings,
   ))
@@ -77,41 +106,77 @@ pub fn canonical_execution_input_for(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
-  execution_to_json(
+  let profile =
+    config_types.WorkspaceHookProfile(
+      name: "default",
+      hooks: dag_hooks,
+      source: config_types.LegacyWorkspaceHooks,
+    )
+  canonical_execution_input_for_profile(
     workflow_id,
     dag,
-    dag_hooks,
+    profile,
     artifact_limits,
     model_settings,
   )
+}
+
+pub fn canonical_execution_input_for_profile(
+  workflow_id: String,
+  dag: workflow_dag.WorkflowDag,
+  profile: config_types.WorkspaceHookProfile,
+  artifact_limits: config_types.ArtifactLimits,
+  model_settings: model_config.Settings,
+) -> String {
+  execution_to_json(workflow_id, dag, profile, artifact_limits, model_settings)
   |> json.to_string
 }
 
 fn execution_to_json(
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
-  dag_hooks: config_types.DagHooksConfig,
+  profile: config_types.WorkspaceHookProfile,
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> json.Json {
-  json.object([
+  let fields = [
     #("dag", dag_to_json(workflow_id, dag)),
-    #("dag_hooks", dag_hooks_to_json(dag_hooks)),
+    #("dag_hooks", dag_hooks_to_json(profile.hooks)),
     #("artifact_limits", artifact_limits_to_json(artifact_limits)),
     #("global_model_settings", model_settings_to_json(model_settings)),
-  ])
+  ]
+  case profile.source {
+    config_types.LegacyWorkspaceHooks -> json.object(fields)
+    config_types.ConfiguredWorkspaceProfile ->
+      json.object([
+        #("dag", dag_to_json(workflow_id, dag)),
+        #("workspace_profile", workspace_profile_to_json(profile)),
+        #("dag_hooks", dag_hooks_to_json(profile.hooks)),
+        #("artifact_limits", artifact_limits_to_json(artifact_limits)),
+        #("global_model_settings", model_settings_to_json(model_settings)),
+      ])
+  }
 }
 
 fn dag_to_json(
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
 ) -> json.Json {
-  json.object([
+  let prefix = [
     #("id", json.string(workflow_id)),
     #("description", option_string_to_json(dag.description)),
-    #("max_parallel_steps", json.int(dag.max_parallel_steps)),
-    #("steps", json.array(sorted_steps(dag.steps), of: step_to_json)),
-  ])
+  ]
+  let prefix = case dag.workspace_profile {
+    None -> prefix
+    Some(profile) ->
+      list.append(prefix, [#("workspace_profile", json.string(profile))])
+  }
+  json.object(
+    list.append(prefix, [
+      #("max_parallel_steps", json.int(dag.max_parallel_steps)),
+      #("steps", json.array(sorted_steps(dag.steps), of: step_to_json)),
+    ]),
+  )
 }
 
 fn sorted_steps(
@@ -173,6 +238,15 @@ fn workspace_to_json(workspace: workflow_dag.WorkspaceRef) -> json.Json {
   ])
 }
 
+fn workspace_profile_to_json(
+  profile: config_types.WorkspaceHookProfile,
+) -> json.Json {
+  json.object([
+    #("name", json.string(profile.name)),
+    #("source", json.string("configured")),
+  ])
+}
+
 fn dag_hooks_to_json(hooks: config_types.DagHooksConfig) -> json.Json {
   json.object([
     #("create", option_string_to_json(hooks.create)),
@@ -203,6 +277,15 @@ fn model_settings_to_json(settings: model_config.Settings) -> json.Json {
     #("model", option_string_to_json(settings.model)),
     #("thinking", option_thinking_to_json(settings.thinking)),
   ])
+}
+
+fn workspace_profile_error_to_fingerprint_error(
+  err: workspace_profile.ProfileResolutionError,
+) -> FingerprintError {
+  case err {
+    workspace_profile.UnknownWorkspaceProfile(profile_name: profile_name, ..) ->
+      WorkspaceProfileUnavailable(profile_name)
+  }
 }
 
 fn option_thinking_to_json(

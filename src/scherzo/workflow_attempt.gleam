@@ -1,6 +1,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
@@ -101,6 +102,7 @@ pub fn workflow_fingerprint(
   orchestrator: config_types.OrchestratorConfig,
 ) -> String {
   fingerprint.for_execution(dag.id, dag, orchestrator)
+  |> result.unwrap("workflow_fingerprint_failed")
 }
 
 pub fn render_recovery_prompt(

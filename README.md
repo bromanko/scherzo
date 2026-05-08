@@ -171,17 +171,31 @@ tracker:
 
 workspace:
   root: .scherzo/workspaces
-  hooks:
-    create: |
-      mkdir -p "$SCHERZO_WORKSPACE_PATH"
-      git clone "$REPO_URL" "$SCHERZO_WORKSPACE_PATH"
-    before_step: |
-      test -d "$SCHERZO_WORKSPACE_PATH/.git"
-    after_step: |
-      true
-    remove: |
-      rm -rf "$SCHERZO_WORKSPACE_PATH"
-    timeout_ms: 60000
+  default_profile: isolated
+  profiles:
+    isolated:
+      hooks:
+        create: |
+          mkdir -p "$SCHERZO_WORKSPACE_PATH"
+          git clone "$REPO_URL" "$SCHERZO_WORKSPACE_PATH"
+        before_step: |
+          test -d "$SCHERZO_WORKSPACE_PATH/.git"
+        after_step: |
+          true
+        remove: |
+          rm -rf "$SCHERZO_WORKSPACE_PATH"
+        timeout_ms: 60000
+    noop:
+      hooks:
+        create: |
+          mkdir -p "$SCHERZO_WORKSPACE_PATH"
+        before_step: |
+          true
+        after_step: |
+          true
+        remove: |
+          rm -rf "$SCHERZO_WORKSPACE_PATH"
+        timeout_ms: 60000
 
 agent:
   max_concurrent_agents: 1
@@ -215,6 +229,21 @@ routing:
 
 Relative paths are resolved from the orchestrator config file directory.
 
+For migration, the older direct hook shape remains valid and becomes the synthetic `default` profile:
+
+```yaml
+workspace:
+  root: .scherzo/workspaces
+  hooks:
+    create: |
+      mkdir -p "$SCHERZO_WORKSPACE_PATH"
+    before_step: |
+      test -d "$SCHERZO_WORKSPACE_PATH"
+    remove: |
+      rm -rf "$SCHERZO_WORKSPACE_PATH"
+    timeout_ms: 60000
+```
+
 ## Workflow DAG files
 
 A workflow file describes one routed issue workflow. Steps may be `agent` steps that run pi with a Markdown prompt template, or `command` steps that run shell commands in a prepared workflow workspace.
@@ -223,6 +252,9 @@ A workflow file describes one routed issue workflow. Steps may be `agent` steps 
 version: 1
 id: implementation
 description: Implement, test, review, apply feedback, and validate.
+# Optional: select an orchestrator-defined workspace hook profile. Omit this
+# field to use workspace.default_profile.
+workspace_profile: isolated
 max_parallel_steps: 4
 steps:
   - id: implement
@@ -286,13 +318,16 @@ Markdown prompt templates are not runtime workflow files; they are only prompt b
 
 ## Workspace hooks
 
-Workspace hooks are trusted shell snippets from the orchestrator config. Scherzo creates and prepares per-issue/per-run workflow workspaces and calls hooks with environment such as:
+Workspace hooks are trusted shell snippets from the orchestrator config. Prefer defining named `workspace.profiles` and selecting one with a workflow's top-level `workspace_profile`; workflow YAML can select a profile but cannot define hook scripts. Existing configs may still use legacy direct `workspace.hooks`, which Scherzo treats as a synthetic `default` profile for workflows that omit `workspace_profile`.
+
+Scherzo creates and prepares per-issue/per-run workflow workspaces and calls hooks with environment such as:
 
 - `SCHERZO_CONFIG_DIR`
 - `SCHERZO_WORKFLOW_ID`
 - `SCHERZO_RUN_ID`
 - `SCHERZO_ISSUE_ID`
 - `SCHERZO_ISSUE_IDENTIFIER`
+- `SCHERZO_WORKSPACE_PROFILE`
 - `SCHERZO_WORKSPACE_NAME`
 - `SCHERZO_WORKSPACE_PATH`
 - `SCHERZO_SOURCE_WORKSPACE_NAME`
@@ -476,7 +511,7 @@ Use repeated `--check` flags to run a subset. This read-only subset loads config
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check workflow-config --check linear-contract --check linear-smoke .scherzo/scherzo.yaml
 ```
 
-The default doctor run includes local checks. `workspace-hooks` prepares and cleans up a scratch workflow-run workspace using the configured `workspace.hooks.create`, `workspace.hooks.before_step`, and `workspace.hooks.remove` snippets. `pi-probe` launches pi RPC in that scratch workspace and performs the compatibility probe without sending a task prompt.
+The default doctor run includes local checks. `workspace-hooks` prepares and cleans up a scratch workflow-run workspace using the orchestrator default workspace profile's `create`, `before_step`, and `remove` hooks. `pi-probe` launches pi RPC in that scratch workspace and performs the compatibility probe without sending a task prompt.
 
 The focused one-off readiness modes remain available for troubleshooting individual surfaces:
 

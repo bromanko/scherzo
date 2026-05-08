@@ -400,7 +400,7 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- If no process is active, remove the stale instance.lock file manually.",
     ]
     WorkspaceHooks -> [
-      "- Inspect workspace.hooks.create, before_step, and remove in the YAML config.",
+      "- Inspect the selected workspace profile hooks or legacy workspace.hooks in the YAML config.",
       "- Re-run this check after fixing hook commands or workspace permissions.",
     ]
     PiProbe -> [

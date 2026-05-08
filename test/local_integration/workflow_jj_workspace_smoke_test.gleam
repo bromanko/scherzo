@@ -71,16 +71,8 @@ fn orchestrator(
   script: String,
 ) -> config_types.OrchestratorConfig {
   let workspace_root = root <> "/workspaces"
-  config_types.OrchestratorConfig(
-    effective: effective(workspace_root),
-    config_dir: root <> "/config",
-    routing: config_types.RoutingConfig(
-      workflow_label_prefix: "workflow:",
-      require_exactly_one_workflow_label: True,
-      default_workflow: None,
-      workflows: dict.from_list([#("smoke", "smoke.yaml")]),
-    ),
-    dag_hooks: config_types.DagHooksConfig(
+  let dag_hooks =
+    config_types.DagHooksConfig(
       create: Some(
         "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n"
         <> "cd \"$SCHERZO_WORKSPACE_PATH\"\n"
@@ -109,6 +101,29 @@ fn orchestrator(
         <> "fi",
       ),
       timeout_ms: 20_000,
+    )
+  config_types.OrchestratorConfig(
+    effective: effective(workspace_root),
+    config_dir: root <> "/config",
+    routing: config_types.RoutingConfig(
+      workflow_label_prefix: "workflow:",
+      require_exactly_one_workflow_label: True,
+      default_workflow: None,
+      workflows: dict.from_list([#("smoke", "smoke.yaml")]),
+    ),
+    dag_hooks: dag_hooks,
+    workspace_profiles: config_types.WorkspaceHookProfiles(
+      default_profile: "default",
+      profiles: dict.from_list([
+        #(
+          "default",
+          config_types.WorkspaceHookProfile(
+            name: "default",
+            hooks: dag_hooks,
+            source: config_types.LegacyWorkspaceHooks,
+          ),
+        ),
+      ]),
     ),
     artifact_limits: limits(),
     model_settings: model_config.default_settings(),

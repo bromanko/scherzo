@@ -11,6 +11,7 @@ import scherzo/path
 import scherzo/template
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
+import scherzo/workspace_profile
 import simplifile
 import yay
 
@@ -137,6 +138,10 @@ fn load_orchestrator(
     dict.to_list(orchestrator.routing.workflows),
     dict.new(),
   ))
+  use _ <- result.try(validate_workspace_profiles(
+    orchestrator,
+    dict.to_list(workflows),
+  ))
   use _ <- result.try(validate_workflow_model_settings(
     orchestrator.model_settings,
     dict.to_list(workflows),
@@ -215,6 +220,24 @@ fn resolve_step_prompts(
         _ -> resolve_step_prompts(rest, workflow_path, [step, ..acc])
       }
     }
+  }
+}
+
+fn validate_workspace_profiles(
+  orchestrator: config_types.OrchestratorConfig,
+  workflows: List(#(String, workflow_dag.WorkflowDag)),
+) -> Result(Nil, BundleError) {
+  case workflows {
+    [] -> Ok(Nil)
+    [#(_, dag), ..rest] ->
+      case workspace_profile.resolve(dag, orchestrator) {
+        Ok(_) -> validate_workspace_profiles(orchestrator, rest)
+        Error(err) ->
+          Error(BundleError(
+            "unknown_workspace_profile",
+            workspace_profile.error_message(err),
+          ))
+      }
   }
 }
 

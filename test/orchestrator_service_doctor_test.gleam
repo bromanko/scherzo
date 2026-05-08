@@ -20,9 +20,9 @@ import test_async
 pub type DoctorAction {
   LockAcquired(String)
   LockReleased
-  PrepareCalled(run_root: String, workspace_path: String)
+  PrepareCalled(run_root: String, workspace_path: String, profile: String)
   PiCalled(cwd: String)
-  CleanupCalled(run_root: String)
+  CleanupCalled(run_root: String, profile: String)
   LogCaptured(
     level: String,
     event: String,
@@ -109,6 +109,7 @@ fn successful_deps(
       _step_id,
       workspace_ref,
       orchestrator,
+      profile,
       _known,
     ) {
       let run_root =
@@ -120,7 +121,10 @@ fn successful_deps(
         <> "/"
         <> run_id
       let workspace_path = run_root <> "/" <> workspace_ref.name
-      process.send(subject, PrepareCalled(run_root, workspace_path))
+      process.send(
+        subject,
+        PrepareCalled(run_root, workspace_path, profile.name),
+      )
       Ok(workspace_run.PreparedStepWorkspace(
         workflow_id: workflow_id,
         run_id: run_id,
@@ -130,10 +134,11 @@ fn successful_deps(
         path: workspace_path,
         source_workspace_name: workspace_ref.from,
         source_workspace_path: None,
+        workspace_profile: profile.name,
       ))
     },
-    cleanup_run: fn(run_root, _orchestrator) {
-      process.send(subject, CleanupCalled(run_root))
+    cleanup_run: fn(run_root, _orchestrator, profile) {
+      process.send(subject, CleanupCalled(run_root, profile.name))
       Ok(Nil)
     },
     pi_probe: fn(_command, cwd, _timeout) {
@@ -385,7 +390,7 @@ pub fn doctor_lock_failure_reports_only_selected_checks_test() {
     service.DoctorDependencies(
       ..successful_deps(subject),
       acquire_lock: fn(_) { Error(instance_lock.LockAlreadyHeld("held")) },
-      prepare_step: fn(_, _, _, _, _, _, _) {
+      prepare_step: fn(_, _, _, _, _, _, _, _) {
         panic as "prepare_step should not run when the doctor lock fails"
       },
       pi_probe: fn(_, _, _) {
@@ -418,7 +423,7 @@ pub fn doctor_pi_probe_lock_failure_reports_only_pi_probe_test() {
     service.DoctorDependencies(
       ..successful_deps(subject),
       acquire_lock: fn(_) { Error(instance_lock.LockAlreadyHeld("held")) },
-      prepare_step: fn(_, _, _, _, _, _, _) {
+      prepare_step: fn(_, _, _, _, _, _, _, _) {
         panic as "prepare_step should not run when the doctor lock fails"
       },
       pi_probe: fn(_, _, _) {
@@ -465,10 +470,10 @@ pub fn doctor_workspace_and_pi_share_one_prepared_workspace_test() {
   assert field_value(pi_result.fields, "workspace_path") == Some(workspace_path)
 
   let assert Ok(LockAcquired(_)) = process.receive(subject, within: 1000)
-  let assert Ok(PrepareCalled(run_root, prepared_path)) =
+  let assert Ok(PrepareCalled(run_root, prepared_path, "default")) =
     process.receive(subject, within: 1000)
   let assert Ok(PiCalled(pi_path)) = process.receive(subject, within: 1000)
-  let assert Ok(CleanupCalled(cleaned_root)) =
+  let assert Ok(CleanupCalled(cleaned_root, "default")) =
     process.receive(subject, within: 1000)
   let assert Ok(LockReleased) = process.receive(subject, within: 1000)
   assert pi_path == prepared_path
@@ -481,8 +486,8 @@ pub fn doctor_cleanup_failure_warns_test() {
   let deps =
     service.DoctorDependencies(
       ..successful_deps(subject),
-      cleanup_run: fn(run_root, _orchestrator) {
-        process.send(subject, CleanupCalled(run_root))
+      cleanup_run: fn(run_root, _orchestrator, _profile) {
+        process.send(subject, CleanupCalled(run_root, "default"))
         Error(error.WorkspaceIo("delete failed"))
       },
     )
@@ -508,12 +513,12 @@ pub fn doctor_pi_probe_prepare_failure_reports_only_pi_probe_test() {
   let deps =
     service.DoctorDependencies(
       ..successful_deps(subject),
-      prepare_step: fn(_, _, _, _, _, _, _) {
+      prepare_step: fn(_, _, _, _, _, _, _, _) {
         Error(
           workspace_run.WorkspaceFailure(error.WorkspaceIo("prepare failed")),
         )
       },
-      cleanup_run: fn(_, _) {
+      cleanup_run: fn(_, _, _) {
         panic as "cleanup_run should not run when prepare_step fails"
       },
       pi_probe: fn(_, _, _) {
@@ -544,8 +549,8 @@ pub fn doctor_pi_probe_cleanup_failure_does_not_report_workspace_hooks_test() {
   let deps =
     service.DoctorDependencies(
       ..successful_deps(subject),
-      cleanup_run: fn(run_root, _orchestrator) {
-        process.send(subject, CleanupCalled(run_root))
+      cleanup_run: fn(run_root, _orchestrator, _profile) {
+        process.send(subject, CleanupCalled(run_root, "default"))
         Error(error.WorkspaceIo("delete failed"))
       },
     )

@@ -26,6 +26,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workflow_scheduler
+import scherzo/workspace_profile
 import scherzo/workspace_run
 
 pub type WorkflowRunSuccess {
@@ -128,6 +129,7 @@ pub type Dependencies {
       Int,
       workflow_dag.WorkspaceRef,
       config_types.OrchestratorConfig,
+      config_types.WorkspaceHookProfile,
       Dict(String, workspace_run.PreparedStepWorkspace),
     ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
     prepare_recovered_step: fn(
@@ -139,6 +141,7 @@ pub type Dependencies {
       Int,
       workflow_dag.WorkspaceRef,
       config_types.OrchestratorConfig,
+      config_types.WorkspaceHookProfile,
       Dict(String, workspace_run.PreparedStepWorkspace),
     ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
     after_step: fn(
@@ -146,9 +149,13 @@ pub type Dependencies {
       String,
       workspace_run.PreparedStepWorkspace,
       config_types.OrchestratorConfig,
+      config_types.WorkspaceHookProfile,
     ) -> Nil,
-    cleanup_run: fn(String, config_types.OrchestratorConfig) ->
-      Result(Nil, error.WorkspaceError),
+    cleanup_run: fn(
+      String,
+      config_types.OrchestratorConfig,
+      config_types.WorkspaceHookProfile,
+    ) -> Result(Nil, error.WorkspaceError),
     command_step: fn(
       StepContext,
       String,
@@ -370,6 +377,7 @@ fn scheduled_dependencies(
       _attempt_index,
       workspace_ref,
       orchestrator,
+      profile,
       known,
     ) {
       workspace_run.prepare_scheduled_step_attempt(
@@ -377,6 +385,7 @@ fn scheduled_dependencies(
         step_id,
         workspace_ref,
         orchestrator,
+        profile,
         known,
       )
     },
@@ -389,6 +398,7 @@ fn scheduled_dependencies(
       _attempt_index,
       workspace_ref,
       orchestrator,
+      profile,
       known,
     ) {
       workspace_run.prepare_scheduled_step_attempt(
@@ -396,15 +406,17 @@ fn scheduled_dependencies(
         step_id,
         workspace_ref,
         orchestrator,
+        profile,
         known,
       )
     },
-    after_step: fn(_, step_id, prepared, orchestrator) {
+    after_step: fn(_, step_id, prepared, orchestrator, profile) {
       workspace_run.scheduled_after_step(
         scheduled,
         step_id,
         prepared,
         orchestrator,
+        profile,
       )
     },
     command_step: fn(context, command, timeout_ms, secrets, limits) {
@@ -492,80 +504,110 @@ pub fn execute_with_context(
   context: RunContext,
   dependencies: Dependencies,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
-  case context {
-    FreshRun(run_id) ->
-      loop(
-        issue,
-        dag,
-        orchestrator,
-        tracker_client,
-        secrets,
-        run_id,
-        False,
-        dependencies,
-        workflow_scheduler.init(dag),
-        dict.new(),
-        dict.new(),
-        None,
-        dict.new(),
-        session_tokens.zero_token_totals(),
-        None,
-        0,
-        True,
-        dict.new(),
-      )
-    RecoveredRun(recovered) ->
-      case recovered.workflow_id != dag.id {
-        True ->
-          Error(WorkflowRunFailure(
-            reason: "workflow_recovery_invalid:workflow_id_mismatch",
-            agent_reason: None,
-            artifacts: recovered.artifacts,
-            run_root: Some(recovered.run_root),
-            failed_step_id: None,
-          ))
-        False ->
-          case
-            workflow_scheduler.init_with_statuses(
-              dag,
-              recovered.scheduler_statuses,
-            )
-          {
-            Error(reason) ->
+  case workspace_profile.resolve(dag, orchestrator) {
+    Error(_) ->
+      Error(WorkflowRunFailure(
+        reason: "workspace_profile_resolution_failed:"
+          <> workspace_profile.selected_name(dag, orchestrator),
+        agent_reason: None,
+        artifacts: run_context_artifacts(context),
+        run_root: run_context_run_root(context),
+        failed_step_id: None,
+      ))
+    Ok(profile) ->
+      case context {
+        FreshRun(run_id) ->
+          loop(
+            issue,
+            dag,
+            orchestrator,
+            tracker_client,
+            secrets,
+            run_id,
+            False,
+            dependencies,
+            workflow_scheduler.init(dag),
+            dict.new(),
+            dict.new(),
+            None,
+            dict.new(),
+            session_tokens.zero_token_totals(),
+            None,
+            0,
+            True,
+            dict.new(),
+            profile,
+          )
+        RecoveredRun(recovered) ->
+          case recovered.workflow_id != dag.id {
+            True ->
               Error(WorkflowRunFailure(
-                reason: "workflow_recovery_invalid:" <> reason,
+                reason: "workflow_recovery_invalid:workflow_id_mismatch",
                 agent_reason: None,
                 artifacts: recovered.artifacts,
                 run_root: Some(recovered.run_root),
                 failed_step_id: None,
               ))
-            Ok(scheduler_state) -> {
-              let cleanup_allowed =
-                workflow_scheduler.outcome(dag, scheduler_state)
-                != workflow_scheduler.WorkflowInProgress
-              loop(
-                issue,
-                dag,
-                orchestrator,
-                tracker_client,
-                secrets,
-                recovered.run_id,
-                True,
-                dependencies,
-                scheduler_state,
-                recovered.artifacts,
-                recovered.prepared_workspaces,
-                Some(recovered.run_root),
-                recovered.step_attempts,
-                recovered.token_totals,
-                recovered.final_issue,
-                recovered.turns,
-                cleanup_allowed,
-                recovered.pi_session_continuations,
-              )
-            }
+            False ->
+              case
+                workflow_scheduler.init_with_statuses(
+                  dag,
+                  recovered.scheduler_statuses,
+                )
+              {
+                Error(reason) ->
+                  Error(WorkflowRunFailure(
+                    reason: "workflow_recovery_invalid:" <> reason,
+                    agent_reason: None,
+                    artifacts: recovered.artifacts,
+                    run_root: Some(recovered.run_root),
+                    failed_step_id: None,
+                  ))
+                Ok(scheduler_state) -> {
+                  let cleanup_allowed =
+                    workflow_scheduler.outcome(dag, scheduler_state)
+                    != workflow_scheduler.WorkflowInProgress
+                  loop(
+                    issue,
+                    dag,
+                    orchestrator,
+                    tracker_client,
+                    secrets,
+                    recovered.run_id,
+                    True,
+                    dependencies,
+                    scheduler_state,
+                    recovered.artifacts,
+                    recovered.prepared_workspaces,
+                    Some(recovered.run_root),
+                    recovered.step_attempts,
+                    recovered.token_totals,
+                    recovered.final_issue,
+                    recovered.turns,
+                    cleanup_allowed,
+                    recovered.pi_session_continuations,
+                    profile,
+                  )
+                }
+              }
           }
       }
+  }
+}
+
+fn run_context_artifacts(
+  context: RunContext,
+) -> Dict(String, step_artifact.StepArtifact) {
+  case context {
+    FreshRun(_) -> dict.new()
+    RecoveredRun(recovered) -> recovered.artifacts
+  }
+}
+
+fn run_context_run_root(context: RunContext) -> Option(String) {
+  case context {
+    FreshRun(_) -> None
+    RecoveredRun(recovered) -> Some(recovered.run_root)
   }
 }
 
@@ -638,6 +680,7 @@ fn loop(
   turns: Int,
   cleanup_allowed: Bool,
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case workflow_scheduler.outcome(dag, scheduler_state) {
     workflow_scheduler.WorkflowSucceeded -> {
@@ -668,6 +711,7 @@ fn loop(
         cleanup_if_allowed(
           run_root,
           orchestrator,
+          profile,
           dependencies,
           cleanup_allowed,
         )
@@ -723,6 +767,7 @@ fn loop(
         cleanup_failure_suffix(cleanup_if_allowed(
           run_root,
           orchestrator,
+          profile,
           dependencies,
           cleanup_allowed,
         ))
@@ -765,6 +810,7 @@ fn loop(
             cleanup_failure_suffix(cleanup_if_allowed(
               run_root,
               orchestrator,
+              profile,
               dependencies,
               cleanup_allowed,
             ))
@@ -802,6 +848,7 @@ fn loop(
               recovered_execution,
               attempt_indexes,
               [],
+              profile,
             )
           {
             Error(PrepareReadyFailure(reason, agent_reason, prepared_run_root)) -> {
@@ -818,6 +865,7 @@ fn loop(
                 cleanup_failure_suffix(cleanup_if_allowed(
                   failure_run_root,
                   orchestrator,
+                  profile,
                   dependencies,
                   cleanup_allowed,
                 ))
@@ -858,6 +906,7 @@ fn loop(
                 cleanup_allowed,
                 recovered_execution,
                 pi_session_continuations,
+                profile,
               )
             }
           }
@@ -962,6 +1011,7 @@ fn prepare_ready_steps(
   recovered_execution: Bool,
   attempt_indexes: Dict(String, Int),
   acc: List(PreparedStart),
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(
   #(
     List(PreparedStart),
@@ -994,6 +1044,7 @@ fn prepare_ready_steps(
           attempt_index,
           step.workspace,
           orchestrator,
+          profile,
           prepared_workspaces,
         )
       {
@@ -1044,6 +1095,7 @@ fn prepare_ready_steps(
                 recovered_execution,
                 next_attempt_indexes,
                 [PreparedStart(step: step, workspace: prepared), ..acc],
+                profile,
               )
             }
           }
@@ -1064,6 +1116,7 @@ fn prepare_step_for_mode(
   attempt_index: Int,
   workspace_ref: workflow_dag.WorkspaceRef,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
 ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError) {
   case recovered_execution, current_run_root {
@@ -1077,6 +1130,7 @@ fn prepare_step_for_mode(
         attempt_index,
         workspace_ref,
         orchestrator,
+        profile,
         prepared_workspaces,
       )
     _, _ ->
@@ -1088,6 +1142,7 @@ fn prepare_step_for_mode(
         attempt_index,
         workspace_ref,
         orchestrator,
+        profile,
         prepared_workspaces,
       )
   }
@@ -1118,6 +1173,7 @@ fn execute_prepared_steps(
   cleanup_allowed: Bool,
   recovered_execution: Bool,
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case starts {
     [] ->
@@ -1140,6 +1196,7 @@ fn execute_prepared_steps(
         turns,
         cleanup_allowed,
         pi_session_continuations,
+        profile,
       )
     _ -> {
       case
@@ -1153,6 +1210,7 @@ fn execute_prepared_steps(
           dependencies,
           artifacts,
           pi_session_continuations,
+          profile,
         )
       {
         Error(StepBatchStartError(reason, batch_cleanup_allowed)) -> {
@@ -1168,6 +1226,7 @@ fn execute_prepared_steps(
             cleanup_failure_suffix(cleanup_if_allowed(
               run_root,
               orchestrator,
+              profile,
               dependencies,
               cleanup_allowed || batch_cleanup_allowed,
             ))
@@ -1205,6 +1264,7 @@ fn execute_prepared_steps(
             True,
             recovered_execution,
             pi_session_continuations,
+            profile,
           )
         }
         Ok(StepBatchFatal(result)) ->
@@ -1219,6 +1279,7 @@ fn execute_prepared_steps(
             artifacts,
             run_root,
             True,
+            profile,
           )
       }
     }
@@ -1235,6 +1296,7 @@ fn run_prepared_batch(
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(StepBatchOutcome, StepBatchStartError) {
   let was_trapping_exits = process_ext.trap_exits(True)
   let subject = process.new_subject()
@@ -1250,6 +1312,7 @@ fn run_prepared_batch(
       dependencies,
       artifacts,
       pi_session_continuations,
+      profile,
     )
   case spawned {
     Error(error) -> {
@@ -1290,6 +1353,7 @@ fn spawn_prepared_steps(
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(List(SpawnedStepWorker), StepBatchStartError) {
   spawn_prepared_steps_loop(
     starts,
@@ -1302,6 +1366,7 @@ fn spawn_prepared_steps(
     dependencies,
     artifacts,
     pi_session_continuations,
+    profile,
     [],
   )
 }
@@ -1317,6 +1382,7 @@ fn spawn_prepared_steps_loop(
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+  profile: config_types.WorkspaceHookProfile,
   acc: List(SpawnedStepWorker),
 ) -> Result(List(SpawnedStepWorker), StepBatchStartError) {
   case starts {
@@ -1372,6 +1438,7 @@ fn spawn_prepared_steps_loop(
                   dependencies,
                   artifacts,
                   pi_session_continuations,
+                  profile,
                 )
               process.send(
                 subject,
@@ -1396,6 +1463,7 @@ fn spawn_prepared_steps_loop(
             dependencies,
             artifacts,
             pi_session_continuations,
+            profile,
             [
               SpawnedStepWorker(step_id: step.id, pid: pid, monitor: monitor),
               ..acc
@@ -1640,6 +1708,7 @@ fn finish_fatal_batch_result(
   artifacts: Dict(String, step_artifact.StepArtifact),
   run_root: Option(String),
   cleanup_allowed: Bool,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   let artifacts = dict.insert(artifacts, result.step_id, result.artifact)
   let checkpoint_result = case prepared_start_by_step(starts, result.step_id) {
@@ -1669,6 +1738,7 @@ fn finish_fatal_batch_result(
               step.id,
               workspace,
               orchestrator,
+              profile,
             )
           {
             Error(reason) ->
@@ -1706,6 +1776,7 @@ fn finish_fatal_batch_result(
     cleanup_failure_suffix(cleanup_if_allowed(
       run_root,
       orchestrator,
+      profile,
       dependencies,
       cleanup_allowed,
     ))
@@ -1787,6 +1858,7 @@ fn apply_prepared_results(
   cleanup_allowed: Bool,
   recovered_execution: Bool,
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case starts {
     [] ->
@@ -1809,6 +1881,7 @@ fn apply_prepared_results(
         turns,
         cleanup_allowed,
         pi_session_continuations,
+        profile,
       )
     [PreparedStart(step: step, workspace: workspace), ..rest] -> {
       case dict.get(result_by_step, step.id) {
@@ -1825,6 +1898,7 @@ fn apply_prepared_results(
             cleanup_failure_suffix(cleanup_if_allowed(
               run_root,
               orchestrator,
+              profile,
               dependencies,
               cleanup_allowed,
             ))
@@ -1873,6 +1947,7 @@ fn apply_prepared_results(
                 cleanup_failure_suffix(cleanup_if_allowed(
                   run_root,
                   orchestrator,
+                  profile,
                   dependencies,
                   cleanup_allowed,
                 ))
@@ -1894,6 +1969,7 @@ fn apply_prepared_results(
                   step.id,
                   workspace,
                   orchestrator,
+                  profile,
                 )
               {
                 Error(reason) -> {
@@ -1909,6 +1985,7 @@ fn apply_prepared_results(
                     cleanup_failure_suffix(cleanup_if_allowed(
                       run_root,
                       orchestrator,
+                      profile,
                       dependencies,
                       cleanup_allowed,
                     ))
@@ -1940,6 +2017,7 @@ fn apply_prepared_results(
                         cleanup_failure_suffix(cleanup_if_allowed(
                           run_root,
                           orchestrator,
+                          profile,
                           dependencies,
                           cleanup_allowed,
                         ))
@@ -1988,6 +2066,7 @@ fn apply_prepared_results(
                         cleanup_allowed,
                         recovered_execution,
                         pi_session_continuations,
+                        profile,
                       )
                     }
                   }
@@ -2005,12 +2084,13 @@ fn run_after_step(
   step_id: String,
   workspace: workspace_run.PreparedStepWorkspace,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, String) {
   let was_trapping_exits = process_ext.trap_exits(True)
   let subject = process.new_subject()
   let pid =
     process.spawn(fn() {
-      dependencies.after_step(issue, step_id, workspace, orchestrator)
+      dependencies.after_step(issue, step_id, workspace, orchestrator, profile)
       process.send(subject, Nil)
     })
   let monitor = process.monitor(pid)
@@ -2072,6 +2152,7 @@ fn run_step(
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+  profile: config_types.WorkspaceHookProfile,
 ) -> #(
   step_artifact.StepArtifact,
   session_tokens.TokenTotals,
@@ -2081,8 +2162,7 @@ fn run_step(
   let context = step_context(step, workspace, issue, orchestrator)
   case step.kind {
     workflow_dag.CommandStep(run, timeout_ms) -> {
-      let timeout_ms =
-        option.unwrap(timeout_ms, orchestrator.dag_hooks.timeout_ms)
+      let timeout_ms = option.unwrap(timeout_ms, profile.hooks.timeout_ms)
       #(
         dependencies.command_step(
           context,
@@ -2440,11 +2520,12 @@ fn mark_all_running(
 fn cleanup_if_allowed(
   run_root: Option(String),
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
   dependencies: Dependencies,
   allowed: Bool,
 ) -> Result(Nil, error.WorkspaceError) {
   case allowed {
-    True -> cleanup_if_needed(run_root, orchestrator, dependencies)
+    True -> cleanup_if_needed(run_root, orchestrator, profile, dependencies)
     False -> Ok(Nil)
   }
 }
@@ -2461,11 +2542,12 @@ fn cleanup_failure_suffix(
 fn cleanup_if_needed(
   run_root: Option(String),
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
   dependencies: Dependencies,
 ) -> Result(Nil, error.WorkspaceError) {
   case run_root {
     None -> Ok(Nil)
-    Some(path) -> dependencies.cleanup_run(path, orchestrator)
+    Some(path) -> dependencies.cleanup_run(path, orchestrator, profile)
   }
 }
 

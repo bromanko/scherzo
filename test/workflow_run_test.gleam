@@ -76,6 +76,42 @@ fn effective() -> config_types.EffectiveConfig {
   )
 }
 
+fn dag_hooks() -> config_types.DagHooksConfig {
+  dag_hooks_with_timeout(1000)
+}
+
+fn dag_hooks_with_timeout(timeout_ms: Int) -> config_types.DagHooksConfig {
+  config_types.DagHooksConfig(
+    create: None,
+    before_step: None,
+    after_step: None,
+    remove: None,
+    timeout_ms: timeout_ms,
+  )
+}
+
+fn workspace_profile(
+  name: String,
+  hooks: config_types.DagHooksConfig,
+  source: config_types.WorkspaceProfileSource,
+) -> config_types.WorkspaceHookProfile {
+  config_types.WorkspaceHookProfile(name: name, hooks: hooks, source: source)
+}
+
+fn legacy_workspace_profiles(
+  hooks: config_types.DagHooksConfig,
+) -> config_types.WorkspaceHookProfiles {
+  config_types.WorkspaceHookProfiles(
+    default_profile: "default",
+    profiles: dict.from_list([
+      #(
+        "default",
+        workspace_profile("default", hooks, config_types.LegacyWorkspaceHooks),
+      ),
+    ]),
+  )
+}
+
 fn orchestrator() -> config_types.OrchestratorConfig {
   config_types.OrchestratorConfig(
     effective: effective(),
@@ -86,13 +122,8 @@ fn orchestrator() -> config_types.OrchestratorConfig {
       default_workflow: None,
       workflows: dict.from_list([#("implementation", "implementation.yaml")]),
     ),
-    dag_hooks: config_types.DagHooksConfig(
-      create: None,
-      before_step: None,
-      after_step: None,
-      remove: None,
-      timeout_ms: 1000,
-    ),
+    dag_hooks: dag_hooks(),
+    workspace_profiles: legacy_workspace_profiles(dag_hooks()),
     artifact_limits: config_types.ArtifactLimits(
       command_stream_max_chars: 1000,
       template_field_max_chars: 1000,
@@ -146,6 +177,7 @@ fn deps(
       attempt_index,
       workspace_ref,
       _orchestrator,
+      profile,
       known,
     ) {
       prepare_fake_step(
@@ -156,6 +188,7 @@ fn deps(
         attempt_index,
         workspace_ref,
         known,
+        profile,
         "prepare",
       )
     },
@@ -168,6 +201,7 @@ fn deps(
       attempt_index,
       workspace_ref,
       _orchestrator,
+      profile,
       known,
     ) {
       prepare_fake_step(
@@ -178,13 +212,14 @@ fn deps(
         attempt_index,
         workspace_ref,
         known,
+        profile,
         "prepare_recovered",
       )
     },
-    after_step: fn(_issue, step_id, _prepared, _orchestrator) {
+    after_step: fn(_issue, step_id, _prepared, _orchestrator, _profile) {
       process.send(subject, "after:" <> step_id)
     },
-    cleanup_run: fn(run_root, _orchestrator) {
+    cleanup_run: fn(run_root, _orchestrator, _profile) {
       process.send(subject, "cleanup:" <> run_root)
       Ok(Nil)
     },
@@ -237,6 +272,7 @@ fn prepare_fake_step(
   attempt_index: Int,
   workspace_ref: workflow_dag.WorkspaceRef,
   known: dict.Dict(String, workspace_run.PreparedStepWorkspace),
+  profile: config_types.WorkspaceHookProfile,
   event_prefix: String,
 ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError) {
   let source = case workspace_ref.from {
@@ -251,32 +287,41 @@ fn prepare_fake_step(
     subject,
     event_prefix <> ":" <> step_id <> ":" <> workspace_ref.name <> ":" <> source,
   )
-  Ok(
-    workspace_run.PreparedStepWorkspace(
-      workflow_id: workflow_id,
-      run_id: run_id,
-      run_root: "test/tmp/workflow-run/workspaces/implementation/ABC-123",
-      attempt_index: attempt_index,
-      workspace_name: workspace_ref.name,
-      path: "test/tmp/workflow-run/workspaces/implementation/ABC-123/"
-        <> workspace_ref.name,
-      source_workspace_name: workspace_ref.from,
-      source_workspace_path: case workspace_ref.from {
-        None -> None
-        Some(name) ->
-          case dict.get(known, name) {
-            Ok(prepared) -> Some(prepared.path)
-            Error(_) -> None
-          }
-      },
-    ),
-  )
+  Ok(workspace_run.PreparedStepWorkspace(
+    workflow_id: workflow_id,
+    run_id: run_id,
+    run_root: "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+    attempt_index: attempt_index,
+    workspace_name: workspace_ref.name,
+    path: "test/tmp/workflow-run/workspaces/implementation/ABC-123/"
+      <> workspace_ref.name,
+    source_workspace_name: workspace_ref.from,
+    source_workspace_path: case workspace_ref.from {
+      None -> None
+      Some(name) ->
+        case dict.get(known, name) {
+          Ok(prepared) -> Some(prepared.path)
+          Error(_) -> None
+        }
+    },
+    workspace_profile: profile.name,
+  ))
 }
 
 fn implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nmax_parallel_steps: 3\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement prompt\n    workspace: main\n  - id: test_after_implement\n    kind: command\n    depends_on: [implement]\n    run: test command\n    workspace: main\n    on_failure: continue\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: code review prompt\n    workspace:\n      name: code-review\n      from: main\n  - id: apply_feedback\n    kind: agent\n    depends_on: [test_after_implement, code_review]\n    prompt: apply {{ steps.code_review.final_response }} {{ steps.test_after_implement.exit_code }}\n    workspace: main\n",
+    )
+  dag
+}
+
+fn command_dag_with_profile(profile: String) -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nworkspace_profile: "
+      <> profile
+      <> "\nsteps:\n  - id: run\n    kind: command\n    run: echo ok\n    workspace: main\n",
     )
   dag
 }
@@ -303,6 +348,74 @@ fn recovered_context(
     warnings: [],
     pi_session_continuations: dict.new(),
   )
+}
+
+pub fn command_default_timeout_uses_selected_workspace_profile_test() {
+  let subject = process.new_subject()
+  let default_hooks = dag_hooks_with_timeout(1000)
+  let noop_hooks = dag_hooks_with_timeout(42)
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator(),
+      dag_hooks: default_hooks,
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "default",
+        profiles: dict.from_list([
+          #(
+            "default",
+            workspace_profile(
+              "default",
+              default_hooks,
+              config_types.LegacyWorkspaceHooks,
+            ),
+          ),
+          #(
+            "noop",
+            workspace_profile(
+              "noop",
+              noop_hooks,
+              config_types.ConfiguredWorkspaceProfile,
+            ),
+          ),
+        ]),
+      ),
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(subject, "timeout:" <> int.to_string(timeout_ms))
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "stdout",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      command_dag_with_profile("noop"),
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert receive_event(subject) == "prepare:run:main:"
+  assert receive_event(subject) == "timeout:42"
 }
 
 pub fn workflow_run_fans_out_fans_in_and_renders_artifacts_test() {
@@ -355,7 +468,7 @@ pub fn workflow_run_completed_cleanup_failure_marks_failed_terminal_test() {
   let dependencies =
     workflow_run.Dependencies(
       ..deps(subject, None),
-      cleanup_run: fn(run_root, _orchestrator) {
+      cleanup_run: fn(run_root, _orchestrator, _profile) {
         process.send(subject, "cleanup:" <> run_root)
         Error(error.WorkspaceIo("delete failed"))
       },
@@ -1236,6 +1349,7 @@ fn deps_with_prepare_failure(
       attempt_index,
       workspace_ref,
       orchestrator,
+      profile,
       known,
     ) {
       case step_id == fail_step_id {
@@ -1252,6 +1366,7 @@ fn deps_with_prepare_failure(
             attempt_index,
             workspace_ref,
             orchestrator,
+            profile,
             known,
           )
       }
@@ -1275,6 +1390,7 @@ fn deps_with_prepare_hook_failure(
       attempt_index,
       workspace_ref,
       orchestrator,
+      profile,
       known,
     ) {
       case step_id == fail_step_id {
@@ -1295,6 +1411,7 @@ fn deps_with_prepare_hook_failure(
             attempt_index,
             workspace_ref,
             orchestrator,
+            profile,
             known,
           )
       }

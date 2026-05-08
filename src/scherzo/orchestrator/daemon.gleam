@@ -58,6 +58,7 @@ import scherzo/workflow_fingerprint
 import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace
+import scherzo/workspace_profile
 import scherzo/workspace_run
 
 pub type StartupError {
@@ -1574,46 +1575,57 @@ fn run_recovered_workflow_worker(
             recovered.issue,
           ))
         True -> {
-          let workflow_dependencies =
-            workflow_run.Dependencies(
-              ..workflow_dependencies,
-              checkpoint: workflow_checkpoint.ledger_writer(
-                bundle.effective.workspace.root,
-                now_ms,
-              ),
-            )
-          let resume =
-            workflow_run.ResumeState(
-              artifacts: recovered.completed_artifacts,
-              workspaces: recovered_workspaces_to_prepared(
-                recovered.completed_workspaces,
-              ),
-              next_attempt_indexes: recovered.next_attempt_indexes,
-              run_root: Some(recovered.run_root),
-              pi_session_continuations: recovered.pi_session_continuations,
-            )
-          case
-            workflow_run.execute_with_resume(
-              recovered.issue,
-              dag,
-              bundle.orchestrator,
-              tracker_client,
-              secrets,
-              recovered.run_id,
-              yaml_workflow_dependencies(
-                workflow_dependencies,
+          case workspace_profile.resolve(dag, bundle.orchestrator) {
+            Error(_) ->
+              Error(yaml_worker_failure(
+                "workflow_recovery_invalid:workspace_profile_unavailable",
+                Some(recovered.run_root),
                 recovered.issue,
-                recovered.run_id,
-                daemon_subject,
-                event_hub,
-                now_ms,
-              ),
-              resume,
-            )
-          {
-            Ok(success) -> Ok(success.worker_success)
-            Error(failure) ->
-              Error(yaml_workflow_failure(failure, recovered.issue))
+              ))
+            Ok(profile) -> {
+              let workflow_dependencies =
+                workflow_run.Dependencies(
+                  ..workflow_dependencies,
+                  checkpoint: workflow_checkpoint.ledger_writer(
+                    bundle.effective.workspace.root,
+                    now_ms,
+                  ),
+                )
+              let resume =
+                workflow_run.ResumeState(
+                  artifacts: recovered.completed_artifacts,
+                  workspaces: recovered_workspaces_to_prepared(
+                    recovered.completed_workspaces,
+                    profile.name,
+                  ),
+                  next_attempt_indexes: recovered.next_attempt_indexes,
+                  run_root: Some(recovered.run_root),
+                  pi_session_continuations: recovered.pi_session_continuations,
+                )
+              case
+                workflow_run.execute_with_resume(
+                  recovered.issue,
+                  dag,
+                  bundle.orchestrator,
+                  tracker_client,
+                  secrets,
+                  recovered.run_id,
+                  yaml_workflow_dependencies(
+                    workflow_dependencies,
+                    recovered.issue,
+                    recovered.run_id,
+                    daemon_subject,
+                    event_hub,
+                    now_ms,
+                  ),
+                  resume,
+                )
+              {
+                Ok(success) -> Ok(success.worker_success)
+                Error(failure) ->
+                  Error(yaml_workflow_failure(failure, recovered.issue))
+              }
+            }
           }
         }
       }
@@ -1637,6 +1649,7 @@ fn recovered_workflow_identity_matches(
 
 fn recovered_workspaces_to_prepared(
   workspaces: Dict(String, recovery.RecoveredWorkspaceSummary),
+  profile_name: String,
 ) -> Dict(String, workspace_run.PreparedStepWorkspace) {
   workspaces
   |> dict.to_list
@@ -1653,6 +1666,7 @@ fn recovered_workspaces_to_prepared(
         path: workspace.path,
         source_workspace_name: workspace.source_workspace_name,
         source_workspace_path: workspace.source_workspace_path,
+        workspace_profile: profile_name,
       ),
     )
   })

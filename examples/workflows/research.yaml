@@ -1,6 +1,7 @@
 version: 1
 id: research
 description: Investigate an issue and report findings without broad code changes.
+workspace_profile: noop
 max_parallel_steps: 1
 steps:
   - id: research
