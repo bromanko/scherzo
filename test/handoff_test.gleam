@@ -153,13 +153,11 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
   assert client.report_success(issue(), success(), "run-2") == Ok(Nil)
   let assert Ok(success_comment) = process.receive(subject, within: 100)
   assert string.contains(success_comment, "run-2")
-  assert string.contains(success_comment, "Result:")
+  assert string.contains(success_comment, "## What Scherzo did")
   assert string.contains(success_comment, "Implemented [REDACTED]")
-  assert string.contains(success_comment, "classification: terminal")
-  assert string.contains(
-    success_comment,
-    "tokens: input=1 output=2 cache_read=0 cache_write=0 total=3",
-  )
+  assert string.contains(success_comment, "| Classification | `terminal` |")
+  assert string.contains(success_comment, "## Token usage")
+  assert string.contains(success_comment, "| Total | 3 |")
   assert !string.contains(success_comment, "secret-key")
 
   let failure =
@@ -189,10 +187,13 @@ pub fn comments_only_and_state_handoff_builds_expected_mutations_test() {
     ))
     == Ok(Nil)
   let assert Ok(park_comment) = process.receive(subject, within: 100)
-  assert string.contains(park_comment, "Scherzo parked ABC-1")
-  assert string.contains(park_comment, "Reason: operator [REDACTED] hold")
-  assert string.contains(park_comment, "Release policy: explicit_unpark_only")
-  assert string.contains(park_comment, "Run id: run-4")
+  assert string.contains(park_comment, "⏸️ Scherzo parked this issue")
+  assert string.contains(park_comment, "| Reason | operator [REDACTED] hold |")
+  assert string.contains(
+    park_comment,
+    "| Release policy | `explicit_unpark_only` |",
+  )
+  assert string.contains(park_comment, "| Run | `run-4` |")
   assert !string.contains(park_comment, "secret-key")
 }
 
@@ -320,14 +321,17 @@ pub fn workflow_command_failure_handoff_renders_retained_workspace_context_test(
   let failure_comment =
     capture_failure_comment(failure, "run-retained-workspace")
 
-  assert string.contains(failure_comment, "error: publish_rebase_conflict")
-  assert string.contains(failure_comment, "step: publish_pr")
   assert string.contains(
     failure_comment,
-    "failure_code: publish_rebase_conflict",
+    "| Error | `publish_rebase_conflict` |",
   )
-  assert string.contains(failure_comment, "retained_workspace: yes")
-  assert string.contains(failure_comment, "workspace: .scherzo/workspaces/")
+  assert string.contains(failure_comment, "| Step | `publish_pr` |")
+  assert string.contains(
+    failure_comment,
+    "| Failure code | `publish_rebase_conflict` |",
+  )
+  assert string.contains(failure_comment, "| Retained workspace | `yes` |")
+  assert string.contains(failure_comment, "| Workspace | `.scherzo/workspaces/")
   assert string.contains(failure_comment, "Resolve the rebase conflicts")
   assert !string.contains(failure_comment, absolute_workspace)
   assert !string.contains(failure_comment, "agent_pi_failed")
@@ -348,9 +352,15 @@ pub fn workflow_command_failure_handoff_renders_revalidation_action_test() {
   let failure_comment =
     capture_failure_comment(failure, "run-revalidation-failed")
 
-  assert string.contains(failure_comment, "error: publish_revalidation_failed")
-  assert string.contains(failure_comment, "step: publish_pr")
-  assert string.contains(failure_comment, "retained_workspace: not_detected")
+  assert string.contains(
+    failure_comment,
+    "| Error | `publish_revalidation_failed` |",
+  )
+  assert string.contains(failure_comment, "| Step | `publish_pr` |")
+  assert string.contains(
+    failure_comment,
+    "| Retained workspace | `not_detected` |",
+  )
   assert string.contains(failure_comment, "post-rebase validation output")
   assert !string.contains(failure_comment, "agent_pi_failed")
   assert !string.contains(failure_comment, "pi_protocol_error")
@@ -379,7 +389,7 @@ pub fn success_handoff_posts_single_structured_result_comment_test() {
   test_async.assert_no_extra_message_within(subject, 20)
   assert string.contains(success_comment, "commentCreate")
   assert string.contains(success_comment, "run-structured")
-  assert string.contains(success_comment, "Result:")
+  assert string.contains(success_comment, "## What Scherzo did")
   assert string.contains(success_comment, "Implemented [REDACTED]")
 }
 
@@ -406,6 +416,12 @@ pub fn success_handoff_with_attachment_uploads_result_to_created_comment_test() 
   test_async.assert_no_extra_message_within(graphql_subject, 20)
   assert string.contains(comment_create, "ScherzoCommentCreate")
   assert string.contains(comment_create, "run-attach")
+  assert string.contains(comment_create, "## Artifacts")
+  assert string.contains(
+    comment_create,
+    "Scherzo will attempt to add `abc-1-run-attach-result.md`",
+  )
+  assert !string.contains(comment_create, "attached file")
   assert string.contains(comment_fetch, "created-comment")
   assert string.contains(file_upload, "ScherzoFileUpload")
   assert string.contains(file_upload, "abc-1-run-attach-result.md")
@@ -436,10 +452,11 @@ pub fn success_handoff_attachment_respects_inline_result_toggle_and_state_order_
   let assert Ok(comment_update) = process.receive(graphql_subject, within: 100)
   let assert Ok(issue_update) = process.receive(graphql_subject, within: 100)
   let assert Ok(upload_markdown) = bit_array.to_string(upload_request.body)
-  assert string.contains(comment_create, "Metadata:")
-  assert !string.contains(comment_create, "Result:")
+  assert string.contains(comment_create, "## Artifacts")
+  assert !string.contains(comment_create, "## What Scherzo did")
   assert !string.contains(comment_create, "Implemented [REDACTED]")
   assert string.contains(file_upload, "abc-1-run-2-result.md")
+  assert string.contains(upload_markdown, "## Result")
   assert string.contains(upload_markdown, "Implemented [REDACTED]")
   assert !string.contains(upload_markdown, "secret-key")
   assert string.contains(comment_fetch, "ScherzoCommentFetch")
@@ -469,6 +486,7 @@ pub fn success_handoff_attachment_failure_stops_before_state_update_test() {
   let assert Ok(file_upload) = process.receive(graphql_subject, within: 100)
   let assert Ok(_) = process.receive(upload_subject, within: 100)
   assert string.contains(comment_create, "ScherzoCommentCreate")
+  assert !string.contains(comment_create, "attached file")
   assert string.contains(comment_fetch, "ScherzoCommentFetch")
   assert string.contains(file_upload, "ScherzoFileUpload")
   test_async.assert_no_extra_message_within(graphql_subject, 20)

@@ -50,12 +50,13 @@ The fifth risk is behavior drift outside formatting. The countermeasure is to ke
 - [x] (2026-05-07 00:00Z) Collected real comments from the `[test] scherzo` Linear project for claim, success, failure, attachment-link fallback, and `/scherzo` command acknowledgement examples.
 - [x] (2026-05-07 00:00Z) Performed a temporary Linear dry-run on a `[test] scherzo` issue and deleted the dry-run comment after collecting API evidence.
 - [x] (2026-05-07 00:00Z) Incorporated adversarial review findings about success attachment truthfulness, mandatory Markdown safety boundaries, artifact outcome tests, smaller TDD slices, and required browser validation.
-- [ ] Implement shared formatting helpers, mandatory escaping, and final safety boundaries.
-- [ ] Update handoff comments in small TDD slices: claim, success without attachment, success with attachment intent, success-result attachment Markdown, generic failure, workflow-command failure, and park.
-- [ ] Update workflow-label triage comments in missing-label, multiple-label, and unknown-label slices.
-- [ ] Update `/scherzo` command acknowledgement comments one status family at a time.
-- [ ] Update attachment-link fallback and success artifact outcome matrix tests.
-- [ ] Complete required Linear browser visual validation, run full validation, and record outcomes.
+- [x] (2026-05-08 00:00Z) Implemented `src/scherzo/linear_comment_format.gleam` with deterministic title, section, table, code-span, token table, indented-block, optional-row, and final cleanup helpers plus adversarial formatter tests.
+- [x] (2026-05-08 00:00Z) Updated handoff comments for claim, success without attachment, success with attachment intent, success-result attachment Markdown, generic failure, workflow-command failure, and park while preserving redaction, truncation, token reporting, and workspace path hiding.
+- [x] (2026-05-08 00:00Z) Updated workflow-label triage comments to include issue-aware friendly missing-label, multiple-label, and unknown-label layouts without changing classification or state update behavior.
+- [x] (2026-05-08 00:00Z) Updated `/scherzo` command acknowledgement comments for applied, queued, rejected, not-found, not-allowed, completed durable receipt, and unknown-after-restart statuses while preserving parsing, authorization, duplicate processing, and acknowledgement enablement behavior.
+- [x] (2026-05-08 00:00Z) Updated success artifact intent tests and preserved attachment upload, native attachment, fallback link append, dedupe, validation, and failure behavior.
+- [x] (2026-05-08 00:00Z) Ran repository validation: `direnv exec . gleam test`, `direnv exec . gleam format --check src test`, and `direnv exec . gleam run -m glinter` all completed without production policy errors.
+- [x] (2026-05-08 15:27Z) Completed required Linear browser visual validation before rollout. Four representative `[DRY RUN — LIV-121]` comments were posted to `LIV-12` in the `[test] scherzo` project, inspected in the Linear browser UI, accepted by the operator as readable/scannable, and queried for `bodyData` evidence.
 
 ## Surprises & Discoveries
 
@@ -65,6 +66,12 @@ The fifth risk is behavior drift outside formatting. The countermeasure is to ke
   Evidence: the dry-run body contained `<details>` and `bodyData` contained the literal string `details`, but no browser screenshot was captured. Treat HTML disclosure as unverified and use non-collapsible fallback sections until a later visual check confirms it.
 - Observation: The suggested `[test] scherzo` project query returned real examples for success, claim, failure, command acknowledgement, and attachment-link fallback. It did not return a real invalid-workflow or park comment in the inspected issue set.
   Evidence: queried project id `1c441d1b-40cd-4f7a-b8cd-5f200848d2aa` and inspected returned issues including `LIV-38`, `LIV-35`, `LIV-33`, `LIV-32`, `LIV-31`, `LIV-29`, `LIV-11`, and `LIV-10`.
+- Observation: Implementation did not need any change to `src/scherzo/linear_attachment.gleam`; the success comment's neutral `## Artifacts` section made the existing native and fallback attachment paths understandable without changing upload or dedupe behavior.
+  Evidence: `direnv exec . gleam test` passed with existing native attachment, fallback Markdown link, dedupe, upload failure, extension validation, and size-limit tests still exercising the same transport actions.
+- Observation: Browser visual validation initially remained a rollout gate because the implementation coding harness did not provide Linear browser inspection.
+  Evidence: the implementation stopped before rollout and recorded the missing browser check rather than claiming acceptance from deterministic tests alone.
+- Observation: Post-implementation browser validation confirmed the final candidate layouts are readable in Linear's browser UI.
+  Evidence: four `[DRY RUN — LIV-121]` comments were posted to `LIV-12` in the `[test] scherzo` project for success-with-attachment-intent (`484e6531-6ca2-42c6-adce-499bf61ff864`), workflow-command failure (`ebace243-0564-473d-ab60-fed0e185c29b`), invalid-workflow (`418ea577-dfb3-4d9a-90b5-46759844efd5`), and command acknowledgement (`f1f60d29-cbaf-4297-949e-a84032f208f2`). The operator inspected them in Linear's browser UI and reported that they looked good. A Linear API query confirmed each comment's `bodyData` contains rich `table` nodes, headings, code marks, and list/code-block structures as applicable.
 
 ## Decision Log
 
@@ -86,10 +93,20 @@ The fifth risk is behavior drift outside formatting. The countermeasure is to ke
 - Decision: Require browser visual validation for rollout, with API `bodyData` checks as supporting evidence only.
   Rationale: The user value is human readability in Linear's browser UI. API evidence can prove parsing, but it cannot prove the final comments are scannable to operators.
   Date: 2026-05-07
+- Decision: Leave `src/scherzo/linear_attachment.gleam`'s fallback Markdown-link append behavior unchanged and make the success comment anticipate fallback linking instead.
+  Rationale: The plan's UX problem was the comment body, not upload mechanics. Keeping fallback behavior unchanged preserves native attachment, dedupe, validation, and failure-order guarantees while the new neutral artifact text explains where the link will appear if fallback is used.
+  Date: 2026-05-08
+- Decision: Record Linear browser dry-run validation as remaining work rather than claiming rollout acceptance from unit tests or API evidence.
+  Rationale: The implementation environment could run deterministic repository validation but did not provide browser inspection. The original risk still requires a human-visible Linear check before rollout.
+  Date: 2026-05-08
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Implementation produced a shared Linear comment formatting module and routed Scherzo-owned handoff, workflow-label triage, and `/scherzo` command acknowledgement comments through it. Operators should now see concise status headlines, compact summary tables, human summary and next-action sections, lower-priority diagnostics and token usage, and neutral artifact wording that does not claim an upload has already succeeded.
+
+The main safety outcomes were preserved: secrets are redacted at final body boundaries, terminal control characters are rendered visibly rather than surviving raw, table pipes and backticks are escaped deterministically, long diagnostics and command messages remain bounded, forbidden absolute local workspace paths remain hidden, command parsing and authorization behavior did not change, and attachment upload/fallback ordering stayed intact. Validation passed with `direnv exec . gleam test`, `direnv exec . gleam format --check src test`, and `direnv exec . gleam run -m glinter`; glinter reported the existing warning inventory and no production policy errors.
+
+The previously remaining browser-validation gap is now resolved. Representative `[DRY RUN — LIV-121]` comments were posted to `LIV-12` in the `[test] scherzo` project, inspected in Linear's browser UI, queried for `bodyData`, and accepted by the operator as readable/scannable. The temporary comments were retained as review evidence for the manual workflow finish.
 
 ## Context and Orientation
 
@@ -932,6 +949,17 @@ Linear Markdown dry-run notes:
 - API evidence: Markdown table syntax remained in `body` and became `table` nodes in `bodyData`.
 - API limitation: HTML `<details>` was not proven as a safe browser-rendered collapsible disclosure. Use regular sections as fallback.
 
+Final Linear browser validation notes:
+
+- Temporary issue used: `LIV-12` in `[test] scherzo`.
+- Temporary prefix used: `[DRY RUN — LIV-121]`.
+- Representative success-with-attachment-intent comment: `484e6531-6ca2-42c6-adce-499bf61ff864`, `https://linear.app/living-systems/issue/LIV-12/create-a-plan-to-address-naming-issues#comment-484e6531`.
+- Representative workflow-command failure comment: `ebace243-0564-473d-ab60-fed0e185c29b`, `https://linear.app/living-systems/issue/LIV-12/create-a-plan-to-address-naming-issues#comment-ebace243`.
+- Representative invalid-workflow comment: `418ea577-dfb3-4d9a-90b5-46759844efd5`, `https://linear.app/living-systems/issue/LIV-12/create-a-plan-to-address-naming-issues#comment-418ea577`.
+- Representative command acknowledgement comment: `f1f60d29-cbaf-4297-949e-a84032f208f2`, `https://linear.app/living-systems/issue/LIV-12/create-a-plan-to-address-naming-issues#comment-f1f60d29`.
+- Browser evidence: the operator inspected these comments in Linear's browser UI and accepted the layouts as readable/scannable.
+- API evidence: a Linear GraphQL query confirmed the comments' `bodyData` contains rich `table` nodes for summary/token tables, `heading` nodes for sections, `code` marks for identifiers, and a `code_block` node for the workflow-command diagnostic block.
+
 ## Interfaces and Dependencies
 
 No new package dependency is required.
@@ -972,4 +1000,4 @@ Do not change `linear_transport.TransportAction`, `linear_transport.process_comm
 
 ## Open Questions and Clarifications Needed
 
-None.
+- Resolved 2026-05-08: Browser validation was completed after the implementation run stopped at the plan-completion gate. Four representative `[DRY RUN — LIV-121]` comments on `LIV-12` were inspected in Linear's browser UI, accepted by the operator as readable/scannable, and queried for `bodyData` evidence.

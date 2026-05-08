@@ -676,7 +676,7 @@ pub fn linear_commands_run_before_candidate_dispatch_test() {
   let snapshot = expect_issue_parked(started.data, "issue-1")
   expect_explicit_unpark_only(snapshot, "issue-1")
   assert dict.size(snapshot.running) == 0
-  let _ack = expect_ack_contains(harness, ["Status: applied"])
+  let _ack = expect_ack_contains(harness, ["| Status | `applied` |"])
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
@@ -742,11 +742,15 @@ pub fn linear_runtime_issue_commands_poll_when_candidate_dispatch_skipped_test()
     "linear_operator_command:prompt:queued",
     20,
   )
-  let ack = expect_ack_contains(harness, ["Command: prompt", "Status: queued"])
+  let ack =
+    expect_ack_contains(harness, [
+      "| Command | `prompt` |",
+      "| Status | `queued` |",
+    ])
   let canonical_session_id = "ABC-1-1000-1"
   let display_name = session_name.generate("ABC-1", canonical_session_id)
-  assert string.contains(ack, "Target: " <> display_name)
-  assert !string.contains(ack, "Target: " <> canonical_session_id)
+  assert string.contains(ack, "| Target | `" <> display_name <> "` |")
+  assert !string.contains(ack, "| Target | `" <> canonical_session_id <> "` |")
 
   test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -794,8 +798,8 @@ pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
   assert second_fetch_ids == ["issue-1"]
   assert wait_for_log(log_subject, "linear_operator_command:abort:applied", 20)
   let assert Ok(ack) = process.receive(ack_subject, within: 1000)
-  assert string.contains(ack, "Command: abort")
-  assert string.contains(ack, "Status: applied")
+  assert string.contains(ack, "| Command | `abort` |")
+  assert string.contains(ack, "| Status | `applied` |")
 
   let assert Ok(snapshot) = wait_for_parked(started.data, "issue-1", 20)
   let assert Ok(parked_entry) = dict.get(snapshot.parked, "issue-1")
@@ -824,7 +828,7 @@ pub fn linear_command_receipts_are_persisted_in_order_test() {
   process.send(started.data, daemon.PollTick(1))
   expect_linear_fetch(harness, ["issue-1"])
   let _snapshot = expect_issue_parked(started.data, "issue-1")
-  let _ack = expect_ack_contains(harness, ["Status: applied"])
+  let _ack = expect_ack_contains(harness, ["| Status | `applied` |"])
   assert wait_for_command_record_kinds(
     workspace_root,
     "c-receipt",
@@ -859,7 +863,7 @@ pub fn linear_command_ack_failure_retries_on_later_poll_test() {
     "linear_operator_command:park:applied",
     20,
   )
-  let _first_ack = expect_ack_contains(harness, ["Status: applied"])
+  let _first_ack = expect_ack_contains(harness, ["| Status | `applied` |"])
   assert wait_for_log(harness.log_subject, "linear_command_ack_failed", 20)
   let _ = test_async.drain_subject(harness.log_subject)
 
@@ -871,7 +875,7 @@ pub fn linear_command_ack_failure_retries_on_later_poll_test() {
   )
   process.send(started.data, daemon.PollTick(2))
   expect_linear_fetch(harness, ["issue-1"])
-  let _second_ack = expect_ack_contains(harness, ["Status: applied"])
+  let _second_ack = expect_ack_contains(harness, ["| Status | `applied` |"])
   let command_logs = test_async.drain_subject(harness.log_subject)
   assert !list.contains(command_logs, "linear_operator_command:park:applied")
   assert wait_for_command_record_kinds(
@@ -926,7 +930,11 @@ pub fn completed_unacked_command_replays_ack_without_reapplying_test() {
 
   process.send(started.data, daemon.PollTick(1))
   expect_linear_fetch(harness, ["issue-1"])
-  let _ack = expect_ack_contains(harness, ["Command: park", "Status: applied"])
+  let _ack =
+    expect_ack_contains(harness, [
+      "| Command | `park` |",
+      "| Status | `applied` |",
+    ])
   let command_logs = test_async.drain_subject(harness.log_subject)
   assert !list.contains(command_logs, "linear_operator_command:park:applied")
   assert wait_for_command_record_kinds(
@@ -1019,7 +1027,8 @@ pub fn started_uncompleted_command_gets_unknown_ack_without_reapplying_test() {
 
   process.send(started.data, daemon.PollTick(1))
   expect_linear_fetch(harness, ["issue-1"])
-  let _ack = expect_ack_contains(harness, ["Status: unknown_after_restart"])
+  let _ack =
+    expect_ack_contains(harness, ["| Status | `unknown_after_restart` |"])
   let command_logs = test_async.drain_subject(harness.log_subject)
   assert !list.contains(command_logs, "linear_operator_command:park:applied")
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
@@ -1052,7 +1061,7 @@ pub fn old_unseen_comment_posted_while_down_is_processed_when_observed_test() {
   process.send(started.data, daemon.PollTick(1))
   expect_linear_fetch(harness, ["issue-1"])
   let _snapshot = expect_issue_parked(started.data, "issue-1")
-  let _ack = expect_ack_contains(harness, ["Status: applied"])
+  let _ack = expect_ack_contains(harness, ["| Status | `applied` |"])
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }

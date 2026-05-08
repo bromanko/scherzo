@@ -124,7 +124,8 @@ pub fn allowed_label_names_and_message_test() {
       workflow_policy.UnknownWorkflowLabel("workflow:surprise"),
       enforcing_config(),
     )
-  assert string.contains(body, "unknown workflow label")
+  assert string.contains(body, "🏷️ Scherzo needs an allowed workflow label")
+  assert string.contains(body, "| Problem | `unknown_workflow_label` |")
   assert string.contains(body, "workflow:bugfix")
   assert string.contains(body, "workflow:surprise")
   assert string.contains(body, "configured ready state")
@@ -139,6 +140,6 @@ pub fn allowed_label_names_and_message_test() {
       workflow_policy.MissingWorkflowLabel,
       custom_ready,
     )
-  assert string.contains(custom_body, "Ready for Robots")
+  assert string.contains(custom_body, "`Ready for Robots`")
   assert !string.contains(custom_body, "Ready for Agent")
 }

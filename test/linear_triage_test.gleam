@@ -122,6 +122,12 @@ pub fn comment_report_builds_one_comment_test() {
     == Ok(linear_triage.InvalidWorkflowReportComment)
   let assert Ok(comment_body) = process.receive(observed, within: 1000)
   assert string.contains(comment_body, "commentCreate")
+  assert string.contains(
+    comment_body,
+    "🏷️ Scherzo needs an allowed workflow label",
+  )
+  assert string.contains(comment_body, "| Issue | `ABC-1` |")
+  assert string.contains(comment_body, "| Problem | `unknown_workflow_label` |")
   assert string.contains(comment_body, "workflow:surprise")
   assert string.contains(comment_body, "workflow:bugfix")
   assert !string.contains(comment_body, "description must not appear")

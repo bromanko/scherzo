@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config/types as config_types
+import scherzo/linear_comment_format as comment_format
 import scherzo/tracker/issue as tracker_issue
 
 pub type IssueWorkflowDecision {
@@ -104,47 +105,134 @@ pub fn violation_message(
   violation: IssueWorkflowViolation,
   config: config_types.LinearContractConfig,
 ) -> String {
-  let allowed = allowed_label_names(config)
-  let expected = expected_labels_block(allowed)
-  let ready_guidance = ready_state_guidance(config)
-  case violation {
-    MissingWorkflowLabel ->
-      "Scherzo did not dispatch this issue because it has no workflow label.\n\n"
-      <> expected
-      <> "\n\nAdd exactly one workflow label, then "
-      <> ready_guidance
-    MultipleWorkflowLabels(labels) ->
-      "Scherzo did not dispatch this issue because it has multiple workflow labels.\n\n"
-      <> "Found:\n"
-      <> bullet_block(normalize_and_sort(labels))
-      <> "\n\n"
-      <> expected
-      <> "\n\nKeep exactly one workflow label, then "
-      <> ready_guidance
-    UnknownWorkflowLabel(label) ->
-      "Scherzo did not dispatch this issue because it has an unknown workflow label.\n\n"
-      <> "Found: "
-      <> normalize(label)
-      <> "\n\n"
-      <> expected
-      <> "\n\nReplace it with exactly one allowed workflow label, then "
-      <> ready_guidance
-  }
+  violation_comment("this issue", violation, config)
 }
 
-fn ready_state_guidance(config: config_types.LinearContractConfig) -> String {
+pub fn violation_comment(
+  issue_identifier: String,
+  violation: IssueWorkflowViolation,
+  config: config_types.LinearContractConfig,
+) -> String {
+  let allowed = allowed_label_names(config)
+  let body = case violation {
+    MissingWorkflowLabel ->
+      invalid_workflow_body(
+        title: "🏷️ Scherzo needs one workflow label",
+        issue_identifier: issue_identifier,
+        problem: "missing_workflow_label",
+        sections: [
+          comment_format.section(
+            "Summary",
+            "Scherzo did not start this issue because it has no workflow label.",
+          ),
+          comment_format.section(
+            "Next action",
+            "Add exactly one allowed workflow label, then move the issue back to "
+              <> ready_state_target(config)
+              <> ".",
+          ),
+          allowed_labels_section(allowed),
+        ],
+      )
+    MultipleWorkflowLabels(labels) ->
+      invalid_workflow_body(
+        title: "🏷️ Scherzo needs one workflow label",
+        issue_identifier: issue_identifier,
+        problem: "multiple_workflow_labels",
+        sections: [
+          comment_format.section(
+            "Summary",
+            "Scherzo found more than one workflow label and cannot choose a workflow safely.",
+          ),
+          labels_section("Found labels", normalize_and_sort(labels)),
+          comment_format.section(
+            "Next action",
+            "Keep exactly one allowed workflow label, then move the issue back to "
+              <> ready_state_target(config)
+              <> ".",
+          ),
+          allowed_labels_section(allowed),
+        ],
+      )
+    UnknownWorkflowLabel(label) ->
+      invalid_workflow_body(
+        title: "🏷️ Scherzo needs an allowed workflow label",
+        issue_identifier: issue_identifier,
+        problem: "unknown_workflow_label",
+        sections: [
+          comment_format.section(
+            "Summary",
+            "Scherzo found "
+              <> comment_format.code_span(normalize(label), "workflow label")
+              <> ", which is not configured as an allowed workflow label.",
+          ),
+          comment_format.section(
+            "Next action",
+            "Replace it with exactly one allowed workflow label, then move the issue back to "
+              <> ready_state_target(config)
+              <> ".",
+          ),
+          allowed_labels_section(allowed),
+        ],
+      )
+  }
+  comment_format.finalize_body("workflow_violation_comment", body, [])
+}
+
+fn invalid_workflow_body(
+  title title_text: String,
+  issue_identifier issue_identifier: String,
+  problem problem: String,
+  sections sections: List(String),
+) -> String {
+  [
+    title_text,
+    comment_format.summary_table([
+      comment_format.SummaryRow(
+        "Issue",
+        comment_format.table_code(issue_identifier, "this issue"),
+      ),
+      comment_format.SummaryRow(
+        "Status",
+        comment_format.table_code("not dispatched", "not_dispatched"),
+      ),
+      comment_format.SummaryRow(
+        "Problem",
+        comment_format.table_code(problem, "workflow_label_problem"),
+      ),
+    ]),
+    ..sections
+  ]
+  |> string.join(with: "\n\n")
+}
+
+fn allowed_labels_section(allowed: List(String)) -> String {
+  labels_section("Allowed labels", allowed)
+}
+
+fn labels_section(title: String, labels: List(String)) -> String {
+  let body =
+    labels
+    |> list.map(fn(label) {
+      "- " <> comment_format.code_span(label, "workflow label")
+    })
+    |> string.join(with: "\n")
+  comment_format.section(title, body)
+}
+
+fn ready_state_target(config: config_types.LinearContractConfig) -> String {
   case ready_state_name(config) {
-    Some(state) -> "move the issue back to " <> state <> "."
-    None -> "move the issue back to the configured ready state."
+    Some(state) -> comment_format.code_span(state, "ready state")
+    None -> "the configured ready state"
   }
 }
 
 fn ready_state_name(
   config: config_types.LinearContractConfig,
 ) -> Option(String) {
-  case dict.get(config.required_states, "ready") {
-    Error(_) -> None
-    Ok(state) -> {
+  case dict.get(config.required_states, "ready") |> option.from_result {
+    None -> None
+    Some(state) -> {
       let state = string.trim(state)
       case state == "" {
         True -> None
@@ -152,16 +240,6 @@ fn ready_state_name(
       }
     }
   }
-}
-
-fn expected_labels_block(allowed: List(String)) -> String {
-  "Expected exactly one of:\n" <> bullet_block(allowed)
-}
-
-fn bullet_block(values: List(String)) -> String {
-  values
-  |> list.map(fn(value) { "- " <> value })
-  |> string.join(with: "\n")
 }
 
 fn workflow_like_labels(labels: List(String), prefix: String) -> List(String) {
