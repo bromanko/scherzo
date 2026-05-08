@@ -78,6 +78,53 @@ fn base_context(
   )
 }
 
+fn legacy_base_context(
+  state: TestState,
+  log_subject: process.Subject(#(String, String, List(#(String, String)))),
+  route_subject: process.Subject(String),
+) -> control_command_handler.Context(TestState) {
+  legacy_context(
+    state,
+    fn(state) { state.pending },
+    fn(state, paused) { TestState(..state, paused: paused) },
+    fn(state, operator_command) {
+      #(state, command.applied(operator_command, Some("reloaded")))
+    },
+    fn(state, operator_command, _) {
+      #(state, command.applied(operator_command, Some("retried")))
+    },
+    fn(state, operator_command, _, _) {
+      #(state, command.applied(operator_command, Some("parked")))
+    },
+    fn(state, operator_command, _) {
+      #(state, command.applied(operator_command, Some("unparked")))
+    },
+    fn(state, operator_command, _, _) {
+      #(state, command.applied(operator_command, Some("aborted")))
+    },
+    fn(state, operator_command, session_id, timeout_ms, send) {
+      process.send(
+        route_subject,
+        session_id <> ":" <> int.to_string(timeout_ms),
+      )
+      let subject = process.new_subject()
+      let reply = process.new_subject()
+      send(subject, reply)
+      #(
+        TestState(..state, routed: state.routed + 1),
+        command.queued(operator_command, Some("routed")),
+      )
+    },
+    fn(_, result, fields) {
+      process.send(log_subject, #(
+        result.command,
+        command.status_to_string(result.status),
+        fields,
+      ))
+    },
+  )
+}
+
 fn recording_context(
   state: TestState,
   log_subject: process.Subject(#(String, String, List(#(String, String)))),
@@ -191,6 +238,45 @@ pub fn control_command_handler_logs_reload_transition_test() {
     control_command_handler.apply(context, command.ReloadWorkflow, 1000)
   assert result.command == "reload"
   let assert Ok(#("reload", "applied", [])) =
+    process.receive(log_subject, within: 100)
+}
+
+pub fn control_command_handler_logs_legacy_context_transition_test() {
+  let log_subject = process.new_subject()
+  let route_subject = process.new_subject()
+  let context =
+    legacy_base_context(
+      TestState(paused: False, pending: 0, routed: 0),
+      log_subject,
+      route_subject,
+    )
+
+  let #(_, result) =
+    control_command_handler.apply(context, command.ReloadWorkflow, 1000)
+  assert result.command == "reload"
+  let assert Ok(#("reload", "applied", [])) =
+    process.receive(log_subject, within: 100)
+}
+
+pub fn control_command_handler_rejects_run_schedule_now_for_legacy_context_test() {
+  let log_subject = process.new_subject()
+  let route_subject = process.new_subject()
+  let context =
+    legacy_base_context(
+      TestState(paused: False, pending: 0, routed: 0),
+      log_subject,
+      route_subject,
+    )
+
+  let #(_, result) =
+    control_command_handler.apply(
+      context,
+      command.RunScheduleNow("nightly"),
+      1000,
+    )
+  assert result.command == "schedule_run_now"
+  assert result.status == command.Rejected("daemon_code_stale")
+  let assert Ok(#("schedule_run_now", "rejected", [])) =
     process.receive(log_subject, within: 100)
 }
 
@@ -414,3 +500,32 @@ pub fn control_command_handler_worker_reply_and_timeout_helpers_test() {
   assert result.status == command.NotAllowed("busy")
   assert result.message == Some("not now")
 }
+
+@external(erlang, "scherzo_control_command_handler_test_ffi", "legacy_context")
+fn legacy_context(
+  state: TestState,
+  pending_claim_count: fn(TestState) -> Int,
+  set_paused: fn(TestState, Bool) -> TestState,
+  reload_workflow: fn(TestState, command.OperatorCommand) ->
+    #(TestState, command.CommandResult),
+  retry_issue: fn(TestState, command.OperatorCommand, command.IssueRef) ->
+    #(TestState, command.CommandResult),
+  park_issue: fn(TestState, command.OperatorCommand, command.IssueRef, String) ->
+    #(TestState, command.CommandResult),
+  unpark_issue: fn(TestState, command.OperatorCommand, command.IssueRef) ->
+    #(TestState, command.CommandResult),
+  abort_session: fn(TestState, command.OperatorCommand, String, Int) ->
+    #(TestState, command.CommandResult),
+  route_worker_command: fn(
+    TestState,
+    command.OperatorCommand,
+    String,
+    Int,
+    fn(
+      process.Subject(worker_command.Command),
+      process.Subject(worker_command.Reply),
+    ) -> Nil,
+  ) -> #(TestState, command.CommandResult),
+  log_result: fn(TestState, command.CommandResult, List(#(String, String))) ->
+    Nil,
+) -> control_command_handler.Context(TestState)
