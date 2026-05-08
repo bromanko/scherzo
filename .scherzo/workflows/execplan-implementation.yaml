@@ -58,9 +58,16 @@ steps:
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" gate-plan-completion'
     workspace: main
 
+  - id: generate_review_brief
+    kind: command
+    depends_on: [gate_plan_completion]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-review" dry-run --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief"'
+    on_failure: continue
+    workspace: main
+
   - id: review_changes
     kind: agent
-    depends_on: [gate_plan_completion]
+    depends_on: [generate_review_brief]
     prompt: prompts/execplan-implementation-review.md
     workspace: main
 
