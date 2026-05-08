@@ -18,6 +18,7 @@ import scherzo/orchestrator/daemon
 import scherzo/path
 import scherzo/result_artifact
 import scherzo/runtime_bundle
+import scherzo/scheduled_failure_reporter
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason
@@ -198,6 +199,33 @@ steps:
   config_path
 }
 
+fn write_scheduled_reporting_workflow(dir: String) -> String {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_dir = dir <> "/workflows"
+  let assert Ok(Nil) = simplifile.create_directory_all(workflow_dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      workflow_text(root, 1)
+        <> "scheduled_jobs:\n  - id: scheduled-job\n    workflow: implementation\n    enabled: true\n    every: 1s\n    overlap: skip\n    catch_up: false\n    on_failure:\n      linear:\n        enabled: true\n        state: Triage\n        labels:\n          - job:scheduled-job\n        dedupe: open_issue_per_job\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_dir <> "/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: scheduled_command
+    kind: command
+    run: exit 1
+    workspace: main
+",
+    )
+  config_path
+}
+
 fn write_scheduled_command_workflow(
   dir: String,
   max_concurrent: Int,
@@ -324,6 +352,9 @@ fn base_dependencies(
     make_handoff: fn(_, _) { handoff.disabled_client() },
     make_linear_commands: fn(_) { disabled_linear_commands() },
     make_triage: fn(_, _) { linear_triage.disabled_client() },
+    make_scheduled_failure_reporter: fn(_) {
+      scheduled_failure_reporter.disabled_client()
+    },
     workflow_run_dependencies: fake_workflow_run_dependencies(log_subject),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, _, _) {
@@ -527,6 +558,71 @@ fn fake_workflow_run_dependencies(
     },
     checkpoint: workflow_checkpoint.noop_writer(),
   )
+}
+
+fn failing_command_workflow_run_dependencies(
+  log_subject: process.Subject(String),
+) -> workflow_run.Dependencies {
+  let base = fake_workflow_run_dependencies(log_subject)
+  workflow_run.Dependencies(
+    ..base,
+    command_step: fn(
+      context: workflow_run.StepContext,
+      _command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
+      process.send(log_subject, "yaml_command_failed:" <> context.step_id)
+      step_artifact.from_command_result(
+        context.step_id,
+        1,
+        "",
+        "forced scheduled failure",
+        False,
+        secrets,
+        limits,
+      )
+    },
+  )
+}
+
+fn scheduled_reporter_success(
+  report_subject: process.Subject(
+    scheduled_failure_reporter.FailureReportRequest,
+  ),
+) -> scheduled_failure_reporter.Client {
+  scheduled_failure_reporter.Client(report_failure: fn(request) {
+    process.send(report_subject, request)
+    Ok(scheduled_failure_reporter.FailureReportCreated("lin-scheduled"))
+  })
+}
+
+type ScheduledReportDirective {
+  ScheduledReportError
+  ScheduledReportSuccess
+}
+
+type DirectedScheduledReportCall {
+  DirectedScheduledReportCall(
+    request: scheduled_failure_reporter.FailureReportRequest,
+    reply: process.Subject(ScheduledReportDirective),
+  )
+}
+
+fn scheduled_reporter_directed(
+  report_subject: process.Subject(DirectedScheduledReportCall),
+) -> scheduled_failure_reporter.Client {
+  scheduled_failure_reporter.Client(report_failure: fn(request) {
+    let reply = process.new_subject()
+    process.send(report_subject, DirectedScheduledReportCall(request, reply))
+    case process.receive(reply, within: 1000) {
+      Ok(ScheduledReportSuccess) ->
+        Ok(scheduled_failure_reporter.FailureReportUpdated("lin-scheduled"))
+      Ok(ScheduledReportError) -> Error(error.LinearApiRequest("boom"))
+      Error(_) -> Error(error.LinearApiRequest("directive timeout"))
+    }
+  })
 }
 
 fn blocking_command_workflow_run_dependencies(
@@ -1072,6 +1168,54 @@ fn has_scheduled_retry_scheduled(
         _,
         _,
       ) -> body_run_id == run_id && body_next_attempt == next_attempt
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_failure_reported(
+  records: List(record.LedgerRecord),
+  run_id: String,
+  issue_id: String,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledFailureReported(
+        _,
+        _,
+        _,
+        body_run_id,
+        _,
+        _,
+        body_issue_id,
+        _,
+      ) -> body_run_id == run_id && body_issue_id == issue_id
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_failure_report_failed(
+  records: List(record.LedgerRecord),
+  run_id: String,
+  generation: Int,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledFailureReportFailed(
+        _,
+        _,
+        _,
+        body_run_id,
+        _,
+        _,
+        _,
+        _,
+        _,
+        body_generation,
+      ) -> body_run_id == run_id && body_generation == generation
       _ -> False
     }
   })
@@ -1813,6 +1957,205 @@ pub fn daemon_scheduled_startup_recovers_active_run_with_retry_test() {
     fn(records) { has_scheduled_started_attempt(records, run_id, 2) },
     20,
   )
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_failure_reports_after_retry_exhaustion_test() {
+  let dir = "test/tmp/daemon-scheduled-report"
+  let workflow_path = write_scheduled_reporting_workflow(dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let report_subject = process.new_subject()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: failing_command_workflow_run_dependencies(
+        command_subject,
+      ),
+      make_scheduled_failure_reporter: fn(_) {
+        scheduled_reporter_success(report_subject)
+      },
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_retry_scheduled(records, run_id, 2) },
+    20,
+  )
+  test_async.assert_no_extra_message_within(report_subject, 50)
+
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_retry_scheduled(records, run_id, 3) },
+    20,
+  )
+  test_async.assert_no_extra_message_within(report_subject, 50)
+
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
+  let assert Ok(request) = process.receive(report_subject, within: 1000)
+  assert request.dedupe_key == "scheduled-job:scheduled-job"
+  assert request.triage_state == "Triage"
+  assert request.configured_labels == ["job:scheduled-job"]
+  assert wait_for_records(
+    root,
+    fn(records) {
+      has_scheduled_failure_reported(records, run_id, "lin-scheduled")
+    },
+    20,
+  )
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
+  let dir = "test/tmp/daemon-scheduled-report-retry"
+  let workflow_path = write_scheduled_reporting_workflow(dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let report_subject = process.new_subject()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: failing_command_workflow_run_dependencies(
+        command_subject,
+      ),
+      make_scheduled_failure_reporter: fn(_) {
+        scheduled_reporter_directed(report_subject)
+      },
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_retry_scheduled(records, run_id, 2) },
+    20,
+  )
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_retry_scheduled(records, run_id, 3) },
+    20,
+  )
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
+  let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
+    process.receive(report_subject, within: 1000)
+  process.send(first_reply, ScheduledReportError)
+  assert first_request.run_id == run_id
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_failure_report_failed(records, run_id, 1) },
+    20,
+  )
+  let _ = test_async.drain_subject(command_subject)
+
+  process.send(started.data, daemon.ScheduledReportRetryTick(run_id, 1))
+  let assert Ok(DirectedScheduledReportCall(second_request, second_reply)) =
+    process.receive(report_subject, within: 1000)
+  process.send(second_reply, ScheduledReportSuccess)
+  assert second_request.run_id == run_id
+  test_async.assert_no_extra_message_within(command_subject, 100)
+  assert wait_for_records(
+    root,
+    fn(records) {
+      has_scheduled_failure_reported(records, run_id, "lin-scheduled")
+    },
+    20,
+  )
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_report_retry_blocks_new_intervals_until_reported_test() {
+  let dir = "test/tmp/daemon-scheduled-report-retry-blocks-intervals"
+  let workflow_path = write_scheduled_reporting_workflow(dir)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let report_subject = process.new_subject()
+  let clock = start_test_clock(100)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: failing_command_workflow_run_dependencies(
+        command_subject,
+      ),
+      make_scheduled_failure_reporter: fn(_) {
+        scheduled_reporter_directed(report_subject)
+      },
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, 1000)
+  process.send(started.data, daemon.PollTick(1))
+  let run_id = "schedule-scheduled-job-19700101T000001Z"
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_retry_scheduled(records, run_id, 2) },
+    20,
+  )
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_retry_scheduled(records, run_id, 3) },
+    20,
+  )
+  process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
+  let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
+    process.receive(report_subject, within: 1000)
+  process.send(first_reply, ScheduledReportError)
+  assert first_request.run_id == run_id
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_failure_report_failed(records, run_id, 1) },
+    20,
+  )
+  let _ = test_async.drain_subject(command_subject)
+
+  set_clock(clock, 2000)
+  process.send(started.data, daemon.PollTick(2))
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_skip(records, "overlap_running") },
+    20,
+  )
+  test_async.assert_no_extra_message_within(command_subject, 100)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)

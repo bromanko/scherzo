@@ -6,6 +6,7 @@ pub fn default_checks_are_stable_test() {
   assert doctor.default_checks()
     == [
       doctor.WorkflowConfig,
+      doctor.ScheduledJobs,
       doctor.LinearContract,
       doctor.LinearSmoke,
       doctor.InstanceLock,
@@ -15,6 +16,7 @@ pub fn default_checks_are_stable_test() {
   assert doctor.list_check_names()
     == [
       "workflow-config",
+      "scheduled-jobs",
       "linear-contract",
       "linear-smoke",
       "instance-lock",
@@ -25,6 +27,7 @@ pub fn default_checks_are_stable_test() {
 
 pub fn parse_check_name_accepts_known_names_test() {
   assert doctor.parse_check_name("workflow-config") == Ok(doctor.WorkflowConfig)
+  assert doctor.parse_check_name("scheduled-jobs") == Ok(doctor.ScheduledJobs)
   assert doctor.parse_check_name("linear-contract") == Ok(doctor.LinearContract)
   assert doctor.parse_check_name("linear-smoke") == Ok(doctor.LinearSmoke)
   assert doctor.parse_check_name("instance-lock") == Ok(doctor.InstanceLock)

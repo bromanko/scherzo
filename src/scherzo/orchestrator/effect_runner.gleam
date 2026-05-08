@@ -8,6 +8,7 @@ import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_triage
+import scherzo/scheduled_failure_reporter
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
@@ -63,6 +64,11 @@ pub type Effect {
     reporting_policy_fingerprint: String,
     client: linear_triage.TriageClient,
   )
+  ReportScheduledFailure(
+    generation: Int,
+    request: scheduled_failure_reporter.FailureReportRequest,
+    client: scheduled_failure_reporter.Client,
+  )
   CleanupWorkspace(
     root: String,
     workspace_path: String,
@@ -115,6 +121,14 @@ pub type EffectResult {
     reporting_policy_fingerprint: String,
     result: Result(
       linear_triage.InvalidWorkflowReportOutcome,
+      error.TrackerError,
+    ),
+  )
+  ScheduledFailureReportFinished(
+    generation: Int,
+    request: scheduled_failure_reporter.FailureReportRequest,
+    result: Result(
+      scheduled_failure_reporter.FailureReportOutcome,
       error.TrackerError,
     ),
   )
@@ -240,6 +254,7 @@ pub fn effect_kind(effect: Effect) -> String {
     ReportPark(_, _) -> "report_park"
     PostLinearCommandAck(_, _, _, _) -> "post_linear_command_ack"
     ReportInvalidWorkflow(_, _, _, _, _) -> "report_invalid_workflow"
+    ReportScheduledFailure(_, _, _) -> "report_scheduled_failure"
     CleanupWorkspace(_, _, _, _) -> "cleanup_workspace"
   }
 }
@@ -477,6 +492,12 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         violation_fingerprint,
         reporting_policy_fingerprint,
         client.report_invalid_workflow(issue, violation),
+      )
+    ReportScheduledFailure(generation, request, client) ->
+      ScheduledFailureReportFinished(
+        generation,
+        request,
+        client.report_failure(request),
       )
     CleanupWorkspace(root, workspace_path, hooks, cleanup) ->
       CleanupFinished(workspace_path, cleanup(root, workspace_path, hooks))

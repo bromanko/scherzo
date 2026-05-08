@@ -93,6 +93,7 @@ pub type StateStatusResult {
     snapshot_path: String,
     archive_dir: String,
     message: String,
+    warnings: List(String),
   )
 }
 
@@ -661,6 +662,7 @@ pub fn inspect_state(workspace_root: String) -> StateStatusResult {
         snapshot_path: "",
         archive_dir: "",
         message: "workspace root is invalid",
+        warnings: [],
       )
     Ok(paths) -> inspect_ledger_paths(paths)
   }
@@ -676,7 +678,36 @@ fn inspect_ledger_paths(paths: ledger.LedgerPath) -> StateStatusResult {
     snapshot_path: paths.snapshot_path,
     archive_dir: paths.archive_dir,
     message: state_status_message(status),
+    warnings: state_status_warnings(paths, status),
   )
+}
+
+fn state_status_warnings(
+  paths: ledger.LedgerPath,
+  status: StateStatus,
+) -> List(String) {
+  case status {
+    StateCurrent ->
+      case scheduled_records_present(paths) {
+        True -> [
+          "scheduled ledger records are present; rollback to an older binary that does not understand scheduled records may be unsafe. Keep this binary, archive old state, or reinitialize only after accepting loss of local schedule history.",
+        ]
+        False -> []
+      }
+    _ -> []
+  }
+}
+
+fn scheduled_records_present(paths: ledger.LedgerPath) -> Bool {
+  file_contains(paths.current_path, "\"kind\":\"scheduled_")
+  || file_contains(paths.snapshot_path, "\"scheduled_jobs\":[{")
+}
+
+fn file_contains(path: String, needle: String) -> Bool {
+  case simplifile.read(path) {
+    Ok(contents) -> string.contains(contents, needle)
+    Error(_) -> False
+  }
 }
 
 fn state_status_for_paths(paths: ledger.LedgerPath) -> StateStatus {
@@ -1046,6 +1077,7 @@ pub fn state_status_to_json(status: StateStatusResult) -> json.Json {
     #("snapshot_path", json.string(status.snapshot_path)),
     #("archive_dir", json.string(status.archive_dir)),
     #("message", json.string(status.message)),
+    #("warnings", json.array(status.warnings, of: json.string)),
     #(
       "recovery",
       session_recovery.old_state_reset_required(status.message)

@@ -2,7 +2,9 @@ import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/session/event
+import scherzo/state/ledger
 import scherzo/state/local_artifacts
+import scherzo/state/record
 import simplifile
 
 fn metadata(
@@ -250,4 +252,34 @@ pub fn offline_state_status_archive_discard_and_reinitialize_test() {
   let discarded = local_artifacts.discard_old_state(discard_root, True, 456)
   assert discarded.status == "applied"
   let assert Ok(False) = simplifile.is_directory(discard_ledger)
+}
+
+pub fn offline_state_status_warns_for_scheduled_records_test() {
+  let root = "test/tmp/local-artifacts/scheduled-state-warning"
+  let _ = simplifile.delete(root)
+  let assert Ok(paths) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      paths,
+      [
+        record.with_id(
+          "scheduled-due",
+          1,
+          record.ScheduledJobDue(
+            "nightly",
+            "maintenance",
+            1000,
+            "schedule-nightly-19700101T000001Z",
+            "automatic",
+          ),
+        ),
+      ],
+      True,
+    )
+
+  let status = local_artifacts.inspect_state(root)
+  assert status.status == local_artifacts.StateCurrent
+  assert status.warnings != []
+  let encoded = status |> local_artifacts.state_status_to_json |> json.to_string
+  assert string.contains(encoded, "scheduled ledger records are present")
 }
