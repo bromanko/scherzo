@@ -69,10 +69,11 @@ pub fn authorized_new_comment_submits_command_and_marks_processed_test() {
       command.queued(parsed.command, Some("queued for next turn")),
       [],
     )
-  assert string.contains(ack, "comment c1")
-  assert string.contains(ack, "Command: prompt")
-  assert string.contains(ack, "Status: queued")
-  assert string.contains(ack, "Target: session-1")
+  assert string.contains(ack, "⏳ Scherzo command queued")
+  assert string.contains(ack, "| Command | `prompt` |")
+  assert string.contains(ack, "| Status | `queued` |")
+  assert string.contains(ack, "| Target | `session-1` |")
+  assert string.contains(ack, "| Source comment | `c1` |")
 }
 
 pub fn unauthorized_comment_is_rejected_without_command_test() {
@@ -96,7 +97,8 @@ pub fn unauthorized_comment_is_rejected_without_command_test() {
   assert submit_count(actions) == 0
   assert ack_count(actions) == 1
   let assert Some(body) = first_ack(actions)
-  assert string.contains(body, "Status: not_allowed")
+  assert string.contains(body, "🔒 Scherzo command not allowed")
+  assert string.contains(body, "| Status | `not_allowed` |")
 
   let #(again, again_actions) =
     linear_transport.process_comments(
@@ -201,9 +203,10 @@ pub fn completed_unacked_receipt_posts_ack_without_submit_test() {
   assert submit_count(actions) == 0
   assert ack_count(actions) == 1
   let assert Some(body) = first_ack(actions)
-  assert string.contains(body, "Command: park")
-  assert string.contains(body, "Status: applied")
-  assert string.contains(body, "Message: issue parked")
+  assert string.contains(body, "✅ Scherzo command applied")
+  assert string.contains(body, "| Command | `park` |")
+  assert string.contains(body, "| Status | `applied` |")
+  assert string.contains(body, "issue parked")
 }
 
 pub fn started_uncompleted_receipt_posts_unknown_ack_test() {
@@ -231,8 +234,9 @@ pub fn started_uncompleted_receipt_posts_unknown_ack_test() {
   assert submit_count(actions) == 0
   assert ack_count(actions) == 1
   let assert Some(body) = first_ack(actions)
-  assert string.contains(body, "Status: unknown_after_restart")
-  assert string.contains(body, "Command: park")
+  assert string.contains(body, "❓ Scherzo command status is unknown")
+  assert string.contains(body, "| Status | `unknown_after_restart` |")
+  assert string.contains(body, "| Command | `park` |")
 }
 
 pub fn malformed_command_is_acknowledged_once_test() {
@@ -276,7 +280,8 @@ pub fn session_command_without_current_session_acks_not_found_test() {
   assert linear_transport.has_processed(next, "c1")
   assert submit_count(actions) == 0
   let assert Some(body) = first_ack(actions)
-  assert string.contains(body, "Status: not_found")
+  assert string.contains(body, "🔎 Scherzo command target not found")
+  assert string.contains(body, "| Status | `not_found` |")
 }
 
 pub fn result_ack_redacts_and_truncates_text_test() {

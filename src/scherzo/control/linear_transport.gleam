@@ -6,6 +6,7 @@ import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/linear_parser
 import scherzo/linear
+import scherzo/linear_comment_format as comment_format
 import scherzo/log
 import scherzo/state/projection
 
@@ -360,14 +361,21 @@ fn maybe_rejection_ack(
 }
 
 fn unauthorized_ack_body(comment_id: String, author_id: String) -> String {
-  common_ack_body(
-    comment_id,
-    "unknown",
-    "not_allowed",
-    None,
-    Some("Linear user is not authorized: " <> author_id),
-    None,
-  )
+  let body =
+    [
+      comment_format.title("🔒", "Scherzo command not allowed"),
+      ack_table("unknown", "not_allowed", None, comment_id),
+      comment_format.section(
+        "Summary",
+        "Scherzo ignored this command because the Linear user is not authorized.",
+      ),
+      comment_format.section(
+        "Run details",
+        "- Linear user id: " <> comment_format.code_span(author_id, "unknown"),
+      ),
+    ]
+    |> join_blocks
+  comment_format.finalize_body("linear_command_ack", body, [])
 }
 
 fn parse_error_ack_body(
@@ -378,11 +386,12 @@ fn parse_error_ack_body(
     linear_parser.NoCurrentSession(name) ->
       common_ack_body(
         comment_id,
-        name,
+        bounded_no_secrets(name, 160),
         "not_found",
         None,
-        Some("No current Scherzo session is running for this issue."),
         None,
+        None,
+        [],
       )
     _ ->
       common_ack_body(
@@ -392,6 +401,7 @@ fn parse_error_ack_body(
         None,
         Some(parse_error_message(err)),
         None,
+        [],
       )
   }
 }
@@ -407,8 +417,9 @@ pub fn completed_receipt_ack_body(
     command_name,
     status,
     None,
-    optional_non_empty(message_excerpt),
+    optional_non_empty(redacted_truncated(message_excerpt, [], 160)),
     None,
+    [],
   )
 }
 
@@ -421,10 +432,9 @@ pub fn unknown_after_restart_ack_body(
     command_name,
     "unknown_after_restart",
     None,
-    Some(
-      "Scherzo restarted while this command was in progress. Inspect current issue/session state and post a new command if needed.",
-    ),
     None,
+    None,
+    [],
   )
 }
 
@@ -449,6 +459,7 @@ pub fn result_ack_body(
     result.target,
     message,
     excerpt,
+    secrets,
   )
 }
 
@@ -470,47 +481,141 @@ fn common_ack_body(
   target: Option(String),
   message: Option(String),
   excerpt: Option(String),
+  secrets: List(String),
 ) -> String {
-  let lines = [
-    "Scherzo command received from comment " <> comment_id <> ".",
-    "Command: " <> command_name,
-    "Status: " <> status,
+  let command_name = redacted_truncated(command_name, secrets, 160)
+  let status = redacted_truncated(status, secrets, 80)
+  let target = case target {
+    Some(target) -> Some(redacted_truncated(target, secrets, 160))
+    None -> None
+  }
+  let blocks = [
+    status_title(status),
+    ack_table(command_name, status, target, comment_id),
+    comment_format.section("Summary", summary_text(status, message)),
   ]
-  let lines = case target {
-    Some(target) -> list.append(lines, ["Target: " <> target])
-    None -> lines
+  let blocks = case next_action_text(status) {
+    None -> blocks
+    Some(next_action) ->
+      list.append(blocks, [comment_format.section("Next action", next_action)])
   }
-  let lines = case message {
-    Some(message) -> list.append(lines, ["Message: " <> message])
-    None -> lines
+  let blocks = case excerpt {
+    None -> blocks
+    Some(excerpt) ->
+      list.append(blocks, [
+        comment_format.section(
+          "Command excerpt",
+          comment_format.code_span(excerpt, "command excerpt"),
+        ),
+      ])
   }
-  let lines = case excerpt {
-    Some(excerpt) -> list.append(lines, ["Excerpt: " <> excerpt])
-    None -> lines
+  let body = blocks |> join_blocks
+  comment_format.finalize_body("linear_command_ack", body, secrets)
+}
+
+fn ack_table(
+  command_name: String,
+  status: String,
+  target: Option(String),
+  comment_id: String,
+) -> String {
+  let rows = [
+    comment_format.SummaryRow(
+      "Command",
+      comment_format.table_code(command_name, "unknown"),
+    ),
+    comment_format.SummaryRow(
+      "Status",
+      comment_format.table_code(status, "unknown"),
+    ),
+  ]
+  let rows = list.append(rows, comment_format.optional_row("Target", target))
+  let rows =
+    list.append(rows, [
+      comment_format.SummaryRow(
+        "Source comment",
+        comment_format.table_code(comment_id, "unknown"),
+      ),
+    ])
+  comment_format.summary_table(rows)
+}
+
+fn status_title(status: String) -> String {
+  case status {
+    "applied" -> comment_format.title("✅", "Scherzo command applied")
+    "queued" -> comment_format.title("⏳", "Scherzo command queued")
+    "rejected" -> comment_format.title("🚫", "Scherzo command rejected")
+    "not_found" -> comment_format.title("🔎", "Scherzo command target not found")
+    "not_allowed" -> comment_format.title("🔒", "Scherzo command not allowed")
+    "unknown_after_restart" ->
+      comment_format.title("❓", "Scherzo command status is unknown")
+    _ -> comment_format.title("ℹ️", "Scherzo command result recorded")
   }
-  string.join(lines, with: "\n")
+}
+
+fn summary_text(status: String, message: Option(String)) -> String {
+  case message {
+    Some(message) -> message
+    None ->
+      case status {
+        "applied" -> "Scherzo applied the command."
+        "queued" -> "Scherzo queued the command."
+        "rejected" -> "Scherzo rejected the command."
+        "not_found" -> "No current Scherzo session is running for this issue."
+        "not_allowed" ->
+          "Scherzo ignored this command because it is not allowed."
+        "unknown_after_restart" ->
+          "Scherzo restarted while this command was in progress, so it cannot safely confirm the outcome from memory."
+        _ -> "Scherzo recorded the command result."
+      }
+  }
+}
+
+fn next_action_text(status: String) -> Option(String) {
+  case status {
+    "rejected" ->
+      Some("Edit or post one `/scherzo` command with the required arguments.")
+    "not_found" ->
+      Some("Start or retry a run before sending this session command.")
+    "unknown_after_restart" ->
+      Some(
+        "Inspect the current issue or session state. Post a new command only if action is still needed.",
+      )
+    _ -> None
+  }
 }
 
 fn parse_error_command_name(err: linear_parser.ParseError) -> String {
   case err {
-    linear_parser.UnknownCommand(name) -> name
-    linear_parser.MissingArgument(name) -> name
+    linear_parser.UnknownCommand(name) -> bounded_no_secrets(name, 160)
+    linear_parser.MissingArgument(name) -> bounded_no_secrets(name, 160)
     linear_parser.InvalidArgument(_) -> "malformed"
     linear_parser.MultipleCommands -> "multiple"
-    linear_parser.NoCurrentSession(name) -> name
+    linear_parser.NoCurrentSession(name) -> bounded_no_secrets(name, 160)
   }
 }
 
 fn parse_error_message(err: linear_parser.ParseError) -> String {
   case err {
-    linear_parser.UnknownCommand(name) -> "Unknown command: " <> name
-    linear_parser.MissingArgument(name) -> "Missing argument: " <> name
-    linear_parser.InvalidArgument(value) -> "Invalid argument: " <> value
+    linear_parser.UnknownCommand(name) ->
+      bounded_no_secrets("Unknown command: " <> name, 160)
+    linear_parser.MissingArgument(name) ->
+      bounded_no_secrets("Missing argument: " <> name, 160)
+    linear_parser.InvalidArgument(value) ->
+      bounded_no_secrets("Invalid argument: " <> value, 160)
     linear_parser.MultipleCommands ->
       "Only one Scherzo command is allowed per Linear comment."
     linear_parser.NoCurrentSession(_) ->
       "No current Scherzo session is running for this issue."
   }
+}
+
+fn join_blocks(blocks: List(String)) -> String {
+  blocks |> string.join(with: "\n\n")
+}
+
+fn bounded_no_secrets(value: String, max: Int) -> String {
+  redacted_truncated(value, [], max)
 }
 
 fn parse_error_reason(err: linear_parser.ParseError) -> String {

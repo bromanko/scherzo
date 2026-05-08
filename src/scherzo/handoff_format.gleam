@@ -1,14 +1,14 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/error
-import scherzo/log
+import scherzo/linear_comment_format as comment_format
 import scherzo/path
 import scherzo/session/tokens as session_tokens
-import scherzo/terminal/sanitize as terminal_sanitize
 import scherzo/tracker/issue as tracker_issue
 import simplifile
 
@@ -16,22 +16,112 @@ const max_failure_detail_chars = 800
 
 const failure_detail_truncated_suffix = "… [truncated]"
 
+pub type SuccessCommentOptions {
+  SuccessCommentOptions(
+    include_result: Bool,
+    attachment_filename: Option(String),
+  )
+}
+
+pub fn claim_comment(
+  issue_identifier: String,
+  run_id: String,
+  secrets: List(String),
+) -> String {
+  let body =
+    [
+      comment_format.title("🛠️", "Scherzo claimed this issue"),
+      comment_format.summary_table([
+        code_row("Issue", issue_identifier),
+        code_row("Run", run_id),
+        code_row("Status", "claimed"),
+      ]),
+      comment_format.section(
+        "Summary",
+        "Scherzo is starting work on "
+          <> comment_format.code_span(issue_identifier, "this issue")
+          <> ".",
+      ),
+      comment_format.section(
+        "Next action",
+        "No action is needed right now. Scherzo will post another update when the run finishes, fails, or parks.",
+      ),
+    ]
+    |> join_blocks
+  comment_format.finalize_body("claim_comment", body, secrets)
+}
+
 pub fn success_comment(
   issue: tracker_issue.Issue,
   success: agent_types.WorkerSuccess,
   run_id: String,
-  include_result: Bool,
+  options: SuccessCommentOptions,
   secrets: List(String),
 ) -> String {
-  let header =
-    "Scherzo completed run " <> run_id <> " for " <> issue.identifier <> "."
-  let body = case include_result {
+  let SuccessCommentOptions(include_result, attachment_filename) = options
+  let blocks = [
+    comment_format.title("✅", "Scherzo completed the run"),
+    comment_format.summary_table([
+      code_row("Issue", issue.identifier),
+      code_row("Run", run_id),
+      code_row("Status", "completed"),
+      code_row(
+        "Classification",
+        classification_to_string(success.final_classification),
+      ),
+    ]),
+    comment_format.section(
+      "Summary",
+      "Scherzo finished the run for "
+        <> comment_format.code_span(issue.identifier, "this issue")
+        <> ".",
+    ),
+  ]
+  let blocks = case include_result {
     True ->
-      header <> "\n\n" <> result_section(success) <> "\n\n" <> metadata(success)
-    False -> header <> "\n\n" <> metadata(success)
+      list.append(blocks, [
+        comment_format.section("What Scherzo did", result_body(success)),
+      ])
+    False -> blocks
   }
-  let body = sanitize_comment_body(body)
-  log.redact("comment_body", body, secrets)
+  let blocks = case attachment_filename {
+    None -> blocks
+    Some(filename) ->
+      list.append(blocks, [
+        comment_format.section(
+          "Artifacts",
+          "- Full result: Scherzo will attempt to add "
+            <> comment_format.code_span(filename, "result.md")
+            <> " to this comment. If fallback linking is used, a Markdown link appears below.",
+        ),
+      ])
+  }
+  let blocks =
+    list.append(blocks, [
+      run_details(success.turns, success.result.source),
+      token_usage(success.tokens),
+    ])
+  let body = blocks |> join_blocks
+  comment_format.finalize_body("success_comment", body, secrets)
+}
+
+pub fn success_result_filename(
+  issue_identifier: String,
+  run_id: String,
+) -> String {
+  let raw_base =
+    safe_filename_component(issue_identifier)
+    <> "-"
+    <> safe_filename_component(run_id)
+  let base =
+    raw_base
+    |> collapse_repeated_hyphens
+    |> trim_hyphens
+  let base = case base == "" {
+    True -> "scherzo-result"
+    False -> base
+  }
+  base <> "-result.md"
 }
 
 pub fn success_result_attachment_markdown(
@@ -44,16 +134,24 @@ pub fn success_result_attachment_markdown(
     None -> None
     Some(_) -> {
       let body =
-        "# Scherzo result for "
-        <> issue.identifier
-        <> " run "
-        <> run_id
-        <> "\n\n"
-        <> result_section(success)
-        <> "\n\n"
-        <> metadata(success)
-      let body = sanitize_comment_body(body)
-      Some(log.redact("attachment_body", body, secrets))
+        [
+          "# Scherzo result for "
+            <> comment_format.code_span(issue.identifier, "this issue"),
+          comment_format.summary_table([
+            code_row("Issue", issue.identifier),
+            code_row("Run", run_id),
+            code_row(
+              "Classification",
+              classification_to_string(success.final_classification),
+            ),
+          ]),
+          comment_format.section("Result", result_body(success)),
+          run_details(success.turns, success.result.source),
+          token_usage(success.tokens),
+        ]
+        |> join_blocks
+      let body = comment_format.finalize_body("attachment_body", body, secrets)
+      Some(body)
     }
   }
 }
@@ -64,11 +162,12 @@ pub fn failure_comment(
   run_id: String,
   secrets: List(String),
 ) -> String {
-  let header =
-    "Scherzo failed run " <> run_id <> " for " <> issue.identifier <> "."
-  let body = header <> "\n\n" <> failure_diagnostics(failure)
-  let body = sanitize_comment_body(body)
-  log.redact("failure_comment", body, secrets)
+  let body = case failure.reason {
+    error.WorkflowCommandFailed(code: code, step_id: step_id, ..) ->
+      workflow_command_failure_comment(issue, failure, run_id, code, step_id)
+    _ -> generic_failure_comment(issue, failure, run_id)
+  }
+  comment_format.finalize_body("failure_comment", body, secrets)
 }
 
 pub fn park_comment(
@@ -78,71 +177,218 @@ pub fn park_comment(
   run_id: Option(String),
   secrets: List(String),
 ) -> String {
-  let reason =
-    inline_value(reason, "unspecified")
-    |> truncate_detail
-  let lines =
+  let rows = [
+    code_row("Issue", issue_identifier),
+    code_row("Status", "parked"),
+    text_row("Reason", truncate_detail(reason)),
+  ]
+  let rows =
+    list.append(
+      rows,
+      comment_format.optional_row("Release policy", release_policy),
+    )
+  let rows = list.append(rows, comment_format.optional_row("Run", run_id))
+  let body =
     [
-      "Scherzo parked " <> issue_identifier <> ".",
-      "",
-      "Reason: " <> reason,
+      comment_format.title("⏸️", "Scherzo parked this issue"),
+      comment_format.summary_table(rows),
+      comment_format.section(
+        "Summary",
+        "Scherzo paused automated work on "
+          <> comment_format.code_span(issue_identifier, "this issue")
+          <> " so it does not keep retrying an unsafe or blocked run.",
+      ),
+      comment_format.section(
+        "Next action",
+        "Inspect the recent Scherzo and Linear failure details. When the issue is safe to run again, use "
+          <> comment_format.code_span(
+          "scherzoctl unpark " <> issue_identifier,
+          "scherzoctl unpark <issue>",
+        )
+          <> " or retry the workflow.",
+      ),
     ]
-    |> list.append(optional_line("Release policy", release_policy))
-    |> list.append(optional_line("Run id", run_id))
-    |> list.append([
-      "Next action: inspect recent Scherzo/Linear failure details, then run `scherzoctl unpark "
-      <> issue_identifier
-      <> "` or retry when safe.",
-    ])
-  let body = lines |> string.join(with: "\n") |> sanitize_comment_body
-  log.redact("park_comment", body, secrets)
+    |> join_blocks
+  comment_format.finalize_body("park_comment", body, secrets)
 }
 
-fn optional_line(label: String, value: Option(String)) -> List(String) {
+fn generic_failure_comment(
+  issue: tracker_issue.Issue,
+  failure: agent_types.WorkerFailure,
+  run_id: String,
+) -> String {
+  let diagnostic_rows = [
+    code_row("Error code", error.agent_code(failure.reason)),
+  ]
+  let diagnostic_rows =
+    list.append(
+      diagnostic_rows,
+      optional_code_row(
+        "Underlying error",
+        underlying_error_code(failure.reason),
+      ),
+    )
+  let diagnostic_rows =
+    list.append(diagnostic_rows, optional_workspace_row(failure.workspace_path))
+  [
+    comment_format.title("⚠️", "Scherzo run needs attention"),
+    comment_format.summary_table([
+      code_row("Issue", issue.identifier),
+      code_row("Run", run_id),
+      code_row("Status", "failed"),
+      text_row("Error", friendly_error(failure.reason)),
+    ]),
+    comment_format.section(
+      "Summary",
+      "Scherzo stopped before completing this run.",
+    ),
+    comment_format.section(
+      "Next action",
+      "Inspect the failure diagnostics below, fix the underlying issue, then retry when safe.",
+    ),
+    failure_diagnostics_section(diagnostic_rows, failure),
+    token_usage(failure.tokens),
+  ]
+  |> join_blocks
+}
+
+fn workflow_command_failure_comment(
+  issue: tracker_issue.Issue,
+  failure: agent_types.WorkerFailure,
+  run_id: String,
+  code: String,
+  step_id: String,
+) -> String {
+  let diagnostic_rows = [
+    code_row("Failure code", code),
+    code_row(
+      "Retained workspace",
+      retained_workspace_status(failure.workspace_path),
+    ),
+  ]
+  let diagnostic_rows =
+    list.append(diagnostic_rows, optional_workspace_row(failure.workspace_path))
+  [
+    comment_format.title("⚠️", "Scherzo workflow step needs attention"),
+    comment_format.summary_table([
+      code_row("Issue", issue.identifier),
+      code_row("Run", run_id),
+      code_row("Step", step_id),
+      code_row("Error", code),
+    ]),
+    comment_format.section(
+      "Summary",
+      "Scherzo stopped during "
+        <> comment_format.code_span(step_id, "workflow step")
+        <> " because "
+        <> comment_format.code_span(code, "workflow failure")
+        <> " occurred.",
+    ),
+    comment_format.section("Next action", suggested_next_action(code)),
+    failure_diagnostics_section(diagnostic_rows, failure),
+    token_usage(failure.tokens),
+  ]
+  |> join_blocks
+}
+
+fn failure_diagnostics_section(
+  rows: List(comment_format.SummaryRow),
+  failure: agent_types.WorkerFailure,
+) -> String {
+  let table = comment_format.summary_table(rows)
+  let body = case failure_detail(failure.reason, failure.workspace_path) {
+    None -> table
+    Some(detail) ->
+      table <> "\n\n" <> comment_format.indented_block(truncate_detail(detail))
+  }
+  comment_format.section("Failure diagnostics", body)
+}
+
+fn friendly_error(reason: error.AgentRunnerError) -> String {
+  case reason {
+    error.PromptFailed(_) -> "Prompt failed"
+    error.WorkspaceFailed(_) -> "Workspace setup failed"
+    error.HookFailedError(_) -> "Hook failed"
+    error.WorkflowHookFailed(_) -> "Workflow hook failed"
+    error.ProbeFailed(_) | error.PiFailed(_) -> "Pi process failed"
+    error.WorkflowCommandFailed(..) -> "Workflow command failed"
+    error.StateRefreshFailed(_) -> "Tracker refresh failed"
+    error.OperatorAbort -> "Operator stopped the run"
+    error.OperatorStopAfterCurrentTurn -> "Operator stopped after this turn"
+  }
+}
+
+fn run_details(turns: Int, source: String) -> String {
+  comment_format.section(
+    "Run details",
+    "- Turns: "
+      <> int.to_string(turns)
+      <> "\n- Result source: "
+      <> comment_format.code_span(source, "unknown"),
+  )
+}
+
+fn token_usage(tokens: session_tokens.TokenTotals) -> String {
+  comment_format.section(
+    "Token usage",
+    comment_format.token_usage_table(tokens),
+  )
+}
+
+fn result_body(success: agent_types.WorkerSuccess) -> String {
+  let result_text = case success.result.final_response {
+    Some(text) ->
+      comment_format.block_text(
+        text,
+        "_No assistant result text was captured._",
+      )
+    None -> "_No assistant result text was captured._"
+  }
+  let truncation_note = case success.result.truncated {
+    True -> "\n\n_Result truncated by Scherzo._"
+    False -> ""
+  }
+  result_text <> truncation_note
+}
+
+fn code_row(label: String, value: String) -> comment_format.SummaryRow {
+  comment_format.SummaryRow(label, comment_format.table_code(value, "unknown"))
+}
+
+fn text_row(label: String, value: String) -> comment_format.SummaryRow {
+  comment_format.SummaryRow(label, comment_format.table_text(value, "unknown"))
+}
+
+fn optional_code_row(
+  label: String,
+  value: Option(String),
+) -> List(comment_format.SummaryRow) {
   case value {
     None -> []
-    Some(value) -> [label <> ": " <> inline_value(value, "unspecified")]
+    Some(value) -> [code_row(label, value)]
   }
 }
 
-fn inline_value(value: String, fallback: String) -> String {
-  let value =
-    value
-    |> sanitize_comment_body
-    |> string.split(on: "\n")
-    |> string.join(with: " ")
-    |> string.trim
-  case value == "" {
-    True -> fallback
-    False -> value
+fn optional_workspace_row(
+  workspace_path: Option(String),
+) -> List(comment_format.SummaryRow) {
+  case display_workspace_path(workspace_path) {
+    None -> []
+    Some(path) -> [
+      comment_format.SummaryRow("Workspace", workspace_value(path)),
+    ]
   }
 }
 
-fn sanitize_comment_body(body: String) -> String {
-  body
-  |> terminal_sanitize.block_lines
-  |> list.intersperse("\n")
-  |> string.concat
-}
-
-fn failure_diagnostics(failure: agent_types.WorkerFailure) -> String {
-  "Failure diagnostics:\n- error: "
-  <> error.agent_code(failure.reason)
-  <> workflow_command_lines(failure.reason)
-  <> retained_workspace_line(failure.reason, failure.workspace_path)
-  <> workspace_line(failure.workspace_path)
-  <> suggested_next_action_line(failure.reason)
-  <> underlying_error_line(failure.reason)
-  <> detail_line(failure)
-  <> "\n- tokens: "
-  <> token_totals(failure.tokens)
-}
-
-fn underlying_error_line(reason: error.AgentRunnerError) -> String {
-  case underlying_error_code(reason) {
-    None -> ""
-    Some(code) -> "\n- underlying_error: " <> code
+fn workspace_value(path: String) -> String {
+  case string.starts_with(path, "_not shown") {
+    True -> comment_format.table_text(path, "not shown")
+    False -> comment_format.table_code(path, "unknown")
   }
+}
+
+fn join_blocks(blocks: List(String)) -> String {
+  blocks |> string.join(with: "\n\n")
 }
 
 fn underlying_error_code(reason: error.AgentRunnerError) -> Option(String) {
@@ -160,13 +406,6 @@ fn underlying_error_code(reason: error.AgentRunnerError) -> Option(String) {
       Some(error.tracker_code(tracker_error))
     error.OperatorAbort -> None
     error.OperatorStopAfterCurrentTurn -> None
-  }
-}
-
-fn detail_line(failure: agent_types.WorkerFailure) -> String {
-  case failure_detail(failure.reason, failure.workspace_path) {
-    None -> ""
-    Some(detail) -> "\n- detail: " <> truncate_detail(detail)
   }
 }
 
@@ -256,25 +495,6 @@ fn tracker_detail(tracker_error: error.TrackerError) -> Option(String) {
   }
 }
 
-fn workflow_command_lines(reason: error.AgentRunnerError) -> String {
-  case reason {
-    error.WorkflowCommandFailed(code: code, step_id: step_id, ..) ->
-      "\n- step: " <> step_id <> "\n- failure_code: " <> code
-    _ -> ""
-  }
-}
-
-fn retained_workspace_line(
-  reason: error.AgentRunnerError,
-  workspace_path: Option(String),
-) -> String {
-  case reason {
-    error.WorkflowCommandFailed(..) ->
-      "\n- retained_workspace: " <> retained_workspace_status(workspace_path)
-    _ -> ""
-  }
-}
-
 fn retained_workspace_status(workspace_path: Option(String)) -> String {
   case workspace_path {
     None -> "unknown"
@@ -289,14 +509,6 @@ fn retained_workspace_status(workspace_path: Option(String)) -> String {
             _ -> "not_detected"
           }
       }
-  }
-}
-
-fn suggested_next_action_line(reason: error.AgentRunnerError) -> String {
-  case reason {
-    error.WorkflowCommandFailed(code: code, ..) ->
-      "\n- suggested_next_action: " <> suggested_next_action(code)
-    _ -> ""
   }
 }
 
@@ -337,13 +549,6 @@ fn sanitize_workspace_path_in_detail(
     Some(raw_path), Some(display_path) ->
       string.replace(detail, each: raw_path, with: display_path)
     _, _ -> detail
-  }
-}
-
-fn workspace_line(workspace_path: Option(String)) -> String {
-  case display_workspace_path(workspace_path) {
-    None -> ""
-    Some(path) -> "\n- workspace: " <> path
   }
 }
 
@@ -390,9 +595,9 @@ fn repo_relative_path(raw_path: String) -> Option(String) {
 }
 
 fn cwd_relative_path(raw_path: String) -> Option(String) {
-  case path.absolute(".") {
-    Ok(root) -> relative_to_root(raw_path, root)
-    Error(_) -> None
+  case path.absolute(".") |> option.from_result {
+    Some(root) -> relative_to_root(raw_path, root)
+    None -> None
   }
 }
 
@@ -410,9 +615,12 @@ fn relative_to_root(raw_path: String, root: String) -> Option(String) {
 }
 
 fn scherzo_workspace_relative_path(raw_path: String) -> Option(String) {
-  case string.split_once(raw_path, on: "/.scherzo/workspaces/") {
-    Ok(#(_, rest)) -> Some(".scherzo/workspaces/" <> rest)
-    Error(_) -> None
+  case
+    string.split_once(raw_path, on: "/.scherzo/workspaces/")
+    |> option.from_result
+  {
+    Some(#(_, rest)) -> Some(".scherzo/workspaces/" <> rest)
+    None -> None
   }
 }
 
@@ -421,19 +629,6 @@ fn trim_trailing_slash(value: String) -> String {
     True -> string.drop_end(value, 1)
     False -> value
   }
-}
-
-fn token_totals(tokens: session_tokens.TokenTotals) -> String {
-  "input="
-  <> int.to_string(tokens.input)
-  <> " output="
-  <> int.to_string(tokens.output)
-  <> " cache_read="
-  <> int.to_string(tokens.cache_read)
-  <> " cache_write="
-  <> int.to_string(tokens.cache_write)
-  <> " total="
-  <> int.to_string(tokens.total)
 }
 
 fn truncate_detail(detail: String) -> String {
@@ -445,36 +640,6 @@ fn truncate_detail(detail: String) -> String {
   }
 }
 
-fn result_section(success: agent_types.WorkerSuccess) -> String {
-  let result_text = case success.result.final_response {
-    Some(text) -> text
-    None -> "_No assistant result text was captured._"
-  }
-  let truncation_note = case success.result.truncated {
-    True -> "\n\n_Result truncated by Scherzo._"
-    False -> ""
-  }
-  "Result:\n" <> result_text <> truncation_note
-}
-
-fn metadata(success: agent_types.WorkerSuccess) -> String {
-  "Metadata:\n"
-  <> "- classification: "
-  <> classification_to_string(success.final_classification)
-  <> "\n- turns: "
-  <> int.to_string(success.turns)
-  <> "\n- tokens: input="
-  <> int.to_string(success.tokens.input)
-  <> " output="
-  <> int.to_string(success.tokens.output)
-  <> " cache_read="
-  <> int.to_string(success.tokens.cache_read)
-  <> " cache_write="
-  <> int.to_string(success.tokens.cache_write)
-  <> " total="
-  <> int.to_string(success.tokens.total)
-}
-
 fn classification_to_string(
   classification: agent_types.FinalClassification,
 ) -> String {
@@ -482,5 +647,70 @@ fn classification_to_string(
     agent_types.FinalActive -> "active"
     agent_types.FinalTerminal -> "terminal"
     agent_types.FinalNonActive -> "non_active"
+  }
+}
+
+fn safe_filename_component(value: String) -> String {
+  value
+  |> string.lowercase
+  |> string.to_graphemes
+  |> list.map(fn(ch) {
+    case is_filename_char(ch) {
+      True -> ch
+      False -> "-"
+    }
+  })
+  |> string.join(with: "")
+}
+
+fn is_filename_char(ch: String) -> Bool {
+  is_between(ch, "a", "z")
+  || is_between(ch, "0", "9")
+  || ch == "."
+  || ch == "_"
+  || ch == "-"
+}
+
+fn is_between(value: String, low: String, high: String) -> Bool {
+  string.compare(value, low) != Lt && string.compare(value, high) != Gt
+}
+
+fn collapse_repeated_hyphens(value: String) -> String {
+  value
+  |> string.to_graphemes
+  |> collapse_hyphen_graphemes(False, [])
+  |> string.join(with: "")
+}
+
+fn collapse_hyphen_graphemes(
+  graphemes: List(String),
+  previous_was_hyphen: Bool,
+  acc: List(String),
+) -> List(String) {
+  case graphemes {
+    [] -> list.reverse(acc)
+    ["-", ..rest] ->
+      case previous_was_hyphen {
+        True -> collapse_hyphen_graphemes(rest, True, acc)
+        False -> collapse_hyphen_graphemes(rest, True, ["-", ..acc])
+      }
+    [ch, ..rest] -> collapse_hyphen_graphemes(rest, False, [ch, ..acc])
+  }
+}
+
+fn trim_hyphens(value: String) -> String {
+  value
+  |> string.to_graphemes
+  |> drop_leading_hyphens
+  |> list.reverse
+  |> drop_leading_hyphens
+  |> list.reverse
+  |> string.join(with: "")
+}
+
+fn drop_leading_hyphens(values: List(String)) -> List(String) {
+  case values {
+    ["-", ..rest] -> drop_leading_hyphens(rest)
+    _ -> values
   }
 }

@@ -107,7 +107,12 @@ fn post_comment(
   issue: tracker_issue.Issue,
   violation: workflow_policy.IssueWorkflowViolation,
 ) -> Result(Nil, error.TrackerError) {
-  let body = workflow_policy.violation_message(violation, contract_config)
+  let body =
+    workflow_policy.violation_comment(
+      issue.identifier,
+      violation,
+      contract_config,
+    )
   use request <- try_tracker(linear.build_comment_create_request(
     tracker_config,
     issue.id,
