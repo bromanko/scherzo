@@ -250,13 +250,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     make_triage: linear_triage.real_triage_client,
     workflow_run_dependencies: workflow_run.default_dependencies(),
     cleanup: workspace.cleanup_stored_path,
-    logger: fn(level, event, fields, secrets) {
-      let _ = level
-      let _ = event
-      let _ = fields
-      let _ = secrets
-      Ok(Nil)
-    },
+    logger: fn(_level, _event, _fields, _secrets) { Ok(Nil) },
     now_ms: monotonic_ms,
     send_after: fn(subject, delay_ms, message) {
       RealTimer(process.send_after(subject, delay_ms, message))
@@ -264,7 +258,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     cancel_timer: fn(timer) {
       case timer {
         RealTimer(timer) -> {
-          let _ = process.cancel_timer(timer)
+          let _timer_cancelled = process.cancel_timer(timer)
           Nil
         }
         TestTimer(_) -> Nil
@@ -290,6 +284,19 @@ pub fn default_dependencies() -> RuntimeDependencies {
       }
     },
   )
+}
+
+fn emit_runtime_log(
+  dependencies: RuntimeDependencies,
+  level: String,
+  event: String,
+  fields: List(log.Field),
+  secrets: List(String),
+) -> Nil {
+  case dependencies.logger(level, event, fields, secrets) {
+    Ok(Nil) -> Nil
+    Error(Nil) -> Nil
+  }
 }
 
 fn start_control_plane(
@@ -328,17 +335,17 @@ fn start_control_plane(
         )
       case control_file.write(path, control) {
         Ok(Nil) -> {
-          let _ =
-            dependencies.logger(
-              "info",
-              "control_server_started",
-              [
-                #("control_file", path),
-                #("host", "127.0.0.1"),
-                #("port", int.to_string(port)),
-              ],
-              secrets,
-            )
+          emit_runtime_log(
+            dependencies,
+            "info",
+            "control_server_started",
+            [
+              #("control_file", path),
+              #("host", "127.0.0.1"),
+              #("port", int.to_string(port)),
+            ],
+            secrets,
+          )
           Ok(ControlPlane(handle: handle, control_file_path: Some(path)))
         }
         Error(err) -> {
@@ -591,11 +598,16 @@ fn load_startup_recovery(
     ledger.replay(ledger_path)
     |> map_ledger_error("ledger_replay_failed"),
   )
-  let _ = list.length(replayed.records)
-  let _ = case replayed.truncated_tail {
+  case replayed.truncated_tail {
     True ->
-      dependencies.logger("warn", "ledger_truncated_tail_ignored", [], secrets)
-    False -> Ok(Nil)
+      emit_runtime_log(
+        dependencies,
+        "warn",
+        "ledger_truncated_tail_ignored",
+        [],
+        secrets,
+      )
+    False -> Nil
   }
   use refreshed_issues <- try_startup(fetch_recovery_issue_states(
     tracker_client,
@@ -674,7 +686,7 @@ fn initial_scheduled_next_due(
                 schedule_core.next_due_after(due_at_ms, job.every_ms)
               None -> schedule_core.initial_next_due(now_ms, job.every_ms)
             }
-          Error(_) -> schedule_core.initial_next_due(now_ms, job.every_ms)
+          Error(Nil) -> schedule_core.initial_next_due(now_ms, job.every_ms)
         }
       None -> schedule_core.initial_next_due(now_ms, job.every_ms)
     }
@@ -717,7 +729,7 @@ fn recover_scheduled_status(
         False -> recover_disabled_scheduled_run(state, status, run)
         True -> recover_enabled_scheduled_run(state, job, status, run)
       }
-    Error(_), Some(run) -> recover_disabled_scheduled_run(state, status, run)
+    Error(Nil), Some(run) -> recover_disabled_scheduled_run(state, status, run)
     _, None -> state
   }
 }
@@ -1039,7 +1051,7 @@ fn optional_run_id(
 ) -> Option(String) {
   case dict.get(run_ids, issue_id) {
     Ok(run_id) -> Some(run_id)
-    Error(_) -> None
+    Error(Nil) -> None
   }
 }
 
@@ -1055,7 +1067,7 @@ fn workflow_recovery_observations(
   candidates
   |> list.map(fn(candidate) {
     let observation = case dict.get(issue_by_id, candidate.issue_id) {
-      Error(_) -> recovery.IssueUnavailable
+      Error(Nil) -> recovery.IssueUnavailable
       Ok(issue) -> current_workflow_observation(bundle, issue)
     }
     #(candidate.run_id, observation)
@@ -1809,7 +1821,7 @@ fn handle_yaml_step_started(
       hub.finish_session(state.event_hub, session_id, reason)
       state
     }
-    Error(_) ->
+    Error(Nil) ->
       case worker_registry.worker_for_run(state.registry, run_id) {
         Ok(_) ->
           State(
@@ -1820,7 +1832,7 @@ fn handle_yaml_step_started(
               run_id,
             ),
           )
-        Error(_) -> state
+        Error(Nil) -> state
       }
   }
 }
@@ -2654,16 +2666,16 @@ fn issue_for_id(
 ) -> Result(tracker_issue.Issue, command.CommandStatus) {
   case dict.get(state.runtime.running, issue_id) {
     Ok(entry) -> Ok(entry.issue)
-    Error(_) ->
+    Error(Nil) ->
       case dict.get(state.pending_claims, issue_id) {
         Ok(pending) -> Ok(pending.issue)
-        Error(_) ->
+        Error(Nil) ->
           case dict.get(state.pending_dispatch_validations, issue_id) {
             Ok(pending) -> Ok(pending.issue)
-            Error(_) ->
+            Error(Nil) ->
               case dict.get(state.runtime.completed, issue_id) {
                 Ok(issue) -> Ok(issue)
-                Error(_) -> fetch_issue_by_id(state, issue_id)
+                Error(Nil) -> fetch_issue_by_id(state, issue_id)
               }
           }
       }
@@ -2929,7 +2941,7 @@ fn cancel_retry_timer(state: State, issue_id: String) -> State {
 
 fn handle_poll_tick(state: State, generation: Int) -> State {
   case poll_scheduler.accept_tick(state.poll, generation) {
-    Error(_) -> state
+    Error(Nil) -> state
     Ok(poll) -> {
       let state = State(..state, poll: poll)
       log_state(state, "info", "tick_started", [
@@ -3007,7 +3019,7 @@ fn refresh_scheduled_next_due_after_reload(state: State) -> State {
     |> list.fold(state.scheduled_next_due, fn(acc, job) {
       case dict.get(acc, job.id) {
         Ok(_) -> acc
-        Error(_) ->
+        Error(Nil) ->
           dict.insert(
             acc,
             job.id,
@@ -3222,7 +3234,7 @@ fn command_result_with_display_target(
               handle.session_id,
             )),
           )
-        Error(_) -> result
+        Error(Nil) -> result
       }
     _, _ -> result
   }
@@ -3778,7 +3790,7 @@ fn ensure_scheduled_next_due(
 ) -> #(State, Int) {
   case dict.get(state.scheduled_next_due, job.id) {
     Ok(value) -> #(state, value)
-    Error(_) -> {
+    Error(Nil) -> {
       let next_due_at_ms = schedule_core.initial_next_due(now_ms, job.every_ms)
       #(
         State(
@@ -3804,7 +3816,7 @@ fn scheduled_mode_for_job(
       schedule_core.Pending(scheduled_skip_reason_for_block(
         pending.blocking_reason,
       ))
-    Error(_) ->
+    Error(Nil) ->
       case scheduled_worker_active_for_job(state, job_id) {
         True -> schedule_core.Active
         False ->
