@@ -110,6 +110,248 @@ pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
   )
 }
 
+pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
+  let dir = "test/tmp/review-artifacts-specialist-lanes"
+  reset_dir(dir)
+  let diff_path = dir <> "/change.diff"
+  let brief_dir = dir <> "/brief"
+  let assert Ok(Nil) =
+    simplifile.write(
+      diff_path,
+      "diff --git a/src/scherzo/control/example.gleam b/src/scherzo/control/example.gleam\n"
+        <> "index 1111111..2222222 100644\n"
+        <> "--- a/src/scherzo/control/example.gleam\n"
+        <> "+++ b/src/scherzo/control/example.gleam\n"
+        <> "@@ -1,3 +1,5 @@\n"
+        <> " pub fn changed(value) {\n"
+        <> "+  let assert Ok(parsed) = parse(value)\n"
+        <> "+  let token = \"supersecrettoken\"\n"
+        <> "   value\n"
+        <> " }\n",
+    )
+
+  let dry_run =
+    run_command(
+      "scripts/scherzo-review dry-run --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> brief_dir
+      <> " --test-status unit=failed:failed",
+    )
+  assert dry_run.status == step_artifact.StepSucceeded
+  assert dry_run.exit_code == Some(0)
+
+  let brief_path = brief_dir <> "/review-brief.v1.json"
+
+  let correctness_dir = dir <> "/correctness"
+  let correctness =
+    run_command(
+      "scripts/scherzo-review run-lane --lane correctness --brief "
+      <> brief_path
+      <> " --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> correctness_dir,
+    )
+  assert correctness.status == step_artifact.StepSucceeded
+  assert correctness.exit_code == Some(0)
+  assert string.contains(correctness.stdout, "REVIEW_LANE_RUN=ok")
+  assert string.contains(correctness.stdout, "REVIEW_LANE=correctness")
+  let correctness_result_path =
+    correctness_dir <> "/review-lane-correctness.v1.json"
+  let assert Ok(correctness_result) = simplifile.read(correctness_result_path)
+  assert string.contains(correctness_result, "\"id\": \"correctness\"")
+  assert string.contains(correctness_result, "\"evidence_type\": \"test\"")
+  assert string.contains(correctness_result, "\"executable_evidence\"")
+  assert string.contains(correctness_result, "\"finding_type\": \"suspicion\"")
+  let correctness_validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> correctness_result_path,
+    )
+  assert correctness_validation.status == step_artifact.StepSucceeded
+
+  let test_quality_dir = dir <> "/test-quality"
+  let test_quality =
+    run_command(
+      "scripts/scherzo-review run-lane --lane test-quality --brief "
+      <> brief_path
+      <> " --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> test_quality_dir,
+    )
+  assert test_quality.status == step_artifact.StepSucceeded
+  assert test_quality.exit_code == Some(0)
+  let test_quality_result_path =
+    test_quality_dir <> "/review-lane-test-quality.v1.json"
+  let assert Ok(test_quality_result) = simplifile.read(test_quality_result_path)
+  assert string.contains(test_quality_result, "\"category\": \"testing\"")
+  assert string.contains(test_quality_result, "\"proposed_tests\"")
+  let test_quality_validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> test_quality_result_path,
+    )
+  assert test_quality_validation.status == step_artifact.StepSucceeded
+
+  let idioms_dir = dir <> "/idioms"
+  let idioms =
+    run_command(
+      "scripts/scherzo-review run-lane --lane idioms-maintainability --brief "
+      <> brief_path
+      <> " --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> idioms_dir,
+    )
+  assert idioms.status == step_artifact.StepSucceeded
+  assert idioms.exit_code == Some(0)
+  let idioms_result_path =
+    idioms_dir <> "/review-lane-idioms-maintainability.v1.json"
+  let assert Ok(idioms_result) = simplifile.read(idioms_result_path)
+  assert string.contains(idioms_result, "\"review_priority\": \"must-fix\"")
+  let idioms_validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> idioms_result_path,
+    )
+  assert idioms_validation.status == step_artifact.StepSucceeded
+
+  let security_dir = dir <> "/security-performance"
+  let security =
+    run_command(
+      "scripts/scherzo-review run-lane --lane security-performance --brief "
+      <> brief_path
+      <> " --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> security_dir,
+    )
+  assert security.status == step_artifact.StepSucceeded
+  assert security.exit_code == Some(0)
+  assert string.contains(security.stdout, "REVIEW_LANE_REVIEW_DEPTH=deep")
+  let security_result_path =
+    security_dir <> "/review-lane-security-performance.v1.json"
+  let assert Ok(security_result) = simplifile.read(security_result_path)
+  let assert Ok(security_log) =
+    simplifile.read(security_dir <> "/review-lane-security-performance.log")
+  let assert Ok(security_analysis) =
+    simplifile.read(
+      security_dir <> "/review-lane-security-performance-analysis.v1.json",
+    )
+  assert string.contains(security_result, "\"review_depth\": \"deep\"")
+  assert string.contains(security_result, "Potential hard-coded secret")
+  assert string.contains(security_log, "review_depth=deep")
+  assert string.contains(
+    security_analysis,
+    "\"artifact_type\": \"review_lane_analysis\"",
+  )
+  let security_validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> security_result_path,
+    )
+  assert security_validation.status == step_artifact.StepSucceeded
+}
+
+pub fn security_performance_lane_uses_low_risk_lightweight_depth_test() {
+  let dir = "test/tmp/review-artifacts-security-lightweight"
+  reset_dir(dir)
+  let diff_path = dir <> "/docs.diff"
+  let brief_dir = dir <> "/brief"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      diff_path,
+      "diff --git a/docs/example.md b/docs/example.md\n"
+        <> "index 1111111..2222222 100644\n"
+        <> "--- a/docs/example.md\n"
+        <> "+++ b/docs/example.md\n"
+        <> "@@ -1,2 +1,3 @@\n"
+        <> " # Example\n"
+        <> "+More documentation.\n"
+        <> " Existing text.\n",
+    )
+
+  let dry_run =
+    run_command(
+      "scripts/scherzo-review dry-run --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> brief_dir,
+    )
+  assert dry_run.status == step_artifact.StepSucceeded
+
+  let lane =
+    run_command(
+      "scripts/scherzo-review run-lane --lane security-performance --brief "
+      <> brief_dir
+      <> "/review-brief.v1.json --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> lane_dir,
+    )
+  assert lane.status == step_artifact.StepSucceeded
+  assert lane.exit_code == Some(0)
+  assert string.contains(lane.stdout, "REVIEW_LANE_REVIEW_DEPTH=lightweight")
+
+  let lane_result_path = lane_dir <> "/review-lane-security-performance.v1.json"
+  let assert Ok(lane_result) = simplifile.read(lane_result_path)
+  let assert Ok(lane_log) =
+    simplifile.read(lane_dir <> "/review-lane-security-performance.log")
+  assert string.contains(lane_result, "\"findings\": []")
+  assert string.contains(
+    lane_result,
+    "Lightweight security/performance review found no heuristic findings.",
+  )
+  assert string.contains(lane_log, "review_depth=lightweight")
+  assert string.contains(
+    lane_log,
+    "skipped deep security/performance heuristics",
+  )
+
+  let validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+    )
+  assert validation.status == step_artifact.StepSucceeded
+}
+
+pub fn review_lane_failure_writes_debug_artifacts_test() {
+  let dir = "test/tmp/review-artifacts-lane-failure"
+  reset_dir(dir)
+  let brief_path = dir <> "/invalid-brief.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      brief_path,
+      "{\"schema_version\":1,\"artifact_type\":\"review_brief\"}\n",
+    )
+
+  let lane =
+    run_command(
+      "scripts/scherzo-review run-lane --lane correctness --brief "
+      <> brief_path
+      <> " --output-dir "
+      <> lane_dir,
+    )
+  assert lane.status == step_artifact.StepFailed
+  assert lane.exit_code == Some(1)
+  assert string.contains(lane.stdout, "REVIEW_LANE_RUN=failed")
+  assert string.contains(lane.stderr, "artifact field 'generated_at_utc'")
+
+  let lane_result_path = lane_dir <> "/review-lane-correctness.v1.json"
+  let assert Ok(lane_result) = simplifile.read(lane_result_path)
+  let assert Ok(lane_log) =
+    simplifile.read(lane_dir <> "/review-lane-correctness.log")
+  assert string.contains(lane_result, "\"state\": \"failed\"")
+  assert string.contains(lane_log, "state=failed")
+  assert string.contains(lane_log, "artifact field 'generated_at_utc'")
+
+  let validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+    )
+  assert validation.status == step_artifact.StepSucceeded
+}
+
 pub fn review_artifact_validator_accepts_review_finding_test() {
   let dir = "test/tmp/review-artifacts-finding"
   reset_dir(dir)
@@ -140,6 +382,45 @@ pub fn review_artifact_validator_accepts_review_finding_test() {
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "REVIEW_ARTIFACT_VALID=ok")
   assert string.contains(artifact.stdout, "REVIEW_ARTIFACT_TYPE=review_finding")
+}
+
+pub fn review_artifact_validator_rejects_blocking_correctness_without_executable_evidence_test() {
+  let dir = "test/tmp/review-artifacts-invalid-correctness-blocker"
+  reset_dir(dir)
+  let artifact_path = dir <> "/lane-result.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      artifact_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_lane_result\",\n"
+        <> "  \"lane\": { \"id\": \"correctness\", \"name\": \"Correctness reviewer\", \"category\": \"correctness\", \"version\": \"1\" },\n"
+        <> "  \"execution_status\": { \"state\": \"succeeded\", \"started_at_utc\": \"2026-05-08T00:00:00Z\", \"completed_at_utc\": \"2026-05-08T00:00:01Z\", \"summary\": \"done\" },\n"
+        <> "  \"findings\": [{\n"
+        <> "    \"id\": \"correctness-001\",\n"
+        <> "    \"category\": \"correctness\",\n"
+        <> "    \"severity\": \"high\",\n"
+        <> "    \"evidence_type\": \"static\",\n"
+        <> "    \"verified\": true,\n"
+        <> "    \"blocking\": true,\n"
+        <> "    \"locations\": [{ \"path\": \"src/example.gleam\" }],\n"
+        <> "    \"summary\": \"Static bug claim\",\n"
+        <> "    \"details\": \"No executable evidence was supplied.\",\n"
+        <> "    \"suggested_fix\": \"Add a failing test or downgrade the finding.\"\n"
+        <> "  }],\n"
+        <> "  \"artifacts\": []\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_command("scripts/scherzo-review validate --artifact " <> artifact_path)
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(
+    artifact.stderr,
+    "blocking correctness findings must be verified with executable evidence",
+  )
 }
 
 pub fn review_artifact_validator_rejects_missing_required_brief_fields_test() {
