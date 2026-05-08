@@ -24,6 +24,35 @@ from typing import Any
 SCHEMA_VERSION = 1
 CONTRACT_SCHEMA_REF = "docs/schemas/review-artifacts.v1.schema.json"
 DEFAULT_OUTPUT_DIR = Path("tmp/scherzo-review-dry-run")
+DEFAULT_LANE_OUTPUT_DIR = Path("tmp/scherzo-review-lanes")
+EXECUTABLE_CORRECTNESS_EVIDENCE_TYPES = {"test", "runtime", "reproduction"}
+
+SPECIALIST_LANES: dict[str, dict[str, str]] = {
+    "correctness": {
+        "id": "correctness",
+        "name": "Correctness reviewer",
+        "category": "correctness",
+        "version": "1",
+    },
+    "test-quality": {
+        "id": "test-quality",
+        "name": "Test-quality reviewer",
+        "category": "testing",
+        "version": "1",
+    },
+    "idioms-maintainability": {
+        "id": "idioms-maintainability",
+        "name": "Idioms / maintainability reviewer",
+        "category": "maintainability",
+        "version": "1",
+    },
+    "security-performance": {
+        "id": "security-performance",
+        "name": "Security / performance risk reviewer",
+        "category": "security-performance",
+        "version": "1",
+    },
+}
 
 
 class ReviewError(Exception):
@@ -100,6 +129,9 @@ class DiffFile:
         self.additions = 0
         self.deletions = 0
         self.hunks = 0
+        self.added_lines: list[str] = []
+        self.deleted_lines: list[str] = []
+        self.hunk_headers: list[str] = []
 
     def to_changed_area(self) -> dict[str, Any]:
         return {
@@ -173,10 +205,13 @@ def parse_diff_files(diff: str) -> list[DiffFile]:
                     current.change_kind = "added"
         elif line.startswith("@@"):
             current.hunks += 1
+            current.hunk_headers.append(line)
         elif line.startswith("+") and not line.startswith("+++"):
             current.additions += 1
+            current.added_lines.append(line[1:])
         elif line.startswith("-") and not line.startswith("---"):
             current.deletions += 1
+            current.deleted_lines.append(line[1:])
 
     return files
 
@@ -430,6 +465,27 @@ def suggested_review_lanes(files: list[DiffFile]) -> list[dict[str, str]]:
         add("change-intent", "Change intent review", "No file changes were parsed; confirm the diff source and intent.")
         return lanes
 
+    add(
+        "correctness",
+        "Correctness reviewer",
+        "Check behavior and logic changes, with blocking bug findings gated on executable evidence.",
+    )
+    add(
+        "test-quality",
+        "Test-quality reviewer",
+        "Evaluate whether changed behavior has meaningful committed tests and concrete edge-case coverage.",
+    )
+    add(
+        "idioms-maintainability",
+        "Idioms / maintainability reviewer",
+        "Review clarity, naming, structure, error handling, and maintainability priority.",
+    )
+    add(
+        "security-performance",
+        "Security / performance risk reviewer",
+        "Scale security and performance depth from the ReviewBrief risk profile.",
+    )
+
     if has_path(files, lambda p: p.endswith(".gleam") or p.startswith("src/") or p.startswith("test/")):
         add("gleam-code-review", "Gleam code review", "Gleam source or tests changed.")
         add("test-review", "Test review", "Source or test changes should have deterministic coverage.")
@@ -514,6 +570,676 @@ def build_review_brief(
             "The brief is heuristic and should orient later review lanes rather than replace direct diff inspection.",
         ],
     }
+
+
+def is_test_path(path: str) -> bool:
+    lower = path.lower()
+    return (
+        lower.startswith("test/")
+        or "/test/" in lower
+        or lower.endswith("_test.gleam")
+        or lower.endswith("_test.py")
+        or lower.endswith(".test.ts")
+        or lower.endswith(".test.tsx")
+        or lower.endswith("_test.go")
+        or lower.endswith("_test.rs")
+    )
+
+
+def is_implementation_path(path: str) -> bool:
+    lower = path.lower()
+    if is_test_path(lower):
+        return False
+    if lower.startswith(("src/", "scripts/", ".scherzo/workflows/", "examples/workflows/")):
+        return True
+    return lower.endswith((
+        ".gleam",
+        ".erl",
+        ".hrl",
+        ".py",
+        ".sh",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".rs",
+        ".go",
+        ".fs",
+        ".fsx",
+        ".elm",
+    ))
+
+
+def is_production_source_path(path: str) -> bool:
+    lower = path.lower()
+    return lower.startswith("src/") and not is_test_path(lower)
+
+
+def significant_added_lines(file: DiffFile) -> list[str]:
+    lines: list[str] = []
+    for line in file.added_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("//") or stripped.startswith("#"):
+            continue
+        lines.append(line)
+    return lines
+
+
+def file_location(file: DiffFile) -> dict[str, Any]:
+    location: dict[str, Any] = {"path": file.path}
+    if file.hunk_headers:
+        location["diff_hunk"] = file.hunk_headers[0]
+    return location
+
+
+def locations_for_files(files: list[DiffFile], fallback: str = ".") -> list[dict[str, Any]]:
+    if not files:
+        return [{"path": fallback}]
+    return [file_location(file) for file in files[:5]]
+
+
+def short_file_list(files: list[DiffFile], limit: int = 5) -> str:
+    paths = [file.path for file in files[:limit]]
+    if len(files) > limit:
+        paths.append(f"and {len(files) - limit} more")
+    return ", ".join(paths) if paths else "no changed files"
+
+
+def make_finding(
+    *,
+    lane_prefix: str,
+    index: int,
+    category: str,
+    severity: str,
+    evidence_type: str,
+    verified: bool,
+    blocking: bool,
+    locations: list[dict[str, Any]],
+    summary: str,
+    details: str,
+    suggested_fix: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    finding: dict[str, Any] = {
+        "id": f"{lane_prefix}-{index:03d}",
+        "category": category,
+        "severity": severity,
+        "evidence_type": evidence_type,
+        "verified": verified,
+        "blocking": blocking,
+        "locations": locations,
+        "summary": summary,
+        "details": details,
+        "suggested_fix": suggested_fix,
+    }
+    if extra:
+        finding.update(extra)
+    return finding
+
+
+def brief_test_statuses(brief: dict[str, Any]) -> list[dict[str, Any]]:
+    statuses = brief.get("test_build_status", [])
+    if not isinstance(statuses, list):
+        return []
+    return [status for status in statuses if isinstance(status, dict)]
+
+
+def status_summary(status: dict[str, Any]) -> str:
+    name = status.get("name", "unnamed")
+    state = status.get("status", "unknown")
+    summary = status.get("summary", "no summary")
+    source = status.get("source", "unknown source")
+    return f"{name}={state} ({summary}; source={source})"
+
+
+def line_has_assertion(line: str) -> bool:
+    lower = line.lower()
+    return any(token in lower for token in [
+        "assert ",
+        "assert(",
+        "assert_",
+        "expect",
+        "should.",
+        " == ",
+        " != ",
+        " ok(",
+        " error(",
+    ])
+
+
+def correctness_static_signal(line: str) -> bool:
+    lower = line.strip().lower()
+    return (
+        "let assert" in lower
+        or "panic(" in lower
+        or lower.startswith("panic ")
+        or "todo" in lower
+        or "unreachable" in lower
+    )
+
+
+def correctness_lane_findings(
+    brief: dict[str, Any], files: list[DiffFile]
+) -> tuple[list[dict[str, Any]], list[str], str]:
+    findings: list[dict[str, Any]] = []
+    checks = [
+        "checked supplied validation status for failed executable evidence",
+        "scanned implementation additions for static correctness suspicion signals",
+    ]
+
+    failed_statuses = [
+        status for status in brief_test_statuses(brief) if status.get("status") == "failed"
+    ]
+    implementation_files = [file for file in files if is_implementation_path(file.path)]
+    if failed_statuses:
+        findings.append(make_finding(
+            lane_prefix="correctness",
+            index=len(findings) + 1,
+            category="correctness",
+            severity="high",
+            evidence_type="test",
+            verified=True,
+            blocking=True,
+            locations=locations_for_files(implementation_files or files),
+            summary="Executable validation failed for the changed implementation.",
+            details=(
+                "The ReviewBrief reports failing executable validation: "
+                + "; ".join(status_summary(status) for status in failed_statuses)
+                + ". This satisfies the correctness lane evidence gate for a blocking bug finding."
+            ),
+            suggested_fix="Reproduce the failing validation locally, fix the behavior under test, and rerun the failing command before publishing.",
+            extra={
+                "finding_type": "proven_bug",
+                "executable_evidence": failed_statuses,
+            },
+        ))
+
+    suspicious_files: list[DiffFile] = []
+    suspicious_examples: list[str] = []
+    for file in implementation_files:
+        for line in significant_added_lines(file):
+            if correctness_static_signal(line):
+                suspicious_files.append(file)
+                if len(suspicious_examples) < 5:
+                    suspicious_examples.append(f"{file.path}: {line.strip()}")
+                break
+
+    if suspicious_files:
+        findings.append(make_finding(
+            lane_prefix="correctness",
+            index=len(findings) + 1,
+            category="correctness",
+            severity="medium",
+            evidence_type="static",
+            verified=False,
+            blocking=False,
+            locations=locations_for_files(suspicious_files),
+            summary="Static-only correctness concern downgraded to non-blocking suspicion.",
+            details=(
+                "Added implementation lines include failure-prone constructs, but this lane did not receive a failing test, repro script, "
+                "or equivalent executable scenario proving a behavior bug. Per the lane contract this is a suspicion, not a blocker. "
+                "Examples: " + "; ".join(suspicious_examples)
+            ),
+            suggested_fix="Inspect the flagged construct, add an executable regression test if it represents a real bug, or replace it with explicit error handling.",
+            extra={"finding_type": "suspicion"},
+        ))
+
+    empty_reason = "No failed validation status or static correctness suspicion signals were found."
+    return findings, checks, empty_reason
+
+
+def proposed_test_cases(brief: dict[str, Any], source_files: list[DiffFile]) -> list[str]:
+    proposals: list[str] = []
+    for file in source_files[:3]:
+        proposals.append(
+            f"Exercise the changed behavior in {file.path}, covering the main success path and at least one edge or error case."
+        )
+    criteria = brief.get("inferred_acceptance_criteria", [])
+    if isinstance(criteria, list):
+        for criterion in criteria[:2]:
+            if isinstance(criterion, str) and criterion.strip():
+                proposals.append(f"Verify acceptance criterion: {criterion}")
+    if not proposals:
+        proposals.append("Add a focused regression test that would fail before the change and pass after it.")
+    return proposals
+
+
+def test_quality_lane_findings(
+    brief: dict[str, Any], files: list[DiffFile]
+) -> tuple[list[dict[str, Any]], list[str], str]:
+    findings: list[dict[str, Any]] = []
+    checks = [
+        "compared implementation file changes with committed test file changes",
+        "scanned changed tests for assertion-bearing additions and shallow assertion patterns",
+        "generated concrete test-case proposals for important uncovered source changes",
+    ]
+    source_files = [file for file in files if is_implementation_path(file.path)]
+    test_files = [file for file in files if is_test_path(file.path)]
+
+    if source_files and not test_files:
+        proposals = proposed_test_cases(brief, source_files)
+        findings.append(make_finding(
+            lane_prefix="test-quality",
+            index=len(findings) + 1,
+            category="testing",
+            severity="medium",
+            evidence_type="static",
+            verified=True,
+            blocking=False,
+            locations=locations_for_files(source_files),
+            summary="Implementation changed without committed test coverage in the diff.",
+            details=(
+                "The diff changes implementation-relevant files ("
+                + short_file_list(source_files)
+                + ") but no test files were parsed. Important gaps should be covered before relying on manual review alone."
+            ),
+            suggested_fix="Add or update focused tests for the changed behavior before publishing.",
+            extra={"proposed_tests": proposals},
+        ))
+
+    assertion_free_test_files: list[DiffFile] = []
+    for file in test_files:
+        added = significant_added_lines(file)
+        if added and not any(line_has_assertion(line) for line in added):
+            assertion_free_test_files.append(file)
+    if assertion_free_test_files:
+        findings.append(make_finding(
+            lane_prefix="test-quality",
+            index=len(findings) + 1,
+            category="testing",
+            severity="low",
+            evidence_type="static",
+            verified=True,
+            blocking=False,
+            locations=locations_for_files(assertion_free_test_files),
+            summary="Changed tests add little or no visible assertion signal.",
+            details=(
+                "These test-file additions do not include recognizable assertions or expectation checks. They may be fixture-only changes, "
+                "but if they are intended as behavioral tests they risk being shallow."
+            ),
+            suggested_fix="Ensure each new or modified test asserts the behavior that matters, including at least one failure or edge-path assertion when relevant.",
+            extra={"review_priority": "should-fix"},
+        ))
+
+    shallow_assertion_files: list[DiffFile] = []
+    for file in test_files:
+        for line in significant_added_lines(file):
+            lower = line.lower()
+            if "assert true" in lower or "== true" in lower or "== false" in lower:
+                shallow_assertion_files.append(file)
+                break
+    if shallow_assertion_files:
+        findings.append(make_finding(
+            lane_prefix="test-quality",
+            index=len(findings) + 1,
+            category="testing",
+            severity="low",
+            evidence_type="static",
+            verified=True,
+            blocking=False,
+            locations=locations_for_files(shallow_assertion_files),
+            summary="Changed tests include potentially shallow boolean assertions.",
+            details="The changed test assertions appear to check bare booleans, which can hide the behavior being protected and make failures less diagnostic.",
+            suggested_fix="Assert the domain result, returned value, emitted artifact, or exact error shape instead of a generic boolean when practical.",
+            extra={"review_priority": "optional/nit"},
+        ))
+
+    empty_reason = "Changed implementation and test files did not trigger the first-version test-quality heuristics."
+    return findings, checks, empty_reason
+
+
+def maintainability_lane_findings(
+    _brief: dict[str, Any], files: list[DiffFile]
+) -> tuple[list[dict[str, Any]], list[str], str]:
+    findings: list[dict[str, Any]] = []
+    checks = [
+        "scanned production source additions for must-fix panic/todo/let assert constructs",
+        "checked patch size for broad-change maintainability risk",
+        "scanned additions for optional whitespace nits",
+    ]
+
+    must_fix_files: list[DiffFile] = []
+    must_fix_examples: list[str] = []
+    for file in files:
+        if not is_production_source_path(file.path):
+            continue
+        for line in significant_added_lines(file):
+            lower = line.strip().lower()
+            if "let assert" in lower or "panic(" in lower or lower.startswith("panic ") or "todo" in lower:
+                must_fix_files.append(file)
+                if len(must_fix_examples) < 5:
+                    must_fix_examples.append(f"{file.path}: {line.strip()}")
+                break
+    if must_fix_files:
+        findings.append(make_finding(
+            lane_prefix="idioms",
+            index=len(findings) + 1,
+            category="maintainability",
+            severity="high",
+            evidence_type="static",
+            verified=True,
+            blocking=True,
+            locations=locations_for_files(must_fix_files),
+            summary="Production source adds process-fatal or test-only constructs.",
+            details=(
+                "The repository production lint policy forbids adding let assert, panic, or todo in src/. "
+                "Examples: " + "; ".join(must_fix_examples)
+            ),
+            suggested_fix="Replace the construct with explicit Result/error handling or a narrow, documented lint suppression only when the invariant is intentionally process-fatal.",
+            extra={"review_priority": "must-fix"},
+        ))
+
+    total_delta = sum(file.additions + file.deletions for file in files)
+    if len(files) > 12 or total_delta > 500:
+        findings.append(make_finding(
+            lane_prefix="idioms",
+            index=len(findings) + 1,
+            category="maintainability",
+            severity="medium",
+            evidence_type="static",
+            verified=True,
+            blocking=False,
+            locations=locations_for_files(files),
+            summary="Large diff may be hard to review as a single change.",
+            details=f"The parsed diff touches {len(files)} file(s) and {total_delta} changed line(s), increasing review and maintenance risk.",
+            suggested_fix="Consider splitting unrelated mechanical, test, documentation, and behavior changes when practical; otherwise call out the structure in the review notes.",
+            extra={"review_priority": "should-fix"},
+        ))
+
+    whitespace_files: list[DiffFile] = []
+    for file in files:
+        for line in file.added_lines:
+            if line.rstrip() != line:
+                whitespace_files.append(file)
+                break
+    if whitespace_files:
+        findings.append(make_finding(
+            lane_prefix="idioms",
+            index=len(findings) + 1,
+            category="maintainability",
+            severity="info",
+            evidence_type="static",
+            verified=True,
+            blocking=False,
+            locations=locations_for_files(whitespace_files),
+            summary="Added lines contain trailing whitespace.",
+            details="Trailing whitespace is a low-value nit, but removing it reduces noisy future diffs.",
+            suggested_fix="Trim the trailing whitespace or rely on the project formatter if it owns the affected file type.",
+            extra={"review_priority": "optional/nit"},
+        ))
+
+    empty_reason = "No must-fix, should-fix, or optional/nit maintainability heuristics triggered."
+    return findings, checks, empty_reason
+
+
+def risk_profile_level(brief: dict[str, Any]) -> str:
+    risk_profile = brief.get("risk_profile")
+    if not isinstance(risk_profile, dict):
+        return "unknown"
+    level = risk_profile.get("level")
+    return level if isinstance(level, str) and level else "unknown"
+
+
+def risk_profile_areas(brief: dict[str, Any]) -> list[str]:
+    risk_profile = brief.get("risk_profile")
+    if not isinstance(risk_profile, dict):
+        return []
+    areas = risk_profile.get("risk_areas", [])
+    if not isinstance(areas, list):
+        return []
+    return [area for area in areas if isinstance(area, str)]
+
+
+def security_performance_depth(brief: dict[str, Any]) -> str:
+    level = risk_profile_level(brief)
+    if level == "high":
+        return "deep"
+    if level in {"medium", "unknown"}:
+        return "standard"
+    return "lightweight"
+
+
+SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['\"]([^'\"]{8,})['\"]"
+)
+
+
+def looks_like_placeholder_secret(value: str) -> bool:
+    lower = value.lower()
+    return any(token in lower for token in [
+        "example",
+        "dummy",
+        "placeholder",
+        "redacted",
+        "test",
+        "changeme",
+        "<",
+        "$",
+    ])
+
+
+def security_performance_lane_findings(
+    brief: dict[str, Any], files: list[DiffFile]
+) -> tuple[list[dict[str, Any]], list[str], str, str]:
+    depth = security_performance_depth(brief)
+    checks = [
+        f"selected {depth} review depth from ReviewBrief risk level {risk_profile_level(brief)}",
+        "always scanned additions for hard-coded secret patterns",
+    ]
+    if depth in {"standard", "deep"}:
+        checks.extend([
+            "scanned for shell/process execution and filesystem/network/parsing risk signals",
+            "scanned for polling, sleep, loop, and memory-growth performance signals",
+        ])
+    if depth == "lightweight":
+        checks.append("skipped deep security/performance heuristics because the brief marked the change low risk")
+
+    findings: list[dict[str, Any]] = []
+    secret_files: list[DiffFile] = []
+    secret_examples: list[str] = []
+    process_files: list[DiffFile] = []
+    filesystem_or_network_files: list[DiffFile] = []
+    performance_files: list[DiffFile] = []
+
+    for file in files:
+        for line in significant_added_lines(file):
+            match = SECRET_ASSIGNMENT_RE.search(line)
+            if match and not looks_like_placeholder_secret(match.group(2)):
+                secret_files.append(file)
+                if len(secret_examples) < 3:
+                    secret_examples.append(f"{file.path}: {match.group(1)} assignment")
+                continue
+
+            lower = line.lower()
+            if depth in {"standard", "deep"}:
+                if any(token in lower for token in [
+                    "shell=true",
+                    "os.system",
+                    "subprocess.run",
+                    "subprocess.popen",
+                    ":os.cmd",
+                    "system.cmd",
+                    "process.run",
+                    "curl ",
+                ]):
+                    process_files.append(file)
+                if any(token in lower for token in [
+                    "open(",
+                    "read_text",
+                    "write_text",
+                    "simplifile.",
+                    "json.loads",
+                    "yaml",
+                    "http",
+                    "socket",
+                    "request(",
+                ]):
+                    filesystem_or_network_files.append(file)
+                if any(token in lower for token in [
+                    "process.sleep",
+                    "send_after",
+                    "while true",
+                    "for (;;)",
+                    "append(",
+                    "list.append",
+                ]):
+                    performance_files.append(file)
+
+    if secret_files:
+        findings.append(make_finding(
+            lane_prefix="security-performance",
+            index=len(findings) + 1,
+            category="security",
+            severity="critical",
+            evidence_type="static",
+            verified=True,
+            blocking=True,
+            locations=locations_for_files(secret_files),
+            summary="Potential hard-coded secret added to the diff.",
+            details="Added lines look like literal credential assignments: " + "; ".join(secret_examples),
+            suggested_fix="Remove the literal secret, rotate it if it was real, and read credentials from the approved environment or secret store instead.",
+            extra={"review_priority": "must-fix", "review_depth": depth},
+        ))
+
+    if process_files:
+        findings.append(make_finding(
+            lane_prefix="security-performance",
+            index=len(findings) + 1,
+            category="security",
+            severity="medium",
+            evidence_type="static",
+            verified=True,
+            blocking=False,
+            locations=locations_for_files(process_files),
+            summary="Changed code touches shell or process execution paths.",
+            details="The risk profile called for at least standard review, and added lines mention process/shell execution primitives.",
+            suggested_fix="Confirm arguments are not constructed from untrusted input, avoid shell=True, keep commands read-only where intended, and cover failures in tests.",
+            extra={"review_priority": "should-fix", "review_depth": depth},
+        ))
+
+    if depth == "deep" and filesystem_or_network_files:
+        findings.append(make_finding(
+            lane_prefix="security-performance",
+            index=len(findings) + 1,
+            category="security",
+            severity="low",
+            evidence_type="static",
+            verified=True,
+            blocking=False,
+            locations=locations_for_files(filesystem_or_network_files),
+            summary="High-risk review found filesystem, parsing, or network-touching changes.",
+            details="The ReviewBrief risk profile selected deep review, so these boundary-touching additions should receive explicit validation for malformed input, path safety, and failure behavior.",
+            suggested_fix="Document the trust boundary, validate inputs before filesystem/network/parsing operations, and add focused error-path tests where behavior changed.",
+            extra={"review_priority": "should-fix", "review_depth": depth},
+        ))
+
+    if depth == "deep" and performance_files:
+        findings.append(make_finding(
+            lane_prefix="security-performance",
+            index=len(findings) + 1,
+            category="performance",
+            severity="low",
+            evidence_type="static",
+            verified=True,
+            blocking=False,
+            locations=locations_for_files(performance_files),
+            summary="High-risk review found polling, sleep, loop, or growth-sensitive changes.",
+            details="These additions can affect daemon throughput, test determinism, or memory growth when they sit on hot paths.",
+            suggested_fix="Prefer deterministic synchronization over sleeps, bound loops and retained data, and add stress or timeout coverage for changed hot paths.",
+            extra={"review_priority": "should-fix", "review_depth": depth},
+        ))
+
+    empty_reason = f"{depth.capitalize()} security/performance review found no heuristic findings."
+    return findings, checks, empty_reason, depth
+
+
+def normalize_correctness_blockers(findings: list[dict[str, Any]]) -> None:
+    for finding in findings:
+        if finding.get("category") != "correctness" or not finding.get("blocking"):
+            continue
+        if (
+            finding.get("evidence_type") not in EXECUTABLE_CORRECTNESS_EVIDENCE_TYPES
+            or finding.get("verified") is not True
+        ):
+            finding["blocking"] = False
+            finding["verified"] = False
+            finding["finding_type"] = "suspicion"
+            finding["downgraded_from_blocking"] = True
+            finding["details"] = (
+                str(finding.get("details", ""))
+                + "\n\nDowngraded by scripts/scherzo-review because blocking correctness findings require verified executable evidence."
+            )
+
+
+def run_specialist_lane(
+    lane_id: str, brief: dict[str, Any], files: list[DiffFile]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if lane_id == "correctness":
+        findings, checks, empty_reason = correctness_lane_findings(brief, files)
+        depth = "standard"
+    elif lane_id == "test-quality":
+        findings, checks, empty_reason = test_quality_lane_findings(brief, files)
+        depth = "standard"
+    elif lane_id == "idioms-maintainability":
+        findings, checks, empty_reason = maintainability_lane_findings(brief, files)
+        depth = "standard"
+    elif lane_id == "security-performance":
+        findings, checks, empty_reason, depth = security_performance_lane_findings(brief, files)
+    else:
+        raise ReviewError(f"unknown review lane: {lane_id}")
+
+    normalize_correctness_blockers(findings)
+    analysis = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_lane_analysis",
+        "lane_id": lane_id,
+        "review_depth": depth,
+        "risk_profile_level": risk_profile_level(brief),
+        "risk_areas": risk_profile_areas(brief),
+        "changed_file_count": len(files),
+        "changed_files": [file.path for file in files],
+        "checks": checks,
+        "finding_count": len(findings),
+        "blocking_finding_count": len([finding for finding in findings if finding.get("blocking")]),
+        "empty_findings_reason": empty_reason if not findings else None,
+    }
+    return findings, analysis
+
+
+def lane_log_text(
+    *,
+    lane_id: str,
+    started_at: str,
+    completed_at: str,
+    brief_path: Path,
+    source: dict[str, Any],
+    diff: str,
+    analysis: dict[str, Any],
+) -> str:
+    lines = [
+        "scherzo-review run-lane",
+        f"lane={lane_id}",
+        f"started_at_utc={started_at}",
+        f"completed_at_utc={completed_at}",
+        f"brief_path={brief_path}",
+        f"brief_sha256={sha256_file(brief_path)}",
+        f"source_kind={source.get('kind')}",
+        f"source_label={source.get('label')}",
+        f"diff_sha256={sha256_text(diff)}",
+        f"changed_file_count={analysis.get('changed_file_count')}",
+        f"review_depth={analysis.get('review_depth')}",
+        f"risk_profile_level={analysis.get('risk_profile_level')}",
+        f"finding_count={analysis.get('finding_count')}",
+        f"blocking_finding_count={analysis.get('blocking_finding_count')}",
+    ]
+    for check in analysis.get("checks", []):
+        lines.append(f"check={check}")
+    empty_reason = analysis.get("empty_findings_reason")
+    if empty_reason:
+        lines.append(f"empty_findings_reason={empty_reason}")
+    return "\n".join(lines) + "\n"
 
 
 def validate_string_field(value: dict[str, Any], field: str) -> None:
@@ -606,6 +1332,14 @@ def validate_review_lane_result(value: dict[str, Any]) -> None:
         if not isinstance(finding, dict):
             raise ReviewError("review lane findings must be objects")
         validate_review_finding_core(finding)
+        if finding.get("category") == "correctness" and finding.get("blocking"):
+            if (
+                finding.get("evidence_type") not in EXECUTABLE_CORRECTNESS_EVIDENCE_TYPES
+                or finding.get("verified") is not True
+            ):
+                raise ReviewError(
+                    "blocking correctness findings must be verified with executable evidence (test, runtime, or reproduction)"
+                )
     validate_list_field(value, "artifacts")
 
 
@@ -623,7 +1357,11 @@ def validate_artifact(value: dict[str, Any]) -> None:
 
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text())
+        text = path.read_text()
+    except OSError as exc:
+        raise ReviewError(f"could not read JSON artifact {path}: {exc}") from exc
+    try:
+        value = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ReviewError(f"invalid JSON in {path}: {exc}") from exc
     if not isinstance(value, dict):
@@ -631,11 +1369,7 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def dry_run_command(args: argparse.Namespace) -> None:
-    started_at = now_utc()
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+def diff_source_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if args.diff_file:
         diff, source = source_from_diff_file(Path(args.diff_file))
     elif args.pr:
@@ -645,6 +1379,15 @@ def dry_run_command(args: argparse.Namespace) -> None:
 
     if args.source_label:
         source["label"] = args.source_label
+    return diff, source
+
+
+def dry_run_command(args: argparse.Namespace) -> None:
+    started_at = now_utc()
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    diff, source = diff_source_from_args(args)
 
     files = parse_diff_files(diff)
     generated_at = now_utc()
@@ -733,6 +1476,154 @@ def dry_run_command(args: argparse.Namespace) -> None:
     print(f"REVIEW_CHANGED_FILES={len(files)}")
 
 
+def run_lane_command(args: argparse.Namespace) -> None:
+    started_at = now_utc()
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    lane_id = args.lane
+    brief_path = Path(args.brief)
+    brief = load_json(brief_path)
+    validate_review_brief(brief)
+    diff, source = diff_source_from_args(args)
+    files = parse_diff_files(diff)
+
+    findings, analysis = run_specialist_lane(lane_id, brief, files)
+    completed_at = now_utc()
+
+    analysis_path = output_dir / f"review-lane-{lane_id}-analysis.v1.json"
+    write_json(analysis_path, analysis)
+    log_path = output_dir / f"review-lane-{lane_id}.log"
+    log_path.write_text(lane_log_text(
+        lane_id=lane_id,
+        started_at=started_at,
+        completed_at=completed_at,
+        brief_path=brief_path,
+        source=source,
+        diff=diff,
+        analysis=analysis,
+    ))
+
+    lane = SPECIALIST_LANES[lane_id]
+    lane_result = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_lane_result",
+        "generated_at_utc": completed_at,
+        "producer": {
+            "name": "scripts/scherzo-review",
+            "version": "1",
+            "mode": "run-lane",
+        },
+        "lane": lane,
+        "execution_status": {
+            "state": "succeeded",
+            "started_at_utc": started_at,
+            "completed_at_utc": completed_at,
+            "summary": f"{lane['name']} completed with {len(findings)} finding(s).",
+        },
+        "input_brief_ref": {
+            "path": str(brief_path),
+            "sha256": sha256_file(brief_path),
+        },
+        "findings": findings,
+        "artifacts": [
+            {
+                "artifact_type": "review_lane_analysis",
+                "path": analysis_path.name,
+                "sha256": sha256_file(analysis_path),
+            },
+            {
+                "artifact_type": "log",
+                "path": log_path.name,
+                "sha256": sha256_file(log_path),
+            },
+        ],
+        "source": {
+            **source,
+            "diff_sha256": sha256_text(diff),
+            "changed_file_count": len(files),
+        },
+        "review_depth": analysis.get("review_depth"),
+        "empty_findings_reason": analysis.get("empty_findings_reason"),
+    }
+    validate_review_lane_result(lane_result)
+    lane_result_path = output_dir / f"review-lane-{lane_id}.v1.json"
+    write_json(lane_result_path, lane_result)
+
+    print("REVIEW_LANE_RUN=ok")
+    print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
+    print(f"REVIEW_LANE={lane_id}")
+    print(f"REVIEW_LANE_RESULT_PATH={lane_result_path}")
+    print(f"REVIEW_LANE_LOG_PATH={log_path}")
+    print(f"REVIEW_LANE_ANALYSIS_PATH={analysis_path}")
+    print(f"REVIEW_LANE_FINDINGS={len(findings)}")
+    print(f"REVIEW_LANE_BLOCKING_FINDINGS={analysis.get('blocking_finding_count')}")
+    print(f"REVIEW_LANE_REVIEW_DEPTH={analysis.get('review_depth')}")
+
+
+def failed_lane_brief_ref(args: argparse.Namespace) -> dict[str, str] | None:
+    brief = getattr(args, "brief", None)
+    if not brief:
+        return None
+    brief_path = Path(brief)
+    if not brief_path.exists():
+        return {"path": str(brief_path)}
+    return {"path": str(brief_path), "sha256": sha256_file(brief_path)}
+
+
+def write_failed_lane_artifacts(args: argparse.Namespace, message: str) -> None:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    lane_id = args.lane
+    timestamp = now_utc()
+    log_path = output_dir / f"review-lane-{lane_id}.log"
+    log_path.write_text(
+        "scherzo-review run-lane\n"
+        f"lane={lane_id}\n"
+        f"started_at_utc={timestamp}\n"
+        f"completed_at_utc={timestamp}\n"
+        "state=failed\n"
+        f"error={message}\n"
+    )
+    lane = SPECIALIST_LANES[lane_id]
+    lane_result = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_lane_result",
+        "generated_at_utc": timestamp,
+        "producer": {
+            "name": "scripts/scherzo-review",
+            "version": "1",
+            "mode": "run-lane",
+        },
+        "lane": lane,
+        "execution_status": {
+            "state": "failed",
+            "started_at_utc": timestamp,
+            "completed_at_utc": timestamp,
+            "summary": f"{lane['name']} failed before producing findings.",
+            "error": message,
+        },
+        "input_brief_ref": failed_lane_brief_ref(args),
+        "findings": [],
+        "artifacts": [
+            {
+                "artifact_type": "log",
+                "path": log_path.name,
+                "sha256": sha256_file(log_path),
+            },
+        ],
+    }
+    validate_review_lane_result(lane_result)
+    lane_result_path = output_dir / f"review-lane-{lane_id}.v1.json"
+    write_json(lane_result_path, lane_result)
+    print("REVIEW_LANE_RUN=failed")
+    print(f"REVIEW_LANE={lane_id}")
+    print(f"REVIEW_LANE_RESULT_PATH={lane_result_path}")
+    print(f"REVIEW_LANE_LOG_PATH={log_path}")
+
+
 def validate_command(args: argparse.Namespace) -> None:
     artifact_path = Path(args.artifact)
     value = load_json(artifact_path)
@@ -786,6 +1677,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dry_run.set_defaults(func=dry_run_command)
 
+    run_lane = subparsers.add_parser(
+        "run-lane",
+        help="Run one specialist review lane against a ReviewBrief and diff source.",
+    )
+    run_lane.add_argument(
+        "--lane",
+        required=True,
+        choices=sorted(SPECIALIST_LANES.keys()),
+        help="Specialist lane id to run independently.",
+    )
+    run_lane.add_argument(
+        "--brief",
+        required=True,
+        help="ReviewBrief artifact path consumed by the lane.",
+    )
+    lane_source = run_lane.add_mutually_exclusive_group()
+    lane_source.add_argument("--diff-file", help="Read a unified git diff from this file.")
+    lane_source.add_argument("--pr", help="Read a GitHub PR diff with gh pr diff (read-only).")
+    run_lane.add_argument("--repo", help="GitHub owner/repo for --pr.")
+    run_lane.add_argument(
+        "--from",
+        dest="from_rev",
+        default="@-",
+        help="jj revision for the left side of the local diff (default: @-).",
+    )
+    run_lane.add_argument(
+        "--to",
+        dest="to_rev",
+        default="@",
+        help="jj revision for the right side of the local diff (default: @).",
+    )
+    run_lane.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_LANE_OUTPUT_DIR),
+        help="Directory for local lane artifacts (default: tmp/scherzo-review-lanes).",
+    )
+    run_lane.add_argument(
+        "--source-label",
+        help="Human label to record in the lane result source object.",
+    )
+    run_lane.set_defaults(func=run_lane_command)
+
     validate = subparsers.add_parser("validate", help="Validate a review artifact JSON object.")
     validate.add_argument("--artifact", required=True, help="Artifact path to validate.")
     validate.set_defaults(func=validate_command)
@@ -795,11 +1728,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "dry-run" and args.repo and not args.pr:
+    if args.command in {"dry-run", "run-lane"} and args.repo and not args.pr:
         usage_error("--repo can only be used with --pr")
     try:
         args.func(args)
     except ReviewError as exc:
+        if args.command == "run-lane":
+            try:
+                write_failed_lane_artifacts(args, str(exc))
+            except Exception:
+                pass
         fail(str(exc))
     return 0
 

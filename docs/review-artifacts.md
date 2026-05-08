@@ -95,15 +95,46 @@ scripts/scherzo-review validate --artifact tmp/review-dry-run/review-lane-result
 
 The validator is deliberately minimal and dependency-free. The JSON Schema remains the documentation source of truth for future, richer validators.
 
+## Specialist lane entrypoint
+
+Use `scripts/scherzo-review run-lane` to run one first-version specialist lane against a diff source plus an existing `ReviewBrief`:
+
+```sh
+scripts/scherzo-review run-lane \
+  --lane correctness \
+  --brief tmp/review-dry-run/review-brief.v1.json \
+  --diff-file /path/to/pr.diff \
+  --output-dir tmp/review-lanes/correctness
+```
+
+The supported lane ids are:
+
+- `correctness`: looks for behavior and logic bugs. Blocking correctness findings must be verified with executable evidence (`test`, `runtime`, or `reproduction`); static-only concerns are emitted as non-blocking suspicions.
+- `test-quality`: checks whether implementation changes have meaningful committed tests, flags shallow or assertion-light test changes, and includes concrete proposed test cases for coverage gaps.
+- `idioms-maintainability`: separates `must-fix`, `should-fix`, and `optional/nit` feedback for clarity, structure, production fatal constructs, and reviewability.
+- `security-performance`: chooses `lightweight`, `standard`, or `deep` review depth from the `ReviewBrief.risk_profile`, staying lightweight for low-risk diffs and inspecting high-risk boundaries more deeply.
+
+Each successful lane writes:
+
+- `review-lane-<lane-id>.v1.json`: a schema-valid `ReviewLaneResult`.
+- `review-lane-<lane-id>-analysis.v1.json`: local diagnostic details about checks performed, selected depth, risk profile, changed files, finding counts, and empty-finding rationale.
+- `review-lane-<lane-id>.log`: a bounded execution log with source, brief checksum, diff checksum, checks, and empty-finding reason when applicable.
+
+If a lane fails before producing findings, it still attempts to write `review-lane-<lane-id>.v1.json` with `execution_status.state: "failed"` and a log artifact containing the error, so malformed briefs and tool failures are debuggable from retained workflow artifacts.
+
+The command prints `REVIEW_LANE_RESULT_PATH=...`, `REVIEW_LANE_LOG_PATH=...`, and, on success, `REVIEW_LANE_ANALYSIS_PATH=...` for workflow steps and tests to consume. It is local-only and does not post PR comments, update Linear, push branches, or mutate remote state.
+
 ## Checked-in workflow integration
 
-The dogfood implementation workflows generate the brief immediately before their existing code-review agent step and store it under the run artifact directory:
+The dogfood implementation workflow generates the brief immediately before review and stores review artifacts under the run artifact directory:
 
 ```text
 $SCHERZO_RUN_ROOT/artifacts/review/<step-id>/
 ```
 
-This is additive and non-blocking for the current review agent. The existing review agent still receives the same implementation context and change analysis, then uses the generated brief as orientation for future staged lanes when it exists. The brief step writes local artifacts only; it does not post PR comments, update Linear, push, rebase, check out PR branches, or alter PR state.
+After brief generation, the workflow runs the four specialist lanes as local command steps. The existing code-review agent still receives the same implementation context and change analysis, plus the lane command outputs, then reads any referenced `ReviewLaneResult`, log, and analysis artifacts before producing the human review summary.
+
+The brief and lane steps write local artifacts only; they do not post PR comments, update Linear, push, rebase, check out PR branches, or alter PR state.
 
 ## Compatibility and versioning
 
