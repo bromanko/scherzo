@@ -993,7 +993,7 @@ fn run_state_reinitialize(
   yes: Bool,
   output: Output,
 ) -> Result(Nil, Error) {
-  let result = local_artifacts.reinitialize_state(root, yes)
+  let result = local_artifacts.reinitialize_state(root, yes: yes)
   print_state_mutation(result, json_output, output)
   Ok(Nil)
 }

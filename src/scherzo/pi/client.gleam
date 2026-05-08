@@ -358,7 +358,10 @@ fn send_auto_retry(
 ) -> Result(Session, error.PiRpcError) {
   let id = int_to_string(session.next_id)
   use _ <- try_pi(
-    port.send_line(session.process, protocol.encode_set_auto_retry(id, enabled))
+    port.send_line(
+      session.process,
+      protocol.encode_set_auto_retry(id, enabled: enabled),
+    )
     |> map_port_error,
   )
   use record <- try_pi(read_until_response(session.process, id, read_timeout_ms))

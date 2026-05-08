@@ -239,7 +239,7 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
 
 pub fn step_outcome(
   artifact: step_artifact.StepArtifact,
-  on_failure_continue: Bool,
+  on_failure on_failure_continue: Bool,
 ) -> String {
   case step_artifact.succeeded(artifact.status) {
     True -> "completed"

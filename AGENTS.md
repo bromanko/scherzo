@@ -19,13 +19,14 @@ Treat an unapproved `.envrc` as an environment setup issue, not as a code or tes
 
 ## Production lint policy
 
-`glinter` is the source of truth for the production safety policy in `src/`. The required gate is:
+`glinter` is the source of truth for the production safety policy in `src/`, and `scherzo_lint` adds Scherzo-specific production style rules. The required gates are:
 
 ```sh
 direnv exec . gleam run -m glinter
+direnv exec . gleam run -m scherzo_lint
 ```
 
-Do not add production `let assert`, `panic`, or `todo`; glinter enforces these as errors for `src/` via `gleam.toml`. Tests are intentionally excluded from the checked glinter policy. Treat warnings as a ratchet inventory: avoid adding new warnings, fix nearby warnings when the fix is mechanical, and do not do unrelated refactors solely to reduce counts. If a production invariant is intentionally process-fatal or a warning is a false positive, prefer explicit error handling first; any `// nolint:` suppression must be on its own line directly above the target, name the narrow rule(s), and include a reason after `--`. See `docs/runbooks/glinter.md` for the baseline and promotion plan.
+Do not add production `let assert`, `panic`, or `todo`; glinter enforces these as errors for `src/` via `gleam.toml`. Tests are intentionally excluded from the checked glinter policy. Treat warnings as a ratchet inventory: avoid adding new warnings, fix nearby warnings when the fix is mechanical, and do not do unrelated refactors solely to reduce counts. The custom `scherzo_public_function_labels` rule currently requires a label for unlabelled `Bool` parameters on public two-parameter production functions. If a production invariant is intentionally process-fatal or a warning/custom style finding is a false positive, prefer explicit error handling or labels first; any `// nolint:` suppression must be on its own line directly above the target, name the narrow rule(s), and include a reason after `--`. See `docs/runbooks/glinter.md` for the baseline and promotion plan, and `docs/LINTING.md` for the custom Scherzo lint policy.
 
 ## Linear CLI
 

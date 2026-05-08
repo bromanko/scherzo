@@ -46,7 +46,10 @@ pub fn status_to_string(status: StepStatus) -> String {
   }
 }
 
-pub fn status_from_exit(exit_code: Int, timed_out: Bool) -> StepStatus {
+pub fn status_from_exit(
+  exit_code: Int,
+  timed_out timed_out: Bool,
+) -> StepStatus {
   case exit_code == 0 && !timed_out {
     True -> StepSucceeded
     False -> StepFailed
@@ -281,7 +284,7 @@ pub fn from_command_result_with_metadata(
   stdout_already_truncated: Bool,
   stderr_already_truncated: Bool,
 ) -> StepArtifact {
-  let status = status_from_exit(exit_code, timed_out)
+  let status = status_from_exit(exit_code, timed_out: timed_out)
   let failure_code = case status {
     StepSucceeded -> None
     StepFailed -> failure_code_from_streams(stdout, stderr)

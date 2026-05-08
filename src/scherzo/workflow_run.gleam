@@ -1914,7 +1914,7 @@ fn apply_prepared_results(
           let outcome =
             workflow_checkpoint.step_outcome(
               result.artifact,
-              step.on_failure == workflow_dag.ContinueWorkflow,
+              on_failure: step.on_failure == workflow_dag.ContinueWorkflow,
             )
           let finished =
             workflow_checkpoint.StepFinished(
