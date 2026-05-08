@@ -1303,23 +1303,23 @@ fn enqueue_startup_recovery_outbox(
     let recovery.OutboxReplay(outbox_id, issue_id, outbox_kind, _, payload_json) =
       entry
     case outbox.decode_payload(payload_json) {
-      Error(error_code) ->
+      Error(error) ->
         fail_startup_recovery_outbox(
           state,
           outbox_id,
           issue_id,
           outbox_kind,
-          error_code,
+          error,
         )
       Ok(payload) ->
         case outbox.recovery_replay_error(outbox_kind, payload.kind) {
-          Error(error_code) ->
+          Error(error) ->
             fail_startup_recovery_outbox(
               state,
               outbox_id,
               issue_id,
               outbox_kind,
-              error_code,
+              error,
             )
           Ok(Nil) -> {
             log_state(state, "info", "outbox_replay_enqueued", [
@@ -1373,20 +1373,18 @@ fn fail_startup_recovery_outbox(
   outbox_id: String,
   issue_id: String,
   outbox_kind: String,
-  error_code: String,
+  error: outbox.ReplayError,
 ) -> State {
+  let error_code = outbox.replay_error_code(error)
+  let body = record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code)
   log_state(state, "warn", "outbox_replay_failed", [
     #("outbox_id", outbox_id),
     #("issue_id", issue_id),
     #("kind", outbox_kind),
     #("error", error_code),
+    #("reason", outbox.describe_replay_error(error)),
   ])
-  let _ =
-    append_ledger_bodies(
-      state,
-      [record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code)],
-      "ledger_append_failed",
-    )
+  let _ = append_ledger_bodies(state, [body], "ledger_append_failed")
   state
 }
 
