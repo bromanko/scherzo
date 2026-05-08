@@ -138,6 +138,35 @@ pub fn validate_rejects_non_conflicted_file_changes_test() {
   assert string.contains(artifact.stderr, "modified: safe.txt")
 }
 
+pub fn validate_accepts_manifested_mechanical_non_conflicted_file_change_test() {
+  let dir = "test/tmp/merge-conflict-validate-mechanical-fallout"
+  write_validation_fixture(dir, "changed\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-merge-conflict-mechanical-edits.json",
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"non_conflicted_edits\": [\n"
+        <> "    {\"path\": \"safe.txt\", \"reason\": \"Mechanical callback arity update after resolved source API changed; behavior unchanged.\"}\n"
+        <> "  ]\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-merge-conflict validate --skip-project-validation",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "VALIDATION=ok")
+  assert string.contains(artifact.stdout, "MECHANICAL_NON_CONFLICTED_EDITS=1")
+  let assert Ok(validation) =
+    simplifile.read(dir <> "/tmp/scherzo-merge-conflict-validation.json")
+  assert string.contains(validation, "\"path\": \"safe.txt\"")
+}
+
 pub fn validate_accepts_resolved_conflicts_when_only_conflicted_files_changed_test() {
   let dir = "test/tmp/merge-conflict-validate-ok"
   write_validation_fixture(dir, "safe\n")
@@ -233,6 +262,7 @@ pub fn checked_in_merge_conflict_workflow_is_routed_and_guarded_test() {
     prompt,
     "Edit only files listed under `CONFLICTED_FILES`",
   )
+  assert string.contains(prompt, "scherzo-merge-conflict-mechanical-edits.json")
 }
 
 fn write_validation_fixture(dir: String, safe_contents: String) -> Nil {

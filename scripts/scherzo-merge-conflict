@@ -4,8 +4,9 @@
 This workflow is intentionally narrow: locate one same-repository GitHub PR or
 branch named by a manually-created Linear issue, create a merge commit from the
 latest target branch and base branch, let pi resolve only materialized conflicts,
-validate that non-conflicted files were not touched, and fast-forward the target
-branch with the merge commit.
+validate that non-conflicted files were not touched except for explicitly
+manifested mechanical fallout repairs, and fast-forward the target branch with
+the merge commit.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ METADATA_PATH = RUN_STATE_DIR / "scherzo-merge-conflict.json"
 BRIEF_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-brief.md"
 RESOLUTION_SUMMARY_PATH = TMP_DIR / "scherzo-merge-conflict-resolution.md"
 FAILURE_PATH = TMP_DIR / "scherzo-merge-conflict-failure.md"
+MECHANICAL_EDITS_PATH = TMP_DIR / "scherzo-merge-conflict-mechanical-edits.json"
 VALIDATION_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-validation.json"
 PUBLISH_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-publish.json"
 PR_COMMENT_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-pr-comment.md"
@@ -48,8 +50,9 @@ prepare       Find exactly one PR or branch reference on the Linear issue,
               fetch the latest target and base branches, create a local merge
               commit, record the conflict set, and retain the run until publish.
 validate      Require conflicts to be resolved, ensure non-conflicted tracked
-              files are unchanged, require a resolution summary, and run project
-              validation when conflicts were resolved.
+              files are unchanged except for a manifest of mechanical fallout
+              repairs, require a resolution summary, and run project validation
+              when conflicts were resolved.
 publish       Fast-forward the target branch with the validated merge commit,
               or no-op when prepare found no conflicts.
 
@@ -613,9 +616,10 @@ def render_brief(issue: dict[str, Any], metadata: dict[str, Any]) -> str:
         "",
         "## Conflict policy",
         "",
-        "Resolve only the files listed under Conflicted files. The validation step "
-        "compares every non-conflicted tracked file against its prepare-time hash "
-        "and fails if any unrelated tracked path changes.",
+        "Resolve only the files listed under Conflicted files by default. The validation "
+        "step compares every non-conflicted tracked file against its prepare-time hash. "
+        "It allows only explicitly manifested mechanical fallout edits that are required "
+        "to make the behavior-preserving merge compile or format.",
         "",
         "Parent/order note: the merge commit was created as `jj new "
         f"{metadata['head_branch']}@{metadata['remote']} "
@@ -739,10 +743,86 @@ def prepare_command() -> None:
         print("- None")
     print(f"METADATA_PATH={METADATA_PATH}")
     print(f"BRIEF_PATH={BRIEF_PATH}")
+    print(f"MECHANICAL_EDITS_PATH={MECHANICAL_EDITS_PATH}")
     print(f"RETENTION_MARKER={retention_marker_path()}")
 
 
-def compare_non_conflict_fingerprints(metadata: dict[str, Any]) -> None:
+def normalize_manifest_path(value: Any) -> str:
+    path = str(value or "").strip()
+    while path.startswith("./"):
+        path = path[2:]
+    if (
+        not path
+        or path in {".", ".."}
+        or path.startswith("/")
+        or path.startswith("../")
+        or "/../" in path
+        or path.endswith("/..")
+    ):
+        fail(f"invalid path in {MECHANICAL_EDITS_PATH}: {path or '<empty>'}")
+    return path
+
+
+def load_mechanical_non_conflict_edits(
+    modified: list[str], conflicted: set[str]
+) -> list[dict[str, str]]:
+    if not MECHANICAL_EDITS_PATH.exists():
+        fail(
+            "non-conflicted tracked files changed without mechanical fallout "
+            f"manifest {MECHANICAL_EDITS_PATH}\nmodified: " + ", ".join(modified)
+        )
+    try:
+        manifest = json.loads(MECHANICAL_EDITS_PATH.read_text())
+    except Exception as exc:
+        fail(f"could not read {MECHANICAL_EDITS_PATH} as JSON: {exc}")
+    if not isinstance(manifest, dict):
+        fail(f"{MECHANICAL_EDITS_PATH} must contain a JSON object")
+
+    raw_entries = manifest.get("non_conflicted_edits")
+    if raw_entries is None:
+        raw_entries = manifest.get("allowed_non_conflicted_edits")
+    if not isinstance(raw_entries, list):
+        fail(
+            f"{MECHANICAL_EDITS_PATH} must contain a non_conflicted_edits list"
+        )
+
+    modified_set = set(modified)
+    seen: set[str] = set()
+    entries: list[dict[str, str]] = []
+    for index, raw_entry in enumerate(raw_entries, start=1):
+        if not isinstance(raw_entry, dict):
+            fail(f"entry {index} in {MECHANICAL_EDITS_PATH} must be an object")
+        path = normalize_manifest_path(raw_entry.get("path"))
+        reason = str(raw_entry.get("reason") or "").strip()
+        if not reason:
+            fail(f"entry {index} in {MECHANICAL_EDITS_PATH} is missing reason")
+        if path in seen:
+            fail(f"duplicate path in {MECHANICAL_EDITS_PATH}: {path}")
+        seen.add(path)
+        if path in conflicted:
+            fail(
+                f"{MECHANICAL_EDITS_PATH} lists conflicted file {path}; "
+                "only non-conflicted fallout edits need a manifest"
+            )
+        if path not in modified_set:
+            fail(
+                f"{MECHANICAL_EDITS_PATH} lists {path}, but that "
+                "non-conflicted tracked file did not change"
+            )
+        entries.append({"path": path, "reason": reason})
+
+    unlisted = sorted(modified_set - seen)
+    if unlisted:
+        fail(
+            "non-conflicted tracked files changed without mechanical edit "
+            "manifest entries\nmodified: " + ", ".join(unlisted)
+        )
+    return entries
+
+
+def compare_non_conflict_fingerprints(
+    metadata: dict[str, Any]
+) -> list[dict[str, str]]:
     conflicted = set(normalize_conflicted_files(metadata.get("conflicted_files", [])))
     expected: dict[str, dict[str, Any]] = {
         path: fingerprint
@@ -757,10 +837,10 @@ def compare_non_conflict_fingerprints(metadata: dict[str, Any]) -> None:
     missing = sorted(expected_paths - current_paths)
     modified = sorted(path for path in expected_paths & current_paths if expected[path] != current[path])
 
-    if unexpected or missing or modified:
+    if unexpected or missing:
         lines = [
-            "non-conflicted tracked files changed; this workflow may only edit "
-            "the conflicted files recorded at prepare time",
+            "non-conflicted tracked files changed; this workflow may not add "
+            "or remove non-conflicted tracked files",
         ]
         if modified:
             lines.append("modified: " + ", ".join(modified))
@@ -769,6 +849,9 @@ def compare_non_conflict_fingerprints(metadata: dict[str, Any]) -> None:
         if unexpected:
             lines.append("added: " + ", ".join(unexpected))
         fail("\n".join(lines))
+    if modified:
+        return load_mechanical_non_conflict_edits(modified, conflicted)
+    return []
 
 
 def ensure_no_conflict_markers(conflicted_files: list[str]) -> None:
@@ -800,7 +883,7 @@ def require_resolution_summary(conflicted_files: list[str]) -> str:
     return summary
 
 
-def validate_resolution_guard() -> str:
+def validate_resolution_guard() -> tuple[str, list[dict[str, str]]]:
     metadata = load_json(METADATA_PATH)
     if FAILURE_PATH.exists():
         details = FAILURE_PATH.read_text().strip()
@@ -814,7 +897,12 @@ def validate_resolution_guard() -> str:
     if conflicted != metadata.get("conflicted_files", []):
         metadata["conflicted_files"] = conflicted
         write_json(METADATA_PATH, metadata)
-    compare_non_conflict_fingerprints(metadata)
+    mechanical_edits = compare_non_conflict_fingerprints(metadata)
+    if mechanical_edits and not conflicted:
+        fail(
+            "mechanical fallout edits are only allowed when conflicted files "
+            "were resolved"
+        )
 
     remaining = conflict_files()
     if remaining:
@@ -823,8 +911,8 @@ def validate_resolution_guard() -> str:
     require_resolution_summary(conflicted)
 
     if conflicted:
-        return "resolved"
-    return "no_conflicts"
+        return "resolved", mechanical_edits
+    return "no_conflicts", []
 
 
 def parse_validate_args(args: list[str]) -> bool:
@@ -870,7 +958,7 @@ def run_project_validation() -> list[str]:
 
 def validate_command(args: list[str]) -> None:
     skip_project_validation = parse_validate_args(args) or project_validation_skipped_by_env()
-    status = validate_resolution_guard()
+    status, mechanical_edits = validate_resolution_guard()
     commands: list[str] = []
     if status == "resolved" and not skip_project_validation:
         commands = run_project_validation()
@@ -887,11 +975,13 @@ def validate_command(args: list[str]) -> None:
             "resolution_status": status,
             "project_validation": project_validation,
             "commands": commands,
+            "mechanical_non_conflicted_edits": mechanical_edits,
         },
     )
     print("VALIDATION=ok")
     print(f"RESOLUTION_STATUS={status}")
     print(f"PROJECT_VALIDATION={project_validation}")
+    print(f"MECHANICAL_NON_CONFLICTED_EDITS={len(mechanical_edits)}")
 
 
 def ensure_validation_passed() -> dict[str, Any]:
@@ -911,6 +1001,7 @@ def write_publish_pr_comment(metadata: dict[str, Any], validation: dict[str, Any
     if os.environ.get("SCHERZO_MERGE_CONFLICT_SKIP_PR_COMMENT", "").lower() in {"1", "true", "yes"}:
         return False
     summary = RESOLUTION_SUMMARY_PATH.read_text().strip() if RESOLUTION_SUMMARY_PATH.exists() else ""
+    mechanical_edits = validation.get("mechanical_non_conflicted_edits") or []
     lines = [
         f"Scherzo merge-conflict resolution complete for Linear `{metadata['linear_issue_identifier']}`.",
         "",
@@ -925,6 +1016,14 @@ def write_publish_pr_comment(metadata: dict[str, Any], validation: dict[str, Any
     ]
     for path in metadata.get("conflicted_files", []):
         lines.append(f"- `{path}`")
+    lines.extend(["", "## Mechanical non-conflicted edits", ""])
+    if mechanical_edits:
+        for edit in mechanical_edits:
+            path = edit.get("path", "unknown") if isinstance(edit, dict) else "unknown"
+            reason = edit.get("reason", "") if isinstance(edit, dict) else ""
+            lines.append(f"- `{path}`: {reason or 'mechanical fallout repair'}")
+    else:
+        lines.append("None.")
     lines.extend(["", "## Resolution summary", "", summary or "None.", ""])
     PR_COMMENT_PATH.write_text("\n".join(lines))
     run(
@@ -997,6 +1096,7 @@ def publish_command() -> None:
         "pr_url": metadata.get("pr_url"),
         "commit": commit,
         "conflicted_files": conflicted,
+        "mechanical_non_conflicted_edits": validation.get("mechanical_non_conflicted_edits") or [],
         "project_validation": validation.get("project_validation"),
         "commented": commented,
     }
@@ -1013,6 +1113,7 @@ def publish_command() -> None:
     print(f"COMMIT={commit}")
     print(f"COMMENTED={'true' if commented else 'false'}")
     print(f"PROJECT_VALIDATION={validation.get('project_validation')}")
+    print(f"MECHANICAL_NON_CONFLICTED_EDITS={len(validation.get('mechanical_non_conflicted_edits') or [])}")
     print("CONFLICTED_FILES:")
     for path in conflicted:
         print(f"- {path}")

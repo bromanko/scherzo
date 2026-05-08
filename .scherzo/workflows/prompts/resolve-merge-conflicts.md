@@ -21,7 +21,10 @@ Workflow contract:
 - Do not use `gh` to post comments. The publish step posts one PR comment when the target is a PR.
 - Read the `METADATA_PATH=...` file printed by the prepare step for target metadata and the exact conflicted file list.
 - Read the `BRIEF_PATH=...` file printed by the prepare step for the normalized target brief.
-- Edit only files listed under `CONFLICTED_FILES` in the preparation output. Validation hashes every other tracked file and fails if any non-conflicted tracked path changes.
+- Edit only files listed under `CONFLICTED_FILES` in the preparation output by default.
+- Exception: you may edit a non-conflicted tracked file only when a targeted check or compiler error shows a small, mechanical fallout from the conflict resolution and the edit is required to preserve the combined intent of both parents. Examples: callback arity updates, import/module rename fixes, constructor field shape updates with ignored/defaulted values, or test helper signature updates that do not change assertions or expected behavior.
+- Do not use the exception to change test expectations, update broad snapshots, add/remove tracked files, refactor, change public behavior, or choose between incompatible semantics. If the needed edit is not obviously mechanical, write `tmp/scherzo-merge-conflict-failure.md` and stop.
+- If you edit any non-conflicted tracked file under this exception, write `tmp/scherzo-merge-conflict-mechanical-edits.json` with a `non_conflicted_edits` list. Each entry must include `path` and a behavior-preserving `reason`. Validation hashes every other tracked file and fails if non-conflicted changes are not manifested.
 - Remove all jj conflict markers. Jujutsu conflict markers may include lines starting with `<<<<<<<`, `+++++++`, `%%%%%%%`, `\\\\\\\`, or `>>>>>>>`.
 - If `CONFLICT_COUNT=0`, make no source changes. You may still read the metadata and finish with a no-op summary.
 
@@ -39,9 +42,23 @@ Process:
 1. Read the `METADATA_PATH` and `BRIEF_PATH` files printed in the prepare output.
 2. If no conflicts were recorded, do not edit tracked files.
 3. Inspect only the conflicted files and the smallest nearby context needed to understand mechanical moves/renames.
-4. Resolve conflict markers in the conflicted files only.
-5. Run targeted checks if cheap and relevant. The workflow validation step runs the final project validation.
-6. Write `tmp/scherzo-merge-conflict-resolution.md` when conflicts were resolved, with this exact structure:
+4. Resolve conflict markers in the conflicted files.
+5. Run targeted checks if cheap and relevant. If they expose mechanical fallout in a non-conflicted tracked file, make only the minimum behavior-preserving edit and write `tmp/scherzo-merge-conflict-mechanical-edits.json`:
+
+```json
+{
+  "schema_version": 1,
+  "non_conflicted_edits": [
+    {
+      "path": "test/example_test.gleam",
+      "reason": "Mechanical callback arity update after the resolved source API added an ignored profile argument; assertions unchanged."
+    }
+  ]
+}
+```
+
+6. The workflow validation step runs the final project validation.
+7. Write `tmp/scherzo-merge-conflict-resolution.md` when conflicts were resolved, with this exact structure:
 
 ```markdown
 # Merge conflict resolution summary
@@ -51,6 +68,9 @@ Resolved conflicts without intentional functionality changes.
 
 ## Files resolved
 - `path`: what was mechanically reconciled.
+
+## Mechanical fallout edits
+- `path`: reason from `tmp/scherzo-merge-conflict-mechanical-edits.json`, or `None`.
 
 ## Behavior-preservation rationale
 - Why the result preserves target/base intent without choosing new behavior.
@@ -84,6 +104,9 @@ One short paragraph stating whether conflicts were resolved, no conflicts were p
 
 ## Files touched
 - `path`: short note, or `None`.
+
+## Mechanical fallout edits
+- `None`, or each non-conflicted tracked path plus why the edit is mechanical and behavior-preserving.
 
 ## Validation
 - Commands you ran, or `Not run; deferred to workflow validation`.
