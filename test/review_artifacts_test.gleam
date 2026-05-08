@@ -470,6 +470,368 @@ pub fn review_lane_failure_writes_debug_artifacts_test() {
   assert validation.status == step_artifact.StepSucceeded
 }
 
+pub fn agent_fixture_lane_writes_bundle_artifacts_test() {
+  let dir = "test/tmp/review-artifacts-agent-fixture-lane"
+  reset_dir(dir)
+  let diff_path = dir <> "/change.diff"
+  let brief_dir = dir <> "/brief"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      diff_path,
+      "diff --git a/src/scherzo/agent_fixture_example.gleam b/src/scherzo/agent_fixture_example.gleam\n"
+        <> "index 1111111..2222222 100644\n"
+        <> "--- a/src/scherzo/agent_fixture_example.gleam\n"
+        <> "+++ b/src/scherzo/agent_fixture_example.gleam\n"
+        <> "@@ -1,3 +1,4 @@\n"
+        <> " pub fn value() {\n"
+        <> "+  2\n"
+        <> "   1\n"
+        <> " }\n",
+    )
+
+  let dry_run =
+    run_command(
+      "scripts/scherzo-review dry-run --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> brief_dir,
+    )
+  assert dry_run.status == step_artifact.StepSucceeded
+
+  let lane =
+    run_command(
+      "scripts/scherzo-review run-lane --lane correctness --brief "
+      <> brief_dir
+      <> "/review-brief.v1.json --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> lane_dir
+      <> " --source-label agent-fixture-test --agent-backend fixture",
+    )
+  assert lane.status == step_artifact.StepSucceeded
+  assert lane.exit_code == Some(0)
+  assert string.contains(lane.stdout, "REVIEW_AGENT_BACKEND=fixture")
+
+  let lane_result_path = lane_dir <> "/review-lane-correctness.v1.json"
+  let assert Ok(lane_result) = simplifile.read(lane_result_path)
+  let assert Ok(changed_files) =
+    simplifile.read(lane_dir <> "/input/changed-files.v1.json")
+  let assert Ok(prompt) = simplifile.read(lane_dir <> "/prompt.md")
+  let assert Ok(raw_output) =
+    simplifile.read(lane_dir <> "/raw-agent-output.json")
+  let assert Ok(log) =
+    simplifile.read(lane_dir <> "/review-lane-correctness.log")
+
+  assert string.contains(lane_result, "\"agent_backend\": \"fixture\"")
+  assert string.contains(lane_result, "input/diff.patch")
+  assert string.contains(lane_result, "raw-agent-output.json")
+  assert string.contains(lane_result, "prompt.md")
+  assert string.contains(
+    changed_files,
+    "src/scherzo/agent_fixture_example.gleam",
+  )
+  assert !string.contains(changed_files, "<absolute-local-path>")
+  assert string.contains(prompt, "Inspect the actual unified diff")
+  assert string.contains(raw_output, "analysis_summary")
+  assert string.contains(log, "agent_backend=fixture")
+
+  let validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+    )
+  assert validation.status == step_artifact.StepSucceeded
+}
+
+pub fn preflight_fixture_backend_records_lane_backends_test() {
+  let dir = "test/tmp/review-artifacts-preflight-fixture-backend"
+  reset_dir(dir)
+
+  let preflight =
+    run_command(
+      "scripts/scherzo-review preflight --agent-backend fixture --scenario no-meaningful-findings-pr --output-dir "
+      <> dir,
+    )
+
+  assert preflight.status == step_artifact.StepSucceeded
+  assert preflight.exit_code == Some(0)
+  assert string.contains(preflight.stdout, "REVIEW_AGENT_BACKEND=fixture")
+
+  let manifest_path = dir <> "/preflight-manifest.v1.json"
+  let assert Ok(manifest) = simplifile.read(manifest_path)
+  assert string.contains(manifest, "\"artifact_type\": \"preflight_manifest\"")
+  assert string.contains(manifest, "\"agent_backend\": \"fixture\"")
+  assert string.contains(manifest, "\"backend\": \"fixture\"")
+  assert string.contains(manifest, "\"lane_id\": \"correctness\"")
+  assert string.contains(manifest, "\"remote_mutations\": \"none\"")
+
+  let validation =
+    run_command("scripts/scherzo-review validate --artifact " <> manifest_path)
+  assert validation.status == step_artifact.StepSucceeded
+  assert string.contains(
+    validation.stdout,
+    "REVIEW_ARTIFACT_TYPE=preflight_manifest",
+  )
+}
+
+pub fn external_agent_missing_command_writes_failed_lane_result_test() {
+  let dir = "test/tmp/review-artifacts-external-missing-command"
+  reset_dir(dir)
+  let diff_path = dir <> "/change.diff"
+  let brief_dir = dir <> "/brief"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      diff_path,
+      "diff --git a/src/scherzo/external_agent_example.gleam b/src/scherzo/external_agent_example.gleam\n"
+        <> "index 1111111..2222222 100644\n"
+        <> "--- a/src/scherzo/external_agent_example.gleam\n"
+        <> "+++ b/src/scherzo/external_agent_example.gleam\n"
+        <> "@@ -1,3 +1,4 @@\n"
+        <> " pub fn value() {\n"
+        <> "+  2\n"
+        <> "   1\n"
+        <> " }\n",
+    )
+
+  let dry_run =
+    run_command(
+      "scripts/scherzo-review dry-run --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> brief_dir,
+    )
+  assert dry_run.status == step_artifact.StepSucceeded
+
+  let lane =
+    run_command(
+      "env -u SCHERZO_REVIEW_AGENT_COMMAND scripts/scherzo-review run-lane --lane correctness --brief "
+      <> brief_dir
+      <> "/review-brief.v1.json --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> lane_dir
+      <> " --agent-backend external",
+    )
+  assert lane.status == step_artifact.StepFailed
+  assert lane.exit_code == Some(1)
+  assert string.contains(lane.stdout, "REVIEW_LANE_RUN=failed")
+  assert string.contains(lane.stdout, "REVIEW_AGENT_BACKEND=external")
+  assert string.contains(lane.stderr, "missing external backend configuration")
+
+  let lane_result_path = lane_dir <> "/review-lane-correctness.v1.json"
+  let assert Ok(lane_result) = simplifile.read(lane_result_path)
+  assert string.contains(lane_result, "\"state\": \"failed\"")
+  assert string.contains(lane_result, "\"agent_backend\": \"external\"")
+  assert string.contains(lane_result, "missing external backend configuration")
+  assert string.contains(lane_result, "input/diff.patch")
+
+  let validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+    )
+  assert validation.status == step_artifact.StepSucceeded
+}
+
+pub fn external_agent_command_writes_successful_lane_result_test() {
+  let dir = "test/tmp/review-artifacts-external-success"
+  reset_dir(dir)
+  let diff_path = dir <> "/change.diff"
+  let brief_dir = dir <> "/brief"
+  let lane_dir = dir <> "/lane"
+  let agent_path = dir <> "/external_agent.py"
+  let assert Ok(Nil) =
+    simplifile.write(
+      diff_path,
+      "diff --git a/src/scherzo/external_agent_success.gleam b/src/scherzo/external_agent_success.gleam\n"
+        <> "index 1111111..2222222 100644\n"
+        <> "--- a/src/scherzo/external_agent_success.gleam\n"
+        <> "+++ b/src/scherzo/external_agent_success.gleam\n"
+        <> "@@ -1,3 +1,4 @@\n"
+        <> " pub fn value() {\n"
+        <> "+  2\n"
+        <> "   1\n"
+        <> " }\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      agent_path,
+      "import json\n"
+        <> "import sys\n"
+        <> "from pathlib import Path\n"
+        <> "raw_output = Path(sys.argv[1])\n"
+        <> "raw_output.write_text(json.dumps({\n"
+        <> "  'lane_id': 'test-quality',\n"
+        <> "  'analysis_summary': 'External agent completed successfully.',\n"
+        <> "  'findings': [],\n"
+        <> "  'review_notes': [{\n"
+        <> "    'kind': 'coverage_note',\n"
+        <> "    'category': 'testing',\n"
+        <> "    'severity': 'info',\n"
+        <> "    'locations': [{'path': 'src/scherzo/external_agent_success.gleam'}],\n"
+        <> "    'summary': 'External agent produced a retained note.',\n"
+        <> "    'details': 'The successful external backend path wrote JSON output.',\n"
+        <> "    'suggested_action': 'Keep the external command contract documented.'\n"
+        <> "  }],\n"
+        <> "  'evidence_requests': []\n"
+        <> "}, indent=2))\n"
+        <> "print('EXTERNAL_AGENT_OK')\n",
+    )
+
+  let dry_run =
+    run_command(
+      "scripts/scherzo-review dry-run --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> brief_dir,
+    )
+  assert dry_run.status == step_artifact.StepSucceeded
+
+  let lane =
+    run_command(
+      "SCHERZO_REVIEW_AGENT_COMMAND='python3 "
+      <> agent_path
+      <> " {raw_output_path}' scripts/scherzo-review run-lane --lane test-quality --brief "
+      <> brief_dir
+      <> "/review-brief.v1.json --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> lane_dir
+      <> " --agent-backend external",
+    )
+  assert lane.status == step_artifact.StepSucceeded
+  assert lane.exit_code == Some(0)
+  assert string.contains(lane.stdout, "REVIEW_AGENT_BACKEND=external")
+  assert string.contains(lane.stdout, "REVIEW_LANE_REVIEW_NOTES=1")
+
+  let lane_result_path = lane_dir <> "/review-lane-test-quality.v1.json"
+  let assert Ok(lane_result) = simplifile.read(lane_result_path)
+  let assert Ok(transcript) =
+    simplifile.read(lane_dir <> "/transcript.stdout.txt")
+  assert string.contains(lane_result, "\"agent_backend\": \"external\"")
+  assert string.contains(
+    lane_result,
+    "External agent produced a retained note.",
+  )
+  assert string.contains(lane_result, "transcript.stdout.txt")
+  assert string.contains(transcript, "EXTERNAL_AGENT_OK")
+
+  let validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+    )
+  assert validation.status == step_artifact.StepSucceeded
+}
+
+pub fn agent_environment_sanitizer_strips_mutation_credentials_test() {
+  let command =
+    "PYTHONPATH=scripts python3 -c 'from scherzo_review.agent_lane_harness import sanitize_agent_environment; env={\"PATH\":\"/bin\",\"GITHUB_TOKEN\":\"gh\",\"GH_TOKEN\":\"gh\",\"LINEAR_API_KEY\":\"lin\",\"SCHERZO_AGENT_LINEAR_API_KEY\":\"lin\",\"SSH_AUTH_SOCK\":\"sock\",\"SCHERZO_REVIEW_AGENT_READONLY_FLAG\":\"1\"}; out=sanitize_agent_environment(env); assert out[\"PATH\"] == \"/bin\"; assert out[\"SCHERZO_REVIEW_AGENT_READONLY_FLAG\"] == \"1\"; assert \"GITHUB_TOKEN\" not in out; assert \"GH_TOKEN\" not in out; assert \"LINEAR_API_KEY\" not in out; assert \"SCHERZO_AGENT_LINEAR_API_KEY\" not in out; assert \"SSH_AUTH_SOCK\" not in out; print(\"SANITIZER_OK\")'"
+  let result = run_command(command)
+  assert result.status == step_artifact.StepSucceeded
+  assert result.exit_code == Some(0)
+  assert string.contains(result.stdout, "SANITIZER_OK")
+}
+
+pub fn correctness_fixture_evidence_gate_preflight_test() {
+  let dir = "test/tmp/review-artifacts-correctness-fixture"
+  reset_dir(dir)
+
+  let preflight =
+    run_command(
+      "scripts/scherzo-review preflight --agent-backend fixture --scenario inverted-auth-control-condition --scenario auth-control-static-suspicion-without-repro --output-dir "
+      <> dir,
+    )
+  assert preflight.status == step_artifact.StepSucceeded
+  assert preflight.exit_code == Some(0)
+
+  let inverted_lane =
+    dir
+    <> "/inverted-auth-control-condition/02-lane-correctness/review-lane-correctness.v1.json"
+  let inverted_ledger =
+    dir
+    <> "/inverted-auth-control-condition/02-lane-correctness/evidence-ledger.v1.json"
+  let inverted_stdout =
+    dir
+    <> "/inverted-auth-control-condition/02-lane-correctness/repro/inverted_auth_repro.stdout.txt"
+  let assert Ok(inverted_result) = simplifile.read(inverted_lane)
+  let assert Ok(ledger) = simplifile.read(inverted_ledger)
+  let assert Ok(stdout) = simplifile.read(inverted_stdout)
+  assert string.contains(inverted_result, "\"blocking\": true")
+  assert string.contains(inverted_result, "\"verified\": true")
+  assert string.contains(inverted_result, "\"evidence_type\": \"reproduction\"")
+  assert string.contains(inverted_result, "\"evidence_id\"")
+  assert string.contains(
+    inverted_result,
+    "src/liv_152_fixture/project_authorization.gleam",
+  )
+  assert string.contains(
+    ledger,
+    "python3 repro/inverted_auth_control_condition_repro.py",
+  )
+  assert string.contains(ledger, "\"exit_code\": 0")
+  assert string.contains(
+    stdout,
+    "REPRODUCED: unauthorized User received Ok(\"deleted\")",
+  )
+
+  let static_lane =
+    dir
+    <> "/auth-control-static-suspicion-without-repro/02-lane-correctness/review-lane-correctness.v1.json"
+  let assert Ok(static_result) = simplifile.read(static_lane)
+  assert string.contains(static_result, "\"findings\": []")
+  assert string.contains(static_result, "\"review_notes\"")
+  assert string.contains(
+    static_result,
+    "downgraded_unverified_correctness_claim",
+  )
+  assert string.contains(static_result, "executable")
+
+  let readiness =
+    run_command(
+      "scripts/scherzo-review validate --artifact "
+      <> dir
+      <> "/preflight-manifest.v1.json --require-cutover-ready",
+    )
+  assert readiness.status == step_artifact.StepSucceeded
+  assert string.contains(readiness.stdout, "REVIEW_CUTOVER_READY=ok")
+}
+
+pub fn heuristic_preflight_is_not_cutover_ready_test() {
+  let dir = "test/tmp/review-artifacts-heuristic-not-ready"
+  reset_dir(dir)
+
+  let preflight =
+    run_command(
+      "scripts/scherzo-review preflight --scenario no-meaningful-findings-pr --output-dir "
+      <> dir,
+    )
+  assert preflight.status == step_artifact.StepSucceeded
+
+  let readiness =
+    run_command(
+      "scripts/scherzo-review validate --artifact "
+      <> dir
+      <> "/preflight-manifest.v1.json --require-cutover-ready",
+    )
+  assert readiness.status == step_artifact.StepFailed
+  assert readiness.exit_code == Some(1)
+  assert string.contains(readiness.stdout, "REVIEW_CUTOVER_READY=failed")
+  assert string.contains(
+    readiness.stderr,
+    "agent_backend must be fixture or external",
+  )
+}
+
+pub fn implementation_workflow_backend_default_stays_heuristic_test() {
+  let assert Ok(workflow) =
+    simplifile.read(".scherzo/workflows/implementation.yaml")
+  assert string.contains(
+    workflow,
+    "SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic",
+  )
+  assert string.contains(workflow, "--agent-backend \"$backend\"")
+}
+
 pub fn review_preflight_runs_full_dry_run_suite_test() {
   let dir = "test/tmp/review-artifacts-preflight"
   reset_dir(dir)

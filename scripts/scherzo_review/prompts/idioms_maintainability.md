@@ -1,0 +1,1 @@
+For idioms and maintainability, inspect production safety, changed public interfaces, error handling, module organization, and reviewability. Preserve Scherzo's production lint policy: new production let assert, panic, or todo is a must-fix finding unless an accepted narrow suppression documents the invariant. Broad reviewability observations are review notes, not blockers.

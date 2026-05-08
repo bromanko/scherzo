@@ -1,0 +1,1 @@
+For test quality, compare implementation changes, changed tests, nearby existing tests represented in context, and supplied validation status. Decide whether tests meaningfully exercise changed behavior, not merely whether test files changed. Concrete missing or misleading coverage can be a testing finding; uncertainty is a coverage note with a proposed test.
