@@ -237,6 +237,52 @@
       },
       "additionalProperties": true
     },
+    "ReviewNote": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "category",
+        "severity",
+        "locations",
+        "summary",
+        "details",
+        "suggested_action"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["risk_note", "coverage_note", "review_note", "follow_up_test"]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "correctness",
+            "maintainability",
+            "security",
+            "performance",
+            "testing",
+            "workflow",
+            "documentation",
+            "artifact_contract",
+            "other"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high", "critical"]
+        },
+        "locations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/LocationReference" }
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "details": { "type": "string", "minLength": 1 },
+        "suggested_action": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
     "ReviewLaneResult": {
       "allOf": [
         { "$ref": "#/$defs/ArtifactHeader" },
@@ -264,6 +310,10 @@
             "findings": {
               "type": "array",
               "items": { "$ref": "#/$defs/ReviewFindingCore" }
+            },
+            "review_notes": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ReviewNote" }
             },
             "artifacts": {
               "type": "array",
@@ -346,6 +396,10 @@
               "type": "array",
               "items": { "$ref": "#/$defs/ReviewFindingCore" }
             },
+            "review_notes": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ReviewNote" }
+            },
             "grouped_findings": {
               "type": "object",
               "additionalProperties": true
@@ -398,6 +452,14 @@
               "type": "array",
               "items": { "$ref": "#/$defs/ReviewFindingCore" }
             },
+            "non_blocking_findings": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ReviewFindingCore" }
+            },
+            "review_notes": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ReviewNote" }
+            },
             "lane_statuses": {
               "type": "array",
               "items": { "$ref": "#/$defs/LaneResultSummary" }
@@ -424,6 +486,7 @@
         "error": { "type": ["string", "null"] },
         "finding_count": { "type": "integer", "minimum": 0 },
         "blocking_finding_count": { "type": "integer", "minimum": 0 },
+        "review_note_count": { "type": "integer", "minimum": 0 },
         "path": { "type": "string", "minLength": 1 },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       },
@@ -435,7 +498,9 @@
       "properties": {
         "total": { "type": "integer", "minimum": 0 },
         "blocking": { "type": "integer", "minimum": 0 },
+        "non_blocking": { "type": "integer", "minimum": 0 },
         "verified": { "type": "integer", "minimum": 0 },
+        "review_notes": { "type": "integer", "minimum": 0 },
         "by_severity": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
         "by_category": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
         "lane_failed": { "type": "integer", "minimum": 0 },

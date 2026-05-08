@@ -45,7 +45,7 @@ Required fields:
 
 ### `ReviewLaneResult`
 
-A `ReviewLaneResult` records a lane execution and embeds its findings.
+A `ReviewLaneResult` records a lane execution and embeds its findings. Lanes may also include `review_notes` for broad risk, coverage, reviewability, or follow-up-test prompts that are useful to reviewers but are not concrete findings.
 
 Required fields:
 
@@ -54,14 +54,16 @@ Required fields:
 - `lane`: lane metadata (`id`, `name`, `category`, `version`, and optional tool/model data).
 - `execution_status`: `state`, start/completion timestamps, and a summary. States are `succeeded`, `failed`, `skipped`, or `blocked`.
 - `findings`: list of `ReviewFinding` core objects. An empty list is valid when a lane has no findings.
+- `review_notes`: optional list of non-finding notes with `kind`, `category`, `severity`, `locations`, `summary`, `details`, and `suggested_action`.
 - `artifacts`: optional local artifact references such as logs, transcripts, or a generated brief.
 - `input_brief_ref`: optional reference to the `ReviewBrief` consumed by the lane.
 
 ### `ReviewSynthesis`
 
-A `ReviewSynthesis` is produced after the specialist lanes finish. It records lane health, normalized findings, synthesis actions, grouped findings, and counts. Synthesis responsibilities include:
+A `ReviewSynthesis` is produced after the specialist lanes finish. It records lane health, normalized findings, review notes, synthesis actions, grouped findings, and counts. Synthesis responsibilities include:
 
 - deduplicating findings with the same category, summary, and primary location;
+- preserving broad risk, coverage, reviewability, and follow-up-test notes separately from concrete findings;
 - downgrading correctness blockers that lack verified executable evidence (`test`, `runtime`, or `reproduction`);
 - recording conflicting remediation advice as alternatives instead of emitting duplicate comments;
 - grouping findings by severity and category; and
@@ -69,7 +71,7 @@ A `ReviewSynthesis` is produced after the specialist lanes finish. It records la
 
 ### `FinalReviewArtifact`
 
-A `FinalReviewArtifact` is the concise human-facing review artifact generated from the synthesis. It always exists when synthesis receives valid lane result artifacts, including when all lanes return empty findings. It includes the final Markdown review body, grouped findings, blocker evidence, lane statuses, and `remote_mutations: "none"` for dry-run/preflight safety.
+A `FinalReviewArtifact` is the concise human-facing review artifact generated from the synthesis. It always exists when synthesis receives valid lane result artifacts, including when all lanes return empty findings. It includes the final Markdown review body, grouped findings, blocker evidence, non-blocking findings, risk/coverage/review notes, lane statuses, and `remote_mutations: "none"` for dry-run/preflight safety.
 
 ## Dry-run entrypoint
 
@@ -169,7 +171,7 @@ A single command runs the staged review flow against representative synthetic PR
 scripts/scherzo-review preflight --output-dir tmp/scherzo-review-preflight
 ```
 
-The preflight suite covers small/trivial, medium feature, test-heavy, no-finding, correctness-with-evidence, security-sensitive, performance-sensitive, lane-failure, malformed-lane-output, empty-findings, and duplicate/conflicting synthesis scenarios. It validates each generated `ReviewBrief`, `ReviewLaneResult`, `ReviewSynthesis`, and `FinalReviewArtifact`, writes per-scenario command logs, and produces `preflight-manifest.v1.json`. Review findings, including blockers intentionally present in fixtures, do not fail preflight; only workflow execution and artifact-contract problems do.
+The preflight suite covers small/trivial, medium feature, test-heavy, no-finding, correctness-with-evidence, security-sensitive, performance-sensitive, PR #80-inspired staged-review precision, lane-failure, malformed-lane-output, empty-findings, and duplicate/conflicting synthesis scenarios. It validates each generated `ReviewBrief`, `ReviewLaneResult`, `ReviewSynthesis`, and `FinalReviewArtifact`, writes per-scenario command logs, and produces `preflight-manifest.v1.json`. Review findings, including blockers intentionally present in fixtures, do not fail preflight; only workflow execution and artifact-contract problems do.
 
 ## Checked-in workflow integration
 
