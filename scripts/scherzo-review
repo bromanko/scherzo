@@ -656,16 +656,142 @@ def file_location(file: DiffFile) -> dict[str, Any]:
     return location
 
 
-def locations_for_files(files: list[DiffFile], fallback: str = ".") -> list[dict[str, Any]]:
+def is_documentation_path(path: str) -> bool:
+    lower = path.lower()
+    return lower.startswith("docs/") or lower.endswith(".md")
+
+
+def is_workflow_path(path: str) -> bool:
+    lower = path.lower()
+    return lower.startswith(".scherzo/workflows/") or lower.startswith("examples/workflows/")
+
+
+def is_script_path(path: str) -> bool:
+    return path.lower().startswith("scripts/")
+
+
+def is_control_plane_source_path(path: str) -> bool:
+    lower = path.lower()
+    if not lower.startswith("src/"):
+        return False
+    return any(token in lower for token in [
+        "/control/",
+        "/state/",
+        "linear",
+        "parser",
+        "parse",
+        "process",
+        "filesystem",
+        "file_system",
+        "workflow",
+        "orchestrator",
+        "workspace",
+    ])
+
+
+def has_review_boundary_token(path: str) -> bool:
+    lower = path.lower()
+    return any(token in lower for token in [
+        "parse",
+        "parser",
+        "json",
+        "yaml",
+        "filesystem",
+        "file_system",
+        "file",
+        "path",
+        "process",
+        "command",
+        "shell",
+        "state",
+        "linear",
+        "control",
+        "workflow",
+        "workspace",
+    ])
+
+
+def location_rank(file: DiffFile, concern: str | None) -> tuple[int, str]:
+    lower = file.path.lower()
+    documentation_concern = concern == "documentation"
+
+    if documentation_concern:
+        if is_documentation_path(lower):
+            base = 0
+        elif is_workflow_path(lower) or is_script_path(lower):
+            base = 5
+        elif lower.startswith("src/"):
+            base = 6
+        else:
+            base = 10
+    elif is_control_plane_source_path(lower):
+        base = 0
+    elif is_workflow_path(lower) or is_script_path(lower):
+        base = 1
+    elif lower.startswith("src/"):
+        base = 2
+    elif lower.startswith("test/"):
+        base = 8
+    elif is_documentation_path(lower):
+        base = 30
+    else:
+        base = 10
+
+    if not documentation_concern and has_review_boundary_token(lower):
+        base -= 1
+    return base, lower
+
+
+def unique_files(files: list[DiffFile]) -> list[DiffFile]:
+    unique: list[DiffFile] = []
+    seen: set[str] = set()
+    for file in files:
+        key = file.path
+        if key not in seen:
+            unique.append(file)
+            seen.add(key)
+    return unique
+
+
+def ranked_unique_files(files: list[DiffFile], concern: str | None = None) -> list[DiffFile]:
+    unique = unique_files(files)
+    return [
+        file for _index, file in sorted(
+            enumerate(unique),
+            key=lambda item: (*location_rank(item[1], concern), item[0]),
+        )
+    ]
+
+
+def dedupe_locations(locations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for location in locations:
+        path = location.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        diff_hunk = location.get("diff_hunk")
+        key = (path, diff_hunk if isinstance(diff_hunk, str) else "")
+        if key not in seen:
+            deduped.append(location)
+            seen.add(key)
+    return deduped
+
+
+def locations_for_files(
+    files: list[DiffFile], fallback: str = ".", concern: str | None = None
+) -> list[dict[str, Any]]:
     if not files:
         return [{"path": fallback}]
-    return [file_location(file) for file in files[:5]]
+    locations = [file_location(file) for file in ranked_unique_files(files, concern)[:5]]
+    return dedupe_locations(locations) or [{"path": fallback}]
 
 
 def short_file_list(files: list[DiffFile], limit: int = 5) -> str:
-    paths = [file.path for file in files[:limit]]
-    if len(files) > limit:
-        paths.append(f"and {len(files) - limit} more")
+    unique = unique_files(files)
+    paths = [file.path for file in unique[:limit]]
+    if len(unique) > limit:
+        paths.append(f"and {len(unique) - limit} more")
     return ", ".join(paths) if paths else "no changed files"
 
 
@@ -691,7 +817,7 @@ def make_finding(
         "evidence_type": evidence_type,
         "verified": verified,
         "blocking": blocking,
-        "locations": locations,
+        "locations": dedupe_locations(locations),
         "summary": summary,
         "details": details,
         "suggested_fix": suggested_fix,
@@ -699,6 +825,34 @@ def make_finding(
     if extra:
         finding.update(extra)
     return finding
+
+
+def make_review_note(
+    *,
+    lane_prefix: str,
+    index: int,
+    kind: str,
+    category: str,
+    severity: str,
+    locations: list[dict[str, Any]],
+    summary: str,
+    details: str,
+    suggested_action: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    note: dict[str, Any] = {
+        "id": f"{lane_prefix}-note-{index:03d}",
+        "kind": kind,
+        "category": category,
+        "severity": severity,
+        "locations": dedupe_locations(locations),
+        "summary": summary,
+        "details": details,
+        "suggested_action": suggested_action,
+    }
+    if extra:
+        note.update(extra)
+    return note
 
 
 def brief_test_statuses(brief: dict[str, Any]) -> list[dict[str, Any]]:
@@ -731,6 +885,93 @@ def line_has_assertion(line: str) -> bool:
     ])
 
 
+def is_test_support_path(path: str) -> bool:
+    lower = path.lower()
+    return any(part in lower for part in [
+        "/fixtures/",
+        "fixture",
+        "/support/",
+        "test/support",
+        "golden",
+        "snapshot",
+        "mock",
+        "fake",
+    ])
+
+
+def is_import_or_module_line(line: str) -> bool:
+    stripped = line.strip()
+    lower = stripped.lower()
+    return (
+        lower.startswith(("import ", "from ", "use ", "package ", "module "))
+        or stripped.startswith(("@", "#"))
+    )
+
+
+def is_behavioral_test_declaration(line: str) -> bool:
+    stripped = line.strip()
+    lower = stripped.lower()
+    return bool(
+        re.search(r"\b(pub\s+)?fn\s+[a-z0-9_]*_test\s*\(", lower)
+        or re.search(r"\bdef\s+test_[a-z0-9_]*\s*\(", lower)
+        or re.search(r"\bfunc\s+test[a-z0-9_]*\s*\(", lower)
+        or lower.startswith("test(")
+        or lower.startswith("it(")
+        or lower.startswith("describe(")
+        or lower == "#[test]"
+    )
+
+
+def is_non_behavioral_test_line(file: DiffFile, line: str) -> bool:
+    stripped = line.strip()
+    lower = stripped.lower()
+    if is_import_or_module_line(line):
+        return True
+    if is_test_support_path(file.path):
+        return True
+    if stripped in {"{", "}", "[", "]", "(", ")", ","}:
+        return True
+    if re.fullmatch(r"[}\]),;]+", stripped):
+        return True
+    if re.search(r"\b(pub\s+)?fn\s+(helper|fixture|setup|teardown|mock|fake|sample|make|new)_", lower):
+        return True
+    if any(token in lower for token in [
+        "fixture",
+        "helper",
+        "setup",
+        "teardown",
+        "before_each",
+        "after_each",
+        "mock",
+        "fake",
+        "stub",
+        "golden",
+        "snapshot",
+        "sample",
+        "test_async",
+        "new_barrier",
+        "drain_subject",
+        "create_directory",
+        "write(",
+        "read(",
+    ]):
+        return True
+    return False
+
+
+def test_file_change_role(file: DiffFile) -> str:
+    added = significant_added_lines(file)
+    if not added:
+        return "empty"
+    if any(line_has_assertion(line) for line in added):
+        return "assertion_bearing"
+    if any(is_behavioral_test_declaration(line) for line in added):
+        return "behavior_without_assertion"
+    if all(is_non_behavioral_test_line(file, line) for line in added):
+        return "non_behavioral"
+    return "unclear_without_assertion"
+
+
 def correctness_static_signal(line: str) -> bool:
     lower = line.strip().lower()
     return (
@@ -744,11 +985,13 @@ def correctness_static_signal(line: str) -> bool:
 
 def correctness_lane_findings(
     brief: dict[str, Any], files: list[DiffFile]
-) -> tuple[list[dict[str, Any]], list[str], str]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], str]:
     findings: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
     checks = [
         "checked supplied validation status for failed executable evidence",
         "scanned implementation additions for static correctness suspicion signals",
+        "identified high-risk changed paths for non-blocking follow-up test suggestions",
     ]
 
     failed_statuses = [
@@ -764,7 +1007,7 @@ def correctness_lane_findings(
             evidence_type="test",
             verified=True,
             blocking=True,
-            locations=locations_for_files(implementation_files or files),
+            locations=locations_for_files(implementation_files or files, concern="correctness"),
             summary="Executable validation failed for the changed implementation.",
             details=(
                 "The ReviewBrief reports failing executable validation: "
@@ -797,7 +1040,7 @@ def correctness_lane_findings(
             evidence_type="static",
             verified=False,
             blocking=False,
-            locations=locations_for_files(suspicious_files),
+            locations=locations_for_files(suspicious_files, concern="correctness"),
             summary="Static-only correctness concern downgraded to non-blocking suspicion.",
             details=(
                 "Added implementation lines include failure-prone constructs, but this lane did not receive a failing test, repro script, "
@@ -808,8 +1051,29 @@ def correctness_lane_findings(
             extra={"finding_type": "suspicion"},
         ))
 
+    follow_up_files = [
+        file for file in implementation_files
+        if is_control_plane_source_path(file.path) or is_workflow_path(file.path) or is_script_path(file.path)
+    ]
+    if follow_up_files and not failed_statuses:
+        notes.append(make_review_note(
+            lane_prefix="correctness",
+            index=len(notes) + 1,
+            kind="follow_up_test",
+            category="correctness",
+            severity="info",
+            locations=locations_for_files(follow_up_files, concern="correctness"),
+            summary="Consider a focused test or repro for the highest-risk changed behavior.",
+            details=(
+                "The changed paths include runtime, workflow, script, or control-plane boundaries, but this lane did not receive "
+                "executable evidence proving a bug. This is a non-blocking prompt to add or confirm a targeted regression check, not a proven correctness finding."
+            ),
+            suggested_action="If the changed boundary has important edge behavior, add a deterministic test or reproduction that would fail for the risky case.",
+            extra={"review_priority": "follow-up"},
+        ))
+
     empty_reason = "No failed validation status or static correctness suspicion signals were found."
-    return findings, checks, empty_reason
+    return findings, notes, checks, empty_reason
 
 
 def proposed_test_cases(brief: dict[str, Any], source_files: list[DiffFile]) -> list[str]:
@@ -830,15 +1094,18 @@ def proposed_test_cases(brief: dict[str, Any], source_files: list[DiffFile]) -> 
 
 def test_quality_lane_findings(
     brief: dict[str, Any], files: list[DiffFile]
-) -> tuple[list[dict[str, Any]], list[str], str]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], str]:
     findings: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
     checks = [
         "compared implementation file changes with committed test file changes",
+        "classified changed tests as behavioral, assertion-bearing, helper, fixture, setup, import-only, or mechanical edits",
         "scanned changed tests for assertion-bearing additions and shallow assertion patterns",
         "generated concrete test-case proposals for important uncovered source changes",
     ]
     source_files = [file for file in files if is_implementation_path(file.path)]
     test_files = [file for file in files if is_test_path(file.path)]
+    test_roles = {file.path: test_file_change_role(file) for file in test_files}
 
     if source_files and not test_files:
         proposals = proposed_test_cases(brief, source_files)
@@ -850,7 +1117,7 @@ def test_quality_lane_findings(
             evidence_type="static",
             verified=True,
             blocking=False,
-            locations=locations_for_files(source_files),
+            locations=locations_for_files(source_files, concern="testing"),
             summary="Implementation changed without committed test coverage in the diff.",
             details=(
                 "The diff changes implementation-relevant files ("
@@ -861,11 +1128,34 @@ def test_quality_lane_findings(
             extra={"proposed_tests": proposals},
         ))
 
-    assertion_free_test_files: list[DiffFile] = []
-    for file in test_files:
-        added = significant_added_lines(file)
-        if added and not any(line_has_assertion(line) for line in added):
-            assertion_free_test_files.append(file)
+    non_behavioral_test_files = [
+        file for file in test_files
+        if test_roles.get(file.path) in {"non_behavioral", "empty"}
+    ]
+    if source_files and test_files and len(non_behavioral_test_files) == len(test_files):
+        notes.append(make_review_note(
+            lane_prefix="test-quality",
+            index=len(notes) + 1,
+            kind="coverage_note",
+            category="testing",
+            severity="info",
+            locations=locations_for_files(source_files, concern="testing"),
+            summary="Implementation changed alongside only non-behavioral test edits.",
+            details=(
+                "The changed test files appear to be import-only, setup/helper-only, fixture/support-only, or mechanical edits. "
+                "That is not a weak-test finding by itself, but reviewers may still want to confirm behavioral coverage exists elsewhere."
+            ),
+            suggested_action="If no existing test exercises the changed behavior, add a focused regression test rather than relying on helper or fixture churn.",
+            extra={
+                "review_priority": "coverage-follow-up",
+                "changed_test_roles": test_roles,
+            },
+        ))
+
+    assertion_free_test_files = [
+        file for file in test_files
+        if test_roles.get(file.path) == "behavior_without_assertion"
+    ]
     if assertion_free_test_files:
         findings.append(make_finding(
             lane_prefix="test-quality",
@@ -875,14 +1165,14 @@ def test_quality_lane_findings(
             evidence_type="static",
             verified=True,
             blocking=False,
-            locations=locations_for_files(assertion_free_test_files),
-            summary="Changed tests add little or no visible assertion signal.",
+            locations=locations_for_files(assertion_free_test_files, concern="testing"),
+            summary="New behavioral tests lack visible assertions.",
             details=(
-                "These test-file additions do not include recognizable assertions or expectation checks. They may be fixture-only changes, "
-                "but if they are intended as behavioral tests they risk being shallow."
+                "These additions introduce recognizable test cases but no assertion or expectation checks. Helper-only, fixture-only, setup-only, "
+                "import-only, and mechanical edits are excluded from this finding."
             ),
-            suggested_fix="Ensure each new or modified test asserts the behavior that matters, including at least one failure or edge-path assertion when relevant.",
-            extra={"review_priority": "should-fix"},
+            suggested_fix="Ensure each new behavioral test asserts the result, emitted artifact, or error path that matters.",
+            extra={"review_priority": "should-fix", "changed_test_roles": test_roles},
         ))
 
     shallow_assertion_files: list[DiffFile] = []
@@ -901,24 +1191,25 @@ def test_quality_lane_findings(
             evidence_type="static",
             verified=True,
             blocking=False,
-            locations=locations_for_files(shallow_assertion_files),
+            locations=locations_for_files(shallow_assertion_files, concern="testing"),
             summary="Changed tests include potentially shallow boolean assertions.",
             details="The changed test assertions appear to check bare booleans, which can hide the behavior being protected and make failures less diagnostic.",
             suggested_fix="Assert the domain result, returned value, emitted artifact, or exact error shape instead of a generic boolean when practical.",
             extra={"review_priority": "optional/nit"},
         ))
 
-    empty_reason = "Changed implementation and test files did not trigger the first-version test-quality heuristics."
-    return findings, checks, empty_reason
+    empty_reason = "Changed implementation and test files did not trigger the first-version test-quality finding heuristics."
+    return findings, notes, checks, empty_reason
 
 
 def maintainability_lane_findings(
     _brief: dict[str, Any], files: list[DiffFile]
-) -> tuple[list[dict[str, Any]], list[str], str]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], str]:
     findings: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
     checks = [
         "scanned production source additions for must-fix panic/todo/let assert constructs",
-        "checked patch size for broad-change maintainability risk",
+        "recorded patch size as a review note unless tied to a concrete maintainability issue",
         "scanned additions for optional whitespace nits",
     ]
 
@@ -943,7 +1234,7 @@ def maintainability_lane_findings(
             evidence_type="static",
             verified=True,
             blocking=True,
-            locations=locations_for_files(must_fix_files),
+            locations=locations_for_files(must_fix_files, concern="maintainability"),
             summary="Production source adds process-fatal or test-only constructs.",
             details=(
                 "The repository production lint policy forbids adding let assert, panic, or todo in src/. "
@@ -955,19 +1246,17 @@ def maintainability_lane_findings(
 
     total_delta = sum(file.additions + file.deletions for file in files)
     if len(files) > 12 or total_delta > 500:
-        findings.append(make_finding(
+        notes.append(make_review_note(
             lane_prefix="idioms",
-            index=len(findings) + 1,
+            index=len(notes) + 1,
+            kind="review_note",
             category="maintainability",
-            severity="medium",
-            evidence_type="static",
-            verified=True,
-            blocking=False,
-            locations=locations_for_files(files),
+            severity="info",
+            locations=locations_for_files(files, concern="maintainability"),
             summary="Large diff may be hard to review as a single change.",
-            details=f"The parsed diff touches {len(files)} file(s) and {total_delta} changed line(s), increasing review and maintenance risk.",
-            suggested_fix="Consider splitting unrelated mechanical, test, documentation, and behavior changes when practical; otherwise call out the structure in the review notes.",
-            extra={"review_priority": "should-fix"},
+            details=f"The parsed diff touches {len(files)} file(s) and {total_delta} changed line(s). This is reviewability context, not a concrete maintainability finding by itself.",
+            suggested_action="If the change combines unrelated mechanical, test, documentation, and behavior edits, consider splitting or clearly summarizing the structure for reviewers.",
+            extra={"review_priority": "review-note"},
         ))
 
     whitespace_files: list[DiffFile] = []
@@ -985,15 +1274,15 @@ def maintainability_lane_findings(
             evidence_type="static",
             verified=True,
             blocking=False,
-            locations=locations_for_files(whitespace_files),
+            locations=locations_for_files(whitespace_files, concern="maintainability"),
             summary="Added lines contain trailing whitespace.",
             details="Trailing whitespace is a low-value nit, but removing it reduces noisy future diffs.",
             suggested_fix="Trim the trailing whitespace or rely on the project formatter if it owns the affected file type.",
             extra={"review_priority": "optional/nit"},
         ))
 
-    empty_reason = "No must-fix, should-fix, or optional/nit maintainability heuristics triggered."
-    return findings, checks, empty_reason
+    empty_reason = "No concrete must-fix, should-fix, or optional/nit maintainability findings triggered."
+    return findings, notes, checks, empty_reason
 
 
 def risk_profile_level(brief: dict[str, Any]) -> str:
@@ -1026,6 +1315,7 @@ def security_performance_depth(brief: dict[str, Any]) -> str:
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['\"]([^'\"]{8,})['\"]"
 )
+STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
 
 
 def looks_like_placeholder_secret(value: str) -> bool:
@@ -1042,9 +1332,23 @@ def looks_like_placeholder_secret(value: str) -> bool:
     ])
 
 
+def line_without_string_literals(line: str) -> str:
+    return STRING_LITERAL_RE.sub("", line)
+
+
+def line_has_concrete_process_risk(line: str) -> bool:
+    lower = line_without_string_literals(line).lower().replace(" ", "")
+    return any(token in lower for token in [
+        "shell=true",
+        "os.system(",
+        ":os.cmd",
+        "system.cmd",
+    ])
+
+
 def security_performance_lane_findings(
     brief: dict[str, Any], files: list[DiffFile]
-) -> tuple[list[dict[str, Any]], list[str], str, str]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], str, str]:
     depth = security_performance_depth(brief)
     checks = [
         f"selected {depth} review depth from ReviewBrief risk level {risk_profile_level(brief)}",
@@ -1052,15 +1356,17 @@ def security_performance_lane_findings(
     ]
     if depth in {"standard", "deep"}:
         checks.extend([
-            "scanned for shell/process execution and filesystem/network/parsing risk signals",
-            "scanned for polling, sleep, loop, and memory-growth performance signals",
+            "scanned for concrete shell/process execution hazards",
+            "recorded broad shell/process, filesystem, network, parsing, and performance surfaces as risk notes",
         ])
     if depth == "lightweight":
         checks.append("skipped deep security/performance heuristics because the brief marked the change low risk")
 
     findings: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
     secret_files: list[DiffFile] = []
     secret_examples: list[str] = []
+    concrete_process_files: list[DiffFile] = []
     process_files: list[DiffFile] = []
     filesystem_or_network_files: list[DiffFile] = []
     performance_files: list[DiffFile] = []
@@ -1087,6 +1393,8 @@ def security_performance_lane_findings(
                     "curl ",
                 ]):
                     process_files.append(file)
+                    if line_has_concrete_process_risk(line):
+                        concrete_process_files.append(file)
                 if any(token in lower for token in [
                     "open(",
                     "read_text",
@@ -1118,14 +1426,14 @@ def security_performance_lane_findings(
             evidence_type="static",
             verified=True,
             blocking=True,
-            locations=locations_for_files(secret_files),
+            locations=locations_for_files(secret_files, concern="security"),
             summary="Potential hard-coded secret added to the diff.",
             details="Added lines look like literal credential assignments: " + "; ".join(secret_examples),
             suggested_fix="Remove the literal secret, rotate it if it was real, and read credentials from the approved environment or secret store instead.",
             extra={"review_priority": "must-fix", "review_depth": depth},
         ))
 
-    if process_files:
+    if concrete_process_files:
         findings.append(make_finding(
             lane_prefix="security-performance",
             index=len(findings) + 1,
@@ -1134,47 +1442,66 @@ def security_performance_lane_findings(
             evidence_type="static",
             verified=True,
             blocking=False,
-            locations=locations_for_files(process_files),
-            summary="Changed code touches shell or process execution paths.",
-            details="The risk profile called for at least standard review, and added lines mention process/shell execution primitives.",
-            suggested_fix="Confirm arguments are not constructed from untrusted input, avoid shell=True, keep commands read-only where intended, and cover failures in tests.",
+            locations=locations_for_files(concrete_process_files, concern="security"),
+            summary="Changed code adds a concrete shell execution hazard.",
+            details="Added lines use shell=True, os.system, or an equivalent shell command primitive. That is specific enough to review as a concrete security finding.",
+            suggested_fix="Avoid invoking a shell; pass an argv list to the process runner, validate any user-controlled arguments, and cover failure behavior in tests.",
             extra={"review_priority": "should-fix", "review_depth": depth},
+        ))
+
+    if process_files:
+        notes.append(make_review_note(
+            lane_prefix="security-performance",
+            index=len(notes) + 1,
+            kind="risk_note",
+            category="security",
+            severity="info",
+            locations=locations_for_files(process_files, concern="security"),
+            summary="Changed code touches process or shell-adjacent boundaries.",
+            details=(
+                "The additions mention process execution primitives. No concrete injection vulnerability was identified by the first-version heuristic, "
+                "so this is retained as a risk note instead of a finding."
+            ),
+            suggested_action="Confirm command arguments are bounded/read-only where intended and that failures are surfaced deterministically.",
+            extra={"review_depth": depth},
         ))
 
     if depth == "deep" and filesystem_or_network_files:
-        findings.append(make_finding(
+        notes.append(make_review_note(
             lane_prefix="security-performance",
-            index=len(findings) + 1,
+            index=len(notes) + 1,
+            kind="risk_note",
             category="security",
-            severity="low",
-            evidence_type="static",
-            verified=True,
-            blocking=False,
-            locations=locations_for_files(filesystem_or_network_files),
-            summary="High-risk review found filesystem, parsing, or network-touching changes.",
-            details="The ReviewBrief risk profile selected deep review, so these boundary-touching additions should receive explicit validation for malformed input, path safety, and failure behavior.",
-            suggested_fix="Document the trust boundary, validate inputs before filesystem/network/parsing operations, and add focused error-path tests where behavior changed.",
-            extra={"review_priority": "should-fix", "review_depth": depth},
+            severity="info",
+            locations=locations_for_files(filesystem_or_network_files, concern="security"),
+            summary="Deep review found filesystem, parsing, or network-touching changes.",
+            details=(
+                "The ReviewBrief selected deep review and the changed lines touch boundary surfaces. No specific vulnerability was proven, "
+                "so this is a review note asking for boundary validation rather than a concrete finding."
+            ),
+            suggested_action="Check malformed input, path safety, and failure behavior where the changed boundary is part of the implementation intent.",
+            extra={"review_depth": depth},
         ))
 
     if depth == "deep" and performance_files:
-        findings.append(make_finding(
+        notes.append(make_review_note(
             lane_prefix="security-performance",
-            index=len(findings) + 1,
+            index=len(notes) + 1,
+            kind="risk_note",
             category="performance",
-            severity="low",
-            evidence_type="static",
-            verified=True,
-            blocking=False,
-            locations=locations_for_files(performance_files),
-            summary="High-risk review found polling, sleep, loop, or growth-sensitive changes.",
-            details="These additions can affect daemon throughput, test determinism, or memory growth when they sit on hot paths.",
-            suggested_fix="Prefer deterministic synchronization over sleeps, bound loops and retained data, and add stress or timeout coverage for changed hot paths.",
-            extra={"review_priority": "should-fix", "review_depth": depth},
+            severity="info",
+            locations=locations_for_files(performance_files, concern="performance"),
+            summary="Deep review found polling, sleep, loop, or growth-sensitive changes.",
+            details=(
+                "These additions can affect daemon throughput, test determinism, or memory growth on hot paths. The heuristic did not prove a performance bug, "
+                "so the signal is retained as a risk note."
+            ),
+            suggested_action="Prefer deterministic synchronization over sleeps, bound loops and retained data, and add stress or timeout coverage if the changed path is hot.",
+            extra={"review_depth": depth},
         ))
 
-    empty_reason = f"{depth.capitalize()} security/performance review found no heuristic findings."
-    return findings, checks, empty_reason, depth
+    empty_reason = f"{depth.capitalize()} security/performance review found no concrete heuristic findings."
+    return findings, notes, checks, empty_reason, depth
 
 
 def normalize_correctness_blockers(findings: list[dict[str, Any]]) -> None:
@@ -1197,18 +1524,18 @@ def normalize_correctness_blockers(findings: list[dict[str, Any]]) -> None:
 
 def run_specialist_lane(
     lane_id: str, brief: dict[str, Any], files: list[DiffFile]
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if lane_id == "correctness":
-        findings, checks, empty_reason = correctness_lane_findings(brief, files)
+        findings, notes, checks, empty_reason = correctness_lane_findings(brief, files)
         depth = "standard"
     elif lane_id == "test-quality":
-        findings, checks, empty_reason = test_quality_lane_findings(brief, files)
+        findings, notes, checks, empty_reason = test_quality_lane_findings(brief, files)
         depth = "standard"
     elif lane_id == "idioms-maintainability":
-        findings, checks, empty_reason = maintainability_lane_findings(brief, files)
+        findings, notes, checks, empty_reason = maintainability_lane_findings(brief, files)
         depth = "standard"
     elif lane_id == "security-performance":
-        findings, checks, empty_reason, depth = security_performance_lane_findings(brief, files)
+        findings, notes, checks, empty_reason, depth = security_performance_lane_findings(brief, files)
     else:
         raise ReviewError(f"unknown review lane: {lane_id}")
 
@@ -1224,10 +1551,11 @@ def run_specialist_lane(
         "changed_files": [file.path for file in files],
         "checks": checks,
         "finding_count": len(findings),
+        "review_note_count": len(notes),
         "blocking_finding_count": len([finding for finding in findings if finding.get("blocking")]),
         "empty_findings_reason": empty_reason if not findings else None,
     }
-    return findings, analysis
+    return findings, notes, analysis
 
 
 def lane_log_text(
@@ -1254,6 +1582,7 @@ def lane_log_text(
         f"review_depth={analysis.get('review_depth')}",
         f"risk_profile_level={analysis.get('risk_profile_level')}",
         f"finding_count={analysis.get('finding_count')}",
+        f"review_note_count={analysis.get('review_note_count', 0)}",
         f"blocking_finding_count={analysis.get('blocking_finding_count')}",
     ]
     for check in analysis.get("checks", []):
@@ -1281,16 +1610,36 @@ def validate_list_field(value: dict[str, Any], field: str) -> list[Any]:
     return field_value
 
 
+def validate_locations(value: dict[str, Any], field: str) -> None:
+    locations = validate_list_field(value, field)
+    for location in locations:
+        if not isinstance(location, dict):
+            raise ReviewError(f"{field} items must be objects")
+        validate_string_field(location, "path")
+
+
 def validate_review_finding_core(value: dict[str, Any]) -> None:
     for field in ["id", "category", "severity", "evidence_type", "summary", "details", "suggested_fix"]:
         validate_string_field(value, field)
     validate_bool_field(value, "verified")
     validate_bool_field(value, "blocking")
-    locations = validate_list_field(value, "locations")
-    for location in locations:
-        if not isinstance(location, dict):
-            raise ReviewError("finding locations must be objects")
-        validate_string_field(location, "path")
+    validate_locations(value, "locations")
+
+
+def validate_review_note_core(value: dict[str, Any]) -> None:
+    for field in ["id", "kind", "category", "severity", "summary", "details", "suggested_action"]:
+        validate_string_field(value, field)
+    validate_locations(value, "locations")
+
+
+def validate_review_notes(value: dict[str, Any]) -> None:
+    if "review_notes" not in value:
+        return
+    notes = validate_list_field(value, "review_notes")
+    for note in notes:
+        if not isinstance(note, dict):
+            raise ReviewError("review_notes items must be objects")
+        validate_review_note_core(note)
 
 
 def validate_review_brief(value: dict[str, Any]) -> None:
@@ -1362,6 +1711,7 @@ def validate_review_lane_result(value: dict[str, Any]) -> None:
                 raise ReviewError(
                     "blocking correctness findings must be verified with executable evidence (test, runtime, or reproduction)"
                 )
+    validate_review_notes(value)
     validate_list_field(value, "artifacts")
 
 
@@ -1396,6 +1746,7 @@ def validate_review_synthesis(value: dict[str, Any]) -> None:
         raise ReviewError("review synthesis grouped_findings must be an object")
     if not isinstance(value.get("finding_counts"), dict):
         raise ReviewError("review synthesis finding_counts must be an object")
+    validate_review_notes(value)
 
 
 def validate_final_review(value: dict[str, Any]) -> None:
@@ -1420,6 +1771,13 @@ def validate_final_review(value: dict[str, Any]) -> None:
     validate_list_field(value, "blockers")
     validate_list_field(value, "lane_statuses")
     validate_list_field(value, "execution_issues")
+    validate_review_notes(value)
+    if "non_blocking_findings" in value:
+        non_blocking = validate_list_field(value, "non_blocking_findings")
+        for finding in non_blocking:
+            if not isinstance(finding, dict):
+                raise ReviewError("final review non_blocking_findings must be objects")
+            validate_review_finding_core(finding)
 
 
 def validate_artifact(value: dict[str, Any]) -> None:
@@ -1539,6 +1897,66 @@ def compact_finding(finding: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def first_note_location_path(note: dict[str, Any]) -> str:
+    locations = note.get("locations")
+    if isinstance(locations, list) and locations:
+        location = locations[0]
+        if isinstance(location, dict):
+            path = location.get("path")
+            if isinstance(path, str) and path:
+                return path
+    return "."
+
+
+def review_note_dedupe_key(note: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        normalized_text(note.get("kind")),
+        normalized_text(note.get("category")),
+        normalized_text(note.get("summary")),
+        normalized_text(first_note_location_path(note)),
+    )
+
+
+def normalize_review_note_for_synthesis(note: dict[str, Any], lane_id: str) -> dict[str, Any]:
+    normalized = json_clone(note)
+    normalized["source_lanes"] = [lane_id]
+    normalized["source_note_ids"] = [note.get("id", "unknown")]
+    locations = normalized.get("locations")
+    if isinstance(locations, list):
+        normalized["locations"] = dedupe_locations([
+            location for location in locations if isinstance(location, dict)
+        ])
+    return normalized
+
+
+def merge_duplicate_review_note(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    existing_sources = existing.setdefault("source_lanes", [])
+    for lane in incoming.get("source_lanes", []):
+        if lane not in existing_sources:
+            existing_sources.append(lane)
+
+    existing_ids = existing.setdefault("source_note_ids", [])
+    for note_id in incoming.get("source_note_ids", []):
+        if note_id not in existing_ids:
+            existing_ids.append(note_id)
+
+    existing["merged_duplicate_count"] = int(existing.get("merged_duplicate_count", 1)) + 1
+
+
+def sort_review_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kind_order = {"risk_note": 0, "coverage_note": 1, "follow_up_test": 2, "review_note": 3}
+    return sorted(
+        notes,
+        key=lambda note: (
+            kind_order.get(str(note.get("kind")), 10),
+            category_sort_index(note.get("category")),
+            -severity_rank(note.get("severity")),
+            first_note_location_path(note),
+            normalized_text(note.get("summary")),
+        ),
+    )
+
+
 def normalize_finding_for_synthesis(
     finding: dict[str, Any], lane_id: str, actions: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -1651,7 +2069,11 @@ def assign_synthesized_ids(findings: list[dict[str, Any]]) -> None:
         finding["id"] = f"synthesized-{index:03d}"
 
 
-def finding_counts(findings: list[dict[str, Any]], lane_statuses: list[dict[str, Any]]) -> dict[str, Any]:
+def finding_counts(
+    findings: list[dict[str, Any]],
+    lane_statuses: list[dict[str, Any]],
+    review_note_count: int = 0,
+) -> dict[str, Any]:
     by_severity = {severity: 0 for severity in SEVERITY_ORDER}
     by_category = {category: 0 for category in CATEGORY_ORDER}
     for finding in findings:
@@ -1663,10 +2085,13 @@ def finding_counts(findings: list[dict[str, Any]], lane_statuses: list[dict[str,
             by_category[category] += 1
         else:
             by_category["other"] += 1
+    blocking_count = len([finding for finding in findings if finding.get("blocking")])
     return {
         "total": len(findings),
-        "blocking": len([finding for finding in findings if finding.get("blocking")]),
+        "blocking": blocking_count,
+        "non_blocking": len(findings) - blocking_count,
         "verified": len([finding for finding in findings if finding.get("verified")]),
+        "review_notes": review_note_count,
         "by_severity": by_severity,
         "by_category": by_category,
         "lane_failed": len([lane for lane in lane_statuses if lane.get("state") == "failed"]),
@@ -1700,6 +2125,7 @@ def lane_status_from_result(path: Path, result: dict[str, Any]) -> dict[str, Any
     lane = result.get("lane", {}) if isinstance(result.get("lane"), dict) else {}
     status = result.get("execution_status", {}) if isinstance(result.get("execution_status"), dict) else {}
     findings = result.get("findings", []) if isinstance(result.get("findings"), list) else []
+    notes = result.get("review_notes", []) if isinstance(result.get("review_notes"), list) else []
     return {
         "lane_id": lane.get("id", "unknown"),
         "lane_name": lane.get("name", "unknown"),
@@ -1708,6 +2134,7 @@ def lane_status_from_result(path: Path, result: dict[str, Any]) -> dict[str, Any
         "error": status.get("error"),
         "finding_count": len(findings),
         "blocking_finding_count": len([finding for finding in findings if isinstance(finding, dict) and finding.get("blocking")]),
+        "review_note_count": len(notes),
         "path": str(path),
         "sha256": sha256_file(path),
     }
@@ -1724,6 +2151,7 @@ def build_review_synthesis(
     lane_statuses: list[dict[str, Any]] = []
     execution_issues: list[dict[str, Any]] = []
     by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    notes_by_key: dict[tuple[str, str, str, str], dict[str, Any]] = {}
 
     for lane_path, lane_result in lane_results:
         lane_status = lane_status_from_result(lane_path, lane_result)
@@ -1751,9 +2179,25 @@ def build_review_synthesis(
             else:
                 by_key[key] = normalized
 
+        review_notes = lane_result.get("review_notes", [])
+        if review_notes is None:
+            review_notes = []
+        if not isinstance(review_notes, list):
+            raise ReviewError(f"lane result review_notes must be a list: {lane_path}")
+        for note in review_notes:
+            if not isinstance(note, dict):
+                raise ReviewError(f"lane result review_notes must be objects: {lane_path}")
+            normalized_note = normalize_review_note_for_synthesis(note, lane_id)
+            note_key = review_note_dedupe_key(normalized_note)
+            if note_key in notes_by_key:
+                merge_duplicate_review_note(notes_by_key[note_key], normalized_note)
+            else:
+                notes_by_key[note_key] = normalized_note
+
     normalized_findings = sort_findings(list(by_key.values()))
+    normalized_notes = sort_review_notes(list(notes_by_key.values()))
     assign_synthesized_ids(normalized_findings)
-    counts = finding_counts(normalized_findings, lane_statuses)
+    counts = finding_counts(normalized_findings, lane_statuses, len(normalized_notes))
     lane_failure_count = counts["lane_failed"]
     execution_state = "completed" if lane_failure_count == 0 else "completed_with_lane_failures"
     if not lane_results:
@@ -1789,6 +2233,7 @@ def build_review_synthesis(
         },
         "execution_issues": execution_issues,
         "normalized_findings": normalized_findings,
+        "review_notes": normalized_notes,
         "grouped_findings": group_findings(normalized_findings),
         "finding_counts": counts,
         "synthesis_actions": actions,
@@ -1802,13 +2247,29 @@ def build_review_synthesis(
     }
 
 
+def first_location_label(item: dict[str, Any]) -> str:
+    locations = item.get("locations") if isinstance(item.get("locations"), list) else []
+    if locations and isinstance(locations[0], dict):
+        path = locations[0].get("path")
+        if isinstance(path, str) and path:
+            return path
+    return "."
+
+
 def render_final_review_markdown(brief: dict[str, Any], synthesis: dict[str, Any]) -> str:
     source = brief.get("source", {}) if isinstance(brief.get("source"), dict) else {}
     counts = synthesis.get("finding_counts", {}) if isinstance(synthesis.get("finding_counts"), dict) else {}
     findings = synthesis.get("normalized_findings", [])
     if not isinstance(findings, list):
         findings = []
+    notes = synthesis.get("review_notes", [])
+    if not isinstance(notes, list):
+        notes = []
     blockers = [finding for finding in findings if isinstance(finding, dict) and finding.get("blocking")]
+    non_blocking = [
+        finding for finding in findings
+        if isinstance(finding, dict) and not finding.get("blocking")
+    ]
     execution_issues = synthesis.get("execution_issues", [])
     if not isinstance(execution_issues, list):
         execution_issues = []
@@ -1825,16 +2286,17 @@ def render_final_review_markdown(brief: dict[str, Any], synthesis: dict[str, Any
         lines.append(f"{len(blockers)} blocker(s) require attention before publish.")
     else:
         lines.append("No blocking findings were produced by the staged review workflow.")
+    if non_blocking:
+        lines.append(f"{len(non_blocking)} non-blocking finding(s) remain for reviewer judgment.")
+    if notes:
+        lines.append(f"{len(notes)} risk/coverage/review note(s) were retained separately from findings.")
     if execution_issues:
         lines.append(f"{len(execution_issues)} lane execution issue(s) were isolated and retained for diagnosis.")
-    lines.extend([
-        "",
-        "## Blockers",
-    ])
+
+    lines.extend(["", "## Blockers"])
     if blockers:
         for finding in blockers[:8]:
-            locations = finding.get("locations") if isinstance(finding.get("locations"), list) else []
-            location = locations[0].get("path") if locations and isinstance(locations[0], dict) else "."
+            location = first_location_label(finding)
             lines.append(
                 f"- [{finding.get('severity')}/{finding.get('category')}] {finding.get('summary')} "
                 f"({location}; evidence={finding.get('evidence_type')}, verified={finding.get('verified')})"
@@ -1844,30 +2306,39 @@ def render_final_review_markdown(brief: dict[str, Any], synthesis: dict[str, Any
     else:
         lines.append("- None.")
 
-    lines.extend(["", "## Findings by severity"])
+    lines.extend(["", "## Non-blocking findings"])
     listed = 0
-    max_listed = 12
-    for severity in SEVERITY_ORDER:
-        severity_findings = [
-            finding for finding in findings if isinstance(finding, dict) and finding.get("severity") == severity
-        ]
-        if not severity_findings:
+    max_listed = 10
+    for finding in non_blocking:
+        if listed >= max_listed:
             continue
-        lines.append(f"### {severity} ({len(severity_findings)})")
-        for finding in severity_findings:
-            if listed >= max_listed:
-                continue
-            locations = finding.get("locations") if isinstance(finding.get("locations"), list) else []
-            location = locations[0].get("path") if locations and isinstance(locations[0], dict) else "."
-            blocking = " blocker" if finding.get("blocking") else ""
-            lines.append(
-                f"- [{finding.get('category')}{blocking}] {finding.get('summary')} ({location})"
-            )
-            listed += 1
-    if findings and listed < len(findings):
-        lines.append(f"- ... {len(findings) - listed} lower-priority finding(s) omitted from concise output; see JSON artifact.")
-    if not findings:
-        lines.append("- No findings from any lane.")
+        location = first_location_label(finding)
+        lines.append(
+            f"- [{finding.get('severity')}/{finding.get('category')}] {finding.get('summary')} "
+            f"({location}; evidence={finding.get('evidence_type')})"
+        )
+        listed += 1
+    if non_blocking and listed < len(non_blocking):
+        lines.append(f"- ... {len(non_blocking) - listed} additional non-blocking finding(s) omitted; see JSON artifact.")
+    if not non_blocking:
+        if not findings:
+            lines.append("- No findings from any lane.")
+        else:
+            lines.append("- None.")
+
+    lines.extend(["", "## Risk / coverage / review notes"])
+    max_notes = 8
+    for index, note in enumerate([note for note in notes if isinstance(note, dict)]):
+        if index >= max_notes:
+            continue
+        location = first_location_label(note)
+        lines.append(
+            f"- [{note.get('kind')}/{note.get('category')}] {note.get('summary')} ({location})"
+        )
+    if notes and len(notes) > max_notes:
+        lines.append(f"- ... {len(notes) - max_notes} additional note(s) omitted; see JSON artifact.")
+    if not notes:
+        lines.append("- None.")
 
     if execution_issues:
         lines.extend(["", "## Lane execution issues"])
@@ -1881,12 +2352,20 @@ def render_final_review_markdown(brief: dict[str, Any], synthesis: dict[str, Any
         for lane in lane_results:
             if isinstance(lane, dict):
                 lines.append(
-                    f"- {lane.get('lane_id')}: {lane.get('state')} with {lane.get('finding_count')} finding(s)."
+                    f"- {lane.get('lane_id')}: {lane.get('state')} with {lane.get('finding_count')} finding(s) "
+                    f"and {lane.get('review_note_count', 0)} note(s)."
                 )
     else:
         lines.append("- No lane result artifacts were supplied.")
 
-    lines.extend(["", "## Counts", f"- Total findings: {counts.get('total', 0)}", f"- Blocking findings: {counts.get('blocking', 0)}"])
+    lines.extend([
+        "",
+        "## Counts",
+        f"- Total findings: {counts.get('total', 0)}",
+        f"- Blocking findings: {counts.get('blocking', 0)}",
+        f"- Non-blocking findings: {counts.get('non_blocking', 0)}",
+        f"- Review notes: {counts.get('review_notes', len(notes))}",
+    ])
     return "\n".join(lines) + "\n"
 
 
@@ -1896,10 +2375,13 @@ def final_review_summary(synthesis: dict[str, Any]) -> str:
     issue_count = len(execution_issues) if isinstance(execution_issues, list) else 0
     total = counts.get("total", 0)
     blocking = counts.get("blocking", 0)
+    note_count = counts.get("review_notes", 0)
     if total == 0:
         finding_text = "No findings were produced by the review lanes."
     else:
         finding_text = f"Synthesized {total} finding(s), including {blocking} blocker(s)."
+    if note_count:
+        finding_text += f" Retained {note_count} risk/coverage/review note(s) separately."
     if issue_count:
         return finding_text + f" {issue_count} lane execution issue(s) were isolated for diagnosis."
     return finding_text
@@ -1917,6 +2399,13 @@ def build_final_review_artifact(
     if not isinstance(findings, list):
         findings = []
     blockers = [json_clone(finding) for finding in findings if isinstance(finding, dict) and finding.get("blocking")]
+    non_blocking = [
+        json_clone(finding) for finding in findings
+        if isinstance(finding, dict) and not finding.get("blocking")
+    ]
+    notes = synthesis.get("review_notes", [])
+    if not isinstance(notes, list):
+        notes = []
     return {
         "$schema": CONTRACT_SCHEMA_REF,
         "schema_version": SCHEMA_VERSION,
@@ -1942,6 +2431,8 @@ def build_final_review_artifact(
         "finding_counts": synthesis.get("finding_counts", {}),
         "grouped_findings": synthesis.get("grouped_findings", {}),
         "blockers": blockers,
+        "non_blocking_findings": non_blocking,
+        "review_notes": json_clone(notes),
         "lane_statuses": synthesis.get("lane_results", []),
         "execution_issues": synthesis.get("execution_issues", []),
         "markdown": render_final_review_markdown(brief, synthesis),
@@ -1966,6 +2457,7 @@ def synthesis_log_text(
         f"brief_sha256={sha256_file(brief_path)}",
         f"lane_result_count={len(lane_paths)}",
         f"finding_count={counts.get('total', 0)}",
+        f"review_note_count={counts.get('review_notes', 0)}",
         f"blocking_finding_count={counts.get('blocking', 0)}",
         f"lane_failed_count={counts.get('lane_failed', 0)}",
         "remote_mutations=none",
@@ -2049,6 +2541,7 @@ def synthesize_command(args: argparse.Namespace) -> None:
     print(f"REVIEW_FINAL_ARTIFACT_PATH={final_path}")
     print(f"REVIEW_SYNTHESIS_LOG_PATH={log_path}")
     print(f"REVIEW_FINDINGS={counts.get('total', 0)}")
+    print(f"REVIEW_REVIEW_NOTES={counts.get('review_notes', 0)}")
     print(f"REVIEW_BLOCKING_FINDINGS={counts.get('blocking', 0)}")
     print(f"REVIEW_LANE_FAILURES={counts.get('lane_failed', 0)}")
     print("REVIEW_REMOTE_MUTATIONS=none")
@@ -2160,7 +2653,7 @@ def run_lane_command(args: argparse.Namespace) -> None:
     diff, source = diff_source_from_args(args)
     files = parse_diff_files(diff)
 
-    findings, analysis = run_specialist_lane(lane_id, brief, files)
+    findings, notes, analysis = run_specialist_lane(lane_id, brief, files)
     completed_at = now_utc()
 
     analysis_path = output_dir / f"review-lane-{lane_id}-analysis.v1.json"
@@ -2199,6 +2692,7 @@ def run_lane_command(args: argparse.Namespace) -> None:
             "sha256": sha256_file(brief_path),
         },
         "findings": findings,
+        "review_notes": notes,
         "artifacts": [
             {
                 "artifact_type": "review_lane_analysis",
@@ -2230,6 +2724,7 @@ def run_lane_command(args: argparse.Namespace) -> None:
     print(f"REVIEW_LANE_LOG_PATH={log_path}")
     print(f"REVIEW_LANE_ANALYSIS_PATH={analysis_path}")
     print(f"REVIEW_LANE_FINDINGS={len(findings)}")
+    print(f"REVIEW_LANE_REVIEW_NOTES={len(notes)}")
     print(f"REVIEW_LANE_BLOCKING_FINDINGS={analysis.get('blocking_finding_count')}")
     print(f"REVIEW_LANE_REVIEW_DEPTH={analysis.get('review_depth')}")
 
@@ -2279,6 +2774,7 @@ def write_failed_lane_artifacts(args: argparse.Namespace, message: str) -> None:
         },
         "input_brief_ref": failed_lane_brief_ref(args),
         "findings": [],
+        "review_notes": [],
         "artifacts": [
             {
                 "artifact_type": "log",
@@ -2433,6 +2929,74 @@ def preflight_scenarios() -> list[dict[str, Any]]:
             "test_status": ["unit=passed:representative performance fixture"],
         },
         {
+            "id": "pr80-staged-review-precision",
+            "description": "PR #80-inspired staged review precision regression fixture",
+            "diff": "diff --git a/docs/review-artifacts.md b/docs/review-artifacts.md\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/docs/review-artifacts.md\n"
+            "+++ b/docs/review-artifacts.md\n"
+            "@@ -1,3 +1,7 @@\n"
+            " # Review artifacts\n"
+            "+Document that scripts/scherzo-review may mention subprocess.run in examples.\n"
+            "+Document that json.loads and simplifile.read_text failures remain local.\n"
+            "+Document that process.sleep should be avoided in async tests.\n"
+            " Existing documentation.\n"
+            "diff --git a/examples/workflows/implementation.yaml b/examples/workflows/implementation.yaml\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/examples/workflows/implementation.yaml\n"
+            "+++ b/examples/workflows/implementation.yaml\n"
+            "@@ -1,3 +1,6 @@\n"
+            " steps:\n"
+            "   - id: staged-review\n"
+            "+    run: scripts/scherzo-review run-lane --lane security-performance\n"
+            "+    artifacts: [review-synthesis.v1.json, final-review.v1.json]\n"
+            "diff --git a/scripts/scherzo-review b/scripts/scherzo-review\n"
+            "index 1111111..2222222 100755\n"
+            "--- a/scripts/scherzo-review\n"
+            "+++ b/scripts/scherzo-review\n"
+            "@@ -10,4 +10,9 @@\n"
+            " def read_fixture(path):\n"
+            "+    payload = Path(path).read_text()\n"
+            "+    data = json.loads(payload)\n"
+            "+    subprocess.run([\"git\", \"diff\", \"--check\"], text=True)\n"
+            "+    subprocess.run([\"git\", \"diff\", \"--stat\"], text=True)\n"
+            "+    return data\n"
+            "     return {}\n"
+            "diff --git a/src/scherzo/control/review_lane.gleam b/src/scherzo/control/review_lane.gleam\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/src/scherzo/control/review_lane.gleam\n"
+            "+++ b/src/scherzo/control/review_lane.gleam\n"
+            "@@ -1,4 +1,9 @@\n"
+            " pub fn schedule(review_state) {\n"
+            "+  let decoded = parse_review_state(review_state)\n"
+            "+  process.send_after(decoded.worker, 1000, decoded.message)\n"
+            "+  state.update(decoded.session_id, decoded.status)\n"
+            "+  linear.issue_comment(decoded.issue_id)\n"
+            "   review_state\n"
+            " }\n"
+            "diff --git a/test/review_lane_test.gleam b/test/review_lane_test.gleam\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/test/review_lane_test.gleam\n"
+            "+++ b/test/review_lane_test.gleam\n"
+            "@@ -1,2 +1,9 @@\n"
+            "+import gleam/list\n"
+            "+import scherzo/control/review_lane\n"
+            "+\n"
+            "+fn fixture_review_state() {\n"
+            "+  let fixture = \"{\\\"session_id\\\":\\\"S1\\\"}\"\n"
+            "+  fixture\n"
+            "+}\n"
+            " pub fn existing_test() {\n"
+            "   assert 1 == 1\n"
+            " }\n",
+            "test_status": ["unit=passed:PR #80-inspired staged review fixture"],
+            "expect_no_blockers": True,
+            "expect_review_notes": True,
+            "expect_no_weak_test_assertion_finding": True,
+            "expect_security_performance_findings": 0,
+            "expect_security_locations_prioritize_non_docs": True,
+        },
+        {
             "id": "lane-timeout-failure-simulation",
             "description": "simulated lane timeout/failure remains isolated and diagnosable",
             "diff": "diff --git a/src/scherzo/review_failure_fixture.gleam b/src/scherzo/review_failure_fixture.gleam\n"
@@ -2572,6 +3136,66 @@ def preflight_assert_scenario_expectations(
         raise ReviewError(
             f"scenario {scenario_id} final artifact did not preserve remote_mutations=none"
         )
+    if scenario.get("expect_no_blockers") and counts.get("blocking", 0) != 0:
+        raise ReviewError(
+            f"scenario {scenario_id} expected no blockers but saw {counts.get('blocking', 0)}"
+        )
+
+    notes = final_review.get("review_notes", [])
+    if not isinstance(notes, list):
+        notes = []
+    if scenario.get("expect_review_notes") and not notes:
+        raise ReviewError(f"scenario {scenario_id} expected review notes")
+
+    normalized_findings = synthesis.get("normalized_findings", [])
+    if not isinstance(normalized_findings, list):
+        normalized_findings = []
+    if scenario.get("expect_no_weak_test_assertion_finding"):
+        for finding in normalized_findings:
+            if not isinstance(finding, dict):
+                continue
+            if normalized_text(finding.get("summary")) in {
+                "changed tests add little or no visible assertion signal",
+                "new behavioral tests lack visible assertions",
+            }:
+                raise ReviewError(
+                    f"scenario {scenario_id} unexpectedly produced a weak-test assertion finding"
+                )
+
+    if scenario.get("expect_security_performance_findings") == 0:
+        for finding in normalized_findings:
+            if not isinstance(finding, dict):
+                continue
+            source_lanes = finding.get("source_lanes", [])
+            if isinstance(source_lanes, list) and "security-performance" in source_lanes:
+                raise ReviewError(
+                    f"scenario {scenario_id} expected security/performance output to be notes, not findings"
+                )
+
+    if scenario.get("expect_security_locations_prioritize_non_docs"):
+        security_notes = [
+            note for note in notes
+            if isinstance(note, dict)
+            and isinstance(note.get("source_lanes"), list)
+            and "security-performance" in note.get("source_lanes", [])
+        ]
+        if not security_notes:
+            raise ReviewError(f"scenario {scenario_id} expected security/performance notes")
+        for note in security_notes:
+            locations = note.get("locations", [])
+            if not isinstance(locations, list) or not locations:
+                raise ReviewError(f"scenario {scenario_id} expected note locations")
+            paths = [
+                location.get("path") for location in locations
+                if isinstance(location, dict) and isinstance(location.get("path"), str)
+            ]
+            if len(paths) != len(set(paths)):
+                raise ReviewError(f"scenario {scenario_id} saw duplicate note locations: {paths}")
+            first_path = paths[0] if paths else ""
+            if first_path.startswith("docs/"):
+                raise ReviewError(
+                    f"scenario {scenario_id} expected non-doc locations before documentation, saw {first_path}"
+                )
 
     if scenario.get("mode") == "lane_failure":
         if counts.get("lane_failed", 0) < 1:
@@ -2921,6 +3545,7 @@ def preflight_command(args: argparse.Namespace) -> None:
         "correctness issue requiring test/repro evidence",
         "security-sensitive filesystem/process/network PR",
         "performance-sensitive PR",
+        "PR #80-inspired staged review precision regression",
         "lane timeout/failure simulation",
         "malformed lane output simulation",
         "empty findings from all lanes",

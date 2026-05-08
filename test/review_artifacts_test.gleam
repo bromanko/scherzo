@@ -354,12 +354,75 @@ pub fn security_performance_lane_uses_low_risk_lightweight_depth_test() {
   assert string.contains(lane_result, "\"findings\": []")
   assert string.contains(
     lane_result,
-    "Lightweight security/performance review found no heuristic findings.",
+    "Lightweight security/performance review found no concrete heuristic findings.",
   )
   assert string.contains(lane_log, "review_depth=lightweight")
   assert string.contains(
     lane_log,
     "skipped deep security/performance heuristics",
+  )
+
+  let validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> lane_result_path,
+    )
+  assert validation.status == step_artifact.StepSucceeded
+}
+
+pub fn security_performance_lane_ignores_detector_token_literals_test() {
+  let dir = "test/tmp/review-artifacts-security-token-literals"
+  reset_dir(dir)
+  let diff_path = dir <> "/tokens.diff"
+  let brief_dir = dir <> "/brief"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      diff_path,
+      "diff --git a/scripts/scherzo-review b/scripts/scherzo-review\n"
+        <> "index 1111111..2222222 100755\n"
+        <> "--- a/scripts/scherzo-review\n"
+        <> "+++ b/scripts/scherzo-review\n"
+        <> "@@ -1,2 +1,8 @@\n"
+        <> " def existing():\n"
+        <> "+CONCRETE_PROCESS_TOKENS = [\n"
+        <> "+    \"shell=True\",\n"
+        <> "+    \"os.system(\",\n"
+        <> "+    \":os.cmd\",\n"
+        <> "+    \"system.cmd\",\n"
+        <> "+]\n"
+        <> "   return None\n",
+    )
+
+  let dry_run =
+    run_command(
+      "scripts/scherzo-review dry-run --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> brief_dir,
+    )
+  assert dry_run.status == step_artifact.StepSucceeded
+
+  let lane =
+    run_command(
+      "scripts/scherzo-review run-lane --lane security-performance --brief "
+      <> brief_dir
+      <> "/review-brief.v1.json --diff-file "
+      <> diff_path
+      <> " --output-dir "
+      <> lane_dir,
+    )
+  assert lane.status == step_artifact.StepSucceeded
+  assert lane.exit_code == Some(0)
+  assert string.contains(lane.stdout, "REVIEW_LANE_FINDINGS=0")
+  assert string.contains(lane.stdout, "REVIEW_LANE_REVIEW_NOTES=1")
+
+  let lane_result_path = lane_dir <> "/review-lane-security-performance.v1.json"
+  let assert Ok(lane_result) = simplifile.read(lane_result_path)
+  assert string.contains(lane_result, "\"findings\": []")
+  assert string.contains(lane_result, "\"review_notes\"")
+  assert !string.contains(
+    lane_result,
+    "Changed code adds a concrete shell execution hazard",
   )
 
   let validation =
@@ -417,7 +480,7 @@ pub fn review_preflight_runs_full_dry_run_suite_test() {
   assert preflight.status == step_artifact.StepSucceeded
   assert preflight.exit_code == Some(0)
   assert string.contains(preflight.stdout, "REVIEW_PREFLIGHT=ok")
-  assert string.contains(preflight.stdout, "REVIEW_PREFLIGHT_SCENARIOS=11")
+  assert string.contains(preflight.stdout, "REVIEW_PREFLIGHT_SCENARIOS=12")
   assert string.contains(preflight.stdout, "REVIEW_REMOTE_MUTATIONS=none")
 
   let manifest_path = dir <> "/preflight-manifest.v1.json"
@@ -426,6 +489,10 @@ pub fn review_preflight_runs_full_dry_run_suite_test() {
   assert string.contains(manifest, "small/trivial PR")
   assert string.contains(manifest, "medium feature PR")
   assert string.contains(manifest, "test-heavy PR")
+  assert string.contains(
+    manifest,
+    "PR #80-inspired staged review precision regression",
+  )
   assert string.contains(manifest, "malformed lane output simulation")
   assert string.contains(manifest, "duplicate-conflicting-synthesis")
   assert string.contains(manifest, "\"remote_mutations\": \"none\"")
@@ -437,6 +504,19 @@ pub fn review_preflight_runs_full_dry_run_suite_test() {
     )
   assert string.contains(empty_final, "No findings from any lane")
   assert string.contains(empty_final, "\"artifact_type\": \"final_review\"")
+
+  let assert Ok(pr80_final) =
+    simplifile.read(
+      dir <> "/pr80-staged-review-precision/03-synthesis/final-review.v1.json",
+    )
+  assert string.contains(pr80_final, "\"blocking\": 0")
+  assert string.contains(pr80_final, "\"review_notes\"")
+  assert string.contains(pr80_final, "scripts/scherzo-review")
+  assert string.contains(pr80_final, "src/scherzo/control/review_lane.gleam")
+  assert !string.contains(
+    pr80_final,
+    "New behavioral tests lack visible assertions",
+  )
 
   let assert Ok(lane_failure_synthesis) =
     simplifile.read(
