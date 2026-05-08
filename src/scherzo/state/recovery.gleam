@@ -1586,7 +1586,7 @@ fn recover_outbox_entry(
         outbox_id,
         issue_id,
         outbox_kind,
-        "outbox_payload_missing",
+        outbox.OutboxPayloadMissing,
       )
     projection.OutboxPendingV2(
       issue_id,
@@ -1596,23 +1596,23 @@ fn recover_outbox_entry(
       _,
     ) ->
       case outbox.decode_payload(payload_json) {
-        Error(error_code) ->
+        Error(error) ->
           fail_outbox_recovery(
             recovery,
             outbox_id,
             issue_id,
             outbox_kind,
-            error_code,
+            error,
           )
         Ok(payload) ->
           case outbox.recovery_replay_error(outbox_kind, payload.kind) {
-            Error(error_code) ->
+            Error(error) ->
               fail_outbox_recovery(
                 recovery,
                 outbox_id,
                 issue_id,
                 outbox_kind,
-                error_code,
+                error,
               )
             Ok(Nil) ->
               OutboxRecovery(..recovery, outbox_to_replay: [
@@ -1637,23 +1637,22 @@ fn fail_outbox_recovery(
   outbox_id: String,
   issue_id: String,
   outbox_kind: String,
-  error_code: String,
+  error: outbox.ReplayError,
 ) -> OutboxRecovery {
+  let error_code = outbox.replay_error_code(error)
+  let body = record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code)
   OutboxRecovery(
     ..recovery,
-    record_bodies: [
-      record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code),
-      ..recovery.record_bodies
-    ],
-    warnings: [
-      outbox_recovery_warning(outbox_id, error_code),
-      ..recovery.warnings
-    ],
+    record_bodies: [body, ..recovery.record_bodies],
+    warnings: [outbox_recovery_warning(outbox_id, error), ..recovery.warnings],
   )
 }
 
-fn outbox_recovery_warning(outbox_id: String, error_code: String) -> String {
-  "outbox_replay_failed:" <> outbox_id <> ":" <> error_code
+fn outbox_recovery_warning(
+  outbox_id: String,
+  error: outbox.ReplayError,
+) -> String {
+  "outbox_replay_failed:" <> outbox_id <> ":" <> outbox.replay_error_code(error)
 }
 
 fn compare_outbox_entries_by_time(
