@@ -99,6 +99,7 @@ pub fn mutating_command_requests_roundtrip_to_operator_commands_test() {
     "11",
     command.RespondUi("session-1", "ui-2", command.UiValue("choice")),
   )
+  assert_command_roundtrip("12", command.RunScheduleNow("nightly-repair"))
 }
 
 pub fn mutating_command_aliases_decode_test() {
@@ -147,6 +148,11 @@ pub fn mutating_command_aliases_decode_test() {
     protocol.decode_request(
       "{\"version\":1,\"type\":\"prompt_session\",\"id\":\"8\",\"token\":\"secret\",\"session_id\":\"session-4\",\"message\":\"hello\"}",
     )
+
+  let assert Ok(protocol.RunScheduleNow(_, _, "nightly-repair")) =
+    protocol.decode_request(
+      "{\"version\":1,\"type\":\"run_schedule_now\",\"id\":\"9\",\"token\":\"secret\",\"job_id\":\"nightly-repair\"}",
+    )
 }
 
 pub fn invalid_mutating_commands_return_invalid_request_test() {
@@ -185,6 +191,12 @@ pub fn invalid_mutating_commands_return_invalid_request_test() {
   )
   assert_invalid_request(
     "{\"version\":1,\"type\":\"respond_ui\",\"id\":\"12\",\"token\":\"secret\",\"session_id\":\"session-1\",\"request_id\":\"ui-1\"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"schedule_run_now\",\"id\":\"13\",\"token\":\"secret\"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"schedule_run_now\",\"id\":\"14\",\"token\":\"secret\",\"job_id\":\"   \"}",
   )
 }
 

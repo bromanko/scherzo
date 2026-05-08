@@ -21,6 +21,7 @@ pub type OperatorCommand {
   StopAfterCurrentTurn(session_id: String)
   PromptSession(session_id: String, message: String)
   RespondUi(session_id: String, request_id: String, response: UiResponse)
+  RunScheduleNow(job_id: String)
 }
 
 pub type CommandStatus {
@@ -52,6 +53,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     StopAfterCurrentTurn(_) -> "stop_after_current_turn"
     PromptSession(_, _) -> "prompt"
     RespondUi(_, _, _) -> "respond_ui"
+    RunScheduleNow(_) -> "schedule_run_now"
   }
 }
 
@@ -64,6 +66,7 @@ pub fn command_target(command: OperatorCommand) -> Option(String) {
     | StopAfterCurrentTurn(session_id)
     | PromptSession(session_id, _)
     | RespondUi(session_id, _, _) -> Some(session_id)
+    RunScheduleNow(job_id) -> Some(job_id)
   }
 }
 

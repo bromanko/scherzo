@@ -13,12 +13,14 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/log
 import scherzo/model_config
+import scherzo/orchestrator/schedule_core
 import scherzo/process_ext
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
+import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
@@ -56,6 +58,11 @@ pub type StepContext {
     config_dir: String,
     issue_id: String,
     issue_identifier: String,
+    run_kind: String,
+    scheduled_job_id: String,
+    schedule_due_at: String,
+    schedule_started_at: String,
+    run_attempt: Int,
   )
 }
 
@@ -290,6 +297,26 @@ pub fn execute(
   )
 }
 
+pub fn execute_scheduled(
+  scheduled: schedule_core.ScheduledRunContext,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  dependencies: Dependencies,
+) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  let issue = scheduled_placeholder_issue(scheduled)
+  execute_with_context(
+    issue,
+    dag,
+    orchestrator,
+    tracker_client,
+    secrets,
+    FreshRun(scheduled.run_id),
+    scheduled_dependencies(scheduled, dependencies),
+  )
+}
+
 pub fn execute_with_resume(
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
@@ -326,6 +353,133 @@ pub fn execute_with_resume(
       pi_session_continuations: resume.pi_session_continuations,
     )),
     dependencies,
+  )
+}
+
+fn scheduled_dependencies(
+  scheduled: schedule_core.ScheduledRunContext,
+  dependencies: Dependencies,
+) -> Dependencies {
+  Dependencies(
+    ..dependencies,
+    prepare_step: fn(
+      _issue,
+      _workflow_id,
+      _run_id,
+      step_id,
+      _attempt_index,
+      workspace_ref,
+      orchestrator,
+      known,
+    ) {
+      workspace_run.prepare_scheduled_step_attempt(
+        scheduled,
+        step_id,
+        workspace_ref,
+        orchestrator,
+        known,
+      )
+    },
+    prepare_recovered_step: fn(
+      _issue,
+      _workflow_id,
+      _run_id,
+      _expected_run_root,
+      step_id,
+      _attempt_index,
+      workspace_ref,
+      orchestrator,
+      known,
+    ) {
+      workspace_run.prepare_scheduled_step_attempt(
+        scheduled,
+        step_id,
+        workspace_ref,
+        orchestrator,
+        known,
+      )
+    },
+    after_step: fn(_, step_id, prepared, orchestrator) {
+      workspace_run.scheduled_after_step(
+        scheduled,
+        step_id,
+        prepared,
+        orchestrator,
+      )
+    },
+    command_step: fn(context, command, timeout_ms, secrets, limits) {
+      let template_context = scheduled_template_context(scheduled)
+      let context = scheduled_step_context(context, scheduled)
+      case template.render_scheduled(command, template_context) {
+        Ok(rendered) ->
+          dependencies.command_step(
+            context,
+            rendered,
+            timeout_ms,
+            secrets,
+            limits,
+          )
+        Error(err) ->
+          step_artifact.from_command_result(
+            context.step_id,
+            1,
+            "",
+            "template render failed:" <> error.template_code(err),
+            False,
+            secrets,
+            limits,
+          )
+      }
+    },
+  )
+}
+
+fn scheduled_step_context(
+  context: StepContext,
+  scheduled: schedule_core.ScheduledRunContext,
+) -> StepContext {
+  StepContext(
+    ..context,
+    issue_id: "",
+    issue_identifier: "",
+    run_kind: "scheduled",
+    scheduled_job_id: scheduled.job_id,
+    schedule_due_at: schedule_core.iso_utc(scheduled.due_at_ms),
+    schedule_started_at: schedule_core.iso_utc(scheduled.started_at_ms),
+    run_attempt: scheduled.attempt,
+  )
+}
+
+fn scheduled_template_context(
+  scheduled: schedule_core.ScheduledRunContext,
+) -> template.ScheduledTemplateContext {
+  template.ScheduledTemplateContext(
+    job_id: scheduled.job_id,
+    workflow_id: scheduled.workflow_id,
+    due_at: schedule_core.iso_utc(scheduled.due_at_ms),
+    started_at: schedule_core.iso_utc(scheduled.started_at_ms),
+    run_id: scheduled.run_id,
+    attempt: scheduled.attempt,
+  )
+}
+
+fn scheduled_placeholder_issue(
+  scheduled: schedule_core.ScheduledRunContext,
+) -> tracker_issue.Issue {
+  tracker_issue.Issue(
+    id: "",
+    identifier: scheduled.job_id,
+    title: "Scheduled job " <> scheduled.job_id,
+    description: None,
+    priority: None,
+    state: issue_state.from_string_unchecked("scheduled"),
+    branch_name: None,
+    url: None,
+    labels: [],
+    blocked_by: [],
+    blocked_by_complete: True,
+    created_at: None,
+    updated_at: None,
   )
 }
 
@@ -2125,7 +2279,6 @@ fn workflow_attempt_context(
 ) -> workflow_attempt.StepAttemptContext {
   let workflow_fingerprint =
     workflow_attempt.workflow_fingerprint(dag, orchestrator)
-    |> result.unwrap("")
   workflow_attempt.StepAttemptContext(
     run_id: context.run_id,
     issue_id: context.issue_id,
@@ -2176,6 +2329,11 @@ fn step_context(
     config_dir: orchestrator.config_dir,
     issue_id: issue.id,
     issue_identifier: issue.identifier,
+    run_kind: "issue",
+    scheduled_job_id: "",
+    schedule_due_at: "",
+    schedule_started_at: "",
+    run_attempt: 0,
   )
 }
 
@@ -2185,8 +2343,13 @@ fn step_command_env(context: StepContext) -> List(#(String, String)) {
     #("SCHERZO_WORKFLOW_ID", context.workflow_id),
     #("SCHERZO_RUN_ID", context.run_id),
     #("SCHERZO_RUN_ROOT", context.run_root),
+    #("SCHERZO_RUN_KIND", context.run_kind),
     #("SCHERZO_ISSUE_ID", context.issue_id),
     #("SCHERZO_ISSUE_IDENTIFIER", context.issue_identifier),
+    #("SCHERZO_SCHEDULED_JOB_ID", context.scheduled_job_id),
+    #("SCHERZO_SCHEDULE_DUE_AT", context.schedule_due_at),
+    #("SCHERZO_SCHEDULE_STARTED_AT", context.schedule_started_at),
+    #("SCHERZO_RUN_ATTEMPT", int.to_string(context.run_attempt)),
     #("SCHERZO_STEP_ID", context.step_id),
     #("SCHERZO_ATTEMPT_INDEX", int.to_string(context.attempt_index)),
     #(

@@ -47,6 +47,7 @@ pub type Request {
     request_id: String,
     response: command.UiResponse,
   )
+  RunScheduleNow(id: String, token: String, job_id: String)
 }
 
 pub type ErrorBody {
@@ -82,6 +83,7 @@ type RequestFields {
     request_id: Option(String),
     cancel: Option(Bool),
     value: Option(String),
+    job_id: Option(String),
   )
 }
 
@@ -102,6 +104,7 @@ pub fn request_id(request: Request) -> String {
     StopAfterCurrentTurn(id, _, _) -> id
     PromptSession(id, _, _, _) -> id
     RespondUi(id, _, _, _, _) -> id
+    RunScheduleNow(id, _, _) -> id
   }
 }
 
@@ -122,6 +125,7 @@ pub fn request_token(request: Request) -> String {
     StopAfterCurrentTurn(_, token, _) -> token
     PromptSession(_, token, _, _) -> token
     RespondUi(_, token, _, _, _) -> token
+    RunScheduleNow(_, token, _) -> token
   }
 }
 
@@ -206,6 +210,12 @@ pub fn request_to_json(request: Request) -> json.Json {
         ],
         base_request_entries(id, token, "respond_ui"),
       )
+      |> json.object
+    RunScheduleNow(id, token, job_id) ->
+      [
+        #("job_id", json.string(job_id)),
+        ..base_request_entries(id, token, "schedule_run_now")
+      ]
       |> json.object
   }
 }
@@ -359,6 +369,11 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
           ))
         Error(err), _, _ | _, Error(err), _ | _, _, Error(err) -> Error(err)
       }
+    "schedule_run_now" | "run_schedule_now" ->
+      case required_job_id(fields) {
+        Ok(job_id) -> Ok(RunScheduleNow(fields.id, fields.token, job_id))
+        Error(err) -> Error(err)
+      }
     other ->
       Error(RequestError(
         fields.id,
@@ -439,6 +454,19 @@ fn required_request_id(fields: RequestFields) -> Result(String, RequestError) {
   }
 }
 
+fn required_job_id(fields: RequestFields) -> Result(String, RequestError) {
+  case fields.job_id {
+    Some(job_id) -> {
+      let job_id = string.trim(job_id)
+      case job_id == "" {
+        True -> invalid(fields.id, "job_id must not be empty")
+        False -> Ok(job_id)
+      }
+    }
+    None -> invalid(fields.id, "missing job_id")
+  }
+}
+
 fn required_ui_response(
   fields: RequestFields,
 ) -> Result(command.UiResponse, RequestError) {
@@ -512,6 +540,11 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.string),
   )
+  use job_id <- decode.optional_field(
+    "job_id",
+    None,
+    decode.optional(decode.string),
+  )
   decode.success(RequestFields(
     version: version,
     id: id,
@@ -527,6 +560,7 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     request_id: request_id,
     cancel: cancel,
     value: value,
+    job_id: job_id,
   ))
 }
 
@@ -654,6 +688,7 @@ pub fn command_request(
       PromptSession(id, token, session_id, message)
     command.RespondUi(session_id, request_id, response) ->
       RespondUi(id, token, session_id, request_id, response)
+    command.RunScheduleNow(job_id) -> RunScheduleNow(id, token, job_id)
   }
 }
 
@@ -675,6 +710,7 @@ pub fn request_operator_command(
       Some(command.PromptSession(session_id, message))
     RespondUi(_, _, session_id, request_id, response) ->
       Some(command.RespondUi(session_id, request_id, response))
+    RunScheduleNow(_, _, job_id) -> Some(command.RunScheduleNow(job_id))
     Ping(_, _)
     | ListSessions(_, _)
     | GetSession(_, _, _)

@@ -117,7 +117,7 @@ fn read_loop(
       )
     }
     Error(port.ProcessExited(status)) -> {
-      let stderr = port.read_diagnostics(process) |> result.unwrap("")
+      let stderr = read_diagnostics_or_error(process)
       let _cleanup_result = port.terminate(process)
       finish_command(
         step_id,
@@ -135,7 +135,7 @@ fn read_loop(
       )
     }
     Error(port.Closed) -> {
-      let stderr = port.read_diagnostics(process) |> result.unwrap("")
+      let stderr = read_diagnostics_or_error(process)
       let _cleanup_result = port.terminate(process)
       finish_command(
         step_id,
@@ -154,7 +154,7 @@ fn read_loop(
     }
     Error(port.ReadTimeout) -> {
       let _ = port.terminate(process)
-      let stderr = port.read_diagnostics(process) |> result.unwrap("")
+      let stderr = read_diagnostics_or_error(process)
       finish_command(
         step_id,
         command,
@@ -171,7 +171,7 @@ fn read_loop(
       )
     }
     Error(err) -> {
-      let stderr = port.read_diagnostics(process) |> result.unwrap("")
+      let stderr = read_diagnostics_or_error(process)
       let _cleanup_result = port.terminate(process)
       finish_command(
         step_id,
@@ -188,6 +188,16 @@ fn read_loop(
         diagnostics,
       )
     }
+  }
+}
+
+fn read_diagnostics_or_error(process: port.Process) -> String {
+  case port.read_diagnostics(process) {
+    Ok(stderr) -> stderr
+    Error(err) ->
+      "[scherzo could not read command diagnostics: "
+      <> port_error_to_string(err)
+      <> "]\n"
   }
 }
 

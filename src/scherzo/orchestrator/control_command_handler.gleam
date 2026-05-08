@@ -21,6 +21,8 @@ pub type Context(state) {
       #(state, command.CommandResult),
     unpark_issue: fn(state, command.OperatorCommand, command.IssueRef) ->
       #(state, command.CommandResult),
+    run_schedule_now: fn(state, command.OperatorCommand, String) ->
+      #(state, command.CommandResult),
     abort_session: fn(state, command.OperatorCommand, String, Int) ->
       #(state, command.CommandResult),
     route_worker_command: fn(
@@ -148,6 +150,11 @@ pub fn apply(
             },
           )
       }
+    command.RunScheduleNow(job_id) ->
+      log_transition(
+        context,
+        context.run_schedule_now(context.state, operator_command, job_id),
+      )
   }
 }
 
