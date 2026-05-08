@@ -13,6 +13,7 @@ import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/state as orchestrator_state
+import scherzo/scheduled_failure_reporter
 import scherzo/session/hub
 import scherzo/session/name as session_name
 import scherzo/session/tokens as session_tokens
@@ -512,6 +513,9 @@ fn dependencies(
     make_handoff: fn(_, _) { handoff.disabled_client() },
     make_linear_commands: fn(_) { linear_command_client },
     make_triage: fn(_, _) { linear_triage.disabled_client() },
+    make_scheduled_failure_reporter: fn(_) {
+      scheduled_failure_reporter.disabled_client()
+    },
     workflow_run_dependencies: workflow_deps_from_agent(agent_runner),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, fields, _) {

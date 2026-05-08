@@ -7,6 +7,7 @@ import scherzo/log
 
 pub type CheckName {
   WorkflowConfig
+  ScheduledJobs
   LinearContract
   LinearSmoke
   InstanceLock
@@ -56,6 +57,7 @@ pub type Options {
 pub fn default_checks() -> List(CheckName) {
   [
     WorkflowConfig,
+    ScheduledJobs,
     LinearContract,
     LinearSmoke,
     InstanceLock,
@@ -72,6 +74,7 @@ pub fn list_check_names() -> List(String) {
 pub fn check_name_to_string(check: CheckName) -> String {
   case check {
     WorkflowConfig -> "workflow-config"
+    ScheduledJobs -> "scheduled-jobs"
     LinearContract -> "linear-contract"
     LinearSmoke -> "linear-smoke"
     InstanceLock -> "instance-lock"
@@ -83,6 +86,7 @@ pub fn check_name_to_string(check: CheckName) -> String {
 pub fn parse_check_name(name: String) -> Result(CheckName, String) {
   case name {
     "workflow-config" -> Ok(WorkflowConfig)
+    "scheduled-jobs" -> Ok(ScheduledJobs)
     "linear-contract" -> Ok(LinearContract)
     "linear-smoke" -> Ok(LinearSmoke)
     "instance-lock" -> Ok(InstanceLock)
@@ -202,6 +206,15 @@ fn human_pass_body(result: CheckResult) -> String {
         <> " workflow "
         <> plural(field_or(result.fields, "workflow_count", ""), "DAG", "DAGs")
         <> ".",
+      ])
+    ScheduledJobs ->
+      indent([
+        "Scheduled job configuration is valid for the fixed-interval MVP.",
+        "Jobs: "
+          <> field_or(result.fields, "scheduled_job_count", "0")
+          <> ", enabled: "
+          <> field_or(result.fields, "enabled_job_count", "0")
+          <> ".",
       ])
     LinearContract ->
       indent([
@@ -354,6 +367,7 @@ fn status_marker(status: CheckStatus) -> String {
 fn check_title(check: CheckName) -> String {
   case check {
     WorkflowConfig -> "Workflow config"
+    ScheduledJobs -> "Scheduled jobs"
     LinearContract -> "Linear contract"
     LinearSmoke -> "Linear smoke"
     InstanceLock -> "Instance lock"
@@ -366,6 +380,8 @@ fn impact(check: CheckName) -> String {
   case check {
     WorkflowConfig ->
       "Scherzo cannot safely start because config, workflow DAGs, or prompt templates did not load."
+    ScheduledJobs ->
+      "Scheduled jobs may fail before dispatch, create noisy Linear triage issues, or reference Linear issue variables that do not exist for scheduled runs."
     LinearContract ->
       "Configured Linear states or labels may not match the target board."
     LinearSmoke ->
@@ -384,6 +400,12 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- Confirm the YAML path is correct and ends in .yaml or .yml.",
       "- Confirm LINEAR_API_KEY and any referenced environment variables are set.",
       "- Confirm routed workflow DAG and prompt-template files exist.",
+    ]
+    ScheduledJobs -> [
+      "- Confirm scheduled_jobs entries reference existing workflows and use every: <n><ms|s|m|h> with at least 1000ms.",
+      "- Keep schedule-level input, vars, payload, catch_up: true, and non-skip overlap modes out of the MVP config.",
+      "- Replace issue.* references in scheduled workflows with scheduled_job.*, schedule.*, or run.* variables.",
+      "- When Linear reporting is enabled, configure a triage state and let Scherzo ensure reserved scheduled-job dedupe labels.",
     ]
     LinearContract -> [
       "- Confirm tracker.project_slug points to the expected Linear project.",

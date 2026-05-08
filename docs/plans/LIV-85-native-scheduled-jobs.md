@@ -61,11 +61,12 @@ Ledger schema changes can make rollback unsafe. The implementation should keep t
 - [x] (2026-05-06 00:45Z) Added scheduled ledger record encoding/decoding, a lightweight scheduled projection, pure schedule-core boundary/run-ID helpers, scheduled workspace path helpers, scheduled hook environment helpers, and focused unit tests for those foundations.
 - [x] (2026-05-06 01:00Z) Added scheduled worker registry handles, run/session lookup, down-resolution support, and daemon down-resolution stubs that log scheduled worker exits without affecting issue worker behavior.
 - [x] (2026-05-06 01:20Z) Applied review hardening for scheduled projection history by bounding per-job `recent_run_ids` retention to the latest 25 entries while leaving full detailed history in the ledger.
-- [ ] Complete durable schedule projection semantics and startup recovery. Completed: ledger record schema, basic projection folding with bounded recent-run retention, scheduled worker registry bookkeeping, pending-run recovery, active-run interruption recovery into the scheduled retry path, and recovery of retry-waiting scheduled runs. Remaining: failure-report retry recovery and state-status rollback warning for scheduled records.
+- [x] (2026-05-08 00:00Z) Completed durable schedule projection semantics and startup recovery, including failure-report retry recovery and the `scherzoctl state status` rollback warning for ledgers containing scheduled records.
 - [x] (2026-05-07 00:00Z) Integrated the local scheduled runtime into the daemon for enabled fixed-interval jobs: automatic due/pending/start/success/failure records, overlap skips, retry timers, command-only scheduled workflow dispatch without Linear issues, manual `schedules run --now`, and local `schedules status`/`history` projection output.
 - [x] (2026-05-07 00:30Z) Applied review feedback by recording paused boundary skips as `schedule_paused`, including active run details in schedule JSON output, retrying interrupted active scheduled runs instead of terminally exhausting them, restoring retry-waiting scheduled runs on startup, accounting due boundaries on worker finish, scheduled retry tick, pause/resume, and manual run requests, and adding targeted daemon/protocol/CLI tests for those paths.
-- [ ] Implement Linear failure reporting after local scheduler tests are green.
-- [ ] Implement remaining `scherzoctl schedules` diagnostics, examples, tests, and rollout documentation.
+- [x] (2026-05-08 00:00Z) Implemented Linear failure reporting after local scheduler tests were green, including open-issue-per-job dedupe, reserved labels/body marker, silent success, durable report failures, and report retry recovery without rerunning completed workflows.
+- [x] (2026-05-08 00:30Z) Implemented remaining `scherzoctl schedules` diagnostics, examples, tests, and rollout documentation, including `schedules logs --last`, schedule doctor config/template/Linear checks, PR conflict repair examples, rollout notes, and deterministic CLI coverage for retained/expired logs and doctor failures.
+- [x] (2026-05-08 01:00Z) Applied post-review Linear reporter hardening: remembered issue IDs are now verified as open before update, fallback reserved-label dedupe is used when the remembered issue is missing or terminal, and the real Linear search query now filters open states while requiring both reserved labels without excluding issues that also have configured labels.
 
 ## Surprises & Discoveries
 
@@ -78,8 +79,8 @@ Ledger schema changes can make rollback unsafe. The implementation should keep t
 - Observation: `scherzoctl` already has a local control API, session inspection, attach/events, pause/resume, retry, park/unpark, cleanup, and offline state commands.
   Evidence: `src/scherzo/ctl.gleam`, `src/scherzo/control/command.gleam`, and `src/scherzo/control/protocol.gleam` define the current command and protocol surfaces.
 
-- Observation: Current doctor checks load workflow config and validate Linear, instance lock, workspace hooks, and pi, but there is no scheduled-job-specific check.
-  Evidence: `src/scherzo/doctor.gleam` lists `WorkflowConfig`, `LinearContract`, `LinearSmoke`, `InstanceLock`, `WorkspaceHooks`, and `PiProbe`.
+- Observation: Plan-completion verification found that the first `schedules doctor` implementation was only a local projection reader and did not validate configured schedules before they ran.
+  Evidence: `src/scherzo/schedule_doctor.gleam` now centralizes job, workflow, interval, MVP-shape, Linear failure, reserved-label, and template-context diagnostics; `src/scherzo/doctor.gleam` includes a `ScheduledJobs` check; and `test/ctl_test.gleam` covers valid doctor output plus `scheduled_workflow_requires_issue_context` failures.
 
 - Observation: The repository test harness does not accept individual file paths after `gleam test`; it accepts suite selectors through `-- --suite ...`.
   Evidence: `direnv exec . gleam test --target erlang test/config_test.gleam` exited with usage text, while `direnv exec . gleam test --target erlang -- --suite unit` ran the deterministic unit suite successfully.
@@ -92,6 +93,12 @@ Ledger schema changes can make rollback unsafe. The implementation should keep t
 
 - Observation: The scheduled projection records that a run is retry-waiting and what the next attempt is, but it does not preserve the original retry timer deadline as a first-class projected field.
   Evidence: `ScheduledRunRetryScheduled` includes `delay_ms` and `generation` in the ledger record, while `projection.ScheduledRunSummary` stores the retrying run ID, due time, reason, and next attempt. Startup recovery therefore restores a fresh daemon-local timer generation and retries soon rather than reconstructing an exact remaining delay from projection alone.
+
+- Observation: `scherzoctl schedules logs --last` needs deterministic behavior both when a retained session is still in the event hub and when only ledger history remains.
+  Evidence: `test/ctl_test.gleam` writes scheduled ledger records with a latest session ID, verifies pretty replay through the existing event renderer when a control file and retained events exist, and verifies the transcript-expired message includes the run ID, session ID, and run root when the event hub is unavailable.
+
+- Observation: Linear's relationship filter needs issue-level `and` clauses to require both reserved scheduled labels without rejecting issues that also have configured labels.
+  Evidence: Linear's published filtering docs and schema show `IssueFilter.and`, `state.type` string comparators, and `nin`; `test/scheduled_failure_reporter_test.gleam` now exercises the real scheduled failure search transport body and a response containing an open issue with reserved plus configured labels alongside a closed matching issue.
 
 
 ## Decision Log
@@ -148,8 +155,8 @@ Ledger schema changes can make rollback unsafe. The implementation should keep t
   Rationale: Adding the ledger record kinds, config validation, scheduled template context, pure boundary helpers, and workspace path support is a safe foundation that keeps the unit suite green. Full startup recovery depends on daemon runtime state and retry timers and should be completed with daemon dispatch tests rather than hidden inside record/projection work.
   Date: 2026-05-06
 
-- Decision: Do not add the `examples/scherzo.yaml` scheduled job block yet.
-  Rationale: The daemon, control protocol, CLI schedule commands, and Linear failure reporting are not implemented in this pass. Publishing an example that appears runnable before those surfaces exist would mislead operators.
+- Decision: Do not add the `examples/scherzo.yaml` scheduled job block until the runtime, control protocol, CLI schedule commands, and Linear failure reporting are implemented.
+  Rationale: Publishing an example that appears runnable before those surfaces exist would mislead operators. The example is now present because the required surfaces have landed.
   Date: 2026-05-06
 
 - Decision: Scheduled projection retains at most 25 `recent_run_ids` per job.
@@ -168,11 +175,25 @@ Ledger schema changes can make rollback unsafe. The implementation should keep t
   Rationale: These transitions all observe wall-clock time and can otherwise delay or misclassify skipped boundaries. Accounting before the transition preserves overlap, paused, and capacity attribution while still using the existing poll-driven loop for ordinary operation.
   Date: 2026-05-07
 
+- Decision: Schedule doctor diagnostics are shared through a dedicated `src/scherzo/schedule_doctor.gleam` module and surfaced from both `scherzoctl schedules doctor` and the general doctor check list.
+  Rationale: The plan-completion verifier found that projection-only doctor output could not catch config, workflow, Linear failure, reserved-label, or template-context problems before a job ran. A shared module keeps those schedule-specific checks deterministic and lets the generic doctor summarize scheduled-job readiness without duplicating scanner logic.
+  Date: 2026-05-08
+
+- Decision: `scherzoctl schedules doctor <job>` can run without a live daemon by loading `scherzo.yaml` from the current directory, the explicit `--root` directory, or that directory's parent, while treating local ledger projection as an additional diagnostic when a workspace root is available.
+  Rationale: Operators need pre-run diagnostics in fresh or stopped environments. Config and template checks should not depend on a retained control file, but local run/failure/report-retry facts are still useful when the ledger can be inspected.
+  Date: 2026-05-08
+
+- Decision: Treat a remembered scheduled failure Linear issue ID as a hint, not as unconditional authority.
+  Rationale: Operators may close, delete, or otherwise make a prior triage issue inaccessible. The reporter now verifies that the remembered issue is still open before commenting or moving it; if it is missing or terminal, Scherzo falls back to reserved-label open-issue dedupe and creates a new issue only when no open dedupe match exists.
+  Date: 2026-05-08
+
 ## Outcomes & Retrospective
 
 Foundational milestones are partially complete as of 2026-05-06. The code now understands scheduled job configuration, rejects schedule-level arbitrary input payloads, renders scheduled template variables without fabricating a Linear issue, rejects enabled scheduled workflows that reference `issue.*`, records and decodes scheduled ledger event kinds, folds basic scheduled history into projection state, bounds projected recent run ID retention to prevent snapshot growth, computes fixed-interval boundaries and deterministic run IDs, can build issue-free scheduled workspace paths and hook environments, and can track scheduled worker handles in the worker registry. Validation for the foundation pass used `direnv exec . gleam format --check src test` and `direnv exec . gleam test --target erlang -- --suite unit`, with the unit suite reporting 780 passed and no failures. Review hardening added the recent-run retention cap and targeted projection coverage, then reran `direnv exec . gleam format --check src test` and `direnv exec . gleam test --target erlang -- --suite unit`; the unit suite reported 783 passed and no failures.
 
-As of 2026-05-07, the local-only scheduled runtime is observable: an enabled scheduled job reaches due/pending/started/succeeded records, command-step success is visible in the local ledger, same-job active overlap records `overlap_running` without a second start, manual `schedules run --now` reaches the daemon through the control protocol, and `scherzoctl schedules status`/`history` can inspect local projection state without creating Linear issues. Review follow-up hardened recovery and boundary accounting: active runs interrupted by daemon restart now enter the scheduled retry path when attempts remain, retry-waiting runs are restored on startup, and due-boundary accounting also happens around worker finish, scheduled retry ticks, pause/resume, and manual-run requests. The final review-fix validation ran `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `direnv exec . gleam run -m glinter`; tests reported 814 passed and no failures, and glinter reported 0 errors with the existing warning inventory. Remaining gaps are Linear failure reporting, failure-report retry recovery, `schedules logs --last`, schedule doctor, examples, and the state-status rollback warning for ledgers containing scheduled records.
+As of 2026-05-07, the local-only scheduled runtime is observable: an enabled scheduled job reaches due/pending/started/succeeded records, command-step success is visible in the local ledger, same-job active overlap records `overlap_running` without a second start, manual `schedules run --now` reaches the daemon through the control protocol, and `scherzoctl schedules status`/`history` can inspect local projection state without creating Linear issues. Review follow-up hardened recovery and boundary accounting: active runs interrupted by daemon restart now enter the scheduled retry path when attempts remain, retry-waiting runs are restored on startup, and due-boundary accounting also happens around worker finish, scheduled retry ticks, pause/resume, and manual-run requests. The final review-fix validation ran `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `direnv exec . gleam run -m glinter`; tests reported 814 passed and no failures, and glinter reported 0 errors with the existing warning inventory.
+
+As of 2026-05-08, the remaining LIV-85 scheduler MVP gaps are closed. Terminal scheduled failures after retry exhaustion report to one deduped Linear triage issue per job using `scheduled-job:<job-id>`, reserved labels, and a body marker, while successful intervals stay silent. Failed Linear report attempts are ledgered and retried without rerunning the completed workflow, including startup recovery. `scherzoctl schedules logs --last` replays retained scheduled session events or prints a transcript-expired diagnostic with run metadata, and `scherzoctl schedules doctor` now checks configured job presence, workflow loading, interval/MVP shape, Linear failure settings, reserved dedupe labels, and `issue.*` template misuse before dispatch. The examples and scheduled-jobs runbook show the supported PR conflict repair shape without unsupported inputs, catch-up, or overlap modes, and `scherzoctl state status` warns when scheduled records make rollback to an older binary unsafe. Post-review hardening made Linear dedupe more faithful to the plan by checking remembered issue IDs for open state before update and by searching open Linear issues with both reserved labels rather than relying on configured labels or closed matches. Plan-completion feedback validation ran `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `direnv exec . gleam run -m glinter`; tests reported 865 passed and no failures, and glinter reported 0 errors with the existing warning inventory. The post-review validation ran `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, and `direnv exec . gleam run -m glinter`; full tests reported 868 passed and no failures, and glinter reported 0 errors with the existing warning inventory.
 
 ## Context and Orientation
 
@@ -196,7 +217,7 @@ After the 2026-05-06 foundation pass, `config_types.OrchestratorConfig` contains
 
 `src/scherzo/config.gleam` already has helpers for strict booleans, strict strings, relative workflow paths, workflow IDs, positive integers, and YAML map access. Reuse those patterns when adding scheduled jobs. Do not introduce a second YAML parser.
 
-`examples/scherzo.yaml` currently documents tracker, polling, workspace hooks, agent, pi, handoff, routing, artifact limits, Linear contract, and Linear commands. It has no `scheduled_jobs` example.
+`examples/scherzo.yaml` now documents tracker, polling, workspace hooks, agent, pi, handoff, routing, scheduled jobs, artifact limits, Linear contract, and Linear commands. Its `scheduled_jobs` example uses the supported PR conflict repair shape and does not include schedule-level inputs, catch-up, or unsupported overlap modes.
 
 `src/scherzo/workflow_dag.gleam` validates workflow IDs and workspace names as lower-case letters or digits followed by lower-case letters, digits, `_`, or `-`. Reuse the same shape for scheduled job IDs.
 
@@ -208,7 +229,7 @@ After the 2026-05-06 foundation pass, `config_types.OrchestratorConfig` contains
 
 `src/scherzo/orchestrator/core.gleam` enforces global and per-state issue concurrency and retry behavior for issue dispatch. Scheduled runs must share the global `agent.max_concurrent_agents` budget, but they should not be subject to Linear issue active/terminal state checks or per-Linear-state limits.
 
-`src/scherzo/linear_triage.gleam` currently reports invalid workflow labels by commenting or moving an existing Linear issue. It does not create or update scheduled failure issues yet. Add scheduled failure reporting there or in a new adjacent module, reusing the existing `linear` transport conventions.
+`src/scherzo/linear_triage.gleam` reports invalid workflow labels by commenting or moving an existing Linear issue. Scheduled failure reporting lives in the adjacent `src/scherzo/scheduled_failure_reporter.gleam` module and reuses the existing Linear transport conventions.
 
 ## Scope Boundaries
 

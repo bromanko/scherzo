@@ -629,6 +629,8 @@ pub fn doctor_list_checks_writes_names_without_loading_config_test() {
     == Ok(Nil)
   let assert Ok(ListWritten("workflow-config")) =
     process.receive(subject, within: 1000)
+  let assert Ok(ListWritten("scheduled-jobs")) =
+    process.receive(subject, within: 1000)
   let assert Ok(ListWritten("linear-contract")) =
     process.receive(subject, within: 1000)
 }

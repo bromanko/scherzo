@@ -35,6 +35,7 @@ import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
 import scherzo/orchestrator/yaml_step_session
 import scherzo/runtime_bundle
+import scherzo/scheduled_failure_reporter
 import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/name as session_name
@@ -78,6 +79,7 @@ pub type Message {
     Result(workflow_run.WorkflowRunSuccess, workflow_run.WorkflowRunFailure),
   )
   ScheduledRetryTick(String, Int)
+  ScheduledReportRetryTick(String, Int)
   WorkerUpdate(String, agent_types.RunnerUpdate)
   WorkerCommandReady(String, String, process.Subject(worker_command.Command))
   YamlStepStarted(String, String)
@@ -164,6 +166,15 @@ type ScheduledRetryStart {
   )
 }
 
+type ScheduledReportRetryStart {
+  ScheduledReportRetryStart(
+    job_id: String,
+    run_id: String,
+    generation: Int,
+    timer: TimerHandle,
+  )
+}
+
 type StartupRecovery {
   StartupRecovery(
     runtime: orchestrator_state.RuntimeState,
@@ -188,6 +199,8 @@ pub type RuntimeDependencies {
       config_types.TrackerConfig,
       config_types.LinearContractConfig,
     ) -> linear_triage.TriageClient,
+    make_scheduled_failure_reporter: fn(config_types.TrackerConfig) ->
+      scheduled_failure_reporter.Client,
     workflow_run_dependencies: workflow_run.Dependencies,
     cleanup: fn(String, String, config_types.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
@@ -212,6 +225,7 @@ type State {
     handoff_client: handoff.Client,
     linear_command_client: linear.CommandClient,
     triage_client: linear_triage.TriageClient,
+    scheduled_failure_reporter: scheduled_failure_reporter.Client,
     linear_command_state: linear_transport.TransportState,
     pending_linear_command_acks: Dict(String, PendingLinearCommandAck),
     in_flight_linear_command_acks: Dict(String, Bool),
@@ -219,6 +233,8 @@ type State {
     pending_scheduled_starts: Dict(String, ScheduledPendingStart),
     scheduled_retries: Dict(String, ScheduledRetryStart),
     next_scheduled_retry_generation: Int,
+    scheduled_report_retries: Dict(String, ScheduledReportRetryStart),
+    next_scheduled_report_generation: Int,
     runtime: orchestrator_state.RuntimeState,
     poll: poll_scheduler.State(TimerHandle),
     retry: retry_scheduler.State(TimerHandle),
@@ -249,6 +265,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     },
     make_linear_commands: linear.real_command_client,
     make_triage: linear_triage.real_triage_client,
+    make_scheduled_failure_reporter: scheduled_failure_reporter.real_client,
     workflow_run_dependencies: workflow_run.default_dependencies(),
     cleanup: workspace.cleanup_stored_path,
     logger: fn(_level, _event, _fields, _secrets) { Ok(Nil) },
@@ -413,6 +430,8 @@ pub fn start(
     dependencies.make_linear_commands(effective.tracker)
   let triage_client =
     dependencies.make_triage(effective.tracker, effective.linear_contract)
+  let scheduled_failure_reporter =
+    dependencies.make_scheduled_failure_reporter(effective.tracker)
   let secrets = config.resolved_secrets(effective)
   use startup_recovery <- try_startup(load_startup_recovery(
     bundle,
@@ -486,6 +505,7 @@ pub fn start(
                       handoff_client: handoff_client,
                       linear_command_client: linear_command_client,
                       triage_client: triage_client,
+                      scheduled_failure_reporter: scheduled_failure_reporter,
                       linear_command_state: linear_command_state,
                       pending_linear_command_acks: dict.new(),
                       in_flight_linear_command_acks: dict.new(),
@@ -496,6 +516,8 @@ pub fn start(
                       pending_scheduled_starts: dict.new(),
                       scheduled_retries: dict.new(),
                       next_scheduled_retry_generation: 1,
+                      scheduled_report_retries: dict.new(),
+                      next_scheduled_report_generation: 1,
                       runtime: runtime,
                       poll: poll,
                       retry: retry_scheduler.new(),
@@ -769,8 +791,9 @@ fn recover_enabled_scheduled_run(
       recover_interrupted_scheduled_run(state, job, run)
     projection.ScheduledRetryWaiting ->
       recover_scheduled_retry_waiting(state, job, run)
-    projection.ScheduledReportRetryWaiting
-    | projection.ScheduledIdle
+    projection.ScheduledReportRetryWaiting ->
+      recover_scheduled_report_retry_waiting(state, job, status)
+    projection.ScheduledIdle
     | projection.ScheduledTerminalSuccess
     | projection.ScheduledTerminalFailure -> state
   }
@@ -812,6 +835,49 @@ fn recover_scheduled_retry_waiting(
     ),
     next_scheduled_retry_generation: generation + 1,
   )
+}
+
+fn recover_scheduled_report_retry_waiting(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+  status: projection.ScheduledJobStatus,
+) -> State {
+  case status.report_retry {
+    None -> state
+    Some(report_retry) -> {
+      let delay_ms = case
+        report_retry.next_retry_at_ms <= state.dependencies.now_ms()
+      {
+        True -> 0
+        False -> report_retry.next_retry_at_ms - state.dependencies.now_ms()
+      }
+      let timer =
+        state.dependencies.send_after(
+          state.subject,
+          delay_ms,
+          ScheduledReportRetryTick(report_retry.run_id, report_retry.generation),
+        )
+      State(
+        ..state,
+        scheduled_report_retries: dict.insert(
+          state.scheduled_report_retries,
+          report_retry.run_id,
+          ScheduledReportRetryStart(
+            job_id: job.id,
+            run_id: report_retry.run_id,
+            generation: report_retry.generation,
+            timer: timer,
+          ),
+        ),
+        next_scheduled_report_generation: case
+          state.next_scheduled_report_generation > report_retry.generation
+        {
+          True -> state.next_scheduled_report_generation
+          False -> report_retry.generation + 1
+        },
+      )
+    }
+  }
 }
 
 fn recover_disabled_scheduled_run(
@@ -893,7 +959,18 @@ fn recover_interrupted_scheduled_run(
       "scheduled_recovery_append_failed",
     )
   case retry_exhausted {
-    True -> state
+    True ->
+      begin_scheduled_failure_report(
+        state,
+        job.id,
+        job.workflow,
+        run.due_at_ms,
+        run.run_id,
+        attempt,
+        "daemon_restart",
+        run.run_root,
+        run.session_id,
+      )
     False ->
       schedule_scheduled_retry_for_run(
         state,
@@ -1721,6 +1798,12 @@ fn handle_message(
       actor.continue(handle_scheduled_worker_finished(state, run_id, result))
     ScheduledRetryTick(run_id, generation) ->
       actor.continue(handle_scheduled_retry_tick(state, run_id, generation))
+    ScheduledReportRetryTick(run_id, generation) ->
+      actor.continue(handle_scheduled_report_retry_tick(
+        state,
+        run_id,
+        generation,
+      ))
     WorkerUpdate(issue_id, update) ->
       actor.continue(handle_worker_update(state, issue_id, update))
     WorkerCommandReady(issue_id, run_id, command_subject) ->
@@ -3018,6 +3101,9 @@ fn apply_reloaded_workflow(
         effective.tracker,
         effective.linear_contract,
       ),
+      scheduled_failure_reporter: state.dependencies.make_scheduled_failure_reporter(
+        effective.tracker,
+      ),
       runtime: runtime,
     )
   let state = refresh_scheduled_next_due_after_reload(state)
@@ -3856,9 +3942,12 @@ fn scheduled_worker_active_for_job(state: State, job_id: String) -> Bool {
 }
 
 fn scheduled_retry_waiting_for_job(state: State, job_id: String) -> Bool {
-  state.scheduled_retries
-  |> dict.values
-  |> list.any(fn(entry) { entry.job_id == job_id })
+  list.any(dict.values(state.scheduled_retries), fn(entry) {
+    entry.job_id == job_id
+  })
+  || list.any(dict.values(state.scheduled_report_retries), fn(entry) {
+    entry.job_id == job_id
+  })
 }
 
 fn apply_scheduled_decisions(
@@ -5446,10 +5535,61 @@ fn finish_scheduled_worker_success(
   handle: worker_registry.ScheduledWorkerHandle,
   success: workflow_run.WorkflowRunSuccess,
 ) -> State {
-  log_state(state, "info", "scheduled_worker_exited", [
+  case success.worker_success.final_classification {
+    agent_types.FinalTerminal -> {
+      log_state(state, "info", "scheduled_worker_exited", [
+        #("job_id", handle.job_id),
+        #("run_id", handle.run_id),
+        #("reason", "normal"),
+      ])
+      hub.update_tokens(
+        state.event_hub,
+        handle.session_id,
+        success.worker_success.tokens,
+      )
+      event_publisher.lifecycle(
+        state.event_hub,
+        handle.session_id,
+        session_event.WorkerExited,
+        Some("normal"),
+      )
+      hub.finish_session(
+        state.event_hub,
+        handle.session_id,
+        session_reason.Normal,
+      )
+      let _ =
+        append_ledger_bodies(
+          state,
+          [
+            record.ScheduledRunSucceeded(
+              handle.job_id,
+              handle.workflow_id,
+              handle.due_at_ms,
+              handle.run_id,
+              handle.attempt,
+              state.dependencies.now_ms(),
+              success.worker_success.tokens.total,
+              success.worker_success.turns,
+            ),
+          ],
+          "scheduled_success_append_failed",
+        )
+      state
+    }
+    agent_types.FinalActive | agent_types.FinalNonActive ->
+      finish_scheduled_worker_needs_human(state, handle, success)
+  }
+}
+
+fn finish_scheduled_worker_needs_human(
+  state: State,
+  handle: worker_registry.ScheduledWorkerHandle,
+  success: workflow_run.WorkflowRunSuccess,
+) -> State {
+  log_state(state, "warn", "scheduled_worker_needs_human", [
     #("job_id", handle.job_id),
     #("run_id", handle.run_id),
-    #("reason", "normal"),
   ])
   hub.update_tokens(
     state.event_hub,
@@ -5460,27 +5600,38 @@ fn finish_scheduled_worker_success(
     state.event_hub,
     handle.session_id,
     session_event.WorkerExited,
-    Some("normal"),
+    Some("needs_human"),
   )
-  hub.finish_session(state.event_hub, handle.session_id, session_reason.Normal)
+  hub.finish_session(state.event_hub, handle.session_id, session_reason.Failed)
   let _ =
     append_ledger_bodies(
       state,
       [
-        record.ScheduledRunSucceeded(
+        record.ScheduledRunFailed(
           handle.job_id,
           handle.workflow_id,
           handle.due_at_ms,
           handle.run_id,
           handle.attempt,
           state.dependencies.now_ms(),
-          success.worker_success.tokens.total,
-          success.worker_success.turns,
+          "needs_human",
+          True,
+          Some(handle.run_root),
         ),
       ],
-      "scheduled_success_append_failed",
+      "scheduled_failure_append_failed",
     )
-  state
+  begin_scheduled_failure_report(
+    state,
+    handle.job_id,
+    handle.workflow_id,
+    handle.due_at_ms,
+    handle.run_id,
+    handle.attempt,
+    "needs_human",
+    Some(handle.run_root),
+    Some(handle.session_id),
+  )
 }
 
 fn finish_scheduled_worker_failure(
@@ -5526,7 +5677,18 @@ fn finish_scheduled_worker_failure(
       "scheduled_failure_append_failed",
     )
   case retry_exhausted {
-    True -> state
+    True ->
+      begin_scheduled_failure_report(
+        state,
+        handle.job_id,
+        handle.workflow_id,
+        handle.due_at_ms,
+        handle.run_id,
+        handle.attempt,
+        reason,
+        option.or(failure.run_root, Some(handle.run_root)),
+        Some(handle.session_id),
+      )
     False ->
       schedule_scheduled_retry(
         state,
@@ -5535,6 +5697,100 @@ fn finish_scheduled_worker_failure(
         next_attempt,
         reason,
       )
+  }
+}
+
+fn begin_scheduled_failure_report(
+  state: State,
+  job_id: String,
+  workflow_id: String,
+  due_at_ms: Int,
+  run_id: String,
+  attempt: Int,
+  reason: String,
+  run_root: Option(String),
+  session_id: Option(String),
+) -> State {
+  case scheduled_job_by_id(state, job_id) {
+    Error(Nil) -> state
+    Ok(job) ->
+      begin_scheduled_failure_report_for_job(
+        state,
+        job,
+        workflow_id,
+        due_at_ms,
+        run_id,
+        attempt,
+        reason,
+        run_root,
+        session_id,
+      )
+  }
+}
+
+fn begin_scheduled_failure_report_for_job(
+  state: State,
+  job: config_types.ScheduledJobConfig,
+  workflow_id: String,
+  due_at_ms: Int,
+  run_id: String,
+  attempt: Int,
+  reason: String,
+  run_root: Option(String),
+  session_id: Option(String),
+) -> State {
+  let linear_config = job.on_failure.linear
+  case linear_config.enabled, linear_config.state {
+    False, _ -> state
+    True, None -> {
+      log_state(state, "warn", "scheduled_failure_report_skipped", [
+        #("job_id", job.id),
+        #("run_id", run_id),
+        #("reason", "missing_triage_state"),
+      ])
+      state
+    }
+    True, Some(triage_state) -> {
+      let generation = state.next_scheduled_report_generation
+      let request =
+        scheduled_failure_reporter.FailureReportRequest(
+          job_id: job.id,
+          workflow_id: workflow_id,
+          due_at_ms: due_at_ms,
+          run_id: run_id,
+          attempt: attempt,
+          max_attempts: state.workflow.effective.agent.max_retry_attempts,
+          reason: reason,
+          run_root: run_root,
+          session_id: session_id,
+          dedupe_key: scheduled_failure_reporter.dedupe_key(job.id),
+          triage_state: triage_state,
+          configured_labels: linear_config.labels,
+          previous_issue_id: scheduled_failure_issue_id_for_state(state, job.id),
+        )
+      enqueue_side_effect(
+        State(..state, next_scheduled_report_generation: generation + 1),
+        effect_runner.ReportScheduledFailure(
+          generation: generation,
+          request: request,
+          client: state.scheduled_failure_reporter,
+        ),
+      )
+    }
+  }
+}
+
+fn scheduled_failure_issue_id_for_state(
+  state: State,
+  job_id: String,
+) -> Option(String) {
+  case scheduled_projection_for_root(state.workflow.effective.workspace.root) {
+    None -> None
+    Some(projected) ->
+      case projection.scheduled_status_for(projected, job_id) {
+        Ok(status) -> status.failure_issue_id
+        Error(Nil) -> None
+      }
   }
 }
 
@@ -5679,6 +5935,196 @@ fn start_scheduled_retry_now(
       ),
     )
   start_pending_scheduled_runs(state)
+}
+
+fn handle_scheduled_failure_report_finished(
+  state: State,
+  generation: Int,
+  request: scheduled_failure_reporter.FailureReportRequest,
+  result: Result(
+    scheduled_failure_reporter.FailureReportOutcome,
+    error.TrackerError,
+  ),
+) -> State {
+  case result {
+    Ok(outcome) ->
+      handle_scheduled_failure_report_success(state, request, outcome)
+    Error(err) ->
+      handle_scheduled_failure_report_failure(state, generation, request, err)
+  }
+}
+
+fn handle_scheduled_failure_report_success(
+  state: State,
+  request: scheduled_failure_reporter.FailureReportRequest,
+  outcome: scheduled_failure_reporter.FailureReportOutcome,
+) -> State {
+  case scheduled_failure_reporter.issue_id(outcome) {
+    None -> state
+    Some(issue_id) -> {
+      log_state(state, "info", "scheduled_failure_reported", [
+        #("job_id", request.job_id),
+        #("run_id", request.run_id),
+        #("linear_issue_id", issue_id),
+        #("action", scheduled_failure_reporter.action(outcome)),
+      ])
+      let _ =
+        append_ledger_bodies(
+          State(
+            ..state,
+            scheduled_report_retries: dict.delete(
+              state.scheduled_report_retries,
+              request.run_id,
+            ),
+          ),
+          [
+            record.ScheduledFailureReported(
+              request.job_id,
+              request.workflow_id,
+              request.due_at_ms,
+              request.run_id,
+              request.attempt,
+              request.dedupe_key,
+              issue_id,
+              scheduled_failure_reporter.action(outcome),
+            ),
+          ],
+          "scheduled_failure_report_append_failed",
+        )
+      State(
+        ..state,
+        scheduled_report_retries: dict.delete(
+          state.scheduled_report_retries,
+          request.run_id,
+        ),
+      )
+    }
+  }
+}
+
+fn handle_scheduled_failure_report_failure(
+  state: State,
+  generation: Int,
+  request: scheduled_failure_reporter.FailureReportRequest,
+  err: error.TrackerError,
+) -> State {
+  let delay_ms =
+    schedule_core.retry_delay(
+      generation,
+      state.workflow.effective.agent.max_retry_backoff_ms,
+    )
+  let next_retry_at_ms = state.dependencies.now_ms() + delay_ms
+  let timer =
+    state.dependencies.send_after(
+      state.subject,
+      delay_ms,
+      ScheduledReportRetryTick(request.run_id, generation),
+    )
+  log_state(state, "warn", "scheduled_failure_report_failed", [
+    #("job_id", request.job_id),
+    #("run_id", request.run_id),
+    #("error", error.tracker_code(err)),
+  ])
+  let _ =
+    append_ledger_bodies(
+      state,
+      [
+        record.ScheduledFailureReportFailed(
+          request.job_id,
+          request.workflow_id,
+          request.due_at_ms,
+          request.run_id,
+          request.attempt,
+          request.dedupe_key,
+          error.tracker_code(err),
+          tracker_error_message(err),
+          next_retry_at_ms,
+          generation,
+        ),
+      ],
+      "scheduled_failure_report_failed_append_failed",
+    )
+  State(
+    ..state,
+    scheduled_report_retries: dict.insert(
+      state.scheduled_report_retries,
+      request.run_id,
+      ScheduledReportRetryStart(
+        job_id: request.job_id,
+        run_id: request.run_id,
+        generation: generation,
+        timer: timer,
+      ),
+    ),
+  )
+}
+
+fn handle_scheduled_report_retry_tick(
+  state: State,
+  run_id: String,
+  generation: Int,
+) -> State {
+  case dict.get(state.scheduled_report_retries, run_id) {
+    Error(Nil) -> state
+    Ok(entry) ->
+      case entry.generation != generation {
+        True -> state
+        False ->
+          retry_scheduled_failure_report(
+            State(
+              ..state,
+              scheduled_report_retries: dict.delete(
+                state.scheduled_report_retries,
+                run_id,
+              ),
+            ),
+            entry,
+          )
+      }
+  }
+}
+
+fn retry_scheduled_failure_report(
+  state: State,
+  entry: ScheduledReportRetryStart,
+) -> State {
+  case scheduled_projection_for_root(state.workflow.effective.workspace.root) {
+    None -> state
+    Some(projected) ->
+      case projection.scheduled_status_for(projected, entry.job_id) {
+        Error(Nil) -> state
+        Ok(status) ->
+          case scheduled_job_by_id(state, entry.job_id), status.current_run {
+            Ok(job), Some(run) ->
+              begin_scheduled_failure_report_for_job(
+                state,
+                job,
+                status.workflow_id,
+                run.due_at_ms,
+                entry.run_id,
+                normalized_scheduled_attempt(run.attempt),
+                option.unwrap(status.last_failure_reason, "scheduled failure"),
+                run.run_root,
+                run.session_id,
+              )
+            _, _ -> state
+          }
+      }
+  }
+}
+
+fn tracker_error_message(err: error.TrackerError) -> String {
+  case err {
+    error.LinearApiRequest(message) -> message
+    error.LinearApiStatus(status) ->
+      "Linear API status " <> int.to_string(status)
+    error.LinearGraphqlErrors(message) -> message
+    error.LinearUnknownPayload(message) -> message
+    error.LinearMissingEndCursor -> "missing Linear pagination cursor"
+    error.LinearUploadStatus(status) ->
+      "Linear upload status " <> int.to_string(status)
+    error.LinearAttachmentError(message) -> message
+  }
 }
 
 fn handle_worker_finished(
@@ -6283,6 +6729,13 @@ fn handle_side_effect_result(
         reporting_policy_fingerprint,
         result,
       )
+    effect_runner.ScheduledFailureReportFinished(generation, request, result) ->
+      handle_scheduled_failure_report_finished(
+        state,
+        generation,
+        request,
+        result,
+      )
     effect_runner.CleanupFinished(workspace_path, result) ->
       handle_cleanup_finished(state, workspace_path, result)
   }
@@ -6373,6 +6826,12 @@ fn crash_result_for_effect(
         issue.id,
         violation_fingerprint,
         reporting_policy_fingerprint,
+        Error(error.LinearApiRequest(reason)),
+      )
+    effect_runner.ReportScheduledFailure(generation, request, _) ->
+      effect_runner.ScheduledFailureReportFinished(
+        generation,
+        request,
         Error(error.LinearApiRequest(reason)),
       )
     effect_runner.CleanupWorkspace(_, workspace_path, _, _) ->

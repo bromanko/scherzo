@@ -9,6 +9,9 @@ import scherzo/control/client
 import scherzo/control/command as control_command
 import scherzo/control/file
 import scherzo/control/protocol
+import scherzo/path
+import scherzo/runtime_bundle
+import scherzo/schedule_doctor
 import scherzo/session/event
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
@@ -17,6 +20,7 @@ import scherzo/state/projection
 import scherzo/terminal/render
 import scherzo/terminal/style
 import scherzo/turn_telemetry
+import simplifile
 
 pub type OutputMode {
   Pretty
@@ -75,6 +79,20 @@ pub type Command {
     json: Bool,
     job_id: String,
   )
+  SchedulesLogs(
+    control_file: Option(String),
+    root: Option(String),
+    json: Bool,
+    color: style.ColorMode,
+    verbose: Bool,
+    job_id: String,
+  )
+  SchedulesDoctor(
+    control_file: Option(String),
+    root: Option(String),
+    json: Bool,
+    job_id: String,
+  )
   StateStatus(root: String, json: Bool)
   StateArchiveOld(root: String, json: Bool, yes: Bool)
   StateDiscardOld(root: String, json: Bool, yes: Bool)
@@ -115,6 +133,14 @@ pub type Replay {
   Replay(events: List(event.SessionEvent), last_cursor: Int, truncated: Bool)
 }
 
+type ScheduleDoctorReport {
+  ScheduleDoctorReport(
+    job_id: String,
+    config_path: Option(String),
+    diagnostics: List(schedule_doctor.Diagnostic),
+  )
+}
+
 type Flags {
   Flags(
     control_file: Option(String),
@@ -132,6 +158,7 @@ type Flags {
     color: style.ColorMode,
     verbose: Bool,
     now: Bool,
+    last: Bool,
     positional: List(String),
   )
 }
@@ -175,12 +202,13 @@ fn default_flags() -> Flags {
     color: style.ColorAuto,
     verbose: False,
     now: False,
+    last: False,
     positional: [],
   )
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules run <job> --now   Start a scheduled job immediately.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <issue>                Retry an issue now.\n  park <issue> --reason <text> --yes\n                               Park an issue until explicitly unparked.\n  unpark <issue>               Unpark an issue.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for park.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -198,6 +226,7 @@ fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
     ["--pretty", ..rest] -> parse_flags(rest, Flags(..flags, pretty: True))
     ["--verbose", ..rest] -> parse_flags(rest, Flags(..flags, verbose: True))
     ["--now", ..rest] -> parse_flags(rest, Flags(..flags, now: True))
+    ["--last", ..rest] -> parse_flags(rest, Flags(..flags, last: True))
     ["--yes", ..rest] -> parse_flags(rest, Flags(..flags, yes: True))
     ["--no-follow", ..rest] ->
       parse_flags(rest, Flags(..flags, no_follow: True))
@@ -373,6 +402,21 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
       ))
     "schedules", ["history", job_id] ->
       Ok(SchedulesHistory(flags.control_file, flags.root, flags.json, job_id))
+    "schedules", ["logs", job_id] ->
+      case flags.last {
+        True ->
+          Ok(SchedulesLogs(
+            flags.control_file,
+            flags.root,
+            flags.json,
+            flags.color,
+            flags.verbose,
+            job_id,
+          ))
+        False -> Error(UsageError("schedules logs requires --last"))
+      }
+    "schedules", ["doctor", job_id] ->
+      Ok(SchedulesDoctor(flags.control_file, flags.root, flags.json, job_id))
     "schedules", ["run", job_id] ->
       case flags.now {
         True -> Ok(operator(flags, control_command.RunScheduleNow(job_id)))
@@ -380,7 +424,7 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
       }
     "schedules", _ ->
       Error(UsageError(
-        "schedules usage: schedules status [job] | history <job> | run <job> --now",
+        "schedules usage: schedules status [job] | history <job> | logs <job> --last | doctor <job> | run <job> --now",
       ))
     "state", ["status"] -> {
       use root <- try_ctl(required_root(flags))
@@ -603,6 +647,19 @@ pub fn run_with_deps(
       run_schedules_status(control_path, root, json, job_id, output)
     SchedulesHistory(control_path, root, json, job_id) ->
       run_schedules_history(control_path, root, json, job_id, output)
+    SchedulesLogs(control_path, root, json, color, verbose, job_id) ->
+      run_schedules_logs(
+        control_path,
+        root,
+        json,
+        color,
+        verbose,
+        deps,
+        job_id,
+        output,
+      )
+    SchedulesDoctor(control_path, root, json, job_id) ->
+      run_schedules_doctor(control_path, root, json, job_id, output)
     StateStatus(root, json) -> run_state_status(root, json, output)
     StateArchiveOld(root, json, yes) ->
       run_state_archive_old(root, json, yes, output)
@@ -710,7 +767,7 @@ fn run_schedules_status(
     Some(id) ->
       case projection.scheduled_status_for(projected, id) {
         Ok(status) -> [status]
-        Error(_) -> []
+        Error(Nil) -> []
       }
   }
   case json_output {
@@ -745,6 +802,445 @@ fn run_schedules_history(
       }
       Ok(Nil)
     }
+  }
+}
+
+fn run_schedules_logs(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  json_output: Bool,
+  color: style.ColorMode,
+  verbose: Bool,
+  deps: ControlClient,
+  job_id: String,
+  output: Output,
+) -> Result(Nil, Error) {
+  use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
+  use projected <- try_ctl(load_schedule_projection(root))
+  use status <- try_ctl(schedule_status_or_error(projected, job_id))
+  use run <- try_ctl(current_scheduled_run_or_error(status))
+  case json_output {
+    True -> {
+      output.line(scheduled_log_lookup_to_json(status, run) |> json.to_string)
+      Ok(Nil)
+    }
+    False ->
+      case run.session_id {
+        Some(session_id) ->
+          case load_control_file(control_path) {
+            Ok(control_file) ->
+              run_events(
+                control_file,
+                deps,
+                output,
+                Pretty,
+                color,
+                0,
+                verbose,
+                session_id,
+              )
+            Error(err) -> {
+              output.line("control_error: " <> error_message(err))
+              print_scheduled_transcript_expired(status, run, output)
+              Ok(Nil)
+            }
+          }
+        None -> {
+          print_scheduled_transcript_expired(status, run, output)
+          Ok(Nil)
+        }
+      }
+  }
+}
+
+fn run_schedules_doctor(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  json_output: Bool,
+  job_id: String,
+  output: Output,
+) -> Result(Nil, Error) {
+  let report = build_schedule_doctor_report(control_path, explicit_root, job_id)
+  case json_output {
+    True ->
+      output.line(schedule_doctor_report_to_json(report) |> json.to_string)
+    False -> print_schedule_doctor_report(report, output)
+  }
+  Ok(Nil)
+}
+
+fn build_schedule_doctor_report(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  job_id: String,
+) -> ScheduleDoctorReport {
+  let config_path = schedule_config_path(explicit_root)
+  let config_diagnostics = schedule_config_diagnostics(config_path, job_id)
+  let projection_diagnostics =
+    schedule_projection_diagnostics(control_path, explicit_root, job_id)
+  ScheduleDoctorReport(
+    job_id: job_id,
+    config_path: config_path,
+    diagnostics: list.append(config_diagnostics, projection_diagnostics),
+  )
+}
+
+fn schedule_config_diagnostics(
+  config_path: Option(String),
+  job_id: String,
+) -> List(schedule_doctor.Diagnostic) {
+  case config_path {
+    None -> [
+      schedule_doctor.Diagnostic(
+        name: "config_load",
+        severity: schedule_doctor.Fail,
+        code: "schedule_config_missing",
+        message: "could not find scherzo.yaml for schedule doctor; run from the config directory or pass --root pointing at a directory that contains scherzo.yaml",
+        fields: [#("job_id", job_id)],
+      ),
+    ]
+    Some(path) ->
+      case runtime_bundle.load(Some(path)) {
+        Error(runtime_bundle.BundleError(code, message)) -> [
+          schedule_doctor.Diagnostic(
+            name: "config_load",
+            severity: schedule_doctor.Fail,
+            code: code,
+            message: message,
+            fields: [#("job_id", job_id), #("config_path", path)],
+          ),
+        ]
+        Ok(bundle) -> {
+          let schedule_doctor.Report(_, diagnostics) =
+            schedule_doctor.inspect_bundle(bundle, Some(job_id))
+          [
+            schedule_doctor.Diagnostic(
+              name: "config_load",
+              severity: schedule_doctor.Pass,
+              code: "ok",
+              message: "scherzo.yaml and routed workflow DAGs loaded successfully",
+              fields: [#("config_path", path), #("job_id", job_id)],
+            ),
+            ..diagnostics
+          ]
+        }
+      }
+  }
+}
+
+fn schedule_projection_diagnostics(
+  control_path: Option(String),
+  explicit_root: Option(String),
+  job_id: String,
+) -> List(schedule_doctor.Diagnostic) {
+  case schedule_workspace_root(control_path, explicit_root) {
+    Error(err) -> [workspace_root_unavailable_diagnostic(job_id, err)]
+    Ok(root) ->
+      case load_schedule_projection(root) {
+        Error(err) -> [projection_load_failed_diagnostic(root, job_id, err)]
+        Ok(projected) ->
+          case projection.scheduled_status_for(projected, job_id) {
+            Error(Nil) -> [
+              schedule_doctor.Diagnostic(
+                name: "local_projection",
+                severity: schedule_doctor.Pass,
+                code: "ok",
+                message: "local ledger projection is readable; no scheduled runs are recorded for this job yet",
+                fields: [#("job_id", job_id), #("workspace_root", root)],
+              ),
+            ]
+            Ok(status) -> scheduled_projection_status_diagnostics(root, status)
+          }
+      }
+  }
+}
+
+fn workspace_root_unavailable_diagnostic(
+  job_id: String,
+  err: Error,
+) -> schedule_doctor.Diagnostic {
+  schedule_doctor.Diagnostic(
+    name: "local_projection",
+    severity: schedule_doctor.Skip,
+    code: error_code(err),
+    message: "local schedule history was not inspected: " <> error_message(err),
+    fields: [#("job_id", job_id)],
+  )
+}
+
+fn projection_load_failed_diagnostic(
+  root: String,
+  job_id: String,
+  err: Error,
+) -> schedule_doctor.Diagnostic {
+  let #(code, message) = case err {
+    Failed(code, message) -> #(code, message)
+    UsageError(message) -> #("usage_error", message)
+  }
+  schedule_doctor.Diagnostic(
+    name: "local_projection",
+    severity: schedule_doctor.Warn,
+    code: code,
+    message: message,
+    fields: [#("job_id", job_id), #("workspace_root", root)],
+  )
+}
+
+fn scheduled_projection_status_diagnostics(
+  root: String,
+  status: projection.ScheduledJobStatus,
+) -> List(schedule_doctor.Diagnostic) {
+  let base = [
+    schedule_doctor.Diagnostic(
+      name: "local_projection",
+      severity: schedule_doctor.Pass,
+      code: "ok",
+      message: "local ledger projection is readable",
+      fields: [
+        #("job_id", status.job_id),
+        #("workspace_root", root),
+        #("state", scheduled_state_to_string(status.state)),
+      ],
+    ),
+  ]
+  let base = case status.current_run {
+    Some(run) -> [
+      schedule_doctor.Diagnostic(
+        name: "latest_run",
+        severity: schedule_doctor.Pass,
+        code: "ok",
+        message: "latest scheduled run is visible in local history",
+        fields: [
+          #("job_id", status.job_id),
+          #("run_id", run.run_id),
+          #("run_status", run.status),
+          #("session_id", optional_string(run.session_id)),
+          #("run_root", optional_string(run.run_root)),
+        ],
+      ),
+      ..base
+    ]
+    None -> [
+      schedule_doctor.Diagnostic(
+        name: "latest_run",
+        severity: schedule_doctor.Pass,
+        code: "ok",
+        message: "no scheduled runs are recorded for this job yet",
+        fields: [#("job_id", status.job_id)],
+      ),
+      ..base
+    ]
+  }
+  let base = case status.failure_issue_id {
+    Some(issue_id) -> [
+      schedule_doctor.Diagnostic(
+        name: "failure_issue",
+        severity: schedule_doctor.Pass,
+        code: "ok",
+        message: "latest scheduled failure report remembered a Linear issue",
+        fields: [#("job_id", status.job_id), #("linear_issue_id", issue_id)],
+      ),
+      ..base
+    ]
+    None -> base
+  }
+  let base = case status.report_retry {
+    Some(retry) -> [
+      schedule_doctor.Diagnostic(
+        name: "failure_report_retry",
+        severity: schedule_doctor.Warn,
+        code: retry.error_code,
+        message: "failure report retry is pending and will retry without rerunning the workflow",
+        fields: [
+          #("job_id", status.job_id),
+          #("run_id", retry.run_id),
+          #("next_retry_at_ms", int.to_string(retry.next_retry_at_ms)),
+          #("generation", int.to_string(retry.generation)),
+        ],
+      ),
+      ..base
+    ]
+    None -> base
+  }
+  list.reverse(base)
+}
+
+fn schedule_config_path(explicit_root: Option(String)) -> Option(String) {
+  schedule_config_candidates(explicit_root)
+  |> first_existing_file
+}
+
+fn schedule_config_candidates(explicit_root: Option(String)) -> List(String) {
+  case explicit_root {
+    None -> ["scherzo.yaml"]
+    Some(root) ->
+      list.append(
+        [path.join(root, "scherzo.yaml")],
+        list.append(parent_config_candidates(root), ["scherzo.yaml"]),
+      )
+  }
+}
+
+fn parent_config_candidates(root: String) -> List(String) {
+  case path.dirname(root) {
+    Ok(parent) -> [path.join(parent, "scherzo.yaml")]
+    Error(Nil) -> []
+  }
+}
+
+fn first_existing_file(paths: List(String)) -> Option(String) {
+  case paths {
+    [] -> None
+    [candidate, ..rest] ->
+      case is_file(candidate) {
+        True -> Some(candidate)
+        False -> first_existing_file(rest)
+      }
+  }
+}
+
+fn is_file(candidate: String) -> Bool {
+  case simplifile.is_file(candidate) {
+    Ok(True) -> True
+    _ -> False
+  }
+}
+
+fn schedule_status_or_error(
+  projected: projection.Projection,
+  job_id: String,
+) -> Result(projection.ScheduledJobStatus, Error) {
+  case projection.scheduled_status_for(projected, job_id) {
+    Ok(status) -> Ok(status)
+    Error(_) -> Error(Failed("schedule_not_found", "scheduled job not found"))
+  }
+}
+
+fn current_scheduled_run_or_error(
+  status: projection.ScheduledJobStatus,
+) -> Result(projection.ScheduledRunSummary, Error) {
+  case status.current_run {
+    Some(run) -> Ok(run)
+    None -> Error(Failed("schedule_no_runs", "scheduled job has no runs"))
+  }
+}
+
+fn scheduled_log_lookup_to_json(
+  status: projection.ScheduledJobStatus,
+  run: projection.ScheduledRunSummary,
+) -> json.Json {
+  json.object([
+    #("job_id", json.string(status.job_id)),
+    #("run_id", json.string(run.run_id)),
+    #("session_id", optional_string_json(run.session_id)),
+    #("run_root", optional_string_json(run.run_root)),
+    #("status", json.string(run.status)),
+  ])
+}
+
+fn print_scheduled_transcript_expired(
+  status: projection.ScheduledJobStatus,
+  run: projection.ScheduledRunSummary,
+  output: Output,
+) -> Nil {
+  output.line("job: " <> status.job_id)
+  output.line("run_id: " <> run.run_id)
+  output.line("session_id: " <> optional_string(run.session_id))
+  output.line("run_root: " <> optional_string(run.run_root))
+  output.line(
+    "logs: latest scheduled session transcript is not available from the local event hub",
+  )
+}
+
+fn schedule_doctor_report_to_json(report: ScheduleDoctorReport) -> json.Json {
+  json.object([
+    #("job_id", json.string(report.job_id)),
+    #("config_path", optional_string_json(report.config_path)),
+    #(
+      "status",
+      json.string(
+        schedule_doctor.severity_to_string(schedule_doctor.most_severe(
+          report.diagnostics,
+        )),
+      ),
+    ),
+    #(
+      "checks",
+      json.array(report.diagnostics, of: schedule_doctor_diagnostic_to_json),
+    ),
+  ])
+}
+
+fn schedule_doctor_diagnostic_to_json(
+  diagnostic: schedule_doctor.Diagnostic,
+) -> json.Json {
+  json.object([
+    #("name", json.string(diagnostic.name)),
+    #(
+      "status",
+      json.string(schedule_doctor.severity_to_string(diagnostic.severity)),
+    ),
+    #("code", json.string(diagnostic.code)),
+    #("message", json.string(diagnostic.message)),
+    #(
+      "fields",
+      json.object(
+        list.map(diagnostic.fields, fn(field) {
+          let #(key, value) = field
+          #(key, json.string(value))
+        }),
+      ),
+    ),
+  ])
+}
+
+fn print_schedule_doctor_report(
+  report: ScheduleDoctorReport,
+  output: Output,
+) -> Nil {
+  output.line("schedule doctor: " <> report.job_id)
+  output.line("config: " <> optional_string(report.config_path))
+  output.line(
+    "status: "
+    <> schedule_doctor.severity_to_string(schedule_doctor.most_severe(
+      report.diagnostics,
+    )),
+  )
+  list.each(report.diagnostics, fn(diagnostic) {
+    output.line(
+      "- "
+      <> schedule_doctor_marker(diagnostic.severity)
+      <> " "
+      <> diagnostic.name
+      <> ": "
+      <> diagnostic.message
+      <> " ("
+      <> diagnostic.code
+      <> ")",
+    )
+    case diagnostic.fields {
+      [] -> Nil
+      _ ->
+        output.line(
+          "  fields: "
+          <> string.join(
+            list.map(diagnostic.fields, fn(field) {
+              let #(key, value) = field
+              key <> "=" <> value
+            }),
+            with: " ",
+          ),
+        )
+    }
+  })
+}
+
+fn schedule_doctor_marker(severity: schedule_doctor.Severity) -> String {
+  case severity {
+    schedule_doctor.Pass -> "PASS"
+    schedule_doctor.Warn -> "WARN"
+    schedule_doctor.Fail -> "FAIL"
+    schedule_doctor.Skip -> "SKIP"
   }
 }
 
@@ -838,6 +1334,21 @@ fn print_scheduled_history(
   output.line(
     "skipped_capacity_count: " <> int.to_string(status.skipped_capacity_count),
   )
+  output.line("failure_issue_id: " <> optional_string(status.failure_issue_id))
+  output.line(
+    "failure_dedupe_key: " <> optional_string(status.failure_dedupe_key),
+  )
+  case status.report_retry {
+    None -> output.line("report_retry: -")
+    Some(report_retry) -> {
+      output.line("report_retry: " <> report_retry.run_id)
+      output.line("report_retry_error: " <> report_retry.error_code)
+      output.line(
+        "report_retry_next_retry_at_ms: "
+        <> int.to_string(report_retry.next_retry_at_ms),
+      )
+    }
+  }
   output.line(
     "recent_run_ids: " <> string.join(status.recent_run_ids, with: ","),
   )
@@ -875,8 +1386,29 @@ fn scheduled_status_to_json(
     #("skipped_catch_up_count", json.int(status.skipped_catch_up_count)),
     #("skipped_paused_count", json.int(status.skipped_paused_count)),
     #("skipped_capacity_count", json.int(status.skipped_capacity_count)),
+    #("failure_issue_id", optional_string_json(status.failure_issue_id)),
+    #("failure_dedupe_key", optional_string_json(status.failure_dedupe_key)),
+    #("report_retry", scheduled_report_retry_to_json(status.report_retry)),
     #("recent_run_ids", json.array(status.recent_run_ids, of: json.string)),
   ])
+}
+
+fn scheduled_report_retry_to_json(
+  retry: Option(projection.ScheduledReportRetry),
+) -> json.Json {
+  case retry {
+    None -> json.null()
+    Some(retry) ->
+      json.object([
+        #("run_id", json.string(retry.run_id)),
+        #("attempt", json.int(retry.attempt)),
+        #("dedupe_key", json.string(retry.dedupe_key)),
+        #("error_code", json.string(retry.error_code)),
+        #("error_message", json.string(retry.error_message)),
+        #("next_retry_at_ms", json.int(retry.next_retry_at_ms)),
+        #("generation", json.int(retry.generation)),
+      ])
+  }
 }
 
 fn scheduled_run_to_json(
@@ -1006,6 +1538,13 @@ fn print_state_status(
   output.line("message: " <> status.message)
   output.line("workspace_root: " <> status.workspace_root)
   output.line("ledger_dir: " <> status.ledger_dir)
+  case status.warnings {
+    [] -> Nil
+    _ -> {
+      output.line("warnings:")
+      list.each(status.warnings, fn(warning) { output.line("  " <> warning) })
+    }
+  }
   case status.status {
     local_artifacts.StateUnsupported(_, _) -> {
       output.line("recovery: old_state_reset_required")

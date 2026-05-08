@@ -19,6 +19,7 @@ import scherzo/orchestrator/daemon
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/runtime_bundle
+import scherzo/schedule_doctor
 import scherzo/signal
 import scherzo/smoke
 import scherzo/tracker
@@ -414,6 +415,7 @@ fn run_loaded_doctor_checks(
 ) -> doctor.Report {
   []
   |> maybe_workflow_config_result(selected, bundle)
+  |> maybe_scheduled_jobs_result(selected, bundle)
   |> maybe_linear_contract_result(selected, bundle, dependencies)
   |> maybe_linear_smoke_result(selected, bundle, dependencies)
   |> maybe_local_probe_results(selected, bundle, dependencies)
@@ -444,6 +446,90 @@ fn maybe_workflow_config_result(
         ),
       ])
   }
+}
+
+fn maybe_scheduled_jobs_result(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+) -> List(doctor.CheckResult) {
+  case doctor.contains_check(selected, doctor.ScheduledJobs) {
+    False -> results
+    True -> list.append(results, [run_scheduled_jobs_doctor_check(bundle)])
+  }
+}
+
+fn run_scheduled_jobs_doctor_check(
+  bundle: runtime_bundle.RuntimeBundle,
+) -> doctor.CheckResult {
+  let report = schedule_doctor.inspect_bundle(bundle, None)
+  let schedule_doctor.Report(_, diagnostics) = report
+  let severity = schedule_doctor.most_severe(diagnostics)
+  let problem_diagnostics =
+    schedule_doctor.failing_or_warning_diagnostics(diagnostics)
+  let #(code, message, extra_fields) = case severity, problem_diagnostics {
+    schedule_doctor.Pass, _ -> #(
+      "ok",
+      "scheduled job configuration is valid",
+      [],
+    )
+    schedule_doctor.Skip, _ -> #(
+      "scheduled_jobs_skipped",
+      "scheduled job diagnostics were skipped",
+      [],
+    )
+    _, [first, ..] -> #(first.code, first.message, [
+      #("first_diagnostic_name", first.name),
+      #("first_diagnostic_code", first.code),
+      #("first_diagnostic_message", first.message),
+    ])
+    _, [] -> #(
+      "scheduled_jobs_unknown",
+      "scheduled job diagnostics did not produce a detailed result",
+      [],
+    )
+  }
+  doctor.CheckResult(
+    check: doctor.ScheduledJobs,
+    status: schedule_severity_to_doctor_status(severity),
+    code: code,
+    message: message,
+    fields: list.append(
+      [
+        #(
+          "scheduled_job_count",
+          int_to_string(list.length(bundle.orchestrator.scheduled_jobs)),
+        ),
+        #(
+          "enabled_job_count",
+          int_to_string(enabled_scheduled_job_count(
+            bundle.orchestrator.scheduled_jobs,
+          )),
+        ),
+        #("diagnostic_count", int_to_string(list.length(diagnostics))),
+      ],
+      extra_fields,
+    ),
+  )
+}
+
+fn schedule_severity_to_doctor_status(
+  severity: schedule_doctor.Severity,
+) -> doctor.CheckStatus {
+  case severity {
+    schedule_doctor.Pass -> doctor.Pass
+    schedule_doctor.Warn -> doctor.Warn
+    schedule_doctor.Fail -> doctor.Fail
+    schedule_doctor.Skip -> doctor.Skip
+  }
+}
+
+fn enabled_scheduled_job_count(
+  jobs: List(config_types.ScheduledJobConfig),
+) -> Int {
+  jobs
+  |> list.filter(fn(job) { job.enabled })
+  |> list.length
 }
 
 fn maybe_linear_contract_result(

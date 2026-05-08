@@ -9,8 +9,11 @@ import scherzo/ctl
 import scherzo/session/event
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
+import scherzo/state/ledger
+import scherzo/state/record
 import scherzo/terminal/style
 import scherzo/turn_telemetry
+import simplifile
 
 const ps_now_ms = -576_460_678_330
 
@@ -29,8 +32,29 @@ fn control_file() -> file.ControlFile {
   )
 }
 
+fn control_file_for_root(root: String) -> file.ControlFile {
+  file.ControlFile(
+    host: "127.0.0.1",
+    port: 1,
+    token: "token",
+    workspace_root: root,
+    started_at_ms: 1,
+  )
+}
+
+fn reset_dir(path: String) -> Nil {
+  let _ = simplifile.delete(path)
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+  Nil
+}
+
 fn write_control_file(path: String) -> Nil {
   let assert Ok(Nil) = file.write(path, control_file())
+  Nil
+}
+
+fn write_control_file_for_root(path: String, root: String) -> Nil {
+  let assert Ok(Nil) = file.write(path, control_file_for_root(root))
   Nil
 }
 
@@ -235,6 +259,17 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     == Ok(ctl.SchedulesStatus(None, Some("work"), False, Some("nightly")))
   assert ctl.parse(["schedules", "history", "nightly", "--root", "work"])
     == Ok(ctl.SchedulesHistory(None, Some("work"), False, "nightly"))
+  assert ctl.parse(["schedules", "logs", "nightly", "--last", "--root", "work"])
+    == Ok(ctl.SchedulesLogs(
+      None,
+      Some("work"),
+      False,
+      style.ColorAuto,
+      False,
+      "nightly",
+    ))
+  assert ctl.parse(["schedules", "doctor", "nightly", "--root", "work"])
+    == Ok(ctl.SchedulesDoctor(None, Some("work"), False, "nightly"))
   assert ctl.parse(["state", "status", "--root", "work", "--json"])
     == Ok(ctl.StateStatus("work", True))
   assert ctl.parse(["state", "archive-old", "--root", "work", "--yes"])
@@ -295,6 +330,8 @@ pub fn parse_operator_commands_test() {
     == Ok(ctl.Operator(None, False, command.RunScheduleNow("nightly")))
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["schedules", "run", "nightly"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["schedules", "logs", "nightly"])
 }
 
 pub fn parse_rejects_usage_errors_test() {
@@ -328,6 +365,8 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "ui respond")
   assert string.contains(usage, "cleanup")
   assert string.contains(usage, "schedules status")
+  assert string.contains(usage, "schedules logs <job> --last")
+  assert string.contains(usage, "schedules doctor <job>")
   assert string.contains(usage, "schedules run <job> --now")
   assert string.contains(usage, "state status")
   assert string.contains(usage, "--control-file <path>")
@@ -336,6 +375,126 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "--verbose")
   assert string.contains(usage, "--since-cursor <n>")
   assert string.contains(usage, "--dry-run")
+}
+
+pub fn schedules_logs_last_replays_retained_session_events_test() {
+  let base = "test/tmp/ctl-schedules/logs-retained"
+  let root = base <> "/workspaces"
+  let control_path = base <> "/control.json"
+  reset_dir(base)
+  write_scheduled_history(root, "nightly-session")
+  write_control_file_for_root(control_path, root)
+  let summary =
+    event.SessionSummary(
+      ..session_summary("nightly-session", ps_now_ms - 1000),
+      display_name: "nightly-session",
+      issue_id: "scheduled-nightly",
+      issue_identifier: "scheduled",
+      issue_title: "Scheduled nightly",
+    )
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.SchedulesLogs(
+        Some(control_path),
+        Some(root),
+        False,
+        style.ColorNever,
+        False,
+        "nightly",
+      ),
+      session_ref_deps([summary]),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "nightly-session")
+  assert string.contains(transcript, "scheduled")
+  assert !string.contains(transcript, "transcript is not available")
+}
+
+pub fn schedules_logs_last_reports_expired_transcript_test() {
+  let base = "test/tmp/ctl-schedules/logs-expired"
+  let root = base <> "/workspaces"
+  reset_dir(base)
+  write_scheduled_history(root, "expired-session")
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.SchedulesLogs(
+        Some(base <> "/missing-control.json"),
+        Some(root),
+        False,
+        style.ColorNever,
+        False,
+        "nightly",
+      ),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "job: nightly")
+  assert string.contains(
+    transcript,
+    "run_id: schedule-nightly-20260505T120000Z",
+  )
+  assert string.contains(transcript, "session_id: expired-session")
+  assert string.contains(
+    transcript,
+    "logs: latest scheduled session transcript is not available",
+  )
+}
+
+pub fn schedules_doctor_reports_config_and_linear_label_checks_test() {
+  let base = "test/tmp/ctl-schedules/doctor-valid"
+  let _ =
+    write_schedule_doctor_config(base, "Scheduled job {{ scheduled_job.id }}")
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.SchedulesDoctor(None, Some(base), False, "nightly"),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "schedule doctor: nightly")
+  assert string.contains(transcript, "config_load")
+  assert string.contains(transcript, "workflow_exists")
+  assert string.contains(transcript, "linear_failure_config")
+  assert string.contains(transcript, "linear_reserved_labels")
+  assert string.contains(transcript, "scherzo:scheduled-job:nightly")
+  assert string.contains(transcript, "scheduled_template_context")
+  assert string.contains(transcript, "local ledger projection is readable")
+}
+
+pub fn schedules_doctor_reports_issue_context_template_failure_test() {
+  let base = "test/tmp/ctl-schedules/doctor-issue-context"
+  let _ = write_schedule_doctor_config(base, "Issue title: {{ issue.title }}")
+  let subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.SchedulesDoctor(None, Some(base), False, "nightly"),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(
+    transcript,
+    "scheduled_workflow_requires_issue_context",
+  )
+  assert string.contains(transcript, "issue.title")
+  assert string.contains(transcript, "workflow nightly")
 }
 
 pub fn ps_human_table_uses_display_name_and_matches_header_order_test() {
@@ -993,4 +1152,88 @@ fn replay_event(session_id: String) -> event.SessionEvent {
       event.LifecycleName(event.WorkerStarted),
     ),
   )
+}
+
+fn write_scheduled_history(root: String, session_id: String) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.new(
+          100,
+          1,
+          record.ScheduledJobDue(
+            "nightly",
+            "nightly",
+            1_746_447_200_000,
+            "schedule-nightly-20260505T120000Z",
+            "automatic",
+          ),
+        ),
+        record.new(
+          101,
+          2,
+          record.ScheduledRunPending(
+            "nightly",
+            "nightly",
+            1_746_447_200_000,
+            "schedule-nightly-20260505T120000Z",
+            "automatic",
+            101,
+          ),
+        ),
+        record.new(
+          102,
+          3,
+          record.ScheduledRunStarted(
+            "nightly",
+            "nightly",
+            1_746_447_200_000,
+            102,
+            "schedule-nightly-20260505T120000Z",
+            1,
+            session_id,
+            root
+              <> "/nightly/scheduled/nightly/schedule-nightly-20260505T120000Z",
+          ),
+        ),
+        record.new(
+          103,
+          4,
+          record.ScheduledRunSucceeded(
+            "nightly",
+            "nightly",
+            1_746_447_200_000,
+            "schedule-nightly-20260505T120000Z",
+            1,
+            103,
+            0,
+            0,
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
+}
+
+fn write_schedule_doctor_config(dir: String, prompt: String) -> String {
+  reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts")
+  let config_path = dir <> "/scherzo.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: |\n      test -d \"$SCHERZO_WORKSPACE_PATH\"\n    remove: |\n      rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    nightly: workflows/nightly.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\nscheduled_jobs:\n  - id: nightly\n    workflow: nightly\n    enabled: true\n    every: 15m\n    overlap: skip\n    catch_up: false\n    on_failure:\n      linear:\n        enabled: true\n        state: Triage\n        labels:\n          - job:nightly\n        dedupe: open_issue_per_job\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/nightly.yaml",
+      "version: 1\nid: nightly\nsteps:\n  - id: inspect\n    kind: agent\n    prompt: prompts/nightly.md\n    workspace: main\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/nightly.md", prompt)
+  config_path
 }

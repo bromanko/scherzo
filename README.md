@@ -580,6 +580,22 @@ Supported comments include:
 
 Authorization is by explicit Linear user id allowlist only. Scherzo persists command receipts in the local ledger as comments are seen, started, completed, and acknowledged. After restart, acked commands are skipped, completed-but-unacked commands are acknowledged from their recorded result without reapplying the command, and commands that were started but not durably completed are acknowledged with `unknown_after_restart` so an operator can inspect state before issuing a new command. If an acknowledgement post fails while the daemon remains running, Scherzo keeps it pending and retries it on later polls without reapplying the source command. Commands posted while Scherzo was down are processed when they are on currently observed issues and still appear in the bounded `poll_limit_per_issue` comment results. Local `scherzoctl` remains the fallback control path.
 
+## Scheduled jobs
+
+Scheduled jobs run existing workflow DAGs on fixed intervals without creating Linear issues for successful intervals. Configure them with top-level `scheduled_jobs` entries that point to `routing.workflows`; keep job-specific payloads in workflow YAML, prompt files, scripts, environment, or repository config rather than schedule-level `input` or `vars`.
+
+The MVP supports fixed `every` intervals, `overlap: skip`, and `catch_up: false`. When `on_failure.linear.enabled: true`, a terminal scheduled failure after retries are exhausted creates or updates one Linear triage issue per job using reserved labels and the body marker `<!-- scherzo-dedupe: scheduled-job:<job-id> -->`. Later successes remain silent in Linear. See `examples/scherzo.yaml` and `docs/runbooks/scheduled-jobs.md` for the PR conflict repair shape and rollout notes.
+
+Useful local commands are:
+
+```sh
+scherzoctl schedules status pr-conflict-repair
+scherzoctl schedules history pr-conflict-repair
+scherzoctl schedules logs pr-conflict-repair --last
+scherzoctl schedules doctor pr-conflict-repair
+scherzoctl schedules run pr-conflict-repair --now
+```
+
 ## Local durable ledger
 
 Scherzo includes a local durable state ledger under `workspace.root/.scherzo-state/ledger/`. Daemon startup now replays this ledger before the first poll tick and uses it for single-instance restart recovery for the same canonical workspace root. Recovery restores durable retry counters, worker-session counters, parked issues, retry timers, known workspace paths, Linear command receipt state, and replayable pending Linear outbox entries that include bounded v2 payloads. Started runs that lack a finish record are marked interrupted because live pi sessions and Erlang ports cannot survive a BEAM restart.
