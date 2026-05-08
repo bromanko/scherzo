@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from scherzo_review import agent_lane_harness
+
 SCHEMA_VERSION = 1
 CONTRACT_SCHEMA_REF = "docs/schemas/review-artifacts.v1.schema.json"
 DEFAULT_OUTPUT_DIR = Path("tmp/scherzo-review-dry-run")
@@ -1711,8 +1713,24 @@ def validate_review_lane_result(value: dict[str, Any]) -> None:
                 raise ReviewError(
                     "blocking correctness findings must be verified with executable evidence (test, runtime, or reproduction)"
                 )
+            if value.get("agent_backend") in {"fixture", "external"} and not (
+                isinstance(finding.get("evidence_id"), str)
+                or isinstance(finding.get("evidence_ids"), list)
+            ):
+                raise ReviewError(
+                    "agent-backed blocking correctness findings must reference a harness evidence id"
+                )
     validate_review_notes(value)
-    validate_list_field(value, "artifacts")
+    artifacts = validate_list_field(value, "artifacts")
+    if value.get("agent_backend") in {"fixture", "external"}:
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                raise ReviewError("review lane artifacts must be objects")
+            path = artifact.get("path")
+            if not isinstance(path, str) or not path:
+                raise ReviewError("review lane artifacts need path strings")
+            if Path(path).is_absolute() or ".." in Path(path).parts:
+                raise ReviewError("agent-backed retained artifact paths must stay relative to the lane output directory")
 
 
 def validate_review_synthesis(value: dict[str, Any]) -> None:
@@ -1747,6 +1765,28 @@ def validate_review_synthesis(value: dict[str, Any]) -> None:
     if not isinstance(value.get("finding_counts"), dict):
         raise ReviewError("review synthesis finding_counts must be an object")
     validate_review_notes(value)
+
+
+def validate_preflight_manifest(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("preflight manifest schema_version must be 1")
+    if value.get("artifact_type") not in {"preflight_manifest", "review_preflight_manifest"}:
+        raise ReviewError("preflight manifest artifact_type must be preflight_manifest")
+    for field in ["generated_at_utc", "started_at_utc", "status", "remote_mutations"]:
+        validate_string_field(value, field)
+    if value.get("remote_mutations") != "none":
+        raise ReviewError("preflight manifest remote_mutations must be none")
+    validate_list_field(value, "coverage")
+    validate_list_field(value, "scenarios")
+    if "lane_runs" in value:
+        lane_runs = validate_list_field(value, "lane_runs")
+        for lane_run in lane_runs:
+            if not isinstance(lane_run, dict):
+                raise ReviewError("preflight lane_runs items must be objects")
+            for field in ["scenario_id", "lane_id", "backend", "execution_status", "artifact_path"]:
+                validate_string_field(lane_run, field)
+    if "cutover_readiness" in value and not isinstance(value.get("cutover_readiness"), dict):
+        raise ReviewError("preflight manifest cutover_readiness must be an object")
 
 
 def validate_final_review(value: dict[str, Any]) -> None:
@@ -1792,9 +1832,11 @@ def validate_artifact(value: dict[str, Any]) -> None:
         validate_review_synthesis(value)
     elif artifact_type == "final_review":
         validate_final_review(value)
+    elif artifact_type in {"preflight_manifest", "review_preflight_manifest"}:
+        validate_preflight_manifest(value)
     else:
         raise ReviewError(
-            "artifact_type must be review_brief, review_finding, review_lane_result, review_synthesis, or final_review"
+            "artifact_type must be review_brief, review_finding, review_lane_result, review_synthesis, final_review, or preflight_manifest"
         )
 
 
@@ -2652,6 +2694,40 @@ def run_lane_command(args: argparse.Namespace) -> None:
     validate_review_brief(brief)
     diff, source = diff_source_from_args(args)
     files = parse_diff_files(diff)
+    backend = agent_lane_harness.parse_agent_backend(getattr(args, "agent_backend", "heuristic"))
+
+    if backend != "heuristic":
+        try:
+            lane_result, analysis, lane_result_path, log_path, analysis_path = agent_lane_harness.run_agent_lane(
+                lane_id=lane_id,
+                lane_metadata=SPECIALIST_LANES[lane_id],
+                brief_path=brief_path,
+                brief=brief,
+                diff=diff,
+                source=source,
+                files=files,
+                output_dir=output_dir,
+                backend=backend,
+                scenario_id=source.get("label"),
+                schema_ref=CONTRACT_SCHEMA_REF,
+            )
+        except agent_lane_harness.HarnessError as exc:
+            raise ReviewError(str(exc)) from exc
+        validate_review_lane_result(lane_result)
+        findings = lane_result.get("findings", []) if isinstance(lane_result.get("findings"), list) else []
+        notes = lane_result.get("review_notes", []) if isinstance(lane_result.get("review_notes"), list) else []
+        print("REVIEW_LANE_RUN=ok")
+        print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
+        print(f"REVIEW_LANE={lane_id}")
+        print(f"REVIEW_AGENT_BACKEND={backend}")
+        print(f"REVIEW_LANE_RESULT_PATH={lane_result_path}")
+        print(f"REVIEW_LANE_LOG_PATH={log_path}")
+        print(f"REVIEW_LANE_ANALYSIS_PATH={analysis_path}")
+        print(f"REVIEW_LANE_FINDINGS={len(findings)}")
+        print(f"REVIEW_LANE_REVIEW_NOTES={len(notes)}")
+        print(f"REVIEW_LANE_BLOCKING_FINDINGS={analysis.get('blocking_finding_count')}")
+        print(f"REVIEW_LANE_REVIEW_DEPTH={analysis.get('review_depth')}")
+        return
 
     findings, notes, analysis = run_specialist_lane(lane_id, brief, files)
     completed_at = now_utc()
@@ -2687,6 +2763,7 @@ def run_lane_command(args: argparse.Namespace) -> None:
             "completed_at_utc": completed_at,
             "summary": f"{lane['name']} completed with {len(findings)} finding(s).",
         },
+        "agent_backend": "heuristic",
         "input_brief_ref": {
             "path": str(brief_path),
             "sha256": sha256_file(brief_path),
@@ -2720,6 +2797,7 @@ def run_lane_command(args: argparse.Namespace) -> None:
     print("REVIEW_LANE_RUN=ok")
     print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
     print(f"REVIEW_LANE={lane_id}")
+    print(f"REVIEW_AGENT_BACKEND={backend}")
     print(f"REVIEW_LANE_RESULT_PATH={lane_result_path}")
     print(f"REVIEW_LANE_LOG_PATH={log_path}")
     print(f"REVIEW_LANE_ANALYSIS_PATH={analysis_path}")
@@ -2744,16 +2822,24 @@ def write_failed_lane_artifacts(args: argparse.Namespace, message: str) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     lane_id = args.lane
     timestamp = now_utc()
+    backend = agent_lane_harness.parse_agent_backend(getattr(args, "agent_backend", "heuristic"))
     log_path = output_dir / f"review-lane-{lane_id}.log"
     log_path.write_text(
         "scherzo-review run-lane\n"
         f"lane={lane_id}\n"
+        f"agent_backend={backend}\n"
         f"started_at_utc={timestamp}\n"
         f"completed_at_utc={timestamp}\n"
         "state=failed\n"
         f"error={message}\n"
     )
     lane = SPECIALIST_LANES[lane_id]
+    retained_artifacts = agent_lane_harness.collect_existing_agent_artifacts(output_dir)
+    retained_artifacts.append({
+        "artifact_type": "log",
+        "path": log_path.name,
+        "sha256": sha256_file(log_path),
+    })
     lane_result = {
         "$schema": CONTRACT_SCHEMA_REF,
         "schema_version": SCHEMA_VERSION,
@@ -2772,22 +2858,18 @@ def write_failed_lane_artifacts(args: argparse.Namespace, message: str) -> None:
             "summary": f"{lane['name']} failed before producing findings.",
             "error": message,
         },
+        "agent_backend": backend,
         "input_brief_ref": failed_lane_brief_ref(args),
         "findings": [],
         "review_notes": [],
-        "artifacts": [
-            {
-                "artifact_type": "log",
-                "path": log_path.name,
-                "sha256": sha256_file(log_path),
-            },
-        ],
+        "artifacts": retained_artifacts,
     }
     validate_review_lane_result(lane_result)
     lane_result_path = output_dir / f"review-lane-{lane_id}.v1.json"
     write_json(lane_result_path, lane_result)
     print("REVIEW_LANE_RUN=failed")
     print(f"REVIEW_LANE={lane_id}")
+    print(f"REVIEW_AGENT_BACKEND={backend}")
     print(f"REVIEW_LANE_RESULT_PATH={lane_result_path}")
     print(f"REVIEW_LANE_LOG_PATH={log_path}")
 
@@ -2997,6 +3079,52 @@ def preflight_scenarios() -> list[dict[str, Any]]:
             "expect_security_locations_prioritize_non_docs": True,
         },
         {
+            "id": "inverted-auth-control-condition",
+            "description": "agent fixture with inverted authorization branch and harness-owned reproduction evidence",
+            "diff": "diff --git a/src/liv_152_fixture/project_authorization.gleam b/src/liv_152_fixture/project_authorization.gleam\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/src/liv_152_fixture/project_authorization.gleam\n"
+            "+++ b/src/liv_152_fixture/project_authorization.gleam\n"
+            "@@ -1,11 +1,11 @@\n"
+            " pub type Role {\n"
+            "   Admin\n"
+            "   User\n"
+            " }\n"
+            " \n"
+            " pub fn delete_project(role: Role) -> Result(String, String) {\n"
+            "   case role {\n"
+            "     Admin -> Ok(\"deleted\")\n"
+            "-    User -> Error(\"forbidden\")\n"
+            "+    User -> Ok(\"deleted\")\n"
+            "   }\n"
+            " }\n",
+            "test_status": ["unit=passed:fixture setup passed"],
+            "agent_backend_required": "fixture",
+            "readiness_required": True,
+            "expect_inverted_auth_blocker": True,
+        },
+        {
+            "id": "auth-control-static-suspicion-without-repro",
+            "description": "agent fixture with static auth/control suspicion but no trusted reproduction",
+            "diff": "diff --git a/src/liv_152_fixture/workflow_gate.gleam b/src/liv_152_fixture/workflow_gate.gleam\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/src/liv_152_fixture/workflow_gate.gleam\n"
+            "+++ b/src/liv_152_fixture/workflow_gate.gleam\n"
+            "@@ -1,7 +1,7 @@\n"
+            " pub fn may_dispatch(is_paused: Bool, has_operator_approval: Bool) -> Bool {\n"
+            "   case is_paused, has_operator_approval {\n"
+            "-    True, _ -> False\n"
+            "+    True, _ -> True\n"
+            "     False, True -> True\n"
+            "     False, False -> False\n"
+            "   }\n"
+            " }\n",
+            "test_status": ["unit=not_run:static suspicion fixture intentionally has no reproduction"],
+            "agent_backend_required": "fixture",
+            "readiness_required": True,
+            "expect_static_suspicion_note": True,
+        },
+        {
             "id": "lane-timeout-failure-simulation",
             "description": "simulated lane timeout/failure remains isolated and diagnosable",
             "diff": "diff --git a/src/scherzo/review_failure_fixture.gleam b/src/scherzo/review_failure_fixture.gleam\n"
@@ -3122,7 +3250,10 @@ def preflight_assert_scenario_expectations(
     scenario_id: str,
     synthesis: dict[str, Any],
     final_review: dict[str, Any],
-) -> None:
+    scenario_dir: Path,
+    lane_paths: list[Path],
+) -> dict[str, Any]:
+    assertions: dict[str, Any] = {}
     counts = (
         final_review.get("finding_counts", {})
         if isinstance(final_review.get("finding_counts"), dict)
@@ -3217,6 +3348,89 @@ def preflight_assert_scenario_expectations(
                 raise ReviewError(
                     f"scenario {scenario_id} expected synthesis action {action_name}"
                 )
+
+    lane_by_id: dict[str, dict[str, Any]] = {}
+    for lane_path in lane_paths:
+        try:
+            lane_result = load_json(lane_path)
+        except ReviewError:
+            continue
+        lane = lane_result.get("lane", {}) if isinstance(lane_result.get("lane"), dict) else {}
+        lane_id = lane.get("id")
+        if isinstance(lane_id, str):
+            lane_by_id[lane_id] = lane_result
+
+    if scenario.get("expect_inverted_auth_blocker"):
+        correctness = lane_by_id.get("correctness")
+        if not correctness:
+            raise ReviewError(f"scenario {scenario_id} expected a correctness lane result")
+        findings = correctness.get("findings", []) if isinstance(correctness.get("findings"), list) else []
+        blockers = [
+            finding for finding in findings
+            if isinstance(finding, dict)
+            and finding.get("category") == "correctness"
+            and finding.get("blocking") is True
+        ]
+        if not blockers:
+            raise ReviewError(f"scenario {scenario_id} expected a blocking correctness finding")
+        blocker = blockers[0]
+        if blocker.get("verified") is not True or blocker.get("evidence_type") != "reproduction":
+            raise ReviewError(f"scenario {scenario_id} expected a verified reproduction blocker")
+        locations = blocker.get("locations", []) if isinstance(blocker.get("locations"), list) else []
+        first_location = locations[0] if locations and isinstance(locations[0], dict) else {}
+        if first_location.get("path") != "src/liv_152_fixture/project_authorization.gleam":
+            raise ReviewError(f"scenario {scenario_id} blocker pointed at the wrong location")
+        evidence_id = blocker.get("evidence_id")
+        if not isinstance(evidence_id, str) or not evidence_id:
+            raise ReviewError(f"scenario {scenario_id} blocker did not reference a harness evidence id")
+        ledger_path = scenario_dir / "02-lane-correctness" / "evidence-ledger.v1.json"
+        ledger = load_json(ledger_path)
+        entries = ledger.get("evidence", []) if isinstance(ledger.get("evidence"), list) else []
+        matching = [entry for entry in entries if isinstance(entry, dict) and entry.get("evidence_id") == evidence_id]
+        if not matching:
+            raise ReviewError(f"scenario {scenario_id} evidence id was missing from the ledger")
+        entry = matching[0]
+        if entry.get("command") != "python3 repro/inverted_auth_control_condition_repro.py":
+            raise ReviewError(f"scenario {scenario_id} evidence command did not match the expected reproduction")
+        if entry.get("exit_code") != 0 or entry.get("timed_out") is not False:
+            raise ReviewError(f"scenario {scenario_id} evidence command did not complete successfully")
+        stdout_artifact = entry.get("stdout_artifact")
+        if not isinstance(stdout_artifact, str):
+            raise ReviewError(f"scenario {scenario_id} evidence stdout artifact was missing")
+        stdout = (scenario_dir / "02-lane-correctness" / stdout_artifact).read_text()
+        if "REPRODUCED: unauthorized User received Ok(\"deleted\")" not in stdout:
+            raise ReviewError(f"scenario {scenario_id} evidence stdout did not prove the fixture")
+        if counts.get("blocking", 0) < 1:
+            raise ReviewError(f"scenario {scenario_id} final review did not retain the blocker")
+        assertions["semantic_fixture_passed"] = True
+
+    if scenario.get("expect_static_suspicion_note"):
+        correctness = lane_by_id.get("correctness")
+        if not correctness:
+            raise ReviewError(f"scenario {scenario_id} expected a correctness lane result")
+        findings = correctness.get("findings", []) if isinstance(correctness.get("findings"), list) else []
+        for finding in findings:
+            if (
+                isinstance(finding, dict)
+                and finding.get("category") == "correctness"
+                and finding.get("blocking") is True
+            ):
+                raise ReviewError(f"scenario {scenario_id} blocked on static-only correctness suspicion")
+        notes = correctness.get("review_notes", []) if isinstance(correctness.get("review_notes"), list) else []
+        matching_notes = [
+            note for note in notes
+            if isinstance(note, dict)
+            and note.get("category") == "correctness"
+            and note.get("kind") in {"risk_note", "follow_up_test"}
+        ]
+        if not matching_notes:
+            raise ReviewError(f"scenario {scenario_id} expected a correctness risk or follow-up note")
+        suggested_action = str(matching_notes[0].get("suggested_action", "")).lower()
+        if "executable" not in suggested_action and "coverage" not in suggested_action:
+            raise ReviewError(f"scenario {scenario_id} note did not ask for executable coverage")
+        assertions["semantic_fixture_passed"] = True
+
+    return assertions
 
 
 def simulated_lane_result(
@@ -3366,7 +3580,9 @@ def duplicate_conflict_lane_results(brief_path: Path, scenario_dir: Path) -> lis
     ]
 
 
-def run_standard_preflight_scenario(scenario: dict[str, Any], output_dir: Path) -> dict[str, Any]:
+def run_standard_preflight_scenario(
+    scenario: dict[str, Any], output_dir: Path, agent_backend: str
+) -> dict[str, Any]:
     scenario_id = str(scenario["id"])
     scenario_dir = output_dir / scenario_id
     scenario_dir.mkdir(parents=True, exist_ok=True)
@@ -3395,6 +3611,8 @@ def run_standard_preflight_scenario(scenario: dict[str, Any], output_dir: Path) 
     )
 
     mode = scenario.get("mode")
+    lane_runs: list[dict[str, Any]] = []
+
     if mode == "malformed_lane":
         malformed_path = scenario_dir / "02-malformed-lane-result.json"
         malformed_path.write_text("{ this is not valid JSON\n")
@@ -3417,7 +3635,9 @@ def run_standard_preflight_scenario(scenario: dict[str, Any], output_dir: Path) 
             "status": "passed",
             "mode": "expected_failure",
             "description": scenario.get("description"),
+            "readiness_required": False,
             "diagnostic_log": str(scenario_dir / "logs" / "03-synthesize-expected-failure.command.log"),
+            "lane_runs": lane_runs,
         }
 
     if mode == "duplicate_conflict":
@@ -3427,6 +3647,16 @@ def run_standard_preflight_scenario(scenario: dict[str, Any], output_dir: Path) 
                 lane_path,
                 scenario_dir / "logs" / f"validate-{lane_path.parent.name}.log",
             )
+            lane_result = load_json(lane_path)
+            lane = lane_result.get("lane", {}) if isinstance(lane_result.get("lane"), dict) else {}
+            execution_status = lane_result.get("execution_status", {}) if isinstance(lane_result.get("execution_status"), dict) else {}
+            lane_runs.append({
+                "scenario_id": scenario_id,
+                "lane_id": str(lane.get("id", "unknown")),
+                "backend": "simulated",
+                "execution_status": str(execution_status.get("state", "unknown")),
+                "artifact_path": str(lane_path),
+            })
     else:
         lane_paths = []
         for lane_id in PREFLIGHT_LANE_IDS:
@@ -3455,6 +3685,8 @@ def run_standard_preflight_scenario(scenario: dict[str, Any], output_dir: Path) 
                         str(lane_dir),
                         "--source-label",
                         scenario_id,
+                        "--agent-backend",
+                        agent_backend,
                     ],
                     scenario_dir / "logs" / f"02-run-lane-{lane_id}.command.log",
                 )
@@ -3463,6 +3695,15 @@ def run_standard_preflight_scenario(scenario: dict[str, Any], output_dir: Path) 
                 lane_path,
                 scenario_dir / "logs" / f"validate-lane-{lane_id}.log",
             )
+            lane_result = load_json(lane_path)
+            execution_status = lane_result.get("execution_status", {}) if isinstance(lane_result.get("execution_status"), dict) else {}
+            lane_runs.append({
+                "scenario_id": scenario_id,
+                "lane_id": lane_id,
+                "backend": str(lane_result.get("agent_backend") or ("simulated" if mode == "lane_failure" else agent_backend)),
+                "execution_status": str(execution_status.get("state", "unknown")),
+                "artifact_path": str(lane_path),
+            })
             lane_paths.append(lane_path)
 
     synth_dir = scenario_dir / "03-synthesis"
@@ -3478,11 +3719,13 @@ def run_standard_preflight_scenario(scenario: dict[str, Any], output_dir: Path) 
 
     synthesis = load_json(synthesis_path)
     final_review = load_json(final_path)
-    preflight_assert_scenario_expectations(
+    assertions = preflight_assert_scenario_expectations(
         scenario=scenario,
         scenario_id=scenario_id,
         synthesis=synthesis,
         final_review=final_review,
+        scenario_dir=scenario_dir,
+        lane_paths=lane_paths,
     )
     counts = (
         final_review.get("finding_counts", {})
@@ -3495,18 +3738,22 @@ def run_standard_preflight_scenario(scenario: dict[str, Any], output_dir: Path) 
         "status": "passed",
         "mode": str(mode or "standard"),
         "description": scenario.get("description"),
+        "readiness_required": bool(scenario.get("readiness_required", mode is None)),
+        "assertions": assertions,
         "brief_path": str(brief_path),
         "synthesis_path": str(synthesis_path),
         "final_review_path": str(final_path),
         "finding_count": counts.get("total", 0),
         "blocking_finding_count": counts.get("blocking", 0),
         "lane_failure_count": counts.get("lane_failed", 0),
+        "lane_runs": lane_runs,
     }
 
 
 def preflight_command(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    agent_backend = agent_lane_harness.parse_agent_backend(getattr(args, "agent_backend", "heuristic"))
     selected = set(args.scenario or [])
     scenarios = preflight_scenarios()
     if selected:
@@ -3515,14 +3762,24 @@ def preflight_command(args: argparse.Namespace) -> None:
         if unknown:
             raise ReviewError("unknown preflight scenario(s): " + ", ".join(sorted(unknown)))
         scenarios = [scenario for scenario in scenarios if str(scenario["id"]) in selected]
+    else:
+        scenarios = [
+            scenario for scenario in scenarios
+            if not scenario.get("agent_backend_required") or scenario.get("agent_backend_required") == agent_backend
+        ]
 
     started_at = now_utc()
     results: list[dict[str, Any]] = []
     failures: list[str] = []
+    all_lane_runs: list[dict[str, Any]] = []
     for scenario in scenarios:
         scenario_id = str(scenario["id"])
         try:
-            results.append(run_standard_preflight_scenario(scenario, output_dir))
+            result = run_standard_preflight_scenario(scenario, output_dir, agent_backend)
+            results.append(result)
+            lane_runs = result.get("lane_runs", [])
+            if isinstance(lane_runs, list):
+                all_lane_runs.extend([run for run in lane_runs if isinstance(run, dict)])
         except Exception as exc:
             failure_message = f"{scenario_id}: {exc}"
             failures.append(failure_message)
@@ -3533,6 +3790,7 @@ def preflight_command(args: argparse.Namespace) -> None:
                 "id": scenario_id,
                 "status": "failed",
                 "description": scenario.get("description"),
+                "readiness_required": bool(scenario.get("readiness_required", False)),
                 "error": str(exc),
             })
 
@@ -3546,24 +3804,31 @@ def preflight_command(args: argparse.Namespace) -> None:
         "security-sensitive filesystem/process/network PR",
         "performance-sensitive PR",
         "PR #80-inspired staged review precision regression",
+        "agent-backed inverted authorization control-condition fixture",
+        "agent-backed static suspicion without reproduction fixture",
         "lane timeout/failure simulation",
         "malformed lane output simulation",
         "empty findings from all lanes",
         "synthesis with duplicate or conflicting findings",
     ]
+    if agent_backend == "heuristic":
+        coverage = [item for item in coverage if not item.startswith("agent-backed")]
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "artifact_type": "review_preflight_manifest",
+        "artifact_type": "preflight_manifest",
         "generated_at_utc": completed_at,
         "started_at_utc": started_at,
         "status": "failed" if failures else "passed",
+        "agent_backend": agent_backend,
         "remote_mutations": "none",
         "coverage": coverage,
         "scenario_count": len(scenarios),
         "passed_scenario_count": len([result for result in results if result.get("status") == "passed"]),
         "failed_scenario_count": len(failures),
+        "lane_runs": all_lane_runs,
         "scenarios": results,
     }
+    manifest["cutover_readiness"] = agent_lane_harness.evaluate_cutover_readiness(manifest)
     manifest_path = output_dir / "preflight-manifest.v1.json"
     write_json(manifest_path, manifest)
 
@@ -3574,6 +3839,7 @@ def preflight_command(args: argparse.Namespace) -> None:
 
     print("REVIEW_PREFLIGHT=ok")
     print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
+    print(f"REVIEW_AGENT_BACKEND={agent_backend}")
     print(f"REVIEW_PREFLIGHT_ARTIFACT_DIR={output_dir}")
     print(f"REVIEW_PREFLIGHT_MANIFEST_PATH={manifest_path}")
     print(f"REVIEW_PREFLIGHT_SCENARIOS={len(scenarios)}")
@@ -3587,6 +3853,13 @@ def validate_command(args: argparse.Namespace) -> None:
     print("REVIEW_ARTIFACT_VALID=ok")
     print(f"REVIEW_SCHEMA_VERSION={value.get('schema_version')}")
     print(f"REVIEW_ARTIFACT_TYPE={value.get('artifact_type')}")
+    if getattr(args, "require_cutover_ready", False):
+        try:
+            agent_lane_harness.validate_cutover_readiness(value)
+        except agent_lane_harness.HarnessError as exc:
+            print("REVIEW_CUTOVER_READY=failed")
+            raise ReviewError(str(exc)) from exc
+        print("REVIEW_CUTOVER_READY=ok")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3673,6 +3946,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--source-label",
         help="Human label to record in the lane result source object.",
     )
+    run_lane.add_argument(
+        "--agent-backend",
+        choices=sorted(agent_lane_harness.AGENT_BACKENDS),
+        default="heuristic",
+        help="Lane backend to use: heuristic keeps the deterministic path; fixture and external exercise the agent harness.",
+    )
     run_lane.set_defaults(func=run_lane_command)
 
     synthesize = subparsers.add_parser(
@@ -3712,10 +3991,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Run only the named preflight scenario. Repeat to select multiple scenarios.",
     )
+    preflight.add_argument(
+        "--agent-backend",
+        choices=sorted(agent_lane_harness.AGENT_BACKENDS),
+        default="heuristic",
+        help="Backend to pass to internal run-lane invocations.",
+    )
     preflight.set_defaults(func=preflight_command)
 
     validate = subparsers.add_parser("validate", help="Validate a review artifact JSON object.")
     validate.add_argument("--artifact", required=True, help="Artifact path to validate.")
+    validate.add_argument(
+        "--require-cutover-ready",
+        action="store_true",
+        help="For preflight manifests, require the fixture/external cutover-readiness gate to be ready.",
+    )
     validate.set_defaults(func=validate_command)
     return parser
 

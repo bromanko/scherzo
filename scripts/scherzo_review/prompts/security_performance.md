@@ -1,0 +1,1 @@
+For security and performance, inspect authorization boundaries, secrets, command execution, filesystem and network parsing, daemon/process behavior, sleeps, polling, retained data, hot paths, and unbounded growth. Concrete vulnerabilities or performance bugs are findings. Broad boundary sensitivity without a specific exploit or bug remains a risk note.

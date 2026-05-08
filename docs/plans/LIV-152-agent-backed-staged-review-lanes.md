@@ -54,30 +54,25 @@ A sixth risk is false validation caused by exercising the old heuristic path. Th
 
 - [x] (2026-05-08 00:00Z) Drafted this ExecPlan from the LIV-152 ticket and current repository facts.
 - [x] (2026-05-08 00:00Z) Incorporated adversarial review findings about harness-owned evidence, preflight backend selection, external backend safety, cutover readiness, fixture specificity, and child issue executability.
-- [ ] Create repository-relative child issue description files under `tmp/linear-liv-152-child-issues/` using the titles and acceptance snippets in this plan.
-- [ ] Create the LIV-151 child issue for the shared agent-lane harness, backend plumbing, artifact retention, and cutover-readiness manifest.
-- [ ] Create the LIV-151 child issue for the correctness semantic lane, concrete inverted-control fixture, and harness-owned executable-evidence gate.
-- [ ] Create the LIV-151 child issue for the test-quality semantic lane.
-- [ ] Create the LIV-151 child issue for the idioms and maintainability semantic lane.
-- [ ] Create the LIV-151 child issue for the security and performance semantic lane.
-- [ ] Create the LIV-151 child issue for the LIV-115 cutover readiness integration point and default-backend switch.
-- [ ] Add a failing Gleam test that `run-lane --agent-backend fixture` writes bundle, raw output, transcript, and schema-valid lane artifacts.
-- [ ] Add `scripts/scherzo_review/__init__.py` and `scripts/scherzo_review/agent_lane_harness.py` with the first pure helpers for backend parsing, artifact hashing, and repository-relative path validation.
-- [ ] Wire `--agent-backend heuristic|fixture|external` through `scripts/scherzo-review run-lane` while keeping `heuristic` as the default.
-- [ ] Implement lane input bundle creation with `diff.patch`, source metadata, changed-file metadata, validation status, context manifest, prompt, and file hashes.
-- [ ] Implement deterministic fixture backend invocation and raw output retention.
-- [ ] Implement external backend command contract, timeout handling, credential stripping, output retention, path containment, and working-tree mutation detection while keeping external mode disabled unless configured.
-- [ ] Implement normalization from fixture or external raw output into `ReviewLaneResult` and failed lane artifacts.
-- [ ] Implement harness-owned evidence execution and `evidence-ledger.v1.json` before allowing blocking correctness findings.
-- [ ] Add `preflight --agent-backend`, propagate it to internal lane runs, and record the backend per lane in `preflight-manifest.v1.json`.
-- [ ] Add `cutover_readiness` computation to the preflight manifest and `validate --require-cutover-ready` support.
-- [ ] Add the concrete `inverted-auth-control-condition` fixture, reproduction script, expected output, evidence ledger assertions, and final-review blocker assertions.
-- [ ] Add the `auth-control-static-suspicion-without-repro` fixture and assert that it creates a correctness review note rather than a blocker.
-- [ ] Implement and validate the test-quality lane fixtures.
-- [ ] Implement and validate the idioms and maintainability lane fixtures.
-- [ ] Implement and validate the security and performance lane fixtures.
-- [ ] Locate or add the LIV-115 staging/cutover backend configuration surface, keep its default safe, and prove it refuses cutover without readiness.
-- [ ] Run the final fixture-backed validation suite and keep LIV-115 blocked until every child issue is complete.
+- [x] (2026-05-08 23:45Z) Superseded the child-issue creation steps for this direct LIV-158 implementation workflow; no Linear child issues were created from this workspace.
+- [x] (2026-05-08 23:45Z) Added Gleam regression coverage for `run-lane --agent-backend fixture`, preflight backend recording, external missing-command failure artifacts, environment credential stripping, correctness evidence gating, heuristic readiness rejection, and the safe workflow backend default.
+- [x] (2026-05-08 23:45Z) Added `scripts/scherzo_review/__init__.py`, `scripts/scherzo_review/agent_lane_harness.py`, and lane prompt files under `scripts/scherzo_review/prompts/`.
+- [x] (2026-05-08 23:45Z) Wired `--agent-backend heuristic|fixture|external` through `scripts/scherzo-review run-lane` while keeping `heuristic` as the default.
+- [x] (2026-05-08 23:45Z) Implemented lane input bundle creation with `diff.patch`, source metadata, changed-file metadata, validation status, context manifest, prompt, and file hashes.
+- [x] (2026-05-08 23:45Z) Implemented deterministic fixture backend invocation and `raw-agent-output.json` retention for all four specialist lanes.
+- [x] (2026-05-08 23:45Z) Implemented the external backend command contract, timeout handling, credential stripping, stdout/stderr retention, artifact path containment, and working-tree mutation detection while keeping external mode disabled unless configured.
+- [x] (2026-05-08 23:45Z) Applied post-review feedback by adding regression coverage for a configured successful `external` backend lane run, including command-template execution, transcript retention, normalized review notes, and artifact validation.
+- [x] (2026-05-08 23:45Z) Implemented normalization from fixture or external raw output into `ReviewLaneResult` and extended failed lane artifacts to retain bundle, prompt, raw output, transcript, evidence ledger, backend metadata, and logs when present.
+- [x] (2026-05-08 23:45Z) Implemented harness-owned evidence execution and `evidence-ledger.v1.json` before allowing agent-backed blocking correctness findings.
+- [x] (2026-05-08 23:45Z) Added `preflight --agent-backend`, propagated it to internal lane runs, and recorded `agent_backend` plus `lane_runs[].backend` in `preflight-manifest.v1.json`.
+- [x] (2026-05-08 23:45Z) Added `cutover_readiness` computation to the preflight manifest and `validate --require-cutover-ready` support.
+- [x] (2026-05-08 23:45Z) Added the concrete `inverted-auth-control-condition` fixture, reproduction script, expected output, evidence ledger assertions, and final-review blocker assertions.
+- [x] (2026-05-08 23:45Z) Added the `auth-control-static-suspicion-without-repro` fixture and asserted that it creates a correctness review note rather than a blocker.
+- [x] (2026-05-08 23:45Z) Implemented fixture-backed test-quality behavior that distinguishes source changes without tests from test-only or assertion-bearing coverage contexts.
+- [x] (2026-05-08 23:45Z) Implemented fixture-backed idioms and maintainability behavior, including production fatal-construct findings and non-blocking reviewability notes.
+- [x] (2026-05-08 23:45Z) Implemented fixture-backed security and performance behavior that separates concrete credential/shell hazards from broad risk notes.
+- [x] (2026-05-08 23:45Z) Located the staged-review integration point in `.scherzo/workflows/implementation.yaml`, added the safe `SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic` backend configuration surface, and proved heuristic manifests fail `--require-cutover-ready`.
+- [x] (2026-05-08 23:45Z) Ran targeted validation: Python compile, JSON schema parsing, fixture-backed preflight, cutover-ready manifest validation, `gleam format --check src test`, `gleam test`, `gleam run -m glinter`, and `gleam run -m scherzo_lint`.
 
 ## Surprises & Discoveries
 
@@ -92,6 +87,12 @@ A sixth risk is false validation caused by exercising the old heuristic path. Th
 
 - Observation: Existing preflight coverage already exercises no-meaningful-findings, PR #80-inspired precision, lane failure, malformed lane output, empty findings, and duplicate or conflicting synthesis scenarios.
   Evidence: `scripts/scherzo-review` defines these cases in `preflight_scenarios()` and runs them through `dry-run`, `run-lane`, artifact validation, and `synthesize`.
+
+- Observation: The checked-in implementation workflow already has four explicit `scripts/scherzo-review run-lane` command steps.
+  Evidence: `.scherzo/workflows/implementation.yaml` contains `correctness_review_lane`, `test_quality_review_lane`, `idioms_maintainability_review_lane`, and `security_performance_review_lane`, which now read `SCHERZO_STAGED_REVIEW_AGENT_BACKEND` with a `heuristic` default.
+
+- Observation: During implementation, validation runs occur with an intentionally dirty working copy, so evidence and external-backend mutation checks must compare pre-run and post-run status rather than requiring a globally clean checkout before the command starts.
+  Evidence: `scripts/scherzo_review/agent_lane_harness.py` records clean evidence when `jj status --color=never` or `git status --short` has the same hash before and after the harness-owned command.
 
 ## Decision Log
 
@@ -127,17 +128,33 @@ A sixth risk is false validation caused by exercising the old heuristic path. Th
   Rationale: A workflow cutover without a human final reviewer is unsafe until the lanes themselves catch the known semantic failure mode and fail closed when they cannot run.
   Date: 2026-05-08
 
-- Decision: Keep child issue creation in scope and make it executable through the repo-local Linear CLI.
-  Rationale: This planning issue exists to create the implementation breakdown under LIV-151. The child issues must have consistent acceptance criteria instead of relying on future implementers to infer scope from this plan.
+- Decision: The original plan scoped child issue creation through the repo-local Linear CLI, but this was superseded by the direct LIV-158 implementation workflow.
+  Rationale: The planning issue was initially structured for separate LIV-151 children. The active LIV-158 workflow instead implements the full checked-in ExecPlan in one dedicated workspace, so no remote Linear child creation was needed.
   Date: 2026-05-08
 
 - Decision: Name this plan `docs/plans/LIV-152-agent-backed-staged-review-lanes.md`.
   Rationale: The Linear description mentions a LIV-151-prefixed path, but the active workflow contract requires the new plan file to be named with the LIV-152 issue identifier.
   Date: 2026-05-08
 
+- Decision: Implement the child-issue scope directly in the LIV-158 implementation workspace instead of creating new Linear children.
+  Rationale: The active workflow contract for LIV-158 is to implement the existing ExecPlan in this dedicated workspace and does not require or benefit from remote Linear mutation. Keeping the implementation local avoids unnecessary operator-side issue churn while preserving the same acceptance evidence in tests and retained artifacts.
+  Date: 2026-05-08
+
+- Decision: Add `SCHERZO_STAGED_REVIEW_AGENT_BACKEND` as the staged-review workflow backend configuration surface, defaulting to `heuristic`.
+  Rationale: `.scherzo/workflows/implementation.yaml` is the checked-in place that runs the four staged review lanes. A single environment-variable default keeps the current deterministic path safe until LIV-115 deliberately switches it after cutover readiness passes.
+  Date: 2026-05-08
+
+- Decision: Treat unchanged pre-run and post-run working-tree status as the mutation-safety check for evidence and external agents.
+  Rationale: Implementation and validation normally run before the final publish commit, so the checkout can contain legitimate in-progress changes. Comparing status hashes still detects harness-introduced mutation without requiring a pristine workspace at validation time.
+  Date: 2026-05-08
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The direct LIV-158 implementation delivered the shared agent-lane harness behind the existing `scripts/scherzo-review` CLI while preserving the deterministic `heuristic` default. Fixture-backed lane runs now write input bundles, prompts, raw backend output, evidence ledgers, analysis artifacts, logs, and schema-valid lane results. External mode is available only when explicitly requested and configured, strips mutation-capable credentials, retains transcripts, checks path containment, fails closed with a schema-valid lane artifact on missing configuration or unsafe execution, and now has post-review regression coverage for a configured successful command that writes normalized lane output.
+
+The correctness evidence gate now proves the plan's central semantic claim. The `inverted-auth-control-condition` fixture produces a blocking correctness finding only after the harness runs the retained reproduction and records its evidence id in `evidence-ledger.v1.json`; the `auth-control-static-suspicion-without-repro` fixture is downgraded into a correctness review note rather than a blocker. Fixture-backed preflight records backend metadata per lane, computes `cutover_readiness`, and `validate --require-cutover-ready` rejects heuristic manifests.
+
+The checked-in implementation workflow now has a safe backend configuration surface through `SCHERZO_STAGED_REVIEW_AGENT_BACKEND`, defaulting to `heuristic`. LIV-115 should continue to treat the default as not cut over until it explicitly sets that variable after fixture-backed or external readiness validation passes.
 
 ## Context and Orientation
 
@@ -610,7 +627,7 @@ Every artifact manifest, synthesis artifact, and final review artifact must cont
 
 Do not add a Python dependency unless a child issue proves the standard library is insufficient. The existing script already uses Python standard library modules for argument parsing, JSON, hashing, subprocesses, paths, and timestamps.
 
-The planned harness module should expose functions with these responsibilities. Exact Python names may change during implementation only if this plan is updated first; otherwise use these names so the child issues share one contract:
+The implemented harness module exposes functions with these responsibilities. Some signatures carry the lane metadata, timestamps, and schema reference that the executable script owns:
 
     AGENT_BACKENDS = {"heuristic", "fixture", "external"}
     parse_agent_backend(value: str) -> str
@@ -622,7 +639,8 @@ The planned harness module should expose functions with these responsibilities. 
     sanitize_agent_environment(env: dict) -> dict
     capture_repo_state(repo_root) -> dict
     run_external_agent(bundle, command_template, timeout_seconds, output_dir, raw_output_path) -> dict
-    normalize_agent_response(lane_id, brief_path, brief, source, diff, raw_output, bundle, output_dir) -> dict
+    run_agent_lane(lane_id, lane_metadata, brief_path, brief, diff, source, files, output_dir, backend, scenario_id, schema_ref) -> tuple
+    normalize_agent_response(lane_id, brief_path, brief, source, diff, raw_output, bundle, output_dir, *, lane_metadata, started_at, completed_at, schema_ref, backend, evidence_ledger) -> tuple
     run_evidence_command(evidence_request, lane_output_dir, timeout_seconds) -> dict
     write_evidence_ledger(output_dir, entries) -> str
     load_evidence_ledger(output_dir) -> dict

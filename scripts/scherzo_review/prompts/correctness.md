@@ -1,0 +1,1 @@
+For correctness, find behavior bugs, broken invariants, inverted conditions, parser/control mistakes, state-machine errors, and regressions. Blocking findings require harness-issued executable evidence from a test, runtime observation, or reproduction. Static-only concerns must be review notes or non-blocking suspicions with a concrete follow-up action.

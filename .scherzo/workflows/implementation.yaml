@@ -38,28 +38,28 @@ steps:
   - id: correctness_review_lane
     kind: command
     depends_on: [generate_review_brief]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane correctness --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/correctness_review_lane"'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; backend=${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane correctness --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/correctness_review_lane" --agent-backend "$backend"'
     on_failure: continue
     workspace: main
 
   - id: test_quality_review_lane
     kind: command
     depends_on: [generate_review_brief]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane test-quality --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/test_quality_review_lane"'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; backend=${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane test-quality --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/test_quality_review_lane" --agent-backend "$backend"'
     on_failure: continue
     workspace: main
 
   - id: idioms_maintainability_review_lane
     kind: command
     depends_on: [generate_review_brief]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane idioms-maintainability --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/idioms_maintainability_review_lane"'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; backend=${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane idioms-maintainability --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/idioms_maintainability_review_lane" --agent-backend "$backend"'
     on_failure: continue
     workspace: main
 
   - id: security_performance_review_lane
     kind: command
     depends_on: [generate_review_brief]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane security-performance --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/security_performance_review_lane"'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; backend=${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane security-performance --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/security_performance_review_lane" --agent-backend "$backend"'
     on_failure: continue
     workspace: main
 

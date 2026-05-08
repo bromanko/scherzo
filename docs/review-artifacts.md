@@ -113,14 +113,15 @@ The validator is deliberately minimal and dependency-free. The JSON Schema remai
 
 ## Specialist lane entrypoint
 
-Use `scripts/scherzo-review run-lane` to run one first-version specialist lane against a diff source plus an existing `ReviewBrief`:
+Use `scripts/scherzo-review run-lane` to run one specialist lane against a diff source plus an existing `ReviewBrief`. The default `--agent-backend heuristic` preserves the deterministic first-version lane behavior. `--agent-backend fixture` exercises the shared agent-lane harness with deterministic local fixtures, and `--agent-backend external` exercises the external command contract when `SCHERZO_REVIEW_AGENT_COMMAND` is configured.
 
 ```sh
 scripts/scherzo-review run-lane \
   --lane correctness \
   --brief tmp/review-dry-run/review-brief.v1.json \
   --diff-file /path/to/pr.diff \
-  --output-dir tmp/review-lanes/correctness
+  --output-dir tmp/review-lanes/correctness \
+  --agent-backend fixture
 ```
 
 The supported lane ids are:
@@ -136,7 +137,15 @@ Each successful lane writes:
 - `review-lane-<lane-id>-analysis.v1.json`: local diagnostic details about checks performed, selected depth, risk profile, changed files, finding counts, and empty-finding rationale.
 - `review-lane-<lane-id>.log`: a bounded execution log with source, brief checksum, diff checksum, checks, and empty-finding reason when applicable.
 
-If a lane fails before producing findings, it still attempts to write `review-lane-<lane-id>.v1.json` with `execution_status.state: "failed"` and a log artifact containing the error, so malformed briefs and tool failures are debuggable from retained workflow artifacts.
+Agent-backed lane runs also retain an input bundle and backend evidence:
+
+- `input/review-brief.v1.json`, `input/diff.patch`, `input/changed-files.v1.json`, `input/validation-status.v1.json`, and `input/context-manifest.v1.json`.
+- `prompt.md`, `raw-agent-output.json`, and transcript files when an external backend runs.
+- `evidence-ledger.v1.json` plus reproduction stdout/stderr/command logs when the harness runs trusted executable evidence.
+
+For agent-backed correctness lanes, a blocking correctness finding must reference a harness-issued evidence id from `evidence-ledger.v1.json` with executable evidence type `test`, `runtime`, or `reproduction`. Static-only correctness claims are downgraded into `review_notes`.
+
+If a lane fails before producing findings, it still attempts to write `review-lane-<lane-id>.v1.json` with `execution_status.state: "failed"` and a log artifact containing the error, so malformed briefs, missing external backend configuration, timeouts, malformed raw output, and containment failures are debuggable from retained workflow artifacts.
 
 The command prints `REVIEW_LANE_RESULT_PATH=...`, `REVIEW_LANE_LOG_PATH=...`, and, on success, `REVIEW_LANE_ANALYSIS_PATH=...` for workflow steps and tests to consume. It is local-only and does not post PR comments, update Linear, push branches, or mutate remote state.
 
@@ -169,9 +178,18 @@ A single command runs the staged review flow against representative synthetic PR
 
 ```sh
 scripts/scherzo-review preflight --output-dir tmp/scherzo-review-preflight
+scripts/scherzo-review preflight --agent-backend fixture --output-dir tmp/scherzo-review-preflight
 ```
 
-The preflight suite covers small/trivial, medium feature, test-heavy, no-finding, correctness-with-evidence, security-sensitive, performance-sensitive, PR #80-inspired staged-review precision, lane-failure, malformed-lane-output, empty-findings, and duplicate/conflicting synthesis scenarios. It validates each generated `ReviewBrief`, `ReviewLaneResult`, `ReviewSynthesis`, and `FinalReviewArtifact`, writes per-scenario command logs, and produces `preflight-manifest.v1.json`. Review findings, including blockers intentionally present in fixtures, do not fail preflight; only workflow execution and artifact-contract problems do.
+The preflight suite covers small/trivial, medium feature, test-heavy, no-finding, correctness-with-evidence, security-sensitive, performance-sensitive, PR #80-inspired staged-review precision, lane-failure, malformed-lane-output, empty-findings, and duplicate/conflicting synthesis scenarios. Fixture-backed preflight additionally covers an inverted authorization control-condition fixture and a static auth/control suspicion with no trusted reproduction. It validates each generated `ReviewBrief`, `ReviewLaneResult`, `ReviewSynthesis`, and `FinalReviewArtifact`, writes per-scenario command logs, and produces `preflight-manifest.v1.json`. Review findings, including blockers intentionally present in fixtures, do not fail preflight; only workflow execution and artifact-contract problems do.
+
+`preflight-manifest.v1.json` records the selected `agent_backend`, per-lane `lane_runs[].backend`, and a `cutover_readiness` object. Validate the cutover gate with:
+
+```sh
+scripts/scherzo-review validate --artifact tmp/scherzo-review-preflight/preflight-manifest.v1.json --require-cutover-ready
+```
+
+That validation succeeds only for a fixture or external manifest whose required semantic scenarios passed, whose required lane runs succeeded with backend metadata, and whose artifacts preserve `remote_mutations: "none"`. A heuristic preflight remains useful for backwards compatibility, but it is not cutover-ready evidence.
 
 ## Checked-in workflow integration
 
@@ -181,7 +199,7 @@ The dogfood implementation workflow generates the brief immediately before revie
 $SCHERZO_RUN_ROOT/artifacts/review/<step-id>/
 ```
 
-After brief generation, the workflow runs the four specialist lanes as independent local command steps, then runs `scripts/scherzo-review synthesize` to produce `ReviewSynthesis` and `FinalReviewArtifact` files under the same run artifact directory. The existing code-review agent still receives the same implementation context and change analysis, plus the brief, lane, synthesis, and final-artifact command outputs, then reads any referenced artifacts before producing the human review summary.
+After brief generation, the workflow runs the four specialist lanes as independent local command steps, then runs `scripts/scherzo-review synthesize` to produce `ReviewSynthesis` and `FinalReviewArtifact` files under the same run artifact directory. `.scherzo/workflows/implementation.yaml` reads `SCHERZO_STAGED_REVIEW_AGENT_BACKEND` for those lane commands and defaults to `heuristic`, so staged review remains on the deterministic backend until a later cutover deliberately sets the variable after `validate --require-cutover-ready` passes. The existing code-review agent still receives the same implementation context and change analysis, plus the brief, lane, synthesis, and final-artifact command outputs, then reads any referenced artifacts before producing the human review summary.
 
 The brief, lane, synthesis, and final review steps write local artifacts only; they do not post PR comments, update Linear, push, rebase, check out PR branches, or alter PR state.
 
