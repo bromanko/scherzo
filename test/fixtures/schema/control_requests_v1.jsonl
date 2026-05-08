@@ -1,0 +1,16 @@
+{"version":1,"id":"req-ping","token":"secret","type":"ping"}
+{"version":1,"id":"req-list-sessions","token":"secret","type":"list_sessions"}
+{"session_id":"session-1","version":1,"id":"req-get-session","token":"secret","type":"get_session"}
+{"session_id":"session-1","after":7,"limit":50,"version":1,"id":"req-get-events","token":"secret","type":"get_events"}
+{"session_id":"session-1","after":7,"version":1,"id":"req-stream-events","token":"secret","type":"stream_events"}
+{"version":1,"id":"req-pause","token":"secret","type":"pause"}
+{"version":1,"id":"req-resume","token":"secret","type":"resume"}
+{"version":1,"id":"req-reload","token":"secret","type":"reload"}
+{"issue_identifier":"LIV-94","version":1,"id":"req-retry","token":"secret","type":"retry"}
+{"reason":"blocked on review","issue_id":"issue-1","version":1,"id":"req-park","token":"secret","type":"park"}
+{"issue_identifier":"LIV-94","version":1,"id":"req-unpark","token":"secret","type":"unpark"}
+{"session_id":"session-1","version":1,"id":"req-abort","token":"secret","type":"abort"}
+{"session_id":"session-1","version":1,"id":"req-stop","token":"secret","type":"stop_after_current_turn"}
+{"session_id":"session-1","message":"continue please","version":1,"id":"req-prompt","token":"secret","type":"prompt"}
+{"session_id":"session-1","request_id":"ui-1","value":"approved","version":1,"id":"req-respond-ui","token":"secret","type":"respond_ui"}
+{"job_id":"nightly-repair","version":1,"id":"req-schedule-now","token":"secret","type":"schedule_run_now"}

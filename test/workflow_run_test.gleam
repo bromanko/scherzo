@@ -459,6 +459,50 @@ pub fn workflow_run_fans_out_fans_in_and_renders_artifacts_test() {
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
 }
 
+pub fn workflow_run_completed_cleanup_failure_marks_failed_terminal_test() {
+  let subject = process.new_subject()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      cleanup_run: fn(run_root, _orchestrator, _profile) {
+        process.send(subject, "cleanup:" <> run_root)
+        Error(error.WorkspaceIo("delete failed"))
+      },
+      checkpoint: workflow_checkpoint.Writer(
+        ..workflow_checkpoint.noop_writer(),
+        workflow_finished: fn(finished: workflow_checkpoint.WorkflowFinished) {
+          process.send(subject, "workflow_finished:" <> finished.outcome)
+          Ok(Nil)
+        },
+      ),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "cleanup_failed:workspace_io"
+  assert receive_event(subject) == "prepare:collect:main:"
+  assert receive_event(subject) == "run:collect"
+  assert receive_event(subject) == "after:collect"
+  assert receive_event(subject) == "workflow_finished:completed"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  assert receive_event(subject) == "workflow_finished:failed_fatal"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
 pub fn workflow_run_on_failure_continue_makes_artifact_available_test() {
   let subject = process.new_subject()
   let assert Ok(success) =
