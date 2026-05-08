@@ -1,7 +1,7 @@
 version: 1
 id: implementation
 description: Implement a focused Scherzo issue from ticket context, review it, validate it, publish a PR, and report the PR URL.
-max_parallel_steps: 1
+max_parallel_steps: 4
 steps:
   - id: prepare_context
     kind: command
@@ -63,13 +63,19 @@ steps:
     on_failure: continue
     workspace: main
 
-  - id: code_review
-    kind: agent
+  - id: synthesize_review
+    kind: command
     depends_on:
       - correctness_review_lane
       - test_quality_review_lane
       - idioms_maintainability_review_lane
       - security_performance_review_lane
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" synthesize --brief "$brief" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/correctness_review_lane/review-lane-correctness.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/test_quality_review_lane/review-lane-test-quality.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/idioms_maintainability_review_lane/review-lane-idioms-maintainability.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/security_performance_review_lane/review-lane-security-performance.v1.json" --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review"'
+    workspace: main
+
+  - id: code_review
+    kind: agent
+    depends_on: [synthesize_review]
     prompt: prompts/code-review.md
     workspace: main
 

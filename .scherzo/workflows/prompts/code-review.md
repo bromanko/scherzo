@@ -29,6 +29,9 @@ Idioms / maintainability lane:
 Security / performance lane:
 {{ steps.security_performance_review_lane.stdout }}
 
+Synthesis and final review artifact output:
+{{ steps.synthesize_review.stdout }}
+
 Review contract:
 
 - You are in the same dedicated jj workspace as the implementation.
@@ -36,6 +39,7 @@ Review contract:
 - Use `jj status --color=never` and `jj diff --from @- --to @ --color=never` only for orientation; the analysis output above is authoritative for changed files across the workflow run.
 - If `REVIEW_BRIEF_PATH=...` is present in the dry-run output, read that local artifact for orientation. It is additive context only; preserve the existing review behavior and do not post the artifact to PRs or Linear.
 - If any specialist lane output includes `REVIEW_LANE_RESULT_PATH=...`, read the referenced `ReviewLaneResult` and its log/analysis artifacts before running the existing review. Treat lane findings as normalized review input: fix or report blocking findings, preserve non-blocking suspicions as feedback, and do not discard empty-finding lane logs.
+- If synthesis output includes `REVIEW_SYNTHESIS_PATH=...` or `REVIEW_FINAL_ARTIFACT_PATH=...`, read the referenced artifacts first. Use the final artifact as the concise normalized review input, including lane failures and downgraded/unproven correctness claims, but still inspect the actual diff before applying fixes.
 - The workflow currently supports project-local Gleam review only. If `LANGUAGES=gleam`, use the vendored project-local review skill content under `.pi/skills/` and run the equivalent of `/review gleam --fix medium`.
 - If the local `/review` command is unavailable or does not accept `--fix medium`, read `.pi/skills/gleam-review/SKILL.md` and the related `.pi/skills/gleam-*-review/SKILL.md` files, perform the Gleam review manually against the changed files, and apply only safe medium-or-smaller fixes.
 - If `LANGUAGES=none`, do not invent a language review. Check the changed files briefly for obvious workflow breakage and report that no supported language review was required.

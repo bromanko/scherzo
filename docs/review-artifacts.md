@@ -57,6 +57,20 @@ Required fields:
 - `artifacts`: optional local artifact references such as logs, transcripts, or a generated brief.
 - `input_brief_ref`: optional reference to the `ReviewBrief` consumed by the lane.
 
+### `ReviewSynthesis`
+
+A `ReviewSynthesis` is produced after the specialist lanes finish. It records lane health, normalized findings, synthesis actions, grouped findings, and counts. Synthesis responsibilities include:
+
+- deduplicating findings with the same category, summary, and primary location;
+- downgrading correctness blockers that lack verified executable evidence (`test`, `runtime`, or `reproduction`);
+- recording conflicting remediation advice as alternatives instead of emitting duplicate comments;
+- grouping findings by severity and category; and
+- carrying failed lane state forward as `execution_issues` without treating review findings themselves as workflow failures.
+
+### `FinalReviewArtifact`
+
+A `FinalReviewArtifact` is the concise human-facing review artifact generated from the synthesis. It always exists when synthesis receives valid lane result artifacts, including when all lanes return empty findings. It includes the final Markdown review body, grouped findings, blocker evidence, lane statuses, and `remote_mutations: "none"` for dry-run/preflight safety.
+
 ## Dry-run entrypoint
 
 Use `scripts/scherzo-review dry-run` to generate a schema-valid brief without posting comments, updating Linear, pushing branches, checking out a PR, or mutating remote state.
@@ -124,6 +138,39 @@ If a lane fails before producing findings, it still attempts to write `review-la
 
 The command prints `REVIEW_LANE_RESULT_PATH=...`, `REVIEW_LANE_LOG_PATH=...`, and, on success, `REVIEW_LANE_ANALYSIS_PATH=...` for workflow steps and tests to consume. It is local-only and does not post PR comments, update Linear, push branches, or mutate remote state.
 
+## Synthesis and final artifact entrypoint
+
+Use `scripts/scherzo-review synthesize` after the specialist lanes:
+
+```sh
+scripts/scherzo-review synthesize \
+  --brief tmp/review-dry-run/review-brief.v1.json \
+  --lane-result tmp/review-lanes/correctness/review-lane-correctness.v1.json \
+  --lane-result tmp/review-lanes/test-quality/review-lane-test-quality.v1.json \
+  --lane-result tmp/review-lanes/idioms/review-lane-idioms-maintainability.v1.json \
+  --lane-result tmp/review-lanes/security/review-lane-security-performance.v1.json \
+  --output-dir tmp/review-synthesis
+```
+
+The command writes:
+
+- `review-synthesis.v1.json`: normalized, deduplicated lane synthesis with lane health and synthesis actions.
+- `final-review.v1.json`: concise final review artifact with Markdown output and grouped findings.
+- `review-synthesis.log`: local execution log.
+- `manifest.v1.json`: checksums for the synthesis artifacts.
+
+It prints `REVIEW_SYNTHESIS_PATH=...`, `REVIEW_FINAL_ARTIFACT_PATH=...`, `REVIEW_LANE_FAILURES=...`, and `REVIEW_REMOTE_MUTATIONS=none`. Failed lanes represented by valid `ReviewLaneResult` artifacts are isolated into `execution_issues`; malformed or missing lane artifacts are infrastructure errors and cause the command to fail.
+
+## E2E preflight entrypoint
+
+A single command runs the staged review flow against representative synthetic PR fixtures without mutating PR, Linear, or remote state:
+
+```sh
+scripts/scherzo-review preflight --output-dir tmp/scherzo-review-preflight
+```
+
+The preflight suite covers small/trivial, medium feature, test-heavy, no-finding, correctness-with-evidence, security-sensitive, performance-sensitive, lane-failure, malformed-lane-output, empty-findings, and duplicate/conflicting synthesis scenarios. It validates each generated `ReviewBrief`, `ReviewLaneResult`, `ReviewSynthesis`, and `FinalReviewArtifact`, writes per-scenario command logs, and produces `preflight-manifest.v1.json`. Review findings, including blockers intentionally present in fixtures, do not fail preflight; only workflow execution and artifact-contract problems do.
+
 ## Checked-in workflow integration
 
 The dogfood implementation workflow generates the brief immediately before review and stores review artifacts under the run artifact directory:
@@ -132,9 +179,9 @@ The dogfood implementation workflow generates the brief immediately before revie
 $SCHERZO_RUN_ROOT/artifacts/review/<step-id>/
 ```
 
-After brief generation, the workflow runs the four specialist lanes as local command steps. The existing code-review agent still receives the same implementation context and change analysis, plus the lane command outputs, then reads any referenced `ReviewLaneResult`, log, and analysis artifacts before producing the human review summary.
+After brief generation, the workflow runs the four specialist lanes as independent local command steps, then runs `scripts/scherzo-review synthesize` to produce `ReviewSynthesis` and `FinalReviewArtifact` files under the same run artifact directory. The existing code-review agent still receives the same implementation context and change analysis, plus the brief, lane, synthesis, and final-artifact command outputs, then reads any referenced artifacts before producing the human review summary.
 
-The brief and lane steps write local artifacts only; they do not post PR comments, update Linear, push, rebase, check out PR branches, or alter PR state.
+The brief, lane, synthesis, and final review steps write local artifacts only; they do not post PR comments, update Linear, push, rebase, check out PR branches, or alter PR state.
 
 ## Compatibility and versioning
 
