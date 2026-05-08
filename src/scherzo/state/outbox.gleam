@@ -43,22 +43,48 @@ pub type Payload {
   Payload(kind: String, body: String, source_comment_id: Option(String))
 }
 
-pub fn decode_payload(payload_json: String) -> Result(Payload, String) {
+pub type ReplayError {
+  OutboxPayloadMissing
+  InvalidOutboxPayload
+  UnsupportedOutboxPayloadKind(String)
+  UnsupportedOutboxKind(String)
+}
+
+pub fn decode_payload(payload_json: String) -> Result(Payload, ReplayError) {
   case json.parse(payload_json, payload_decoder()) {
     Ok(payload) -> Ok(payload)
-    Error(_) -> Error("invalid_outbox_payload")
+    Error(_) -> Error(InvalidOutboxPayload)
   }
 }
 
 pub fn recovery_replay_error(
   outbox_kind: String,
   payload_kind: String,
-) -> Result(Nil, String) {
+) -> Result(Nil, ReplayError) {
   case outbox_kind, payload_kind {
     "linear_command_ack", "linear_command_ack" -> Ok(Nil)
-    "linear_command_ack", other ->
-      Error("unsupported_outbox_payload_kind:" <> other)
-    other, _ -> Error("unsupported_outbox_kind:" <> other)
+    "linear_command_ack", other -> Error(UnsupportedOutboxPayloadKind(other))
+    other, _ -> Error(UnsupportedOutboxKind(other))
+  }
+}
+
+pub fn replay_error_code(error: ReplayError) -> String {
+  case error {
+    OutboxPayloadMissing -> "outbox_payload_missing"
+    InvalidOutboxPayload -> "invalid_outbox_payload"
+    UnsupportedOutboxPayloadKind(kind) ->
+      "unsupported_outbox_payload_kind:" <> kind
+    UnsupportedOutboxKind(kind) -> "unsupported_outbox_kind:" <> kind
+  }
+}
+
+pub fn describe_replay_error(error: ReplayError) -> String {
+  case error {
+    OutboxPayloadMissing -> "outbox payload missing"
+    InvalidOutboxPayload -> "invalid outbox payload JSON"
+    UnsupportedOutboxPayloadKind(kind) ->
+      "unsupported outbox payload kind: " <> kind
+    UnsupportedOutboxKind(kind) -> "unsupported outbox kind: " <> kind
   }
 }
 
