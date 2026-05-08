@@ -20,7 +20,7 @@ fn reset_dir(path: String) -> Nil {
 }
 
 fn run_command(command: String) -> step_artifact.StepArtifact {
-  command_step.run("review-artifacts", command, ".", 10_000, [], limits())
+  command_step.run("review-artifacts", command, ".", 120_000, [], limits())
 }
 
 pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
@@ -249,6 +249,61 @@ pub fn specialist_review_lanes_emit_schema_valid_lane_results_test() {
       "scripts/scherzo-review validate --artifact " <> security_result_path,
     )
   assert security_validation.status == step_artifact.StepSucceeded
+
+  let synthesis_dir = dir <> "/synthesis"
+  let synthesis =
+    run_command(
+      "scripts/scherzo-review synthesize --brief "
+      <> brief_path
+      <> " --lane-result "
+      <> correctness_result_path
+      <> " --lane-result "
+      <> test_quality_result_path
+      <> " --lane-result "
+      <> idioms_result_path
+      <> " --lane-result "
+      <> security_result_path
+      <> " --output-dir "
+      <> synthesis_dir,
+    )
+  assert synthesis.status == step_artifact.StepSucceeded
+  assert synthesis.exit_code == Some(0)
+  assert string.contains(synthesis.stdout, "REVIEW_SYNTHESIS=ok")
+  assert string.contains(synthesis.stdout, "REVIEW_FINAL_ARTIFACT_PATH=")
+  assert string.contains(synthesis.stdout, "REVIEW_REMOTE_MUTATIONS=none")
+
+  let synthesis_path = synthesis_dir <> "/review-synthesis.v1.json"
+  let final_path = synthesis_dir <> "/final-review.v1.json"
+  let assert Ok(synthesis_artifact) = simplifile.read(synthesis_path)
+  let assert Ok(final_artifact) = simplifile.read(final_path)
+  let assert Ok(synthesis_log) =
+    simplifile.read(synthesis_dir <> "/review-synthesis.log")
+  assert string.contains(
+    synthesis_artifact,
+    "\"artifact_type\": \"review_synthesis\"",
+  )
+  assert string.contains(synthesis_artifact, "\"grouped_findings\"")
+  assert string.contains(synthesis_artifact, "\"lane_failed\": 0")
+  assert string.contains(final_artifact, "\"artifact_type\": \"final_review\"")
+  assert string.contains(final_artifact, "# Staged review summary")
+  assert string.contains(final_artifact, "\"remote_mutations\": \"none\"")
+  assert string.contains(synthesis_log, "remote_mutations=none")
+
+  let synthesis_validation =
+    run_command("scripts/scherzo-review validate --artifact " <> synthesis_path)
+  assert synthesis_validation.status == step_artifact.StepSucceeded
+  assert string.contains(
+    synthesis_validation.stdout,
+    "REVIEW_ARTIFACT_TYPE=review_synthesis",
+  )
+
+  let final_validation =
+    run_command("scripts/scherzo-review validate --artifact " <> final_path)
+  assert final_validation.status == step_artifact.StepSucceeded
+  assert string.contains(
+    final_validation.stdout,
+    "REVIEW_ARTIFACT_TYPE=final_review",
+  )
 }
 
 pub fn security_performance_lane_uses_low_risk_lightweight_depth_test() {
@@ -350,6 +405,61 @@ pub fn review_lane_failure_writes_debug_artifacts_test() {
       "scripts/scherzo-review validate --artifact " <> lane_result_path,
     )
   assert validation.status == step_artifact.StepSucceeded
+}
+
+pub fn review_preflight_runs_full_dry_run_suite_test() {
+  let dir = "test/tmp/review-artifacts-preflight"
+  reset_dir(dir)
+
+  let preflight =
+    run_command("scripts/scherzo-review preflight --output-dir " <> dir)
+
+  assert preflight.status == step_artifact.StepSucceeded
+  assert preflight.exit_code == Some(0)
+  assert string.contains(preflight.stdout, "REVIEW_PREFLIGHT=ok")
+  assert string.contains(preflight.stdout, "REVIEW_PREFLIGHT_SCENARIOS=11")
+  assert string.contains(preflight.stdout, "REVIEW_REMOTE_MUTATIONS=none")
+
+  let manifest_path = dir <> "/preflight-manifest.v1.json"
+  let assert Ok(manifest) = simplifile.read(manifest_path)
+  assert string.contains(manifest, "\"status\": \"passed\"")
+  assert string.contains(manifest, "small/trivial PR")
+  assert string.contains(manifest, "medium feature PR")
+  assert string.contains(manifest, "test-heavy PR")
+  assert string.contains(manifest, "malformed lane output simulation")
+  assert string.contains(manifest, "duplicate-conflicting-synthesis")
+  assert string.contains(manifest, "\"remote_mutations\": \"none\"")
+  assert string.contains(manifest, "\"failed_scenario_count\": 0")
+
+  let assert Ok(empty_final) =
+    simplifile.read(
+      dir <> "/empty-findings-all-lanes/03-synthesis/final-review.v1.json",
+    )
+  assert string.contains(empty_final, "No findings from any lane")
+  assert string.contains(empty_final, "\"artifact_type\": \"final_review\"")
+
+  let assert Ok(lane_failure_synthesis) =
+    simplifile.read(
+      dir
+      <> "/lane-timeout-failure-simulation/03-synthesis/review-synthesis.v1.json",
+    )
+  assert string.contains(lane_failure_synthesis, "simulated timeout after 1ms")
+  assert string.contains(lane_failure_synthesis, "\"kind\": \"lane_failure\"")
+
+  let assert Ok(conflict_synthesis) =
+    simplifile.read(
+      dir
+      <> "/duplicate-conflicting-synthesis/03-synthesis/review-synthesis.v1.json",
+    )
+  assert string.contains(conflict_synthesis, "deduplicated_finding")
+  assert string.contains(
+    conflict_synthesis,
+    "resolved_conflicting_recommendation",
+  )
+  assert string.contains(
+    conflict_synthesis,
+    "downgraded_unproven_correctness_claim",
+  )
 }
 
 pub fn review_artifact_validator_accepts_review_finding_test() {

@@ -6,7 +6,9 @@
   "oneOf": [
     { "$ref": "#/$defs/ReviewBrief" },
     { "$ref": "#/$defs/ReviewFinding" },
-    { "$ref": "#/$defs/ReviewLaneResult" }
+    { "$ref": "#/$defs/ReviewLaneResult" },
+    { "$ref": "#/$defs/ReviewSynthesis" },
+    { "$ref": "#/$defs/FinalReviewArtifact" }
   ],
   "$defs": {
     "ArtifactHeader": {
@@ -297,6 +299,147 @@
         "completed_at_utc": { "type": "string", "minLength": 1 },
         "summary": { "type": "string", "minLength": 1 },
         "error": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "ReviewSynthesis": {
+      "allOf": [
+        { "$ref": "#/$defs/ArtifactHeader" },
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "generated_at_utc",
+            "producer",
+            "brief_ref",
+            "lane_results",
+            "execution_summary",
+            "execution_issues",
+            "normalized_findings",
+            "grouped_findings",
+            "finding_counts",
+            "synthesis_actions",
+            "remote_mutations"
+          ],
+          "properties": {
+            "artifact_type": { "const": "review_synthesis" },
+            "brief_ref": { "$ref": "#/$defs/ArtifactReference" },
+            "lane_results": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/LaneResultSummary" }
+            },
+            "execution_summary": {
+              "type": "object",
+              "required": ["state", "summary"],
+              "properties": {
+                "state": { "type": "string", "minLength": 1 },
+                "summary": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": true
+            },
+            "execution_issues": {
+              "type": "array",
+              "items": { "type": "object", "additionalProperties": true }
+            },
+            "normalized_findings": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ReviewFindingCore" }
+            },
+            "grouped_findings": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "finding_counts": { "$ref": "#/$defs/FindingCounts" },
+            "synthesis_actions": {
+              "type": "array",
+              "items": { "type": "object", "additionalProperties": true }
+            },
+            "remote_mutations": { "const": "none" }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "FinalReviewArtifact": {
+      "allOf": [
+        { "$ref": "#/$defs/ArtifactHeader" },
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "generated_at_utc",
+            "producer",
+            "brief_ref",
+            "synthesis_ref",
+            "title",
+            "summary",
+            "finding_counts",
+            "grouped_findings",
+            "blockers",
+            "lane_statuses",
+            "execution_issues",
+            "markdown",
+            "remote_mutations"
+          ],
+          "properties": {
+            "artifact_type": { "const": "final_review" },
+            "brief_ref": { "$ref": "#/$defs/ArtifactReference" },
+            "synthesis_ref": { "$ref": "#/$defs/ArtifactReference" },
+            "title": { "type": "string", "minLength": 1 },
+            "summary": { "type": "string", "minLength": 1 },
+            "finding_counts": { "$ref": "#/$defs/FindingCounts" },
+            "grouped_findings": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "blockers": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ReviewFindingCore" }
+            },
+            "lane_statuses": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/LaneResultSummary" }
+            },
+            "execution_issues": {
+              "type": "array",
+              "items": { "type": "object", "additionalProperties": true }
+            },
+            "markdown": { "type": "string", "minLength": 1 },
+            "remote_mutations": { "const": "none" }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "LaneResultSummary": {
+      "type": "object",
+      "required": ["lane_id", "state", "finding_count", "path"],
+      "properties": {
+        "lane_id": { "type": "string", "minLength": 1 },
+        "lane_name": { "type": "string" },
+        "state": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string" },
+        "error": { "type": ["string", "null"] },
+        "finding_count": { "type": "integer", "minimum": 0 },
+        "blocking_finding_count": { "type": "integer", "minimum": 0 },
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "additionalProperties": true
+    },
+    "FindingCounts": {
+      "type": "object",
+      "required": ["total", "blocking", "by_severity", "by_category"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "blocking": { "type": "integer", "minimum": 0 },
+        "verified": { "type": "integer", "minimum": 0 },
+        "by_severity": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "by_category": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "lane_failed": { "type": "integer", "minimum": 0 },
+        "lane_succeeded": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": true
     },
