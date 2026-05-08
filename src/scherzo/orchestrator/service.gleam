@@ -83,10 +83,14 @@ pub type DoctorDependencies {
       String,
       workflow_dag.WorkspaceRef,
       config_types.OrchestratorConfig,
+      config_types.WorkspaceHookProfile,
       Dict(String, workspace_run.PreparedStepWorkspace),
     ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
-    cleanup_run: fn(String, config_types.OrchestratorConfig) ->
-      Result(Nil, error.WorkspaceError),
+    cleanup_run: fn(
+      String,
+      config_types.OrchestratorConfig,
+      config_types.WorkspaceHookProfile,
+    ) -> Result(Nil, error.WorkspaceError),
     pi_probe: fn(String, String, Int) -> Result(Nil, error.PiRpcError),
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
@@ -690,34 +694,88 @@ fn run_workspace_and_pi_checks(
   {
     False -> results
     True ->
-      case prepare_doctor_workspace(bundle, dependencies) {
-        Error(err) -> workspace_prepare_failure_results(results, selected, err)
-        Ok(prepared) -> {
-          let results =
-            maybe_workspace_hooks_pass(results, selected, bundle, prepared)
-          let results =
-            maybe_pi_probe_result(
-              results,
-              selected,
-              bundle,
-              dependencies,
-              prepared,
-            )
-          append_cleanup_warning_if_needed(
-            results,
-            selected,
-            bundle,
-            dependencies,
-            prepared,
-          )
-        }
+      case default_workspace_profile(bundle.orchestrator) {
+        Error(_) -> workspace_profile_unavailable_results(results, selected)
+        Ok(profile) ->
+          case prepare_doctor_workspace(bundle, dependencies, profile) {
+            Error(err) ->
+              workspace_prepare_failure_results(results, selected, err)
+            Ok(prepared) -> {
+              let results =
+                maybe_workspace_hooks_pass(
+                  results,
+                  selected,
+                  bundle,
+                  prepared,
+                  profile,
+                )
+              let results =
+                maybe_pi_probe_result(
+                  results,
+                  selected,
+                  bundle,
+                  dependencies,
+                  prepared,
+                )
+              append_cleanup_warning_if_needed(
+                results,
+                selected,
+                bundle,
+                dependencies,
+                prepared,
+                profile,
+              )
+            }
+          }
       }
+  }
+}
+
+fn default_workspace_profile(
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(config_types.WorkspaceHookProfile, Nil) {
+  dict.get(
+    orchestrator.workspace_profiles.profiles,
+    orchestrator.workspace_profiles.default_profile,
+  )
+}
+
+fn workspace_profile_unavailable_results(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+) -> List(doctor.CheckResult) {
+  let results = case doctor.contains_check(selected, doctor.WorkspaceHooks) {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.WorkspaceHooks,
+          status: doctor.Fail,
+          code: "workspace_profile_unavailable",
+          message: "default workspace profile unavailable",
+          fields: [],
+        ),
+      ])
+  }
+  case doctor.contains_check(selected, doctor.PiProbe) {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.PiProbe,
+          status: doctor.Skip,
+          code: "workspace_profile_unavailable",
+          message: "doctor workspace was not prepared",
+          fields: [],
+        ),
+      ])
   }
 }
 
 fn prepare_doctor_workspace(
   bundle: runtime_bundle.RuntimeBundle,
   dependencies: DoctorDependencies,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError) {
   dependencies.prepare_step(
     doctor_issue(),
@@ -726,6 +784,7 @@ fn prepare_doctor_workspace(
     "doctor",
     workflow_dag.WorkspaceRef(name: "main", from: None),
     bundle.orchestrator,
+    profile,
     dict.new(),
   )
 }
@@ -802,8 +861,9 @@ fn prepare_error_details(err: workspace_run.PrepareError) -> #(String, String) {
 fn maybe_workspace_hooks_pass(
   results: List(doctor.CheckResult),
   selected: List(doctor.CheckName),
-  bundle: runtime_bundle.RuntimeBundle,
+  _bundle: runtime_bundle.RuntimeBundle,
   prepared: workspace_run.PreparedStepWorkspace,
+  profile: config_types.WorkspaceHookProfile,
 ) -> List(doctor.CheckResult) {
   case doctor.contains_check(selected, doctor.WorkspaceHooks) {
     False -> results
@@ -817,10 +877,7 @@ fn maybe_workspace_hooks_pass(
           fields: [
             #("workspace_path", prepared.path),
             #("run_root", prepared.run_root),
-            #(
-              "hooks",
-              configured_workspace_hooks(bundle.orchestrator.dag_hooks),
-            ),
+            #("hooks", configured_workspace_hooks(profile.hooks)),
           ],
         ),
       ])
@@ -907,8 +964,11 @@ fn append_cleanup_warning_if_needed(
   bundle: runtime_bundle.RuntimeBundle,
   dependencies: DoctorDependencies,
   prepared: workspace_run.PreparedStepWorkspace,
+  profile: config_types.WorkspaceHookProfile,
 ) -> List(doctor.CheckResult) {
-  case dependencies.cleanup_run(prepared.run_root, bundle.orchestrator) {
+  case
+    dependencies.cleanup_run(prepared.run_root, bundle.orchestrator, profile)
+  {
     Ok(Nil) -> results
     Error(err) ->
       case doctor.contains_check(selected, doctor.WorkspaceHooks) {
@@ -1205,44 +1265,54 @@ fn run_pi_probe_orchestrator(
       created_at: None,
       updated_at: None,
     )
-  case
-    workspace_run.prepare_step(
-      issue,
-      "probe",
-      "probe",
-      "probe",
-      workflow_dag.WorkspaceRef(name: "main", from: None),
-      orchestrator,
-      dict.new(),
-    )
-  {
-    Error(workspace_run.WorkspaceFailure(err)) ->
-      Error(StartupError(error.workspace_code(err), "workspace error"))
-    Error(workspace_run.HookFailure(err)) ->
-      Error(StartupError(error.hook_code(err), "hook error"))
-    Ok(prepared) -> {
-      let probe_result =
-        probe.probe(
-          orchestrator.effective.pi.command,
-          prepared.path,
-          orchestrator.effective.pi.read_timeout_ms,
+  case default_workspace_profile(orchestrator) {
+    Error(_) ->
+      Error(StartupError(
+        "workspace_profile_unavailable",
+        "default workspace profile unavailable",
+      ))
+    Ok(profile) ->
+      case
+        workspace_run.prepare_step(
+          issue,
+          "probe",
+          "probe",
+          "probe",
+          workflow_dag.WorkspaceRef(name: "main", from: None),
+          orchestrator,
+          profile,
+          dict.new(),
         )
-      let _ = workspace_run.cleanup_run(prepared.run_root, orchestrator)
-      case probe_result {
-        Ok(Nil) -> {
-          let _ =
-            log_stderr(
-              "info",
-              "pi_probe_ok",
-              [#("workspace_path", prepared.path)],
-              secrets,
+      {
+        Error(workspace_run.WorkspaceFailure(err)) ->
+          Error(StartupError(error.workspace_code(err), "workspace error"))
+        Error(workspace_run.HookFailure(err)) ->
+          Error(StartupError(error.hook_code(err), "hook error"))
+        Ok(prepared) -> {
+          let probe_result =
+            probe.probe(
+              orchestrator.effective.pi.command,
+              prepared.path,
+              orchestrator.effective.pi.read_timeout_ms,
             )
-          Ok(Nil)
+          let _ =
+            workspace_run.cleanup_run(prepared.run_root, orchestrator, profile)
+          case probe_result {
+            Ok(Nil) -> {
+              let _ =
+                log_stderr(
+                  "info",
+                  "pi_probe_ok",
+                  [#("workspace_path", prepared.path)],
+                  secrets,
+                )
+              Ok(Nil)
+            }
+            Error(err) ->
+              Error(StartupError(error.pi_rpc_code(err), "pi probe error"))
+          }
         }
-        Error(err) ->
-          Error(StartupError(error.pi_rpc_code(err), "pi probe error"))
       }
-    }
   }
 }
 

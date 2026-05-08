@@ -411,6 +411,7 @@ fn fake_workflow_run_dependencies(
       attempt_index,
       workspace_ref,
       orchestrator,
+      profile,
       _known,
     ) {
       let run_root =
@@ -430,6 +431,7 @@ fn fake_workflow_run_dependencies(
         path: run_root <> "/" <> workspace_ref.name,
         source_workspace_name: workspace_ref.from,
         source_workspace_path: None,
+        workspace_profile: profile.name,
       ))
     },
     prepare_recovered_step: fn(
@@ -441,6 +443,7 @@ fn fake_workflow_run_dependencies(
       attempt_index,
       workspace_ref,
       _orchestrator,
+      profile,
       _known,
     ) {
       Ok(workspace_run.PreparedStepWorkspace(
@@ -452,12 +455,13 @@ fn fake_workflow_run_dependencies(
         path: expected_run_root <> "/" <> workspace_ref.name,
         source_workspace_name: workspace_ref.from,
         source_workspace_path: None,
+        workspace_profile: profile.name,
       ))
     },
-    after_step: fn(_, step_id, _, _) {
+    after_step: fn(_, step_id, _, _, _) {
       process.send(log_subject, "yaml_after:" <> step_id)
     },
-    cleanup_run: fn(run_root, _) {
+    cleanup_run: fn(run_root, _, _) {
       process.send(log_subject, "yaml_cleanup:" <> run_root)
       Ok(Nil)
     },

@@ -51,11 +51,13 @@ A sixth risk is accidentally creating a VCS mode under a different name. Counter
 
 - [x] (2026-05-06 00:00Z) Drafted this ExecPlan from the Linear issue and current repository inspection.
 - [x] (2026-05-06 00:30Z) Incorporated adversarial review findings for recovery, non-workflow callers, signature-threading detail, and fingerprint scope.
-- [ ] Implement config profile types and backward-compatible parsing.
-- [ ] Implement workflow-level `workspace_profile` parsing and validation.
-- [ ] Resolve profiles during bundle loading, runtime execution, cleanup, and fingerprinting.
-- [ ] Add focused tests for config, workflow parsing, runtime hooks, fingerprinting, recovery implications, and workflow loading failures.
-- [ ] Update README, architecture notes, examples, and dogfood hook script guidance.
+- [x] (2026-05-08 00:47Z) Implemented config profile types and backward-compatible parsing.
+- [x] (2026-05-08 00:47Z) Implemented workflow-level `workspace_profile` parsing and validation.
+- [x] (2026-05-08 00:47Z) Resolved profiles during bundle loading, runtime execution, cleanup, and fingerprinting.
+- [x] (2026-05-08 00:47Z) Added focused tests for config, workflow parsing, runtime hooks, fingerprinting, recovery implications, and workflow loading failures.
+- [x] (2026-05-08 00:47Z) Updated README, architecture notes, examples, and dogfood hook script guidance.
+- [x] (2026-05-08 00:47Z) Applied plan-completion feedback by preserving the literal `workspace.hooks` in CLI usage text and updating this living ExecPlan completion state.
+- [x] (2026-05-08 01:10Z) Applied post-plan Gleam review feedback by making command-step default timeouts use the selected workspace profile and adding focused regression coverage.
 
 ## Surprises & Discoveries
 
@@ -65,6 +67,10 @@ A sixth risk is accidentally creating a VCS mode under a different name. Counter
   Evidence: `src/scherzo/workflow_fingerprint.gleam` has `dag_hooks_to_json` with `create`, `before_step`, `after_step`, `remove`, and `timeout_ms`.
 - Observation: Hook execution currently reads directly from `orchestrator.dag_hooks` in all workspace lifecycle phases.
   Evidence: `src/scherzo/workspace_run.gleam` uses `orchestrator.dag_hooks` in `run_create_hook`, `run_before_step_hook`, `after_step`, and `cleanup_run`.
+- Observation: Plan-completion validation caught that the CLI usage test intentionally requires the exact literal `workspace.hooks`, not only the looser phrase `workspace hooks/profiles`.
+  Evidence: The verifier reported `main_test.usage_mentions_required_operational_constraints_test` failed because `main.usage()` did not contain `workspace.hooks`; after the usage text was changed to say `workspace.hooks or workspace profiles`, `direnv exec . gleam test` reported `831 passed, no failures`.
+- Observation: The post-plan Gleam review found command-step default timeout selection still needed to follow the selected workspace profile, not the orchestrator default profile.
+  Evidence: `src/scherzo/workflow_run.gleam` now unwraps command-step `timeout_ms` with `profile.hooks.timeout_ms`, and `test/workflow_run_test.gleam` has `command_default_timeout_uses_selected_workspace_profile_test` asserting `workspace_profile: noop` uses the `noop` timeout.
 
 ## Decision Log
 
@@ -89,10 +95,20 @@ A sixth risk is accidentally creating a VCS mode under a different name. Counter
 - Decision: Non-workflow service, doctor, and probe workspace callers use the orchestrator default workspace profile.
   Rationale: These callers have no workflow DAG selector, but they still need one trusted profile and consistent `SCHERZO_WORKSPACE_PROFILE` hook environment; the default profile is the only operator-configured policy that applies globally.
   Date: 2026-05-06
+- Decision: CLI usage must keep the literal spelling `workspace.hooks` while also mentioning workspace profiles.
+  Rationale: Direct `workspace.hooks` remains a supported compatibility path, and the existing usage test encodes that operators should continue to see that exact configuration surface in help text.
+  Date: 2026-05-08
+- Decision: Command-step default timeouts use the selected workspace profile's hook timeout.
+  Rationale: Operators expect one profile selection to govern both lifecycle hooks and the command timeout default derived from those hooks; falling back to the orchestrator default profile would make workflows selecting `noop` or another configured profile execute with the wrong timeout unless every command step repeated an explicit timeout.
+  Date: 2026-05-08
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Implementation completed the required workflow-level workspace hook profile behavior. The orchestrator config now supports backward-compatible direct `workspace.hooks` plus named `workspace.profiles`, workflows can select a top-level `workspace_profile`, runtime bundle loading rejects unknown selectors, execution and DAG fingerprints account for the selected profile without hashing unselected profiles, workspace lifecycle hooks receive and use the resolved profile, doctor/probe paths use the default profile, recovery reconstructs in-memory prepared workspaces with the selected profile after fingerprint validation, and documentation/examples describe the native profile abstraction.
+
+The plan-completion repair closed the two verifier blockers: CLI usage once again contains the exact literal `workspace.hooks`, and this living ExecPlan now records the completed required implementation milestones. The full test suite passed with `831 passed, no failures`. Deferred items remain the original non-goals: no native `repo_root` mode, no VCS-specific behavior in core, no workflow-defined hook scripts, no step-level profile overrides, and no persisted profile field in v1 ledger records.
+
+Post-review feedback closed the remaining timeout consistency gap: command steps that omit an explicit timeout now inherit the selected workspace profile's `timeout_ms`, and a focused workflow-run regression test protects that behavior. Targeted formatting validation passed after this review repair; the workflow's final validation should rerun the complete validation gate before publish.
 
 ## Context and Orientation
 

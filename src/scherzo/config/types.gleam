@@ -141,6 +141,26 @@ pub type DagHooksConfig {
   )
 }
 
+pub type WorkspaceProfileSource {
+  LegacyWorkspaceHooks
+  ConfiguredWorkspaceProfile
+}
+
+pub type WorkspaceHookProfile {
+  WorkspaceHookProfile(
+    name: String,
+    hooks: DagHooksConfig,
+    source: WorkspaceProfileSource,
+  )
+}
+
+pub type WorkspaceHookProfiles {
+  WorkspaceHookProfiles(
+    default_profile: String,
+    profiles: Dict(String, WorkspaceHookProfile),
+  )
+}
+
 pub type ArtifactLimits {
   ArtifactLimits(
     command_stream_max_chars: Int,
@@ -188,6 +208,7 @@ pub type OrchestratorConfig {
     config_dir: String,
     routing: RoutingConfig,
     dag_hooks: DagHooksConfig,
+    workspace_profiles: WorkspaceHookProfiles,
     artifact_limits: ArtifactLimits,
     model_settings: model_config.Settings,
     scheduled_jobs: List(ScheduledJobConfig),

@@ -19,6 +19,7 @@ fn minimal() -> String {
 pub fn parses_minimal_workflow_dag_test() {
   let dag = parse_ok(minimal())
   assert dag.id == "research"
+  assert dag.workspace_profile == None
   assert dag.max_parallel_steps == 1
   let assert [step] = dag.steps
   assert step.id == "main"
@@ -29,6 +30,36 @@ pub fn parses_minimal_workflow_dag_test() {
   let assert workflow_dag.AgentStep(workflow_dag.PromptFile(
     "prompts/research.md",
   )) = step.kind
+}
+
+pub fn parses_top_level_workspace_profile_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\nworkspace_profile: noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
+    )
+  assert dag.workspace_profile == Some("noop")
+}
+
+pub fn rejects_invalid_workspace_profile_test() {
+  assert error_code(
+      "version: 1\nid: research\nworkspace_profile: 123\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "workspace_profile_not_string"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_profile: ../noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "invalid_workspace_profile"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_profile: Noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "invalid_workspace_profile"
+}
+
+pub fn rejects_step_level_workspace_profile_test() {
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace_profile: noop\n    prompt: a.md\n",
+    )
+    == "step_workspace_profile_not_supported"
 }
 
 pub fn parses_per_step_model_settings_test() {

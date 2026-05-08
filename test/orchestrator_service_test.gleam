@@ -115,6 +115,7 @@ fn workflow_deps() -> workflow_run.Dependencies {
       attempt_index,
       workspace_ref,
       orchestrator,
+      profile,
       _known,
     ) {
       let run_root =
@@ -134,6 +135,7 @@ fn workflow_deps() -> workflow_run.Dependencies {
         path: run_root <> "/" <> workspace_ref.name,
         source_workspace_name: workspace_ref.from,
         source_workspace_path: None,
+        workspace_profile: profile.name,
       ))
     },
     prepare_recovered_step: fn(
@@ -145,6 +147,7 @@ fn workflow_deps() -> workflow_run.Dependencies {
       attempt_index,
       workspace_ref,
       _orchestrator,
+      profile,
       _known,
     ) {
       Ok(workspace_run.PreparedStepWorkspace(
@@ -156,10 +159,11 @@ fn workflow_deps() -> workflow_run.Dependencies {
         path: expected_run_root <> "/" <> workspace_ref.name,
         source_workspace_name: workspace_ref.from,
         source_workspace_path: None,
+        workspace_profile: profile.name,
       ))
     },
-    after_step: fn(_, _, _, _) { Nil },
-    cleanup_run: fn(_, _) { Ok(Nil) },
+    after_step: fn(_, _, _, _, _) { Nil },
+    cleanup_run: fn(_, _, _) { Ok(Nil) },
     command_step: fn(
       context: workflow_run.StepContext,
       _command,

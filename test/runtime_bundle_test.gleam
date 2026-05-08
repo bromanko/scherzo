@@ -131,6 +131,56 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   assert prompt == "Implement {{ issue.identifier }}"
 }
 
+pub fn loads_workflows_with_workspace_profiles_test() {
+  let dir = "test/tmp/runtime-bundle-workspace-profiles"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/noop.yaml",
+      "version: 1\nid: noop\nworkspace_profile: noop\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/defaulted.yaml",
+      "version: 1\nid: defaulted\nsteps:\n  - id: run\n    kind: command\n    run: echo default\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n    defaulted: workflows/defaulted.yaml\n",
+    )
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  let assert Ok(noop) = dict.get(bundle.workflows, "noop")
+  let assert Ok(defaulted) = dict.get(bundle.workflows, "defaulted")
+  assert noop.workspace_profile == Some("noop")
+  assert defaulted.workspace_profile == None
+}
+
+pub fn rejects_workflow_with_unknown_workspace_profile_test() {
+  let dir = "test/tmp/runtime-bundle-unknown-workspace-profile"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/noop.yaml",
+      "version: 1\nid: noop\nworkspace_profile: missing\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n  profiles:\n    isolated:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+    )
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "unknown_workspace_profile"
+  assert string.contains(message, "noop")
+  assert string.contains(message, "missing")
+  assert string.contains(message, "default")
+  assert string.contains(message, "isolated")
+}
+
 pub fn scheduled_workflow_rejects_issue_context_references_test() {
   let dir = "test/tmp/runtime-bundle-scheduled-issue-context"
   reset_dir(dir)

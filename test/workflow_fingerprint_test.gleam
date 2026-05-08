@@ -1,4 +1,5 @@
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/workflow_dag
@@ -16,6 +17,17 @@ fn hooks(create: Option(String)) -> config_types.DagHooksConfig {
     after_step: None,
     remove: None,
     timeout_ms: 1000,
+  )
+}
+
+fn profile(
+  name: String,
+  hooks: config_types.DagHooksConfig,
+) -> config_types.WorkspaceHookProfile {
+  config_types.WorkspaceHookProfile(
+    name: name,
+    hooks: hooks,
+    source: config_types.ConfiguredWorkspaceProfile,
   )
 }
 
@@ -60,6 +72,82 @@ pub fn workflow_fingerprint_changes_for_semantic_fields_test() {
     != workflow_fingerprint.for_dag("implementation", changed_command)
   assert base_fingerprint
     != workflow_fingerprint.for_dag("implementation", changed_parallelism)
+}
+
+pub fn workflow_dag_fingerprint_includes_explicit_workspace_profile_test() {
+  let noop =
+    parse(
+      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let isolated =
+    parse(
+      "version: 1\nid: implementation\nworkspace_profile: isolated\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let omitted =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  assert workflow_fingerprint.for_dag("implementation", noop)
+    != workflow_fingerprint.for_dag("implementation", isolated)
+  assert !string.contains(
+    workflow_fingerprint.canonical_input(omitted),
+    "workspace_profile",
+  )
+}
+
+pub fn execution_fingerprint_uses_selected_workspace_profile_test() {
+  let dag =
+    parse(
+      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let settings = model_config.default_settings()
+  let noop = profile("noop", hooks(Some("create")))
+  let renamed = profile("isolated", hooks(Some("create")))
+  let changed = profile("noop", hooks(Some("changed")))
+  let base =
+    workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      noop,
+      limits(1000),
+      settings,
+    )
+  assert base
+    != workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      renamed,
+      limits(1000),
+      settings,
+    )
+  assert base
+    != workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      changed,
+      limits(1000),
+      settings,
+    )
+  assert string.contains(
+    workflow_fingerprint.canonical_execution_input_for_profile(
+      "implementation",
+      dag,
+      noop,
+      limits(1000),
+      settings,
+    ),
+    "workspace_profile",
+  )
+  assert !string.contains(
+    workflow_fingerprint.canonical_execution_input_for(
+      "implementation",
+      dag,
+      hooks(Some("create")),
+      limits(1000),
+      settings,
+    ),
+    "\"workspace_profile\":{",
+  )
 }
 
 pub fn workflow_execution_fingerprint_changes_for_hooks_and_artifact_limits_test() {

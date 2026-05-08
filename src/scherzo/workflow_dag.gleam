@@ -11,6 +11,7 @@ pub type WorkflowDag {
   WorkflowDag(
     id: String,
     description: Option(String),
+    workspace_profile: Option(String),
     max_parallel_steps: Int,
     steps: List(WorkflowStep),
   )
@@ -64,12 +65,14 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
       use _ <- result.try(require_version(root))
       use id <- result.try(required_string(root, "id", "missing_workflow_id"))
       use _ <- result.try(validate_workflow_id(id))
+      use workspace_profile <- result.try(read_workspace_profile(root))
       use max_parallel_steps <- result.try(read_max_parallel_steps(root))
       use steps <- result.try(read_steps(root))
       let dag =
         WorkflowDag(
           id: id,
           description: optional_string(root, "description"),
+          workspace_profile: workspace_profile,
           max_parallel_steps: max_parallel_steps,
           steps: steps,
         )
@@ -126,6 +129,26 @@ fn require_version(root: yay.Node) -> Result(Nil, DagError) {
   }
 }
 
+fn read_workspace_profile(root: yay.Node) -> Result(Option(String), DagError) {
+  case get_node(root, "workspace_profile") {
+    None -> Ok(None)
+    Some(yay.NodeStr(profile)) ->
+      case valid_workflow_or_workspace_id(profile) {
+        True -> Ok(Some(profile))
+        False ->
+          Error(DagError(
+            "invalid_workspace_profile",
+            "invalid workspace_profile: " <> profile,
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "workspace_profile_not_string",
+        "workspace_profile must be a string",
+      ))
+  }
+}
+
 fn read_max_parallel_steps(root: yay.Node) -> Result(Int, DagError) {
   let value = optional_int(root, "max_parallel_steps") |> option.unwrap(1)
   case value >= 1 {
@@ -162,6 +185,7 @@ fn read_step_list(
 fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
   case node {
     yay.NodeMap(_) -> {
+      use _ <- result.try(reject_step_workspace_profile(node))
       use id <- result.try(required_string(node, "id", "missing_step_id"))
       use _ <- result.try(validate_step_id(id))
       use kind <- result.try(read_step_kind(node))
@@ -179,6 +203,17 @@ fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
       ))
     }
     _ -> Error(DagError("step_not_map", "each step must be a map"))
+  }
+}
+
+fn reject_step_workspace_profile(node: yay.Node) -> Result(Nil, DagError) {
+  case get_node(node, "workspace_profile") {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(DagError(
+        "step_workspace_profile_not_supported",
+        "workspace_profile is only valid at workflow top level",
+      ))
   }
 }
 
