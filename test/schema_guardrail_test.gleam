@@ -139,9 +139,10 @@ pub fn workflow_dag_yaml_fixture_parses_documented_schema_shape_test() {
     == Some("github-copilot/gpt-5.1-codex")
   assert implement_step.model_settings.thinking
     == Some(model_config.ThinkingHigh)
-  let assert workflow_dag.AgentStep(workflow_dag.PromptFile(
-    "prompts/implement.md",
-  )) = implement_step.kind
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptFile("prompts/implement.md"),
+    None,
+  ) = implement_step.kind
 
   assert test_step.id == "test"
   assert test_step.depends_on == ["implement"]

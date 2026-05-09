@@ -126,7 +126,7 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   assert bundle.config_path == dir <> "/scherzo.yaml"
   let assert Ok(dag) = dict.get(bundle.workflows, "implementation")
   let assert [step] = dag.steps
-  let assert workflow_dag.AgentStep(workflow_dag.PromptInline(prompt)) =
+  let assert workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), None) =
     step.kind
   assert prompt == "Implement {{ issue.identifier }}"
 }

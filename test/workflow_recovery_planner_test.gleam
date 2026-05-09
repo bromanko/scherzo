@@ -187,6 +187,7 @@ fn success_artifact(
       stdout_truncated: False,
       stderr_truncated: False,
       summary_text: "success " <> step_id,
+      structured_output: None,
     ),
   )
 }
@@ -214,6 +215,7 @@ fn failure_artifact(
       stdout_truncated: False,
       stderr_truncated: False,
       summary_text: "failure " <> step_id,
+      structured_output: None,
     ),
   )
 }

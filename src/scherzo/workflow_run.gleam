@@ -17,6 +17,7 @@ import scherzo/orchestrator/schedule_core
 import scherzo/process_ext
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
+import scherzo/structured_output
 import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
@@ -1750,7 +1751,7 @@ fn finish_fatal_batch_result(
     }
   }
   let reason = case checkpoint_result {
-    Ok(Nil) -> "workflow_step_failed"
+    Ok(Nil) -> workflow_step_failed_reason(result)
     Error(error) ->
       "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
   }
@@ -1787,6 +1788,17 @@ fn finish_fatal_batch_result(
     run_root: run_root,
     failed_step_id: Some(result.step_id),
   ))
+}
+
+fn workflow_step_failed_reason(result: StepExecutionResult) -> String {
+  case result.artifact.failure_code {
+    Some(code) ->
+      case string.starts_with(code, "structured_output_") {
+        True -> "workflow_step_failed:" <> code <> ":step=" <> result.step_id
+        False -> "workflow_step_failed"
+      }
+    None -> "workflow_step_failed"
+  }
 }
 
 fn mark_unfinished_siblings_interrupted(
@@ -2176,10 +2188,11 @@ fn run_step(
         0,
       )
     }
-    workflow_dag.AgentStep(prompt_ref) ->
+    workflow_dag.AgentStep(prompt_ref, structured_output_spec) ->
       run_agent_step(
         step,
         prompt_ref,
+        structured_output_spec,
         context,
         issue,
         dag,
@@ -2196,6 +2209,7 @@ fn run_step(
 fn run_agent_step(
   step: workflow_dag.WorkflowStep,
   prompt_ref: workflow_dag.PromptRef,
+  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
   context: StepContext,
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
@@ -2266,11 +2280,14 @@ fn run_agent_step(
         )
       {
         Ok(success) -> #(
-          step_artifact.from_agent_success(
-            step.id,
+          agent_success_artifact(
+            step,
+            context,
             success,
+            structured_output_spec,
             secrets,
             orchestrator.artifact_limits,
+            dependencies.checkpoint,
           ),
           success.tokens,
           success.final_issue,
@@ -2288,6 +2305,147 @@ fn run_agent_step(
           0,
         )
       }
+    }
+  }
+}
+
+fn agent_success_artifact(
+  step: workflow_dag.WorkflowStep,
+  context: StepContext,
+  success: agent_types.WorkerSuccess,
+  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  checkpoint: workflow_checkpoint.Writer,
+) -> step_artifact.StepArtifact {
+  case structured_output_spec {
+    None -> step_artifact.from_agent_success(step.id, success, secrets, limits)
+    Some(spec) ->
+      agent_success_with_structured_output(
+        step,
+        context,
+        success,
+        spec,
+        secrets,
+        limits,
+        checkpoint,
+      )
+  }
+}
+
+fn agent_success_with_structured_output(
+  step: workflow_dag.WorkflowStep,
+  context: StepContext,
+  success: agent_types.WorkerSuccess,
+  spec: workflow_dag.StructuredOutputSpec,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  checkpoint: workflow_checkpoint.Writer,
+) -> step_artifact.StepArtifact {
+  let base = step_artifact.from_agent_success(step.id, success, secrets, limits)
+  let format = workflow_dag.structured_output_format_to_string(spec.format)
+  let required_keys =
+    workflow_dag.structured_output_schema_required_keys(spec.schema)
+  case
+    structured_output.validate_final_response(
+      spec,
+      success.result.final_response,
+      base.final_response_truncated,
+      secrets,
+    )
+  {
+    Ok(structured_output.StructuredOutputAbsent) ->
+      step_artifact.StepArtifact(
+        ..base,
+        structured_output: Some(step_artifact.StructuredOutputAbsent(
+          spec.artifact_name,
+          format,
+          "not_applicable",
+        )),
+      )
+    Ok(structured_output.StructuredOutputPresent(payload_json)) ->
+      write_structured_output_artifact(
+        step,
+        context,
+        success,
+        spec,
+        format,
+        required_keys,
+        payload_json,
+        secrets,
+        limits,
+        checkpoint,
+      )
+    Error(error) ->
+      step_artifact.from_agent_structured_output_error(
+        step.id,
+        success,
+        secrets,
+        limits,
+        structured_output.error_code(error),
+        structured_output.error_message_for_step(error, step.id),
+        spec.artifact_name,
+        format,
+      )
+  }
+}
+
+fn write_structured_output_artifact(
+  step: workflow_dag.WorkflowStep,
+  context: StepContext,
+  success: agent_types.WorkerSuccess,
+  spec: workflow_dag.StructuredOutputSpec,
+  format: String,
+  required_keys: List(String),
+  payload_json: String,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  checkpoint: workflow_checkpoint.Writer,
+) -> step_artifact.StepArtifact {
+  let write =
+    workflow_checkpoint.StructuredOutputWrite(
+      run_id: context.run_id,
+      workflow_id: context.workflow_id,
+      step_id: step.id,
+      attempt_index: context.attempt_index,
+      artifact_name: spec.artifact_name,
+      format: format,
+      schema_required_keys: required_keys,
+      payload_json: payload_json,
+    )
+  case checkpoint.write_structured_output_artifact(write) {
+    Ok(written) ->
+      step_artifact.from_agent_success_with_valid_structured_output(
+        step.id,
+        success,
+        secrets,
+        limits,
+        step_artifact.StructuredOutputMetadata(
+          artifact_name: spec.artifact_name,
+          format: format,
+          ref: written.ref,
+          path: written.path,
+          sha256: written.sha256,
+          bytes: written.bytes,
+          schema_status: "valid",
+        ),
+      )
+    Error(error) -> {
+      let message =
+        "step "
+        <> step.id
+        <> " structured output artifact write failed: "
+        <> workflow_checkpoint.describe_error(error)
+      step_artifact.from_agent_structured_output_error(
+        step.id,
+        success,
+        secrets,
+        limits,
+        "structured_output_artifact_write_failed",
+        message,
+        spec.artifact_name,
+        format,
+      )
     }
   }
 }
@@ -2415,7 +2573,7 @@ fn step_is_continuation_capable(
   orchestrator: config_types.OrchestratorConfig,
 ) -> Bool {
   case step.kind {
-    workflow_dag.AgentStep(_) ->
+    workflow_dag.AgentStep(_, _) ->
       orchestrator.effective.pi.session_persistence.enabled
     workflow_dag.CommandStep(_, _) -> False
   }

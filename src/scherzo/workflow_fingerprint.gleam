@@ -211,10 +211,46 @@ fn kind_to_json(kind: workflow_dag.StepKind) -> json.Json {
         #("run", json.string(run)),
         #("timeout_ms", option_int_to_json(timeout_ms)),
       ])
-    workflow_dag.AgentStep(prompt_ref) ->
+    workflow_dag.AgentStep(prompt_ref, structured_output) ->
       json.object([
         #("type", json.string("agent")),
         #("prompt", prompt_ref_to_json(prompt_ref)),
+        #("structured_output", structured_output_to_json(structured_output)),
+      ])
+  }
+}
+
+fn structured_output_to_json(
+  structured_output: Option(workflow_dag.StructuredOutputSpec),
+) -> json.Json {
+  case structured_output {
+    None -> json.null()
+    Some(spec) ->
+      json.object([
+        #(
+          "format",
+          json.string(workflow_dag.structured_output_format_to_string(
+            spec.format,
+          )),
+        ),
+        #("artifact_name", json.string(spec.artifact_name)),
+        #("required", json.bool(spec.required)),
+        #("schema", structured_output_schema_to_json(spec.schema)),
+      ])
+  }
+}
+
+fn structured_output_schema_to_json(
+  schema: workflow_dag.StructuredOutputSchema,
+) -> json.Json {
+  case schema {
+    workflow_dag.StructuredObjectSchema(required_keys) ->
+      json.object([
+        #("type", json.string("object")),
+        #(
+          "required",
+          json.array(sorted_strings(required_keys), of: json.string),
+        ),
       ])
   }
 }

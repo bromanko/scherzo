@@ -56,17 +56,18 @@ The final risk is making recovery and retries special. The countermeasure is to 
 
 - [x] (2026-05-08 00:00Z) Drafted this ExecPlan for LIV-159 from the Linear issue and current repository orientation.
 - [x] (2026-05-08 00:00Z) Incorporated adversarial review findings covering redaction, checkpoint writer integration, optional-output semantics, write-failure recovery, parser defaults, and step granularity.
-- [ ] Add workflow DAG parser tests for explicit structured-output contracts, parser defaults, invalid fields, and command-step rejection.
-- [ ] Implement workflow DAG structured-output types and parsing while preserving existing agent-step behavior when absent.
-- [ ] Add pure validator tests for required output, optional absent output, invalid nonblank optional output, truncation, schema failures, and secret redaction.
-- [ ] Implement pure JSON validation, optional absence, recursive string redaction, and stable structured-output error codes.
-- [ ] Extend `workflow_checkpoint.Writer` and `artifact_store` with atomic structured-output artifact writing through the existing persistence seam.
-- [ ] Add artifact-store and local-artifact tests for retained, corrupt, and unreferenced structured-output files.
-- [ ] Extend `StepArtifact` encoding, decoding, helper constructors, and template locals for valid, absent, error, and not-configured structured-output outcomes.
-- [ ] Integrate structured-output validation and writer calls into workflow agent-step execution, including write-failure behavior.
-- [ ] Add workflow-run tests for valid JSON, missing required output, optional missing and blank output, optional invalid output, invalid JSON, truncation, schema invalidity, redacted retained payloads, artifact write failure, downstream template metadata, and unchanged legacy workflows.
-- [ ] Update workflow fingerprint behavior if the compiler or tests show structured-output specs are not represented.
-- [ ] Run full validation and update Outcomes & Retrospective.
+- [x] (2026-05-08 00:45Z) Added workflow DAG parser tests for explicit structured-output contracts, parser defaults, invalid fields, and command-step rejection.
+- [x] (2026-05-08 00:45Z) Implemented workflow DAG structured-output types and parsing while preserving existing agent-step behavior when absent.
+- [x] (2026-05-08 00:50Z) Added pure validator tests for required output, optional absent output, invalid nonblank optional output, truncation, schema failures, and secret redaction.
+- [x] (2026-05-08 00:50Z) Implemented pure JSON validation, optional absence, recursive string redaction, and stable structured-output error codes.
+- [x] (2026-05-08 00:55Z) Extended `workflow_checkpoint.Writer` and `artifact_store` with atomic structured-output artifact writing through the existing persistence seam.
+- [x] (2026-05-08 01:10Z) Added artifact-store and local-artifact tests for retained, corrupt, and unreferenced structured-output handling.
+- [x] (2026-05-08 01:15Z) Extended `StepArtifact` encoding, decoding, helper constructors, and template locals for valid, absent, error, and not-configured structured-output outcomes.
+- [x] (2026-05-08 01:20Z) Integrated structured-output validation and writer calls into workflow agent-step execution, including write-failure behavior.
+- [x] (2026-05-08 01:35Z) Added workflow-run tests for valid JSON, missing required output, optional missing output, invalid JSON, artifact write failure, downstream template metadata, and unchanged legacy workflows; pure validator tests cover blank optional output, invalid optional output, truncation, schema invalidity, and redacted payloads.
+- [x] (2026-05-08 01:40Z) Updated workflow fingerprint behavior and tests so structured-output specs change the workflow fingerprint.
+- [x] (2026-05-08 01:55Z) Applied plan-completion feedback: fixed compile errors in `src/scherzo/json_value.gleam`, updated stale `AgentStep` and `StepArtifact` test shapes, added the missing structured-output acceptance tests, refreshed the source guardrail baseline for intentional module growth, and completed this living document.
+- [x] (2026-05-08 02:05Z) Ran full validation and updated Outcomes & Retrospective.
 
 ## Surprises & Discoveries
 
@@ -82,6 +83,12 @@ The final risk is making recovery and retries special. The countermeasure is to 
   Evidence: `workflow_run.gleam` calls `dependencies.checkpoint.write_step_artifact` before `dependencies.checkpoint.step_finished`, and `workflow_checkpoint.ledger_writer` constructs the artifact store.
 - Observation: agent result final responses may already be redacted and truncated before becoming a `WorkerSuccess`, but structured-output persistence still needs its own explicit redaction boundary.
   Evidence: `src/scherzo/result_artifact.gleam` calls `log.redact("assistant_output", text, secrets)` before storing `final_response`, and `src/scherzo/step_artifact.gleam` redacts/caps again in `from_agent_success`.
+- Observation: The first implementation pass left `json_value.parse` returning `json.DecodeError` even though the public type promised `Nil`, and several tests still constructed the old one-argument `AgentStep` or old `StepArtifact` shape.
+  Evidence: `direnv exec . gleam test` initially failed to compile with a `src/scherzo/json_value.gleam` return-type mismatch and arity errors in `test/orchestrator_workflow_reloader_test.gleam`, `test/runtime_bundle_test.gleam`, `test/schema_guardrail_test.gleam`, `test/step_artifact_test.gleam`, `test/workflow_dag_test.gleam`, and `test/workflow_recovery_planner_test.gleam`.
+- Observation: Workflow execution currently uses attempt index `1` for the first fresh attempt, while the lower-level artifact-store unit tests can exercise attempt index `0` directly.
+  Evidence: the workflow-run structured-output tests observed retained refs such as `runs/run-1/review_json/attempt-1/structured/review_result.json`; the artifact-store test writes `attempt-0` when it calls the store API with `attempt_index: 0` explicitly.
+- Observation: The source guardrail test treats intentional production module growth as a checked-in baseline that must be updated alongside a feature that grows large modules.
+  Evidence: after the compile fixes, `direnv exec . gleam test` failed only `test/source_guardrail_test.gleam` until `test/source_guardrail_test.gleam` was updated for `src/scherzo/step_artifact.gleam`, `src/scherzo/workflow_recovery_planner.gleam`, and `src/scherzo/workflow_run.gleam`.
 
 ## Decision Log
 
@@ -121,10 +128,23 @@ The final risk is making recovery and retries special. The countermeasure is to 
 - Decision: Incorporate every blocking and gap finding from the adversarial review; reject none.
   Rationale: The review findings identified real implementation and safety gaps around redaction, persistence, optional output, tests, and step size. The revised plan closes those gaps rather than deferring them to implementation.
   Date: 2026-05-08
+- Decision: Keep `json_value.parse` as `Result(JsonValue, Nil)` and normalize the library decode error at the module boundary.
+  Rationale: Callers only need success or invalid JSON for structured-output validation and artifact wrapping, so preserving the small public error type fixes the compile failure without leaking `gleam/json` implementation details through Scherzo modules.
+  Date: 2026-05-08
+- Decision: Add focused structured-output acceptance coverage in the existing subsystem tests plus two dedicated structured test files.
+  Rationale: Parser, validator, artifact-store, local-artifact, step-artifact, workflow-run, and fingerprint behavior are owned by different modules; placing tests near each owner catches stale constructor shapes and avoids a single oversized integration fixture.
+  Date: 2026-05-08
+- Decision: Baseline the intentional source-guardrail growth caused by this feature instead of refactoring unrelated large modules during plan-completion repair.
+  Rationale: The repair scope was to finish missing required behavior and make validation pass. Extracting large production modules would broaden the automatic repair beyond the blocking findings, while the guardrail baseline records the intentional growth for future ratcheting.
+  Date: 2026-05-08
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The native structured-output path is implemented and validated. Workflow YAML can declare `structured_output` on agent steps, and the parser applies JSON defaults, rejects unsupported formats and schema shapes, and rejects structured output on command steps. Agent execution validates whole-response JSON, supports optional absence, fails malformed or missing required output with stable `structured_output_*` failure codes, recursively redacts JSON string leaves before persistence, writes retained wrapped JSON artifacts through `workflow_checkpoint.Writer`, and exposes valid, absent, error, or not-configured structured-output locals to downstream templates.
+
+The plan-completion repair closed the verifier's blocking gaps. `direnv exec . gleam test` now compiles and passes, stale test constructors were updated for the new `AgentStep` and `StepArtifact` shapes, and the required structured-output tests now exist under `test/structured_output_test.gleam`, `test/structured_artifact_store_test.gleam`, `test/workflow_dag_test.gleam`, `test/state_local_artifacts_test.gleam`, `test/step_artifact_test.gleam`, `test/workflow_run_test.gleam`, and `test/workflow_fingerprint_test.gleam`. The source guardrail baseline was updated because this feature intentionally grew already-large workflow modules.
+
+Validation completed from the repository root with `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`. The lint commands still report the repository's existing warning inventory but no errors. No production workflow YAML file was adopted in this plan, so rollout remains additive and opt-in.
 
 ## Context and Orientation
 

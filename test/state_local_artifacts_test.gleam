@@ -138,6 +138,57 @@ pub fn retention_classifier_uses_transcript_and_tombstone_durations_test() {
   assert tombstone_after.cleanup_phase == event.Eligible
 }
 
+pub fn structured_output_workflow_artifact_uses_workflow_retention_test() {
+  let decision =
+    local_artifacts.classify(
+      metadata(local_artifacts.WorkflowArtifact, Some(0), Some(event.Cleanup)),
+      local_artifacts.workflow_artifact_retention_ms,
+    )
+
+  assert decision.artifact_type == "workflow_artifact"
+  assert decision.cleanup_phase == event.Eligible
+}
+
+pub fn unreferenced_structured_output_workflow_artifact_is_retained_test() {
+  let decision =
+    local_artifacts.classify(
+      local_artifacts.LocalArtifactMetadata(
+        ..metadata(
+          local_artifacts.WorkflowArtifact,
+          Some(0),
+          Some(event.Cleanup),
+        ),
+        id: "runs/run-1/review_json/attempt-0/structured/orphan.json",
+        owner_id: None,
+      ),
+      local_artifacts.workflow_artifact_retention_ms,
+    )
+
+  assert decision.cleanup_phase == event.Retained
+  assert string.contains(decision.reason, "missing owner")
+}
+
+pub fn corrupt_structured_output_workflow_artifact_is_retained_test() {
+  let decision =
+    local_artifacts.classify(
+      local_artifacts.LocalArtifactMetadata(
+        ..metadata(
+          local_artifacts.WorkflowArtifact,
+          Some(0),
+          Some(event.Cleanup),
+        ),
+        id: "runs/run-1/review_json/attempt-0/structured/review_result.json",
+        schema_status: local_artifacts.SchemaCorrupt(
+          "invalid_structured_output_artifact",
+        ),
+      ),
+      local_artifacts.workflow_artifact_retention_ms,
+    )
+
+  assert decision.cleanup_phase == event.Retained
+  assert string.contains(decision.reason, "corrupt schema")
+}
+
 pub fn path_safety_rejects_escapes_and_symlinks_test() {
   let root = "test/tmp/local-artifacts/path-safety"
   let _ = simplifile.delete(root)

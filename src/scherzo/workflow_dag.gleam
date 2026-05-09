@@ -29,8 +29,25 @@ pub type WorkflowStep {
 }
 
 pub type StepKind {
-  AgentStep(prompt: PromptRef)
+  AgentStep(prompt: PromptRef, structured_output: Option(StructuredOutputSpec))
   CommandStep(run: String, timeout_ms: Option(Int))
+}
+
+pub type StructuredOutputFormat {
+  StructuredJson
+}
+
+pub type StructuredOutputSchema {
+  StructuredObjectSchema(required_keys: List(String))
+}
+
+pub type StructuredOutputSpec {
+  StructuredOutputSpec(
+    artifact_name: String,
+    required: Bool,
+    format: StructuredOutputFormat,
+    schema: StructuredOutputSchema,
+  )
 }
 
 pub type PromptRef {
@@ -100,15 +117,32 @@ pub fn terminal_step(dag: WorkflowDag) -> Option(WorkflowStep) {
 
 pub fn prompt_file_path(step: WorkflowStep) -> Option(String) {
   case step.kind {
-    AgentStep(PromptFile(path)) -> Some(path)
+    AgentStep(PromptFile(path), _) -> Some(path)
     _ -> None
   }
 }
 
 pub fn with_prompt(step: WorkflowStep, prompt: PromptRef) -> WorkflowStep {
   case step.kind {
-    AgentStep(_) -> WorkflowStep(..step, kind: AgentStep(prompt))
+    AgentStep(_, structured_output) ->
+      WorkflowStep(..step, kind: AgentStep(prompt, structured_output))
     _ -> step
+  }
+}
+
+pub fn structured_output_format_to_string(
+  format: StructuredOutputFormat,
+) -> String {
+  case format {
+    StructuredJson -> "json"
+  }
+}
+
+pub fn structured_output_schema_required_keys(
+  schema: StructuredOutputSchema,
+) -> List(String) {
+  case schema {
+    StructuredObjectSchema(required_keys) -> required_keys
   }
 }
 
@@ -188,7 +222,7 @@ fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
       use _ <- result.try(reject_step_workspace_profile(node))
       use id <- result.try(required_string(node, "id", "missing_step_id"))
       use _ <- result.try(validate_step_id(id))
-      use kind <- result.try(read_step_kind(node))
+      use kind <- result.try(read_step_kind(node, id))
       use depends_on <- result.try(read_depends_on(node))
       use workspace <- result.try(read_workspace(node))
       use on_failure <- result.try(read_failure_policy(node))
@@ -217,7 +251,10 @@ fn reject_step_workspace_profile(node: yay.Node) -> Result(Nil, DagError) {
   }
 }
 
-fn read_step_kind(node: yay.Node) -> Result(StepKind, DagError) {
+fn read_step_kind(
+  node: yay.Node,
+  step_id: String,
+) -> Result(StepKind, DagError) {
   let kind = optional_string(node, "kind")
   case kind {
     Some(raw) -> {
@@ -228,9 +265,14 @@ fn read_step_kind(node: yay.Node) -> Result(StepKind, DagError) {
             "prompt",
             "missing_prompt",
           ))
-          Ok(AgentStep(PromptFile(prompt)))
+          use structured_output <- result.try(read_structured_output(
+            node,
+            step_id,
+          ))
+          Ok(AgentStep(PromptFile(prompt), structured_output))
         }
         "command" -> {
+          use _ <- result.try(reject_command_structured_output(node))
           use run <- result.try(required_string(node, "run", "missing_run"))
           Ok(CommandStep(run: run, timeout_ms: optional_int(node, "timeout_ms")))
         }
@@ -238,21 +280,214 @@ fn read_step_kind(node: yay.Node) -> Result(StepKind, DagError) {
           Error(DagError("unknown_step_kind", "unknown step kind: " <> other))
       }
     }
-    None -> infer_step_kind(node)
+    None -> infer_step_kind(node, step_id)
   }
 }
 
-fn infer_step_kind(node: yay.Node) -> Result(StepKind, DagError) {
+fn infer_step_kind(
+  node: yay.Node,
+  step_id: String,
+) -> Result(StepKind, DagError) {
   case optional_string(node, "prompt"), optional_string(node, "run") {
-    Some(prompt), None -> Ok(AgentStep(PromptFile(prompt)))
-    None, Some(run) ->
+    Some(prompt), None -> {
+      use structured_output <- result.try(read_structured_output(node, step_id))
+      Ok(AgentStep(PromptFile(prompt), structured_output))
+    }
+    None, Some(run) -> {
+      use _ <- result.try(reject_command_structured_output(node))
       Ok(CommandStep(run: run, timeout_ms: optional_int(node, "timeout_ms")))
+    }
     Some(_), Some(_) ->
       Error(DagError(
         "ambiguous_step_kind",
         "step cannot have both prompt and run without kind",
       ))
     None, None -> Error(DagError("missing_step_kind", "step kind is required"))
+  }
+}
+
+fn read_structured_output(
+  node: yay.Node,
+  step_id: String,
+) -> Result(Option(StructuredOutputSpec), DagError) {
+  case get_node(node, "structured_output") {
+    None -> Ok(None)
+    Some(structured_node) ->
+      case structured_node {
+        yay.NodeMap(_) -> {
+          use format <- result.try(read_structured_output_format(
+            structured_node,
+          ))
+          use artifact_name <- result.try(read_structured_artifact_name(
+            structured_node,
+            step_id,
+          ))
+          use required <- result.try(read_structured_required(structured_node))
+          use schema <- result.try(read_structured_schema(structured_node))
+          Ok(
+            Some(StructuredOutputSpec(
+              artifact_name: artifact_name,
+              required: required,
+              format: format,
+              schema: schema,
+            )),
+          )
+        }
+        _ ->
+          Error(DagError(
+            "structured_output_not_map",
+            "structured_output must be a map",
+          ))
+      }
+  }
+}
+
+fn reject_command_structured_output(node: yay.Node) -> Result(Nil, DagError) {
+  case get_node(node, "structured_output") {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(DagError(
+        "structured_output_on_command_step",
+        "structured_output is only valid on agent steps",
+      ))
+  }
+}
+
+fn read_structured_output_format(
+  node: yay.Node,
+) -> Result(StructuredOutputFormat, DagError) {
+  case get_node(node, "format") {
+    None -> Ok(StructuredJson)
+    Some(yay.NodeStr(value)) ->
+      case string.trim(value) |> string.lowercase {
+        "json" -> Ok(StructuredJson)
+        _ ->
+          Error(DagError(
+            "unsupported_structured_output_format",
+            "structured_output.format must be json",
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "structured_output_format_not_string",
+        "structured_output.format must be a string",
+      ))
+  }
+}
+
+fn read_structured_artifact_name(
+  node: yay.Node,
+  step_id: String,
+) -> Result(String, DagError) {
+  let name_result = case get_node(node, "artifact_name") {
+    None -> Ok(step_id)
+    Some(yay.NodeStr(value)) -> Ok(value)
+    Some(_) ->
+      Error(DagError(
+        "structured_artifact_name_not_string",
+        "structured_output.artifact_name must be a string",
+      ))
+  }
+  use name <- result.try(name_result)
+  case valid_step_id(name) {
+    True -> Ok(name)
+    False ->
+      Error(DagError(
+        "invalid_structured_artifact_name",
+        "invalid structured_output.artifact_name: " <> name,
+      ))
+  }
+}
+
+fn read_structured_required(node: yay.Node) -> Result(Bool, DagError) {
+  case get_node(node, "required") {
+    None -> Ok(True)
+    Some(yay.NodeBool(value)) -> Ok(value)
+    Some(_) ->
+      Error(DagError(
+        "structured_output_required_not_bool",
+        "structured_output.required must be a boolean",
+      ))
+  }
+}
+
+fn read_structured_schema(
+  node: yay.Node,
+) -> Result(StructuredOutputSchema, DagError) {
+  case get_node(node, "schema") {
+    None -> Ok(StructuredObjectSchema([]))
+    Some(schema_node) ->
+      case schema_node {
+        yay.NodeMap(_) -> {
+          use _ <- result.try(read_structured_schema_type(schema_node))
+          use required_keys <- result.try(read_structured_schema_required(
+            schema_node,
+          ))
+          Ok(StructuredObjectSchema(required_keys))
+        }
+        _ ->
+          Error(DagError(
+            "structured_output_schema_not_map",
+            "structured_output.schema must be a map",
+          ))
+      }
+  }
+}
+
+fn read_structured_schema_type(node: yay.Node) -> Result(Nil, DagError) {
+  case get_node(node, "type") {
+    None -> Ok(Nil)
+    Some(yay.NodeStr(value)) ->
+      case string.trim(value) |> string.lowercase {
+        "object" -> Ok(Nil)
+        _ ->
+          Error(DagError(
+            "unsupported_structured_output_schema_type",
+            "structured_output.schema.type must be object",
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "structured_output_schema_type_not_string",
+        "structured_output.schema.type must be a string",
+      ))
+  }
+}
+
+fn read_structured_schema_required(
+  node: yay.Node,
+) -> Result(List(String), DagError) {
+  case get_node(node, "required") {
+    None -> Ok([])
+    Some(yay.NodeSeq(values)) -> read_required_key_list(values, [])
+    Some(_) ->
+      Error(DagError(
+        "structured_output_schema_required_not_list",
+        "structured_output.schema.required must be a list",
+      ))
+  }
+}
+
+fn read_required_key_list(
+  values: List(yay.Node),
+  acc: List(String),
+) -> Result(List(String), DagError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeStr(value), ..rest] ->
+      case valid_step_id(value) {
+        True -> read_required_key_list(rest, [value, ..acc])
+        False ->
+          Error(DagError(
+            "invalid_structured_output_required_key",
+            "invalid structured_output.schema.required key: " <> value,
+          ))
+      }
+    [_, ..] ->
+      Error(DagError(
+        "structured_output_schema_required_entry_not_string",
+        "structured_output.schema.required entries must be strings",
+      ))
   }
 }
 
@@ -324,7 +559,7 @@ fn read_model_settings(
   node: yay.Node,
 ) -> Result(model_config.Settings, DagError) {
   case kind {
-    AgentStep(_) -> read_agent_model_settings(node)
+    AgentStep(_, _) -> read_agent_model_settings(node)
     CommandStep(_, _) -> reject_command_model_settings(node)
   }
 }

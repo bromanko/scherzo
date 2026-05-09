@@ -1,6 +1,6 @@
 import gleam/dict
 import gleam/int
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import scherzo/config
 import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime_bundle
@@ -136,7 +136,10 @@ pub fn workflow_reloader_reload_now_reloads_when_config_contents_unchanged_test(
       let assert Ok(dag) = dict.get(next.bundle.workflows, "implementation")
       let assert [step] = dag.steps
       assert step.kind
-        == workflow_dag.AgentStep(workflow_dag.PromptInline("Updated Prompt"))
+        == workflow_dag.AgentStep(
+          workflow_dag.PromptInline("Updated Prompt"),
+          None,
+        )
     }
     _ -> panic as "expected reload_now to reload unchanged config contents"
   }

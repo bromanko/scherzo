@@ -19,6 +19,28 @@ pub type StepStatus {
   StepFailed
 }
 
+pub type StructuredOutputMetadata {
+  StructuredOutputMetadata(
+    artifact_name: String,
+    format: String,
+    ref: String,
+    path: String,
+    sha256: String,
+    bytes: Int,
+    schema_status: String,
+  )
+}
+
+pub type StructuredOutputOutcome {
+  StructuredOutputValid(StructuredOutputMetadata)
+  StructuredOutputAbsent(
+    artifact_name: String,
+    format: String,
+    schema_status: String,
+  )
+  StructuredOutputError(artifact_name: String, format: String, message: String)
+}
+
 pub type StepArtifact {
   StepArtifact(
     step_id: String,
@@ -36,6 +58,7 @@ pub type StepArtifact {
     stdout_truncated: Bool,
     stderr_truncated: Bool,
     summary_text: String,
+    structured_output: Option(StructuredOutputOutcome),
   )
 }
 
@@ -80,6 +103,10 @@ pub fn to_json(artifact: StepArtifact) -> json.Json {
     #("stdout_truncated", json.bool(artifact.stdout_truncated)),
     #("stderr_truncated", json.bool(artifact.stderr_truncated)),
     #("summary_text", json.string(artifact.summary_text)),
+    #(
+      "structured_output",
+      option_structured_output_to_json(artifact.structured_output),
+    ),
   ])
 }
 
@@ -145,6 +172,11 @@ pub fn decoder() -> decode.Decoder(StepArtifact) {
   use stdout_truncated <- decode.field("stdout_truncated", decode.bool)
   use stderr_truncated <- decode.field("stderr_truncated", decode.bool)
   use summary_text <- decode.field("summary_text", decode.string)
+  use structured_output <- decode.optional_field(
+    "structured_output",
+    None,
+    decode.optional(structured_output_decoder()),
+  )
   decode.success(StepArtifact(
     step_id: step_id,
     status: status,
@@ -161,6 +193,7 @@ pub fn decoder() -> decode.Decoder(StepArtifact) {
     stdout_truncated: stdout_truncated,
     stderr_truncated: stderr_truncated,
     summary_text: summary_text,
+    structured_output: structured_output,
   ))
 }
 
@@ -183,6 +216,92 @@ fn option_int_to_json(value: Option(Int)) -> json.Json {
   case value {
     Some(value) -> json.int(value)
     None -> json.null()
+  }
+}
+
+fn option_structured_output_to_json(
+  value: Option(StructuredOutputOutcome),
+) -> json.Json {
+  case value {
+    Some(outcome) -> structured_output_to_json(outcome)
+    None -> json.null()
+  }
+}
+
+fn structured_output_to_json(outcome: StructuredOutputOutcome) -> json.Json {
+  case outcome {
+    StructuredOutputValid(metadata) ->
+      json.object([
+        #("status", json.string("valid")),
+        #("artifact_name", json.string(metadata.artifact_name)),
+        #("format", json.string(metadata.format)),
+        #("ref", json.string(metadata.ref)),
+        #("path", json.string(metadata.path)),
+        #("sha256", json.string(metadata.sha256)),
+        #("bytes", json.int(metadata.bytes)),
+        #("schema_status", json.string(metadata.schema_status)),
+      ])
+    StructuredOutputAbsent(artifact_name, format, schema_status) ->
+      json.object([
+        #("status", json.string("absent")),
+        #("artifact_name", json.string(artifact_name)),
+        #("format", json.string(format)),
+        #("schema_status", json.string(schema_status)),
+      ])
+    StructuredOutputError(artifact_name, format, message) ->
+      json.object([
+        #("status", json.string("error")),
+        #("artifact_name", json.string(artifact_name)),
+        #("format", json.string(format)),
+        #("error", json.string(message)),
+      ])
+  }
+}
+
+fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
+  use status <- decode.field("status", decode.string)
+  case status {
+    "valid" -> {
+      use artifact_name <- decode.field("artifact_name", decode.string)
+      use format <- decode.field("format", decode.string)
+      use ref <- decode.field("ref", decode.string)
+      use path <- decode.field("path", decode.string)
+      use sha256 <- decode.field("sha256", decode.string)
+      use bytes <- decode.field("bytes", decode.int)
+      use schema_status <- decode.field("schema_status", decode.string)
+      decode.success(
+        StructuredOutputValid(StructuredOutputMetadata(
+          artifact_name: artifact_name,
+          format: format,
+          ref: ref,
+          path: path,
+          sha256: sha256,
+          bytes: bytes,
+          schema_status: schema_status,
+        )),
+      )
+    }
+    "absent" -> {
+      use artifact_name <- decode.field("artifact_name", decode.string)
+      use format <- decode.field("format", decode.string)
+      use schema_status <- decode.field("schema_status", decode.string)
+      decode.success(StructuredOutputAbsent(
+        artifact_name,
+        format,
+        schema_status,
+      ))
+    }
+    "error" -> {
+      use artifact_name <- decode.field("artifact_name", decode.string)
+      use format <- decode.field("format", decode.string)
+      use message <- decode.field("error", decode.string)
+      decode.success(StructuredOutputError(artifact_name, format, message))
+    }
+    _ ->
+      decode.failure(
+        StructuredOutputError("", "", ""),
+        expected: "StructuredOutputOutcome",
+      )
   }
 }
 
@@ -215,6 +334,83 @@ pub fn from_agent_success(
     stdout_truncated: False,
     stderr_truncated: False,
     summary_text: summary,
+    structured_output: None,
+  )
+}
+
+pub fn from_agent_success_with_valid_structured_output(
+  step_id: String,
+  success: agent_types.WorkerSuccess,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  metadata: StructuredOutputMetadata,
+) -> StepArtifact {
+  from_agent_success_with_structured_output(
+    step_id,
+    success,
+    secrets,
+    limits,
+    StructuredOutputValid(metadata),
+  )
+}
+
+pub fn from_agent_success_with_absent_structured_output(
+  step_id: String,
+  success: agent_types.WorkerSuccess,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  artifact_name: String,
+  format: String,
+  schema_status: String,
+) -> StepArtifact {
+  from_agent_success_with_structured_output(
+    step_id,
+    success,
+    secrets,
+    limits,
+    StructuredOutputAbsent(artifact_name, format, schema_status),
+  )
+}
+
+pub fn from_agent_success_with_structured_output(
+  step_id: String,
+  success: agent_types.WorkerSuccess,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  outcome: StructuredOutputOutcome,
+) -> StepArtifact {
+  StepArtifact(
+    ..from_agent_success(step_id, success, secrets, limits),
+    structured_output: Some(outcome),
+  )
+}
+
+pub fn from_agent_structured_output_error(
+  step_id: String,
+  success: agent_types.WorkerSuccess,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  failure_code: String,
+  message: String,
+  artifact_name: String,
+  format: String,
+) -> StepArtifact {
+  let base = from_agent_success(step_id, success, secrets, limits)
+  StepArtifact(
+    ..base,
+    status: StepFailed,
+    failure_code: Some(failure_code),
+    stderr: message,
+    summary_text: step_id
+      <> " failure agent"
+      <> failure_code_inline(Some(failure_code))
+      <> " "
+      <> inline(message, 80),
+    structured_output: Some(StructuredOutputError(
+      artifact_name,
+      format,
+      message,
+    )),
   )
 }
 
@@ -334,6 +530,7 @@ pub fn from_command_result_with_metadata(
     stdout_truncated: stdout_truncated,
     stderr_truncated: stderr_truncated,
     summary_text: summary,
+    structured_output: None,
   )
 }
 
@@ -698,28 +895,87 @@ fn artifact_locals(
   artifact: StepArtifact,
 ) -> List(#(String, template.Value)) {
   let prefix = "steps." <> step_id <> "."
-  [
-    #(prefix <> "status", template.VString(status_to_string(artifact.status))),
-    #(prefix <> "final_response", option_string_value(artifact.final_response)),
-    #(prefix <> "exit_code", option_int_value(artifact.exit_code)),
-    #(prefix <> "command", option_string_value(artifact.command)),
-    #(prefix <> "duration_ms", option_int_value(artifact.duration_ms)),
-    #(
-      prefix <> "diagnostic_path",
-      option_string_value(artifact.diagnostic_path),
-    ),
-    #(prefix <> "failure_code", option_string_value(artifact.failure_code)),
-    #(prefix <> "stdout", template.VString(artifact.stdout)),
-    #(prefix <> "stderr", template.VString(artifact.stderr)),
-    #(prefix <> "timed_out", template.VBool(artifact.timed_out)),
-    #(
-      prefix <> "final_response_truncated",
-      template.VBool(artifact.final_response_truncated),
-    ),
-    #(prefix <> "stdout_truncated", template.VBool(artifact.stdout_truncated)),
-    #(prefix <> "stderr_truncated", template.VBool(artifact.stderr_truncated)),
-    #(prefix <> "summary", template.VString(artifact.summary_text)),
-  ]
+  list.append(
+    [
+      #(prefix <> "status", template.VString(status_to_string(artifact.status))),
+      #(
+        prefix <> "final_response",
+        option_string_value(artifact.final_response),
+      ),
+      #(prefix <> "exit_code", option_int_value(artifact.exit_code)),
+      #(prefix <> "command", option_string_value(artifact.command)),
+      #(prefix <> "duration_ms", option_int_value(artifact.duration_ms)),
+      #(
+        prefix <> "diagnostic_path",
+        option_string_value(artifact.diagnostic_path),
+      ),
+      #(prefix <> "failure_code", option_string_value(artifact.failure_code)),
+      #(prefix <> "stdout", template.VString(artifact.stdout)),
+      #(prefix <> "stderr", template.VString(artifact.stderr)),
+      #(prefix <> "timed_out", template.VBool(artifact.timed_out)),
+      #(
+        prefix <> "final_response_truncated",
+        template.VBool(artifact.final_response_truncated),
+      ),
+      #(prefix <> "stdout_truncated", template.VBool(artifact.stdout_truncated)),
+      #(prefix <> "stderr_truncated", template.VBool(artifact.stderr_truncated)),
+      #(prefix <> "summary", template.VString(artifact.summary_text)),
+    ],
+    structured_output_locals(prefix, artifact.structured_output),
+  )
+}
+
+fn structured_output_locals(
+  prefix: String,
+  outcome: Option(StructuredOutputOutcome),
+) -> List(#(String, template.Value)) {
+  let prefix = prefix <> "structured_output."
+  case outcome {
+    Some(StructuredOutputValid(metadata)) -> [
+      #(prefix <> "status", template.VString("valid")),
+      #(prefix <> "artifact_name", template.VString(metadata.artifact_name)),
+      #(prefix <> "format", template.VString(metadata.format)),
+      #(prefix <> "ref", template.VString(metadata.ref)),
+      #(prefix <> "path", template.VString(metadata.path)),
+      #(prefix <> "sha256", template.VString(metadata.sha256)),
+      #(prefix <> "bytes", template.VInt(metadata.bytes)),
+      #(prefix <> "schema_status", template.VString(metadata.schema_status)),
+      #(prefix <> "error", template.VNil),
+    ]
+    Some(StructuredOutputAbsent(artifact_name, format, schema_status)) -> [
+      #(prefix <> "status", template.VString("absent")),
+      #(prefix <> "artifact_name", template.VString(artifact_name)),
+      #(prefix <> "format", template.VString(format)),
+      #(prefix <> "ref", template.VNil),
+      #(prefix <> "path", template.VNil),
+      #(prefix <> "sha256", template.VNil),
+      #(prefix <> "bytes", template.VNil),
+      #(prefix <> "schema_status", template.VString(schema_status)),
+      #(prefix <> "error", template.VNil),
+    ]
+    Some(StructuredOutputError(artifact_name, format, message)) -> [
+      #(prefix <> "status", template.VString("error")),
+      #(prefix <> "artifact_name", template.VString(artifact_name)),
+      #(prefix <> "format", template.VString(format)),
+      #(prefix <> "ref", template.VNil),
+      #(prefix <> "path", template.VNil),
+      #(prefix <> "sha256", template.VNil),
+      #(prefix <> "bytes", template.VNil),
+      #(prefix <> "schema_status", template.VNil),
+      #(prefix <> "error", template.VString(message)),
+    ]
+    None -> [
+      #(prefix <> "status", template.VString("not_configured")),
+      #(prefix <> "artifact_name", template.VNil),
+      #(prefix <> "format", template.VNil),
+      #(prefix <> "ref", template.VNil),
+      #(prefix <> "path", template.VNil),
+      #(prefix <> "sha256", template.VNil),
+      #(prefix <> "bytes", template.VNil),
+      #(prefix <> "schema_status", template.VNil),
+      #(prefix <> "error", template.VNil),
+    ]
+  }
 }
 
 fn primary_text(

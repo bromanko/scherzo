@@ -205,7 +205,10 @@ fn resolve_step_prompts(
     [] -> Ok(list.reverse(acc))
     [step, ..rest] -> {
       case step.kind {
-        workflow_dag.AgentStep(workflow_dag.PromptFile(prompt_path)) -> {
+        workflow_dag.AgentStep(
+          workflow_dag.PromptFile(prompt_path),
+          structured_output,
+        ) -> {
           use prompt <- result.try(read_relative_prompt(
             prompt_path,
             workflow_path,
@@ -213,7 +216,10 @@ fn resolve_step_prompts(
           let step =
             workflow_dag.WorkflowStep(
               ..step,
-              kind: workflow_dag.AgentStep(workflow_dag.PromptInline(prompt)),
+              kind: workflow_dag.AgentStep(
+                workflow_dag.PromptInline(prompt),
+                structured_output,
+              ),
             )
           resolve_step_prompts(rest, workflow_path, [step, ..acc])
         }
@@ -296,8 +302,8 @@ fn validate_scheduled_step(
   step: workflow_dag.WorkflowStep,
 ) -> Result(Nil, BundleError) {
   let source = case step.kind {
-    workflow_dag.AgentStep(workflow_dag.PromptInline(prompt)) -> prompt
-    workflow_dag.AgentStep(workflow_dag.PromptFile(path)) -> path
+    workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), _) -> prompt
+    workflow_dag.AgentStep(workflow_dag.PromptFile(path), _) -> path
     workflow_dag.CommandStep(run, _) -> run
   }
   case first_issue_reference(template.referenced_variables(source)) {
@@ -361,7 +367,7 @@ fn validate_step_model_settings(
     [] -> Ok(Nil)
     [step, ..rest] -> {
       case step.kind {
-        workflow_dag.AgentStep(_) -> {
+        workflow_dag.AgentStep(_, _) -> {
           let resolved = model_config.resolve(defaults, step.model_settings)
           use _ <- result.try(
             model_config.validate_resolved(

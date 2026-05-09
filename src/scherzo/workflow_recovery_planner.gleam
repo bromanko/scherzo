@@ -1081,7 +1081,8 @@ fn step_state(
 
 fn is_agent_step(dag: workflow_dag.WorkflowDag, step_id: String) -> Bool {
   case workflow_dag.step_by_id(dag, step_id) {
-    Ok(workflow_dag.WorkflowStep(kind: workflow_dag.AgentStep(_), ..)) -> True
+    Ok(workflow_dag.WorkflowStep(kind: workflow_dag.AgentStep(_, _), ..)) ->
+      True
     _ -> False
   }
 }

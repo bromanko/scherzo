@@ -12,6 +12,7 @@ import scherzo/model_config
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
+import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
@@ -22,6 +23,7 @@ import scherzo/workflow_dag
 import scherzo/workflow_run
 import scherzo/workflow_scheduler
 import scherzo/workspace_run
+import simplifile
 import support/expected_crash
 import test_async
 
@@ -150,6 +152,13 @@ fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
 }
 
 fn success_agent(prompt: String) -> agent_types.WorkerSuccess {
+  success_agent_with_response(Some("response:" <> prompt), False)
+}
+
+fn success_agent_with_response(
+  final_response: Option(String),
+  truncated: Bool,
+) -> agent_types.WorkerSuccess {
   agent_types.WorkerSuccess(
     final_issue: Some(issue()),
     final_classification: agent_types.FinalTerminal,
@@ -157,11 +166,17 @@ fn success_agent(prompt: String) -> agent_types.WorkerSuccess {
     tokens: session_tokens.zero_token_totals(),
     turns: 1,
     result: result_artifact.ResultArtifact(
-      final_response: Some("response:" <> prompt),
-      truncated: False,
+      final_response: final_response,
+      truncated: truncated,
       source: "test",
     ),
   )
+}
+
+fn reset_dir(path: String) -> Nil {
+  let _ = simplifile.delete(path)
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+  Nil
 }
 
 fn deps(
@@ -264,6 +279,36 @@ fn deps(
   )
 }
 
+fn deps_with_structured_agent_response(
+  subject: process.Subject(String),
+  final_response: Option(String),
+  truncated: Bool,
+  checkpoint: workflow_checkpoint.Writer,
+) -> workflow_run.Dependencies {
+  let base = deps(subject, None)
+  workflow_run.Dependencies(
+    ..base,
+    agent_step: fn(
+      _issue,
+      context: workflow_run.StepContext,
+      prompt_mode,
+      _attempt_context,
+      _effective,
+      _tracker,
+      _emit_update,
+      _command_ready,
+      _record_pi_session,
+    ) {
+      process.send(
+        subject,
+        "agent:" <> context.step_id <> ":" <> prompt_text(prompt_mode),
+      )
+      Ok(success_agent_with_response(final_response, truncated))
+    },
+    checkpoint: checkpoint,
+  )
+}
+
 fn prepare_fake_step(
   subject: process.Subject(String),
   workflow_id: String,
@@ -312,6 +357,28 @@ fn implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nmax_parallel_steps: 3\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement prompt\n    workspace: main\n  - id: test_after_implement\n    kind: command\n    depends_on: [implement]\n    run: test command\n    workspace: main\n    on_failure: continue\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: code review prompt\n    workspace:\n      name: code-review\n      from: main\n  - id: apply_feedback\n    kind: agent\n    depends_on: [test_after_implement, code_review]\n    prompt: apply {{ steps.code_review.final_response }} {{ steps.test_after_implement.exit_code }}\n    workspace: main\n",
+    )
+  dag
+}
+
+fn structured_output_dag(required: Bool) -> workflow_dag.WorkflowDag {
+  let required_text = case required {
+    True -> "true"
+    False -> "false"
+  }
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      required: "
+      <> required_text
+      <> "\n      schema:\n        required: [summary, findings]\n",
+    )
+  dag
+}
+
+fn structured_output_downstream_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n  - id: followup\n    kind: agent\n    depends_on: [review_json]\n    prompt: use {{ steps.review_json.structured_output.ref }} {{ steps.review_json.structured_output.path }}\n    workspace: main\n",
     )
   dag
 }
@@ -457,6 +524,248 @@ pub fn workflow_run_fans_out_fans_in_and_renders_artifacts_test() {
   assert receive_event(subject) == "after:apply_feedback"
   assert receive_event(subject)
     == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+}
+
+pub fn valid_json_final_response_becomes_retained_structured_artifact_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/structured-valid"
+  reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      structured_output_dag(True),
+      orchestrator(),
+      empty_tracker(),
+      ["token-123"],
+      "run-1",
+      deps_with_structured_agent_response(
+        subject,
+        Some("{\"summary\":\"token-123\",\"findings\":[\"token-123\"]}"),
+        False,
+        checkpoint,
+      ),
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "review_json")
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    artifact.structured_output
+  assert metadata.ref
+    == "runs/run-1/review_json/attempt-1/structured/review_result.json"
+  let assert Ok(contents) = simplifile.read(metadata.path)
+  assert string.contains(contents, "\"artifact_type\":\"structured_output\"")
+  assert string.contains(contents, "[REDACTED]")
+  assert !string.contains(contents, "token-123")
+}
+
+pub fn invalid_json_structured_output_fails_agent_step_clearly_test() {
+  let subject = process.new_subject()
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      structured_output_dag(True),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(
+        subject,
+        Some("not json"),
+        False,
+        workflow_checkpoint.noop_writer(),
+      ),
+    )
+
+  assert string.contains(failure.reason, "structured_output_invalid_json")
+  assert failure.failed_step_id == Some("review_json")
+  let assert Ok(artifact) = dict.get(failure.artifacts, "review_json")
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("structured_output_invalid_json")
+  let assert Some(step_artifact.StructuredOutputError(_, _, message)) =
+    artifact.structured_output
+  assert string.contains(message, "review_json")
+}
+
+pub fn missing_required_structured_output_fails_agent_step_clearly_test() {
+  let subject = process.new_subject()
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      structured_output_dag(True),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(
+        subject,
+        None,
+        False,
+        workflow_checkpoint.noop_writer(),
+      ),
+    )
+
+  assert string.contains(failure.reason, "structured_output_missing")
+  let assert Ok(artifact) = dict.get(failure.artifacts, "review_json")
+  assert artifact.failure_code == Some("structured_output_missing")
+}
+
+pub fn optional_missing_structured_output_succeeds_without_artifact_test() {
+  let subject = process.new_subject()
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      structured_output_dag(False),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(
+        subject,
+        None,
+        False,
+        workflow_checkpoint.noop_writer(),
+      ),
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "review_json")
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Some(step_artifact.StructuredOutputAbsent(_, _, _)) =
+    artifact.structured_output
+  let locals =
+    step_artifact.to_template_locals(
+      dict.from_list([#("review_json", artifact)]),
+    )
+  let assert Ok(status) =
+    list.key_find(locals, "steps.review_json.structured_output.status")
+  assert status == template.VString("absent")
+  let assert Ok(path) =
+    list.key_find(locals, "steps.review_json.structured_output.path")
+  assert path == template.VNil
+}
+
+pub fn structured_artifact_write_failure_fails_step_without_metadata_test() {
+  let subject = process.new_subject()
+  let checkpoint =
+    workflow_checkpoint.Writer(
+      ..workflow_checkpoint.noop_writer(),
+      write_structured_output_artifact: fn(_) {
+        Error(workflow_checkpoint.CheckpointArtifactFailed(
+          "structured write failed",
+        ))
+      },
+    )
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      structured_output_dag(True),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(
+        subject,
+        Some("{\"summary\":\"ok\",\"findings\":[]}"),
+        False,
+        checkpoint,
+      ),
+    )
+
+  assert string.contains(
+    failure.reason,
+    "structured_output_artifact_write_failed",
+  )
+  let assert Ok(artifact) = dict.get(failure.artifacts, "review_json")
+  assert artifact.failure_code
+    == Some("structured_output_artifact_write_failed")
+  let assert Some(step_artifact.StructuredOutputError(_, _, message)) =
+    artifact.structured_output
+  assert string.contains(message, "structured write failed")
+}
+
+pub fn structured_artifact_metadata_available_to_downstream_template_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/structured-downstream"
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        let prompt = prompt_text(prompt_mode)
+        case context.step_id {
+          "review_json" ->
+            Ok(success_agent_with_response(
+              Some("{\"summary\":\"ok\",\"findings\":[]}"),
+              False,
+            ))
+          _ -> {
+            process.send(subject, "rendered:" <> prompt)
+            Ok(success_agent(prompt))
+          }
+        }
+      },
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      structured_output_downstream_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let rendered = receive_event_with_prefix(subject, "rendered:", 20)
+  assert string.contains(
+    rendered,
+    "runs/run-1/review_json/attempt-1/structured/review_result.json",
+  )
+  assert string.contains(rendered, ".scherzo-state/artifacts/")
+  let assert Ok(artifact) = dict.get(success.artifacts, "review_json")
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    artifact.structured_output
+  let assert Ok(_) = simplifile.read(metadata.path)
+}
+
+pub fn workflow_without_structured_output_behaves_unchanged_test() {
+  let subject = process.new_subject()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: plain\n    kind: agent\n    prompt: plain prompt\n    workspace: main\n",
+    )
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps(subject, None),
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "plain")
+  assert artifact.final_response == Some("response:plain prompt")
+  assert artifact.structured_output == None
+  let locals =
+    step_artifact.to_template_locals(dict.from_list([#("plain", artifact)]))
+  let assert Ok(status) =
+    list.key_find(locals, "steps.plain.structured_output.status")
+  assert status == template.VString("not_configured")
 }
 
 pub fn workflow_run_completed_cleanup_failure_marks_failed_terminal_test() {
@@ -1417,6 +1726,23 @@ fn deps_with_prepare_hook_failure(
       }
     },
   )
+}
+
+fn receive_event_with_prefix(
+  subject: process.Subject(String),
+  prefix: String,
+  remaining: Int,
+) -> String {
+  case remaining <= 0 {
+    True -> ""
+    False -> {
+      let event = receive_event(subject)
+      case string.starts_with(event, prefix) {
+        True -> event
+        False -> receive_event_with_prefix(subject, prefix, remaining - 1)
+      }
+    }
+  }
 }
 
 fn receive_event(subject: process.Subject(String)) -> String {
