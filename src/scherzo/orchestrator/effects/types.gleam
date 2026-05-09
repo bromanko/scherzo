@@ -1,5 +1,6 @@
 import gleam/option.{type Option}
 import scherzo/log
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/state/record
 import scherzo/tracker/issue as tracker_issue
@@ -8,6 +9,7 @@ pub type Effect {
   Log(level: String, event: String, fields: List(log.Field))
   AppendLedger(request: LedgerAppend)
   StartWorker(request: WorkerStart)
+  ReplySnapshot(orchestrator_state.RuntimeState)
 }
 
 pub type LedgerAppend {

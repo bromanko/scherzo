@@ -1847,7 +1847,7 @@ fn handle_message(
     SideEffectCompleted(completion) ->
       actor.continue(handle_side_effect_completed(state, completion))
     GetSnapshot(reply) -> {
-      process.send(reply, state.runtime)
+      effect_runner.reply_snapshot(state.runtime, reply)
       actor.continue(state)
     }
     ApplyOperatorCommand(operator_command, timeout_ms, reply) ->
