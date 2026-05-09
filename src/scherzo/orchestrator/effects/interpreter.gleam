@@ -1,9 +1,12 @@
 import gleam/list
 import scherzo/log
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/state/ledger
+import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_policy
 
 pub type LedgerAppender =
   fn(effects_types.LedgerAppend) -> Result(Nil, ledger.LedgerError)
@@ -17,6 +20,35 @@ pub opaque type ShellState(shell) {
     log_effect: fn(shell, String, String, List(log.Field)) -> shell,
     start_worker: fn(shell, effects_types.WorkerStart) -> shell,
     reply_snapshot: fn(shell, orchestrator_state.RuntimeState) -> shell,
+    mark_poll_in_flight: fn(shell, Int) -> shell,
+    schedule_next_poll: fn(shell) -> shell,
+    fetch_candidates: fn(shell, Int) -> shell,
+    fetch_linear_commands: fn(
+      shell,
+      Int,
+      List(String),
+      List(tracker_issue.Issue),
+      Bool,
+    ) -> shell,
+    begin_dispatch_validation: fn(shell, String, Int) -> shell,
+    reserve_session_sequence: fn(shell, Int) -> shell,
+    claim_issue: fn(shell, tracker_issue.Issue, String, String) -> shell,
+    report_invalid_workflow: fn(
+      shell,
+      tracker_issue.Issue,
+      workflow_policy.IssueWorkflowViolation,
+      String,
+      String,
+    ) -> shell,
+    remove_retry_timer: fn(shell, String) -> shell,
+    finish_retry_refresh: fn(shell, String) -> shell,
+    defer_retry_timer: fn(shell, String, Int, Int) -> shell,
+    begin_retry_refresh: fn(shell, String, Int) -> shell,
+    schedule_retry_timer: fn(shell, String, Int, Int, reason.RetryReason) ->
+      shell,
+    cancel_retry_timer: fn(shell, String, Int, String) -> shell,
+    release_claim: fn(shell, String) -> shell,
+    clear_recovery: fn(shell, String) -> shell,
   )
 }
 
@@ -42,6 +74,22 @@ pub fn new_shell_state(
       list.append(started_workers, [request])
     },
     reply_snapshot: fn(started_workers, _) { started_workers },
+    mark_poll_in_flight: fn(started_workers, _) { started_workers },
+    schedule_next_poll: fn(started_workers) { started_workers },
+    fetch_candidates: fn(started_workers, _) { started_workers },
+    fetch_linear_commands: fn(started_workers, _, _, _, _) { started_workers },
+    begin_dispatch_validation: fn(started_workers, _, _) { started_workers },
+    reserve_session_sequence: fn(started_workers, _) { started_workers },
+    claim_issue: fn(started_workers, _, _, _) { started_workers },
+    report_invalid_workflow: fn(started_workers, _, _, _, _) { started_workers },
+    remove_retry_timer: fn(started_workers, _) { started_workers },
+    finish_retry_refresh: fn(started_workers, _) { started_workers },
+    defer_retry_timer: fn(started_workers, _, _, _) { started_workers },
+    begin_retry_refresh: fn(started_workers, _, _) { started_workers },
+    schedule_retry_timer: fn(started_workers, _, _, _, _) { started_workers },
+    cancel_retry_timer: fn(started_workers, _, _, _) { started_workers },
+    release_claim: fn(started_workers, _) { started_workers },
+    clear_recovery: fn(started_workers, _) { started_workers },
   )
 }
 
@@ -54,6 +102,42 @@ pub fn new_production_shell_state(
   start_worker start_worker: fn(shell, effects_types.WorkerStart) -> shell,
   reply_snapshot reply_snapshot: fn(shell, orchestrator_state.RuntimeState) ->
     shell,
+  mark_poll_in_flight mark_poll_in_flight: fn(shell, Int) -> shell,
+  schedule_next_poll schedule_next_poll: fn(shell) -> shell,
+  fetch_candidates fetch_candidates: fn(shell, Int) -> shell,
+  fetch_linear_commands fetch_linear_commands: fn(
+    shell,
+    Int,
+    List(String),
+    List(tracker_issue.Issue),
+    Bool,
+  ) -> shell,
+  begin_dispatch_validation begin_dispatch_validation: fn(shell, String, Int) ->
+    shell,
+  reserve_session_sequence reserve_session_sequence: fn(shell, Int) -> shell,
+  claim_issue claim_issue: fn(shell, tracker_issue.Issue, String, String) ->
+    shell,
+  report_invalid_workflow report_invalid_workflow: fn(
+    shell,
+    tracker_issue.Issue,
+    workflow_policy.IssueWorkflowViolation,
+    String,
+    String,
+  ) -> shell,
+  remove_retry_timer remove_retry_timer: fn(shell, String) -> shell,
+  finish_retry_refresh finish_retry_refresh: fn(shell, String) -> shell,
+  defer_retry_timer defer_retry_timer: fn(shell, String, Int, Int) -> shell,
+  begin_retry_refresh begin_retry_refresh: fn(shell, String, Int) -> shell,
+  schedule_retry_timer schedule_retry_timer: fn(
+    shell,
+    String,
+    Int,
+    Int,
+    reason.RetryReason,
+  ) -> shell,
+  cancel_retry_timer cancel_retry_timer: fn(shell, String, Int, String) -> shell,
+  release_claim release_claim: fn(shell, String) -> shell,
+  clear_recovery clear_recovery: fn(shell, String) -> shell,
 ) -> ShellState(shell) {
   ShellState(
     data: data,
@@ -62,6 +146,22 @@ pub fn new_production_shell_state(
     log_effect: log_effect,
     start_worker: start_worker,
     reply_snapshot: reply_snapshot,
+    mark_poll_in_flight: mark_poll_in_flight,
+    schedule_next_poll: schedule_next_poll,
+    fetch_candidates: fetch_candidates,
+    fetch_linear_commands: fetch_linear_commands,
+    begin_dispatch_validation: begin_dispatch_validation,
+    reserve_session_sequence: reserve_session_sequence,
+    claim_issue: claim_issue,
+    report_invalid_workflow: report_invalid_workflow,
+    remove_retry_timer: remove_retry_timer,
+    finish_retry_refresh: finish_retry_refresh,
+    defer_retry_timer: defer_retry_timer,
+    begin_retry_refresh: begin_retry_refresh,
+    schedule_retry_timer: schedule_retry_timer,
+    cancel_retry_timer: cancel_retry_timer,
+    release_claim: release_claim,
+    clear_recovery: clear_recovery,
   )
 }
 
@@ -117,6 +217,131 @@ fn apply_loop(
         }
         effects_types.ReplySnapshot(snapshot) -> {
           let data = shell.reply_snapshot(shell.data, snapshot)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.MarkPollInFlight(generation) -> {
+          let data = shell.mark_poll_in_flight(shell.data, generation)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ScheduleNextPoll -> {
+          let data = shell.schedule_next_poll(shell.data)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.FetchCandidates(generation) -> {
+          let data = shell.fetch_candidates(shell.data, generation)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.FetchLinearCommands(
+          generation,
+          issue_ids,
+          candidates,
+          dispatch_after,
+        ) -> {
+          let data =
+            shell.fetch_linear_commands(
+              shell.data,
+              generation,
+              issue_ids,
+              candidates,
+              dispatch_after,
+            )
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.BeginDispatchValidation(issue_id, generation) -> {
+          let data =
+            shell.begin_dispatch_validation(shell.data, issue_id, generation)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ReserveSessionSequence(sequence) -> {
+          let data = shell.reserve_session_sequence(shell.data, sequence)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ClaimIssue(issue, workspace_path, run_id) -> {
+          let data =
+            shell.claim_issue(shell.data, issue, workspace_path, run_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ReportInvalidWorkflow(
+          issue,
+          violation,
+          violation_fingerprint,
+          reporting_policy_fingerprint,
+        ) -> {
+          let data =
+            shell.report_invalid_workflow(
+              shell.data,
+              issue,
+              violation,
+              violation_fingerprint,
+              reporting_policy_fingerprint,
+            )
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.RemoveRetryTimer(issue_id) -> {
+          let data = shell.remove_retry_timer(shell.data, issue_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.FinishRetryRefresh(issue_id) -> {
+          let data = shell.finish_retry_refresh(shell.data, issue_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.DeferRetryTimer(issue_id, generation, delay_ms) -> {
+          let data =
+            shell.defer_retry_timer(shell.data, issue_id, generation, delay_ms)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.BeginRetryRefresh(issue_id, generation) -> {
+          let data = shell.begin_retry_refresh(shell.data, issue_id, generation)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ScheduleRetryTimer(
+          issue_id,
+          delay_ms,
+          generation,
+          retry_reason,
+        ) -> {
+          let data =
+            shell.schedule_retry_timer(
+              shell.data,
+              issue_id,
+              delay_ms,
+              generation,
+              retry_reason,
+            )
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.CancelRetryTimer(issue_id, generation, cancel_reason) -> {
+          let data =
+            shell.cancel_retry_timer(
+              shell.data,
+              issue_id,
+              generation,
+              cancel_reason,
+            )
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ReleaseClaim(issue_id) -> {
+          let data = shell.release_claim(shell.data, issue_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ClearRecovery(issue_id) -> {
+          let data = shell.clear_recovery(shell.data, issue_id)
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }

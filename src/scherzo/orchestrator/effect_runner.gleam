@@ -155,6 +155,9 @@ pub fn reply_snapshot(
       runtime: runtime,
       workers: transition_types.new_worker_directory(),
       pending_claims: dict.new(),
+      pending_dispatch_validations: dict.new(),
+      next_dispatch_validation_generation: 1,
+      next_session_sequence: 1,
     )
   let shell =
     transition_interpreter.new_production_shell_state(
@@ -167,6 +170,22 @@ pub fn reply_snapshot(
         process.send(reply, snapshot)
         data
       },
+      mark_poll_in_flight: fn(data, _) { data },
+      schedule_next_poll: fn(data) { data },
+      fetch_candidates: fn(data, _) { data },
+      fetch_linear_commands: fn(data, _, _, _, _) { data },
+      begin_dispatch_validation: fn(data, _, _) { data },
+      reserve_session_sequence: fn(data, _) { data },
+      claim_issue: fn(data, _, _, _) { data },
+      report_invalid_workflow: fn(data, _, _, _, _) { data },
+      remove_retry_timer: fn(data, _) { data },
+      finish_retry_refresh: fn(data, _) { data },
+      defer_retry_timer: fn(data, _, _, _) { data },
+      begin_retry_refresh: fn(data, _, _) { data },
+      schedule_retry_timer: fn(data, _, _, _, _) { data },
+      cancel_retry_timer: fn(data, _, _, _) { data },
+      release_claim: fn(data, _) { data },
+      clear_recovery: fn(data, _) { data },
     )
   let transition_runner.RunResult(exhausted: _, ..) =
     transition_runner.run(
