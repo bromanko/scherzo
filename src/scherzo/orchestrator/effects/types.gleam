@@ -1,8 +1,12 @@
 import gleam/option.{type Option}
+import scherzo/agent/types as agent_types
+import scherzo/handoff
 import scherzo/log
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/event as session_event
+import scherzo/session/reason as session_reason
+import scherzo/session/tokens as session_tokens
 import scherzo/state/record
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
@@ -40,9 +44,46 @@ pub type Effect {
     generation: Int,
     retry_reason: reason.RetryReason,
   )
+  ScheduleRecoveredRetryTimer(issue_id: String, delay_ms: Int, generation: Int)
   CancelRetryTimer(issue_id: String, generation: Int, cancel_reason: String)
   ReleaseClaim(issue_id: String)
   ClearRecovery(issue_id: String)
+  WorkerStartFailed(request: WorkerStart, reason: String)
+  RemoveWorker(identity: WorkerIdentity, demonitor: Bool)
+  PublishWorkerExited(request: WorkerExitPublication)
+  ReportWorkerSuccess(
+    identity: WorkerIdentity,
+    success: agent_types.WorkerSuccess,
+  )
+  ReportWorkerFailure(
+    identity: WorkerIdentity,
+    failure: agent_types.WorkerFailure,
+  )
+  CleanupWorkspace(workspace_path: String)
+  ParkIssue(
+    parked: orchestrator_state.ParkedEntry,
+    source_run_id: Option(String),
+  )
+  ReplayLinearCommandAck(
+    issue_id: String,
+    source_comment_id: String,
+    body: String,
+  )
+  ReportPark(report: handoff.ParkReport)
+  StopWorker(identity: WorkerIdentity, reason: session_reason.WorkerExitReason)
+  RegisterYamlStepStarted(session_id: String, run_id: String)
+  FinishYamlStepRoute(session_id: String)
+  FinishYamlStepSession(
+    session_id: String,
+    reason: session_reason.WorkerExitReason,
+  )
+  FinishYamlStepSessionsForRun(
+    run_id: String,
+    reason: session_reason.WorkerExitReason,
+  )
+  ClearYamlStepRoutesForRun(run_id: String)
+  MarkYamlRunStopping(run_id: String, reason: session_reason.WorkerExitReason)
+  ShutdownRuntime(stop_effect_runner: Bool)
 }
 
 pub type LedgerAppend {
@@ -76,5 +117,27 @@ pub type WorkerStart {
     workflow_id: String,
     route_label: String,
     recovery: Option(session_event.RecoveryInfo),
+  )
+}
+
+pub type WorkerIdentity {
+  WorkerIdentity(
+    issue_id: String,
+    run_id: String,
+    session_id: String,
+    issue: tracker_issue.Issue,
+    workspace_path: String,
+    workflow_id: String,
+    command_route_id: String,
+  )
+}
+
+pub type WorkerExitPublication {
+  WorkerExitPublication(
+    identity: WorkerIdentity,
+    reason_text: String,
+    exit_reason: session_reason.WorkerExitReason,
+    tokens: session_tokens.TokenTotals,
+    update_tokens: Bool,
   )
 }

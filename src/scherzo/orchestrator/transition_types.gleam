@@ -1,11 +1,15 @@
 import gleam/dict
 import gleam/option.{type Option}
+import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
+import scherzo/handoff
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/event as session_event
+import scherzo/session/reason as session_reason
 import scherzo/state/ledger
 import scherzo/state/record
+import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 
 pub type State {
@@ -21,6 +25,14 @@ pub type State {
 
 pub type Message {
   SnapshotRequested
+  StartupRecoveryApplied(
+    retry_timers: List(recovery.RecoveredRetry),
+    cleanup_workspaces: List(recovery.CleanupRequest),
+    outbox_to_replay: List(recovery.OutboxReplay),
+    park_reports: List(handoff.ParkReport),
+    warnings: List(String),
+    secrets: List(String),
+  )
   PollTick(generation: Int, poll: PollSnapshot)
   CandidateFetchStartRequested(generation: Int, context: DispatchContext)
   CandidateFetchCompleted(
@@ -70,6 +82,29 @@ pub type Message {
     result: Result(Nil, ledger.LedgerError),
     now_ms: Int,
   )
+  WorkerStartSucceeded(issue_id: String, run_id: String, session_id: String)
+  WorkerStartFailed(
+    issue_id: String,
+    run_id: String,
+    session_id: String,
+    reason: String,
+  )
+  WorkerCommandReady(issue_id: String, run_id: String)
+  WorkerFinished(
+    issue_id: String,
+    run_id: String,
+    result: WorkerFinishResult,
+    context: WorkerLifecycleContext,
+  )
+  WorkerDown(resolution: WorkerDownResolution, context: WorkerLifecycleContext)
+  WorkerStopRequested(
+    session_id: String,
+    reason: session_reason.WorkerExitReason,
+    context: WorkerLifecycleContext,
+  )
+  YamlStepStarted(session_id: String, run_id: String)
+  YamlStepFinished(session_id: String)
+  ShutdownRequested(stop_effect_runner: Bool)
 }
 
 pub type Outcome {
@@ -81,6 +116,8 @@ pub type WorkerDirectory {
     by_issue: dict.Dict(String, WorkerEntry),
     by_session: dict.Dict(String, String),
     route_to_session: dict.Dict(String, String),
+    yaml_step_runs: dict.Dict(String, String),
+    stopped_yaml_runs: dict.Dict(String, session_reason.WorkerExitReason),
   )
 }
 
@@ -103,6 +140,28 @@ pub type WorkerStatus {
   WorkerRunning
   WorkerStopping(reason: String)
   WorkerFinishedStatus
+}
+
+pub type WorkerLifecycleContext {
+  WorkerLifecycleContext(effective: config_types.EffectiveConfig, now_ms: Int)
+}
+
+pub type WorkerFinishResult {
+  WorkerSucceeded(success: agent_types.WorkerSuccess)
+  WorkerFailed(failure: agent_types.WorkerFailure, kind: WorkerFailureKind)
+}
+
+pub type WorkerFailureKind {
+  StandardWorkerFailure(reason_text: String)
+  RecoveryResumeValidationFailure(reason_text: String)
+  OperatorWorkerFailure(reason: session_reason.WorkerExitReason)
+  WorkerDownFailure
+}
+
+pub type WorkerDownResolution {
+  KnownWorkerDown(issue_id: String, run_id: String, session_id: String)
+  WorkerDownStale(issue_id: String)
+  UnknownWorkerDown
 }
 
 pub type PendingClaim {
@@ -168,5 +227,7 @@ pub fn new_worker_directory() -> WorkerDirectory {
     by_issue: dict.new(),
     by_session: dict.new(),
     route_to_session: dict.new(),
+    yaml_step_runs: dict.new(),
+    stopped_yaml_runs: dict.new(),
   )
 }

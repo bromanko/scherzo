@@ -1,9 +1,13 @@
 import gleam/list
+import gleam/option.{type Option}
+import scherzo/agent/types as agent_types
+import scherzo/handoff
 import scherzo/log
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
+import scherzo/session/reason as session_reason
 import scherzo/state/ledger
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
@@ -18,7 +22,8 @@ pub opaque type ShellState(shell) {
       #(shell, Result(Nil, ledger.LedgerError)),
     now_ms: fn(shell) -> Int,
     log_effect: fn(shell, String, String, List(log.Field)) -> shell,
-    start_worker: fn(shell, effects_types.WorkerStart) -> shell,
+    start_worker: fn(shell, effects_types.WorkerStart) ->
+      #(shell, Result(Nil, String)),
     reply_snapshot: fn(shell, orchestrator_state.RuntimeState) -> shell,
     mark_poll_in_flight: fn(shell, Int) -> shell,
     schedule_next_poll: fn(shell) -> shell,
@@ -46,9 +51,47 @@ pub opaque type ShellState(shell) {
     begin_retry_refresh: fn(shell, String, Int) -> shell,
     schedule_retry_timer: fn(shell, String, Int, Int, reason.RetryReason) ->
       shell,
+    schedule_recovered_retry_timer: fn(shell, String, Int, Int) -> shell,
     cancel_retry_timer: fn(shell, String, Int, String) -> shell,
     release_claim: fn(shell, String) -> shell,
     clear_recovery: fn(shell, String) -> shell,
+    worker_start_failed: fn(shell, effects_types.WorkerStart, String) -> shell,
+    remove_worker: fn(shell, effects_types.WorkerIdentity, Bool) -> shell,
+    publish_worker_exited: fn(shell, effects_types.WorkerExitPublication) ->
+      shell,
+    report_worker_success: fn(
+      shell,
+      effects_types.WorkerIdentity,
+      agent_types.WorkerSuccess,
+    ) -> shell,
+    report_worker_failure: fn(
+      shell,
+      effects_types.WorkerIdentity,
+      agent_types.WorkerFailure,
+    ) -> shell,
+    cleanup_workspace: fn(shell, String) -> shell,
+    park_issue: fn(shell, orchestrator_state.ParkedEntry, Option(String)) ->
+      shell,
+    replay_linear_command_ack: fn(shell, String, String, String) -> shell,
+    report_park: fn(shell, handoff.ParkReport) -> shell,
+    stop_worker: fn(
+      shell,
+      effects_types.WorkerIdentity,
+      session_reason.WorkerExitReason,
+    ) -> shell,
+    register_yaml_step_started: fn(shell, String, String) -> shell,
+    finish_yaml_step_route: fn(shell, String) -> shell,
+    finish_yaml_step_session: fn(shell, String, session_reason.WorkerExitReason) ->
+      shell,
+    finish_yaml_step_sessions_for_run: fn(
+      shell,
+      String,
+      session_reason.WorkerExitReason,
+    ) -> shell,
+    clear_yaml_step_routes_for_run: fn(shell, String) -> shell,
+    mark_yaml_run_stopping: fn(shell, String, session_reason.WorkerExitReason) ->
+      shell,
+    shutdown_runtime: fn(shell, Bool) -> shell,
   )
 }
 
@@ -71,7 +114,7 @@ pub fn new_shell_state(
     now_ms: fn(_) { now_ms() },
     log_effect: fn(started_workers, _, _, _) { started_workers },
     start_worker: fn(started_workers, request) {
-      list.append(started_workers, [request])
+      #(list.append(started_workers, [request]), Ok(Nil))
     },
     reply_snapshot: fn(started_workers, _) { started_workers },
     mark_poll_in_flight: fn(started_workers, _) { started_workers },
@@ -87,9 +130,31 @@ pub fn new_shell_state(
     defer_retry_timer: fn(started_workers, _, _, _) { started_workers },
     begin_retry_refresh: fn(started_workers, _, _) { started_workers },
     schedule_retry_timer: fn(started_workers, _, _, _, _) { started_workers },
+    schedule_recovered_retry_timer: fn(started_workers, _, _, _) {
+      started_workers
+    },
     cancel_retry_timer: fn(started_workers, _, _, _) { started_workers },
     release_claim: fn(started_workers, _) { started_workers },
     clear_recovery: fn(started_workers, _) { started_workers },
+    worker_start_failed: fn(started_workers, _, _) { started_workers },
+    remove_worker: fn(started_workers, _, _) { started_workers },
+    publish_worker_exited: fn(started_workers, _) { started_workers },
+    report_worker_success: fn(started_workers, _, _) { started_workers },
+    report_worker_failure: fn(started_workers, _, _) { started_workers },
+    cleanup_workspace: fn(started_workers, _) { started_workers },
+    park_issue: fn(started_workers, _, _) { started_workers },
+    replay_linear_command_ack: fn(started_workers, _, _, _) { started_workers },
+    report_park: fn(started_workers, _) { started_workers },
+    stop_worker: fn(started_workers, _, _) { started_workers },
+    register_yaml_step_started: fn(started_workers, _, _) { started_workers },
+    finish_yaml_step_route: fn(started_workers, _) { started_workers },
+    finish_yaml_step_session: fn(started_workers, _, _) { started_workers },
+    finish_yaml_step_sessions_for_run: fn(started_workers, _, _) {
+      started_workers
+    },
+    clear_yaml_step_routes_for_run: fn(started_workers, _) { started_workers },
+    mark_yaml_run_stopping: fn(started_workers, _, _) { started_workers },
+    shutdown_runtime: fn(started_workers, _) { started_workers },
   )
 }
 
@@ -99,7 +164,8 @@ pub fn new_production_shell_state(
     #(shell, Result(Nil, ledger.LedgerError)),
   now_ms now_ms: fn(shell) -> Int,
   log_effect log_effect: fn(shell, String, String, List(log.Field)) -> shell,
-  start_worker start_worker: fn(shell, effects_types.WorkerStart) -> shell,
+  start_worker start_worker: fn(shell, effects_types.WorkerStart) ->
+    #(shell, Result(Nil, String)),
   reply_snapshot reply_snapshot: fn(shell, orchestrator_state.RuntimeState) ->
     shell,
   mark_poll_in_flight mark_poll_in_flight: fn(shell, Int) -> shell,
@@ -135,9 +201,80 @@ pub fn new_production_shell_state(
     Int,
     reason.RetryReason,
   ) -> shell,
+  schedule_recovered_retry_timer schedule_recovered_retry_timer: fn(
+    shell,
+    String,
+    Int,
+    Int,
+  ) -> shell,
   cancel_retry_timer cancel_retry_timer: fn(shell, String, Int, String) -> shell,
   release_claim release_claim: fn(shell, String) -> shell,
   clear_recovery clear_recovery: fn(shell, String) -> shell,
+  worker_start_failed worker_start_failed: fn(
+    shell,
+    effects_types.WorkerStart,
+    String,
+  ) -> shell,
+  remove_worker remove_worker: fn(shell, effects_types.WorkerIdentity, Bool) ->
+    shell,
+  publish_worker_exited publish_worker_exited: fn(
+    shell,
+    effects_types.WorkerExitPublication,
+  ) -> shell,
+  report_worker_success report_worker_success: fn(
+    shell,
+    effects_types.WorkerIdentity,
+    agent_types.WorkerSuccess,
+  ) -> shell,
+  report_worker_failure report_worker_failure: fn(
+    shell,
+    effects_types.WorkerIdentity,
+    agent_types.WorkerFailure,
+  ) -> shell,
+  cleanup_workspace cleanup_workspace: fn(shell, String) -> shell,
+  park_issue park_issue: fn(
+    shell,
+    orchestrator_state.ParkedEntry,
+    Option(String),
+  ) -> shell,
+  replay_linear_command_ack replay_linear_command_ack: fn(
+    shell,
+    String,
+    String,
+    String,
+  ) -> shell,
+  report_park report_park: fn(shell, handoff.ParkReport) -> shell,
+  stop_worker stop_worker: fn(
+    shell,
+    effects_types.WorkerIdentity,
+    session_reason.WorkerExitReason,
+  ) -> shell,
+  register_yaml_step_started register_yaml_step_started: fn(
+    shell,
+    String,
+    String,
+  ) -> shell,
+  finish_yaml_step_route finish_yaml_step_route: fn(shell, String) -> shell,
+  finish_yaml_step_session finish_yaml_step_session: fn(
+    shell,
+    String,
+    session_reason.WorkerExitReason,
+  ) -> shell,
+  finish_yaml_step_sessions_for_run finish_yaml_step_sessions_for_run: fn(
+    shell,
+    String,
+    session_reason.WorkerExitReason,
+  ) -> shell,
+  clear_yaml_step_routes_for_run clear_yaml_step_routes_for_run: fn(
+    shell,
+    String,
+  ) -> shell,
+  mark_yaml_run_stopping mark_yaml_run_stopping: fn(
+    shell,
+    String,
+    session_reason.WorkerExitReason,
+  ) -> shell,
+  shutdown_runtime shutdown_runtime: fn(shell, Bool) -> shell,
 ) -> ShellState(shell) {
   ShellState(
     data: data,
@@ -159,9 +296,27 @@ pub fn new_production_shell_state(
     defer_retry_timer: defer_retry_timer,
     begin_retry_refresh: begin_retry_refresh,
     schedule_retry_timer: schedule_retry_timer,
+    schedule_recovered_retry_timer: schedule_recovered_retry_timer,
     cancel_retry_timer: cancel_retry_timer,
     release_claim: release_claim,
     clear_recovery: clear_recovery,
+    worker_start_failed: worker_start_failed,
+    remove_worker: remove_worker,
+    publish_worker_exited: publish_worker_exited,
+    report_worker_success: report_worker_success,
+    report_worker_failure: report_worker_failure,
+    cleanup_workspace: cleanup_workspace,
+    park_issue: park_issue,
+    replay_linear_command_ack: replay_linear_command_ack,
+    report_park: report_park,
+    stop_worker: stop_worker,
+    register_yaml_step_started: register_yaml_step_started,
+    finish_yaml_step_route: finish_yaml_step_route,
+    finish_yaml_step_session: finish_yaml_step_session,
+    finish_yaml_step_sessions_for_run: finish_yaml_step_sessions_for_run,
+    clear_yaml_step_routes_for_run: clear_yaml_step_routes_for_run,
+    mark_yaml_run_stopping: mark_yaml_run_stopping,
+    shutdown_runtime: shutdown_runtime,
   )
 }
 
@@ -206,8 +361,27 @@ fn apply_loop(
           }
         }
         effects_types.StartWorker(request) -> {
-          let data = shell.start_worker(shell.data, request)
+          let #(data, result) = shell.start_worker(shell.data, request)
           let shell = ShellState(..shell, data: data)
+          let follow_up_messages = case result {
+            Ok(Nil) -> [
+              transition_types.WorkerStartSucceeded(
+                request.issue_id,
+                request.run_id,
+                request.session_id,
+              ),
+              ..follow_up_messages
+            ]
+            Error(reason) -> [
+              transition_types.WorkerStartFailed(
+                request.issue_id,
+                request.run_id,
+                request.session_id,
+                reason,
+              ),
+              ..follow_up_messages
+            ]
+          }
           apply_loop(shell, rest, follow_up_messages)
         }
         effects_types.Log(level, event, fields) -> {
@@ -324,6 +498,21 @@ fn apply_loop(
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }
+        effects_types.ScheduleRecoveredRetryTimer(
+          issue_id,
+          delay_ms,
+          generation,
+        ) -> {
+          let data =
+            shell.schedule_recovered_retry_timer(
+              shell.data,
+              issue_id,
+              delay_ms,
+              generation,
+            )
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
         effects_types.CancelRetryTimer(issue_id, generation, cancel_reason) -> {
           let data =
             shell.cancel_retry_timer(
@@ -342,6 +531,100 @@ fn apply_loop(
         }
         effects_types.ClearRecovery(issue_id) -> {
           let data = shell.clear_recovery(shell.data, issue_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.WorkerStartFailed(request, reason) -> {
+          let data = shell.worker_start_failed(shell.data, request, reason)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.RemoveWorker(identity, demonitor) -> {
+          let data = shell.remove_worker(shell.data, identity, demonitor)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.PublishWorkerExited(request) -> {
+          let data = shell.publish_worker_exited(shell.data, request)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ReportWorkerSuccess(identity, success) -> {
+          let data = shell.report_worker_success(shell.data, identity, success)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ReportWorkerFailure(identity, failure) -> {
+          let data = shell.report_worker_failure(shell.data, identity, failure)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.CleanupWorkspace(workspace_path) -> {
+          let data = shell.cleanup_workspace(shell.data, workspace_path)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ParkIssue(parked, source_run_id) -> {
+          let data = shell.park_issue(shell.data, parked, source_run_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ReplayLinearCommandAck(issue_id, source_comment_id, body) -> {
+          let data =
+            shell.replay_linear_command_ack(
+              shell.data,
+              issue_id,
+              source_comment_id,
+              body,
+            )
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ReportPark(report) -> {
+          let data = shell.report_park(shell.data, report)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.StopWorker(identity, reason) -> {
+          let data = shell.stop_worker(shell.data, identity, reason)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.RegisterYamlStepStarted(session_id, run_id) -> {
+          let data =
+            shell.register_yaml_step_started(shell.data, session_id, run_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.FinishYamlStepRoute(session_id) -> {
+          let data = shell.finish_yaml_step_route(shell.data, session_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.FinishYamlStepSession(session_id, reason) -> {
+          let data =
+            shell.finish_yaml_step_session(shell.data, session_id, reason)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.FinishYamlStepSessionsForRun(run_id, reason) -> {
+          let data =
+            shell.finish_yaml_step_sessions_for_run(shell.data, run_id, reason)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ClearYamlStepRoutesForRun(run_id) -> {
+          let data = shell.clear_yaml_step_routes_for_run(shell.data, run_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.MarkYamlRunStopping(run_id, reason) -> {
+          let data = shell.mark_yaml_run_stopping(shell.data, run_id, reason)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ShutdownRuntime(stop_effect_runner) -> {
+          let data = shell.shutdown_runtime(shell.data, stop_effect_runner)
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }

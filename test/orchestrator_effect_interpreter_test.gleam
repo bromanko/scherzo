@@ -86,7 +86,10 @@ pub fn append_ledger_continue_regardless_failure_does_not_block_later_effects_te
       effects_types.StartWorker(worker_start),
     ])
 
-  assert follow_up_messages == []
+  assert follow_up_messages
+    == [
+      transition_types.WorkerStartSucceeded("issue-1", "run-1", "session-1"),
+    ]
   assert interpreter.started_workers(shell) == [worker_start]
 }
 
