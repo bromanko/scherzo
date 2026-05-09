@@ -5,7 +5,11 @@ import gleam/list
 import gleam/option.{None, Some}
 import orchestrator_transition_test
 import scherzo/agent/types as agent_types
+import scherzo/control/command
+import scherzo/control/linear_parser
 import scherzo/handoff
+import scherzo/linear
+
 import scherzo/orchestrator/effects/interpreter
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
@@ -115,6 +119,143 @@ pub fn transition_runner_retry_continue_regardless_keeps_timer_after_append_fail
       "append:retry_schedule:issue-1:2",
       "retry:schedule:issue-1",
     ]
+}
+
+pub fn linear_command_start_append_failure_prevents_apply_test() {
+  let state = orchestrator_transition_test.fixture_state()
+  let shell = append_failure_shell()
+
+  let transition_runner.RunResult(
+    state: next,
+    shell: shell,
+    exhausted: exhausted,
+  ) =
+    transition_runner.run(
+      state: state,
+      shell: shell,
+      messages: [
+        transition_types.LinearCommandSubmitted(
+          comment: linear_comment("c-start"),
+          parsed: parsed_linear_command("c-start", command.PauseDispatch, ""),
+          safe_excerpt: "",
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert next == state
+  assert interpreter.data(shell)
+    == [
+      "append:linear_command_start:c-start",
+      "log:linear_command_start_record_failed",
+    ]
+}
+
+pub fn linear_command_completion_append_success_enqueues_ack_test() {
+  let state = orchestrator_transition_test.fixture_state()
+  let shell = event_shell()
+
+  let transition_runner.RunResult(
+    state: next,
+    shell: shell,
+    exhausted: exhausted,
+  ) =
+    transition_runner.run(
+      state: state,
+      shell: shell,
+      messages: [
+        transition_types.LinearCommandApplied(
+          comment_id: "c-complete",
+          issue_id: "issue-1",
+          command_name: "pause",
+          result: command.applied(command.PauseDispatch, Some("paused")),
+          message_excerpt: "paused",
+          ack_body: Some("ack body"),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell)
+    == [
+      "append:linear_command_completion:c-complete",
+      "append:linear_command_ack_outbox:c-complete",
+      "ack:post:c-complete",
+    ]
+  assert dict.get(next.pending_linear_command_acks, "c-complete")
+    == Ok(transition_types.PendingLinearCommandAck("issue-1", "ack body", True))
+  assert dict.has_key(next.in_flight_linear_command_acks, "c-complete")
+}
+
+pub fn linear_command_ack_outbox_append_failure_remains_retryable_test() {
+  let state = orchestrator_transition_test.fixture_state()
+  let shell = append_failure_shell()
+
+  let transition_runner.RunResult(
+    state: next,
+    shell: shell,
+    exhausted: exhausted,
+  ) =
+    transition_runner.run(
+      state: state,
+      shell: shell,
+      messages: [
+        transition_types.LinearCommandAckRequested(
+          issue_id: "issue-1",
+          source_comment_id: "c-ack",
+          body: "ack body",
+          outbox_recorded: False,
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell)
+    == [
+      "append:linear_command_ack_outbox:c-ack",
+      "log:linear_command_ack_outbox_record_failed",
+    ]
+  assert dict.get(next.pending_linear_command_acks, "c-ack")
+    == Ok(transition_types.PendingLinearCommandAck("issue-1", "ack body", False))
+  assert !dict.has_key(next.in_flight_linear_command_acks, "c-ack")
+}
+
+pub fn linear_command_ack_publish_failure_remains_retryable_test() {
+  let pending =
+    transition_types.PendingLinearCommandAck("issue-1", "ack body", True)
+  let state =
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      pending_linear_command_acks: dict.from_list([#("c-publish", pending)]),
+      in_flight_linear_command_acks: dict.from_list([#("c-publish", True)]),
+    )
+  let shell = event_shell()
+
+  let transition_runner.RunResult(
+    state: next,
+    shell: shell,
+    exhausted: exhausted,
+  ) =
+    transition_runner.run(
+      state: state,
+      shell: shell,
+      messages: [
+        transition_types.LinearCommandAckFinished(
+          issue_id: "issue-1",
+          source_comment_id: "c-publish",
+          result: Error("api"),
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert interpreter.data(shell) == ["log:linear_command_ack_failed"]
+  assert dict.get(next.pending_linear_command_acks, "c-publish") == Ok(pending)
+  assert !dict.has_key(next.in_flight_linear_command_acks, "c-publish")
 }
 
 pub fn transition_runner_stops_at_message_limit_test() {
@@ -486,6 +627,30 @@ fn lifecycle_context() -> transition_types.WorkerLifecycleContext {
   )
 }
 
+fn linear_comment(comment_id: String) -> linear.LinearComment {
+  linear.LinearComment(
+    id: comment_id,
+    issue_id: "issue-1",
+    body: "/scherzo pause",
+    created_at_ms: 1,
+    updated_at_ms: 1,
+    author: linear.LinearCommentAuthor(id: "user-1", email: None, name: None),
+  )
+}
+
+fn parsed_linear_command(
+  comment_id: String,
+  operator_command: command.OperatorCommand,
+  excerpt: String,
+) -> linear_parser.ParsedLinearCommand {
+  linear_parser.ParsedLinearCommand(
+    source_issue_id: "issue-1",
+    source_comment_id: comment_id,
+    command: operator_command,
+    excerpt: excerpt,
+  )
+}
+
 fn event_shell() -> interpreter.ShellState(List(String)) {
   shell_with_append_and_start_result(Ok(Nil), Ok(Nil))
 }
@@ -620,7 +785,32 @@ fn shell_with_append_and_start_result(
     shutdown_runtime: fn(events, stop_effect_runner) {
       list.append(events, ["shutdown:" <> bool.to_string(stop_effect_runner)])
     },
+    set_operator_paused: fn(events, paused) {
+      list.append(events, ["operator_paused:" <> bool_string(paused)])
+    },
+    apply_operator_command: fn(events, request) {
+      #(
+        list.append(events, ["operator:apply"]),
+        command.rejected(request.operator_command, "unhandled", None),
+      )
+    },
+    finish_operator_command: fn(events, _, result) {
+      #(list.append(events, ["operator:finish:" <> result.command]), [])
+    },
+    post_linear_command_ack: fn(events, _, comment_id, _) {
+      list.append(events, ["ack:post:" <> comment_id])
+    },
+    report_park_effect: fn(events, issue_id, _, _, _, _) {
+      list.append(events, ["park:report:" <> issue_id])
+    },
   )
+}
+
+fn bool_string(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
+  }
 }
 
 fn claim_ledger_append_requested() -> transition_types.Message {

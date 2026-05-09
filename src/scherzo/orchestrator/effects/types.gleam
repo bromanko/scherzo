@@ -1,6 +1,8 @@
 import gleam/option.{type Option}
 import scherzo/agent/types as agent_types
+import scherzo/control/command
 import scherzo/handoff
+
 import scherzo/log
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
@@ -84,6 +86,24 @@ pub type Effect {
   ClearYamlStepRoutesForRun(run_id: String)
   MarkYamlRunStopping(run_id: String, reason: session_reason.WorkerExitReason)
   ShutdownRuntime(stop_effect_runner: Bool)
+  SetOperatorPaused(paused: Bool)
+  ApplyOperatorCommand(request: OperatorCommandRequest)
+  FinishOperatorCommand(
+    request: OperatorCommandRequest,
+    result: command.CommandResult,
+  )
+  PostLinearCommandAck(
+    issue_id: String,
+    source_comment_id: String,
+    body: String,
+  )
+  ReportParkEffect(
+    issue_id: String,
+    issue_identifier: String,
+    reason: String,
+    release_policy: String,
+    source_run_id: Option(String),
+  )
 }
 
 pub type LedgerAppend {
@@ -104,6 +124,51 @@ pub type LedgerPolicy {
 pub type LedgerContinuation {
   NoLedgerContinuation
   SpawnClaimedWorker(issue_id: String, run_id: String, session_id: String)
+  ApplyLinearCommand(request: OperatorCommandRequest)
+  EnqueueLinearCommandAck(
+    issue_id: String,
+    source_comment_id: String,
+    body: String,
+  )
+  PublishLinearCommandAck(
+    issue_id: String,
+    source_comment_id: String,
+    body: String,
+  )
+  RemoveLinearCommandAck(issue_id: String, source_comment_id: String)
+  ReportParkAfterLedger(
+    issue_id: String,
+    issue_identifier: String,
+    reason: String,
+    release_policy: String,
+    source_run_id: Option(String),
+  )
+}
+
+pub type OperatorCommandSource {
+  LocalOperatorCommand
+  LinearOperatorCommand(
+    comment_id: String,
+    issue_id: String,
+    command_name: String,
+    excerpt: String,
+  )
+}
+
+pub type OperatorCommandRequest {
+  OperatorCommandRequest(
+    source: OperatorCommandSource,
+    operator_command: command.OperatorCommand,
+    timeout_ms: Int,
+  )
+}
+
+pub type LinearCommandCompletion {
+  LinearCommandCompletion(
+    result: command.CommandResult,
+    message_excerpt: String,
+    ack_body: Option(String),
+  )
 }
 
 pub type WorkerStart {

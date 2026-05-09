@@ -1,9 +1,11 @@
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None}
 import gleam/otp/actor
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
+import scherzo/control/command
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
@@ -158,6 +160,8 @@ pub fn reply_snapshot(
       pending_dispatch_validations: dict.new(),
       next_dispatch_validation_generation: 1,
       next_session_sequence: 1,
+      pending_linear_command_acks: dict.new(),
+      in_flight_linear_command_acks: dict.new(),
     )
   let shell =
     transition_interpreter.new_production_shell_state(
@@ -204,6 +208,20 @@ pub fn reply_snapshot(
       clear_yaml_step_routes_for_run: fn(data, _) { data },
       mark_yaml_run_stopping: fn(data, _, _) { data },
       shutdown_runtime: fn(data, _) { data },
+      set_operator_paused: fn(data, _) { data },
+      apply_operator_command: fn(data, request) {
+        #(
+          data,
+          command.rejected(
+            request.operator_command,
+            "operator_command_unhandled",
+            None,
+          ),
+        )
+      },
+      finish_operator_command: fn(data, _, _) { #(data, []) },
+      post_linear_command_ack: fn(data, _, _, _) { data },
+      report_park_effect: fn(data, _, _, _, _, _) { data },
     )
   let transition_runner.RunResult(exhausted: _, ..) =
     transition_runner.run(

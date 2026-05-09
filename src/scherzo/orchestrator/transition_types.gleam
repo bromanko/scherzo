@@ -2,7 +2,11 @@ import gleam/dict
 import gleam/option.{type Option}
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
+import scherzo/control/command
+import scherzo/control/linear_parser
 import scherzo/handoff
+import scherzo/linear
+
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/event as session_event
@@ -20,6 +24,8 @@ pub type State {
     pending_dispatch_validations: dict.Dict(String, PendingDispatchValidation),
     next_dispatch_validation_generation: Int,
     next_session_sequence: Int,
+    pending_linear_command_acks: dict.Dict(String, PendingLinearCommandAck),
+    in_flight_linear_command_acks: dict.Dict(String, Bool),
   )
 }
 
@@ -40,6 +46,37 @@ pub type Message {
     poll: PollSnapshot,
     result: Result(List(tracker_issue.Issue), String),
     context: DispatchContext,
+  )
+  LinearCommandSubmitted(
+    comment: linear.LinearComment,
+    parsed: linear_parser.ParsedLinearCommand,
+    safe_excerpt: String,
+  )
+  LinearCommandApplied(
+    comment_id: String,
+    issue_id: String,
+    command_name: String,
+    result: command.CommandResult,
+    message_excerpt: String,
+    ack_body: Option(String),
+  )
+  LinearCommandAckRequested(
+    issue_id: String,
+    source_comment_id: String,
+    body: String,
+    outbox_recorded: Bool,
+  )
+  LinearCommandAckFinished(
+    issue_id: String,
+    source_comment_id: String,
+    result: Result(Nil, String),
+  )
+  RetryPendingLinearCommandAcks
+  OperatorCommandSubmitted(
+    request: effects_types.OperatorCommandRequest,
+    context: DispatchContext,
+    issue_resolution: OperatorIssueResolution,
+    parked_issue_resolution: ParkedIssueResolution,
   )
   LinearCommandPhaseFinished(
     candidates: List(tracker_issue.Issue),
@@ -162,6 +199,28 @@ pub type WorkerDownResolution {
   KnownWorkerDown(issue_id: String, run_id: String, session_id: String)
   WorkerDownStale(issue_id: String)
   UnknownWorkerDown
+}
+
+pub type PendingLinearCommandAck {
+  PendingLinearCommandAck(issue_id: String, body: String, outbox_recorded: Bool)
+}
+
+pub type OperatorIssueResolution {
+  OperatorIssueNotResolved
+  OperatorIssueResolved(tracker_issue.Issue)
+  OperatorIssueNotFound
+  OperatorIssueRejected(reason: String)
+  OperatorIssueNotAllowed(reason: String)
+  OperatorIssueResolutionFailed
+}
+
+pub type ParkedIssueResolution {
+  ParkedIssueNotResolved
+  ParkedIssueResolved(issue_id: String)
+  ParkedIssueNotFound
+  ParkedIssueRejected(reason: String)
+  ParkedIssueNotAllowed(reason: String)
+  ParkedIssueResolutionFailed
 }
 
 pub type PendingClaim {
