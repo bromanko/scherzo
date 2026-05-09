@@ -73,6 +73,10 @@ pub type Effect {
   )
   ReportPark(report: handoff.ParkReport)
   StopWorker(identity: WorkerIdentity, reason: session_reason.WorkerExitReason)
+  StopWorkerAfterIssueRefresh(
+    identity: WorkerIdentity,
+    reason: reason.StopReason,
+  )
   RegisterYamlStepStarted(session_id: String, run_id: String)
   FinishYamlStepRoute(session_id: String)
   FinishYamlStepSession(

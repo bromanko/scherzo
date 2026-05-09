@@ -81,6 +81,11 @@ pub opaque type ShellState(shell) {
       effects_types.WorkerIdentity,
       session_reason.WorkerExitReason,
     ) -> shell,
+    stop_worker_after_issue_refresh: fn(
+      shell,
+      effects_types.WorkerIdentity,
+      reason.StopReason,
+    ) -> shell,
     register_yaml_step_started: fn(shell, String, String) -> shell,
     finish_yaml_step_route: fn(shell, String) -> shell,
     finish_yaml_step_session: fn(shell, String, session_reason.WorkerExitReason) ->
@@ -165,6 +170,9 @@ pub fn new_shell_state(
     replay_linear_command_ack: fn(started_workers, _, _, _) { started_workers },
     report_park: fn(started_workers, _) { started_workers },
     stop_worker: fn(started_workers, _, _) { started_workers },
+    stop_worker_after_issue_refresh: fn(started_workers, _, _) {
+      started_workers
+    },
     register_yaml_step_started: fn(started_workers, _, _) { started_workers },
     finish_yaml_step_route: fn(started_workers, _) { started_workers },
     finish_yaml_step_session: fn(started_workers, _, _) { started_workers },
@@ -284,6 +292,11 @@ pub fn new_production_shell_state(
     effects_types.WorkerIdentity,
     session_reason.WorkerExitReason,
   ) -> shell,
+  stop_worker_after_issue_refresh stop_worker_after_issue_refresh: fn(
+    shell,
+    effects_types.WorkerIdentity,
+    reason.StopReason,
+  ) -> shell,
   register_yaml_step_started register_yaml_step_started: fn(
     shell,
     String,
@@ -369,6 +382,7 @@ pub fn new_production_shell_state(
     replay_linear_command_ack: replay_linear_command_ack,
     report_park: report_park,
     stop_worker: stop_worker,
+    stop_worker_after_issue_refresh: stop_worker_after_issue_refresh,
     register_yaml_step_started: register_yaml_step_started,
     finish_yaml_step_route: finish_yaml_step_route,
     finish_yaml_step_session: finish_yaml_step_session,
@@ -651,6 +665,12 @@ fn apply_loop(
         }
         effects_types.StopWorker(identity, reason) -> {
           let data = shell.stop_worker(shell.data, identity, reason)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.StopWorkerAfterIssueRefresh(identity, reason) -> {
+          let data =
+            shell.stop_worker_after_issue_refresh(shell.data, identity, reason)
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }
