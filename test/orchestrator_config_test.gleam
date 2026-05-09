@@ -284,6 +284,19 @@ pub fn orchestrator_config_accepts_matching_linear_contract_labels_test() {
     == ["implementation"]
 }
 
+pub fn orchestrator_config_allows_scheduled_only_routes_outside_linear_contract_test() {
+  let source =
+    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n    scheduled-maintenance: workflows/scheduled-maintenance.yaml\nscheduled_jobs:\n  - id: scheduled-maintenance\n    workflow: scheduled-maintenance\n    every: 15m\nlinear_contract:\n  workflow_labels: [implementation]\n"
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert orchestrator.effective.linear_contract.workflow_labels
+    == ["implementation"]
+}
+
 pub fn orchestrator_config_rejects_disagreeing_linear_contract_labels_test() {
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
