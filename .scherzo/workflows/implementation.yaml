@@ -1,6 +1,7 @@
 version: 1
 id: implementation
 description: Implement a focused Scherzo issue from ticket context, review it, validate it, publish a PR, and report the PR URL.
+workspace_profile: dogfood-jj
 max_parallel_steps: 4
 steps:
   - id: prepare_context

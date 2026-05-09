@@ -118,6 +118,8 @@ pub fn workflow_docs_explain_vendored_skill_update_and_validation_test() {
   assert_contains(docs, "workflow portability validation")
   assert_contains(docs, "doctor --check workflow-config")
   assert_contains(docs, "scripts/scherzo-review")
+  assert_contains(docs, "workspace.profiles.dogfood-jj")
+  assert_contains(docs, "workspace_profile: dogfood-jj")
   assert_contains(docs, "do not add language-specific review skills")
   assert_contains(docs, "LIV-115")
 }

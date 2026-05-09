@@ -1,6 +1,8 @@
 import gleam/dict
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/config/types as config_types
 import scherzo/runtime_bundle
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
@@ -304,6 +306,47 @@ pub fn loads_checked_in_execplan_implementation_workflow_test() {
   assert dag.id == "execplan-implementation"
   let assert Some(terminal) = workflow_dag.terminal_step(dag)
   assert terminal.id == "publish_pr"
+}
+
+pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(".scherzo/scherzo.yaml"), env)
+  assert bundle.orchestrator.workspace_profiles.default_profile == "dogfood-jj"
+  assert !dict.has_key(
+    bundle.orchestrator.workspace_profiles.profiles,
+    "default",
+  )
+  let assert Ok(profile) =
+    dict.get(bundle.orchestrator.workspace_profiles.profiles, "dogfood-jj")
+  assert profile.name == "dogfood-jj"
+  assert profile.source == config_types.ConfiguredWorkspaceProfile
+  assert profile.hooks.timeout_ms == 60_000
+  let assert Some(create_hook) = profile.hooks.create
+  assert string.contains(create_hook, "scripts/scherzo-jj-workspace")
+  assert string.contains(create_hook, "after-create")
+  let assert Some(before_step_hook) = profile.hooks.before_step
+  assert string.contains(before_step_hook, "scripts/scherzo-jj-workspace")
+  assert string.contains(before_step_hook, "before-run")
+  let assert Some(after_step_hook) = profile.hooks.after_step
+  assert string.contains(after_step_hook, "true")
+  let assert Some(remove_hook) = profile.hooks.remove
+  assert string.contains(remove_hook, "scripts/scherzo-jj-workspace")
+  assert string.contains(remove_hook, "before-remove")
+
+  list.each(
+    [
+      "research",
+      "implementation",
+      "execplan",
+      "execplan-revision",
+      "execplan-implementation",
+      "merge-conflict-resolution",
+    ],
+    fn(workflow_id) {
+      let assert Ok(dag) = dict.get(bundle.workflows, workflow_id)
+      assert dag.workspace_profile == Some("dogfood-jj")
+    },
+  )
 }
 
 pub fn routing_rejects_missing_unknown_and_multiple_labels_test() {

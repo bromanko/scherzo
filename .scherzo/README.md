@@ -11,7 +11,8 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Put runtime jj workspaces under `.scherzo/workspaces/<workflow-name>/`; they are ignored by git.
 - Config-relative paths are resolved from `.scherzo/scherzo.yaml`, so this repository uses `workspace.root: workspaces` to land at repo-root `.scherzo/workspaces`.
 - Populate Scherzo workspaces with `jj workspace add`, not separate `git clone` checkouts. New root workspaces prefer `SCHERZO_PR_BASE@SCHERZO_PR_REMOTE` (default `main@origin`) when that revision is already known locally, falling back through the local base branch and finally `@`; set `SCHERZO_JJ_WORKSPACE_BASE` to override this for deliberate local dogfooding.
-- Use `scripts/scherzo-jj-workspace` from YAML `workspace.hooks` instead of inlining jj lifecycle shell; pass the workflow name as the second argument. The helper runs `direnv allow .` only during initial trusted workspace creation when `.envrc` is present, so later direnv-backed validation does not fail on a blocked workspace-local `.envrc` without re-approving an `.envrc` an agent may have modified.
+- Keep dogfood workspace lifecycle policy explicit: `.scherzo/scherzo.yaml` defines `workspace.profiles.dogfood-jj` as the documented default, and each checked-in workflow selects it with top-level `workspace_profile: dogfood-jj`.
+- The `dogfood-jj` profile invokes `scripts/scherzo-jj-workspace` instead of inlining jj lifecycle shell; pass the workflow name as the second argument. The helper runs `direnv allow .` only during initial trusted workspace creation when `.envrc` is present, so later direnv-backed validation does not fail on a blocked workspace-local `.envrc` without re-approving an `.envrc` an agent may have modified.
 - Use `scripts/scherzo-pi` as the checked-in `pi.command` wrapper so workflows such as research, execplan, and execplan-revision can select `openai-codex/gpt-5.5:xhigh` while other workflows keep the default pi model.
 - Keep machine-specific variants as `.scherzo/workflows/**/*.local.yaml`, `.scherzo/workflows/**/*.local.yml`, `.scherzo/scherzo.local.yaml`, or `.scherzo/scherzo.local.yml`; they are ignored by git.
 - Do not put secrets in workflow files. Use environment variables for secrets and deployment-specific values.
@@ -56,7 +57,7 @@ export SCHERZO_EXECPLAN_IMPLEMENTATION_STATE=Backlog
 export SCHERZO_REPO_ROOT=$(pwd)
 ```
 
-The checked-in `tracker.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository, but setting it makes the jj workspace hook independent of the current directory layout.
+The checked-in `tracker.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository, but setting it makes the `dogfood-jj` workspace profile hooks independent of the current directory layout.
 
 ### Scherzo agent devenv profile
 

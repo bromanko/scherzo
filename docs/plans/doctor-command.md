@@ -84,8 +84,8 @@ The main documentation risk is leaving the old TODO trail in place after impleme
 - Observation: The current no-prompt pi probe uses the YAML DAG workspace path, not the older `workspace.prepare` helper. Doctor should reuse `workspace_run.prepare_step` and `workspace_run.cleanup_run` so it exercises the same `workspace.hooks.create`, `workspace.hooks.before_step`, and `workspace.hooks.remove` behavior as `--pi-probe`.
   Evidence: `src/scherzo/orchestrator/service.gleam` implements `run_pi_probe_orchestrator` with `workspace_run.prepare_step`, `workflow_dag.WorkspaceRef(name: "main", from: None)`, `probe.probe`, and `workspace_run.cleanup_run`.
 
-- Observation: `config.validate_dispatch` is a legacy top-level hook gate and is not part of the current startup or probe path. Calling it from doctor would incorrectly fail valid YAML orchestrator configs that use `workspace.hooks.create` and `workspace.hooks.before_step`.
-  Evidence: `grep` finds `validate_dispatch` only in `src/scherzo/config.gleam` and `test/config_test.gleam`; `README.md`, `.scherzo/scherzo.yaml`, and `examples/scherzo.yaml` configure hooks under `workspace.hooks`.
+- Observation: `config.validate_dispatch` is a legacy top-level hook gate and is not part of the current startup or probe path. Calling it from doctor would incorrectly fail valid YAML orchestrator configs that use workspace lifecycle hooks.
+  Evidence: `grep` finds `validate_dispatch` only in `src/scherzo/config.gleam` and `test/config_test.gleam`; current configs may configure hooks under legacy direct `workspace.hooks` or under named `workspace.profiles.<name>.hooks`, as `.scherzo/scherzo.yaml` now does with `workspace.profiles.dogfood-jj`.
 
 - Observation: This workspace currently blocks `direnv exec .` until `.envrc` is allowed, but the plain Gleam commands still validate the current tree.
   Evidence: `direnv exec . gleam test` failed with "`.envrc` is blocked"; `gleam format --check src test`, `gleam test`, and `gleam run -- --help` succeeded, and `gleam test` reported `410 passed, no failures`.

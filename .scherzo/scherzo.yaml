@@ -13,28 +13,33 @@ workspace:
   # Paths are resolved relative to .scherzo/scherzo.yaml. Runtime workspaces
   # land under repo-root/.scherzo/workspaces/<workflow>/<issue>/<run>/.
   root: workspaces
-  hooks:
-    create: |
-      set -eu
-      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
-      mkdir -p "$SCHERZO_WORKSPACE_PATH"
-      cd "$SCHERZO_WORKSPACE_PATH"
-      SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" after-create "$SCHERZO_WORKFLOW_ID"
-    before_step: |
-      set -eu
-      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
-      cd "$SCHERZO_WORKSPACE_PATH"
-      SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" before-run "$SCHERZO_WORKFLOW_ID"
-    after_step: |
-      true
-    remove: |
-      set -eu
-      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
-      workflow_name=${SCHERZO_WORKFLOW_ID:-workflow}
-      if [ -d "$SCHERZO_RUN_ROOT/workspaces" ]; then
-        SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" before-remove "$workflow_name"
-      fi
-    timeout_ms: 60000
+  # All checked-in dogfood workflows select dogfood-jj explicitly. Keep the
+  # same named profile as the documented default for ad-hoc routed workflows.
+  default_profile: dogfood-jj
+  profiles:
+    dogfood-jj:
+      hooks:
+        create: |
+          set -eu
+          repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+          mkdir -p "$SCHERZO_WORKSPACE_PATH"
+          cd "$SCHERZO_WORKSPACE_PATH"
+          SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" after-create "$SCHERZO_WORKFLOW_ID"
+        before_step: |
+          set -eu
+          repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+          cd "$SCHERZO_WORKSPACE_PATH"
+          SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" before-run "$SCHERZO_WORKFLOW_ID"
+        after_step: |
+          true
+        remove: |
+          set -eu
+          repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+          workflow_name=${SCHERZO_WORKFLOW_ID:-workflow}
+          if [ -d "$SCHERZO_RUN_ROOT/workspaces" ]; then
+            SCHERZO_REPO_ROOT="$repo_root" sh "$repo_root/scripts/scherzo-jj-workspace" before-remove "$workflow_name"
+          fi
+        timeout_ms: 60000
 agent:
   # Allow up to four dogfood agents to run in parallel. Set to 0 to pause new
   # dispatch while preserving workflow reload and running-worker reconciliation.
