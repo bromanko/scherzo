@@ -367,6 +367,30 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
     simplifile.is_file(success.workspace_path <> "/AFTER_RUN")
 }
 
+pub fn runner_fails_when_pi_reports_stop_reason_error_test() {
+  let root = "test/tmp/runner-stop-reason-error"
+  reset_dir(root)
+  let command = "FAKE_PI_STOP_REASON_ERROR=1 " <> fake_pi()
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert failure.reason
+    == error.PiFailed(error.PiProtocolError(
+      "pi turn_end reported stopReason=error: terminated",
+    ))
+  assert turn_event_names(drain_updates(update_subject, []))
+    == ["turn_started", "turn_failed"]
+}
+
 pub fn recovery_prompt_reopens_recorded_session_without_original_prompt_test() {
   let root = "test/tmp/runner-recovery-prompt"
   reset_dir(root)

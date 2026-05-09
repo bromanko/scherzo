@@ -454,44 +454,88 @@ fn handle_turn_record(
     update_from_record(record, context.turn, secrets),
   )
   let turn_records = list.append(turn_records, [record])
-  case event {
-    pi_event.AgentEnd ->
-      case pending_ui {
-        None ->
-          Ok(ActiveTurn(session, prompt_queue, stop_after_turn, turn_records))
-        Some(_) ->
-          Error(context.cleanup_failure(
+  case stop_reason_failure(record) {
+    Some(err) ->
+      Error(context.cleanup_failure(
+        session,
+        context.issue_id,
+        prompt_queue,
+        error.PiFailed(err),
+        context.totals,
+        None,
+      ))
+    None ->
+      case event {
+        pi_event.AgentEnd ->
+          case pending_ui {
+            None ->
+              Ok(ActiveTurn(
+                session,
+                prompt_queue,
+                stop_after_turn,
+                turn_records,
+              ))
+            Some(_) ->
+              Error(context.cleanup_failure(
+                session,
+                context.issue_id,
+                prompt_queue,
+                error.PiFailed(error.PiProtocolError(
+                  "agent ended with pending UI request",
+                )),
+                context.totals,
+                None,
+              ))
+          }
+        pi_event.ExtensionUiRequest ->
+          handle_extension_ui_record(
+            context,
             session,
-            context.issue_id,
+            record,
             prompt_queue,
-            error.PiFailed(error.PiProtocolError(
-              "agent ended with pending UI request",
-            )),
-            context.totals,
-            None,
-          ))
+            stop_after_turn,
+            pending_ui,
+            turn_records,
+            stall_deadline_ms,
+          )
+        _ ->
+          active_turn_loop(
+            context,
+            session,
+            prompt_queue,
+            stop_after_turn,
+            pending_ui,
+            turn_records,
+            monotonic_ms() + context.config.pi.stall_timeout_ms,
+          )
       }
-    pi_event.ExtensionUiRequest ->
-      handle_extension_ui_record(
-        context,
-        session,
-        record,
-        prompt_queue,
-        stop_after_turn,
-        pending_ui,
-        turn_records,
-        stall_deadline_ms,
-      )
-    _ ->
-      active_turn_loop(
-        context,
-        session,
-        prompt_queue,
-        stop_after_turn,
-        pending_ui,
-        turn_records,
-        monotonic_ms() + context.config.pi.stall_timeout_ms,
-      )
+  }
+}
+
+fn stop_reason_failure(record: protocol.RpcRecord) -> Option(error.PiRpcError) {
+  case record.stop_reason {
+    None -> None
+    Some(reason) -> {
+      let normalized = reason |> string.trim |> string.lowercase
+      case normalized == "error" {
+        True -> Some(error.PiProtocolError(stop_reason_failure_message(record)))
+        False -> None
+      }
+    }
+  }
+}
+
+fn stop_reason_failure_message(record: protocol.RpcRecord) -> String {
+  let base = "pi " <> record.type_ <> " reported stopReason=error"
+  case record.error_message {
+    None -> base
+    Some(message) -> {
+      let message = string.trim(message)
+      case message == "" {
+        True -> base
+        False -> base <> ": " <> message
+      }
+    }
   }
 }
 

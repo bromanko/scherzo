@@ -2456,7 +2456,7 @@ fn agent_failure_artifact(
   secrets: List(String),
   limits: config_types.ArtifactLimits,
 ) -> step_artifact.StepArtifact {
-  let detail = "agent step failed:" <> error.agent_code(failure.reason)
+  let detail = error.agent_artifact_detail(failure.reason)
   let stderr = case is_recovery_resume_validation_failure(failure.reason) {
     True ->
       "SCHERZO_FAILURE_CODE="

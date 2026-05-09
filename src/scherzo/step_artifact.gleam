@@ -686,7 +686,7 @@ fn stream_inline(label: String, value: String, truncated: Bool) -> String {
         True -> " [truncated]"
         False -> ""
       }
-      " " <> label <> "=\"" <> inline(value, 60) <> suffix <> "\""
+      " " <> label <> "=\"" <> inline(value, 160) <> suffix <> "\""
     }
   }
 }

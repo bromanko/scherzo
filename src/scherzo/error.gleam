@@ -1,3 +1,5 @@
+import gleam/int
+
 pub type ConfigError {
   UnsupportedTrackerKind(String)
   MissingTrackerApiKey
@@ -186,6 +188,39 @@ pub fn agent_code(error: AgentRunnerError) -> String {
     StateRefreshFailed(_) -> "agent_state_refresh_failed"
     OperatorAbort -> "agent_operator_abort"
     OperatorStopAfterCurrentTurn -> "agent_operator_stop_after_current_turn"
+  }
+}
+
+pub fn agent_artifact_detail(error: AgentRunnerError) -> String {
+  "agent step failed:" <> agent_code(error) <> agent_detail_suffix(error)
+}
+
+pub fn agent_detail_suffix(error: AgentRunnerError) -> String {
+  case error {
+    PromptFailed(TemplateRenderError(message)) ->
+      "\ntemplate render error: " <> message
+    ProbeFailed(pi_error) -> "\n" <> pi_rpc_detail(pi_error)
+    PiFailed(pi_error) -> "\n" <> pi_rpc_detail(pi_error)
+    WorkflowCommandFailed(detail: detail, ..) -> "\n" <> detail
+    StateRefreshFailed(tracker_error) ->
+      "\ntracker refresh error: " <> tracker_code(tracker_error)
+    OperatorAbort -> "\noperator requested abort"
+    OperatorStopAfterCurrentTurn ->
+      "\noperator requested stop after current turn"
+    WorkspaceFailed(_) | HookFailedError(_) | WorkflowHookFailed(_) -> ""
+  }
+}
+
+pub fn pi_rpc_detail(error: PiRpcError) -> String {
+  case error {
+    PiLaunchFailed(message) -> "pi launch failed: " <> message
+    PiMalformedJson(line) -> "pi emitted malformed JSON: " <> line
+    PiReadTimeout -> "timed out waiting for pi RPC response"
+    PiTurnTimeout -> "pi turn timeout elapsed before agent_end"
+    PiStallTimeout -> "pi stall timeout elapsed without output"
+    PiExited(status) ->
+      "pi process exited with status " <> int.to_string(status)
+    PiProtocolError(message) -> "pi protocol error: " <> message
   }
 }
 

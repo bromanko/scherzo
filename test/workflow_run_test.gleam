@@ -1592,6 +1592,70 @@ pub fn workflow_run_fatal_failure_stops_remaining_steps_test() {
   test_async.assert_no_extra_message_within(subject, 50)
 }
 
+pub fn workflow_run_agent_pi_error_fails_step_artifact_and_report_test() {
+  let subject = process.new_subject()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement prompt\n    workspace: main\n  - id: analyze_changes\n    kind: command\n    depends_on: [implement]\n    run: analyze\n    workspace: main\n",
+    )
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(subject, "agent:" <> context.step_id)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError(
+            "pi turn_end reported stopReason=error: terminated",
+          )),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: Some(issue()),
+        ))
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert failure.failed_step_id == Some("implement")
+  let assert Ok(artifact) = dict.get(failure.artifacts, "implement")
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(artifact.stderr, "agent_pi_failed")
+  assert string.contains(artifact.stderr, "terminated")
+  let report = workflow_run.failure_report(failure)
+  assert string.contains(report, "workflow_step_failed")
+  assert string.contains(
+    report,
+    "pi protocol error: pi turn_end reported stopReason=error: terminated",
+  )
+  assert receive_event(subject) == "prepare:implement:main:"
+  assert receive_event(subject) == "agent:implement"
+  assert receive_event(subject) == "after:implement"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
 pub fn workflow_run_failure_report_promotes_command_failure_code_test() {
   let subject = process.new_subject()
   let assert Ok(dag) =
