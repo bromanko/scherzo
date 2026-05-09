@@ -302,7 +302,8 @@ pub fn after_step(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Nil {
-  case profile.hooks.after_step {
+  let profile_hooks = config_types.profile_hooks(profile)
+  case profile_hooks.after_step {
     None -> Nil
     Some(script) -> {
       let _ =
@@ -310,7 +311,7 @@ pub fn after_step(
           "after_step",
           script,
           orchestrator.config_dir,
-          profile.hooks.timeout_ms,
+          profile_hooks.timeout_ms,
           hook_env(issue, step_id, prepared, orchestrator),
         )
       Nil
@@ -325,7 +326,8 @@ pub fn scheduled_after_step(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Nil {
-  case profile.hooks.after_step {
+  let profile_hooks = config_types.profile_hooks(profile)
+  case profile_hooks.after_step {
     None -> Nil
     Some(script) -> {
       let _ =
@@ -333,7 +335,7 @@ pub fn scheduled_after_step(
           "after_step",
           script,
           orchestrator.config_dir,
-          profile.hooks.timeout_ms,
+          profile_hooks.timeout_ms,
           scheduled_hook_env(
             scheduled.job_id,
             schedule_core.iso_utc(scheduled.due_at_ms),
@@ -368,7 +370,8 @@ pub fn cleanup_run(
       case retain_cleanup(target_abs) {
         True -> Ok(Nil)
         False -> {
-          case profile.hooks.remove {
+          let profile_hooks = config_types.profile_hooks(profile)
+          case profile_hooks.remove {
             None -> Nil
             Some(script) -> {
               let dummy_issue =
@@ -404,7 +407,7 @@ pub fn cleanup_run(
                   "remove",
                   script,
                   orchestrator.config_dir,
-                  profile.hooks.timeout_ms,
+                  profile_hooks.timeout_ms,
                   hook_env(dummy_issue, "", prepared, orchestrator),
                 )
               Nil
@@ -876,7 +879,8 @@ fn run_create_hook(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
-  case profile.hooks.create {
+  let profile_hooks = config_types.profile_hooks(profile)
+  case profile_hooks.create {
     None ->
       create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
     Some(script) ->
@@ -884,7 +888,7 @@ fn run_create_hook(
         "create",
         script,
         orchestrator.config_dir,
-        profile.hooks.timeout_ms,
+        profile_hooks.timeout_ms,
         hook_env(issue, step_id, prepared, orchestrator),
       )
       |> result.map_error(HookFailure)
@@ -898,14 +902,15 @@ fn run_before_step_hook(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
-  case profile.hooks.before_step {
+  let profile_hooks = config_types.profile_hooks(profile)
+  case profile_hooks.before_step {
     None -> Ok(Nil)
     Some(script) ->
       hooks.run_hook_with_env(
         "before_step",
         script,
         orchestrator.config_dir,
-        profile.hooks.timeout_ms,
+        profile_hooks.timeout_ms,
         hook_env(issue, step_id, prepared, orchestrator),
       )
       |> result.map_error(HookFailure)
@@ -919,7 +924,8 @@ fn run_scheduled_create_hook(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
-  case profile.hooks.create {
+  let profile_hooks = config_types.profile_hooks(profile)
+  case profile_hooks.create {
     None ->
       create_directory(prepared.path) |> result.map_error(WorkspaceFailure)
     Some(script) ->
@@ -927,7 +933,7 @@ fn run_scheduled_create_hook(
         "create",
         script,
         orchestrator.config_dir,
-        profile.hooks.timeout_ms,
+        profile_hooks.timeout_ms,
         scheduled_hook_env(
           scheduled.job_id,
           schedule_core.iso_utc(scheduled.due_at_ms),
@@ -949,14 +955,15 @@ fn run_scheduled_before_step_hook(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, PrepareError) {
-  case profile.hooks.before_step {
+  let profile_hooks = config_types.profile_hooks(profile)
+  case profile_hooks.before_step {
     None -> Ok(Nil)
     Some(script) ->
       hooks.run_hook_with_env(
         "before_step",
         script,
         orchestrator.config_dir,
-        profile.hooks.timeout_ms,
+        profile_hooks.timeout_ms,
         scheduled_hook_env(
           scheduled.job_id,
           schedule_core.iso_utc(scheduled.due_at_ms),

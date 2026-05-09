@@ -1,4 +1,5 @@
 import gleam/option.{None, Some}
+import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/workflow_dag
 
@@ -20,6 +21,7 @@ pub fn parses_minimal_workflow_dag_test() {
   let dag = parse_ok(minimal())
   assert dag.id == "research"
   assert dag.workspace_profile == None
+  assert dag.workspace_capabilities == []
   assert dag.max_parallel_steps == 1
   let assert [step] = dag.steps
   assert step.id == "main"
@@ -93,6 +95,37 @@ pub fn rejects_invalid_structured_output_contracts_test() {
     == "structured_output_schema_required_entry_not_string"
 }
 
+pub fn parses_workspace_capabilities_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\nworkspace_capabilities: [assert-only, changed-files]\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
+    )
+  assert dag.workspace_capabilities
+    == [
+      config_types.WorkspaceAssertOnly,
+      config_types.WorkspaceChangedFiles,
+    ]
+}
+
+pub fn rejects_invalid_workspace_capabilities_test() {
+  assert error_code(
+      "version: 1\nid: research\nworkspace_capabilities: assert-only\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "workspace_capabilities_not_list"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_capabilities: [123]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "workspace_capabilities_entry_not_string"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_capabilities: [pull-request]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "unknown_workspace_capability"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_capabilities: [assert-only, assert-only]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "duplicate_workspace_capability"
+}
+
 pub fn parses_top_level_workspace_profile_test() {
   let dag =
     parse_ok(
@@ -121,6 +154,13 @@ pub fn rejects_step_level_workspace_profile_test() {
       "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace_profile: noop\n    prompt: a.md\n",
     )
     == "step_workspace_profile_not_supported"
+}
+
+pub fn rejects_step_level_workspace_capabilities_test() {
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace_capabilities: [assert-only]\n    prompt: a.md\n",
+    )
+    == "step_workspace_capabilities_not_supported"
 }
 
 pub fn parses_per_step_model_settings_test() {

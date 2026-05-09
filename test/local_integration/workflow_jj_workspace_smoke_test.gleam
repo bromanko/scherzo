@@ -120,7 +120,8 @@ fn orchestrator(
           "default",
           config_types.WorkspaceHookProfile(
             name: "default",
-            hooks: dag_hooks,
+            hooks: Some(dag_hooks),
+            driver: None,
             source: config_types.LegacyWorkspaceHooks,
           ),
         ),

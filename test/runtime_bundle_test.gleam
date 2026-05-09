@@ -160,6 +160,89 @@ pub fn loads_workflows_with_workspace_profiles_test() {
   assert defaulted.workspace_profile == None
 }
 
+pub fn loads_hook_backed_profile_with_no_workspace_capabilities_test() {
+  let dir = "test/tmp/runtime-bundle-hook-no-capabilities"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/noop.yaml",
+      "version: 1\nid: noop\nworkspace_profile: noop\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+    )
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert dict.has_key(bundle.workflows, "noop")
+}
+
+pub fn rejects_missing_selected_workspace_capabilities_test() {
+  let dir = "test/tmp/runtime-bundle-missing-capabilities"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/noop.yaml",
+      "version: 1\nid: noop\nworkspace_profile: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n        capabilities: [status]\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+    )
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "workspace_capabilities_unavailable"
+  assert string.contains(message, "workflow noop")
+  assert string.contains(message, "workspace_profile noop")
+  assert string.contains(message, "missing: assert-only")
+}
+
+pub fn blocks_selected_driver_profile_after_capability_match_test() {
+  let dir = "test/tmp/runtime-bundle-driver-blocked"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/noop.yaml",
+      "version: 1\nid: noop\nworkspace_profile: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n        capabilities: [assert-only]\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+    )
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "workspace_driver_invocation_unavailable"
+  assert string.contains(message, "workflow noop")
+  assert string.contains(message, "workspace_profile noop")
+  assert string.contains(message, "docs/runbooks/workspace-driver-migration.md")
+}
+
+pub fn rejects_default_profile_missing_workspace_capabilities_test() {
+  let dir = "test/tmp/runtime-bundle-default-missing-capabilities"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/noop.yaml",
+      "version: 1\nid: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+    )
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "workspace_capabilities_unavailable"
+  assert string.contains(message, "workspace_profile default")
+}
+
 pub fn rejects_workflow_with_unknown_workspace_profile_test() {
   let dir = "test/tmp/runtime-bundle-unknown-workspace-profile"
   reset_dir(dir)
@@ -319,17 +402,19 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
   let assert Ok(profile) =
     dict.get(bundle.orchestrator.workspace_profiles.profiles, "dogfood-jj")
   assert profile.name == "dogfood-jj"
-  assert profile.source == config_types.ConfiguredWorkspaceProfile
-  assert profile.hooks.timeout_ms == 60_000
-  let assert Some(create_hook) = profile.hooks.create
+  assert profile.source == config_types.ConfiguredWorkspaceHooks
+  assert profile.driver == None
+  let assert Some(hooks) = profile.hooks
+  assert hooks.timeout_ms == 60_000
+  let assert Some(create_hook) = hooks.create
   assert string.contains(create_hook, "scripts/scherzo-jj-workspace")
   assert string.contains(create_hook, "after-create")
-  let assert Some(before_step_hook) = profile.hooks.before_step
+  let assert Some(before_step_hook) = hooks.before_step
   assert string.contains(before_step_hook, "scripts/scherzo-jj-workspace")
   assert string.contains(before_step_hook, "before-run")
-  let assert Some(after_step_hook) = profile.hooks.after_step
+  let assert Some(after_step_hook) = hooks.after_step
   assert string.contains(after_step_hook, "true")
-  let assert Some(remove_hook) = profile.hooks.remove
+  let assert Some(remove_hook) = hooks.remove
   assert string.contains(remove_hook, "scripts/scherzo-jj-workspace")
   assert string.contains(remove_hook, "before-remove")
 

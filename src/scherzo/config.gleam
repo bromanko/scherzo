@@ -204,7 +204,7 @@ pub fn resolve_orchestrator_root(
   use default_workspace_profile <- result.try(resolve_default_workspace_profile(
     workspace_profiles,
   ))
-  let dag_hooks = default_workspace_profile.hooks
+  let dag_hooks = config_types.profile_hooks(default_workspace_profile)
   use artifact_limits <- result.try(resolve_artifact_limits(root))
   use model_settings <- result.try(resolve_workflow_model_settings(root))
   use scheduled_jobs <- result.try(resolve_scheduled_jobs(root, routing))
@@ -1015,6 +1015,143 @@ fn read_dag_hooks(
   }
 }
 
+fn read_workspace_driver(
+  driver: yay.Node,
+  path: String,
+) -> Result(config_types.WorkspaceDriverConfig, error.ConfigError) {
+  use command <- result.try(read_driver_command(driver, path <> ".command"))
+  use lifecycle <- result.try(read_lifecycle_operations(
+    driver,
+    "lifecycle",
+    path <> ".lifecycle",
+  ))
+  use capabilities <- result.try(read_workspace_capabilities(
+    driver,
+    "capabilities",
+    path <> ".capabilities",
+  ))
+  let timeout = get_int(driver, "timeout_ms") |> int_default(60_000)
+  case timeout > 0 {
+    False -> Error(error.InvalidConfig(path <> ".timeout_ms must be positive"))
+    True ->
+      Ok(config_types.WorkspaceDriverConfig(
+        command: command,
+        lifecycle: lifecycle,
+        capabilities: capabilities,
+        timeout_ms: timeout,
+      ))
+  }
+}
+
+fn read_driver_command(
+  node: yay.Node,
+  path: String,
+) -> Result(String, error.ConfigError) {
+  case get_node(node, "command") {
+    Some(yay.NodeStr(value)) -> {
+      let value = string.trim(value)
+      case value == "" {
+        True -> Error(error.InvalidConfig(path <> " must be non-empty"))
+        False -> Ok(value)
+      }
+    }
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a string"))
+    None -> Error(error.InvalidConfig(path <> " is required"))
+  }
+}
+
+fn read_lifecycle_operations(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(List(config_types.WorkspaceLifecycleOperation), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok([])
+    Some(yay.NodeSeq(values)) ->
+      read_lifecycle_operation_values(values, path, [], [])
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a list"))
+  }
+}
+
+fn read_lifecycle_operation_values(
+  values: List(yay.Node),
+  path: String,
+  seen: List(config_types.WorkspaceLifecycleOperation),
+  acc: List(config_types.WorkspaceLifecycleOperation),
+) -> Result(List(config_types.WorkspaceLifecycleOperation), error.ConfigError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeStr(value), ..rest] -> {
+      use operation <- result.try(
+        config_types.workspace_lifecycle_operation_from_string(value)
+        |> result.replace_error(error.InvalidConfig(
+          path <> " has unknown lifecycle operation: " <> value,
+        )),
+      )
+      case list.contains(seen, operation) {
+        True ->
+          Error(error.InvalidConfig(
+            path
+            <> " has duplicate lifecycle operation: "
+            <> config_types.workspace_lifecycle_operation_to_string(operation),
+          ))
+        False ->
+          read_lifecycle_operation_values(rest, path, [operation, ..seen], [
+            operation,
+            ..acc
+          ])
+      }
+    }
+    [_, ..] -> Error(error.InvalidConfig(path <> " entries must be strings"))
+  }
+}
+
+fn read_workspace_capabilities(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(List(config_types.WorkspaceCapability), error.ConfigError) {
+  case get_node(node, key) {
+    None -> Ok([])
+    Some(yay.NodeSeq(values)) ->
+      read_workspace_capability_values(values, path, [], [])
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a list"))
+  }
+}
+
+fn read_workspace_capability_values(
+  values: List(yay.Node),
+  path: String,
+  seen: List(config_types.WorkspaceCapability),
+  acc: List(config_types.WorkspaceCapability),
+) -> Result(List(config_types.WorkspaceCapability), error.ConfigError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeStr(value), ..rest] -> {
+      use capability <- result.try(
+        config_types.workspace_capability_from_string(value)
+        |> result.replace_error(error.InvalidConfig(
+          path <> " has unknown workspace capability: " <> value,
+        )),
+      )
+      case list.contains(seen, capability) {
+        True ->
+          Error(error.InvalidConfig(
+            path
+            <> " has duplicate workspace capability: "
+            <> config_types.workspace_capability_to_string(capability),
+          ))
+        False ->
+          read_workspace_capability_values(rest, path, [capability, ..seen], [
+            capability,
+            ..acc
+          ])
+      }
+    }
+    [_, ..] -> Error(error.InvalidConfig(path <> " entries must be strings"))
+  }
+}
+
 fn read_configured_workspace_profiles(
   workspace: yay.Node,
 ) -> Result(
@@ -1056,19 +1193,44 @@ fn read_workspace_profile_entry(
 ) -> Result(config_types.WorkspaceHookProfile, error.ConfigError) {
   let path = "workspace.profiles." <> name
   case node {
-    yay.NodeMap(_) ->
-      case get_node(node, "hooks") {
-        Some(yay.NodeMap(_) as hooks) -> {
+    yay.NodeMap(_) -> {
+      let hooks_node = get_node(node, "hooks")
+      let driver_node = get_node(node, "driver")
+      case hooks_node, driver_node {
+        Some(_), Some(_) ->
+          Error(error.InvalidConfig(path <> " must not mix hooks and driver"))
+        Some(yay.NodeMap(_) as hooks), None -> {
           use hooks <- result.try(read_dag_hooks(hooks, path <> ".hooks"))
           Ok(config_types.WorkspaceHookProfile(
             name: name,
-            hooks: hooks,
-            source: config_types.ConfiguredWorkspaceProfile,
+            hooks: Some(hooks),
+            driver: None,
+            source: config_types.ConfiguredWorkspaceHooks,
           ))
         }
-        Some(_) | None ->
+        Some(_), None ->
           Error(error.InvalidConfig(path <> ".hooks must be a map"))
+        None, Some(yay.NodeMap(_) as driver) -> {
+          use driver <- result.try(read_workspace_driver(
+            driver,
+            path <> ".driver",
+          ))
+          Ok(config_types.WorkspaceHookProfile(
+            name: name,
+            hooks: None,
+            driver: Some(driver),
+            source: config_types.ConfiguredWorkspaceDriver,
+          ))
+        }
+        None, Some(_) ->
+          Error(error.InvalidConfig(path <> ".driver must be a map"))
+        None, None ->
+          Error(error.InvalidConfig(
+            path
+            <> " must define hooks for legacy runtime behavior or driver for the new workspace schema",
+          ))
       }
+    }
     _ -> Error(error.InvalidConfig(path <> " must be a map"))
   }
 }
@@ -1082,10 +1244,10 @@ fn add_legacy_default_profile(
   dict.Dict(String, config_types.WorkspaceHookProfile),
   error.ConfigError,
 ) {
-  case has_legacy_hooks || !has_configured_profiles {
-    False -> Ok(profiles)
-    True ->
-      case dict.has_key(profiles, "default") && has_legacy_hooks {
+  case has_legacy_hooks, has_configured_profiles {
+    False, True -> Ok(profiles)
+    True, _ ->
+      case dict.has_key(profiles, "default") {
         True ->
           Error(error.InvalidConfig(
             "workspace.profiles.default conflicts with legacy workspace.hooks; move the legacy hooks into profiles.default or rename the profile",
@@ -1098,12 +1260,24 @@ fn add_legacy_default_profile(
             "default",
             config_types.WorkspaceHookProfile(
               name: "default",
-              hooks: hooks,
+              hooks: Some(hooks),
+              driver: None,
               source: config_types.LegacyWorkspaceHooks,
             ),
           ))
         }
       }
+    False, False ->
+      Ok(dict.insert(
+        profiles,
+        "default",
+        config_types.WorkspaceHookProfile(
+          name: "default",
+          hooks: None,
+          driver: None,
+          source: config_types.SyntheticDefaultWorkspace,
+        ),
+      ))
   }
 }
 

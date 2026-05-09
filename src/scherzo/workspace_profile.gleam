@@ -11,6 +11,17 @@ pub type ProfileResolutionError {
     profile_name: String,
     available: List(String),
   )
+  WorkspaceCapabilitiesUnavailable(
+    workflow_id: String,
+    profile_name: String,
+    required: List(config_types.WorkspaceCapability),
+    provided: List(config_types.WorkspaceCapability),
+    missing: List(config_types.WorkspaceCapability),
+  )
+  WorkspaceDriverInvocationUnavailable(
+    workflow_id: String,
+    profile_name: String,
+  )
 }
 
 pub fn selected_name(
@@ -39,6 +50,48 @@ pub fn resolve(
   }
 }
 
+pub fn validate_capabilities(
+  dag: workflow_dag.WorkflowDag,
+  profile: config_types.WorkspaceHookProfile,
+) -> Result(Nil, ProfileResolutionError) {
+  let provided = provided_capabilities(profile)
+  let missing = missing_capabilities(dag.workspace_capabilities, provided, [])
+  case missing {
+    [] -> Ok(Nil)
+    _ ->
+      Error(WorkspaceCapabilitiesUnavailable(
+        workflow_id: dag.id,
+        profile_name: profile.name,
+        required: dag.workspace_capabilities,
+        provided: provided,
+        missing: missing,
+      ))
+  }
+}
+
+pub fn validate_dispatchable_profile(
+  dag: workflow_dag.WorkflowDag,
+  profile: config_types.WorkspaceHookProfile,
+) -> Result(Nil, ProfileResolutionError) {
+  case profile.driver {
+    Some(_) ->
+      Error(WorkspaceDriverInvocationUnavailable(
+        workflow_id: dag.id,
+        profile_name: profile.name,
+      ))
+    None -> Ok(Nil)
+  }
+}
+
+pub fn error_code(error: ProfileResolutionError) -> String {
+  case error {
+    UnknownWorkspaceProfile(..) -> "unknown_workspace_profile"
+    WorkspaceCapabilitiesUnavailable(..) -> "workspace_capabilities_unavailable"
+    WorkspaceDriverInvocationUnavailable(..) ->
+      "workspace_driver_invocation_unavailable"
+  }
+}
+
 pub fn error_message(error: ProfileResolutionError) -> String {
   case error {
     UnknownWorkspaceProfile(workflow_id, profile_name, available) ->
@@ -48,6 +101,55 @@ pub fn error_message(error: ProfileResolutionError) -> String {
       <> profile_name
       <> "; available profiles: "
       <> available_names_to_string(available)
+    WorkspaceCapabilitiesUnavailable(
+      workflow_id,
+      profile_name,
+      required,
+      provided,
+      missing,
+    ) ->
+      "workflow "
+      <> workflow_id
+      <> " requires workspace capabilities "
+      <> config_types.workspace_capabilities_to_string(required)
+      <> " but workspace_profile "
+      <> profile_name
+      <> " provides "
+      <> config_types.workspace_capabilities_to_string(provided)
+      <> "; missing: "
+      <> config_types.workspace_capabilities_to_string(missing)
+    WorkspaceDriverInvocationUnavailable(workflow_id, profile_name) ->
+      "workflow "
+      <> workflow_id
+      <> " selects workspace_profile "
+      <> profile_name
+      <> ", but workspace driver invocation is not implemented in this Scherzo version; use a hook-backed profile or wait for the driver invocation migration. See docs/runbooks/workspace-driver-migration.md"
+  }
+}
+
+fn provided_capabilities(
+  profile: config_types.WorkspaceHookProfile,
+) -> List(config_types.WorkspaceCapability) {
+  case profile.driver {
+    Some(driver) -> driver.capabilities
+    None -> []
+  }
+}
+
+fn missing_capabilities(
+  required: List(config_types.WorkspaceCapability),
+  provided: List(config_types.WorkspaceCapability),
+  acc: List(config_types.WorkspaceCapability),
+) -> List(config_types.WorkspaceCapability) {
+  case required {
+    [] -> config_types.canonical_workspace_capabilities(acc)
+    [capability, ..rest] ->
+      case
+        list.contains(provided, capability) || list.contains(acc, capability)
+      {
+        True -> missing_capabilities(rest, provided, acc)
+        False -> missing_capabilities(rest, provided, [capability, ..acc])
+      }
   }
 }
 

@@ -98,7 +98,12 @@ fn workspace_profile(
   hooks: config_types.DagHooksConfig,
   source: config_types.WorkspaceProfileSource,
 ) -> config_types.WorkspaceHookProfile {
-  config_types.WorkspaceHookProfile(name: name, hooks: hooks, source: source)
+  config_types.WorkspaceHookProfile(
+    name: name,
+    hooks: Some(hooks),
+    driver: None,
+    source: source,
+  )
 }
 
 fn legacy_workspace_profiles(
@@ -442,7 +447,7 @@ pub fn command_default_timeout_uses_selected_workspace_profile_test() {
             workspace_profile(
               "noop",
               noop_hooks,
-              config_types.ConfiguredWorkspaceProfile,
+              config_types.ConfiguredWorkspaceHooks,
             ),
           ),
         ]),
