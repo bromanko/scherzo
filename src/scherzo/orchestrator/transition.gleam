@@ -3,18 +3,18 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/error
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
+import scherzo/orchestrator/transitions/claims
+import scherzo/orchestrator/transitions/commands
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
-import scherzo/workspace
 
 pub fn handle(
   message: transition_types.Message,
@@ -31,6 +31,65 @@ pub fn handle(
       handle_candidate_fetch_start_requested(state, generation, context)
     transition_types.CandidateFetchCompleted(generation, poll, result, context) ->
       handle_candidate_fetch_completed(state, generation, poll, result, context)
+    transition_types.LinearCommandSubmitted(comment, parsed, safe_excerpt) ->
+      commands.handle_linear_submitted(state, comment, parsed, safe_excerpt)
+    transition_types.LinearCommandApplied(
+      comment_id,
+      issue_id,
+      command_name,
+      result,
+      message_excerpt,
+      ack_body,
+    ) ->
+      commands.handle_linear_applied(
+        state,
+        comment_id,
+        issue_id,
+        command_name,
+        result,
+        message_excerpt,
+        ack_body,
+      )
+    transition_types.LinearCommandAckRequested(
+      issue_id,
+      source_comment_id,
+      body,
+      outbox_recorded,
+    ) ->
+      commands.request_linear_ack(
+        state,
+        issue_id,
+        source_comment_id,
+        body,
+        outbox_recorded,
+      )
+    transition_types.LinearCommandAckFinished(
+      issue_id,
+      source_comment_id,
+      result,
+    ) ->
+      commands.handle_linear_ack_finished(
+        state,
+        issue_id,
+        source_comment_id,
+        result,
+      )
+    transition_types.RetryPendingLinearCommandAcks ->
+      commands.retry_pending_linear_acks(state)
+    transition_types.OperatorCommandSubmitted(
+      request,
+      context,
+      issue_resolution,
+      parked_issue_resolution,
+    ) ->
+      commands.handle_operator_submitted(
+        state,
+        request,
+        context,
+        issue_resolution,
+        parked_issue_resolution,
+        operator_callbacks(),
+      )
     transition_types.LinearCommandPhaseFinished(
       candidates,
       dispatch_after,
@@ -76,7 +135,7 @@ pub fn handle(
       bodies,
       failure_event,
     ) ->
-      handle_claim_ledger_append_requested(
+      claims.handle_requested(
         state,
         correlation_id,
         issue_id,
@@ -104,6 +163,18 @@ pub fn snapshot(
   state: transition_types.State,
 ) -> orchestrator_state.RuntimeState {
   state.runtime
+}
+
+fn operator_callbacks() -> commands.OperatorCallbacks {
+  commands.operator_callbacks(
+    issue_is_running_claimed_or_pending,
+    can_reserve_dispatch_slot,
+    dispatch_candidates_outcome,
+  )
+}
+
+fn claim_callbacks() -> claims.Callbacks {
+  claims.Callbacks(dispatch_candidates: dispatch_candidates_outcome)
 }
 
 fn handle_poll_tick(
@@ -415,7 +486,7 @@ fn handle_dispatch_validation_completed(
                   [
                     #("issue_id", issue_id),
                     #("generation", int.to_string(generation)),
-                    #("reason", dispatch_validation_error_reason(err)),
+                    #("reason", claims.dispatch_validation_error_reason(err)),
                   ],
                 ),
                 ..outcome.effects
@@ -567,11 +638,12 @@ fn handle_successful_dispatch_validation(
                       ])
                     }
                     True ->
-                      begin_claim_for_issue(
+                      claims.begin_for_issue(
                         state,
                         refreshed_issue,
                         pending.remaining_candidates,
                         context,
+                        claim_callbacks(),
                       )
                   }
               }
@@ -582,80 +654,14 @@ fn handle_successful_dispatch_validation(
   }
 }
 
-fn begin_claim_for_issue(
+fn clear_pending_claim(
   state: transition_types.State,
-  issue: tracker_issue.Issue,
-  remaining_candidates: List(tracker_issue.Issue),
-  context: transition_types.DispatchContext,
-) -> transition_types.Outcome {
-  case select_workflow_route(context, issue) {
-    Error(#(code, message)) -> {
-      let outcome =
-        dispatch_candidates_outcome(remaining_candidates, state, context)
-      transition_types.Outcome(state: outcome.state, effects: [
-        effects_types.Log("warn", "workflow_route_failed", [
-          #("issue_id", issue.id),
-          #("error", code),
-          #("message", message),
-        ]),
-        ..outcome.effects
-      ])
-    }
-    Ok(workflow_id) ->
-      case workspace.workspace_path(context.workspace_root, issue.identifier) {
-        Error(err) -> {
-          let outcome =
-            dispatch_candidates_outcome(remaining_candidates, state, context)
-          transition_types.Outcome(state: outcome.state, effects: [
-            effects_types.Log("warn", "dispatch_workspace_path_failed", [
-              #("issue_id", issue.id),
-              #("error", error.workspace_code(err)),
-            ]),
-            ..outcome.effects
-          ])
-        }
-        Ok(#(_, workspace_path)) -> {
-          let sequence = state.next_session_sequence
-          let run_id = make_run_id(issue, context.now_ms, sequence)
-          let session_id = make_session_id(issue.identifier, run_id, sequence)
-          let recovery =
-            dict.get(context.recovery_by_issue, issue.id)
-            |> option.from_result
-          let pending =
-            transition_types.PendingClaim(
-              issue_id: issue.id,
-              run_id: run_id,
-              session_id: session_id,
-              workspace_path: workspace_path,
-              workflow_id: workflow_id,
-              command_route_id: "worker:"
-                <> run_id
-                <> ":"
-                <> int.to_string(sequence),
-              route_label: issue.identifier,
-              issue: issue,
-              recovery: recovery,
-              remaining_candidates: remaining_candidates,
-              dispatch_context: context,
-            )
-          transition_types.Outcome(
-            state: transition_types.State(
-              ..state,
-              pending_claims: dict.insert(
-                state.pending_claims,
-                issue.id,
-                pending,
-              ),
-              next_session_sequence: sequence + 1,
-            ),
-            effects: [
-              effects_types.ReserveSessionSequence(sequence),
-              effects_types.ClaimIssue(issue, workspace_path, run_id),
-            ],
-          )
-        }
-      }
-  }
+  issue_id: String,
+) -> transition_types.State {
+  transition_types.State(
+    ..state,
+    pending_claims: dict.delete(state.pending_claims, issue_id),
+  )
 }
 
 fn handle_handoff_claim_completed(
@@ -715,9 +721,9 @@ fn handle_handoff_claim_completed(
               ])
             }
             transition_types.HandoffClaimSucceeded(bodies) ->
-              handle_claim_ledger_append_requested(
+              claims.handle_requested(
                 state,
-                claim_correlation_id(issue_id, run_id),
+                claims.claim_correlation_id(issue_id, run_id),
                 issue_id,
                 run_id,
                 pending.session_id,
@@ -955,7 +961,13 @@ fn handle_retry_issue_candidate(
                       ..state,
                       runtime: clear_retry(state.runtime, issue_id),
                     )
-                  begin_claim_for_issue(state, issue, [], context)
+                  claims.begin_for_issue(
+                    state,
+                    issue,
+                    [],
+                    context,
+                    claim_callbacks(),
+                  )
                 }
               }
           }
@@ -1050,7 +1062,8 @@ fn map_core_effect(
   effect: core.Effect,
 ) -> transition_types.Outcome {
   case effect {
-    core.Dispatch(issue) -> begin_claim_for_issue(state, issue, [], context)
+    core.Dispatch(issue) ->
+      claims.begin_for_issue(state, issue, [], context, claim_callbacks())
     core.ScheduleRetry(issue_id, delay_ms, generation, retry_reason) ->
       transition_types.Outcome(
         state: state,
@@ -1146,37 +1159,6 @@ fn cancel_retry_effects(
   ]
 }
 
-fn handle_claim_ledger_append_requested(
-  state: transition_types.State,
-  correlation_id: String,
-  issue_id: String,
-  run_id: String,
-  session_id: String,
-  bodies: List(record.RecordBody),
-  failure_event: String,
-) -> transition_types.Outcome {
-  case dict.get(state.pending_claims, issue_id) {
-    Error(Nil) ->
-      stale_claim_continuation(state, correlation_id, issue_id, run_id)
-    Ok(pending) ->
-      case pending.run_id == run_id && pending.session_id == session_id {
-        False ->
-          stale_claim_continuation(state, correlation_id, issue_id, run_id)
-        True ->
-          transition_types.Outcome(state: state, effects: [
-            effects_types.AppendLedger(effects_types.LedgerAppend(
-              correlation_id: correlation_id,
-              bodies: bodies,
-              failure_event: failure_event,
-              policy: effects_types.ContinueWith(
-                effects_types.SpawnClaimedWorker(issue_id, run_id, session_id),
-              ),
-            )),
-          ])
-      }
-  }
-}
-
 fn handle_ledger_append_completed(
   state: transition_types.State,
   correlation_id: String,
@@ -1185,141 +1167,68 @@ fn handle_ledger_append_completed(
 ) -> transition_types.Outcome {
   case continuation {
     effects_types.SpawnClaimedWorker(issue_id, run_id, session_id) ->
-      handle_spawn_claimed_worker(
+      claims.handle_spawn(
         state,
         correlation_id,
         issue_id,
         run_id,
         session_id,
         result,
+        claim_callbacks(),
+      )
+    effects_types.ApplyLinearCommand(request) ->
+      commands.handle_linear_apply_continuation(
+        state,
+        correlation_id,
+        request,
+        result,
+      )
+    effects_types.EnqueueLinearCommandAck(issue_id, source_comment_id, body) ->
+      commands.handle_linear_enqueue_continuation(
+        state,
+        correlation_id,
+        issue_id,
+        source_comment_id,
+        body,
+        result,
+      )
+    effects_types.PublishLinearCommandAck(issue_id, source_comment_id, body) ->
+      commands.handle_linear_publish_continuation(
+        state,
+        correlation_id,
+        issue_id,
+        source_comment_id,
+        body,
+        result,
+      )
+    effects_types.RemoveLinearCommandAck(issue_id, source_comment_id) ->
+      commands.handle_linear_remove_continuation(
+        state,
+        correlation_id,
+        issue_id,
+        source_comment_id,
+        result,
+      )
+    effects_types.ReportParkAfterLedger(
+      issue_id,
+      issue_identifier,
+      reason,
+      release_policy,
+      source_run_id,
+    ) ->
+      commands.handle_operator_report_park_continuation(
+        state,
+        correlation_id,
+        issue_id,
+        issue_identifier,
+        reason,
+        release_policy,
+        source_run_id,
+        result,
       )
     effects_types.NoLedgerContinuation ->
       transition_types.Outcome(state: state, effects: [])
   }
-}
-
-fn handle_spawn_claimed_worker(
-  state: transition_types.State,
-  correlation_id: String,
-  issue_id: String,
-  run_id: String,
-  session_id: String,
-  result: Result(Nil, ledger.LedgerError),
-) -> transition_types.Outcome {
-  case dict.get(state.pending_claims, issue_id) {
-    Error(Nil) ->
-      stale_claim_continuation(state, correlation_id, issue_id, run_id)
-    Ok(pending) ->
-      case pending.run_id == run_id && pending.session_id == session_id {
-        False ->
-          stale_claim_continuation(state, correlation_id, issue_id, run_id)
-        True ->
-          case result {
-            Error(err) ->
-              transition_types.Outcome(
-                state: clear_pending_claim(state, issue_id),
-                effects: [
-                  effects_types.Log("warn", "ledger_append_failed", [
-                    #("issue_id", issue_id),
-                    #("run_id", run_id),
-                    #("correlation_id", correlation_id),
-                    #("error", ledger_error_code(err)),
-                  ]),
-                ],
-              )
-            Ok(Nil) -> start_claimed_worker(state, pending)
-          }
-      }
-  }
-}
-
-fn start_claimed_worker(
-  state: transition_types.State,
-  pending: transition_types.PendingClaim,
-) -> transition_types.Outcome {
-  let worker_entry =
-    transition_types.WorkerEntry(
-      issue_id: pending.issue_id,
-      run_id: pending.run_id,
-      session_id: pending.session_id,
-      issue: pending.issue,
-      workspace_path: pending.workspace_path,
-      workflow_id: pending.workflow_id,
-      command_route_id: pending.command_route_id,
-      status: transition_types.WorkerStarting,
-      recovery: pending.recovery,
-    )
-  let workers = state.workers
-  let workers =
-    transition_types.WorkerDirectory(
-      by_issue: dict.insert(workers.by_issue, pending.issue_id, worker_entry),
-      by_session: dict.insert(
-        workers.by_session,
-        pending.session_id,
-        pending.issue_id,
-      ),
-      route_to_session: dict.insert(
-        workers.route_to_session,
-        pending.command_route_id,
-        pending.session_id,
-      ),
-    )
-  let state =
-    transition_types.State(
-      ..state,
-      pending_claims: dict.delete(state.pending_claims, pending.issue_id),
-      runtime: core.apply_worker_start(
-        state.runtime,
-        pending.issue,
-        pending.workspace_path,
-      ),
-      workers: workers,
-    )
-  let continued =
-    dispatch_candidates_outcome(
-      pending.remaining_candidates,
-      state,
-      pending.dispatch_context,
-    )
-  transition_types.Outcome(state: continued.state, effects: [
-    effects_types.StartWorker(effects_types.WorkerStart(
-      issue_id: pending.issue_id,
-      run_id: pending.run_id,
-      session_id: pending.session_id,
-      command_route_id: pending.command_route_id,
-      issue: pending.issue,
-      workspace_path: pending.workspace_path,
-      workflow_id: pending.workflow_id,
-      route_label: pending.route_label,
-      recovery: pending.recovery,
-    )),
-    ..continued.effects
-  ])
-}
-
-fn stale_claim_continuation(
-  state: transition_types.State,
-  correlation_id: String,
-  issue_id: String,
-  run_id: String,
-) -> transition_types.Outcome {
-  transition_types.Outcome(state: state, effects: [
-    effects_types.Log("warn", "claim_ledger_continuation_stale", [
-      #("issue_id", issue_id),
-      #("run_id", run_id),
-      #("correlation_id", correlation_id),
-    ]),
-  ])
-}
-
-fn clear_pending_claim(
-  state: transition_types.State,
-  issue_id: String,
-) -> transition_types.State {
-  transition_types.State(
-    ..state,
-    pending_claims: dict.delete(state.pending_claims, issue_id),
-  )
 }
 
 fn report_blocked_dependency(
@@ -1366,10 +1275,10 @@ fn report_blocked_dependency(
                 decision,
               ),
             ),
-            #("blockers", blocker_summary(issue, decision)),
+            #("blockers", claims.blocker_summary(issue, decision)),
             #(
               "incomplete",
-              bool_field(core.blocker_decision_incomplete(decision)),
+              claims.bool_field(core.blocker_decision_incomplete(decision)),
             ),
           ]),
         ],
@@ -1640,138 +1549,6 @@ fn append_unique_issues(
   })
 }
 
-fn select_workflow_route(
-  context: transition_types.DispatchContext,
-  issue: tracker_issue.Issue,
-) -> Result(String, #(String, String)) {
-  let labels =
-    workflow_labels(issue.labels, context.routing.workflow_label_prefix, [])
-  case labels {
-    [] ->
-      case context.routing.require_exactly_one_workflow_label {
-        True ->
-          Error(#("missing_workflow_label", "issue has no workflow label"))
-        False ->
-          case context.routing.default_workflow {
-            Some(id) -> lookup_workflow(context.available_workflow_ids, id)
-            None ->
-              Error(#("missing_workflow_label", "issue has no workflow label"))
-          }
-      }
-    [id] -> lookup_workflow(context.available_workflow_ids, id)
-    _ ->
-      Error(#("multiple_workflow_labels", "issue has multiple workflow labels"))
-  }
-}
-
-fn lookup_workflow(
-  available_workflow_ids: List(String),
-  id: String,
-) -> Result(String, #(String, String)) {
-  case list.contains(available_workflow_ids, id) {
-    True -> Ok(id)
-    False ->
-      Error(#("unknown_workflow_label", "unknown workflow label: " <> id))
-  }
-}
-
-fn workflow_labels(
-  labels: List(String),
-  prefix: String,
-  acc: List(String),
-) -> List(String) {
-  case labels {
-    [] -> list.reverse(acc)
-    [label, ..rest] -> {
-      let label = label |> string.trim |> string.lowercase
-      case prefix != "" && string.starts_with(label, prefix) {
-        True ->
-          workflow_labels(rest, prefix, [
-            string.drop_start(label, string.length(prefix)),
-            ..acc
-          ])
-        False -> workflow_labels(rest, prefix, acc)
-      }
-    }
-  }
-}
-
-fn dispatch_validation_error_reason(
-  err: transition_types.DispatchValidationError,
-) -> String {
-  case err {
-    transition_types.DispatchValidationTrackerError(tracker_error) ->
-      "tracker_error:" <> tracker_error
-    transition_types.DispatchValidationMissingIssue -> "missing_issue"
-    transition_types.DispatchValidationDuplicateIssue -> "duplicate_issue"
-    transition_types.DispatchValidationIdMismatch(_, _) -> "id_mismatch"
-  }
-}
-
-fn blocker_summary(
-  issue: tracker_issue.Issue,
-  decision: core.BlockerDecision,
-) -> String {
-  let blockers = case decision {
-    core.BlockersSatisfied -> issue.blocked_by
-    core.BlockedByDependency(open_blockers, _) ->
-      case open_blockers {
-        [] -> issue.blocked_by
-        _ -> open_blockers
-      }
-  }
-  blockers
-  |> list.map(blocker_to_summary)
-  |> string.join(with: ",")
-}
-
-fn blocker_to_summary(blocker: tracker_issue.BlockerRef) -> String {
-  let name = case blocker.identifier {
-    Some(identifier) -> identifier
-    None ->
-      case blocker.id {
-        Some(id) -> id
-        None -> "unknown"
-      }
-  }
-  let state = case blocker.state {
-    Some(state) -> issue_state.to_string(state)
-    None -> "unknown"
-  }
-  name <> ":" <> state
-}
-
-fn bool_field(value: Bool) -> String {
-  case value {
-    True -> "true"
-    False -> "false"
-  }
-}
-
-fn make_run_id(
-  issue: tracker_issue.Issue,
-  now_ms: Int,
-  sequence: Int,
-) -> String {
-  issue.identifier
-  <> "-"
-  <> int.to_string(now_ms)
-  <> "-"
-  <> int.to_string(sequence)
-}
-
-fn make_session_id(
-  _issue_identifier: String,
-  run_id: String,
-  _sequence: Int,
-) -> String {
-  run_id
-}
-
-fn claim_correlation_id(issue_id: String, run_id: String) -> String {
-  "claim:" <> issue_id <> ":" <> run_id
-}
-
 fn clear_retry(
   state: orchestrator_state.RuntimeState,
   issue_id: String,
@@ -1808,14 +1585,5 @@ fn identifier_for_runtime(
             Error(_) -> issue_id
           }
       }
-  }
-}
-
-fn ledger_error_code(err: ledger.LedgerError) -> String {
-  case err {
-    ledger.Io(_) -> "io"
-    ledger.LedgerFfiFailed(_) -> "ledger_ffi_failed"
-    ledger.UnsupportedVersion(_) -> "unsupported_version"
-    ledger.CorruptRecord(_, _) -> "corrupt_record"
   }
 }
