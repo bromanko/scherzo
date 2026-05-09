@@ -25,7 +25,19 @@ fn definition(front: String) -> yay.Node {
 }
 
 fn minimal_front() -> String {
-  "tracker:\n  kind: linear\n  project_slug: TEST\nhooks:\n  before_run: test -d .git\n"
+  "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
+}
+
+fn tracker_validation_front(tracker_fields: String) -> String {
+  "tracker:\n  kind: linear\n  project_slug: TEST\n"
+  <> tracker_fields
+  <> "hooks:\n  before_run: test -d .git\n"
+}
+
+fn invalid_config_message(front: String) -> String {
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  message
 }
 
 pub fn default_values_test() {
@@ -34,6 +46,7 @@ pub fn default_values_test() {
   assert tracker.kind == tracker_kind.LinearTracker
   assert issue_state.to_strings(tracker.active_states)
     == ["Todo", "In Progress"]
+  assert issue_state.to_strings(tracker.dispatch_states) == ["Todo"]
   assert issue_state.to_strings(tracker.terminal_states)
     == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
 
@@ -53,6 +66,69 @@ pub fn default_values_test() {
   assert pi.ui_request_policy == config_types.Cancel
   assert pi.ui_request_timeout_ms == 300_000
   assert pi.compatibility_probe == True
+}
+
+pub fn missing_dispatch_states_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(message, "tracker.dispatch_states")
+  assert string.contains(message, "required")
+  assert string.contains(message, "dispatch_states: [Todo]")
+}
+
+pub fn wrong_type_dispatch_states_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  dispatch_states: Todo\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(
+    message,
+    "tracker.dispatch_states must be a string list",
+  )
+}
+
+pub fn non_string_dispatch_states_entry_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  dispatch_states: [Todo, 123]\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(
+    message,
+    "tracker.dispatch_states entries must be strings",
+  )
+}
+
+pub fn empty_dispatch_states_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  dispatch_states: []\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(message, "must contain at least one state")
+}
+
+pub fn dispatch_states_outside_active_states_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  dispatch_states: [In Progress]\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(message, "tracker.dispatch_states")
+  assert string.contains(message, "subset")
+  assert string.contains(message, "tracker.active_states")
+  assert string.contains(message, "In Progress")
+}
+
+pub fn dispatch_states_normalized_subset_canonicalizes_test() {
+  let assert Ok(configured) =
+    config.resolve_with_env(
+      definition(tracker_validation_front(
+        "  active_states: [Todo, In Progress]\n  dispatch_states: [\" todo \"]\n  terminal_states: [Done]\n",
+      )),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert issue_state.to_strings(configured.tracker.dispatch_states) == ["Todo"]
 }
 
 pub fn tracker_validation_and_env_resolution_test() {
@@ -99,7 +175,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured.tracker.api_key == Some("linearkey")
 
   let env_project =
-    "tracker:\n  kind: linear\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  kind: linear\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(configured_env_project) =
     config.resolve_with_env(
       definition(env_project),
@@ -109,7 +185,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured_env_project.tracker.project_slug == Some("ENV-PROJECT")
 
   let explicit =
-    "tracker:\n  kind: linear\n  project_slug: TEST\n  api_key: \"$OTHER_VAR\"\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  kind: linear\n  project_slug: TEST\n  api_key: \"$OTHER_VAR\"\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(configured_explicit) =
     config.resolve_with_env(definition(explicit), "test/tmp/scherzo.yaml", env)
   assert configured_explicit.tracker.api_key == Some("other-secret")
@@ -153,7 +229,9 @@ pub fn path_resolution_and_env_indirection_test() {
 pub fn hooks_and_agent_limit_validation_test() {
   let assert Ok(no_hooks) =
     config.resolve_with_env(
-      definition("tracker:\n  kind: linear\n  project_slug: TEST\n"),
+      definition(
+        "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\n",
+      ),
       "test/tmp/scherzo.yaml",
       env,
     )

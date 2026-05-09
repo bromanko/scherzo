@@ -1,9 +1,11 @@
 import gleam/dict
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
@@ -11,6 +13,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import simplifile
+import yay
 
 fn tracker_config() -> config_types.TrackerConfig {
   config_types.TrackerConfig(
@@ -19,6 +22,7 @@ fn tracker_config() -> config_types.TrackerConfig {
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
     active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+    dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }
@@ -101,17 +105,17 @@ pub fn candidate_query_uses_project_slug_filter_test() {
     )
   let query = request_query(request.body)
   assert variable_names(request.body)
-    == ["activeStates", "after", "projectSlug"]
+    == ["after", "dispatchStates", "projectSlug"]
   assert string_variable(request.body, "projectSlug") == "PROJ"
-  assert string_list_variable(request.body, "activeStates") == ["Todo"]
+  assert string_list_variable(request.body, "dispatchStates") == ["Todo"]
   assert optional_string_variable(request.body, "after") == Some("cursor")
   assert string.contains(
     query,
-    "query CandidateIssues($projectSlug: String!, $activeStates: [String!], $after: String)",
+    "query CandidateIssues($projectSlug: String!, $dispatchStates: [String!], $after: String)",
   )
   assert string.contains(
     query,
-    "issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $activeStates } } })",
+    "issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $dispatchStates } } })",
   )
   assert string.contains(
     query,
@@ -197,6 +201,46 @@ pub fn missing_inverse_relations_is_rejected_test() {
     "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"ABC-123-id\",\"identifier\":\"ABC-123\",\"title\":\"Title ABC-123\",\"state\":{\"name\":\"Todo\"}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
   let assert Error(error.LinearUnknownPayload(_)) =
     linear.parse_page_response(linear.Response(status: 200, body: body))
+}
+
+pub fn fetch_candidate_issues_uses_dispatch_states_test() {
+  let captured = process.new_subject()
+  let transport = fn(request: linear.Request) {
+    process.send(captured, request.body)
+    Ok(linear.Response(
+      status: 200,
+      body: response_page("ABC-1", "false", "null"),
+    ))
+  }
+
+  let assert Ok(_) = linear.fetch_candidate_issues(tracker_config(), transport)
+  let assert Ok(body) = process.receive(captured, within: 1000)
+  assert string_list_variable(body, "dispatchStates") == ["Todo"]
+}
+
+pub fn fetch_candidate_issues_uses_canonical_dispatch_state_names_test() {
+  let captured = process.new_subject()
+  let assert Ok([document]) =
+    yay.parse_string(
+      "tracker:\n  kind: linear\n  api_key: secret-key\n  project_slug: PROJ\n  active_states: [Todo]\n  dispatch_states: [\" todo \"]\n",
+    )
+  let assert Ok(effective) =
+    config.resolve_with_env(
+      yay.document_root(document),
+      "test/tmp/scherzo.yaml",
+      fn(_) { None },
+    )
+  let transport = fn(request: linear.Request) {
+    process.send(captured, request.body)
+    Ok(linear.Response(
+      status: 200,
+      body: response_page("ABC-1", "false", "null"),
+    ))
+  }
+
+  let assert Ok(_) = linear.fetch_candidate_issues(effective.tracker, transport)
+  let assert Ok(body) = process.receive(captured, within: 1000)
+  assert string_list_variable(body, "dispatchStates") == ["Todo"]
 }
 
 pub fn pagination_preserves_order_test() {

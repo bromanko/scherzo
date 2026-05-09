@@ -192,7 +192,7 @@ pub fn fetch_candidate_issues(
   config: config_types.TrackerConfig,
   transport: Transport,
 ) -> Result(List(tracker_issue.Issue), error.TrackerError) {
-  fetch_pages(config, config.active_states, None, transport, [])
+  fetch_pages(config, config.dispatch_states, None, transport, [])
 }
 
 pub fn fetch_issues_by_states(
@@ -308,7 +308,7 @@ pub fn build_candidate_request(
         json.object([
           #("projectSlug", json.string(project_slug)),
           #(
-            "activeStates",
+            "dispatchStates",
             json.array(issue_state.to_strings(states), of: json.string),
           ),
           #("after", json.nullable(after, of: json.string)),
@@ -519,7 +519,7 @@ fn graphql_request(endpoint: String, api_key: String, body: String) -> Request {
 }
 
 pub fn candidate_query() -> String {
-  "query CandidateIssues($projectSlug: String!, $activeStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $activeStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
+  "query CandidateIssues($projectSlug: String!, $dispatchStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $dispatchStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn state_refresh_query() -> String {

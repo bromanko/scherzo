@@ -49,7 +49,7 @@ pub fn linear_reader(
 ) -> LinearSmokeReader {
   LinearSmokeReader(
     fetch_candidate_sample: fn() {
-      fetch_one_page(config, config.active_states, transport)
+      fetch_one_page(config, config.dispatch_states, transport)
     },
     fetch_terminal_sample: fn(states) {
       fetch_one_page(config, states, transport)

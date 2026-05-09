@@ -76,7 +76,7 @@ fn yaml_config_with_max(
   max_concurrent: Int,
   extra: String,
 ) -> String {
-  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
+  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
   <> root
   <> "\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: |\n      test -d \"$SCHERZO_WORKSPACE_PATH\"\n    after_step: |\n      true\n    remove: |\n      rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: "
   <> int_to_string(max_concurrent)
@@ -211,6 +211,8 @@ fn workflow_deps() -> workflow_run.Dependencies {
 
 fn contract_config_text(root: String, active_state: String) -> String {
   "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: ["
+  <> active_state
+  <> "]\n  dispatch_states: ["
   <> active_state
   <> "]\n  terminal_states: [Done]\nworkspace:\n  root: "
   <> root
@@ -411,7 +413,7 @@ pub fn linear_contract_check_mismatch_logs_diagnostics_and_fails_test() {
     fields: mismatch_fields,
     secrets: _,
   )) = process.receive(log_subject, within: 1000)
-  assert field_value(mismatch_fields, "diagnostic_count") == Some("1")
+  assert field_value(mismatch_fields, "diagnostic_count") == Some("2")
   let assert Ok(CapturedLog(
     level: "error",
     event: "linear_contract_diagnostic",

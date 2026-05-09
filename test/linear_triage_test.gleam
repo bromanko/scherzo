@@ -20,6 +20,7 @@ fn tracker_config() -> config_types.TrackerConfig {
     api_key: Some("lin_api_secret"),
     project_slug: Some("TEST"),
     active_states: issue_state.list_from_strings(["Ready for Agent"]),
+    dispatch_states: issue_state.list_from_strings(["Ready for Agent"]),
     terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }

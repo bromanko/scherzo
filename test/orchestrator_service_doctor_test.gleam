@@ -69,7 +69,7 @@ fn write_config(dir: String, extra: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
-      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: |\n      test -d \"$SCHERZO_WORKSPACE_PATH\"\n    remove: |\n      rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n"
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: workspaces\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: |\n      test -d \"$SCHERZO_WORKSPACE_PATH\"\n    remove: |\n      rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: 1\n  max_turns: 1\n"
         <> extra,
     )
   let assert Ok(Nil) =
@@ -81,6 +81,21 @@ fn write_config(dir: String, extra: String) -> String {
     simplifile.write(
       dir <> "/workflows/prompts/implementation.md",
       "Implement the issue.",
+    )
+  config_path
+}
+
+fn write_invalid_dispatch_config(
+  dir: String,
+  tracker_fields: String,
+) -> String {
+  reset_dir(dir)
+  let config_path = dir <> "/scherzo.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n"
+        <> tracker_fields,
     )
   config_path
 }
@@ -277,6 +292,97 @@ pub fn doctor_workflow_config_success_prints_human_summary_test() {
   assert string.contains(output, "Selected checks passed.")
 }
 
+pub fn doctor_missing_dispatch_states_failure_is_actionable_test() {
+  let config_path =
+    write_invalid_dispatch_config(
+      "test/tmp/doctor-missing-dispatch-states",
+      "  active_states: [Todo]\n  terminal_states: [Done]\n",
+    )
+  let subject = process.new_subject()
+  let deps = successful_deps(subject)
+  let options =
+    doctor.Options(
+      path: Some(config_path),
+      checks: ["workflow-config"],
+      list_checks: False,
+      output: doctor.Human,
+    )
+  let assert Ok(report) =
+    service.build_doctor_report_with_dependencies(options, deps)
+  let assert Some(result) = result_for(report, doctor.WorkflowConfig)
+  assert result.status == doctor.Fail
+  assert string.contains(result.message, "tracker.dispatch_states")
+  assert string.contains(result.message, "required")
+  assert string.contains(result.message, "dispatch_states: [Todo]")
+
+  assert service.start_doctor_with_dependencies(options, deps)
+    == Error(service.StartupError(
+      "doctor_failed",
+      "one or more doctor checks failed",
+    ))
+  let assert Ok(ListWritten(output)) = process.receive(subject, within: 1000)
+  assert string.contains(output, "Workflow config")
+  assert string.contains(output, "tracker.dispatch_states")
+  assert string.contains(output, "required")
+  assert string.contains(output, "dispatch_states: [Todo]")
+}
+
+pub fn doctor_wrong_type_dispatch_states_failure_is_actionable_test() {
+  assert_doctor_dispatch_state_config_failure(
+    "test/tmp/doctor-wrong-dispatch-states",
+    "  active_states: [Todo]\n  dispatch_states: Todo\n  terminal_states: [Done]\n",
+    "tracker.dispatch_states must be a string list",
+  )
+}
+
+pub fn doctor_non_string_dispatch_states_failure_is_actionable_test() {
+  assert_doctor_dispatch_state_config_failure(
+    "test/tmp/doctor-non-string-dispatch-states",
+    "  active_states: [Todo]\n  dispatch_states: [Todo, 123]\n  terminal_states: [Done]\n",
+    "tracker.dispatch_states entries must be strings",
+  )
+}
+
+pub fn doctor_empty_dispatch_states_failure_is_actionable_test() {
+  assert_doctor_dispatch_state_config_failure(
+    "test/tmp/doctor-empty-dispatch-states",
+    "  active_states: [Todo]\n  dispatch_states: []\n  terminal_states: [Done]\n",
+    "tracker.dispatch_states must contain at least one state",
+  )
+}
+
+pub fn doctor_out_of_subset_dispatch_states_failure_is_actionable_test() {
+  assert_doctor_dispatch_state_config_failure(
+    "test/tmp/doctor-subset-dispatch-states",
+    "  active_states: [Todo]\n  dispatch_states: [In Progress]\n  terminal_states: [Done]\n",
+    "tracker.dispatch_states must be a subset of tracker.active_states",
+  )
+}
+
+fn assert_doctor_dispatch_state_config_failure(
+  dir: String,
+  tracker_fields: String,
+  expected_message: String,
+) -> Nil {
+  let config_path = write_invalid_dispatch_config(dir, tracker_fields)
+  let subject = process.new_subject()
+  let deps = successful_deps(subject)
+  let assert Ok(report) =
+    service.build_doctor_report_with_dependencies(
+      doctor.Options(
+        path: Some(config_path),
+        checks: ["workflow-config"],
+        list_checks: False,
+        output: doctor.Human,
+      ),
+      deps,
+    )
+  let assert Some(result) = result_for(report, doctor.WorkflowConfig)
+  assert result.status == doctor.Fail
+  assert string.contains(result.message, expected_message)
+  assert string.contains(result.message, "tracker.dispatch_states")
+}
+
 pub fn doctor_unknown_check_name_fails_before_loading_workflow_test() {
   let subject = process.new_subject()
   let deps =
@@ -379,7 +485,7 @@ pub fn doctor_contract_mismatch_reports_failure_test() {
   let assert Some(result) = result_for(report, doctor.LinearContract)
   assert result.status == doctor.Fail
   assert result.code == "linear_contract_mismatch"
-  assert field_value(result.fields, "diagnostic_count") == Some("1")
+  assert field_value(result.fields, "diagnostic_count") == Some("2")
   assert doctor.has_failures(report) == True
 }
 

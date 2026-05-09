@@ -115,16 +115,21 @@ fn state_requirements(
   effective: config_types.EffectiveConfig,
 ) -> List(StateRequirement) {
   let tracker_states =
-    list.append(
+    [
       state_requirements_from_list(
         effective.tracker.active_states,
         "tracker.active_states",
       ),
       state_requirements_from_list(
+        effective.tracker.dispatch_states,
+        "tracker.dispatch_states",
+      ),
+      state_requirements_from_list(
         effective.tracker.terminal_states,
         "tracker.terminal_states",
       ),
-    )
+    ]
+    |> list.flatten
   case effective.linear_contract.enabled {
     False -> tracker_states
     True -> list.append(tracker_states, contract_required_states(effective))

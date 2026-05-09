@@ -50,7 +50,7 @@ fn orchestrator(
   before_hook: String,
 ) -> config_types.OrchestratorConfig {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\nworkspace:\n  root: workspaces\n  hooks:\n    create: |\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  hooks:\n    create: |\n"
     <> indent(create_hook)
     <> "    before_step: |\n"
     <> indent(before_hook)
@@ -79,7 +79,7 @@ fn named_profile(
 
 fn profile_orchestrator(dir: String) -> config_types.OrchestratorConfig {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n          touch \"$SCHERZO_WORKSPACE_PATH/isolated\"\n        remove: |\n          printf '%s' \"$SCHERZO_WORKSPACE_PROFILE\" > remove-profile.log\n        timeout_ms: 5000\n    noop:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n          touch \"$SCHERZO_WORKSPACE_PATH/noop\"\n        remove: |\n          printf '%s' \"$SCHERZO_WORKSPACE_PROFILE\" > remove-profile.log\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n          touch \"$SCHERZO_WORKSPACE_PATH/isolated\"\n        remove: |\n          printf '%s' \"$SCHERZO_WORKSPACE_PROFILE\" > remove-profile.log\n        timeout_ms: 5000\n    noop:\n      hooks:\n        create: |\n          mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n          touch \"$SCHERZO_WORKSPACE_PATH/noop\"\n        remove: |\n          printf '%s' \"$SCHERZO_WORKSPACE_PROFILE\" > remove-profile.log\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(root(source), dir <> "/scherzo.yaml", env)
   orchestrator

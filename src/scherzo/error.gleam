@@ -113,6 +113,19 @@ pub fn config_code(error: ConfigError) -> String {
   }
 }
 
+pub fn config_message(error: ConfigError) -> String {
+  case error {
+    UnsupportedTrackerKind(kind) -> "unsupported tracker kind: " <> kind
+    MissingTrackerApiKey -> "tracker.api_key or LINEAR_API_KEY is required"
+    MissingTrackerProjectSlug -> "tracker.project_slug is required"
+    InvalidConfig(message) -> message
+    InvalidScheduledJobOverlap(message) -> message
+    ScheduledJobCatchUpUnsupported(message) -> message
+    ScheduledJobUnsupportedInputs(message) -> message
+    DispatchValidationFailed(message) -> message
+  }
+}
+
 pub fn template_code(error: TemplateError) -> String {
   case error {
     TemplateRenderError(_) -> "template_render_error"

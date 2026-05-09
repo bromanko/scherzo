@@ -1521,64 +1521,43 @@ fn dispatch_candidates(
 ) -> Result(ServiceResult, StartupError) {
   case candidates {
     [] -> Ok(ServiceResult(logs: logs, dispatched: dispatched, state: state))
-    [issue, ..rest] -> {
-      let state = core.unpark_if_issue_changed(state, issue)
-      case core.blocker_decision(bundle.effective, issue) {
-        core.BlockedByDependency(_, _) -> {
-          let line =
-            log.warn("linear_dependency_blocked_candidate", [
-              #("issue_id", issue.id),
-              #("issue_identifier", issue.identifier),
-            ])
-          emit_best_effort_output(dependencies.logger(line))
+    [issue, ..rest] ->
+      case core.is_dispatch_state(bundle.effective, issue.state) {
+        False ->
           dispatch_candidates(
             rest,
             bundle,
             state,
             tracker_client,
             dependencies,
-            [line, ..logs],
+            logs,
             dispatched,
           )
-        }
-        core.BlockersSatisfied ->
-          case core.should_dispatch(state, bundle.effective, issue) {
-            False ->
+        True -> {
+          let state = core.unpark_if_issue_changed(state, issue)
+          case core.blocker_decision(bundle.effective, issue) {
+            core.BlockedByDependency(_, _) -> {
+              let line =
+                log.warn("linear_dependency_blocked_candidate", [
+                  #("issue_id", issue.id),
+                  #("issue_identifier", issue.identifier),
+                ])
+              emit_best_effort_output(dependencies.logger(line))
               dispatch_candidates(
                 rest,
                 bundle,
                 state,
                 tracker_client,
                 dependencies,
-                logs,
+                [line, ..logs],
                 dispatched,
               )
-            True ->
-              case runtime_bundle.select_workflow(bundle, issue) {
-                Error(runtime_bundle.BundleError(code, _)) -> {
-                  let skipped =
-                    log.warn("workflow_route_failed", [
-                      #("issue_id", issue.id),
-                      #("issue_identifier", issue.identifier),
-                      #("error", code),
-                    ])
-                  emit_best_effort_output(dependencies.logger(skipped))
+            }
+            core.BlockersSatisfied ->
+              case core.should_dispatch(state, bundle.effective, issue) {
+                False ->
                   dispatch_candidates(
                     rest,
-                    bundle,
-                    state,
-                    tracker_client,
-                    dependencies,
-                    [skipped, ..logs],
-                    dispatched,
-                  )
-                }
-                Ok(#(workflow_id, dag)) ->
-                  dispatch_issue(
-                    rest,
-                    issue,
-                    workflow_id,
-                    dag,
                     bundle,
                     state,
                     tracker_client,
@@ -1586,10 +1565,44 @@ fn dispatch_candidates(
                     logs,
                     dispatched,
                   )
+                True ->
+                  case runtime_bundle.select_workflow(bundle, issue) {
+                    Error(runtime_bundle.BundleError(code, _)) -> {
+                      let skipped =
+                        log.warn("workflow_route_failed", [
+                          #("issue_id", issue.id),
+                          #("issue_identifier", issue.identifier),
+                          #("error", code),
+                        ])
+                      emit_best_effort_output(dependencies.logger(skipped))
+                      dispatch_candidates(
+                        rest,
+                        bundle,
+                        state,
+                        tracker_client,
+                        dependencies,
+                        [skipped, ..logs],
+                        dispatched,
+                      )
+                    }
+                    Ok(#(workflow_id, dag)) ->
+                      dispatch_issue(
+                        rest,
+                        issue,
+                        workflow_id,
+                        dag,
+                        bundle,
+                        state,
+                        tracker_client,
+                        dependencies,
+                        logs,
+                        dispatched,
+                      )
+                  }
               }
           }
+        }
       }
-    }
   }
 }
 
@@ -1646,69 +1659,51 @@ fn dispatch_issue(
         dispatched,
       )
     }
-    Ok(refreshed_issue) -> {
-      let state = core.unpark_if_issue_changed(state, refreshed_issue)
-      let decision = core.blocker_decision(bundle.effective, refreshed_issue)
-      case decision {
-        core.BlockedByDependency(_, _) -> {
-          let line =
-            log.warn("linear_dependency_claim_validation_blocked", [
-              #("issue_id", refreshed_issue.id),
-              #("issue_identifier", refreshed_issue.identifier),
-              #(
-                "incomplete",
-                bool_string(core.blocker_decision_incomplete(decision)),
-              ),
-            ])
-          emit_best_effort_output(dependencies.logger(line))
+    Ok(refreshed_issue) ->
+      case core.is_dispatch_state(bundle.effective, refreshed_issue.state) {
+        False ->
           dispatch_candidates(
             remaining,
             bundle,
             state,
             tracker_client,
             dependencies,
-            [line, ..logs],
+            logs,
             dispatched,
           )
-        }
-        core.BlockersSatisfied ->
-          case core.should_dispatch(state, bundle.effective, refreshed_issue) {
-            False ->
+        True -> {
+          let state = core.unpark_if_issue_changed(state, refreshed_issue)
+          let decision =
+            core.blocker_decision(bundle.effective, refreshed_issue)
+          case decision {
+            core.BlockedByDependency(_, _) -> {
+              let line =
+                log.warn("linear_dependency_claim_validation_blocked", [
+                  #("issue_id", refreshed_issue.id),
+                  #("issue_identifier", refreshed_issue.identifier),
+                  #(
+                    "incomplete",
+                    bool_string(core.blocker_decision_incomplete(decision)),
+                  ),
+                ])
+              emit_best_effort_output(dependencies.logger(line))
               dispatch_candidates(
                 remaining,
                 bundle,
                 state,
                 tracker_client,
                 dependencies,
-                logs,
+                [line, ..logs],
                 dispatched,
               )
-            True ->
-              case runtime_bundle.select_workflow(bundle, refreshed_issue) {
-                Error(runtime_bundle.BundleError(code, _)) -> {
-                  let skipped =
-                    log.warn("workflow_route_failed", [
-                      #("issue_id", refreshed_issue.id),
-                      #("issue_identifier", refreshed_issue.identifier),
-                      #("error", code),
-                    ])
-                  emit_best_effort_output(dependencies.logger(skipped))
+            }
+            core.BlockersSatisfied ->
+              case
+                core.should_dispatch(state, bundle.effective, refreshed_issue)
+              {
+                False ->
                   dispatch_candidates(
                     remaining,
-                    bundle,
-                    state,
-                    tracker_client,
-                    dependencies,
-                    [skipped, ..logs],
-                    dispatched,
-                  )
-                }
-                Ok(#(workflow_id, dag)) ->
-                  execute_dispatch_issue(
-                    remaining,
-                    refreshed_issue,
-                    workflow_id,
-                    dag,
                     bundle,
                     state,
                     tracker_client,
@@ -1716,10 +1711,44 @@ fn dispatch_issue(
                     logs,
                     dispatched,
                   )
+                True ->
+                  case runtime_bundle.select_workflow(bundle, refreshed_issue) {
+                    Error(runtime_bundle.BundleError(code, _)) -> {
+                      let skipped =
+                        log.warn("workflow_route_failed", [
+                          #("issue_id", refreshed_issue.id),
+                          #("issue_identifier", refreshed_issue.identifier),
+                          #("error", code),
+                        ])
+                      emit_best_effort_output(dependencies.logger(skipped))
+                      dispatch_candidates(
+                        remaining,
+                        bundle,
+                        state,
+                        tracker_client,
+                        dependencies,
+                        [skipped, ..logs],
+                        dispatched,
+                      )
+                    }
+                    Ok(#(workflow_id, dag)) ->
+                      execute_dispatch_issue(
+                        remaining,
+                        refreshed_issue,
+                        workflow_id,
+                        dag,
+                        bundle,
+                        state,
+                        tracker_client,
+                        dependencies,
+                        logs,
+                        dispatched,
+                      )
+                  }
               }
           }
+        }
       }
-    }
   }
 }
 

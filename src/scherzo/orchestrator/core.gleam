@@ -197,14 +197,21 @@ pub fn is_active(
   config: config_types.EffectiveConfig,
   state: issue_state.IssueState,
 ) -> Bool {
-  contains_normalized(config.tracker.active_states, state)
+  issue_state.contains_normalized(config.tracker.active_states, state)
+}
+
+pub fn is_dispatch_state(
+  config: config_types.EffectiveConfig,
+  state: issue_state.IssueState,
+) -> Bool {
+  issue_state.contains_normalized(config.tracker.dispatch_states, state)
 }
 
 pub fn is_terminal(
   config: config_types.EffectiveConfig,
   state: issue_state.IssueState,
 ) -> Bool {
-  contains_normalized(config.tracker.terminal_states, state)
+  issue_state.contains_normalized(config.tracker.terminal_states, state)
 }
 
 pub fn retry_candidate_preconditions_satisfied(
@@ -1102,11 +1109,4 @@ fn put_counter(
     ..state,
     issue_counters: dict.insert(state.issue_counters, issue_id, counter),
   )
-}
-
-fn contains_normalized(
-  states: List(issue_state.IssueState),
-  state: issue_state.IssueState,
-) -> Bool {
-  list.any(states, fn(s) { issue_state.equals_normalized(s, state) })
 }

@@ -92,12 +92,29 @@ fn effective(
   active_states: List(String),
   terminal_states: List(String),
 ) -> config_types.EffectiveConfig {
+  effective_with_dispatch(
+    contract,
+    handoff,
+    active_states,
+    active_states,
+    terminal_states,
+  )
+}
+
+fn effective_with_dispatch(
+  contract: config_types.LinearContractConfig,
+  handoff: config_types.HandoffConfig,
+  active_states: List(String),
+  dispatch_states: List(String),
+  terminal_states: List(String),
+) -> config_types.EffectiveConfig {
   config_types.EffectiveConfig(
     tracker: config_types.TrackerConfig(
       ..config.default_tracker_config(),
       api_key: Some("secret"),
       project_slug: Some("PROJ"),
       active_states: issue_state.list_from_strings(active_states),
+      dispatch_states: issue_state.list_from_strings(dispatch_states),
       terminal_states: issue_state.list_from_strings(terminal_states),
     ),
     polling: config.default_polling_config(),
@@ -166,11 +183,38 @@ pub fn reports_missing_state_for_project_team_test() {
         name: "Ready for Agent",
         source: "tracker.active_states",
       ),
+      linear_contract.MissingState(
+        team_key: "OPS",
+        name: "Ready for Agent",
+        source: "tracker.dispatch_states",
+      ),
     ]
   assert string_contains(
     linear_contract.format_report(diagnostics),
     "missing_state",
   )
+}
+
+pub fn reports_missing_dispatch_state_source_test() {
+  let diagnostics =
+    linear_contract.check(
+      effective_with_dispatch(
+        contract_config(False),
+        handoff_config(False, None, None, None),
+        ["Ready for Agent"],
+        ["Dispatch Only"],
+        ["Done"],
+      ),
+      board([team("ENG", all_states(), [])], []),
+    )
+  assert diagnostics
+    == [
+      linear_contract.MissingState(
+        team_key: "ENG",
+        name: "Dispatch Only",
+        source: "tracker.dispatch_states",
+      ),
+    ]
 }
 
 pub fn reports_missing_required_label_for_project_team_test() {
@@ -329,6 +373,11 @@ pub fn invalid_workflow_state_id_diagnostics_test() {
         team_key: "ENG",
         name: "Ready for Agent",
         source: "tracker.active_states",
+      ),
+      linear_contract.MissingState(
+        team_key: "ENG",
+        name: "Ready for Agent",
+        source: "tracker.dispatch_states",
       ),
       linear_contract.MissingState(
         team_key: "ENG",

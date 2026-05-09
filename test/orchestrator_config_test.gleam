@@ -21,12 +21,12 @@ fn root(source: String) -> yay.Node {
 }
 
 fn base_config(extra: String) -> String {
-  "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\nworkspace:\n  root: workspaces\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+  "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n"
   <> extra
 }
 
 fn base_config_with_workspace(workspace: String) -> String {
-  "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\nworkspace:\n"
+  "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nworkspace:\n"
   <> workspace
   <> "routing:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\n"
 }
@@ -48,7 +48,7 @@ pub fn resolve_root_resolves_shared_config_from_standalone_yaml_test() {
 
 pub fn orchestrator_config_resolves_routing_and_dag_hooks_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: test -d \"$SCHERZO_WORKSPACE_PATH\"\n    after_step: echo done\n    remove: rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 1234\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nartifact_limits:\n  command_stream_max_chars: 111\n  template_field_max_chars: 222\n  workflow_summary_max_chars: 333\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  hooks:\n    create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: test -d \"$SCHERZO_WORKSPACE_PATH\"\n    after_step: echo done\n    remove: rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 1234\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nartifact_limits:\n  command_stream_max_chars: 111\n  template_field_max_chars: 222\n  workflow_summary_max_chars: 333\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(source),
@@ -240,7 +240,7 @@ pub fn orchestrator_config_rejects_invalid_project_model_defaults_test() {
 
 pub fn orchestrator_config_validates_default_workflow_test() {
   let with_default =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\nworkspace:\n  root: workspaces\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  default_workflow: Implementation\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  default_workflow: Implementation\n  workflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
       root(with_default),
@@ -250,7 +250,7 @@ pub fn orchestrator_config_validates_default_workflow_test() {
   assert orchestrator.routing.default_workflow == Some("implementation")
 
   let invalid_default =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\nworkspace:\n  root: workspaces\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  default_workflow: research\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  default_workflow: research\n  workflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
       root(invalid_default),
@@ -295,7 +295,7 @@ pub fn orchestrator_config_rejects_disagreeing_linear_contract_labels_test() {
 
 pub fn orchestrator_config_rejects_escaping_routing_paths_test() {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\nrouting:\n  workflows:\n    research: ../outside.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nrouting:\n  workflows:\n    research: ../outside.yaml\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_orchestrator_root(
       root(source),

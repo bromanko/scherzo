@@ -3621,60 +3621,67 @@ fn dispatch_candidates(
     True ->
       case issues {
         [] -> state
-        [issue, ..rest] -> {
-          let state = unpark_if_issue_changed_state(state, issue)
-          case core.blocker_decision(state.workflow.effective, issue) {
-            core.BlockedByDependency(_, _) -> {
-              let state =
-                report_blocked_dependency(
-                  state,
-                  issue,
-                  "candidate",
-                  "linear_dependency_blocked_candidate",
-                  core.blocker_decision(state.workflow.effective, issue),
-                )
-              dispatch_candidates(rest, state)
-            }
-            core.BlockersSatisfied -> {
-              let runtime =
-                core.clear_blocked_dependency_report(
-                  state.runtime,
-                  issue.id,
-                  "candidate",
-                )
-              let state = State(..state, runtime: runtime)
-              case
-                core.dispatch_preconditions_satisfied_without_slot_capacity(
-                  state.runtime,
-                  state.workflow.effective,
-                  issue,
-                )
-                && !dict.has_key(state.pending_claims, issue.id)
-                && !dict.has_key(state.pending_dispatch_validations, issue.id)
-              {
-                False -> dispatch_candidates(rest, state)
-                True ->
+        [issue, ..rest] ->
+          case core.is_dispatch_state(state.workflow.effective, issue.state) {
+            False -> dispatch_candidates(rest, state)
+            True -> {
+              let state = unpark_if_issue_changed_state(state, issue)
+              case core.blocker_decision(state.workflow.effective, issue) {
+                core.BlockedByDependency(_, _) -> {
+                  let state =
+                    report_blocked_dependency(
+                      state,
+                      issue,
+                      "candidate",
+                      "linear_dependency_blocked_candidate",
+                      core.blocker_decision(state.workflow.effective, issue),
+                    )
+                  dispatch_candidates(rest, state)
+                }
+                core.BlockersSatisfied -> {
+                  let runtime =
+                    core.clear_blocked_dependency_report(
+                      state.runtime,
+                      issue.id,
+                      "candidate",
+                    )
+                  let state = State(..state, runtime: runtime)
                   case
-                    workflow_policy.classify_issue(
-                      state.workflow.effective.linear_contract,
+                    core.dispatch_preconditions_satisfied_without_slot_capacity(
+                      state.runtime,
+                      state.workflow.effective,
                       issue,
                     )
+                    && !dict.has_key(state.pending_claims, issue.id)
+                    && !dict.has_key(
+                      state.pending_dispatch_validations,
+                      issue.id,
+                    )
                   {
-                    workflow_policy.WorkflowInvalid(violation) ->
-                      handle_invalid_workflow_candidate(
-                        state,
-                        issue,
-                        violation,
-                        rest,
-                      )
-                    workflow_policy.WorkflowPolicyDisabled
-                    | workflow_policy.WorkflowSelected(_, _) ->
-                      handle_valid_workflow_candidate(state, issue, rest)
+                    False -> dispatch_candidates(rest, state)
+                    True ->
+                      case
+                        workflow_policy.classify_issue(
+                          state.workflow.effective.linear_contract,
+                          issue,
+                        )
+                      {
+                        workflow_policy.WorkflowInvalid(violation) ->
+                          handle_invalid_workflow_candidate(
+                            state,
+                            issue,
+                            violation,
+                            rest,
+                          )
+                        workflow_policy.WorkflowPolicyDisabled
+                        | workflow_policy.WorkflowSelected(_, _) ->
+                          handle_valid_workflow_candidate(state, issue, rest)
+                      }
                   }
+                }
               }
             }
           }
-        }
       }
   }
 }
@@ -6908,75 +6915,87 @@ fn handle_successful_dispatch_validation(
   pending: PendingDispatchValidation,
   refreshed_issue: tracker_issue.Issue,
 ) -> State {
-  let state = unpark_if_issue_changed_state(state, refreshed_issue)
-  let decision =
-    core.blocker_decision(state.workflow.effective, refreshed_issue)
-  case decision {
-    core.BlockedByDependency(_, _) -> {
-      let state =
-        report_blocked_dependency(
-          state,
-          refreshed_issue,
-          "claim_validation",
-          "linear_dependency_claim_validation_blocked",
-          decision,
-        )
-      dispatch_candidates(pending.remaining_candidates, state)
-    }
-    core.BlockersSatisfied -> {
-      let runtime =
-        core.clear_blocked_dependency_report(
-          state.runtime,
-          refreshed_issue.id,
-          "claim_validation",
-        )
-      let state = State(..state, runtime: runtime)
-      case dispatch_validation_precondition_failure(state, refreshed_issue) {
-        Some(reason) -> {
-          log_state(state, "info", "dispatch_validation_precondition_failed", [
-            #("issue_id", refreshed_issue.id),
-            #("generation", int.to_string(pending.generation)),
-            #("reason", reason),
-          ])
+  case core.is_dispatch_state(state.workflow.effective, refreshed_issue.state) {
+    False -> dispatch_candidates(pending.remaining_candidates, state)
+    True -> {
+      let state = unpark_if_issue_changed_state(state, refreshed_issue)
+      let decision =
+        core.blocker_decision(state.workflow.effective, refreshed_issue)
+      case decision {
+        core.BlockedByDependency(_, _) -> {
+          let state =
+            report_blocked_dependency(
+              state,
+              refreshed_issue,
+              "claim_validation",
+              "linear_dependency_claim_validation_blocked",
+              decision,
+            )
           dispatch_candidates(pending.remaining_candidates, state)
         }
-        None ->
-          case
-            workflow_policy.classify_issue(
-              state.workflow.effective.linear_contract,
-              refreshed_issue,
+        core.BlockersSatisfied -> {
+          let runtime =
+            core.clear_blocked_dependency_report(
+              state.runtime,
+              refreshed_issue.id,
+              "claim_validation",
             )
+          let state = State(..state, runtime: runtime)
+          case
+            dispatch_validation_precondition_failure(state, refreshed_issue)
           {
-            workflow_policy.WorkflowInvalid(violation) ->
-              handle_invalid_workflow_candidate(
+            Some(reason) -> {
+              log_state(
                 state,
-                refreshed_issue,
-                violation,
-                pending.remaining_candidates,
+                "info",
+                "dispatch_validation_precondition_failed",
+                [
+                  #("issue_id", refreshed_issue.id),
+                  #("generation", int.to_string(pending.generation)),
+                  #("reason", reason),
+                ],
               )
-            workflow_policy.WorkflowPolicyDisabled
-            | workflow_policy.WorkflowSelected(_, _) ->
-              case can_reserve_dispatch_slot(state, refreshed_issue) {
-                False -> {
-                  log_state(
-                    state,
-                    "info",
-                    "dispatch_validation_slot_unavailable",
-                    [
-                      #("issue_id", refreshed_issue.id),
-                      #("generation", int.to_string(pending.generation)),
-                    ],
-                  )
-                  dispatch_candidates(pending.remaining_candidates, state)
-                }
-                True ->
-                  dispatch_issue_with_continuation(
+              dispatch_candidates(pending.remaining_candidates, state)
+            }
+            None ->
+              case
+                workflow_policy.classify_issue(
+                  state.workflow.effective.linear_contract,
+                  refreshed_issue,
+                )
+              {
+                workflow_policy.WorkflowInvalid(violation) ->
+                  handle_invalid_workflow_candidate(
                     state,
                     refreshed_issue,
+                    violation,
                     pending.remaining_candidates,
                   )
+                workflow_policy.WorkflowPolicyDisabled
+                | workflow_policy.WorkflowSelected(_, _) ->
+                  case can_reserve_dispatch_slot(state, refreshed_issue) {
+                    False -> {
+                      log_state(
+                        state,
+                        "info",
+                        "dispatch_validation_slot_unavailable",
+                        [
+                          #("issue_id", refreshed_issue.id),
+                          #("generation", int.to_string(pending.generation)),
+                        ],
+                      )
+                      dispatch_candidates(pending.remaining_candidates, state)
+                    }
+                    True ->
+                      dispatch_issue_with_continuation(
+                        state,
+                        refreshed_issue,
+                        pending.remaining_candidates,
+                      )
+                  }
               }
           }
+        }
       }
     }
   }

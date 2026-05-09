@@ -53,11 +53,11 @@ A sixth risk is incomplete test fixture migration after adding a field to `Track
 
 - [x] (2026-05-08 00:00Z) Drafted this ExecPlan from LIV-164 and inspected the current repository for the main edit points.
 - [x] (2026-05-08 01:00Z) Incorporated adversarial review findings about canonical state names, strict YAML parsing, daemon-level invalid-workflow coverage, candidate-loop call sites, and exact doctor acceptance.
-- [ ] Implement the configuration model and validation changes.
-- [ ] Update doctor/startup error reporting for actionable `tracker.dispatch_states` failures.
-- [ ] Switch dispatch candidate fetching and daemon/service/core dispatch guards to `dispatch_states`.
-- [ ] Update Linear contract validation and dogfood configuration migration.
-- [ ] Add and update tests, then run formatting, tests, glinter, and Scherzo lint.
+- [x] (2026-05-08 16:15Z) Implemented the configuration model and validation changes: `TrackerConfig.dispatch_states`, required strict YAML parsing, non-empty and subset validation, and canonicalization against `active_states`.
+- [x] (2026-05-08 16:15Z) Updated doctor/startup error reporting so `tracker.dispatch_states` failures preserve actionable messages such as the required setting and `dispatch_states: [Todo]` remediation.
+- [x] (2026-05-08 16:15Z) Switched dispatch candidate fetching and Linear smoke sampling to `dispatch_states`, and added daemon/service/core dispatch guards before invalid-workflow triage, claim validation, workflow selection, or dispatch.
+- [x] (2026-05-08 16:15Z) Updated Linear contract validation to check `tracker.dispatch_states` and migrated the dogfood configuration to `dispatch_states: [Todo]` while keeping `active_states: [Todo, In Progress]`.
+- [x] (2026-05-08 16:15Z) Added and updated parser, doctor, Linear request, daemon guard, lifecycle, contract, fixture, and constructor tests; final formatting, test, glinter, and Scherzo lint validation is recorded below in Outcomes & Retrospective.
 
 ## Surprises & Discoveries
 
@@ -75,6 +75,8 @@ A sixth risk is incomplete test fixture migration after adding a field to `Track
   Evidence: repository inspection of `src/scherzo/config.gleam`.
 - Observation: Initial candidate loops exist in both `src/scherzo/orchestrator/daemon.gleam` and `src/scherzo/orchestrator/service.gleam`; daemon invalid-workflow reporting is performed through `handle_invalid_workflow_candidate`.
   Evidence: repository search for `dispatch_candidates` and `handle_invalid_workflow_candidate`.
+- Observation: Plan-completion verification failed closed even though implementation files already contained the required dispatch-state split, because this living ExecPlan still showed required implementation items unchecked and had no completion retrospective.
+  Evidence: `tmp/scherzo-plan-completion-verdict.json` reported `verdict: "fail"` and named only the stale Progress checklist and placeholder Outcomes & Retrospective as blocking findings.
 
 ## Decision Log
 
@@ -96,10 +98,23 @@ A sixth risk is incomplete test fixture migration after adding a field to `Track
 - Decision: Add defensive daemon/service/core guards even though Linear candidate fetching will query only dispatch states.
   Rationale: Initial candidate loops should fail safe if a tracker implementation or test fake returns extra active-state issues.
   Date: 2026-05-08
+- Decision: Treat the plan-completion repair as a living-document-only change.
+  Rationale: The verifier's blocking findings identified stale ExecPlan Progress and Outcomes sections, not missing production or test behavior; broadening into code cleanup would violate the repair scope.
+  Date: 2026-05-08
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Completed on 2026-05-08. The implementation split lifecycle-active states from dispatch-eligible states as intended. `tracker.dispatch_states` is now a required, strictly parsed tracker configuration field; it must be non-empty, must be a normalized subset of `tracker.active_states`, and accepted entries are canonicalized to the active-state spelling before storage so Linear queries use canonical board names.
+
+The operator-facing migration is fail-closed. Old configs without `tracker.dispatch_states` now fail configuration loading and doctor workflow-config checks with actionable messages that name `tracker.dispatch_states` and show the `dispatch_states: [Todo]` remediation. The dogfood config was migrated to keep `active_states: [Todo, In Progress]` while adding `dispatch_states: [Todo]`.
+
+Candidate discovery now uses dispatch states: Linear candidate fetching and the Linear smoke sample use `config.dispatch_states`, and the daemon and service initial candidate loops defensively skip non-dispatch-state issues before invalid-workflow triage, claim validation, workflow selection, or dispatch. Lifecycle behavior remains separated: active-state checks still use `tracker.active_states`, preserving **In Progress** as active for retry, recovery, and final classification.
+
+Linear contract validation now checks `tracker.dispatch_states` and reports failures against that source. Tests were added or updated for strict config parsing, doctor error messages, canonicalized Linear request state filters, daemon-level invalid-workflow and dispatch guards, lifecycle-active regression behavior, contract validation, YAML fixtures, and direct `TrackerConfig` constructors.
+
+Validation was run from the repository root through direnv after the plan-completion repair: `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint` all exited successfully. `gleam test` reported 921 passed and no failures. The lint commands reported the existing warning inventory with 0 errors.
+
+No known implementation gaps remain for this ExecPlan. The only plan-completion failure found after implementation was that this living document had not been updated to reflect completed work; this repair updates the Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective sections without changing production code.
 
 ## Context and Orientation
 
