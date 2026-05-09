@@ -12,18 +12,49 @@ Usage:
   scherzo-execplan create-implementation-issue --plan PLAN --pr-url URL [--branch BRANCH] [--source-issue ISSUE]
 
 Run from the Scherzo jj workspace root. The workflow must leave exactly one
-changed ExecPlan file under docs/plans/. create-pr validates, pushes a jj
-bookmark to origin, opens a ready GitHub PR against main, and writes a durable
-publish context artifact. create-implementation-issue creates or finds the
-follow-up Linear issue that will run workflow:execplan-implementation after the
-plan PR is merged, using the publish context or explicit inputs instead of the
-current jj diff.
+changed ExecPlan source file under docs/plans/. validate and create-pr render a
+Carbon-style single-file HTML review artifact and print PRIMARY_PLAN_ARTIFACT
+and PLAN_HTML_PATH; the output defaults to $SCHERZO_RUN_ROOT/artifacts/execplan
+when SCHERZO_RUN_ROOT is set, otherwise tmp/execplan-artifacts. create-pr
+validates, pushes a jj bookmark to origin, opens a ready GitHub PR against main,
+and writes a durable publish context artifact. create-implementation-issue
+creates or finds the follow-up Linear issue that will run
+workflow:execplan-implementation after the plan PR is merged, using the publish
+context or explicit inputs instead of the current jj diff.
 EOF
 }
 
 fail() {
   echo "scherzo-execplan: $*" >&2
   exit 1
+}
+
+script_dir() {
+  CDPATH= cd -- "$(dirname -- "$0")" && pwd -P
+}
+
+plan_html_artifact_dir() {
+  if [ -n "${SCHERZO_EXECPLAN_HTML_DIR:-}" ]; then
+    printf '%s\n' "$SCHERZO_EXECPLAN_HTML_DIR"
+  elif [ -n "${SCHERZO_RUN_ROOT:-}" ]; then
+    printf '%s\n' "$SCHERZO_RUN_ROOT/artifacts/execplan"
+  else
+    printf '%s\n' "tmp/execplan-artifacts"
+  fi
+}
+
+render_plan_html_artifact() {
+  plan=$1
+  require_command python3
+  output_dir=$(plan_html_artifact_dir)
+  mkdir -p "$output_dir"
+  html_path="$output_dir/$(basename "$plan" .md).html"
+  renderer=$(script_dir)/scherzo-execplan-html
+  [ -f "$renderer" ] || fail "HTML renderer not found: $renderer"
+  python3 "$renderer" render "$plan" "$html_path" >/dev/null
+  echo "PRIMARY_PLAN_ARTIFACT=$html_path"
+  echo "PLAN_HTML_PATH=$html_path"
+  echo "PLAN_MARKDOWN_PATH=$plan"
 }
 
 require_command() {
@@ -126,6 +157,7 @@ validate_command() {
     plan=$(find_plan_path)
   fi
   validate_plan "$plan"
+  render_plan_html_artifact "$plan"
   echo "PLAN_PATH=$plan"
   echo "VALIDATION=ok"
 }
@@ -440,6 +472,7 @@ EOF_BODY
 
   source_issue=$(maybe_source_issue_identifier "$plan")
   write_publish_context "$context_path" "$plan" "$branch" "$pr_url" "$source_issue"
+  render_plan_html_artifact "$plan"
 
   echo "PLAN_PATH=$plan"
   echo "BRANCH=$branch"
