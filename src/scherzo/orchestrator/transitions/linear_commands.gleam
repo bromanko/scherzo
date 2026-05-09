@@ -9,6 +9,7 @@ import scherzo/orchestrator/transition_types
 import scherzo/state/ledger
 import scherzo/state/outbox
 import scherzo/state/record
+import scherzo/state/recovery
 
 pub fn handle_submitted(
   state: transition_types.State,
@@ -118,6 +119,82 @@ pub fn request_ack(
         )),
       ])
   }
+}
+
+pub fn startup_outbox_replay_effects(
+  outbox_to_replay: List(recovery.OutboxReplay),
+) -> List(effects_types.Effect) {
+  list.flat_map(outbox_to_replay, startup_outbox_replay_entry_effects)
+}
+
+fn startup_outbox_replay_entry_effects(
+  entry: recovery.OutboxReplay,
+) -> List(effects_types.Effect) {
+  let recovery.OutboxReplay(outbox_id, issue_id, outbox_kind, _, payload_json) =
+    entry
+  case outbox.decode_payload(payload_json) {
+    Error(error) ->
+      startup_outbox_replay_failure_effects(
+        outbox_id,
+        issue_id,
+        outbox_kind,
+        error,
+      )
+    Ok(payload) ->
+      case outbox.recovery_replay_error(outbox_kind, payload.kind) {
+        Error(error) ->
+          startup_outbox_replay_failure_effects(
+            outbox_id,
+            issue_id,
+            outbox_kind,
+            error,
+          )
+        Ok(Nil) -> {
+          let source_comment_id = case payload.source_comment_id {
+            Some(source_comment_id) -> source_comment_id
+            None -> outbox_id
+          }
+          [
+            effects_types.Log("info", "outbox_replay_enqueued", [
+              #("outbox_id", outbox_id),
+              #("issue_id", issue_id),
+              #("kind", outbox_kind),
+            ]),
+            effects_types.ReplayLinearCommandAck(
+              issue_id,
+              source_comment_id,
+              payload.body,
+            ),
+          ]
+        }
+      }
+  }
+}
+
+fn startup_outbox_replay_failure_effects(
+  outbox_id: String,
+  issue_id: String,
+  outbox_kind: String,
+  error: outbox.ReplayError,
+) -> List(effects_types.Effect) {
+  let error_code = outbox.replay_error_code(error)
+  [
+    effects_types.Log("warn", "outbox_replay_failed", [
+      #("outbox_id", outbox_id),
+      #("issue_id", issue_id),
+      #("kind", outbox_kind),
+      #("error", error_code),
+      #("reason", outbox.describe_replay_error(error)),
+    ]),
+    effects_types.AppendLedger(effects_types.LedgerAppend(
+      correlation_id: "outbox_failed:" <> outbox_id,
+      bodies: [
+        record.OutboxFailed(outbox_id, issue_id, outbox_kind, error_code),
+      ],
+      failure_event: "ledger_append_failed",
+      policy: effects_types.ContinueRegardless,
+    )),
+  ]
 }
 
 pub fn retry_pending_acks(

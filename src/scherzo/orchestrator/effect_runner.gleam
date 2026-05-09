@@ -169,7 +169,7 @@ pub fn reply_snapshot(
       append_ledger: fn(data, _) { #(data, Ok(Nil)) },
       now_ms: fn(_) { 0 },
       log_effect: fn(data, _, _, _) { data },
-      start_worker: fn(data, _) { data },
+      start_worker: fn(data, _) { #(data, Ok(Nil)) },
       reply_snapshot: fn(data, snapshot) {
         process.send(reply, snapshot)
         data
@@ -187,9 +187,27 @@ pub fn reply_snapshot(
       defer_retry_timer: fn(data, _, _, _) { data },
       begin_retry_refresh: fn(data, _, _) { data },
       schedule_retry_timer: fn(data, _, _, _, _) { data },
+      schedule_recovered_retry_timer: fn(data, _, _, _) { data },
       cancel_retry_timer: fn(data, _, _, _) { data },
       release_claim: fn(data, _) { data },
       clear_recovery: fn(data, _) { data },
+      worker_start_failed: fn(data, _, _) { data },
+      remove_worker: fn(data, _, _) { data },
+      publish_worker_exited: fn(data, _) { data },
+      report_worker_success: fn(data, _, _) { data },
+      report_worker_failure: fn(data, _, _) { data },
+      cleanup_workspace: fn(data, _) { data },
+      park_issue: fn(data, _, _) { data },
+      replay_linear_command_ack: fn(data, _, _, _) { data },
+      report_park: fn(data, _) { data },
+      stop_worker: fn(data, _, _) { data },
+      register_yaml_step_started: fn(data, _, _) { data },
+      finish_yaml_step_route: fn(data, _) { data },
+      finish_yaml_step_session: fn(data, _, _) { data },
+      finish_yaml_step_sessions_for_run: fn(data, _, _) { data },
+      clear_yaml_step_routes_for_run: fn(data, _) { data },
+      mark_yaml_run_stopping: fn(data, _, _) { data },
+      shutdown_runtime: fn(data, _) { data },
       set_operator_paused: fn(data, _) { data },
       apply_operator_command: fn(data, request) {
         #(
@@ -203,7 +221,7 @@ pub fn reply_snapshot(
       },
       finish_operator_command: fn(data, _, _) { #(data, []) },
       post_linear_command_ack: fn(data, _, _, _) { data },
-      report_park: fn(data, _, _, _, _, _) { data },
+      report_park_effect: fn(data, _, _, _, _, _) { data },
     )
   let transition_runner.RunResult(exhausted: _, ..) =
     transition_runner.run(

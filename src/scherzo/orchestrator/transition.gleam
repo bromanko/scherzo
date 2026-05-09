@@ -3,6 +3,11 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/types as agent_types
+import scherzo/error
+import scherzo/handoff
+import scherzo/log
+
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/reason as orchestrator_reason
@@ -10,8 +15,12 @@ import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/claims
 import scherzo/orchestrator/transitions/commands
+import scherzo/session/reason as session_reason
+import scherzo/session/tokens as session_tokens
+
 import scherzo/state/ledger
 import scherzo/state/record
+import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
@@ -25,6 +34,23 @@ pub fn handle(
       transition_types.Outcome(state: state, effects: [
         effects_types.ReplySnapshot(state.runtime),
       ])
+    transition_types.StartupRecoveryApplied(
+      retry_timers,
+      cleanup_workspaces,
+      outbox_to_replay,
+      park_reports,
+      warnings,
+      secrets,
+    ) ->
+      handle_startup_recovery_applied(
+        state,
+        retry_timers,
+        cleanup_workspaces,
+        outbox_to_replay,
+        park_reports,
+        warnings,
+        secrets,
+      )
     transition_types.PollTick(generation, poll) ->
       handle_poll_tick(state, generation, poll)
     transition_types.CandidateFetchStartRequested(generation, context) ->
@@ -156,6 +182,24 @@ pub fn handle(
         continuation,
         result,
       )
+    transition_types.WorkerStartSucceeded(issue_id, run_id, session_id) ->
+      handle_worker_start_succeeded(state, issue_id, run_id, session_id)
+    transition_types.WorkerStartFailed(issue_id, run_id, session_id, reason) ->
+      handle_worker_start_failed(state, issue_id, run_id, session_id, reason)
+    transition_types.WorkerCommandReady(issue_id, run_id) ->
+      handle_worker_command_ready(state, issue_id, run_id)
+    transition_types.WorkerFinished(issue_id, run_id, result, context) ->
+      handle_worker_finished(state, issue_id, run_id, result, context)
+    transition_types.WorkerDown(resolution, context) ->
+      handle_worker_down(state, resolution, context)
+    transition_types.WorkerStopRequested(session_id, reason, context) ->
+      handle_worker_stop_requested(state, session_id, reason, context)
+    transition_types.YamlStepStarted(session_id, run_id) ->
+      handle_yaml_step_started(state, session_id, run_id)
+    transition_types.YamlStepFinished(session_id) ->
+      handle_yaml_step_finished(state, session_id)
+    transition_types.ShutdownRequested(stop_effect_runner) ->
+      handle_shutdown_requested(state, stop_effect_runner)
   }
 }
 
@@ -163,6 +207,147 @@ pub fn snapshot(
   state: transition_types.State,
 ) -> orchestrator_state.RuntimeState {
   state.runtime
+}
+
+fn handle_startup_recovery_applied(
+  state: transition_types.State,
+  retry_timers: List(recovery.RecoveredRetry),
+  cleanup_workspaces: List(recovery.CleanupRequest),
+  outbox_to_replay: List(recovery.OutboxReplay),
+  park_reports: List(handoff.ParkReport),
+  warnings: List(String),
+  secrets: List(String),
+) -> transition_types.Outcome {
+  let effects =
+    list.append(
+      startup_recovered_retry_effects(retry_timers, secrets),
+      list.append(
+        startup_cleanup_effects(cleanup_workspaces),
+        list.append(
+          commands.startup_outbox_replay_effects(outbox_to_replay),
+          list.append(
+            startup_park_report_effects(park_reports),
+            startup_warning_effects(warnings, secrets),
+          ),
+        ),
+      ),
+    )
+  transition_types.Outcome(state: state, effects: effects)
+}
+
+fn startup_recovered_retry_effects(
+  retry_timers: List(recovery.RecoveredRetry),
+  secrets: List(String),
+) -> List(effects_types.Effect) {
+  list.flat_map(retry_timers, fn(retry) {
+    let recovery.RecoveredRetry(
+      issue_id,
+      issue_identifier,
+      delay_ms,
+      generation,
+      reason_text,
+    ) = retry
+    let safe_reason =
+      safe_recovery_text("recovery_reason", reason_text, secrets)
+    [
+      effects_types.Log("info", "workflow_recovery_status", [
+        #("issue_id", issue_id),
+        #("issue_identifier", issue_identifier),
+        #("status", "recovered"),
+        #("source", "recovery.recovered_retry"),
+        #("delay_ms", int.to_string(delay_ms)),
+        #("generation", int.to_string(generation)),
+        #("reason", safe_reason),
+      ]),
+      effects_types.Log("info", "recovered_retry_scheduled", [
+        #("issue_id", issue_id),
+        #("delay_ms", int.to_string(delay_ms)),
+        #("generation", int.to_string(generation)),
+        #("reason", safe_reason),
+      ]),
+      effects_types.ScheduleRecoveredRetryTimer(issue_id, delay_ms, generation),
+    ]
+  })
+}
+
+fn startup_cleanup_effects(
+  cleanup_workspaces: List(recovery.CleanupRequest),
+) -> List(effects_types.Effect) {
+  list.flat_map(cleanup_workspaces, fn(cleanup) {
+    let recovery.CleanupRequest(issue_id, issue_identifier, workspace_path) =
+      cleanup
+    [
+      effects_types.Log("info", "workflow_recovery_status", [
+        #("issue_id", issue_id),
+        #("issue_identifier", issue_identifier),
+        #("status", "cleanup"),
+        #("source", "recovery.cleanup_request"),
+        #("reason", "terminal interrupted run cleanup queued"),
+      ]),
+      effects_types.Log("info", "recovered_workspace_cleanup", [
+        #("issue_id", issue_id),
+        #("workspace_path", workspace_path),
+      ]),
+      effects_types.CleanupWorkspace(workspace_path),
+    ]
+  })
+}
+
+fn startup_park_report_effects(
+  park_reports: List(handoff.ParkReport),
+) -> List(effects_types.Effect) {
+  list.map(park_reports, effects_types.ReportPark)
+}
+
+fn startup_warning_effects(
+  warnings: List(String),
+  secrets: List(String),
+) -> List(effects_types.Effect) {
+  list.flat_map(warnings, fn(warning) {
+    let safe_warning = safe_recovery_text("recovery_warning", warning, secrets)
+    [
+      effects_types.Log("warn", "workflow_recovery_status", [
+        #("status", "recovered"),
+        #("source", "recovery.warning"),
+        #("reason", safe_warning),
+      ]),
+      effects_types.Log("warn", "startup_recovery_warning", [
+        #("warning", safe_warning),
+      ]),
+    ]
+  })
+}
+
+fn safe_recovery_text(
+  label: String,
+  value: String,
+  secrets: List(String),
+) -> String {
+  log.redact(label, value, secrets)
+  |> log.truncate(200)
+}
+
+fn handle_shutdown_requested(
+  state: transition_types.State,
+  stop_effect_runner: Bool,
+) -> transition_types.Outcome {
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      running: dict.new(),
+      claimed: dict.new(),
+      retry_attempts: dict.new(),
+    )
+  transition_types.Outcome(
+    state: transition_types.State(
+      ..state,
+      runtime: runtime,
+      workers: transition_types.new_worker_directory(),
+      pending_claims: dict.new(),
+      pending_dispatch_validations: dict.new(),
+    ),
+    effects: [effects_types.ShutdownRuntime(stop_effect_runner)],
+  )
 }
 
 fn operator_callbacks() -> commands.OperatorCallbacks {
@@ -1056,6 +1241,75 @@ fn map_core_effects(
   )
 }
 
+fn map_lifecycle_core_effects(
+  state: transition_types.State,
+  effects: List(core.Effect),
+  source_run_id: Option(String),
+) -> transition_types.Outcome {
+  list.fold(
+    effects,
+    transition_types.Outcome(state: state, effects: []),
+    fn(outcome, effect) {
+      let transition_types.Outcome(state: state, effects: mapped) =
+        map_lifecycle_core_effect(outcome.state, effect, source_run_id)
+      transition_types.Outcome(
+        state: state,
+        effects: list.append(outcome.effects, mapped),
+      )
+    },
+  )
+}
+
+fn map_lifecycle_core_effect(
+  state: transition_types.State,
+  effect: core.Effect,
+  source_run_id: Option(String),
+) -> transition_types.Outcome {
+  case effect {
+    core.ScheduleRetry(issue_id, delay_ms, generation, retry_reason) ->
+      transition_types.Outcome(
+        state: state,
+        effects: schedule_retry_effects(
+          state.runtime,
+          issue_id,
+          delay_ms,
+          generation,
+          retry_reason,
+        ),
+      )
+    core.CancelRetry(issue_id, generation, cancel_reason) ->
+      transition_types.Outcome(
+        state: state,
+        effects: cancel_retry_effects(issue_id, generation, cancel_reason),
+      )
+    core.ReleaseClaim(issue_id) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.ReleaseClaim(issue_id),
+      ])
+    core.CleanupWorkspace(workspace_path) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.CleanupWorkspace(workspace_path),
+      ])
+    core.ParkIssue(issue_id, _) ->
+      transition_types.Outcome(
+        state: state,
+        effects: park_issue_effects(state.runtime, issue_id, source_run_id),
+      )
+    core.StopWorker(issue_id, _) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "transition_unhandled_stop_worker", [
+          #("issue_id", issue_id),
+        ]),
+      ])
+    core.Dispatch(issue) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "transition_unhandled_lifecycle_dispatch", [
+          #("issue_id", issue.id),
+        ]),
+      ])
+  }
+}
+
 fn map_core_effect(
   state: transition_types.State,
   context: transition_types.DispatchContext,
@@ -1086,9 +1340,7 @@ fn map_core_effect(
       ])
     core.CleanupWorkspace(workspace_path) ->
       transition_types.Outcome(state: state, effects: [
-        effects_types.Log("warn", "transition_unhandled_cleanup_workspace", [
-          #("workspace_path", workspace_path),
-        ]),
+        effects_types.CleanupWorkspace(workspace_path),
       ])
     core.StopWorker(issue_id, _) ->
       transition_types.Outcome(state: state, effects: [
@@ -1097,11 +1349,10 @@ fn map_core_effect(
         ]),
       ])
     core.ParkIssue(issue_id, _) ->
-      transition_types.Outcome(state: state, effects: [
-        effects_types.Log("warn", "transition_unhandled_park_issue", [
-          #("issue_id", issue_id),
-        ]),
-      ])
+      transition_types.Outcome(
+        state: state,
+        effects: park_issue_effects(state.runtime, issue_id, None),
+      )
   }
 }
 
@@ -1229,6 +1480,853 @@ fn handle_ledger_append_completed(
     effects_types.NoLedgerContinuation ->
       transition_types.Outcome(state: state, effects: [])
   }
+}
+
+fn handle_worker_start_succeeded(
+  state: transition_types.State,
+  issue_id: String,
+  run_id: String,
+  session_id: String,
+) -> transition_types.Outcome {
+  case worker_entry_for_issue(state, issue_id, run_id) {
+    Error(Nil) ->
+      stale_worker_lifecycle(state, "worker_start_stale", issue_id, run_id)
+    Ok(entry) ->
+      case entry.session_id == session_id {
+        False ->
+          stale_worker_lifecycle(state, "worker_start_stale", issue_id, run_id)
+        True -> {
+          let entry =
+            transition_types.WorkerEntry(
+              ..entry,
+              status: transition_types.WorkerRunning,
+            )
+          let workers =
+            transition_types.WorkerDirectory(
+              ..state.workers,
+              by_issue: dict.insert(state.workers.by_issue, issue_id, entry),
+            )
+          transition_types.Outcome(
+            state: transition_types.State(..state, workers: workers),
+            effects: [],
+          )
+        }
+      }
+  }
+}
+
+fn handle_worker_start_failed(
+  state: transition_types.State,
+  issue_id: String,
+  run_id: String,
+  session_id: String,
+  reason: String,
+) -> transition_types.Outcome {
+  case worker_entry_for_issue(state, issue_id, run_id) {
+    Error(Nil) ->
+      stale_worker_lifecycle(
+        state,
+        "worker_start_failed_stale",
+        issue_id,
+        run_id,
+      )
+    Ok(entry) ->
+      case entry.session_id == session_id {
+        False ->
+          stale_worker_lifecycle(
+            state,
+            "worker_start_failed_stale",
+            issue_id,
+            run_id,
+          )
+        True -> {
+          let state = remove_worker_from_directory(state, entry)
+          let runtime =
+            orchestrator_state.RuntimeState(
+              ..state.runtime,
+              running: dict.delete(state.runtime.running, issue_id),
+              claimed: dict.delete(state.runtime.claimed, issue_id),
+            )
+          transition_types.Outcome(
+            state: transition_types.State(..state, runtime: runtime),
+            effects: [
+              effects_types.WorkerStartFailed(
+                worker_start_from_entry(entry),
+                reason,
+              ),
+              effects_types.Log("warn", "worker_start_failed", [
+                #("issue_id", issue_id),
+                #("run_id", run_id),
+                #("reason", reason),
+              ]),
+            ],
+          )
+        }
+      }
+  }
+}
+
+fn handle_worker_command_ready(
+  state: transition_types.State,
+  issue_id: String,
+  run_id: String,
+) -> transition_types.Outcome {
+  case worker_entry_for_issue(state, issue_id, run_id) {
+    Error(Nil) ->
+      stale_worker_lifecycle(
+        state,
+        "worker_command_ready_stale",
+        issue_id,
+        run_id,
+      )
+    Ok(entry) -> {
+      let entry =
+        transition_types.WorkerEntry(
+          ..entry,
+          status: transition_types.WorkerRunning,
+        )
+      let workers =
+        transition_types.WorkerDirectory(
+          ..state.workers,
+          by_issue: dict.insert(state.workers.by_issue, issue_id, entry),
+        )
+      transition_types.Outcome(
+        state: transition_types.State(..state, workers: workers),
+        effects: [],
+      )
+    }
+  }
+}
+
+fn handle_worker_finished(
+  state: transition_types.State,
+  issue_id: String,
+  run_id: String,
+  result: transition_types.WorkerFinishResult,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  case worker_entry_for_issue(state, issue_id, run_id) {
+    Error(Nil) ->
+      stale_worker_lifecycle(state, "worker_finished_stale", issue_id, run_id)
+    Ok(entry) -> {
+      let identity = worker_identity(entry)
+      let state = remove_worker_from_directory(state, entry)
+      let remove_effect = effects_types.RemoveWorker(identity, True)
+      let transition_types.Outcome(state: state, effects: effects) =
+        finish_worker_entry(state, entry, identity, result, context)
+      transition_types.Outcome(state: state, effects: [remove_effect, ..effects])
+    }
+  }
+}
+
+fn finish_worker_entry(
+  state: transition_types.State,
+  entry: transition_types.WorkerEntry,
+  identity: effects_types.WorkerIdentity,
+  result: transition_types.WorkerFinishResult,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  case result {
+    transition_types.WorkerSucceeded(success) ->
+      finish_worker_success_entry(state, entry, identity, success, context)
+    transition_types.WorkerFailed(failure, kind) ->
+      finish_worker_failure_entry(
+        state,
+        entry,
+        identity,
+        failure,
+        kind,
+        context,
+      )
+  }
+}
+
+fn finish_worker_success_entry(
+  state: transition_types.State,
+  entry: transition_types.WorkerEntry,
+  identity: effects_types.WorkerIdentity,
+  success: agent_types.WorkerSuccess,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  let final_issue = case success.final_issue {
+    Some(issue) -> issue
+    None -> entry.issue
+  }
+  let core.Transition(state: runtime, effects: core_effects) =
+    core.apply_workflow_success(
+      state.runtime,
+      context.effective,
+      entry.issue_id,
+      final_issue,
+      success.tokens,
+      context.now_ms,
+      core.AlreadyCleaned,
+    )
+  let state = transition_types.State(..state, runtime: runtime)
+  let bodies = [
+    record.RunFinished(
+      entry.run_id,
+      entry.issue_id,
+      classification_to_string(success.final_classification),
+      success.tokens.total,
+      success.turns,
+    ),
+    counter_record_for_runtime(
+      runtime,
+      entry.issue_id,
+      final_issue.identifier,
+      Some(entry.run_id),
+      context.now_ms,
+    ),
+  ]
+  let transition_types.Outcome(state: state, effects: follow_ups) =
+    map_lifecycle_core_effects(state, core_effects, Some(entry.run_id))
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("info", "worker_exited", [
+      #("issue_id", entry.issue_id),
+      #("run_id", entry.run_id),
+      #("reason", "normal"),
+    ]),
+    effects_types.PublishWorkerExited(effects_types.WorkerExitPublication(
+      identity: identity,
+      reason_text: "normal",
+      exit_reason: session_reason.Normal,
+      tokens: success.tokens,
+      update_tokens: True,
+    )),
+    effects_types.AppendLedger(effects_types.LedgerAppend(
+      correlation_id: "worker_finish:" <> entry.issue_id <> ":" <> entry.run_id,
+      bodies: bodies,
+      failure_event: "ledger_append_failed",
+      policy: effects_types.ContinueRegardless,
+    )),
+    effects_types.ReportWorkerSuccess(identity, success),
+    ..follow_ups
+  ])
+}
+
+fn finish_worker_failure_entry(
+  state: transition_types.State,
+  entry: transition_types.WorkerEntry,
+  identity: effects_types.WorkerIdentity,
+  failure: agent_types.WorkerFailure,
+  kind: transition_types.WorkerFailureKind,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  case kind {
+    transition_types.StandardWorkerFailure(reason_text) ->
+      finish_standard_worker_failure_entry(
+        state,
+        entry,
+        identity,
+        failure,
+        reason_text,
+        context,
+      )
+    transition_types.WorkerDownFailure ->
+      finish_standard_worker_failure_entry(
+        state,
+        entry,
+        identity,
+        failure,
+        "worker_down",
+        context,
+      )
+    transition_types.RecoveryResumeValidationFailure(reason_text) ->
+      finish_recovery_validation_failure_entry(
+        state,
+        entry,
+        identity,
+        failure,
+        reason_text,
+        context,
+      )
+    transition_types.OperatorWorkerFailure(reason) ->
+      finish_operator_worker_failure_entry(
+        state,
+        entry,
+        identity,
+        failure,
+        reason,
+        context,
+      )
+  }
+}
+
+fn finish_standard_worker_failure_entry(
+  state: transition_types.State,
+  entry: transition_types.WorkerEntry,
+  identity: effects_types.WorkerIdentity,
+  failure: agent_types.WorkerFailure,
+  reason_text: String,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  let baseline_issue = baseline_issue_for_failure(entry, failure)
+  let core.Transition(state: runtime, effects: core_effects) =
+    core.apply_worker_failure(
+      state.runtime,
+      context.effective,
+      entry.issue_id,
+      baseline_issue,
+      context.now_ms,
+    )
+  let state = transition_types.State(..state, runtime: runtime)
+  let bodies =
+    worker_failure_bodies(
+      runtime,
+      entry,
+      failure.tokens.total,
+      baseline_issue.identifier,
+      context.now_ms,
+    )
+  let transition_types.Outcome(state: state, effects: follow_ups) =
+    map_lifecycle_core_effects(state, core_effects, Some(entry.run_id))
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("warn", "worker_exited", [
+      #("issue_id", entry.issue_id),
+      #("run_id", entry.run_id),
+      #("reason", reason_text),
+    ]),
+    effects_types.PublishWorkerExited(effects_types.WorkerExitPublication(
+      identity: identity,
+      reason_text: reason_text,
+      exit_reason: session_reason.Failed,
+      tokens: failure.tokens,
+      update_tokens: False,
+    )),
+    effects_types.AppendLedger(effects_types.LedgerAppend(
+      correlation_id: "worker_failure:" <> entry.issue_id <> ":" <> entry.run_id,
+      bodies: bodies,
+      failure_event: "ledger_append_failed",
+      policy: effects_types.ContinueRegardless,
+    )),
+    effects_types.ReportWorkerFailure(identity, failure),
+    ..follow_ups
+  ])
+}
+
+fn finish_recovery_validation_failure_entry(
+  state: transition_types.State,
+  entry: transition_types.WorkerEntry,
+  identity: effects_types.WorkerIdentity,
+  failure: agent_types.WorkerFailure,
+  reason_text: String,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  let baseline_issue = baseline_issue_for_failure(entry, failure)
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      running: dict.delete(state.runtime.running, entry.issue_id),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, entry.issue_id),
+    )
+  let state = transition_types.State(..state, runtime: runtime)
+  let state =
+    park_runtime(
+      state,
+      baseline_issue,
+      orchestrator_reason.ParkOperator(reason_text),
+      context.now_ms,
+    )
+  let park_effects =
+    park_issue_effects(state.runtime, entry.issue_id, Some(entry.run_id))
+  transition_types.Outcome(
+    state: state,
+    effects: list.append(
+      [
+        effects_types.Log("warn", "worker_exited", [
+          #("issue_id", entry.issue_id),
+          #("run_id", entry.run_id),
+          #("reason", reason_text),
+        ]),
+        effects_types.PublishWorkerExited(effects_types.WorkerExitPublication(
+          identity: identity,
+          reason_text: reason_text,
+          exit_reason: session_reason.Failed,
+          tokens: failure.tokens,
+          update_tokens: False,
+        )),
+        effects_types.AppendLedger(effects_types.LedgerAppend(
+          correlation_id: "worker_failure:"
+            <> entry.issue_id
+            <> ":"
+            <> entry.run_id,
+          bodies: worker_failure_bodies(
+            runtime,
+            entry,
+            failure.tokens.total,
+            baseline_issue.identifier,
+            context.now_ms,
+          ),
+          failure_event: "ledger_append_failed",
+          policy: effects_types.ContinueRegardless,
+        )),
+      ],
+      park_effects,
+    ),
+  )
+}
+
+fn finish_operator_worker_failure_entry(
+  state: transition_types.State,
+  entry: transition_types.WorkerEntry,
+  identity: effects_types.WorkerIdentity,
+  failure: agent_types.WorkerFailure,
+  reason: session_reason.WorkerExitReason,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  let reason_text = session_reason.to_string(reason)
+  let final_issue = baseline_issue_for_failure(entry, failure)
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      running: dict.delete(state.runtime.running, entry.issue_id),
+      completed: dict.insert(
+        state.runtime.completed,
+        entry.issue_id,
+        final_issue,
+      ),
+      aggregate_pi_totals: session_tokens_add(
+        state.runtime.aggregate_pi_totals,
+        failure.tokens,
+      ),
+    )
+  let state = transition_types.State(..state, runtime: runtime)
+  let state =
+    park_runtime(
+      state,
+      final_issue,
+      orchestrator_reason.ParkOperator(reason_text),
+      context.now_ms,
+    )
+  let park_effects =
+    park_issue_effects(state.runtime, entry.issue_id, Some(entry.run_id))
+  transition_types.Outcome(
+    state: state,
+    effects: list.append(
+      [
+        effects_types.Log("warn", "worker_exited", [
+          #("issue_id", entry.issue_id),
+          #("run_id", entry.run_id),
+          #("reason", reason_text),
+        ]),
+        effects_types.PublishWorkerExited(effects_types.WorkerExitPublication(
+          identity: identity,
+          reason_text: reason_text,
+          exit_reason: reason,
+          tokens: failure.tokens,
+          update_tokens: True,
+        )),
+        effects_types.AppendLedger(effects_types.LedgerAppend(
+          correlation_id: "workflow_cancelled:"
+            <> entry.issue_id
+            <> ":"
+            <> entry.run_id,
+          bodies: [
+            record.WorkflowRunFinished(
+              entry.run_id,
+              entry.workflow_id,
+              entry.issue_id,
+              "cancelled",
+              failure.tokens.total,
+              0,
+            ),
+          ],
+          failure_event: "workflow_terminal_append_failed",
+          policy: effects_types.ContinueRegardless,
+        )),
+      ],
+      park_effects,
+    ),
+  )
+}
+
+fn handle_worker_down(
+  state: transition_types.State,
+  resolution: transition_types.WorkerDownResolution,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  case resolution {
+    transition_types.UnknownWorkerDown ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "worker_down_stale", []),
+      ])
+    transition_types.WorkerDownStale(issue_id) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "worker_down_stale", [#("issue_id", issue_id)]),
+      ])
+    transition_types.KnownWorkerDown(issue_id, run_id, _session_id) -> {
+      let failure = worker_down_failure(state, issue_id, run_id)
+      let result =
+        transition_types.WorkerFailed(
+          failure,
+          transition_types.WorkerDownFailure,
+        )
+      let transition_types.Outcome(state: state, effects: effects) =
+        handle_worker_finished(state, issue_id, run_id, result, context)
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "worker_down", [#("issue_id", issue_id)]),
+        ..effects
+      ])
+    }
+  }
+}
+
+fn handle_worker_stop_requested(
+  state: transition_types.State,
+  session_id: String,
+  reason: session_reason.WorkerExitReason,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  case dict.get(state.workers.by_session, session_id) {
+    Error(Nil) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "worker_stop_stale", [
+          #("session_id", session_id),
+        ]),
+      ])
+    Ok(issue_id) ->
+      case dict.get(state.workers.by_issue, issue_id) {
+        Error(Nil) ->
+          transition_types.Outcome(state: state, effects: [
+            effects_types.Log("warn", "worker_stop_stale", [
+              #("session_id", session_id),
+            ]),
+          ])
+        Ok(entry) -> stop_worker_entry(state, entry, reason, context)
+      }
+  }
+}
+
+fn stop_worker_entry(
+  state: transition_types.State,
+  entry: transition_types.WorkerEntry,
+  reason: session_reason.WorkerExitReason,
+  context: transition_types.WorkerLifecycleContext,
+) -> transition_types.Outcome {
+  let reason_text = session_reason.to_string(reason)
+  let state = remove_worker_from_directory(state, entry)
+  let state =
+    transition_types.State(
+      ..state,
+      workers: transition_types.WorkerDirectory(
+        ..state.workers,
+        stopped_yaml_runs: dict.insert(
+          state.workers.stopped_yaml_runs,
+          entry.run_id,
+          reason,
+        ),
+      ),
+    )
+  let state =
+    park_runtime(
+      state,
+      entry.issue,
+      orchestrator_reason.ParkOperator(reason_text),
+      context.now_ms,
+    )
+  let identity = worker_identity(entry)
+  transition_types.Outcome(state: state, effects: [
+    effects_types.AppendLedger(effects_types.LedgerAppend(
+      correlation_id: "workflow_cancelled:"
+        <> entry.issue_id
+        <> ":"
+        <> entry.run_id,
+      bodies: [
+        record.WorkflowRunFinished(
+          entry.run_id,
+          entry.workflow_id,
+          entry.issue_id,
+          "cancelled",
+          0,
+          0,
+        ),
+      ],
+      failure_event: "workflow_terminal_append_failed",
+      policy: effects_types.ContinueRegardless,
+    )),
+    effects_types.MarkYamlRunStopping(entry.run_id, reason),
+    effects_types.StopWorker(identity, reason),
+    effects_types.FinishYamlStepSessionsForRun(entry.run_id, reason),
+    effects_types.ClearYamlStepRoutesForRun(entry.run_id),
+    effects_types.RemoveWorker(identity, False),
+    ..park_issue_effects(state.runtime, entry.issue_id, Some(entry.run_id))
+  ])
+}
+
+fn handle_yaml_step_started(
+  state: transition_types.State,
+  session_id: String,
+  run_id: String,
+) -> transition_types.Outcome {
+  case dict.get(state.workers.stopped_yaml_runs, run_id) {
+    Ok(reason) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.FinishYamlStepSession(session_id, reason),
+      ])
+    Error(Nil) ->
+      case worker_for_run(state.workers, run_id) {
+        Error(Nil) -> transition_types.Outcome(state: state, effects: [])
+        Ok(_) -> {
+          let workers =
+            transition_types.WorkerDirectory(
+              ..state.workers,
+              yaml_step_runs: dict.insert(
+                state.workers.yaml_step_runs,
+                session_id,
+                run_id,
+              ),
+            )
+          transition_types.Outcome(
+            state: transition_types.State(..state, workers: workers),
+            effects: [effects_types.RegisterYamlStepStarted(session_id, run_id)],
+          )
+        }
+      }
+  }
+}
+
+fn handle_yaml_step_finished(
+  state: transition_types.State,
+  session_id: String,
+) -> transition_types.Outcome {
+  let workers =
+    transition_types.WorkerDirectory(
+      ..state.workers,
+      yaml_step_runs: dict.delete(state.workers.yaml_step_runs, session_id),
+    )
+  transition_types.Outcome(
+    state: transition_types.State(..state, workers: workers),
+    effects: [effects_types.FinishYamlStepRoute(session_id)],
+  )
+}
+
+fn worker_entry_for_issue(
+  state: transition_types.State,
+  issue_id: String,
+  run_id: String,
+) -> Result(transition_types.WorkerEntry, Nil) {
+  case dict.get(state.workers.by_issue, issue_id) {
+    Error(Nil) -> Error(Nil)
+    Ok(entry) ->
+      case entry.run_id == run_id {
+        True -> Ok(entry)
+        False -> Error(Nil)
+      }
+  }
+}
+
+fn worker_for_run(
+  workers: transition_types.WorkerDirectory,
+  run_id: String,
+) -> Result(transition_types.WorkerEntry, Nil) {
+  workers.by_issue
+  |> dict.values
+  |> list.filter(fn(entry) { entry.run_id == run_id })
+  |> first_worker_entry
+}
+
+fn first_worker_entry(
+  entries: List(transition_types.WorkerEntry),
+) -> Result(transition_types.WorkerEntry, Nil) {
+  case entries {
+    [] -> Error(Nil)
+    [entry, ..] -> Ok(entry)
+  }
+}
+
+fn worker_identity(
+  entry: transition_types.WorkerEntry,
+) -> effects_types.WorkerIdentity {
+  effects_types.WorkerIdentity(
+    issue_id: entry.issue_id,
+    run_id: entry.run_id,
+    session_id: entry.session_id,
+    issue: entry.issue,
+    workspace_path: entry.workspace_path,
+    workflow_id: entry.workflow_id,
+    command_route_id: entry.command_route_id,
+  )
+}
+
+fn worker_start_from_entry(
+  entry: transition_types.WorkerEntry,
+) -> effects_types.WorkerStart {
+  effects_types.WorkerStart(
+    issue_id: entry.issue_id,
+    run_id: entry.run_id,
+    session_id: entry.session_id,
+    command_route_id: entry.command_route_id,
+    issue: entry.issue,
+    workspace_path: entry.workspace_path,
+    workflow_id: entry.workflow_id,
+    route_label: entry.issue.identifier,
+    recovery: entry.recovery,
+  )
+}
+
+fn remove_worker_from_directory(
+  state: transition_types.State,
+  entry: transition_types.WorkerEntry,
+) -> transition_types.State {
+  let workers =
+    transition_types.WorkerDirectory(
+      ..state.workers,
+      by_issue: dict.delete(state.workers.by_issue, entry.issue_id),
+      by_session: dict.delete(state.workers.by_session, entry.session_id),
+      route_to_session: dict.delete(
+        state.workers.route_to_session,
+        entry.command_route_id,
+      ),
+    )
+  transition_types.State(..state, workers: workers)
+}
+
+fn baseline_issue_for_failure(
+  entry: transition_types.WorkerEntry,
+  failure: agent_types.WorkerFailure,
+) -> tracker_issue.Issue {
+  case failure.final_issue {
+    Some(issue) ->
+      case issue.id == entry.issue_id {
+        True -> issue
+        False -> entry.issue
+      }
+    None -> entry.issue
+  }
+}
+
+fn worker_failure_bodies(
+  runtime: orchestrator_state.RuntimeState,
+  entry: transition_types.WorkerEntry,
+  token_total: Int,
+  issue_identifier: String,
+  now_ms: Int,
+) -> List(record.RecordBody) {
+  [
+    record.RunFinished(entry.run_id, entry.issue_id, "failure", token_total, 0),
+    counter_record_for_runtime(
+      runtime,
+      entry.issue_id,
+      issue_identifier,
+      Some(entry.run_id),
+      now_ms,
+    ),
+  ]
+}
+
+fn counter_record_for_runtime(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+  issue_identifier: String,
+  source_run_id: Option(String),
+  now_ms: Int,
+) -> record.RecordBody {
+  let counter = case dict.get(runtime.issue_counters, issue_id) {
+    Ok(counter) -> counter
+    Error(Nil) -> orchestrator_state.new_issue_counter()
+  }
+  record.IssueCounterUpdated(
+    issue_id,
+    issue_identifier,
+    counter.failure_attempts,
+    counter.worker_sessions,
+    now_ms,
+    source_run_id,
+  )
+}
+
+fn park_issue_effects(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+  source_run_id: Option(String),
+) -> List(effects_types.Effect) {
+  case dict.get(runtime.parked, issue_id) {
+    Ok(parked) -> [effects_types.ParkIssue(parked, source_run_id)]
+    Error(Nil) -> []
+  }
+}
+
+fn park_runtime(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  reason: orchestrator_reason.ParkReason,
+  now_ms: Int,
+) -> transition_types.State {
+  let parked =
+    orchestrator_state.ParkedEntry(
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      reason: reason,
+      release_policy: orchestrator_state.ExplicitUnparkOnly,
+      parked_at_ms: now_ms,
+    )
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      running: dict.delete(state.runtime.running, issue.id),
+      claimed: dict.delete(state.runtime.claimed, issue.id),
+      retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
+      issue_counters: dict.delete(state.runtime.issue_counters, issue.id),
+      parked: dict.insert(state.runtime.parked, issue.id, parked),
+    )
+  transition_types.State(..state, runtime: runtime)
+}
+
+fn session_tokens_add(
+  a: session_tokens.TokenTotals,
+  b: session_tokens.TokenTotals,
+) -> session_tokens.TokenTotals {
+  session_tokens.TokenTotals(
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cache_read: a.cache_read + b.cache_read,
+    cache_write: a.cache_write + b.cache_write,
+    total: a.total + b.total,
+  )
+}
+
+fn classification_to_string(
+  classification: agent_types.FinalClassification,
+) -> String {
+  case classification {
+    agent_types.FinalActive -> "active"
+    agent_types.FinalTerminal -> "terminal"
+    agent_types.FinalNonActive -> "non_active"
+  }
+}
+
+fn worker_down_failure(
+  state: transition_types.State,
+  issue_id: String,
+  run_id: String,
+) -> agent_types.WorkerFailure {
+  let #(workspace_path, final_issue) = case
+    worker_entry_for_issue(state, issue_id, run_id)
+  {
+    Ok(entry) -> #(Some(entry.workspace_path), Some(entry.issue))
+    Error(Nil) -> #(None, None)
+  }
+  agent_types.WorkerFailure(
+    reason: error.PiFailed(error.PiProtocolError("worker_down")),
+    workspace_path: workspace_path,
+    tokens: session_tokens.zero_token_totals(),
+    final_issue: final_issue,
+  )
+}
+
+fn stale_worker_lifecycle(
+  state: transition_types.State,
+  event: String,
+  issue_id: String,
+  run_id: String,
+) -> transition_types.Outcome {
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("warn", event, [
+      #("issue_id", issue_id),
+      #("run_id", run_id),
+    ]),
+  ])
 }
 
 fn report_blocked_dependency(

@@ -214,6 +214,8 @@ fn start_worker(
         pending.command_route_id,
         pending.session_id,
       ),
+      yaml_step_runs: workers.yaml_step_runs,
+      stopped_yaml_runs: workers.stopped_yaml_runs,
     )
   let state =
     transition_types.State(

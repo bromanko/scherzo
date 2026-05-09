@@ -7,6 +7,7 @@ import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/linear_commands
 import scherzo/orchestrator/transitions/operator
 import scherzo/state/ledger
+import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 
 pub type OperatorCallbacks =
@@ -75,6 +76,12 @@ pub fn retry_pending_linear_acks(
   state: transition_types.State,
 ) -> transition_types.Outcome {
   linear_commands.retry_pending_acks(state)
+}
+
+pub fn startup_outbox_replay_effects(
+  outbox_to_replay: List(recovery.OutboxReplay),
+) -> List(effects_types.Effect) {
+  linear_commands.startup_outbox_replay_effects(outbox_to_replay)
 }
 
 pub fn handle_linear_apply_continuation(
