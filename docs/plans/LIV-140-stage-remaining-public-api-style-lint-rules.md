@@ -44,10 +44,10 @@ A fourth risk is duplicated diagnostics with the existing PR #82 rule. The count
 ## Progress
 
 - [x] (2026-05-08 00:00Z) Drafted this ExecPlan proposal from Linear issue LIV-140 and verified the current custom lint entry points and configuration.
-- [ ] Add inventory-only analysis code and tests for the three public API style candidates.
-- [ ] Run the production inventory against `src/` and record a concise findings summary.
-- [ ] Apply the thresholds in this plan to choose off, warning/inventory-only, module-scoped blocking, or globally blocking for each candidate.
-- [ ] If and only if a candidate is below threshold, implement the smallest safe lint configuration change and document suppression guidance.
+- [x] (2026-05-09 21:27Z) Added inventory-only analysis code, Markdown report rendering, an explicit `scherzo_lint_inventory` runner, and tests for the three public API style candidates.
+- [x] (2026-05-09 21:27Z) Ran the production inventory against `src/` and recorded the concise findings summary in `docs/lint/public-api-style-inventory.md`.
+- [x] (2026-05-09 21:27Z) Applied the thresholds in this plan: high-arity and duplicate-primitive candidates remain inventory-only because they exceed warning and blocking thresholds; broader unlabelled `Bool` remains inventory-only for this slice because it needs manual review and still exceeds global blocking thresholds.
+- [x] (2026-05-09 21:27Z) Skipped optional lint configuration changes because no candidate was selected for warning, module-scoped blocking, or globally blocking rollout in this implementation.
 
 ## Surprises & Discoveries
 
@@ -55,6 +55,10 @@ A fourth risk is duplicated diagnostics with the existing PR #82 rule. The count
   Evidence: `test/scherzo_lint.gleam` calls `glinter.run(extra_rules: [public_function_labels.rule()])`.
 - Observation: The current PR #82 rule intentionally defers high-arity, duplicate primitive, and three-parameter `Bool` cases.
   Evidence: `test/scherzo_lint/public_function_labels_test.gleam` includes tests named `three_parameter_bool_is_deferred_by_rollout_test`, `duplicate_string_parameters_are_deferred_by_rollout_test`, and `high_arity_without_bool_is_deferred_by_rollout_test`.
+- Observation: The production inventory is broader than any immediate rollout threshold for high-arity or duplicate primitive parameters.
+  Evidence: `build/public-api-style-inventory.md` reported 300 total rows: 133 high-arity public functions, 147 duplicate primitive public parameters, and 20 broader unlabelled public `Bool` parameters.
+- Observation: The current production tree has no two-parameter unlabelled `Bool` rows left for the inventory to mark as already covered by `scherzo_public_function_labels`.
+  Evidence: the generated report's existing-rule coverage column was `no` for all 300 rows.
 
 ## Decision Log
 
@@ -67,10 +71,16 @@ A fourth risk is duplicated diagnostics with the existing PR #82 rule. The count
 - Decision: Use explicit numeric churn thresholds before any CI or SelfCI wiring.
   Rationale: This makes the rollout falsifiable and prevents subjective "this seems narrow" decisions from expanding into broad API churn.
   Date: 2026-05-08
+- Decision: Use `scherzo_main_ffi` for the inventory runner's command-line arguments and exit code rather than importing the transitive `argv` package directly.
+  Rationale: The repository already has this FFI for `gleam run` entry points, and using it avoids adding a new direct dependency for a dev-only runner.
+  Date: 2026-05-09
+- Decision: Leave all three candidate rules inventory-only in this implementation.
+  Rationale: High-arity and duplicate-primitive candidates exceed warning and blocking thresholds. Broader unlabelled `Bool` is small enough for future warning-only review, but it still exceeds the global blocking threshold, touches five subsystems, overlaps the existing `Bool` policy, and needs manual call-site churn review before warning noise is introduced.
+  Date: 2026-05-09
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The inventory-only implementation completed without expanding the production lint gate. Developers can now run `direnv exec . gleam run -m scherzo_lint_inventory -- --path src --format markdown --output build/public-api-style-inventory.md` to regenerate the raw inventory, while normal `glinter` and `scherzo_lint` behavior remains governed by the existing configuration. The committed summary in `docs/lint/public-api-style-inventory.md` records the threshold math and recommends no warning or blocking rollout in this slice. The main lesson is that the remaining candidate rules are still broad production-style policies, not small mechanical cleanups; follow-up work should review one narrow candidate or subsystem at a time.
 
 ## Context and Orientation
 
