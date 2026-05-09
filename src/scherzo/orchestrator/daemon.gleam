@@ -120,10 +120,6 @@ type ControlPlane {
   ControlPlane(handle: ControlServerHandle, control_file_path: Option(String))
 }
 
-type PendingLinearCommandAck {
-  PendingLinearCommandAck(issue_id: String, body: String)
-}
-
 type ScheduledPendingStart {
   ScheduledPendingStart(
     job_id: String,
@@ -210,7 +206,10 @@ type State {
     triage_client: linear_triage.TriageClient,
     scheduled_failure_reporter: scheduled_failure_reporter.Client,
     linear_command_state: linear_transport.TransportState,
-    pending_linear_command_acks: Dict(String, PendingLinearCommandAck),
+    pending_linear_command_acks: Dict(
+      String,
+      transition_types.PendingLinearCommandAck,
+    ),
     in_flight_linear_command_acks: Dict(String, Bool),
     scheduled_next_due: Dict(String, Int),
     pending_scheduled_starts: Dict(String, ScheduledPendingStart),
@@ -235,6 +234,8 @@ type State {
     control_server: ControlServerHandle,
     control_file_path: Option(String),
     operator_paused: Bool,
+    last_operator_command_result: Option(command.CommandResult),
+    shell_state_overrides_transition: Bool,
     dependencies: RuntimeDependencies,
   )
 }
@@ -518,6 +519,8 @@ pub fn start(
                       control_server: control_plane.handle,
                       control_file_path: control_plane.control_file_path,
                       operator_paused: False,
+                      last_operator_command_result: None,
+                      shell_state_overrides_transition: False,
                       dependencies: dependencies,
                     )
                     |> schedule_recovered_retry_timers(
@@ -1415,16 +1418,12 @@ fn enqueue_startup_recovery_outbox(
                   source_comment_id,
                 ),
               )
-            state
-            |> remember_pending_linear_command_ack(
+            request_linear_command_ack(
+              state,
               issue_id,
               source_comment_id,
               payload.body,
-            )
-            |> enqueue_pending_linear_command_ack_effect(
-              issue_id,
-              source_comment_id,
-              payload.body,
+              True,
             )
           }
         }
@@ -2080,22 +2079,250 @@ fn apply_operator_command_to_state(
   operator_command: command.OperatorCommand,
   timeout_ms: Int,
 ) -> #(State, command.CommandResult) {
-  control_command_handler.apply(
-    control_command_handler.Context(
-      state: state,
-      pending_claim_count: fn(state) { dict.size(state.pending_claims) },
-      set_paused: set_operator_paused,
-      reload_workflow: reload_workflow_for_operator,
-      retry_issue: retry_issue_for_operator,
-      park_issue: park_issue_for_operator,
-      unpark_issue: unpark_issue_for_operator,
-      run_schedule_now: schedule_run_now_for_operator,
-      abort_session: abort_session_for_operator_sync,
-      route_worker_command: route_worker_command_sync,
-      log_result: log_operator_result,
-    ),
-    operator_command,
-    timeout_ms,
+  let state = State(..state, last_operator_command_result: None)
+  let request =
+    transition_effects.OperatorCommandRequest(
+      source: transition_effects.LocalOperatorCommand,
+      operator_command: operator_command,
+      timeout_ms: timeout_ms,
+    )
+  let state =
+    run_transition_messages(state, [
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: transition_dispatch_context(state),
+        issue_resolution: operator_issue_resolution(state, operator_command),
+        parked_issue_resolution: parked_issue_resolution(
+          state,
+          operator_command,
+        ),
+      ),
+    ])
+  let result = case state.last_operator_command_result {
+    Some(result) -> result
+    None ->
+      command.rejected(
+        operator_command,
+        "operator_command_result_missing",
+        Some("operator command did not produce a result"),
+      )
+  }
+  #(State(..state, last_operator_command_result: None), result)
+}
+
+fn operator_issue_resolution(
+  state: State,
+  operator_command: command.OperatorCommand,
+) -> transition_types.OperatorIssueResolution {
+  case operator_command {
+    command.RetryIssue(issue_ref) | command.ParkIssue(issue_ref, _) ->
+      case issue_for_ref(state, issue_ref) {
+        Ok(issue) -> transition_types.OperatorIssueResolved(issue)
+        Error(command.NotFound) -> transition_types.OperatorIssueNotFound
+        Error(command.Rejected(reason)) ->
+          transition_types.OperatorIssueRejected(reason)
+        Error(command.NotAllowed(reason)) ->
+          transition_types.OperatorIssueNotAllowed(reason)
+        Error(_) -> transition_types.OperatorIssueResolutionFailed
+      }
+    command.PauseDispatch
+    | command.ResumeDispatch
+    | command.ReloadWorkflow
+    | command.UnparkIssue(_)
+    | command.AbortSession(_)
+    | command.StopAfterCurrentTurn(_)
+    | command.PromptSession(_, _)
+    | command.RespondUi(_, _, _)
+    | command.RunScheduleNow(_) -> transition_types.OperatorIssueNotResolved
+  }
+}
+
+fn parked_issue_resolution(
+  state: State,
+  operator_command: command.OperatorCommand,
+) -> transition_types.ParkedIssueResolution {
+  case operator_command {
+    command.UnparkIssue(issue_ref) ->
+      case parked_issue_id_for_ref(state, issue_ref) {
+        Ok(issue_id) -> transition_types.ParkedIssueResolved(issue_id)
+        Error(command.NotFound) -> transition_types.ParkedIssueNotFound
+        Error(command.Rejected(reason)) ->
+          transition_types.ParkedIssueRejected(reason)
+        Error(command.NotAllowed(reason)) ->
+          transition_types.ParkedIssueNotAllowed(reason)
+        Error(_) -> transition_types.ParkedIssueResolutionFailed
+      }
+    command.PauseDispatch
+    | command.ResumeDispatch
+    | command.ReloadWorkflow
+    | command.RetryIssue(_)
+    | command.ParkIssue(_, _)
+    | command.AbortSession(_)
+    | command.StopAfterCurrentTurn(_)
+    | command.PromptSession(_, _)
+    | command.RespondUi(_, _, _)
+    | command.RunScheduleNow(_) -> transition_types.ParkedIssueNotResolved
+  }
+}
+
+fn apply_shell_operator_command(
+  state: State,
+  request: transition_effects.OperatorCommandRequest,
+) -> #(State, command.CommandResult) {
+  let operator_command = request.operator_command
+  let #(state, result) = case operator_command {
+    command.ReloadWorkflow ->
+      reload_workflow_for_operator(state, operator_command)
+    command.RunScheduleNow(job_id) ->
+      schedule_run_now_for_operator(state, operator_command, job_id)
+    command.AbortSession(session_id) ->
+      abort_session_for_operator_sync(
+        state,
+        operator_command,
+        session_id,
+        request.timeout_ms,
+      )
+    command.StopAfterCurrentTurn(session_id) ->
+      route_worker_command_sync(
+        state,
+        operator_command,
+        session_id,
+        request.timeout_ms,
+        fn(subject, reply) {
+          process.send(subject, worker_command.StopAfterCurrentTurn(reply))
+        },
+      )
+    command.PromptSession(session_id, message) ->
+      route_worker_command_sync(
+        state,
+        operator_command,
+        session_id,
+        request.timeout_ms,
+        fn(subject, reply) {
+          process.send(subject, worker_command.QueuePrompt(message, reply))
+        },
+      )
+    command.RespondUi(session_id, request_id, response) ->
+      route_worker_command_sync(
+        state,
+        operator_command,
+        session_id,
+        request.timeout_ms,
+        fn(subject, reply) {
+          process.send(
+            subject,
+            worker_command.RespondToUi(request_id, response, reply),
+          )
+        },
+      )
+    command.PauseDispatch
+    | command.ResumeDispatch
+    | command.RetryIssue(_)
+    | command.ParkIssue(_, _)
+    | command.UnparkIssue(_) ->
+      case request.source {
+        transition_effects.LinearOperatorCommand(_, _, _, _) ->
+          apply_operator_command_to_state(
+            state,
+            operator_command,
+            request.timeout_ms,
+          )
+        transition_effects.LocalOperatorCommand -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "operator_command_already_handled",
+            None,
+          ),
+        )
+      }
+  }
+  #(State(..state, shell_state_overrides_transition: True), result)
+}
+
+fn finish_operator_command_effect(
+  state: State,
+  request: transition_effects.OperatorCommandRequest,
+  result: command.CommandResult,
+) -> #(State, List(transition_types.Message)) {
+  let state = State(..state, last_operator_command_result: Some(result))
+  case request.source {
+    transition_effects.LocalOperatorCommand -> {
+      log_operator_result(state, result, [])
+      #(state, [])
+    }
+    transition_effects.LinearOperatorCommand(
+      comment_id,
+      issue_id,
+      command_name,
+      excerpt,
+    ) -> {
+      let completion =
+        linear_command_completion_for_result(
+          state,
+          comment_id,
+          issue_id,
+          command_name,
+          excerpt,
+          request.operator_command,
+          result,
+        )
+      log_state(state, "info", "linear_operator_command", [
+        #("comment_id", comment_id),
+        #("command", result.command),
+        #("status", command.status_to_string(result.status)),
+      ])
+      #(state, [
+        transition_types.LinearCommandApplied(
+          comment_id: comment_id,
+          issue_id: issue_id,
+          command_name: command_name,
+          result: completion.result,
+          message_excerpt: completion.message_excerpt,
+          ack_body: completion.ack_body,
+        ),
+      ])
+    }
+  }
+}
+
+fn linear_command_completion_for_result(
+  state: State,
+  comment_id: String,
+  issue_id: String,
+  _command_name: String,
+  excerpt: String,
+  operator_command: command.OperatorCommand,
+  result: command.CommandResult,
+) -> transition_effects.LinearCommandCompletion {
+  let ack_result =
+    command_result_with_display_target(state, operator_command, result)
+  let message_excerpt =
+    result_message_excerpt(ack_result, state.workflow.secrets)
+  let ack_body = case
+    linear_transport.should_ack_result(
+      state.workflow.effective.linear_commands,
+      result,
+    )
+  {
+    True ->
+      Some(linear_transport.result_ack_body(
+        comment_id,
+        linear_parser.ParsedLinearCommand(
+          source_issue_id: issue_id,
+          source_comment_id: comment_id,
+          command: operator_command,
+          excerpt: excerpt,
+        ),
+        ack_result,
+        state.workflow.secrets,
+      ))
+    False -> None
+  }
+  transition_effects.LinearCommandCompletion(
+    result: ack_result,
+    message_excerpt: message_excerpt,
+    ack_body: ack_body,
   )
 }
 
@@ -2138,109 +2365,6 @@ fn reload_workflow_for_operator(
     config.CurrentInvalid(reason) -> #(
       state,
       command.rejected(operator_command, reason, Some("workflow reload failed")),
-    )
-  }
-}
-
-fn retry_issue_for_operator(
-  state: State,
-  operator_command: command.OperatorCommand,
-  issue_ref: command.IssueRef,
-) -> #(State, command.CommandResult) {
-  case issue_for_ref(state, issue_ref) {
-    Error(command.NotFound) -> #(
-      state,
-      command.not_found(operator_command, Some("issue not found")),
-    )
-    Error(command.Rejected(reason)) -> #(
-      state,
-      command.rejected(operator_command, reason, Some(reason)),
-    )
-    Error(command.NotAllowed(reason)) -> #(
-      state,
-      command.not_allowed(operator_command, reason, Some(reason)),
-    )
-    Error(_) -> #(
-      state,
-      command.rejected(operator_command, "issue_resolution_failed", None),
-    )
-    Ok(issue) ->
-      case issue_is_running_claimed_or_pending(state, issue.id) {
-        True -> #(
-          state,
-          command.rejected(
-            operator_command,
-            "issue_already_active",
-            Some("issue is running, claimed, or pending claim"),
-          ),
-        )
-        False ->
-          case state.operator_paused {
-            True -> #(
-              state,
-              command.rejected(
-                operator_command,
-                "dispatch_paused",
-                Some("dispatch is paused"),
-              ),
-            )
-            False -> retry_resolved_issue(state, operator_command, issue)
-          }
-      }
-  }
-}
-
-fn retry_resolved_issue(
-  state: State,
-  operator_command: command.OperatorCommand,
-  issue: tracker_issue.Issue,
-) -> #(State, command.CommandResult) {
-  let _ =
-    append_ledger_bodies(
-      state,
-      [
-        record.IssueUnparked(issue.id, issue.identifier, "operator_retry"),
-        record.IssueCounterUpdated(
-          issue.id,
-          issue.identifier,
-          0,
-          0,
-          state.dependencies.now_ms(),
-          None,
-        ),
-      ],
-      "ledger_append_failed",
-    )
-  let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      parked: dict.delete(state.runtime.parked, issue.id),
-      retry_attempts: dict.delete(state.runtime.retry_attempts, issue.id),
-      issue_counters: dict.delete(state.runtime.issue_counters, issue.id),
-    )
-  let state =
-    State(
-      ..state,
-      runtime: runtime,
-      recovery_by_issue: dict.delete(state.recovery_by_issue, issue.id),
-    )
-    |> cancel_retry_timer(issue.id)
-  case
-    config.can_dispatch(state.workflow.reload_state)
-    && core.should_dispatch(state.runtime, state.workflow.effective, issue)
-    && can_reserve_dispatch_slot(state, issue)
-  {
-    True -> {
-      let state = dispatch_issue(state, issue)
-      #(state, command.applied(operator_command, Some("retry dispatched")))
-    }
-    False -> #(
-      state,
-      command.rejected(
-        operator_command,
-        "not_dispatchable",
-        Some("issue is not currently dispatchable"),
-      ),
     )
   }
 }
@@ -2321,83 +2445,6 @@ fn schedule_run_now_for_enabled_job(
         "overlap_running",
         Some("scheduled job already has a pending, active, or retrying run"),
       ),
-    )
-  }
-}
-
-fn park_issue_for_operator(
-  state: State,
-  operator_command: command.OperatorCommand,
-  issue_ref: command.IssueRef,
-  reason: String,
-) -> #(State, command.CommandResult) {
-  case issue_for_ref(state, issue_ref) {
-    Error(command.NotFound) -> #(
-      state,
-      command.not_found(operator_command, Some("issue not found")),
-    )
-    Error(command.Rejected(reason)) -> #(
-      state,
-      command.rejected(operator_command, reason, Some(reason)),
-    )
-    Error(command.NotAllowed(reason)) -> #(
-      state,
-      command.not_allowed(operator_command, reason, Some(reason)),
-    )
-    Error(_) -> #(
-      state,
-      command.rejected(operator_command, "issue_resolution_failed", None),
-    )
-    Ok(issue) ->
-      case issue_is_running_claimed_or_pending(state, issue.id) {
-        True -> #(
-          state,
-          command.rejected(
-            operator_command,
-            "issue_active",
-            Some(
-              "running, claimed, or pending issues must be stopped before parking",
-            ),
-          ),
-        )
-        False -> {
-          let state =
-            park_issue_state(
-              state,
-              issue,
-              orchestrator_reason.ParkOperator(reason),
-            )
-          #(state, command.applied(operator_command, Some("issue parked")))
-        }
-      }
-  }
-}
-
-fn unpark_issue_for_operator(
-  state: State,
-  operator_command: command.OperatorCommand,
-  issue_ref: command.IssueRef,
-) -> #(State, command.CommandResult) {
-  case parked_issue_id_for_ref(state, issue_ref) {
-    Ok(issue_id) -> {
-      let state = unpark_issue_state(state, issue_id)
-      #(state, command.applied(operator_command, Some("issue unparked")))
-    }
-    Error(command.NotFound) -> #(
-      state,
-      command.not_found(operator_command, Some("parked issue not found")),
-    )
-    Error(command.Rejected(reason)) -> #(
-      state,
-      command.rejected(operator_command, reason, Some(reason)),
-    )
-    Error(command.NotAllowed(reason)) -> #(
-      state,
-      command.not_allowed(operator_command, reason, Some(reason)),
-    )
-    Error(_) -> #(
-      state,
-      command.rejected(operator_command, "issue_resolution_failed", None),
     )
   }
 }
@@ -2701,37 +2748,6 @@ fn active_run_issue_ids(state: State) -> List(String) {
   |> append_unique_list(worker_registry.worker_issue_ids(state.registry))
 }
 
-fn active_run_issues(state: State) -> List(tracker_issue.Issue) {
-  let runtime =
-    state.runtime.running
-    |> dict.values
-    |> list.map(fn(entry) { entry.issue })
-  let active_workers = worker_registry.worker_issues(state.registry)
-  []
-  |> append_unique_issues(runtime)
-  |> append_unique_issues(active_workers)
-}
-
-fn append_unique_issues(
-  existing: List(tracker_issue.Issue),
-  values: List(tracker_issue.Issue),
-) -> List(tracker_issue.Issue) {
-  list.fold(values, existing, fn(acc, issue) {
-    case list.contains(list.map(acc, fn(item) { item.id }), issue.id) {
-      True -> acc
-      False -> list.append(acc, [issue])
-    }
-  })
-}
-
-fn issue_is_running_claimed_or_pending(state: State, issue_id: String) -> Bool {
-  has_active_run(state, issue_id)
-  || dict.has_key(state.runtime.running, issue_id)
-  || dict.has_key(state.runtime.claimed, issue_id)
-  || dict.has_key(state.pending_claims, issue_id)
-  || dict.has_key(state.pending_dispatch_validations, issue_id)
-}
-
 fn issue_for_ref(
   state: State,
   issue_ref: command.IssueRef,
@@ -2882,14 +2898,6 @@ fn worker_for_session(
   worker_registry.worker_for_session(state.registry, session_id)
 }
 
-fn park_issue_state(
-  state: State,
-  issue: tracker_issue.Issue,
-  reason: orchestrator_reason.ParkReason,
-) -> State {
-  park_issue_state_with_run(state, issue, reason, None)
-}
-
 fn park_issue_state_with_run(
   state: State,
   issue: tracker_issue.Issue,
@@ -2924,42 +2932,6 @@ fn park_issue_state_with_run(
     False -> state
     True -> enqueue_park_report_for_runtime(state, issue.id, source_run_id)
   }
-}
-
-fn unpark_issue_state(state: State, issue_id: String) -> State {
-  let issue_identifier = identifier_for_runtime(state.runtime, issue_id)
-  let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      parked: dict.delete(state.runtime.parked, issue_id),
-      retry_attempts: dict.delete(state.runtime.retry_attempts, issue_id),
-      issue_counters: dict.delete(state.runtime.issue_counters, issue_id),
-    )
-  let state =
-    State(
-      ..state,
-      runtime: runtime,
-      recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
-    )
-    |> cancel_retry_timer(issue_id)
-  let _ =
-    append_ledger_bodies(
-      state,
-      [
-        record.IssueUnparked(issue_id, issue_identifier, "operator"),
-        record.IssueCounterUpdated(
-          issue_id,
-          issue_identifier,
-          0,
-          0,
-          state.dependencies.now_ms(),
-          None,
-        ),
-      ],
-      "ledger_append_failed",
-    )
-  log_state(state, "info", "issue_unparked", [#("issue_id", issue_id)])
-  state
 }
 
 fn cancel_retry_timer(state: State, issue_id: String) -> State {
@@ -3168,8 +3140,8 @@ fn finish_linear_command_phase(
   candidates: List(tracker_issue.Issue),
   dispatch_after: Bool,
 ) -> State {
-  let state = retry_pending_linear_command_acks(state)
   run_transition_messages(state, [
+    transition_types.RetryPendingLinearCommandAcks,
     transition_types.LinearCommandPhaseFinished(
       candidates,
       dispatch_after,
@@ -3255,7 +3227,13 @@ fn apply_linear_transport_action(
     linear_transport.SubmitCommand(comment, parsed) ->
       apply_linear_submit_command(state, comment, parsed)
     linear_transport.PostAck(issue_id, source_comment_id, body) ->
-      enqueue_linear_command_ack(state, issue_id, source_comment_id, body)
+      request_linear_command_ack(
+        state,
+        issue_id,
+        source_comment_id,
+        body,
+        False,
+      )
     linear_transport.LogIgnored(reason, comment_id) -> {
       log_state(state, "info", "linear_command_ignored", [
         #("comment_id", comment_id),
@@ -3271,189 +3249,50 @@ fn apply_linear_submit_command(
   comment: linear.LinearComment,
   parsed: linear_parser.ParsedLinearCommand,
 ) -> State {
-  let command_name = command.command_name(parsed.command)
-  case
-    append_ledger_bodies(
-      state,
-      [
-        record.LinearCommandSeen(
-          comment.id,
-          comment.issue_id,
-          comment.author.id,
-          command_name,
-          safe_linear_command_excerpt(parsed.excerpt, state.workflow.secrets),
-        ),
-        record.LinearCommandStarted(comment.id, comment.issue_id, command_name),
-      ],
-      "linear_command_start_record_failed",
-    )
-  {
-    False -> state
-    True -> {
-      let state_before_command = state
-      let #(state, result) =
-        apply_operator_command_to_state(state, parsed.command, 1000)
-      let ack_result =
-        command_result_with_display_target(
-          state_before_command,
-          parsed.command,
-          result,
-        )
-      log_state(state, "info", "linear_operator_command", [
-        #("comment_id", comment.id),
-        #("command", result.command),
-        #("status", command.status_to_string(result.status)),
-      ])
-      case
-        append_ledger_bodies(
-          state,
-          [
-            record.LinearCommandCompleted(
-              comment.id,
-              comment.issue_id,
-              command.status_to_string(result.status),
-              result_message_excerpt(ack_result, state.workflow.secrets),
-            ),
-          ],
-          "linear_command_completion_record_failed",
-        )
-      {
-        False -> state
-        True ->
-          case
-            linear_transport.should_ack_result(
-              state.workflow.effective.linear_commands,
-              result,
-            )
-          {
-            True -> {
-              let body =
-                linear_transport.result_ack_body(
-                  comment.id,
-                  parsed,
-                  ack_result,
-                  state.workflow.secrets,
-                )
-              enqueue_linear_command_ack(
-                state,
-                comment.issue_id,
-                comment.id,
-                body,
-              )
-            }
-            False -> state
-          }
-      }
-    }
-  }
+  run_transition_messages(state, [
+    transition_types.LinearCommandSubmitted(
+      comment: comment,
+      parsed: parsed,
+      safe_excerpt: safe_linear_command_excerpt(
+        parsed.excerpt,
+        state.workflow.secrets,
+      ),
+    ),
+  ])
 }
 
-fn enqueue_linear_command_ack(
+fn request_linear_command_ack(
+  state: State,
+  issue_id: String,
+  source_comment_id: String,
+  body: String,
+  outbox_recorded: Bool,
+) -> State {
+  run_transition_messages(state, [
+    transition_types.LinearCommandAckRequested(
+      issue_id: issue_id,
+      source_comment_id: source_comment_id,
+      body: body,
+      outbox_recorded: outbox_recorded,
+    ),
+  ])
+}
+
+fn enqueue_linear_command_ack_publish(
   state: State,
   issue_id: String,
   source_comment_id: String,
   body: String,
 ) -> State {
-  case
-    append_ledger_bodies(
-      state,
-      [
-        record.OutboxPendingV2(
-          source_comment_id,
-          issue_id,
-          "linear_command_ack",
-          "linear_command_ack:" <> source_comment_id,
-          outbox.linear_command_ack_payload(
-            source_comment_id,
-            body,
-            state.workflow.secrets,
-          ),
-        ),
-      ],
-      "linear_command_ack_outbox_record_failed",
-    )
-  {
-    False -> state
-    True ->
-      state
-      |> remember_pending_linear_command_ack(issue_id, source_comment_id, body)
-      |> enqueue_pending_linear_command_ack_effect(
-        issue_id,
-        source_comment_id,
-        body,
-      )
-  }
-}
-
-fn remember_pending_linear_command_ack(
-  state: State,
-  issue_id: String,
-  source_comment_id: String,
-  body: String,
-) -> State {
-  State(
-    ..state,
-    pending_linear_command_acks: dict.insert(
-      state.pending_linear_command_acks,
-      source_comment_id,
-      PendingLinearCommandAck(issue_id, body),
+  enqueue_side_effect(
+    state,
+    effect_runner.PostLinearCommandAck(
+      issue_id: issue_id,
+      source_comment_id: source_comment_id,
+      body: body,
+      client: state.linear_command_client,
     ),
   )
-}
-
-fn enqueue_pending_linear_command_ack_effect(
-  state: State,
-  issue_id: String,
-  source_comment_id: String,
-  body: String,
-) -> State {
-  case dict.has_key(state.in_flight_linear_command_acks, source_comment_id) {
-    True -> state
-    False -> {
-      let state =
-        State(
-          ..state,
-          in_flight_linear_command_acks: dict.insert(
-            state.in_flight_linear_command_acks,
-            source_comment_id,
-            True,
-          ),
-        )
-      enqueue_side_effect(
-        state,
-        effect_runner.PostLinearCommandAck(
-          issue_id: issue_id,
-          source_comment_id: source_comment_id,
-          body: body,
-          client: state.linear_command_client,
-        ),
-      )
-    }
-  }
-}
-
-fn retry_pending_linear_command_acks(state: State) -> State {
-  state.pending_linear_command_acks
-  |> dict.to_list
-  |> list.fold(state, fn(state, entry) {
-    let #(source_comment_id, pending) = entry
-    let PendingLinearCommandAck(issue_id, body) = pending
-    case dict.has_key(state.in_flight_linear_command_acks, source_comment_id) {
-      True -> state
-      False -> {
-        log_state(state, "info", "linear_command_ack_retry_enqueued", [
-          #("issue_id", issue_id),
-          #("comment_id", source_comment_id),
-        ])
-        enqueue_pending_linear_command_ack_effect(
-          state,
-          issue_id,
-          source_comment_id,
-          body,
-        )
-      }
-    }
-  })
 }
 
 fn safe_linear_command_excerpt(value: String, secrets: List(String)) -> String {
@@ -3525,6 +3364,8 @@ fn transition_state_from_daemon(state: State) -> transition_types.State {
     pending_dispatch_validations: state.pending_dispatch_validations,
     next_dispatch_validation_generation: state.next_dispatch_validation_generation,
     next_session_sequence: worker_registry.next_session_sequence(state.registry),
+    pending_linear_command_acks: state.pending_linear_command_acks,
+    in_flight_linear_command_acks: state.in_flight_linear_command_acks,
   )
 }
 
@@ -3532,12 +3373,22 @@ fn merge_transition_state(
   state: State,
   transition_state: transition_types.State,
 ) -> State {
+  let state = case state.shell_state_overrides_transition {
+    True -> State(..state, shell_state_overrides_transition: False)
+    False ->
+      State(
+        ..state,
+        runtime: transition_state.runtime,
+        pending_claims: transition_state.pending_claims,
+        pending_dispatch_validations: transition_state.pending_dispatch_validations,
+        next_dispatch_validation_generation: transition_state.next_dispatch_validation_generation,
+        shell_state_overrides_transition: False,
+      )
+  }
   State(
     ..state,
-    runtime: transition_state.runtime,
-    pending_claims: transition_state.pending_claims,
-    pending_dispatch_validations: transition_state.pending_dispatch_validations,
-    next_dispatch_validation_generation: transition_state.next_dispatch_validation_generation,
+    pending_linear_command_acks: transition_state.pending_linear_command_acks,
+    in_flight_linear_command_acks: transition_state.in_flight_linear_command_acks,
   )
 }
 
@@ -3679,6 +3530,34 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
       State(
         ..state,
         recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
+      )
+    },
+    set_operator_paused: set_operator_paused,
+    apply_operator_command: apply_shell_operator_command,
+    finish_operator_command: finish_operator_command_effect,
+    post_linear_command_ack: fn(state, issue_id, source_comment_id, body) {
+      enqueue_linear_command_ack_publish(
+        state,
+        issue_id,
+        source_comment_id,
+        body,
+      )
+    },
+    report_park: fn(
+      state,
+      issue_id,
+      issue_identifier,
+      reason,
+      release_policy,
+      source_run_id,
+    ) {
+      enqueue_park_report(
+        state,
+        issue_id,
+        issue_identifier,
+        reason,
+        release_policy,
+        source_run_id,
       )
     },
   )
@@ -4179,72 +4058,6 @@ fn handle_retry_refresh_finished(
       transition_dispatch_context(state),
     ),
   ])
-}
-
-fn slots_remain(state: State) -> Bool {
-  state.workflow.effective.agent.max_concurrent_agents != 0
-  && dispatch_slots_used(state)
-  < state.workflow.effective.agent.max_concurrent_agents
-}
-
-fn can_reserve_dispatch_slot(state: State, issue: tracker_issue.Issue) -> Bool {
-  !has_active_run(state, issue.id)
-  && !dict.has_key(state.pending_claims, issue.id)
-  && !dict.has_key(state.pending_dispatch_validations, issue.id)
-  && slots_remain(state)
-  && per_state_dispatch_slot_available(state, issue.state)
-}
-
-fn dispatch_slots_used(state: State) -> Int {
-  active_run_count(state)
-  + dict.size(state.pending_claims)
-  + dict.size(state.pending_dispatch_validations)
-  + list.length(worker_registry.scheduled_worker_handles(state.registry))
-  + dict.size(state.pending_scheduled_starts)
-}
-
-fn per_state_dispatch_slot_available(
-  state: State,
-  issue_state_value: issue_state.IssueState,
-) -> Bool {
-  let key = issue_state.key(issue_state_value)
-  case
-    dict.get(state.workflow.effective.agent.max_concurrent_agents_by_state, key)
-  {
-    Error(_) -> True
-    Ok(limit) -> dispatch_count_for_state(state, key) < limit
-  }
-}
-
-fn dispatch_count_for_state(
-  state: State,
-  normalized_state: issue_state.IssueStateKey,
-) -> Int {
-  running_count_for_state(state, normalized_state)
-  + pending_claim_count_for_state(state, normalized_state)
-}
-
-fn running_count_for_state(
-  state: State,
-  normalized_state: issue_state.IssueStateKey,
-) -> Int {
-  state
-  |> active_run_issues
-  |> list.filter(fn(issue) { issue_state.key(issue.state) == normalized_state })
-  |> list.length
-}
-
-fn pending_claim_count_for_state(
-  state: State,
-  normalized_state: issue_state.IssueStateKey,
-) -> Int {
-  state.pending_claims
-  |> dict.to_list
-  |> list.filter(fn(entry) {
-    let #(_, pending) = entry
-    issue_state.key(pending.issue.state) == normalized_state
-  })
-  |> list.length
 }
 
 fn dispatch_issue(state: State, issue: tracker_issue.Issue) -> State {
@@ -6651,42 +6464,17 @@ fn handle_linear_command_ack_finished(
   comment_id: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
-  let state =
-    State(
-      ..state,
-      in_flight_linear_command_acks: dict.delete(
-        state.in_flight_linear_command_acks,
-        comment_id,
-      ),
-    )
-  case result {
-    Ok(Nil) -> {
-      let _ =
-        append_ledger_bodies(
-          state,
-          [
-            record.OutboxCompleted(comment_id, issue_id, "linear_command_ack"),
-            record.LinearCommandAcked(comment_id, issue_id),
-          ],
-          "ledger_append_failed",
-        )
-      State(
-        ..state,
-        pending_linear_command_acks: dict.delete(
-          state.pending_linear_command_acks,
-          comment_id,
-        ),
-      )
-    }
-    Error(err) -> {
-      log_state(state, "warn", "linear_command_ack_failed", [
-        #("issue_id", issue_id),
-        #("comment_id", comment_id),
-        #("error", error.tracker_code(err)),
-      ])
-      state
-    }
+  let result = case result {
+    Ok(Nil) -> Ok(Nil)
+    Error(err) -> Error(error.tracker_code(err))
   }
+  run_transition_messages(state, [
+    transition_types.LinearCommandAckFinished(
+      issue_id: issue_id,
+      source_comment_id: comment_id,
+      result: result,
+    ),
+  ])
 }
 
 fn handle_invalid_workflow_report_finished(
@@ -7059,6 +6847,29 @@ fn identifier_for_runtime(
           }
       }
   }
+}
+
+fn enqueue_park_report(
+  state: State,
+  issue_id: String,
+  issue_identifier: String,
+  reason: String,
+  release_policy: String,
+  source_run_id: Option(String),
+) -> State {
+  enqueue_side_effect(
+    state,
+    effect_runner.ReportPark(
+      handoff.ParkReport(
+        issue_id: issue_id,
+        issue_identifier: issue_identifier,
+        reason: reason,
+        release_policy: Some(release_policy),
+        run_id: source_run_id,
+      ),
+      state.handoff_client,
+    ),
+  )
 }
 
 fn enqueue_park_report_for_runtime(

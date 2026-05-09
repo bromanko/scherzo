@@ -1,4 +1,6 @@
 import gleam/list
+import gleam/option.{type Option, None}
+import scherzo/control/command
 import scherzo/log
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/reason
@@ -49,6 +51,17 @@ pub opaque type ShellState(shell) {
     cancel_retry_timer: fn(shell, String, Int, String) -> shell,
     release_claim: fn(shell, String) -> shell,
     clear_recovery: fn(shell, String) -> shell,
+    set_operator_paused: fn(shell, Bool) -> shell,
+    apply_operator_command: fn(shell, effects_types.OperatorCommandRequest) ->
+      #(shell, command.CommandResult),
+    finish_operator_command: fn(
+      shell,
+      effects_types.OperatorCommandRequest,
+      command.CommandResult,
+    ) -> #(shell, List(transition_types.Message)),
+    post_linear_command_ack: fn(shell, String, String, String) -> shell,
+    report_park: fn(shell, String, String, String, String, Option(String)) ->
+      shell,
   )
 }
 
@@ -90,6 +103,22 @@ pub fn new_shell_state(
     cancel_retry_timer: fn(started_workers, _, _, _) { started_workers },
     release_claim: fn(started_workers, _) { started_workers },
     clear_recovery: fn(started_workers, _) { started_workers },
+    set_operator_paused: fn(started_workers, _) { started_workers },
+    apply_operator_command: fn(started_workers, request) {
+      #(
+        started_workers,
+        command.rejected(
+          request.operator_command,
+          "operator_command_unhandled",
+          None,
+        ),
+      )
+    },
+    finish_operator_command: fn(started_workers, _, _) {
+      #(started_workers, [])
+    },
+    post_linear_command_ack: fn(started_workers, _, _, _) { started_workers },
+    report_park: fn(started_workers, _, _, _, _, _) { started_workers },
   )
 }
 
@@ -138,6 +167,30 @@ pub fn new_production_shell_state(
   cancel_retry_timer cancel_retry_timer: fn(shell, String, Int, String) -> shell,
   release_claim release_claim: fn(shell, String) -> shell,
   clear_recovery clear_recovery: fn(shell, String) -> shell,
+  set_operator_paused set_operator_paused: fn(shell, Bool) -> shell,
+  apply_operator_command apply_operator_command: fn(
+    shell,
+    effects_types.OperatorCommandRequest,
+  ) -> #(shell, command.CommandResult),
+  finish_operator_command finish_operator_command: fn(
+    shell,
+    effects_types.OperatorCommandRequest,
+    command.CommandResult,
+  ) -> #(shell, List(transition_types.Message)),
+  post_linear_command_ack post_linear_command_ack: fn(
+    shell,
+    String,
+    String,
+    String,
+  ) -> shell,
+  report_park report_park: fn(
+    shell,
+    String,
+    String,
+    String,
+    String,
+    Option(String),
+  ) -> shell,
 ) -> ShellState(shell) {
   ShellState(
     data: data,
@@ -162,6 +215,11 @@ pub fn new_production_shell_state(
     cancel_retry_timer: cancel_retry_timer,
     release_claim: release_claim,
     clear_recovery: clear_recovery,
+    set_operator_paused: set_operator_paused,
+    apply_operator_command: apply_operator_command,
+    finish_operator_command: finish_operator_command,
+    post_linear_command_ack: post_linear_command_ack,
+    report_park: report_park,
   )
 }
 
@@ -342,6 +400,63 @@ fn apply_loop(
         }
         effects_types.ClearRecovery(issue_id) -> {
           let data = shell.clear_recovery(shell.data, issue_id)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.SetOperatorPaused(paused) -> {
+          let data = shell.set_operator_paused(shell.data, paused)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ApplyOperatorCommand(request) -> {
+          let #(data, result) =
+            shell.apply_operator_command(shell.data, request)
+          let #(data, new_follow_ups) =
+            shell.finish_operator_command(data, request, result)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(
+            shell,
+            rest,
+            list.append(list.reverse(new_follow_ups), follow_up_messages),
+          )
+        }
+        effects_types.FinishOperatorCommand(request, result) -> {
+          let #(data, new_follow_ups) =
+            shell.finish_operator_command(shell.data, request, result)
+          let shell = ShellState(..shell, data: data)
+          apply_loop(
+            shell,
+            rest,
+            list.append(list.reverse(new_follow_ups), follow_up_messages),
+          )
+        }
+        effects_types.PostLinearCommandAck(issue_id, source_comment_id, body) -> {
+          let data =
+            shell.post_linear_command_ack(
+              shell.data,
+              issue_id,
+              source_comment_id,
+              body,
+            )
+          let shell = ShellState(..shell, data: data)
+          apply_loop(shell, rest, follow_up_messages)
+        }
+        effects_types.ReportParkEffect(
+          issue_id,
+          issue_identifier,
+          reason,
+          release_policy,
+          source_run_id,
+        ) -> {
+          let data =
+            shell.report_park(
+              shell.data,
+              issue_id,
+              issue_identifier,
+              reason,
+              release_policy,
+              source_run_id,
+            )
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }
