@@ -1,5 +1,7 @@
 import gleam/dict.{type Dict}
+import gleam/list
 import gleam/option.{type Option}
+import gleam/string
 import scherzo/model_config
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -109,6 +111,145 @@ pub type LinearContractConfig {
     invalid_workflow_state_id: Option(String),
     comment_on_invalid_workflow: Bool,
   )
+}
+
+pub type LinearContractRoutingError {
+  LinearContractRoutingPrefixMismatch
+  LinearContractRoutingWorkflowLabelsMismatch
+}
+
+pub fn linear_contract_routing_error_message(
+  error: LinearContractRoutingError,
+) -> String {
+  case error {
+    LinearContractRoutingPrefixMismatch ->
+      "linear_contract.workflow_label_prefix must match routing.workflow_label_prefix"
+    LinearContractRoutingWorkflowLabelsMismatch ->
+      "linear_contract.workflow_labels must match issue-dispatched routing.workflows when routing requires exactly one workflow label"
+  }
+}
+
+pub fn resolve_linear_contract_for_routing(
+  contract: LinearContractConfig,
+  routing: RoutingConfig,
+  scheduled_jobs: List(ScheduledJobConfig),
+  has_labels: Bool,
+  has_prefix: Bool,
+) -> Result(LinearContractConfig, LinearContractRoutingError) {
+  let workflow_names =
+    dict.keys(routing.workflows)
+    |> normalize_label_list
+    |> list.sort(by: string.compare)
+  let scheduled_names =
+    scheduled_jobs
+    |> list.map(fn(job) { job.workflow })
+    |> normalize_label_list
+  let issue_workflow_names =
+    workflow_names
+    |> list.filter(fn(name) { !list.contains(scheduled_names, name) })
+  let contract_prefix = case has_prefix {
+    True -> contract.workflow_label_prefix
+    False -> routing.workflow_label_prefix
+  }
+  case
+    has_prefix
+    && contract.workflow_label_prefix != routing.workflow_label_prefix
+  {
+    True -> Error(LinearContractRoutingPrefixMismatch)
+    False ->
+      resolve_linear_contract_names(
+        contract,
+        contract_prefix,
+        routing.require_exactly_one_workflow_label,
+        has_labels,
+        workflow_names,
+        issue_workflow_names,
+      )
+  }
+}
+
+fn resolve_linear_contract_names(
+  contract: LinearContractConfig,
+  contract_prefix: String,
+  require_exactly_one_workflow_label: Bool,
+  has_labels: Bool,
+  workflow_names: List(String),
+  issue_workflow_names: List(String),
+) -> Result(LinearContractConfig, LinearContractRoutingError) {
+  let contract_names =
+    contract.workflow_labels
+    |> normalize_label_list
+    |> list.sort(by: string.compare)
+  case require_exactly_one_workflow_label, has_labels {
+    True, False ->
+      Ok(
+        LinearContractConfig(
+          ..contract,
+          workflow_label_prefix: contract_prefix,
+          workflow_labels: issue_workflow_names,
+        ),
+      )
+    True, True ->
+      case
+        valid_contract_names(
+          contract_names,
+          workflow_names,
+          issue_workflow_names,
+        )
+      {
+        True ->
+          Ok(
+            LinearContractConfig(
+              ..contract,
+              workflow_label_prefix: contract_prefix,
+              workflow_labels: contract_names,
+            ),
+          )
+        False -> Error(LinearContractRoutingWorkflowLabelsMismatch)
+      }
+    _, _ ->
+      Ok(
+        LinearContractConfig(..contract, workflow_label_prefix: contract_prefix),
+      )
+  }
+}
+
+fn valid_contract_names(
+  contract_names: List(String),
+  workflow_names: List(String),
+  issue_workflow_names: List(String),
+) -> Bool {
+  list.all(issue_workflow_names, fn(name) {
+    list.contains(contract_names, name)
+  })
+  && list.all(contract_names, fn(name) { list.contains(workflow_names, name) })
+}
+
+fn normalize_label(value: String) -> String {
+  value |> string.trim |> string.lowercase
+}
+
+fn normalize_label_list(values: List(String)) -> List(String) {
+  values
+  |> list.map(normalize_label)
+  |> list.filter(fn(value) { value != "" })
+  |> dedupe_preserving_first
+}
+
+fn dedupe_preserving_first(values: List(String)) -> List(String) {
+  dedupe_loop(values, []) |> list.reverse
+}
+
+fn dedupe_loop(values: List(String), acc: List(String)) -> List(String) {
+  case values {
+    [] -> acc
+    [value, ..rest] -> {
+      case list.contains(acc, value) {
+        True -> dedupe_loop(rest, acc)
+        False -> dedupe_loop(rest, [value, ..acc])
+      }
+    }
+  }
 }
 
 pub type LinearCommandConfig {

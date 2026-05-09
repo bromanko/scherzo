@@ -56,12 +56,12 @@ The sixth risk is a partially deployed scheduled job that starts failing every i
 - [x] (2026-05-09 00:00Z) Verified the current tree has native scheduled workflow execution, scheduled failure reporting, and `scherzoctl schedules` diagnostics.
 - [x] (2026-05-09 00:00Z) Verified the current dogfood config has the merge-conflict resolver route but no scheduled scout job, scout workflow, or scout script.
 - [x] (2026-05-09 00:00Z) Refreshed the plan to remove stale scheduler-runtime implementation scope and focus on the GitHub/Linear scout.
-- [ ] Add deterministic fixture tests for the scout CLI and decision behavior.
-- [ ] Implement `scripts/scherzo-github-pr-conflict-scout` with production `scan` and fixture-only `scan-fixture` subcommands.
-- [ ] Add `.scherzo/workflows/github-pr-conflict-scout.yaml`.
-- [ ] Add the `github-pr-conflict-scout` route and `scheduled_jobs` entry to `.scherzo/scherzo.yaml`.
-- [ ] Add runtime-bundle/config tests proving the checked-in scheduled workflow loads and has no issue context.
-- [ ] Run full validation: tests, formatting, glinter, and Scherzo custom lint.
+- [x] (2026-05-09 22:30Z) Added deterministic fixture tests for the scout CLI and decision behavior in `test/github_pr_conflict_scout_test.gleam`.
+- [x] (2026-05-09 22:30Z) Implemented `scripts/scherzo-github-pr-conflict-scout` with production `scan` and fixture-only `scan-fixture` subcommands.
+- [x] (2026-05-09 22:30Z) Added `.scherzo/workflows/github-pr-conflict-scout.yaml`.
+- [x] (2026-05-09 22:30Z) Added the `github-pr-conflict-scout` route and `scheduled_jobs` entry to `.scherzo/scherzo.yaml` without adding a Linear workflow label for the scout.
+- [x] (2026-05-09 22:30Z) Added runtime-bundle/config tests proving the checked-in scheduled workflow loads and has no issue context.
+- [x] (2026-05-09 22:30Z) Ran full validation: tests, formatting, glinter, Scherzo custom lint, Python compile check, and a fixture smoke command.
 
 ## Surprises & Discoveries
 
@@ -82,6 +82,12 @@ The sixth risk is a partially deployed scheduled job that starts failing every i
 
 - Observation: There is no current scout implementation.
   Evidence: repository searches found no `scripts/scherzo-github-pr-conflict-scout`, no `.scherzo/workflows/github-pr-conflict-scout.yaml`, and no `github-pr-conflict-scout` route.
+
+- Observation: The checked-in config loader originally required explicit `linear_contract.workflow_labels` to match every `routing.workflows` key, which made a scheduled-only route fail to load unless it also became a Linear issue workflow label.
+  Evidence: the first full `direnv exec . gleam test --target erlang` after adding the scout route failed with `invalid_config` and the message `linear_contract.workflow_labels must match routing.workflows when routing requires exactly one workflow label`.
+
+- Observation: The source guardrail prevents growing the already-large `src/scherzo/config.gleam` module, including both line count and internal-import count growth.
+  Evidence: after a first implementation of the scheduled-only route exemption in `src/scherzo/config.gleam`, `source_guardrail_test.source_guardrail_matches_checked_in_baseline_test` failed first on line growth and then on internal-import growth. The final implementation keeps the config module below its line baseline and avoids increasing its internal imports by placing pure workflow-label resolution helpers in `src/scherzo/config/types.gleam`.
 
 ## Decision Log
 
@@ -105,9 +111,19 @@ The sixth risk is a partially deployed scheduled job that starts failing every i
   Rationale: The marker is stable across title edits, independent of Linear identifiers, easy to search in descriptions, and readable to operators.
   Date: 2026-05-09
 
+- Decision: Treat scheduled-only workflow routes as outside the required Linear issue workflow label set unless an operator explicitly includes them in `linear_contract.workflow_labels`.
+  Rationale: Scheduled jobs still need a workflow route so the daemon can load their DAG, but they are not dispatched from Linear issues. This preserves the plan's safety boundary while keeping the existing exact-label contract for issue-dispatched workflows.
+  Date: 2026-05-09
+
+- Decision: Put the pure linear-contract route/label normalization helper in `src/scherzo/config/types.gleam` instead of growing `src/scherzo/config.gleam`.
+  Rationale: The source guardrail already baselines `src/scherzo/config.gleam` as a large module. Keeping the new helper in the smaller config types module avoids increasing the large module's line or internal-import baseline while keeping the behavior close to the config data types it normalizes.
+  Date: 2026-05-09
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The scheduled GitHub PR merge-conflict scout is implemented. The repository now has a deterministic fixture-driven scout test suite, an executable Python scout script with production GitHub, local preflight, and Linear GraphQL paths, a one-step scheduled command workflow, dogfood scheduling configuration, and runtime-bundle tests proving that the scheduled route loads without a `workflow:github-pr-conflict-scout` Linear label.
+
+The main implementation gap discovered during execution was that the existing Linear contract resolver treated all workflow routes as issue-dispatched routes. The final code updates that config behavior so scheduled-only routes can coexist with strict Linear issue workflow labels. Full validation passed with the existing warning inventory unchanged in kind for the touched production code, and the fixture smoke command demonstrated the expected resolver issue summary for PR #123.
 
 ## Context and Orientation
 
@@ -123,11 +139,11 @@ The scheduler is daemon-local and poll-driven. When the daemon receives a valid 
 
 The repository uses Gleam on the Erlang target and has a direnv/devenv environment. Commands should be run from the repository root with `direnv exec .` unless direnv is unavailable. If direnv reports that `.envrc` is blocked, inspect `.envrc`, run `direnv allow .`, and retry the command.
 
-The file `.scherzo/scherzo.yaml` exists. It configures Linear with `project_slug: scherzo-f6f4bc92d6d7`, `active_states: [Todo, In Progress]`, `dispatch_states: [Todo]`, and `terminal_states: [Canceled, Duplicate, Done]`. It routes `merge-conflict-resolution` to `workflows/merge-conflict-resolution.yaml`. It requires exactly one issue workflow label and lists `merge-conflict-resolution` in `linear_contract.workflow_labels`. It does not currently contain a `scheduled_jobs` section.
+The file `.scherzo/scherzo.yaml` exists. It configures Linear with `project_slug: scherzo-f6f4bc92d6d7`, `active_states: [Todo, In Progress]`, `dispatch_states: [Todo]`, and `terminal_states: [Canceled, Duplicate, Done]`. It routes `merge-conflict-resolution` to `workflows/merge-conflict-resolution.yaml` and `github-pr-conflict-scout` to `workflows/github-pr-conflict-scout.yaml`. It requires exactly one issue workflow label and lists `merge-conflict-resolution`, but not `github-pr-conflict-scout`, in `linear_contract.workflow_labels`. It now contains an enabled `scheduled_jobs` entry for `github-pr-conflict-scout` with `every: 15m`, `overlap: skip`, `catch_up: false`, and Linear scheduled-failure reporting to `Triage`.
 
 The file `.scherzo/workflows/merge-conflict-resolution.yaml` exists and uses `workspace_profile: dogfood-jj`. Its command steps use `SCHERZO_CONFIG_DIR` to infer the repository root and invoke `scripts/scherzo-merge-conflict`. This is the workflow that scout-created Linear issues must trigger.
 
-The file `scripts/scherzo-merge-conflict` exists and is an executable Python 3 script. It already knows how to extract PR targets from Linear issue text and how to prepare, validate, and publish a conflict repair. This plan must not change that script except by adding tests that assert scout-created issue text remains compatible if needed.
+The file `scripts/scherzo-merge-conflict` exists and is an executable Python 3 script. It already knows how to extract PR targets from Linear issue text and how to prepare, validate, and publish a conflict repair. This plan did not change that script. The file `scripts/scherzo-github-pr-conflict-scout` now also exists and is an executable Python 3 script with `scan` and `scan-fixture` subcommands.
 
 The native scheduler files already exist. `src/scherzo/orchestrator/schedule_core.gleam` defines fixed-interval due-time math and run IDs such as `schedule-scheduled-job-19700101T000001Z`. `src/scherzo/orchestrator/daemon.gleam` evaluates scheduled jobs and starts scheduled workers. `src/scherzo/workflow_run.gleam` implements scheduled workflow execution, scheduled template rendering, and scheduled command environment variables. `src/scherzo/runtime_bundle.gleam` rejects scheduled workflows that reference `issue.*`.
 

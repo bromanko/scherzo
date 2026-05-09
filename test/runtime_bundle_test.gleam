@@ -341,6 +341,7 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
       "execplan-revision",
       "execplan-implementation",
       "merge-conflict-resolution",
+      "github-pr-conflict-scout",
     ],
     fn(workflow_id) {
       let assert Ok(dag) = dict.get(bundle.workflows, workflow_id)
