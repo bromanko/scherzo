@@ -14,8 +14,9 @@ Usage: scherzo-jj-workspace <after-create|before-run|before-remove> <workflow-na
 Run from a Scherzo hook. SCHERZO_WORKSPACE_PATH points at the logical workspace
 and SCHERZO_RUN_ROOT points at the workflow run root. SCHERZO_REPO_ROOT may point
 at the coordinating jj repository; otherwise the script uses SCHERZO_CONFIG_DIR.
-Set SCHERZO_JJ_WORKSPACE_BASE to override the initial base revision; otherwise
-new root workspaces prefer ${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin},
+Set SCHERZO_JJ_WORKSPACE_BASE to override the initial base revision. Without
+that override, new root workspaces fetch ${SCHERZO_PR_BASE:-main} from
+${SCHERZO_PR_REMOTE:-origin} before preferring ${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin},
 then ${SCHERZO_PR_BASE:-main}, then main@origin, then main, then @.
 EOF
 }
@@ -85,6 +86,16 @@ current_change_id() {
 revision_exists() {
   revision=$1
   jj --repository "$repo_root" log -r "$revision" --no-graph -T 'commit_id' --color=never >/dev/null 2>&1
+}
+
+fetch_workspace_publish_base() {
+  default_base=${SCHERZO_PR_BASE:-main}
+  default_remote=${SCHERZO_PR_REMOTE:-origin}
+
+  if ! output=$(jj --repository "$repo_root" git fetch --remote "$default_remote" --branch "$default_base" 2>&1); then
+    printf '%s\n' "$output" >&2
+    fail "could not fetch publish base '${default_base}' from remote '${default_remote}' before creating root workspace; set SCHERZO_PR_REMOTE/SCHERZO_PR_BASE to a fetchable branch or set SCHERZO_JJ_WORKSPACE_BASE to an explicit local revision to skip this fetch"
+  fi
 }
 
 workspace_base_revision() {
@@ -190,6 +201,9 @@ case "$command" in
     if [ -d "$workspace_path/.jj" ]; then
       verify_current_workspace
       exit 0
+    fi
+    if [ -z "${SCHERZO_SOURCE_WORKSPACE_PATH:-}" ] && [ -z "${SCHERZO_JJ_WORKSPACE_BASE:-}" ]; then
+      fetch_workspace_publish_base
     fi
     prepare_destination_for_workspace_add
     if [ -n "${SCHERZO_SOURCE_WORKSPACE_PATH:-}" ]; then

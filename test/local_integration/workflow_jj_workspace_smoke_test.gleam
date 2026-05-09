@@ -78,7 +78,7 @@ fn orchestrator(
         <> "cd \"$SCHERZO_WORKSPACE_PATH\"\n"
         <> "SCHERZO_REPO_ROOT=\""
         <> repo
-        <> "\" sh \""
+        <> "\" SCHERZO_JJ_WORKSPACE_BASE=@ sh \""
         <> script
         <> "\" after-create \"$SCHERZO_WORKFLOW_ID\"",
       ),
