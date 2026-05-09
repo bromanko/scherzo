@@ -18,6 +18,8 @@ pub type RpcRecord {
     delta: Option(String),
     assistant_event_type: Option(String),
     message: Option(String),
+    stop_reason: Option(String),
+    error_message: Option(String),
     method: Option(String),
     tokens: session_tokens.TokenTotals,
     tool_name: Option(String),
@@ -105,6 +107,8 @@ type MessageObject {
     role: Option(String),
     tool_name: Option(String),
     is_error: Option(Bool),
+    stop_reason: Option(String),
+    error_message: Option(String),
     content: List(ContentItem),
   )
 }
@@ -162,6 +166,26 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     "message",
     empty_message_object(),
     tolerant_message_object_decoder(),
+  )
+  use top_stop_reason_camel <- decode.optional_field(
+    "stopReason",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_stop_reason_snake <- decode.optional_field(
+    "stop_reason",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_error_message_camel <- decode.optional_field(
+    "errorMessage",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_error_message_snake <- decode.optional_field(
+    "error_message",
+    None,
+    tolerant_optional_string_decoder(),
   )
   use assistant_messages <- decode.optional_field(
     "messages",
@@ -249,6 +273,16 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     delta: delta,
     assistant_event_type: assistant_event_type,
     message: message,
+    stop_reason: first_non_empty([
+      top_stop_reason_camel,
+      top_stop_reason_snake,
+      message_object.stop_reason,
+    ]),
+    error_message: first_non_empty([
+      top_error_message_camel,
+      top_error_message_snake,
+      message_object.error_message,
+    ]),
     method: method,
     tokens: data.tokens,
     tool_name: tool_name_for_record(
@@ -411,6 +445,26 @@ fn message_object_decoder() -> decode.Decoder(MessageObject) {
       decode.dynamic |> decode.map(fn(_) { None }),
     ]),
   )
+  use stop_reason_camel <- decode.optional_field(
+    "stopReason",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use stop_reason_snake <- decode.optional_field(
+    "stop_reason",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use error_message_camel <- decode.optional_field(
+    "errorMessage",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use error_message_snake <- decode.optional_field(
+    "error_message",
+    None,
+    tolerant_optional_string_decoder(),
+  )
   use content <- decode.optional_field(
     "content",
     [],
@@ -422,6 +476,8 @@ fn message_object_decoder() -> decode.Decoder(MessageObject) {
     role: role,
     tool_name: tool_name,
     is_error: is_error,
+    stop_reason: first_non_empty([stop_reason_camel, stop_reason_snake]),
+    error_message: first_non_empty([error_message_camel, error_message_snake]),
     content: content,
   ))
 }
@@ -452,7 +508,14 @@ fn content_item_decoder() -> decode.Decoder(ContentItem) {
 }
 
 fn empty_message_object() -> MessageObject {
-  MessageObject(role: None, tool_name: None, is_error: None, content: [])
+  MessageObject(
+    role: None,
+    tool_name: None,
+    is_error: None,
+    stop_reason: None,
+    error_message: None,
+    content: [],
+  )
 }
 
 fn tool_name_for_record(

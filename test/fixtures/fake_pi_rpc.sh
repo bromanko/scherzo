@@ -203,7 +203,11 @@ while IFS= read -r line; do
       if [[ -n "${FAKE_PI_STALL_AFTER_PROMPT:-}" ]]; then
         sleep "$(awk "BEGIN { print ${FAKE_PI_STALL_AFTER_PROMPT} / 1000 }")"
       fi
-      jq -cn --arg text "$fake_pi_text" '{type:"turn_end",message:{role:"assistant",content:[{type:"text",text:$text}]}}'
+      if [[ -n "${FAKE_PI_STOP_REASON_ERROR:-}" ]]; then
+        jq -cn --arg text "$fake_pi_text" '{type:"turn_end",stopReason:"error",errorMessage:"terminated",message:{role:"assistant",content:[{type:"text",text:$text}]}}'
+      else
+        jq -cn --arg text "$fake_pi_text" '{type:"turn_end",message:{role:"assistant",content:[{type:"text",text:$text}]}}'
+      fi
       if [[ -n "${FAKE_PI_DELAY_BEFORE_AGENT_END_MS:-}" ]]; then
         sleep "$(awk "BEGIN { print ${FAKE_PI_DELAY_BEFORE_AGENT_END_MS} / 1000 }")"
       fi

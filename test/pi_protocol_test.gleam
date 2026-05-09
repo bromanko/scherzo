@@ -54,6 +54,23 @@ pub fn decode_extension_ui_request_message_test() {
   assert record.message == Some("continue?")
 }
 
+pub fn decode_stop_reason_error_fields_test() {
+  let assert Ok(top_level) =
+    protocol.decode_record(
+      "{\"type\":\"turn_end\",\"stopReason\":\"error\",\"errorMessage\":\"terminated\"}",
+    )
+  assert top_level.stop_reason == Some("error")
+  assert top_level.error_message == Some("terminated")
+
+  let assert Ok(nested_message) =
+    protocol.decode_record(
+      "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\",\"errorMessage\":\"terminated\",\"content\":[{\"type\":\"text\",\"text\":\"partial\"}]}}",
+    )
+  assert nested_message.stop_reason == Some("error")
+  assert nested_message.error_message == Some("terminated")
+  assert nested_message.assistant_messages == ["partial"]
+}
+
 pub fn decode_agent_end_assistant_messages_test() {
   let assert Ok(record) =
     protocol.decode_record(
