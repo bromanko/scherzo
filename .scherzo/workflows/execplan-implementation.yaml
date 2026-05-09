@@ -1,6 +1,6 @@
 version: 1
 id: execplan-implementation
-description: Implement an existing ExecPlan, verify the plan is complete, review the changed Gleam code, validate, publish a PR, and clean up safely.
+description: Implement an existing ExecPlan, verify the plan is complete, review the changed files, validate, publish a PR, and clean up safely.
 max_parallel_steps: 1
 steps:
   - id: prepare_plan
@@ -65,9 +65,47 @@ steps:
     on_failure: continue
     workspace: main
 
+  - id: correctness_review_lane
+    kind: command
+    depends_on: [generate_review_brief]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; backend=${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane correctness --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/correctness_review_lane" --agent-backend "$backend"'
+    on_failure: continue
+    workspace: main
+
+  - id: test_quality_review_lane
+    kind: command
+    depends_on: [generate_review_brief]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; backend=${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane test-quality --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/test_quality_review_lane" --agent-backend "$backend"'
+    on_failure: continue
+    workspace: main
+
+  - id: idioms_maintainability_review_lane
+    kind: command
+    depends_on: [generate_review_brief]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; backend=${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane idioms-maintainability --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/idioms_maintainability_review_lane" --agent-backend "$backend"'
+    on_failure: continue
+    workspace: main
+
+  - id: security_performance_review_lane
+    kind: command
+    depends_on: [generate_review_brief]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; backend=${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" run-lane --lane security-performance --brief "$brief" --from @- --to @ --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/security_performance_review_lane" --agent-backend "$backend"'
+    on_failure: continue
+    workspace: main
+
+  - id: synthesize_review
+    kind: command
+    depends_on:
+      - correctness_review_lane
+      - test_quality_review_lane
+      - idioms_maintainability_review_lane
+      - security_performance_review_lane
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; brief="$SCHERZO_RUN_ROOT/artifacts/review/generate_review_brief/review-brief.v1.json"; "$repo_root/scripts/scherzo-review" synthesize --brief "$brief" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/correctness_review_lane/review-lane-correctness.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/test_quality_review_lane/review-lane-test-quality.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/idioms_maintainability_review_lane/review-lane-idioms-maintainability.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/security_performance_review_lane/review-lane-security-performance.v1.json" --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review"'
+    workspace: main
+
   - id: review_changes
     kind: agent
-    depends_on: [generate_review_brief]
+    depends_on: [synthesize_review]
     prompt: prompts/execplan-implementation-review.md
     workspace: main
 

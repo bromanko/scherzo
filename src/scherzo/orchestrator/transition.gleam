@@ -1,10 +1,20 @@
 import gleam/dict
+import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
+import scherzo/error
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/state/ledger
 import scherzo/state/record
+import scherzo/tracker/issue as tracker_issue
+import scherzo/tracker/state as issue_state
+import scherzo/workflow_policy
+import scherzo/workspace
 
 pub fn handle(
   message: transition_types.Message,
@@ -15,6 +25,49 @@ pub fn handle(
       transition_types.Outcome(state: state, effects: [
         effects_types.ReplySnapshot(state.runtime),
       ])
+    transition_types.PollTick(generation, poll) ->
+      handle_poll_tick(state, generation, poll)
+    transition_types.CandidateFetchStartRequested(generation, context) ->
+      handle_candidate_fetch_start_requested(state, generation, context)
+    transition_types.CandidateFetchCompleted(generation, poll, result, context) ->
+      handle_candidate_fetch_completed(state, generation, poll, result, context)
+    transition_types.LinearCommandPhaseFinished(
+      candidates,
+      dispatch_after,
+      context,
+    ) -> finish_dispatch_phase(state, candidates, dispatch_after, context)
+    transition_types.DispatchCandidates(candidates, context) ->
+      dispatch_candidates_outcome(candidates, state, context)
+    transition_types.DispatchValidationCompleted(
+      issue_id,
+      generation,
+      result,
+      context,
+    ) ->
+      handle_dispatch_validation_completed(
+        state,
+        issue_id,
+        generation,
+        result,
+        context,
+      )
+    transition_types.HandoffClaimCompleted(issue_id, run_id, result) ->
+      handle_handoff_claim_completed(state, issue_id, run_id, result)
+    transition_types.RetryTick(issue_id, generation, context) ->
+      handle_retry_tick(state, issue_id, generation, context)
+    transition_types.RetryRefreshCompleted(
+      issue_id,
+      generation,
+      result,
+      context,
+    ) ->
+      handle_retry_refresh_completed(
+        state,
+        issue_id,
+        generation,
+        result,
+        context,
+      )
     transition_types.ClaimLedgerAppendRequested(
       correlation_id,
       issue_id,
@@ -51,6 +104,1046 @@ pub fn snapshot(
   state: transition_types.State,
 ) -> orchestrator_state.RuntimeState {
   state.runtime
+}
+
+fn handle_poll_tick(
+  state: transition_types.State,
+  generation: Int,
+  poll: transition_types.PollSnapshot,
+) -> transition_types.Outcome {
+  case poll_tick_is_stale(poll, generation) {
+    True -> transition_types.Outcome(state: state, effects: [])
+    False ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.MarkPollInFlight(generation),
+        effects_types.Log("info", "tick_started", [
+          #("generation", int.to_string(generation)),
+        ]),
+      ])
+  }
+}
+
+fn poll_tick_is_stale(
+  poll: transition_types.PollSnapshot,
+  generation: Int,
+) -> Bool {
+  generation != poll.generation || poll.in_flight != None
+}
+
+fn poll_result_is_stale(
+  poll: transition_types.PollSnapshot,
+  generation: Int,
+) -> Bool {
+  generation != poll.generation || poll.in_flight != Some(generation)
+}
+
+fn handle_candidate_fetch_start_requested(
+  state: transition_types.State,
+  generation: Int,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case candidate_fetch_allowed(state, context) {
+    True ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.FetchCandidates(generation),
+      ])
+    False -> finish_candidate_phase(state, generation, [], False, context)
+  }
+}
+
+fn candidate_fetch_allowed(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+) -> Bool {
+  !context.operator_paused
+  && context.dispatch_enabled
+  && context.effective.agent.max_concurrent_agents != 0
+  && slots_remain(state, context)
+}
+
+fn handle_candidate_fetch_completed(
+  state: transition_types.State,
+  generation: Int,
+  poll: transition_types.PollSnapshot,
+  result: Result(List(tracker_issue.Issue), String),
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case poll_result_is_stale(poll, generation) {
+    True -> transition_types.Outcome(state: state, effects: [])
+    False ->
+      case result {
+        Error(err) -> {
+          let outcome =
+            finish_candidate_phase(state, generation, [], False, context)
+          transition_types.Outcome(state: outcome.state, effects: [
+            effects_types.Log("warn", "candidate_fetch_failed", [
+              #("error", err),
+            ]),
+            ..outcome.effects
+          ])
+        }
+        Ok(candidates) -> {
+          let candidates = core.sort_candidates(candidates)
+          let outcome =
+            finish_candidate_phase(state, generation, candidates, True, context)
+          transition_types.Outcome(state: outcome.state, effects: [
+            effects_types.Log("info", "candidates_fetched", [
+              #("count", int.to_string(list.length(candidates))),
+            ]),
+            ..outcome.effects
+          ])
+        }
+      }
+  }
+}
+
+fn finish_candidate_phase(
+  state: transition_types.State,
+  generation: Int,
+  candidates: List(tracker_issue.Issue),
+  dispatch_after: Bool,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  let issue_ids = observed_issue_ids(state, context, candidates)
+  case context.effective.linear_commands.enabled && issue_ids != [] {
+    True ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.FetchLinearCommands(
+          generation,
+          issue_ids,
+          candidates,
+          dispatch_after,
+        ),
+      ])
+    False -> finish_dispatch_phase(state, candidates, dispatch_after, context)
+  }
+}
+
+fn finish_dispatch_phase(
+  state: transition_types.State,
+  candidates: List(tracker_issue.Issue),
+  dispatch_after: Bool,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  let outcome = case dispatch_after {
+    True -> dispatch_candidates_outcome(candidates, state, context)
+    False -> transition_types.Outcome(state: state, effects: [])
+  }
+  transition_types.Outcome(
+    state: outcome.state,
+    effects: list.append(outcome.effects, [effects_types.ScheduleNextPoll]),
+  )
+}
+
+fn dispatch_candidates_outcome(
+  issues: List(tracker_issue.Issue),
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case !context.operator_paused && context.dispatch_enabled {
+    False -> transition_types.Outcome(state: state, effects: [])
+    True ->
+      case issues {
+        [] -> transition_types.Outcome(state: state, effects: [])
+        [issue, ..rest] -> dispatch_candidate(issue, rest, state, context)
+      }
+  }
+}
+
+fn dispatch_candidate(
+  issue: tracker_issue.Issue,
+  rest: List(tracker_issue.Issue),
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case core.is_dispatch_state(context.effective, issue.state) {
+    False -> dispatch_candidates_outcome(rest, state, context)
+    True -> {
+      let state =
+        transition_types.State(
+          ..state,
+          runtime: core.unpark_if_issue_changed(state.runtime, issue),
+        )
+      let decision = core.blocker_decision(context.effective, issue)
+      case decision {
+        core.BlockedByDependency(_, _) -> {
+          let reported =
+            report_blocked_dependency(
+              state,
+              context,
+              issue,
+              "candidate",
+              "linear_dependency_blocked_candidate",
+              decision,
+            )
+          append_with_next(reported, fn(state) {
+            dispatch_candidates_outcome(rest, state, context)
+          })
+        }
+        core.BlockersSatisfied -> {
+          let state =
+            transition_types.State(
+              ..state,
+              runtime: core.clear_blocked_dependency_report(
+                state.runtime,
+                issue.id,
+                "candidate",
+              ),
+            )
+          case dispatch_preconditions_without_slot(state, context, issue) {
+            False -> dispatch_candidates_outcome(rest, state, context)
+            True ->
+              case
+                workflow_policy.classify_issue(
+                  context.effective.linear_contract,
+                  issue,
+                )
+              {
+                workflow_policy.WorkflowInvalid(violation) -> {
+                  let reported =
+                    report_invalid_workflow_candidate(
+                      state,
+                      context,
+                      issue,
+                      violation,
+                    )
+                  append_with_next(reported, fn(state) {
+                    dispatch_candidates_outcome(rest, state, context)
+                  })
+                }
+                workflow_policy.WorkflowPolicyDisabled
+                | workflow_policy.WorkflowSelected(_, _) -> {
+                  let state =
+                    transition_types.State(
+                      ..state,
+                      runtime: core.clear_invalid_workflow_report(
+                        state.runtime,
+                        issue.id,
+                      ),
+                    )
+                  case can_reserve_dispatch_slot(state, context, issue) {
+                    False -> dispatch_candidates_outcome(rest, state, context)
+                    True ->
+                      begin_dispatch_validation(state, issue, rest, context)
+                  }
+                }
+              }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn begin_dispatch_validation(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case issue_is_running_claimed_or_pending(state, context, issue.id) {
+    True -> dispatch_candidates_outcome(remaining_candidates, state, context)
+    False -> {
+      let generation = state.next_dispatch_validation_generation
+      let pending =
+        transition_types.PendingDispatchValidation(
+          issue: issue,
+          remaining_candidates: remaining_candidates,
+          generation: generation,
+          requested_at_ms: context.now_ms,
+        )
+      transition_types.Outcome(
+        state: transition_types.State(
+          ..state,
+          pending_dispatch_validations: dict.insert(
+            state.pending_dispatch_validations,
+            issue.id,
+            pending,
+          ),
+          next_dispatch_validation_generation: generation + 1,
+        ),
+        effects: [
+          effects_types.Log(
+            "info",
+            "linear_dependency_claim_validation_started",
+            [
+              #("issue_id", issue.id),
+              #("issue_identifier", issue.identifier),
+              #("generation", int.to_string(generation)),
+            ],
+          ),
+          effects_types.BeginDispatchValidation(issue.id, generation),
+        ],
+      )
+    }
+  }
+}
+
+fn handle_dispatch_validation_completed(
+  state: transition_types.State,
+  issue_id: String,
+  generation: Int,
+  result: Result(tracker_issue.Issue, transition_types.DispatchValidationError),
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case dict.get(state.pending_dispatch_validations, issue_id) {
+    Error(_) -> stale_dispatch_validation(state, issue_id, generation)
+    Ok(pending) ->
+      case pending.generation != generation {
+        True -> stale_dispatch_validation(state, issue_id, generation)
+        False -> {
+          let state =
+            transition_types.State(
+              ..state,
+              pending_dispatch_validations: dict.delete(
+                state.pending_dispatch_validations,
+                issue_id,
+              ),
+            )
+          case result {
+            Error(err) -> {
+              let outcome =
+                dispatch_candidates_outcome(
+                  pending.remaining_candidates,
+                  state,
+                  context,
+                )
+              transition_types.Outcome(state: outcome.state, effects: [
+                effects_types.Log(
+                  "warn",
+                  "linear_dependency_claim_validation_failed",
+                  [
+                    #("issue_id", issue_id),
+                    #("generation", int.to_string(generation)),
+                    #("reason", dispatch_validation_error_reason(err)),
+                  ],
+                ),
+                ..outcome.effects
+              ])
+            }
+            Ok(refreshed_issue) ->
+              handle_successful_dispatch_validation(
+                state,
+                pending,
+                refreshed_issue,
+                context,
+              )
+          }
+        }
+      }
+  }
+}
+
+fn stale_dispatch_validation(
+  state: transition_types.State,
+  issue_id: String,
+  generation: Int,
+) -> transition_types.Outcome {
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("info", "dispatch_validation_stale", [
+      #("issue_id", issue_id),
+      #("generation", int.to_string(generation)),
+    ]),
+  ])
+}
+
+fn handle_successful_dispatch_validation(
+  state: transition_types.State,
+  pending: transition_types.PendingDispatchValidation,
+  refreshed_issue: tracker_issue.Issue,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case core.is_dispatch_state(context.effective, refreshed_issue.state) {
+    False ->
+      dispatch_candidates_outcome(pending.remaining_candidates, state, context)
+    True -> {
+      let state =
+        transition_types.State(
+          ..state,
+          runtime: core.unpark_if_issue_changed(state.runtime, refreshed_issue),
+        )
+      let decision = core.blocker_decision(context.effective, refreshed_issue)
+      case decision {
+        core.BlockedByDependency(_, _) -> {
+          let reported =
+            report_blocked_dependency(
+              state,
+              context,
+              refreshed_issue,
+              "claim_validation",
+              "linear_dependency_claim_validation_blocked",
+              decision,
+            )
+          append_with_next(reported, fn(state) {
+            dispatch_candidates_outcome(
+              pending.remaining_candidates,
+              state,
+              context,
+            )
+          })
+        }
+        core.BlockersSatisfied -> {
+          let state =
+            transition_types.State(
+              ..state,
+              runtime: core.clear_blocked_dependency_report(
+                state.runtime,
+                refreshed_issue.id,
+                "claim_validation",
+              ),
+            )
+          case
+            dispatch_validation_precondition_failure(
+              state,
+              context,
+              refreshed_issue,
+            )
+          {
+            Some(reason) -> {
+              let outcome =
+                dispatch_candidates_outcome(
+                  pending.remaining_candidates,
+                  state,
+                  context,
+                )
+              transition_types.Outcome(state: outcome.state, effects: [
+                effects_types.Log(
+                  "info",
+                  "dispatch_validation_precondition_failed",
+                  [
+                    #("issue_id", refreshed_issue.id),
+                    #("generation", int.to_string(pending.generation)),
+                    #("reason", reason),
+                  ],
+                ),
+                ..outcome.effects
+              ])
+            }
+            None ->
+              case
+                workflow_policy.classify_issue(
+                  context.effective.linear_contract,
+                  refreshed_issue,
+                )
+              {
+                workflow_policy.WorkflowInvalid(violation) -> {
+                  let reported =
+                    report_invalid_workflow_candidate(
+                      state,
+                      context,
+                      refreshed_issue,
+                      violation,
+                    )
+                  append_with_next(reported, fn(state) {
+                    dispatch_candidates_outcome(
+                      pending.remaining_candidates,
+                      state,
+                      context,
+                    )
+                  })
+                }
+                workflow_policy.WorkflowPolicyDisabled
+                | workflow_policy.WorkflowSelected(_, _) ->
+                  case
+                    can_reserve_dispatch_slot(state, context, refreshed_issue)
+                  {
+                    False -> {
+                      let outcome =
+                        dispatch_candidates_outcome(
+                          pending.remaining_candidates,
+                          state,
+                          context,
+                        )
+                      transition_types.Outcome(state: outcome.state, effects: [
+                        effects_types.Log(
+                          "info",
+                          "dispatch_validation_slot_unavailable",
+                          [
+                            #("issue_id", refreshed_issue.id),
+                            #("generation", int.to_string(pending.generation)),
+                          ],
+                        ),
+                        ..outcome.effects
+                      ])
+                    }
+                    True ->
+                      begin_claim_for_issue(
+                        state,
+                        refreshed_issue,
+                        pending.remaining_candidates,
+                        context,
+                      )
+                  }
+              }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn begin_claim_for_issue(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case select_workflow_route(context, issue) {
+    Error(#(code, message)) -> {
+      let outcome =
+        dispatch_candidates_outcome(remaining_candidates, state, context)
+      transition_types.Outcome(state: outcome.state, effects: [
+        effects_types.Log("warn", "workflow_route_failed", [
+          #("issue_id", issue.id),
+          #("error", code),
+          #("message", message),
+        ]),
+        ..outcome.effects
+      ])
+    }
+    Ok(workflow_id) ->
+      case workspace.workspace_path(context.workspace_root, issue.identifier) {
+        Error(err) -> {
+          let outcome =
+            dispatch_candidates_outcome(remaining_candidates, state, context)
+          transition_types.Outcome(state: outcome.state, effects: [
+            effects_types.Log("warn", "dispatch_workspace_path_failed", [
+              #("issue_id", issue.id),
+              #("error", error.workspace_code(err)),
+            ]),
+            ..outcome.effects
+          ])
+        }
+        Ok(#(_, workspace_path)) -> {
+          let sequence = state.next_session_sequence
+          let run_id = make_run_id(issue, context.now_ms, sequence)
+          let session_id = make_session_id(issue.identifier, run_id, sequence)
+          let recovery =
+            dict.get(context.recovery_by_issue, issue.id)
+            |> option.from_result
+          let pending =
+            transition_types.PendingClaim(
+              issue_id: issue.id,
+              run_id: run_id,
+              session_id: session_id,
+              workspace_path: workspace_path,
+              workflow_id: workflow_id,
+              command_route_id: "worker:"
+                <> run_id
+                <> ":"
+                <> int.to_string(sequence),
+              route_label: issue.identifier,
+              issue: issue,
+              recovery: recovery,
+              remaining_candidates: remaining_candidates,
+              dispatch_context: context,
+            )
+          transition_types.Outcome(
+            state: transition_types.State(
+              ..state,
+              pending_claims: dict.insert(
+                state.pending_claims,
+                issue.id,
+                pending,
+              ),
+              next_session_sequence: sequence + 1,
+            ),
+            effects: [
+              effects_types.ReserveSessionSequence(sequence),
+              effects_types.ClaimIssue(issue, workspace_path, run_id),
+            ],
+          )
+        }
+      }
+  }
+}
+
+fn handle_handoff_claim_completed(
+  state: transition_types.State,
+  issue_id: String,
+  run_id: String,
+  result: transition_types.HandoffClaimResult,
+) -> transition_types.Outcome {
+  case dict.get(state.pending_claims, issue_id) {
+    Error(_) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "handoff_claim_stale", [
+          #("issue_id", issue_id),
+        ]),
+      ])
+    Ok(pending) ->
+      case pending.run_id != run_id {
+        True ->
+          transition_types.Outcome(state: state, effects: [
+            effects_types.Log("warn", "handoff_claim_stale", [
+              #("issue_id", issue_id),
+              #("run_id", run_id),
+            ]),
+          ])
+        False ->
+          case result {
+            transition_types.HandoffClaimFailed(err) -> {
+              let state = clear_pending_claim(state, issue_id)
+              let outcome =
+                dispatch_candidates_outcome(
+                  pending.remaining_candidates,
+                  state,
+                  pending.dispatch_context,
+                )
+              transition_types.Outcome(state: outcome.state, effects: [
+                effects_types.Log("warn", "handoff_claim_failed", [
+                  #("issue_id", issue_id),
+                  #("error", err),
+                ]),
+                ..outcome.effects
+              ])
+            }
+            transition_types.HandoffClaimStartRecordFailed(reason) -> {
+              let state = clear_pending_claim(state, issue_id)
+              let outcome =
+                dispatch_candidates_outcome(
+                  pending.remaining_candidates,
+                  state,
+                  pending.dispatch_context,
+                )
+              transition_types.Outcome(state: outcome.state, effects: [
+                effects_types.Log("warn", "workflow_checkpoint_start_failed", [
+                  #("issue_id", issue_id),
+                  #("error", reason),
+                ]),
+                ..outcome.effects
+              ])
+            }
+            transition_types.HandoffClaimSucceeded(bodies) ->
+              handle_claim_ledger_append_requested(
+                state,
+                claim_correlation_id(issue_id, run_id),
+                issue_id,
+                run_id,
+                pending.session_id,
+                bodies,
+                "ledger_append_failed",
+              )
+          }
+      }
+  }
+}
+
+fn handle_retry_tick(
+  state: transition_types.State,
+  issue_id: String,
+  generation: Int,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case dict.get(state.runtime.retry_attempts, issue_id) {
+    Error(_) -> retry_timer_stale(state, issue_id, generation, False)
+    Ok(entry) ->
+      case entry.timer_generation != generation {
+        True -> retry_timer_stale(state, issue_id, generation, True)
+        False -> {
+          let accepted_effects = [effects_types.RemoveRetryTimer(issue_id)]
+          case retry_dispatch_available(state, context) {
+            False ->
+              transition_types.Outcome(
+                state: state,
+                effects: list.append(accepted_effects, [
+                  effects_types.Log(
+                    "warn",
+                    "retry_deferred_dispatch_unavailable",
+                    [#("issue_id", issue_id)],
+                  ),
+                  effects_types.DeferRetryTimer(issue_id, generation, 1000),
+                ]),
+              )
+            True ->
+              transition_types.Outcome(
+                state: state,
+                effects: list.append(accepted_effects, [
+                  effects_types.BeginRetryRefresh(issue_id, generation),
+                ]),
+              )
+          }
+        }
+      }
+  }
+}
+
+fn retry_timer_stale(
+  state: transition_types.State,
+  issue_id: String,
+  generation: Int,
+  include_generation: Bool,
+) -> transition_types.Outcome {
+  let fields = case include_generation {
+    True -> [
+      #("issue_id", issue_id),
+      #("generation", int.to_string(generation)),
+    ]
+    False -> [#("issue_id", issue_id)]
+  }
+  transition_types.Outcome(state: state, effects: [
+    effects_types.Log("info", "retry_timer_stale", fields),
+  ])
+}
+
+fn retry_dispatch_available(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+) -> Bool {
+  !context.operator_paused
+  && context.dispatch_enabled
+  && slots_remain(state, context)
+}
+
+fn handle_retry_refresh_completed(
+  state: transition_types.State,
+  issue_id: String,
+  generation: Int,
+  result: Result(List(tracker_issue.Issue), String),
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  let finish_effect = effects_types.FinishRetryRefresh(issue_id)
+  let outcome = case dict.get(state.runtime.retry_attempts, issue_id) {
+    Error(_) -> retry_timer_stale(state, issue_id, generation, False)
+    Ok(entry) ->
+      case entry.timer_generation != generation {
+        True -> retry_timer_stale(state, issue_id, generation, True)
+        False ->
+          case context.dispatch_enabled {
+            False ->
+              transition_types.Outcome(state: state, effects: [
+                effects_types.Log(
+                  "warn",
+                  "retry_deferred_dispatch_unavailable",
+                  [#("issue_id", issue_id)],
+                ),
+                effects_types.DeferRetryTimer(issue_id, generation, 1000),
+              ])
+            True ->
+              handle_retry_candidate_after_refresh(
+                state,
+                issue_id,
+                retry_candidate_result(result),
+                context,
+              )
+          }
+      }
+  }
+  transition_types.Outcome(state: outcome.state, effects: [
+    finish_effect,
+    ..outcome.effects
+  ])
+}
+
+fn retry_candidate_result(
+  result: Result(List(tracker_issue.Issue), String),
+) -> Result(Option(tracker_issue.Issue), String) {
+  case result {
+    Error(err) -> Error(err)
+    Ok([issue]) -> Ok(Some(issue))
+    Ok(_) -> Ok(None)
+  }
+}
+
+fn handle_retry_candidate_after_refresh(
+  state: transition_types.State,
+  issue_id: String,
+  candidate: Result(Option(tracker_issue.Issue), String),
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  case candidate {
+    Error(_) ->
+      schedule_retry_with_backoff(
+        state,
+        context,
+        issue_id,
+        orchestrator_reason.RetryPollFailed,
+      )
+    Ok(None) -> release_retry_claim(state, issue_id)
+    Ok(Some(issue)) ->
+      handle_retry_issue_candidate(state, issue_id, issue, context)
+  }
+}
+
+fn handle_retry_issue_candidate(
+  state: transition_types.State,
+  issue_id: String,
+  issue: tracker_issue.Issue,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  let state =
+    transition_types.State(
+      ..state,
+      runtime: core.unpark_if_issue_changed(state.runtime, issue),
+    )
+  let decision = core.blocker_decision(context.effective, issue)
+  case decision {
+    core.BlockedByDependency(_, _) -> {
+      let reported =
+        report_blocked_dependency(
+          state,
+          context,
+          issue,
+          "retry",
+          "linear_dependency_retry_blocked",
+          decision,
+        )
+      let stopped =
+        stop_retry_for_dependency_blocked(reported.state, issue_id, context)
+      transition_types.Outcome(
+        state: stopped.state,
+        effects: list.append(
+          reported.effects,
+          list.append(stopped.effects, [effects_types.ClearRecovery(issue_id)]),
+        ),
+      )
+    }
+    core.BlockersSatisfied -> {
+      let state =
+        transition_types.State(
+          ..state,
+          runtime: core.clear_blocked_dependency_report(
+            state.runtime,
+            issue.id,
+            "retry",
+          ),
+        )
+      case
+        core.retry_candidate_preconditions_satisfied_without_slot_capacity(
+          state.runtime,
+          context.effective,
+          issue_id,
+          issue,
+        )
+      {
+        False -> release_retry_claim(state, issue_id)
+        True ->
+          case
+            workflow_policy.classify_issue(
+              context.effective.linear_contract,
+              issue,
+            )
+          {
+            workflow_policy.WorkflowInvalid(violation) -> {
+              let stopped =
+                stop_retry_for_policy_invalid(state, issue_id, context)
+              let reported =
+                report_invalid_workflow_candidate(
+                  stopped.state,
+                  context,
+                  issue,
+                  violation,
+                )
+              transition_types.Outcome(
+                state: reported.state,
+                effects: list.append(stopped.effects, reported.effects),
+              )
+            }
+            workflow_policy.WorkflowPolicyDisabled
+            | workflow_policy.WorkflowSelected(_, _) ->
+              case can_reserve_dispatch_slot(state, context, issue) {
+                False ->
+                  schedule_retry_with_backoff(
+                    state,
+                    context,
+                    issue_id,
+                    orchestrator_reason.RetryNoSlots,
+                  )
+                True -> {
+                  let state =
+                    transition_types.State(
+                      ..state,
+                      runtime: clear_retry(state.runtime, issue_id),
+                    )
+                  begin_claim_for_issue(state, issue, [], context)
+                }
+              }
+          }
+      }
+    }
+  }
+}
+
+fn release_retry_claim(
+  state: transition_types.State,
+  issue_id: String,
+) -> transition_types.Outcome {
+  transition_types.Outcome(
+    state: transition_types.State(
+      ..state,
+      runtime: release_claim(clear_retry(state.runtime, issue_id), issue_id),
+    ),
+    effects: [effects_types.ReleaseClaim(issue_id)],
+  )
+}
+
+fn schedule_retry_with_backoff(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  issue_id: String,
+  retry_reason: orchestrator_reason.RetryReason,
+) -> transition_types.Outcome {
+  let core.Transition(state: runtime, effects: core_effects) =
+    core.schedule_retry_with_backoff(
+      state.runtime,
+      context.effective,
+      issue_id,
+      retry_reason,
+    )
+  map_core_effects(
+    transition_types.State(..state, runtime: runtime),
+    context,
+    core_effects,
+  )
+}
+
+fn stop_retry_for_policy_invalid(
+  state: transition_types.State,
+  issue_id: String,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  let core.Transition(state: runtime, effects: core_effects) =
+    core.stop_retry_for_policy_invalid(state.runtime, issue_id)
+  map_core_effects(
+    transition_types.State(..state, runtime: runtime),
+    context,
+    core_effects,
+  )
+}
+
+fn stop_retry_for_dependency_blocked(
+  state: transition_types.State,
+  issue_id: String,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  let core.Transition(state: runtime, effects: core_effects) =
+    core.stop_retry_for_dependency_blocked(state.runtime, issue_id)
+  map_core_effects(
+    transition_types.State(..state, runtime: runtime),
+    context,
+    core_effects,
+  )
+}
+
+fn map_core_effects(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  effects: List(core.Effect),
+) -> transition_types.Outcome {
+  list.fold(
+    effects,
+    transition_types.Outcome(state: state, effects: []),
+    fn(outcome, effect) {
+      let transition_types.Outcome(state: state, effects: mapped) =
+        map_core_effect(outcome.state, context, effect)
+      transition_types.Outcome(
+        state: state,
+        effects: list.append(outcome.effects, mapped),
+      )
+    },
+  )
+}
+
+fn map_core_effect(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  effect: core.Effect,
+) -> transition_types.Outcome {
+  case effect {
+    core.Dispatch(issue) -> begin_claim_for_issue(state, issue, [], context)
+    core.ScheduleRetry(issue_id, delay_ms, generation, retry_reason) ->
+      transition_types.Outcome(
+        state: state,
+        effects: schedule_retry_effects(
+          state.runtime,
+          issue_id,
+          delay_ms,
+          generation,
+          retry_reason,
+        ),
+      )
+    core.CancelRetry(issue_id, generation, cancel_reason) ->
+      transition_types.Outcome(
+        state: state,
+        effects: cancel_retry_effects(issue_id, generation, cancel_reason),
+      )
+    core.ReleaseClaim(issue_id) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.ReleaseClaim(issue_id),
+      ])
+    core.CleanupWorkspace(workspace_path) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "transition_unhandled_cleanup_workspace", [
+          #("workspace_path", workspace_path),
+        ]),
+      ])
+    core.StopWorker(issue_id, _) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "transition_unhandled_stop_worker", [
+          #("issue_id", issue_id),
+        ]),
+      ])
+    core.ParkIssue(issue_id, _) ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.Log("warn", "transition_unhandled_park_issue", [
+          #("issue_id", issue_id),
+        ]),
+      ])
+  }
+}
+
+fn schedule_retry_effects(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+  delay_ms: Int,
+  generation: Int,
+  retry_reason: orchestrator_reason.RetryReason,
+) -> List(effects_types.Effect) {
+  let reason_text = orchestrator_reason.retry_to_string(retry_reason)
+  [
+    effects_types.AppendLedger(effects_types.LedgerAppend(
+      correlation_id: "retry_schedule:"
+        <> issue_id
+        <> ":"
+        <> int.to_string(generation),
+      bodies: [
+        record.RetryScheduled(
+          issue_id,
+          identifier_for_runtime(runtime, issue_id),
+          delay_ms,
+          generation,
+          reason_text,
+        ),
+      ],
+      failure_event: "ledger_append_failed",
+      policy: effects_types.ContinueRegardless,
+    )),
+    effects_types.ScheduleRetryTimer(
+      issue_id,
+      delay_ms,
+      generation,
+      retry_reason,
+    ),
+  ]
+}
+
+fn cancel_retry_effects(
+  issue_id: String,
+  generation: Int,
+  cancel_reason: String,
+) -> List(effects_types.Effect) {
+  [
+    effects_types.AppendLedger(effects_types.LedgerAppend(
+      correlation_id: "retry_cancel:"
+        <> issue_id
+        <> ":"
+        <> int.to_string(generation),
+      bodies: [record.RetryCancelled(issue_id, generation, cancel_reason)],
+      failure_event: "ledger_append_failed",
+      policy: effects_types.ContinueRegardless,
+    )),
+    effects_types.CancelRetryTimer(issue_id, generation, cancel_reason),
+  ]
 }
 
 fn handle_claim_ledger_append_requested(
@@ -173,6 +1266,7 @@ fn start_claimed_worker(
     )
   let state =
     transition_types.State(
+      ..state,
       pending_claims: dict.delete(state.pending_claims, pending.issue_id),
       runtime: core.apply_worker_start(
         state.runtime,
@@ -181,7 +1275,13 @@ fn start_claimed_worker(
       ),
       workers: workers,
     )
-  transition_types.Outcome(state: state, effects: [
+  let continued =
+    dispatch_candidates_outcome(
+      pending.remaining_candidates,
+      state,
+      pending.dispatch_context,
+    )
+  transition_types.Outcome(state: continued.state, effects: [
     effects_types.StartWorker(effects_types.WorkerStart(
       issue_id: pending.issue_id,
       run_id: pending.run_id,
@@ -193,6 +1293,7 @@ fn start_claimed_worker(
       route_label: pending.route_label,
       recovery: pending.recovery,
     )),
+    ..continued.effects
   ])
 }
 
@@ -219,6 +1320,495 @@ fn clear_pending_claim(
     ..state,
     pending_claims: dict.delete(state.pending_claims, issue_id),
   )
+}
+
+fn report_blocked_dependency(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+  phase: String,
+  event: String,
+  decision: core.BlockerDecision,
+) -> transition_types.Outcome {
+  case
+    core.already_reported_blocked_dependency(
+      state.runtime,
+      context.effective,
+      issue,
+      phase,
+      decision,
+    )
+  {
+    True -> transition_types.Outcome(state: state, effects: [])
+    False -> {
+      let runtime =
+        core.mark_blocked_dependency_reported(
+          state.runtime,
+          context.effective,
+          issue,
+          phase,
+          decision,
+          context.now_ms,
+        )
+      transition_types.Outcome(
+        state: transition_types.State(..state, runtime: runtime),
+        effects: [
+          effects_types.Log("warn", event, [
+            #("issue_id", issue.id),
+            #("issue_identifier", issue.identifier),
+            #("phase", phase),
+            #(
+              "blocker_fingerprint",
+              core.blocked_dependency_fingerprint(
+                context.effective,
+                issue,
+                phase,
+                decision,
+              ),
+            ),
+            #("blockers", blocker_summary(issue, decision)),
+            #(
+              "incomplete",
+              bool_field(core.blocker_decision_incomplete(decision)),
+            ),
+          ]),
+        ],
+      )
+    }
+  }
+}
+
+fn report_invalid_workflow_candidate(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+  violation: workflow_policy.IssueWorkflowViolation,
+) -> transition_types.Outcome {
+  case
+    core.already_attempted_invalid_workflow(
+      state.runtime,
+      issue,
+      violation,
+      context.effective.linear_contract,
+    )
+  {
+    True -> transition_types.Outcome(state: state, effects: [])
+    False -> {
+      let fingerprint = workflow_policy.violation_fingerprint(violation)
+      let reporting_policy_fingerprint =
+        workflow_policy.reporting_policy_fingerprint(
+          context.effective.linear_contract,
+        )
+      let runtime =
+        core.mark_invalid_workflow_report_pending(
+          state.runtime,
+          issue,
+          violation,
+          context.effective.linear_contract,
+          context.now_ms,
+        )
+      transition_types.Outcome(
+        state: transition_types.State(..state, runtime: runtime),
+        effects: [
+          effects_types.Log("warn", "invalid_workflow_candidate", [
+            #("issue_id", issue.id),
+            #("issue_identifier", issue.identifier),
+            #("violation", workflow_policy.violation_code(violation)),
+            #("violation_fingerprint", fingerprint),
+          ]),
+          effects_types.ReportInvalidWorkflow(
+            issue,
+            violation,
+            fingerprint,
+            reporting_policy_fingerprint,
+          ),
+        ],
+      )
+    }
+  }
+}
+
+fn append_with_next(
+  outcome: transition_types.Outcome,
+  next: fn(transition_types.State) -> transition_types.Outcome,
+) -> transition_types.Outcome {
+  let next_outcome = next(outcome.state)
+  transition_types.Outcome(
+    state: next_outcome.state,
+    effects: list.append(outcome.effects, next_outcome.effects),
+  )
+}
+
+fn dispatch_preconditions_without_slot(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+) -> Bool {
+  core.dispatch_preconditions_satisfied_without_slot_capacity(
+    state.runtime,
+    context.effective,
+    issue,
+  )
+  && !dict.has_key(state.pending_claims, issue.id)
+  && !dict.has_key(state.pending_dispatch_validations, issue.id)
+  && !list.contains(active_issue_ids(state, context), issue.id)
+}
+
+fn dispatch_validation_precondition_failure(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+) -> Option(String) {
+  case
+    string.trim(issue.id) == ""
+    || string.trim(issue.identifier) == ""
+    || string.trim(issue.title) == ""
+    || string.trim(issue_state.to_string(issue.state)) == ""
+  {
+    True -> Some("missing_required_fields")
+    False ->
+      case core.is_active(context.effective, issue.state) {
+        False -> Some("inactive_state")
+        True ->
+          case core.is_terminal(context.effective, issue.state) {
+            True -> Some("terminal_state")
+            False ->
+              case list.contains(active_issue_ids(state, context), issue.id) {
+                True -> Some("already_running")
+                False ->
+                  case
+                    dict.has_key(state.runtime.claimed, issue.id)
+                    || dict.has_key(state.pending_claims, issue.id)
+                  {
+                    True -> Some("already_claimed")
+                    False ->
+                      case
+                        core.dispatch_preconditions_satisfied_without_slot_capacity(
+                          state.runtime,
+                          context.effective,
+                          issue,
+                        )
+                      {
+                        True -> None
+                        False -> Some("parked")
+                      }
+                  }
+              }
+          }
+      }
+  }
+}
+
+fn issue_is_running_claimed_or_pending(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  issue_id: String,
+) -> Bool {
+  list.contains(active_issue_ids(state, context), issue_id)
+  || dict.has_key(state.runtime.running, issue_id)
+  || dict.has_key(state.runtime.claimed, issue_id)
+  || dict.has_key(state.pending_claims, issue_id)
+  || dict.has_key(state.pending_dispatch_validations, issue_id)
+}
+
+fn can_reserve_dispatch_slot(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+) -> Bool {
+  !list.contains(active_issue_ids(state, context), issue.id)
+  && !dict.has_key(state.pending_claims, issue.id)
+  && !dict.has_key(state.pending_dispatch_validations, issue.id)
+  && slots_remain(state, context)
+  && per_state_dispatch_slot_available(state, context, issue.state)
+}
+
+fn slots_remain(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+) -> Bool {
+  context.effective.agent.max_concurrent_agents != 0
+  && dispatch_slots_used(state, context)
+  < context.effective.agent.max_concurrent_agents
+}
+
+fn dispatch_slots_used(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+) -> Int {
+  list.length(active_issue_ids(state, context))
+  + dict.size(state.pending_claims)
+  + dict.size(state.pending_dispatch_validations)
+  + context.reserved_non_issue_slots
+}
+
+fn per_state_dispatch_slot_available(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  issue_state_value: issue_state.IssueState,
+) -> Bool {
+  let key = issue_state.key(issue_state_value)
+  case dict.get(context.effective.agent.max_concurrent_agents_by_state, key) {
+    Error(_) -> True
+    Ok(limit) -> dispatch_count_for_state(state, context, key) < limit
+  }
+}
+
+fn dispatch_count_for_state(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  normalized_state: issue_state.IssueStateKey,
+) -> Int {
+  running_count_for_state(state, context, normalized_state)
+  + pending_claim_count_for_state(state, normalized_state)
+}
+
+fn running_count_for_state(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  normalized_state: issue_state.IssueStateKey,
+) -> Int {
+  active_issues(state, context)
+  |> list.filter(fn(issue) { issue_state.key(issue.state) == normalized_state })
+  |> list.length
+}
+
+fn pending_claim_count_for_state(
+  state: transition_types.State,
+  normalized_state: issue_state.IssueStateKey,
+) -> Int {
+  state.pending_claims
+  |> dict.values
+  |> list.filter(fn(pending) {
+    issue_state.key(pending.issue.state) == normalized_state
+  })
+  |> list.length
+}
+
+fn active_issue_ids(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+) -> List(String) {
+  []
+  |> append_unique_list(dict.keys(state.runtime.running))
+  |> append_unique_list(context.active_issue_ids)
+}
+
+fn active_issues(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+) -> List(tracker_issue.Issue) {
+  []
+  |> append_unique_issues(
+    state.runtime.running |> dict.values |> list.map(fn(entry) { entry.issue }),
+  )
+  |> append_unique_issues(context.active_issues)
+}
+
+fn observed_issue_ids(
+  state: transition_types.State,
+  context: transition_types.DispatchContext,
+  candidates: List(tracker_issue.Issue),
+) -> List(String) {
+  active_issue_ids(state, context)
+  |> append_unique_list(dict.keys(state.runtime.retry_attempts))
+  |> append_unique_list(dict.keys(state.runtime.parked))
+  |> append_unique_list(list.map(candidates, fn(issue) { issue.id }))
+}
+
+fn append_unique_list(
+  existing: List(String),
+  values: List(String),
+) -> List(String) {
+  list.fold(values, existing, fn(acc, value) {
+    case list.contains(acc, value) {
+      True -> acc
+      False -> list.append(acc, [value])
+    }
+  })
+}
+
+fn append_unique_issues(
+  existing: List(tracker_issue.Issue),
+  values: List(tracker_issue.Issue),
+) -> List(tracker_issue.Issue) {
+  list.fold(values, existing, fn(acc, issue) {
+    case list.contains(list.map(acc, fn(item) { item.id }), issue.id) {
+      True -> acc
+      False -> list.append(acc, [issue])
+    }
+  })
+}
+
+fn select_workflow_route(
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+) -> Result(String, #(String, String)) {
+  let labels =
+    workflow_labels(issue.labels, context.routing.workflow_label_prefix, [])
+  case labels {
+    [] ->
+      case context.routing.require_exactly_one_workflow_label {
+        True ->
+          Error(#("missing_workflow_label", "issue has no workflow label"))
+        False ->
+          case context.routing.default_workflow {
+            Some(id) -> lookup_workflow(context.available_workflow_ids, id)
+            None ->
+              Error(#("missing_workflow_label", "issue has no workflow label"))
+          }
+      }
+    [id] -> lookup_workflow(context.available_workflow_ids, id)
+    _ ->
+      Error(#("multiple_workflow_labels", "issue has multiple workflow labels"))
+  }
+}
+
+fn lookup_workflow(
+  available_workflow_ids: List(String),
+  id: String,
+) -> Result(String, #(String, String)) {
+  case list.contains(available_workflow_ids, id) {
+    True -> Ok(id)
+    False ->
+      Error(#("unknown_workflow_label", "unknown workflow label: " <> id))
+  }
+}
+
+fn workflow_labels(
+  labels: List(String),
+  prefix: String,
+  acc: List(String),
+) -> List(String) {
+  case labels {
+    [] -> list.reverse(acc)
+    [label, ..rest] -> {
+      let label = label |> string.trim |> string.lowercase
+      case prefix != "" && string.starts_with(label, prefix) {
+        True ->
+          workflow_labels(rest, prefix, [
+            string.drop_start(label, string.length(prefix)),
+            ..acc
+          ])
+        False -> workflow_labels(rest, prefix, acc)
+      }
+    }
+  }
+}
+
+fn dispatch_validation_error_reason(
+  err: transition_types.DispatchValidationError,
+) -> String {
+  case err {
+    transition_types.DispatchValidationTrackerError(tracker_error) ->
+      "tracker_error:" <> tracker_error
+    transition_types.DispatchValidationMissingIssue -> "missing_issue"
+    transition_types.DispatchValidationDuplicateIssue -> "duplicate_issue"
+    transition_types.DispatchValidationIdMismatch(_, _) -> "id_mismatch"
+  }
+}
+
+fn blocker_summary(
+  issue: tracker_issue.Issue,
+  decision: core.BlockerDecision,
+) -> String {
+  let blockers = case decision {
+    core.BlockersSatisfied -> issue.blocked_by
+    core.BlockedByDependency(open_blockers, _) ->
+      case open_blockers {
+        [] -> issue.blocked_by
+        _ -> open_blockers
+      }
+  }
+  blockers
+  |> list.map(blocker_to_summary)
+  |> string.join(with: ",")
+}
+
+fn blocker_to_summary(blocker: tracker_issue.BlockerRef) -> String {
+  let name = case blocker.identifier {
+    Some(identifier) -> identifier
+    None ->
+      case blocker.id {
+        Some(id) -> id
+        None -> "unknown"
+      }
+  }
+  let state = case blocker.state {
+    Some(state) -> issue_state.to_string(state)
+    None -> "unknown"
+  }
+  name <> ":" <> state
+}
+
+fn bool_field(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
+  }
+}
+
+fn make_run_id(
+  issue: tracker_issue.Issue,
+  now_ms: Int,
+  sequence: Int,
+) -> String {
+  issue.identifier
+  <> "-"
+  <> int.to_string(now_ms)
+  <> "-"
+  <> int.to_string(sequence)
+}
+
+fn make_session_id(
+  _issue_identifier: String,
+  run_id: String,
+  _sequence: Int,
+) -> String {
+  run_id
+}
+
+fn claim_correlation_id(issue_id: String, run_id: String) -> String {
+  "claim:" <> issue_id <> ":" <> run_id
+}
+
+fn clear_retry(
+  state: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
+    ..state,
+    retry_attempts: dict.delete(state.retry_attempts, issue_id),
+  )
+}
+
+fn release_claim(
+  state: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
+    ..state,
+    claimed: dict.delete(state.claimed, issue_id),
+    retry_attempts: dict.delete(state.retry_attempts, issue_id),
+  )
+}
+
+fn identifier_for_runtime(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> String {
+  case dict.get(runtime.claimed, issue_id) {
+    Ok(identifier) -> identifier
+    Error(_) ->
+      case dict.get(runtime.completed, issue_id) {
+        Ok(issue) -> issue.identifier
+        Error(_) ->
+          case dict.get(runtime.parked, issue_id) {
+            Ok(parked) -> parked.identifier
+            Error(_) -> issue_id
+          }
+      }
+  }
 }
 
 fn ledger_error_code(err: ledger.LedgerError) -> String {

@@ -96,6 +96,10 @@ pub fn reserve_session_sequence(registry: Registry) -> #(Registry, Int) {
   )
 }
 
+pub fn next_session_sequence(registry: Registry) -> Int {
+  registry.next_session_sequence
+}
+
 pub fn register_worker(registry: Registry, handle: WorkerHandle) -> Registry {
   Registry(
     ..registry,
