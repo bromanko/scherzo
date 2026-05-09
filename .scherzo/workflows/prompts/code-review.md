@@ -37,11 +37,13 @@ Review contract:
 - You are in the same dedicated jj workspace as the implementation.
 - Do not create, forget, finish, switch, push, or otherwise manage jj workspaces.
 - Use `jj status --color=never` and `jj diff --from @- --to @ --color=never` only for orientation; the analysis output above is authoritative for changed files across the workflow run.
-- If `REVIEW_BRIEF_PATH=...` is present in the dry-run output, read that local artifact for orientation. It is additive context only; preserve the existing review behavior and do not post the artifact to PRs or Linear.
-- If any specialist lane output includes `REVIEW_LANE_RESULT_PATH=...`, read the referenced `ReviewLaneResult` and its log/analysis artifacts before running the existing review. Treat lane findings as normalized review input: fix or report blocking findings, preserve non-blocking suspicions as feedback, and do not discard empty-finding lane logs.
+- If `REVIEW_BRIEF_PATH=...` is present in the dry-run output, read that local artifact for orientation. It is additive context only; do not post the artifact to PRs or Linear.
+- If any specialist lane output includes `REVIEW_LANE_RESULT_PATH=...`, read the referenced `ReviewLaneResult` and its log/analysis artifacts produced by `scripts/scherzo-review`. Treat lane findings as normalized review input: fix or report blocking findings, preserve non-blocking suspicions as feedback, and do not discard empty-finding lane logs.
 - If synthesis output includes `REVIEW_SYNTHESIS_PATH=...` or `REVIEW_FINAL_ARTIFACT_PATH=...`, read the referenced artifacts first. Use the final artifact as the concise normalized review input, including lane failures and downgraded/unproven correctness claims, but still inspect the actual diff before applying fixes.
-- The workflow currently supports project-local Gleam review only. If `LANGUAGES=gleam`, use the vendored project-local review skill content under `.pi/skills/` and run the equivalent of `/review gleam --fix medium`.
-- If the local `/review` command is unavailable or does not accept `--fix medium`, read `.pi/skills/gleam-review/SKILL.md` and the related `.pi/skills/gleam-*-review/SKILL.md` files, perform the Gleam review manually against the changed files, and apply only safe medium-or-smaller fixes.
+- This review step is self-contained in the repository. Do not invoke local pi slash commands, home-directory pi skills, or files outside the checkout for review behavior.
+- Use the staged review artifacts produced by `scripts/scherzo-review` as the normalized specialist review input. If `REVIEW_FINAL_ARTIFACT_PATH=...` is present, treat that final artifact as the primary findings list, including lane failures, blocking findings, downgraded findings, and retained notes.
+- Inspect the actual diff before applying a fix. The staged artifacts guide review scope, but the current files decide whether a finding is still valid and safe to fix.
+- If a staged lane failed or a synthesis artifact is missing, use the available lane logs, the change analysis output, and a bounded manual inspection of changed files. Do not fall back to language-specific local pi skills.
 - If `LANGUAGES=none`, do not invent a language review. Check the changed files briefly for obvious workflow breakage and report that no supported language review was required.
 - Treat unsupported review-relevant files listed in `UNSUPPORTED_REVIEW_FILES` as out of scope unless they are obviously broken by the current change.
 - Keep changes focused. Do not start unrelated cleanup.
@@ -49,16 +51,17 @@ Review contract:
 
 Review process:
 
-1. Read the change analysis output and identify the review commands to run.
-2. Run the supported project-local review(s), currently Gleam.
-3. Apply safe and relevant medium-or-smaller fixes if the review tooling or your manual review identifies them.
-4. Leave risky, broad, or ambiguous findings for the feedback step with a clear explanation.
-5. Finish with a concise review report.
+1. Read the change analysis output and staged review command outputs.
+2. Read the final review artifact and any referenced lane result/log artifacts.
+3. Inspect the actual diff and current files only as needed to verify findings.
+4. Apply safe and relevant medium-or-smaller fixes identified by the staged artifacts or bounded inspection.
+5. Leave risky, broad, ambiguous, or unsupported findings for the feedback step with a clear explanation.
+6. Finish with a concise review report.
 
 Final response format:
 
 ## Review performed
-- Review commands run, or `No supported language review required`.
+- Staged review artifacts and files inspected, or `No supported language review required`.
 
 ## Fixes applied
 - Bullet list of safe fixes made, or `None`.
