@@ -27,9 +27,70 @@ pub fn parses_minimal_workflow_dag_test() {
   assert step.workspace == workflow_dag.WorkspaceRef(name: "main", from: None)
   assert step.on_failure == workflow_dag.FailWorkflow
   assert step.model_settings == model_config.default_settings()
-  let assert workflow_dag.AgentStep(workflow_dag.PromptFile(
-    "prompts/research.md",
-  )) = step.kind
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptFile("prompts/research.md"),
+    None,
+  ) = step.kind
+}
+
+pub fn parses_agent_structured_output_defaults_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output: {}\n",
+    )
+  let assert [step] = dag.steps
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptFile("prompts/review.md"),
+    Some(spec),
+  ) = step.kind
+  assert spec.format == workflow_dag.StructuredJson
+  assert spec.artifact_name == "review_json"
+  assert spec.required == True
+  assert spec.schema == workflow_dag.StructuredObjectSchema([])
+}
+
+pub fn parses_agent_structured_output_json_contract_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: json\n      artifact_name: review_result\n      required: true\n      schema:\n        type: object\n        required:\n          - summary\n          - findings\n",
+    )
+  let assert [step] = dag.steps
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptFile("prompts/review.md"),
+    Some(spec),
+  ) = step.kind
+  assert spec.format == workflow_dag.StructuredJson
+  assert spec.artifact_name == "review_result"
+  assert spec.required == True
+  assert spec.schema
+    == workflow_dag.StructuredObjectSchema(["summary", "findings"])
+}
+
+pub fn rejects_invalid_structured_output_contracts_test() {
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: command\n    run: echo ok\n    structured_output: {}\n",
+    )
+    == "structured_output_on_command_step"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: yaml\n",
+    )
+    == "unsupported_structured_output_format"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      artifact_name: bad-name\n",
+    )
+    == "invalid_structured_artifact_name"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        type: array\n",
+    )
+    == "unsupported_structured_output_schema_type"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        required: summary\n",
+    )
+    == "structured_output_schema_required_not_list"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        required:\n          - 123\n",
+    )
+    == "structured_output_schema_required_entry_not_string"
 }
 
 pub fn parses_top_level_workspace_profile_test() {

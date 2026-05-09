@@ -19,6 +19,28 @@ pub type ArtifactWritten {
   ArtifactWritten(ref: String, sha256: String, bytes: Int)
 }
 
+pub type StructuredOutputWrite {
+  StructuredOutputWrite(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    artifact_name: String,
+    format: String,
+    schema_required_keys: List(String),
+    payload_json: String,
+  )
+}
+
+pub type StructuredArtifactWritten {
+  StructuredArtifactWritten(
+    ref: String,
+    path: String,
+    sha256: String,
+    bytes: Int,
+  )
+}
+
 pub type WorkflowFinished {
   WorkflowFinished(
     run_id: String,
@@ -61,6 +83,8 @@ pub type Writer {
       Result(Nil, CheckpointError),
     write_step_artifact: fn(StepFinished, step_artifact.StepArtifact) ->
       Result(ArtifactWritten, CheckpointError),
+    write_structured_output_artifact: fn(StructuredOutputWrite) ->
+      Result(StructuredArtifactWritten, CheckpointError),
     step_finished: fn(StepFinished, ArtifactWritten) ->
       Result(Nil, CheckpointError),
     step_interrupted: fn(String, String, String, Int, String) ->
@@ -82,6 +106,20 @@ pub fn noop_writer() -> Writer {
           <> "/attempt-"
           <> int.to_string(finished.attempt_index)
           <> ".json",
+        sha256: "noop",
+        bytes: 0,
+      ))
+    },
+    write_structured_output_artifact: fn(write) {
+      Ok(StructuredArtifactWritten(
+        ref: "noop/"
+          <> workflow_identity.step_component(write.step_id)
+          <> "/attempt-"
+          <> int.to_string(write.attempt_index)
+          <> "/structured/"
+          <> workflow_identity.safe_component(write.artifact_name, "artifact")
+          <> ".json",
+        path: "noop-structured-output-artifact.json",
         sha256: "noop",
         bytes: 0,
       ))
@@ -197,6 +235,30 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
       )
       |> result.map(fn(ref) {
         ArtifactWritten(ref: ref.ref, sha256: ref.sha256, bytes: ref.bytes)
+      })
+      |> result.map_error(fn(error) {
+        CheckpointArtifactFailed(describe_artifact_error(error))
+      })
+    },
+    write_structured_output_artifact: fn(write) {
+      artifact_store.write_structured_output_artifact(
+        store,
+        write.run_id,
+        write.workflow_id,
+        write.step_id,
+        write.attempt_index,
+        write.artifact_name,
+        write.format,
+        write.schema_required_keys,
+        write.payload_json,
+      )
+      |> result.map(fn(ref) {
+        StructuredArtifactWritten(
+          ref: ref.ref,
+          path: ref.path,
+          sha256: ref.sha256,
+          bytes: ref.bytes,
+        )
       })
       |> result.map_error(fn(error) {
         CheckpointArtifactFailed(describe_artifact_error(error))

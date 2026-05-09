@@ -6,6 +6,7 @@ import gleam/option.{None}
 import gleam/result
 import gleam/string
 import scherzo/hash
+import scherzo/json_value
 import scherzo/path
 import scherzo/step_artifact
 import scherzo/workflow_identity
@@ -17,6 +18,23 @@ pub type Store {
 
 pub type ArtifactRef {
   ArtifactRef(ref: String, sha256: String, bytes: Int)
+}
+
+pub type StructuredArtifactRef {
+  StructuredArtifactRef(ref: String, path: String, sha256: String, bytes: Int)
+}
+
+pub type StructuredOutputArtifact {
+  StructuredOutputArtifact(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    artifact_name: String,
+    format: String,
+    schema_required_keys: List(String),
+    payload: json_value.JsonValue,
+  )
 }
 
 pub type ArtifactWriteError {
@@ -94,6 +112,81 @@ pub fn write_step_artifact(
   }
 }
 
+pub fn write_structured_output_artifact(
+  store: Store,
+  run_id: String,
+  workflow_id: String,
+  step_id: String,
+  attempt_index: Int,
+  artifact_name: String,
+  format: String,
+  schema_required_keys: List(String),
+  payload_json: String,
+) -> Result(StructuredArtifactRef, ArtifactError) {
+  let ref =
+    structured_output_artifact_ref(
+      run_id,
+      step_id,
+      attempt_index,
+      artifact_name,
+    )
+  use final_path <- result.try(resolve_ref_for_write(store, ref))
+  use Nil <- result.try(ensure_parent(final_path))
+  use payload <- result.try(parse_structured_payload_json(payload_json))
+  let bytes =
+    structured_output_to_string(StructuredOutputArtifact(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      artifact_name: artifact_name,
+      format: format,
+      schema_required_keys: schema_required_keys,
+      payload: payload,
+    ))
+  use Nil <- result.try(
+    write_atomic(final_path, bytes)
+    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
+  )
+  use final <- result.try(
+    simplifile.read(final_path)
+    |> result.replace_error(MissingStepArtifact(ref)),
+  )
+  let sha = hash.sha256_hex(final)
+  case final == bytes {
+    True ->
+      Ok(StructuredArtifactRef(
+        ref: ref,
+        path: final_path,
+        sha256: sha,
+        bytes: bit_array.byte_size(bit_array.from_string(final)),
+      ))
+    False -> Error(CorruptStepArtifact(ref))
+  }
+}
+
+fn parse_structured_payload_json(
+  payload_json: String,
+) -> Result(json_value.JsonValue, ArtifactError) {
+  case json_value.parse(payload_json) {
+    Ok(payload) -> Ok(payload)
+    Error(Nil) -> Error(DecodeArtifactFailed("invalid_payload_json"))
+  }
+}
+
+pub fn read_structured_output_artifact(
+  store: Store,
+  ref: String,
+  expected_sha256: String,
+) -> Result(StructuredOutputArtifact, ArtifactError) {
+  use contents <- result.try(read_artifact_contents(store, ref))
+  let actual_sha = hash.sha256_hex(contents)
+  case actual_sha == expected_sha256 {
+    False -> Error(CorruptStepArtifact(ref))
+    True -> decode_structured_output_contents(contents)
+  }
+}
+
 pub fn read_step_artifact(
   store: Store,
   ref: String,
@@ -116,6 +209,13 @@ pub fn read_step_artifact_unverified(
 }
 
 fn read_step_artifact_contents(
+  store: Store,
+  ref: String,
+) -> Result(String, ArtifactError) {
+  read_artifact_contents(store, ref)
+}
+
+fn read_artifact_contents(
   store: Store,
   ref: String,
 ) -> Result(String, ArtifactError) {
@@ -152,6 +252,23 @@ pub fn artifact_ref(
   <> ".json"
 }
 
+pub fn structured_output_artifact_ref(
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  artifact_name: String,
+) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/"
+  <> workflow_identity.safe_component(step_id, "step")
+  <> "/attempt-"
+  <> int.to_string(attempt_index)
+  <> "/structured/"
+  <> workflow_identity.safe_component(artifact_name, "artifact")
+  <> ".json"
+}
+
 fn stored_to_string(stored: StoredArtifact) -> String {
   stored_to_json(stored) |> json.to_string
 }
@@ -165,6 +282,106 @@ fn stored_to_json(stored: StoredArtifact) -> json.Json {
     #("attempt_index", json.int(stored.attempt_index)),
     #("artifact", step_artifact.to_json(stored.artifact)),
   ])
+}
+
+fn structured_output_to_string(artifact: StructuredOutputArtifact) -> String {
+  structured_output_to_json(artifact) |> json.to_string
+}
+
+fn structured_output_to_json(artifact: StructuredOutputArtifact) -> json.Json {
+  json.object([
+    #("schema_version", json.int(1)),
+    #("artifact_type", json.string("structured_output")),
+    #("run_id", json.string(artifact.run_id)),
+    #("workflow_id", json.string(artifact.workflow_id)),
+    #("step_id", json.string(artifact.step_id)),
+    #("attempt_index", json.int(artifact.attempt_index)),
+    #("artifact_name", json.string(artifact.artifact_name)),
+    #("format", json.string(artifact.format)),
+    #(
+      "schema",
+      json.object([
+        #("type", json.string("object")),
+        #(
+          "required",
+          json.array(artifact.schema_required_keys, of: json.string),
+        ),
+      ]),
+    ),
+    #("payload", json_value.to_json(artifact.payload)),
+  ])
+}
+
+fn decode_structured_output_contents(
+  contents: String,
+) -> Result(StructuredOutputArtifact, ArtifactError) {
+  case json.parse(contents, structured_output_decoder()) {
+    Ok(artifact) -> Ok(artifact)
+    Error(_) ->
+      Error(DecodeArtifactFailed("invalid_structured_output_artifact"))
+  }
+}
+
+fn structured_output_decoder() -> decode.Decoder(StructuredOutputArtifact) {
+  use schema_version <- decode.field("schema_version", decode.int)
+  case schema_version == 1 {
+    False ->
+      decode.failure(
+        empty_structured_output_artifact(),
+        expected: "StructuredOutputArtifact",
+      )
+    True -> {
+      use artifact_type <- decode.field("artifact_type", decode.string)
+      case artifact_type == "structured_output" {
+        False ->
+          decode.failure(
+            empty_structured_output_artifact(),
+            expected: "structured_output artifact_type",
+          )
+        True -> {
+          use run_id <- decode.field("run_id", decode.string)
+          use workflow_id <- decode.field("workflow_id", decode.string)
+          use step_id <- decode.field("step_id", decode.string)
+          use attempt_index <- decode.field("attempt_index", decode.int)
+          use artifact_name <- decode.field("artifact_name", decode.string)
+          use format <- decode.field("format", decode.string)
+          use schema_required_keys <- decode.field(
+            "schema",
+            structured_output_schema_required_decoder(),
+          )
+          use payload <- decode.field("payload", json_value.decoder())
+          decode.success(StructuredOutputArtifact(
+            run_id: run_id,
+            workflow_id: workflow_id,
+            step_id: step_id,
+            attempt_index: attempt_index,
+            artifact_name: artifact_name,
+            format: format,
+            schema_required_keys: schema_required_keys,
+            payload: payload,
+          ))
+        }
+      }
+    }
+  }
+}
+
+fn structured_output_schema_required_decoder() -> decode.Decoder(List(String)) {
+  use required_keys <- decode.field("required", decode.list(decode.string))
+  decode.success(required_keys)
+}
+
+fn empty_structured_output_artifact() -> StructuredOutputArtifact {
+  StructuredOutputArtifact(
+    run_id: "",
+    workflow_id: "",
+    step_id: "",
+    attempt_index: 0,
+    artifact_name: "",
+    format: "",
+    schema_required_keys: [],
+    payload: json_value.JNull,
+  )
 }
 
 fn decode_stored_string(contents: String) -> Result(StoredArtifact, String) {
@@ -216,6 +433,7 @@ fn empty_artifact() -> step_artifact.StepArtifact {
     stdout_truncated: False,
     stderr_truncated: False,
     summary_text: "",
+    structured_output: None,
   )
 }
 

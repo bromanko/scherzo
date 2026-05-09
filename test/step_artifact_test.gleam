@@ -82,6 +82,141 @@ pub fn agent_success_without_final_response_stays_successful_test() {
   assert artifact.final_response_truncated == False
 }
 
+pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_test() {
+  let metadata =
+    step_artifact.StructuredOutputMetadata(
+      artifact_name: "review_result",
+      format: "json",
+      ref: "runs/run-1/review_json/attempt-0/structured/review_result.json",
+      path: "test/tmp/artifact.json",
+      sha256: "abc123",
+      bytes: 42,
+      schema_status: "valid",
+    )
+  let artifact =
+    step_artifact.from_agent_success_with_valid_structured_output(
+      "review_json",
+      agent_success("{\"summary\":\"ok\",\"findings\":[]}"),
+      [],
+      limits(),
+      metadata,
+    )
+
+  let assert Ok(decoded) =
+    step_artifact.decode_string(step_artifact.to_string(artifact))
+  assert decoded.structured_output == artifact.structured_output
+  let locals =
+    step_artifact.to_template_locals(
+      dict.from_list([#("review_json", artifact)]),
+    )
+  assert lookup(locals, "steps.review_json.structured_output.status")
+    == template.VString("valid")
+  assert lookup(locals, "steps.review_json.structured_output.artifact_name")
+    == template.VString("review_result")
+  assert lookup(locals, "steps.review_json.structured_output.format")
+    == template.VString("json")
+  assert lookup(locals, "steps.review_json.structured_output.ref")
+    == template.VString(
+      "runs/run-1/review_json/attempt-0/structured/review_result.json",
+    )
+  assert lookup(locals, "steps.review_json.structured_output.path")
+    == template.VString("test/tmp/artifact.json")
+  assert lookup(locals, "steps.review_json.structured_output.sha256")
+    == template.VString("abc123")
+  assert lookup(locals, "steps.review_json.structured_output.bytes")
+    == template.VInt(42)
+  assert lookup(locals, "steps.review_json.structured_output.schema_status")
+    == template.VString("valid")
+  assert lookup(locals, "steps.review_json.structured_output.error")
+    == template.VNil
+}
+
+pub fn optional_absent_structured_output_exposes_absent_status_test() {
+  let artifact =
+    step_artifact.from_agent_success_with_absent_structured_output(
+      "review_json",
+      agent_success(""),
+      [],
+      limits(),
+      "review_result",
+      "json",
+      "not_applicable",
+    )
+  let locals =
+    step_artifact.to_template_locals(
+      dict.from_list([#("review_json", artifact)]),
+    )
+
+  assert lookup(locals, "steps.review_json.structured_output.status")
+    == template.VString("absent")
+  assert lookup(locals, "steps.review_json.structured_output.artifact_name")
+    == template.VString("review_result")
+  assert lookup(locals, "steps.review_json.structured_output.format")
+    == template.VString("json")
+  assert lookup(locals, "steps.review_json.structured_output.ref")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.path")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.sha256")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.bytes")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.schema_status")
+    == template.VString("not_applicable")
+  assert lookup(locals, "steps.review_json.structured_output.error")
+    == template.VNil
+}
+
+pub fn structured_output_error_exposes_error_status_test() {
+  let artifact =
+    step_artifact.from_agent_structured_output_error(
+      "review_json",
+      agent_success("not json"),
+      [],
+      limits(),
+      "structured_output_invalid_json",
+      "step review_json required a JSON-only final response",
+      "review_result",
+      "json",
+    )
+  let assert Ok(decoded) =
+    step_artifact.decode_string(step_artifact.to_string(artifact))
+  assert decoded.failure_code == Some("structured_output_invalid_json")
+  let locals =
+    step_artifact.to_template_locals(
+      dict.from_list([#("review_json", artifact)]),
+    )
+  assert lookup(locals, "steps.review_json.structured_output.status")
+    == template.VString("error")
+  assert lookup(locals, "steps.review_json.structured_output.error")
+    == template.VString("step review_json required a JSON-only final response")
+  assert lookup(locals, "steps.review_json.structured_output.path")
+    == template.VNil
+}
+
+pub fn step_without_structured_output_exposes_not_configured_status_test() {
+  let artifact =
+    step_artifact.from_agent_success(
+      "review_json",
+      agent_success("plain text"),
+      [],
+      limits(),
+    )
+  let assert Ok(decoded) =
+    step_artifact.decode_string(step_artifact.to_string(artifact))
+  assert decoded.structured_output == None
+  let locals =
+    step_artifact.to_template_locals(
+      dict.from_list([#("review_json", artifact)]),
+    )
+  assert lookup(locals, "steps.review_json.structured_output.status")
+    == template.VString("not_configured")
+  assert lookup(locals, "steps.review_json.structured_output.path")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.ref")
+    == template.VNil
+}
+
 pub fn command_success_artifact_exposes_exit_and_stdout_test() {
   let artifact =
     step_artifact.from_command_result(
@@ -190,7 +325,10 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
       steps: [
         workflow_dag.WorkflowStep(
           id: "implement",
-          kind: workflow_dag.AgentStep(workflow_dag.PromptInline("implement")),
+          kind: workflow_dag.AgentStep(
+            workflow_dag.PromptInline("implement"),
+            None,
+          ),
           depends_on: [],
           workspace: workflow_dag.WorkspaceRef(name: "main", from: None),
           on_failure: workflow_dag.FailWorkflow,

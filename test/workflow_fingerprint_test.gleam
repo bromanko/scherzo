@@ -74,6 +74,24 @@ pub fn workflow_fingerprint_changes_for_semantic_fields_test() {
     != workflow_fingerprint.for_dag("implementation", changed_parallelism)
 }
 
+pub fn workflow_fingerprint_changes_for_structured_output_contract_test() {
+  let unstructured =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n",
+    )
+  let structured =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      required: true\n      schema:\n        required: [summary, findings]\n",
+    )
+
+  assert workflow_fingerprint.for_dag("implementation", unstructured)
+    != workflow_fingerprint.for_dag("implementation", structured)
+  assert string.contains(
+    workflow_fingerprint.canonical_input(structured),
+    "structured_output",
+  )
+}
+
 pub fn workflow_dag_fingerprint_includes_explicit_workspace_profile_test() {
   let noop =
     parse(
