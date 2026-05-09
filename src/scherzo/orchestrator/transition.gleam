@@ -4,12 +4,34 @@ import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/state/ledger
+import scherzo/state/record
 
 pub fn handle(
   message: transition_types.Message,
   state: transition_types.State,
 ) -> transition_types.Outcome {
   case message {
+    transition_types.SnapshotRequested ->
+      transition_types.Outcome(state: state, effects: [
+        effects_types.ReplySnapshot(state.runtime),
+      ])
+    transition_types.ClaimLedgerAppendRequested(
+      correlation_id,
+      issue_id,
+      run_id,
+      session_id,
+      bodies,
+      failure_event,
+    ) ->
+      handle_claim_ledger_append_requested(
+        state,
+        correlation_id,
+        issue_id,
+        run_id,
+        session_id,
+        bodies,
+        failure_event,
+      )
     transition_types.LedgerAppendCompleted(
       correlation_id,
       continuation,
@@ -29,6 +51,37 @@ pub fn snapshot(
   state: transition_types.State,
 ) -> orchestrator_state.RuntimeState {
   state.runtime
+}
+
+fn handle_claim_ledger_append_requested(
+  state: transition_types.State,
+  correlation_id: String,
+  issue_id: String,
+  run_id: String,
+  session_id: String,
+  bodies: List(record.RecordBody),
+  failure_event: String,
+) -> transition_types.Outcome {
+  case dict.get(state.pending_claims, issue_id) {
+    Error(Nil) ->
+      stale_claim_continuation(state, correlation_id, issue_id, run_id)
+    Ok(pending) ->
+      case pending.run_id == run_id && pending.session_id == session_id {
+        False ->
+          stale_claim_continuation(state, correlation_id, issue_id, run_id)
+        True ->
+          transition_types.Outcome(state: state, effects: [
+            effects_types.AppendLedger(effects_types.LedgerAppend(
+              correlation_id: correlation_id,
+              bodies: bodies,
+              failure_event: failure_event,
+              policy: effects_types.ContinueWith(
+                effects_types.SpawnClaimedWorker(issue_id, run_id, session_id),
+              ),
+            )),
+          ])
+      }
+  }
 }
 
 fn handle_ledger_append_completed(

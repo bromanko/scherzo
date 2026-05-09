@@ -4,6 +4,7 @@ import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/state/ledger
+import scherzo/state/record
 import scherzo/tracker/issue as tracker_issue
 
 pub type State {
@@ -15,6 +16,15 @@ pub type State {
 }
 
 pub type Message {
+  SnapshotRequested
+  ClaimLedgerAppendRequested(
+    correlation_id: String,
+    issue_id: String,
+    run_id: String,
+    session_id: String,
+    bodies: List(record.RecordBody),
+    failure_event: String,
+  )
   LedgerAppendCompleted(
     correlation_id: String,
     continuation: effects_types.LedgerContinuation,

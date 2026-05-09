@@ -8,6 +8,10 @@ import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_triage
+import scherzo/orchestrator/effects/interpreter as transition_interpreter
+import scherzo/orchestrator/state as orchestrator_state
+import scherzo/orchestrator/transition_runner
+import scherzo/orchestrator/transition_types
 import scherzo/scheduled_failure_reporter
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
@@ -138,6 +142,40 @@ pub type EffectResult {
 pub type Completion {
   Finished(id: Int, result: EffectResult)
   Crashed(id: Int, effect: Effect, reason: String)
+}
+
+const transition_runner_message_limit = 32
+
+pub fn reply_snapshot(
+  runtime: orchestrator_state.RuntimeState,
+  reply: process.Subject(orchestrator_state.RuntimeState),
+) -> Nil {
+  let transition_state =
+    transition_types.State(
+      runtime: runtime,
+      workers: transition_types.new_worker_directory(),
+      pending_claims: dict.new(),
+    )
+  let shell =
+    transition_interpreter.new_production_shell_state(
+      data: Nil,
+      append_ledger: fn(data, _) { #(data, Ok(Nil)) },
+      now_ms: fn(_) { 0 },
+      log_effect: fn(data, _, _, _) { data },
+      start_worker: fn(data, _) { data },
+      reply_snapshot: fn(data, snapshot) {
+        process.send(reply, snapshot)
+        data
+      },
+    )
+  let transition_runner.RunResult(exhausted: _, ..) =
+    transition_runner.run(
+      state: transition_state,
+      shell: shell,
+      messages: [transition_types.SnapshotRequested],
+      max_messages: transition_runner_message_limit,
+    )
+  Nil
 }
 
 pub type Dependencies {
