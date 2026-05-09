@@ -201,6 +201,7 @@ pub fn reply_snapshot(
       replay_linear_command_ack: fn(data, _, _, _) { data },
       report_park: fn(data, _) { data },
       stop_worker: fn(data, _, _) { data },
+      stop_worker_after_issue_refresh: fn(data, _, _) { data },
       register_yaml_step_started: fn(data, _, _) { data },
       finish_yaml_step_route: fn(data, _) { data },
       finish_yaml_step_session: fn(data, _, _) { data },

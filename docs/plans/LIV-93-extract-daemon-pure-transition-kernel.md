@@ -5,11 +5,11 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 
 ## Purpose / Big Picture
 
-Scherzo operators rely on the orchestrator daemon to poll Linear, claim eligible issues, run pi workers, recover interrupted work, respond to operator commands, and keep the local ledger and live session UI consistent. Today most of that behavior is concentrated in `src/scherzo/orchestrator/daemon.gleam`, a file currently measured at 5,921 lines. This makes routine changes risky because an implementation agent has to understand startup recovery, polling, dispatch, retries, Linear command handling, worker process management, event publishing, YAML step sessions, cleanup, and side-effect execution at the same time.
+Scherzo operators rely on the orchestrator daemon to poll Linear, claim eligible issues, run pi workers, recover interrupted work, respond to operator commands, and keep the local ledger and live session UI consistent. When this plan was drafted, most of that behavior was concentrated in `src/scherzo/orchestrator/daemon.gleam`, then measured at 5,921 lines. Later cutover slices added scheduled-workflow support and transition adapters before final cleanup; at the LIV-150 acceptance pass, `daemon.gleam` is 6,684 lines against a temporary guardrail baseline of 7,404. The file is still large, but the cut-over message families now call the transition kernel and effect interpreter instead of maintaining parallel daemon-local decision paths.
 
 After this change, an operator should observe the same daemon behavior and the same once-mode behavior, but maintainers should be able to inspect and test most daemon orchestration behavior as pure state transitions. A pure transition is a function that receives a message and a data-only state, then returns a new data-only state plus an ordered list of explicit effects to interpret. The actor shell remains responsible for BEAM process details such as timers, monitors, control server handles, worker process identifiers, and effect execution. The practical outcome is that future changes to dispatch, retry, recovery, operator-command behavior, and Linear command receipt handling can be reviewed in small modules and covered by fast tests without booting the daemon actor.
 
-The maintainability outcome is falsifiable. At completion, `src/scherzo/orchestrator/daemon.gleam` must no longer contain the handler families mapped in Scope Boundaries except for thin shell adapters, the new transition tests must cover the listed daemon-test categories, and any remaining private daemon decision function in those categories must have a Decision Log entry explaining why it is shell-owned. A reviewer should be able to understand dispatch decisions in `src/scherzo/orchestrator/transitions/dispatch.gleam`, retry decisions in `src/scherzo/orchestrator/transitions/retry.gleam`, Linear command ordering in `src/scherzo/orchestrator/transitions/linear_commands.gleam`, and worker lifecycle decisions in `src/scherzo/orchestrator/transitions/worker.gleam` without reading worker process spawning, timer, or control server code.
+The maintainability outcome is falsifiable. At completion, `src/scherzo/orchestrator/daemon.gleam` must no longer contain the handler families mapped in Scope Boundaries except for thin shell adapters, the new transition tests must cover the listed daemon-test categories, and any remaining private daemon decision function in those categories must have a Decision Log entry explaining why it is shell-owned. The completed implementation uses `src/scherzo/orchestrator/transition.gleam` as the main pure kernel, with focused helpers in `src/scherzo/orchestrator/transitions/claims.gleam`, `src/scherzo/orchestrator/transitions/linear_commands.gleam`, and `src/scherzo/orchestrator/transitions/operator.gleam`; the originally proposed per-family files such as `transitions/dispatch.gleam`, `transitions/retry.gleam`, and `transitions/worker.gleam` were not created in this pass.
 
 ## Problem Framing and Constraints
 
@@ -25,7 +25,7 @@ The extraction must happen in small, green slices. Each slice should compile, fo
 
 The chosen strategy is an incremental strangler refactor. First introduce data-only effect types, pure transition state types, and tests for the two highest-risk boundaries: ledger-gated continuations and worker-registry synchronization. Then move one behavior family at a time from private daemon functions into modules under `src/scherzo/orchestrator/transitions/`, leaving thin compatibility wrappers in `daemon.gleam` until each family is fully covered by pure tests. Finally reduce `daemon.gleam` to an actor shell that converts BEAM-specific messages into transition messages, invokes `transition.handle`, interprets the returned effects, drains any follow-up transition messages produced by the interpreter, and sends replies.
 
-The final module shape is:
+The originally proposed module shape was:
 
     src/scherzo/orchestrator/daemon.gleam
     src/scherzo/orchestrator/transition.gleam
@@ -41,13 +41,27 @@ The final module shape is:
     src/scherzo/orchestrator/effects/types.gleam
     src/scherzo/orchestrator/effects/interpreter.gleam
 
-The extra `transition_types.gleam` file is deliberate. If `transition.gleam` defines all transition types and also imports `transitions/polling.gleam`, while `transitions/polling.gleam` imports those types, the modules form a cycle. `transition_types.gleam` avoids that cycle by owning the shared `State`, `Message`, `Outcome`, and pending-action types. `transition.gleam` becomes the small public facade that dispatches messages to the specialized `transitions/*` modules.
+The actual LIV-150 completion shape is narrower and should be treated as the checked-in truth for future work:
+
+    src/scherzo/orchestrator/daemon.gleam
+    src/scherzo/orchestrator/transition.gleam
+    src/scherzo/orchestrator/transition_runner.gleam
+    src/scherzo/orchestrator/transition_types.gleam
+    src/scherzo/orchestrator/transitions/claims.gleam
+    src/scherzo/orchestrator/transitions/commands.gleam
+    src/scherzo/orchestrator/transitions/helpers.gleam
+    src/scherzo/orchestrator/transitions/linear_commands.gleam
+    src/scherzo/orchestrator/transitions/operator.gleam
+    src/scherzo/orchestrator/effects/types.gleam
+    src/scherzo/orchestrator/effects/interpreter.gleam
+
+The extra `transition_types.gleam` file remains deliberate. It owns the shared `State`, `Message`, `Outcome`, and pending-action types so the kernel and focused `transitions/*` helpers do not form import cycles. In the completed shape, `transition.gleam` is not only a small facade; it also contains the consolidated polling, dispatch, retry, worker lifecycle, recovery application, and shutdown state-clearing transitions that were not split into separate per-family files.
 
 The actor shell owns process-specific resources. The pure transition state owns data needed to make decisions. The effect interpreter is the boundary between them. Effects must be data-only: they must not contain `tracker.Client`, `handoff.Client`, `linear.CommandClient`, `linear_triage.TriageClient`, `process.Pid`, `process.Monitor`, `process.Subject`, `process.Timer`, or dependency function closures. The interpreter injects those resources when running an effect.
 
 Ledger-gated work has one protocol. A transition that needs durable ledger records before later work must emit `AppendLedger(..., ContinueWith(...))` and must not emit the gated effect in the same outcome. The interpreter appends synchronously, returns a follow-up pure message `LedgerAppendCompleted(correlation_id, continuation, result, now_ms)`, and the daemon drains that message through `transition.handle` before accepting the next external daemon message. Only the success transition for `SpawnClaimedWorker` emits `StartWorker`; only the success transition for `EnqueueLinearAck` emits an ack enqueue effect. Append failure transitions log the configured failure event, preserve or clear pending state according to the legacy behavior named in Plan of Work, and emit no gated effect. Effects with `StopBatchOnFailure` are interpreted left-to-right in the same effect batch; a failed append stops only the remaining effects in that batch. Effects with `ContinueRegardless` are attempted synchronously, log on failure, and never gate later effects.
 
-Worker process state has one synchronization model. `transition_types.WorkerDirectory` is authoritative for logical facts: which issue and run are active, which session id represents the run, which command route ids are expected, which YAML step sessions are open, and whether the kernel believes a worker is starting, running, stopping, or finished. `worker_registry.Registry` remains authoritative for shell facts: PIDs, monitors, command subjects, and process-level stopped-run bookkeeping. Route ids are generated by the pure transition before shell work starts; the shell stores a map from route id to the real process subject when it receives a ready message. A worker spawn or monitor failure is represented as a follow-up pure message `WorkerStartRegistered(...)` or `WorkerStartFailed(...)`, so the kernel mirror can be repaired instead of silently diverging from the shell registry.
+Worker process state has one synchronization model. `transition_types.WorkerDirectory` is authoritative for logical facts: which issue and run are active, which session id represents the run, which command route ids are expected, which YAML step sessions are open, and whether the kernel believes a worker is starting, running, stopping, or finished. `worker_registry.Registry` remains authoritative for shell facts: PIDs, monitors, command subjects, and process-level stopped-run bookkeeping. Route ids are generated by the pure transition before shell work starts; the shell stores a map from route id to the real process subject when it receives a ready message. A worker spawn result is represented as a follow-up pure message `WorkerStartSucceeded(...)` or `WorkerStartFailed(...)`, so the kernel mirror can be repaired instead of silently diverging from the shell registry.
 
 This is proportionate because the daemon already has lower-level pure transition code, existing scheduler and registry helper modules, and a broad test suite. A one-shot rewrite would be too risky, but extracting message families behind a stable facade lets each risk be tested and reviewed independently. Once-mode sharing is explicitly deferred from this ExecPlan: once mode must keep working, but adapting `src/scherzo/orchestrator/service.gleam` to use the new daemon transition model is a follow-up unless this plan is revised with concrete synchronous-interpreter requirements.
 
@@ -81,23 +95,27 @@ Another risk is making once mode diverge further from daemon mode. `src/scherzo/
 - [x] (2026-05-06 00:00Z) Inspected the current orchestrator files, tests, and source-control status needed to draft this plan.
 - [x] (2026-05-06 00:00Z) Drafted this ExecPlan as `docs/plans/LIV-93-extract-daemon-pure-transition-kernel.md`.
 - [x] (2026-05-06 00:00Z) Incorporated adversarial review feedback covering ledger continuations, worker synchronization, interface closure, recovery semantics, effect-runner-down handling, once-mode deferral, and concrete-step granularity.
-- [ ] Milestone 1: add closed transition/effect scaffolding and smoke tests with no behavior change.
-- [ ] Milestone 2: prove ledger continuation and worker registry synchronization protocols with interpreter and shell tests.
-- [ ] Milestone 3: extract polling, candidate dispatch, and retry transitions in wrapper-sized slices.
-- [ ] Milestone 4: extract Linear command and operator command transitions in wrapper-sized slices.
-- [ ] Milestone 5: extract worker lifecycle, YAML step session, and worker-down transitions in wrapper-sized slices.
-- [ ] Milestone 6: extract startup recovery application and shutdown transitions.
-- [ ] Milestone 7: reduce `daemon.gleam` to the actor shell through small interpreter cutover checkpoints.
-- [ ] Milestone 8: remove legacy wrappers, update tests, and complete the retrospective. Once-mode transition sharing is deferred to a follow-up unless this plan is revised.
+- [x] (2026-05-09 21:20Z) Milestone 1 completed in prior LIV-109 slices: `transition_types.gleam`, `transition.gleam`, `transition_runner.gleam`, `effects/types.gleam`, and `effects/interpreter.gleam` exist and are covered by transition and runner tests.
+- [x] (2026-05-09 21:20Z) Milestone 2 completed in the checked-in kernel shape: ledger continuations flow through `effects/interpreter.gleam` and `transition_runner.gleam`, and worker start success/failure follow-up messages repair the pure worker directory.
+- [x] (2026-05-09 21:20Z) Milestone 3 completed without the originally proposed per-domain files: polling entry, running refresh reconciliation, candidate dispatch, dispatch validation, claim completion, and retry transitions live in `src/scherzo/orchestrator/transition.gleam` plus `transitions/claims.gleam`.
+- [x] (2026-05-09 21:20Z) Milestone 4 completed: Linear command receipt, completion, ack outbox, ack publish, and remove continuations live in `transitions/linear_commands.gleam`; pause/resume/retry/park/unpark operator decisions live in `transitions/operator.gleam`.
+- [x] (2026-05-09 21:20Z) Milestone 5 completed in the consolidated kernel: worker start registration/failure, worker command readiness, worker finish/down, stop requests, and YAML step started/finished transitions live in `transition.gleam`. LIV-150 moved raw worker-failure classification out of `daemon.gleam` so the daemon no longer selects the worker failure kind before calling the kernel.
+- [x] (2026-05-09 21:20Z) Milestone 6 completed partially and truthfully scoped: startup-fatal recovery I/O remains in `daemon.gleam`, while applying loaded recovery timers, cleanup, outbox replay, park reports, and warnings is expressed as transition effects. Shutdown logical state clearing is in `transition.gleam`; process teardown remains shell-owned.
+- [x] (2026-05-09 21:20Z) Milestone 7 completed for the cut-over message families: production daemon paths call `transition_runner.run`, `transition.handle`, and `effects/interpreter.apply`. `EffectRunnerDown(process.Down)`, timers, monitors, clients, control file/server operations, EventHub handles, worker process spawning, and scheduled workflow process management remain shell-owned.
+- [x] (2026-05-09 21:20Z) Milestone 8 LIV-150 cleanup completed: the legacy handler-name grep from Concrete Step 84 returns no matches; source guardrails were lowered/refreshed after `daemon.gleam` measured 6,684 lines and 56 internal imports; once-mode transition sharing remains deferred.
 
 ## Surprises & Discoveries
 
-- Observation: The current daemon is slightly smaller than the ticket's approximate line count but still very large. It was measured at 5,921 lines with `wc -l src/scherzo/orchestrator/daemon.gleam`.
-  Evidence: `wc -l` reported 5,921 lines for `src/scherzo/orchestrator/daemon.gleam`, 1,118 lines for `src/scherzo/orchestrator/core.gleam`, 479 lines for `src/scherzo/orchestrator/effect_runner.gleam`, and 1,837 lines for `src/scherzo/orchestrator/service.gleam`.
+- Observation: The daemon was measured at 5,921 lines when this plan was drafted, but later cutover and scheduled-workflow slices temporarily raised the source guardrail baseline to 7,404 lines. LIV-150 reduced the checked-in daemon to 6,684 lines and 56 internal imports, so the guardrail could be lowered even though the file remains large.
+  Evidence: `direnv exec . gleam test` on 2026-05-09 printed the source-guardrail inventory showing `src/scherzo/orchestrator/daemon.gleam: 6684 lines, 56 internal imports` before the baseline update.
 - Observation: Several helper modules already isolate useful pieces of the daemon and should be preserved rather than replaced.
   Evidence: `src/scherzo/orchestrator/core.gleam`, `src/scherzo/orchestrator/effect_runner.gleam`, `src/scherzo/orchestrator/worker_registry.gleam`, `src/scherzo/orchestrator/workflow_reloader.gleam`, `src/scherzo/orchestrator/poll_scheduler.gleam`, `src/scherzo/orchestrator/retry_scheduler.gleam`, `src/scherzo/orchestrator/control_command_handler.gleam`, and `src/scherzo/orchestrator/event_publisher.gleam` already exist and have focused tests.
 - Observation: Once mode currently duplicates dispatch logic in `src/scherzo/orchestrator/service.gleam` rather than calling daemon message transitions.
   Evidence: `run_once_with_dependencies`, `run_tick`, `dispatch_candidates`, `validate_service_dispatch_issue`, `dispatch_issue`, `execute_dispatch_issue`, and `interpret_effects` are private functions in `src/scherzo/orchestrator/service.gleam`.
+- Observation: The final checked-in kernel did not use every originally planned per-family module name. Dispatch, retry, worker lifecycle, recovery application, and shutdown state clearing are consolidated in `src/scherzo/orchestrator/transition.gleam`; Linear and operator decisions are split into focused `transitions/*` helpers.
+  Evidence: `find src/scherzo/orchestrator/transitions -name '*.gleam'` shows `claims.gleam`, `commands.gleam`, `helpers.gleam`, `linear_commands.gleam`, and `operator.gleam`, with no `polling.gleam`, `dispatch.gleam`, `retry.gleam`, `worker.gleam`, `recovery.gleam`, or `shutdown.gleam`.
+- Observation: The implementation workflow for LIV-150 is ticket-sourced, not execplan-sourced, so the checked-in plan-completion helper is not available as a passing gate in this workspace.
+  Evidence: `tmp/scherzo-implementation.json` has `"source_kind": "ticket"`; `scripts/scherzo-implementation plan-completion-context` requires `source_kind == "execplan"` before writing a completion context.
 
 ## Decision Log
 
@@ -125,10 +143,24 @@ Another risk is making once mode diverge further from daemon mode. `src/scherzo/
 - Decision: Defer once-mode sharing to a follow-up unless stakeholders explicitly add it back with synchronous-interpreter acceptance criteria.
   Rationale: LIV-93 is about extracting the daemon. Once-mode sharing is desirable but would add a second effect interpretation model and extra parity surface after the daemon cutover risk is already high.
   Date: 2026-05-06.
+- Decision: Accept the consolidated checked-in kernel shape for LIV-150 instead of creating empty or mechanical `polling`, `dispatch`, `retry`, `worker`, `recovery`, and `shutdown` modules during cleanup.
+  Rationale: The production paths already route through `transition.handle`, `transition_runner.run`, and `effects/interpreter.apply`. Splitting `transition.gleam` only to match the original file names would be a broad refactor with little additional acceptance value for this cleanup ticket.
+  Date: 2026-05-09.
+- Decision: Move worker failure-kind classification into `src/scherzo/orchestrator/transition.gleam` and pass raw worker results plus redaction secrets from the daemon shell.
+  Rationale: Choosing standard, recovery-validation, operator-stop, operator-abort, or worker-down behavior is a worker lifecycle decision. The daemon should only provide process context and secrets needed for safe log text.
+  Date: 2026-05-09.
+- Decision: Treat the remaining daemon functions that touch workflow reloads, issue lookup, worker command subjects, timers, monitors, EventHub handles, control files, clients, and scheduled workflow workers as shell adapters unless a future ticket extracts those process resources.
+  Rationale: These functions either call BEAM/process APIs, resolve real subjects and monitors, or operate on scheduled workflow process state that was introduced after this plan was drafted. Moving them in LIV-150 would exceed the final cleanup scope.
+  Date: 2026-05-09.
+- Decision: Lower `src/scherzo/orchestrator/daemon.gleam` in the source guardrail baseline from 7,404 lines and 57 internal imports to 6,684 lines and 56 internal imports; refresh `transition.gleam` to 2,880 lines and 20 internal imports.
+  Rationale: The daemon materially shrank during this cleanup and no longer contains the legacy handler names from Concrete Step 84. `transition.gleam` gained one internal import because it now owns worker failure classification, and its line baseline was ratcheted down to the current measured size after the stale active-worker context fix.
+  Date: 2026-05-09.
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The LIV-150 cleanup completed the acceptance pass for the checked-in extraction shape. Production daemon message paths for polling, dispatch validation, claim continuations, retry refresh, Linear command continuations, operator pause/resume/retry/park/unpark, worker start/finish/down, YAML step start/finish, startup recovery application, and shutdown state clearing call the transition kernel and effect interpreter. `src/scherzo/orchestrator/daemon.gleam` remains the process shell for OTP actor messages, timers, monitors, clients, control server/file lifecycle, EventHub handles, worker process spawning, command subjects, workflow reload I/O, startup-fatal recovery I/O, and scheduled workflow workers.
+
+The final structural check from Concrete Step 84 now returns no matches for the legacy wrapper names: `handle_poll_tick`, `dispatch_candidates`, `handle_retry_tick`, `process_linear_command_comments`, `apply_linear_transport_actions`, `apply_linear_submit_command`, `enqueue_linear_command_ack`, `handle_operator_command`, `handle_worker_finished`, `handle_worker_down`, and `shutdown_state_internal`. `daemon.gleam` measured 6,684 lines and 56 internal imports after cleanup, down from the temporary 7,404-line source guardrail baseline. Validation on 2026-05-09 passed with `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`; glinter reported the existing warning inventory with 0 errors. The remaining follow-up risk is size rather than parallel behavior: further shrinking should target scheduled workflow process management, startup recovery I/O, or workflow reload shell code with separate characterization tests instead of reopening daemon-local decision paths.
 
 ## Context and Orientation
 
@@ -142,7 +174,7 @@ If `direnv exec . ...` reports that `.envrc` is blocked, inspect `.envrc`, run `
 
 The relevant orchestrator files currently are:
 
-- `src/scherzo/orchestrator/daemon.gleam`: the current actor implementation. It defines public `StartupError`, public `Message`, `TimerHandle`, `ControlServerHandle`, `RuntimeDependencies`, a large private `State`, `default_dependencies`, `start`, `shutdown`, `get_snapshot`, `apply_operator_command`, and many private handlers. It owns process startup, control server startup, event hub startup, startup recovery, poll ticks, retry ticks, candidate dispatch, Linear command comment processing, operator command handling, pending claims, pending dispatch validations, worker process spawning, worker updates, YAML step sessions, effect runner completions, side-effect interpretation, ledger appends, shutdown, and logging.
+- `src/scherzo/orchestrator/daemon.gleam`: the current actor shell. It defines public `StartupError`, public `Message`, `TimerHandle`, `ControlServerHandle`, `RuntimeDependencies`, a large private `State`, `default_dependencies`, `start`, `shutdown`, `get_snapshot`, and `apply_operator_command`. It still owns process startup, control server startup, event hub startup, startup-fatal recovery I/O, workflow reload I/O, timer and monitor handles, worker process spawning, worker command subjects, scheduled workflow workers, and shell logging. The cut-over polling, dispatch, retry, Linear command, operator command, worker lifecycle, recovery-application, and shutdown state-clearing message families route through the transition kernel and effect interpreter.
 - `src/scherzo/orchestrator/core.gleam`: a pure runtime domain module. It defines `core.Effect`, `core.Transition`, `core.new_state`, dispatch precondition helpers, workflow policy checks, active/terminal checks, worker success/failure transitions, retry scheduling, issue reconciliation, parked issue helpers, invalid workflow report helpers, blocked dependency report helpers, and token accounting. This module should remain and be called by the new transition modules.
 - `src/scherzo/orchestrator/effect_runner.gleam`: an actor that runs asynchronous side effects with bounded concurrency. Its current `Effect` type includes values such as `FetchCandidates`, `FetchLinearCommands`, `RefreshRunning`, `RefreshRetry`, `ValidateDispatchClaim`, `ClaimIssue`, `ReportSuccess`, `ReportFailure`, `PostLinearCommandAck`, `ReportInvalidWorkflow`, and `CleanupWorkspace`. Today these effects carry clients and cleanup functions. In the target design, `effect_runner.gleam` remains a concurrency primitive, but its inputs should be adapted from data-only effects by `effects/interpreter.gleam`.
 - `src/scherzo/orchestrator/state.gleam`: defines `RuntimeState`, `RunningEntry`, `RetryEntry`, `IssueCounter`, `ParkedEntry`, `InvalidWorkflowReport`, and `BlockedDependencyReport`. This state is already data-only and should remain part of the pure transition state.
@@ -174,7 +206,7 @@ reported no changes.
 
 The repository contains the orchestrator files named in this plan under `src/scherzo/orchestrator/`. No existing `docs/plans/LIV-93-*` file was found when the filename was chosen. The `test/` directory contains existing daemon, core, service, effect runner, worker registry, poll scheduler, retry scheduler, and Linear command tests that should be used as the safety net for this refactor.
 
-The current `src/scherzo/orchestrator/daemon.gleam` public `Message` variants are `PollTick`, `RetryTick`, `WorkerFinished`, `WorkerUpdate`, `WorkerCommandReady`, `YamlStepStarted`, `YamlStepUpdate`, `YamlStepCommandReady`, `YamlStepFinished`, `AbortWorkerCommandTimedOut`, `WorkerDown`, `EffectRunnerDown`, `SideEffectCompleted`, `Shutdown`, `GetSnapshot`, and `ApplyOperatorCommand`. The target design may keep a shell-facing message type in `daemon.gleam`, but the pure transition message type must not expose process-specific variants such as `WorkerDown(process.Down)` or reply subjects.
+The current `src/scherzo/orchestrator/daemon.gleam` public `Message` variants are `PollTick`, `RetryTick`, `WorkerFinished`, `ScheduledWorkerFinished`, `ScheduledRetryTick`, `ScheduledReportRetryTick`, `WorkerUpdate`, `WorkerCommandReady`, `YamlStepStarted`, `YamlStepUpdate`, `YamlStepCommandReady`, `YamlStepFinished`, `AbortWorkerCommandTimedOut`, `WorkerDown`, `EffectRunnerDown`, `SideEffectCompleted`, `Shutdown`, `GetSnapshot`, and `ApplyOperatorCommand`. The shell-facing message type in `daemon.gleam` may contain process-specific variants such as `WorkerDown(process.Down)` or reply subjects; the pure transition message type must not.
 
 The current `daemon.State` contains both pure data and shell resources. Pure data includes `workflow`, `linear_command_state`, `pending_linear_command_acks`, `in_flight_linear_command_acks`, `runtime`, `pending_claims`, `pending_dispatch_validations`, `next_dispatch_validation_generation`, `recovery_by_issue`, and `operator_paused`. Shell resources include `subject`, tracker/handoff/Linear clients, `poll` and `retry` scheduler states parameterized by `TimerHandle`, `registry` with PIDs and monitors, `effect_runner`, `effect_runner_monitor`, `event_hub`, `control_server`, `control_file_path`, and dependency closures.
 
@@ -404,8 +436,8 @@ In `src/scherzo/orchestrator/transition_types.gleam`, define the pure transition
       RetryTick(issue_id: String, generation: Int, now_ms: Int)
       AsyncCompleted(result: effects_types.AsyncResult, now_ms: Int)
       LedgerAppendCompleted(correlation_id: String, continuation: effects_types.LedgerContinuation, result: Result(Nil, ledger.LedgerError), now_ms: Int)
-      WorkerStartRegistered(issue_id: String, run_id: String, session_id: String, command_route_id: String, now_ms: Int)
-      WorkerStartFailed(issue_id: String, run_id: String, session_id: String, reason: String, now_ms: Int)
+      WorkerStartSucceeded(issue_id: String, run_id: String, session_id: String)
+      WorkerStartFailed(issue_id: String, run_id: String, session_id: String, reason: String)
       WorkerFinished(issue_id: String, run_id: String, result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure), now_ms: Int)
       WorkerUpdate(issue_id: String, update: agent_types.RunnerUpdate, now_ms: Int)
       WorkerCommandReady(issue_id: String, run_id: String, route_id: String)
@@ -651,7 +683,7 @@ The daemon event loop must drain follow-up messages deterministically. For one i
 
 16. Run formatting and tests, then commit the ledger continuation protocol.
 
-17. Add a failing worker synchronization test in `test/orchestrator_effect_interpreter_test.gleam`: interpreting a `StartWorker` effect with a fake successful worker spawn adds the same issue id, run id, session id, and command route id to the shell registry projection and returns `WorkerStartRegistered(...)`.
+17. Add a failing worker synchronization test in `test/orchestrator_effect_interpreter_test.gleam`: interpreting a `StartWorker` effect with a fake successful worker spawn adds the same issue id, run id, session id, and command route id to the shell registry projection and returns `WorkerStartSucceeded(...)`.
 
 18. Implement `WorkerStart` interpretation using the existing worker spawn dependency and `worker_registry.gleam`. In the first pass, use fake dependencies in the test so no real worker process is started.
 
@@ -858,9 +890,9 @@ and observe a formatted tree with all tests passing.
 
 The daemon API remains compatible. Code that calls `daemon.start`, `daemon.shutdown`, `daemon.get_snapshot`, or `daemon.apply_operator_command` should not need to change, except for internal test helpers that intentionally inspect private implementation details.
 
-The actor shell is measurably smaller and narrower. `src/scherzo/orchestrator/daemon.gleam` should primarily contain public types, dependency defaults, startup and shutdown shell setup, shell message conversion, reply subject handling, selector setup, effect-runner-down shell handling, and calls into `transition.handle` and `effects/interpreter.apply`. It should not contain the large private functions mapped in Scope Boundaries unless a Decision Log entry explains why a specific function had to remain shell-local. The validation search in Concrete Step 84 should return no matches, or only short shell adapters documented in Decision Log.
+The actor shell is measurably smaller and narrower than the temporary cutover baseline. `src/scherzo/orchestrator/daemon.gleam` still contains public types, dependency defaults, startup and shutdown shell setup, shell message conversion, reply subject handling, selector setup, effect-runner-down shell handling, workflow reload I/O, process/timer/monitor adapters, and scheduled workflow worker process management. It calls into `transition.handle`, `transition_runner.run`, and `effects/interpreter.apply` for the cut-over message families. The validation search in Concrete Step 84 should return no matches.
 
-The new transition modules exist and own the mapped behavior. A reviewer can inspect `src/scherzo/orchestrator/transitions/dispatch.gleam` to understand dispatch decisions without reading worker process spawn code, inspect `src/scherzo/orchestrator/transitions/retry.gleam` to understand retry decisions without reading control server code, inspect `src/scherzo/orchestrator/transitions/linear_commands.gleam` to understand receipt and ack behavior without reading timer code, and inspect `src/scherzo/orchestrator/transitions/worker.gleam` to understand worker lifecycle decisions without reading PID or monitor code.
+The checked-in transition kernel owns the mapped behavior in a consolidated shape. A reviewer can inspect `src/scherzo/orchestrator/transition.gleam` for polling, dispatch, retry, worker lifecycle, recovery application, and shutdown state-clearing decisions; `src/scherzo/orchestrator/transitions/claims.gleam` for claim ledger continuations; `src/scherzo/orchestrator/transitions/linear_commands.gleam` for Linear command receipt and ack ordering; and `src/scherzo/orchestrator/transitions/operator.gleam` for pause/resume/retry/park/unpark decisions. The per-family module names originally proposed for dispatch, retry, worker, recovery, and shutdown are not present.
 
 Effects are explicit and typed. Ledger writes, timer scheduling, event publishing, worker spawning/stopping, async tracker/handoff/Linear calls, cleanup, control-plane operations, shutdown operations, and replies appear as `effects/types.gleam` values returned by pure transitions. Data-only effects do not carry concrete clients, process handles, process subjects, process timers, or dependency closures.
 
@@ -1021,7 +1053,7 @@ The final `daemon.gleam` should retain these public functions and types unless a
 
 `src/scherzo/orchestrator/effect_runner.gleam` remains responsible for bounded concurrent async work. In the first implementation, adapt `effects_types.AsyncEffect` to the existing `effect_runner.Effect` variants in the interpreter. If a later cleanup changes `effect_runner.Effect` itself to be data-only, do it as a separate commit with `test/orchestrator_effect_runner_test.gleam` passing before and after.
 
-`src/scherzo/orchestrator/worker_registry.gleam` remains the shell registry for real worker handles. The pure `WorkerDirectory` in `transition_types.gleam` is the transition mirror. The interpreter must update the registry and return `WorkerStartRegistered`, `WorkerStartFailed`, route-ready, stop, and cleanup follow-up messages so the kernel mirror can update itself. If keeping them synchronized becomes complex, add more invariant tests in `test/orchestrator_effect_interpreter_test.gleam` before continuing; do not move additional worker lifecycle code while the mirror and registry can diverge.
+`src/scherzo/orchestrator/worker_registry.gleam` remains the shell registry for real worker handles. The pure `WorkerDirectory` in `transition_types.gleam` is the transition mirror. The interpreter must update the registry and return `WorkerStartSucceeded`, `WorkerStartFailed`, route-ready, stop, and cleanup follow-up messages so the kernel mirror can update itself. If keeping them synchronized becomes complex, add more invariant tests in `test/orchestrator_effect_interpreter_test.gleam` before continuing; do not move additional worker lifecycle code while the mirror and registry can diverge.
 
 `PollState` and `RetryState` remain data-only. Existing `src/scherzo/orchestrator/poll_scheduler.gleam` and `src/scherzo/orchestrator/retry_scheduler.gleam` may still be used by the shell or interpreter to manage real timer handles, but pure transitions should only store logical generations, in-flight generations, due times, and retry reasons.
 

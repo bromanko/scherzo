@@ -1621,11 +1621,24 @@ fn handle_message(
   message: Message,
 ) -> actor.Next(State, Message) {
   case message {
-    PollTick(generation) -> actor.continue(handle_poll_tick(state, generation))
+    PollTick(generation) -> actor.continue(poll_tick_shell(state, generation))
     RetryTick(issue_id, generation) ->
-      actor.continue(handle_retry_tick(state, issue_id, generation))
+      actor.continue(
+        run_transition_messages(state, [
+          transition_types.RetryTick(
+            issue_id,
+            generation,
+            transition_dispatch_context(state),
+          ),
+        ]),
+      )
     WorkerFinished(issue_id, run_id, result) ->
-      actor.continue(handle_worker_finished(state, issue_id, run_id, result))
+      actor.continue(worker_finished_to_transition(
+        state,
+        issue_id,
+        run_id,
+        result,
+      ))
     ScheduledWorkerFinished(run_id, result) ->
       actor.continue(handle_scheduled_worker_finished(state, run_id, result))
     ScheduledRetryTick(run_id, generation) ->
@@ -1671,7 +1684,7 @@ fn handle_message(
       process.send(reply, result)
       actor.continue(state)
     }
-    WorkerDown(down) -> actor.continue(handle_worker_down(state, down))
+    WorkerDown(down) -> actor.continue(worker_down_to_transition(state, down))
     EffectRunnerDown(down) -> {
       let _ = handle_effect_runner_down(state, down)
       actor.stop_abnormal("effect_runner_down")
@@ -1683,7 +1696,7 @@ fn handle_message(
       actor.continue(state)
     }
     ApplyOperatorCommand(operator_command, timeout_ms, reply) ->
-      actor.continue(handle_operator_command(
+      actor.continue(operator_command_reply(
         state,
         operator_command,
         timeout_ms,
@@ -1882,7 +1895,7 @@ fn handle_registry_down_resolution(
   }
 }
 
-fn handle_operator_command(
+fn operator_command_reply(
   state: State,
   operator_command: command.OperatorCommand,
   timeout_ms: Int,
@@ -2695,7 +2708,7 @@ fn cancel_retry_timer(state: State, issue_id: String) -> State {
   )
 }
 
-fn handle_poll_tick(state: State, generation: Int) -> State {
+fn poll_tick_shell(state: State, generation: Int) -> State {
   let state =
     run_transition_messages(state, [
       transition_types.PollTick(generation, poll_snapshot(state)),
@@ -2819,27 +2832,18 @@ fn handle_running_refresh_finished(
   generation: Int,
   result: Result(List(tracker_issue.Issue), error.TrackerError),
 ) -> State {
-  case poll_result_is_stale(state, generation) {
-    True -> state
-    False -> {
-      let state = case result {
-        Error(err) -> {
-          log_state(state, "warn", "running_refresh_failed", [
-            #("error", error.tracker_code(err)),
-          ])
-          state
-        }
-        Ok(issues) ->
-          list.fold(issues, state, fn(acc, issue) {
-            let transition =
-              core.reconcile_issue(acc.runtime, acc.workflow.effective, issue)
-            let acc = State(..acc, runtime: transition.state)
-            apply_effects(acc, transition.effects)
-          })
-      }
-      begin_candidate_fetch_or_finish(state, generation)
-    }
+  let result = case result {
+    Ok(issues) -> Ok(issues)
+    Error(err) -> Error(error.tracker_code(err))
   }
+  run_transition_messages(state, [
+    transition_types.RunningRefreshCompleted(
+      generation,
+      poll_snapshot(state),
+      result,
+      transition_dispatch_context(state),
+    ),
+  ])
 }
 
 fn handle_candidate_fetch_finished(
@@ -2878,7 +2882,7 @@ fn handle_linear_command_fetch_finished(
           ])
           state
         }
-        Ok(comments) -> process_linear_command_comments(state, comments)
+        Ok(comments) -> linear_comments_to_transition(state, comments)
       }
       finish_linear_command_phase(state, candidates, dispatch_after)
     }
@@ -2900,7 +2904,7 @@ fn finish_linear_command_phase(
   ])
 }
 
-fn process_linear_command_comments(
+fn linear_comments_to_transition(
   state: State,
   comments: List(linear.LinearComment),
 ) -> State {
@@ -2912,18 +2916,18 @@ fn process_linear_command_comments(
       worker_registry.issue_sessions(state.registry),
     )
   let state = State(..state, linear_command_state: transport_state)
-  apply_linear_transport_actions(state, actions)
+  fold_linear_transport_actions(state, actions)
 }
 
-fn apply_linear_transport_actions(
+fn fold_linear_transport_actions(
   state: State,
   actions: List(linear_transport.TransportAction),
 ) -> State {
   case actions {
     [] -> state
     [action, ..rest] ->
-      apply_linear_transport_actions(
-        apply_linear_transport_action(state, action),
+      fold_linear_transport_actions(
+        linear_transport_action_to_transition(state, action),
         rest,
       )
   }
@@ -2969,21 +2973,15 @@ fn operator_command_targets_session(
   }
 }
 
-fn apply_linear_transport_action(
+fn linear_transport_action_to_transition(
   state: State,
   action: linear_transport.TransportAction,
 ) -> State {
   case action {
     linear_transport.SubmitCommand(comment, parsed) ->
-      apply_linear_submit_command(state, comment, parsed)
+      linear_submit_to_transition(state, comment, parsed)
     linear_transport.PostAck(issue_id, source_comment_id, body) ->
-      request_linear_command_ack(
-        state,
-        issue_id,
-        source_comment_id,
-        body,
-        False,
-      )
+      linear_ack_to_transition(state, issue_id, source_comment_id, body, False)
     linear_transport.LogIgnored(reason, comment_id) -> {
       log_state(state, "info", "linear_command_ignored", [
         #("comment_id", comment_id),
@@ -2994,7 +2992,7 @@ fn apply_linear_transport_action(
   }
 }
 
-fn apply_linear_submit_command(
+fn linear_submit_to_transition(
   state: State,
   comment: linear.LinearComment,
   parsed: linear_parser.ParsedLinearCommand,
@@ -3011,7 +3009,7 @@ fn apply_linear_submit_command(
   ])
 }
 
-fn request_linear_command_ack(
+fn linear_ack_to_transition(
   state: State,
   issue_id: String,
   source_comment_id: String,
@@ -3028,7 +3026,7 @@ fn request_linear_command_ack(
   ])
 }
 
-fn enqueue_linear_command_ack_publish(
+fn post_linear_command_ack_shell(
   state: State,
   issue_id: String,
   source_comment_id: String,
@@ -3294,23 +3292,19 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
     replay_linear_command_ack: transition_replay_linear_command_ack,
     report_park: transition_report_park,
     stop_worker: transition_stop_worker,
+    stop_worker_after_issue_refresh: transition_stop_worker_after_issue_refresh,
     register_yaml_step_started: transition_register_yaml_step_started,
     finish_yaml_step_route: transition_finish_yaml_step_route,
     finish_yaml_step_session: transition_finish_yaml_step_session,
     finish_yaml_step_sessions_for_run: transition_finish_yaml_step_sessions_for_run,
     clear_yaml_step_routes_for_run: transition_clear_yaml_step_routes_for_run,
     mark_yaml_run_stopping: transition_mark_yaml_run_stopping,
-    shutdown_runtime: shutdown_state_internal,
+    shutdown_runtime: shutdown_runtime_shell,
     set_operator_paused: set_operator_paused,
     apply_operator_command: apply_shell_operator_command,
     finish_operator_command: finish_operator_command_effect,
     post_linear_command_ack: fn(state, issue_id, source_comment_id, body) {
-      enqueue_linear_command_ack_publish(
-        state,
-        issue_id,
-        source_comment_id,
-        body,
-      )
+      post_linear_command_ack_shell(state, issue_id, source_comment_id, body)
     },
     report_park_effect: fn(
       state,
@@ -3532,7 +3526,7 @@ fn transition_replay_linear_command_ack(
         source_comment_id,
       ),
     )
-  request_linear_command_ack(state, issue_id, source_comment_id, body, True)
+  linear_ack_to_transition(state, issue_id, source_comment_id, body, True)
 }
 
 fn transition_report_park(state: State, report: handoff.ParkReport) -> State {
@@ -3639,6 +3633,51 @@ fn transition_stop_worker(
       hub.finish_session(state.event_hub, handle.session_id, reason)
       process.demonitor_process(handle.monitor)
       stop_worker(handle)
+      State(
+        ..state,
+        registry: worker_registry.remove_worker_handle(state.registry, handle),
+      )
+    }
+  }
+}
+
+fn transition_stop_worker_after_issue_refresh(
+  state: State,
+  identity: transition_effects.WorkerIdentity,
+  reason: orchestrator_reason.StopReason,
+) -> State {
+  let reason_text = orchestrator_reason.stop_to_string(reason)
+  case worker_registry.worker_for_issue(state.registry, identity.issue_id) {
+    Error(_) -> state
+    Ok(handle) -> {
+      hub.update_status(
+        state.event_hub,
+        handle.session_id,
+        session_event.Stopping,
+      )
+      event_publisher.lifecycle(
+        state.event_hub,
+        handle.session_id,
+        session_event.StopRequested,
+        Some(reason_text),
+      )
+      process.demonitor_process(handle.monitor)
+      stop_worker(handle)
+      event_publisher.lifecycle(
+        state.event_hub,
+        handle.session_id,
+        session_event.WorkerExited,
+        Some(session_reason.to_string(session_reason.Stopped)),
+      )
+      hub.finish_session(
+        state.event_hub,
+        handle.session_id,
+        session_reason.Stopped,
+      )
+      log_state(state, "warn", "worker_stop_requested", [
+        #("issue_id", identity.issue_id),
+        #("reason", reason_text),
+      ])
       State(
         ..state,
         registry: worker_registry.remove_worker_handle(state.registry, handle),
@@ -3848,18 +3887,6 @@ fn transition_schedule_recovered_retry_timer(
       state.dependencies.cancel_timer,
     ),
   )
-}
-
-fn dispatch_candidates(
-  issues: List(tracker_issue.Issue),
-  state: State,
-) -> State {
-  run_transition_messages(state, [
-    transition_types.DispatchCandidates(
-      issues,
-      transition_dispatch_context(state),
-    ),
-  ])
 }
 
 fn schedule_next_poll(state: State) -> State {
@@ -4162,16 +4189,6 @@ fn pending_scheduled_count_excluding(
   |> list.length
 }
 
-fn handle_retry_tick(state: State, issue_id: String, generation: Int) -> State {
-  run_transition_messages(state, [
-    transition_types.RetryTick(
-      issue_id,
-      generation,
-      transition_dispatch_context(state),
-    ),
-  ])
-}
-
 fn handle_retry_refresh_finished(
   state: State,
   issue_id: String,
@@ -4190,10 +4207,6 @@ fn handle_retry_refresh_finished(
       transition_dispatch_context(state),
     ),
   ])
-}
-
-fn dispatch_issue(state: State, issue: tracker_issue.Issue) -> State {
-  dispatch_candidates([issue], state)
 }
 
 fn workflow_run_started_body_for_claim(
@@ -5714,7 +5727,7 @@ fn tracker_error_message(err: error.TrackerError) -> String {
   }
 }
 
-fn handle_worker_finished(
+fn worker_finished_to_transition(
   state: State,
   issue_id: String,
   run_id: String,
@@ -5726,51 +5739,11 @@ fn handle_worker_finished(
       transition_types.WorkerFinished(
         issue_id,
         run_id,
-        worker_finish_result_for_transition(state, result),
+        result,
         transition_lifecycle_context(state),
       ),
     ])
   start_pending_scheduled_runs(state)
-}
-
-fn worker_finish_result_for_transition(
-  state: State,
-  result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
-) -> transition_types.WorkerFinishResult {
-  case result {
-    Ok(success) -> transition_types.WorkerSucceeded(success)
-    Error(failure) ->
-      transition_types.WorkerFailed(
-        failure,
-        worker_failure_kind_for_transition(state, failure),
-      )
-  }
-}
-
-fn worker_failure_kind_for_transition(
-  state: State,
-  failure: agent_types.WorkerFailure,
-) -> transition_types.WorkerFailureKind {
-  case is_recovery_resume_validation_worker_failure(failure) {
-    True ->
-      transition_types.RecoveryResumeValidationFailure(
-        workflow_attempt.recovery_pi_resume_validation_failed,
-      )
-    False ->
-      case failure.reason {
-        error.OperatorAbort ->
-          transition_types.OperatorWorkerFailure(session_reason.OperatorAbort)
-        error.OperatorStopAfterCurrentTurn ->
-          transition_types.OperatorWorkerFailure(
-            session_reason.OperatorStopAfterCurrentTurn,
-          )
-        _ ->
-          transition_types.StandardWorkerFailure(worker_failure_message(
-            failure,
-            state.workflow.secrets,
-          ))
-      }
-  }
 }
 
 fn transition_lifecycle_context(
@@ -5779,68 +5752,8 @@ fn transition_lifecycle_context(
   transition_types.WorkerLifecycleContext(
     effective: state.workflow.effective,
     now_ms: state.dependencies.now_ms(),
+    secrets: state.workflow.secrets,
   )
-}
-
-fn worker_failure_message(
-  failure: agent_types.WorkerFailure,
-  secrets: List(String),
-) -> String {
-  let code = error.agent_code(failure.reason)
-  case failure.reason {
-    error.PiFailed(error.PiProtocolError(reason)) ->
-      code <> ":pi_protocol_error:" <> log.redact("failure", reason, secrets)
-    error.PiFailed(pi_error) -> code <> ":" <> error.pi_rpc_code(pi_error)
-    error.WorkflowCommandFailed(step_id: step_id, detail: detail, ..) ->
-      code
-      <> ":workflow_command_failed:"
-      <> step_id
-      <> ":"
-      <> log.redact("failure", detail, secrets)
-    error.ProbeFailed(pi_error) -> code <> ":" <> error.pi_rpc_code(pi_error)
-    error.PromptFailed(template_error) ->
-      code <> ":" <> error.template_code(template_error)
-    error.WorkspaceFailed(workspace_error) ->
-      code <> ":" <> error.workspace_code(workspace_error)
-    error.HookFailedError(hook_error) ->
-      code <> ":" <> hook_failure_message(hook_error, secrets)
-    error.WorkflowHookFailed(hook_error) ->
-      code <> ":" <> hook_failure_message(hook_error, secrets)
-    error.StateRefreshFailed(tracker_error) ->
-      code <> ":" <> error.tracker_code(tracker_error)
-    error.OperatorAbort | error.OperatorStopAfterCurrentTurn -> code
-  }
-}
-
-fn hook_failure_message(
-  hook_error: error.HookError,
-  secrets: List(String),
-) -> String {
-  let detail = case hook_error {
-    error.HookFailed(command, status, output) ->
-      error.hook_code(hook_error)
-      <> ":"
-      <> command
-      <> " exited "
-      <> int.to_string(status)
-      <> ": "
-      <> output
-    error.HookTimedOut(command) ->
-      error.hook_code(hook_error) <> ":" <> command <> " timed out"
-    error.HookIo(message) -> error.hook_code(hook_error) <> ":" <> message
-  }
-  log.redact("failure", detail, secrets)
-  |> log.truncate(4000)
-}
-
-fn is_recovery_resume_validation_worker_failure(
-  failure: agent_types.WorkerFailure,
-) -> Bool {
-  case failure.reason {
-    error.PiFailed(error.PiProtocolError(reason)) ->
-      reason == workflow_attempt.recovery_pi_resume_validation_failed
-    _ -> False
-  }
 }
 
 fn append_workflow_interrupted_terminal(
@@ -5911,7 +5824,7 @@ fn workflow_id_from_status(status: projection.WorkflowRunStatus) -> String {
   }
 }
 
-fn handle_worker_down(state: State, down: process.Down) -> State {
+fn worker_down_to_transition(state: State, down: process.Down) -> State {
   case down {
     process.ProcessDown(monitor, _, _) ->
       handle_registry_down_resolution(
@@ -6501,168 +6414,6 @@ fn ledger_records_for_bodies_loop(
   }
 }
 
-fn apply_effects(state: State, effects: List(core.Effect)) -> State {
-  apply_effects_with_run(state, effects, None)
-}
-
-fn apply_effects_with_run(
-  state: State,
-  effects: List(core.Effect),
-  source_run_id: Option(String),
-) -> State {
-  case effects {
-    [] -> state
-    [effect, ..rest] ->
-      apply_effects_with_run(
-        apply_effect(state, effect, source_run_id),
-        rest,
-        source_run_id,
-      )
-  }
-}
-
-fn apply_effect(
-  state: State,
-  effect: core.Effect,
-  source_run_id: Option(String),
-) -> State {
-  case effect {
-    core.Dispatch(issue) -> dispatch_issue(state, issue)
-    core.ScheduleRetry(issue_id, delay_ms, generation, reason) -> {
-      let reason_text = orchestrator_reason.retry_to_string(reason)
-      case worker_registry.issue_session(state.registry, issue_id) {
-        Ok(session_id) ->
-          event_publisher.lifecycle(
-            state.event_hub,
-            session_id,
-            session_event.RetryScheduled,
-            Some(reason_text),
-          )
-        Error(_) -> Nil
-      }
-      log_state(state, "info", "retry_scheduled", [
-        #("issue_id", issue_id),
-        #("delay_ms", int.to_string(delay_ms)),
-        #("generation", int.to_string(generation)),
-        #("reason", reason_text),
-      ])
-      let _ =
-        append_ledger_bodies(
-          state,
-          [
-            record.RetryScheduled(
-              issue_id,
-              identifier_for_runtime(state.runtime, issue_id),
-              delay_ms,
-              generation,
-              reason_text,
-            ),
-          ],
-          "ledger_append_failed",
-        )
-      let timer =
-        state.dependencies.send_after(
-          state.subject,
-          delay_ms,
-          RetryTick(issue_id, generation),
-        )
-      State(
-        ..state,
-        retry: retry_scheduler.schedule_timer(
-          state.retry,
-          issue_id,
-          timer,
-          state.dependencies.cancel_timer,
-        ),
-      )
-    }
-    core.CancelRetry(issue_id, generation, reason) -> {
-      let _ =
-        append_ledger_bodies(
-          state,
-          [
-            record.RetryCancelled(issue_id, generation, reason),
-          ],
-          "ledger_append_failed",
-        )
-      cancel_retry_timer(state, issue_id)
-    }
-    core.CleanupWorkspace(workspace_path) -> {
-      case string.trim(workspace_path) == "" {
-        True -> state
-        False ->
-          enqueue_side_effect(
-            state,
-            effect_runner.CleanupWorkspace(
-              root: state.workflow.effective.workspace.root,
-              workspace_path: workspace_path,
-              hooks: state.workflow.effective.hooks,
-              cleanup: state.dependencies.cleanup,
-            ),
-          )
-      }
-    }
-    core.StopWorker(issue_id, reason) -> {
-      let reason_text = orchestrator_reason.stop_to_string(reason)
-      case worker_registry.worker_for_issue(state.registry, issue_id) {
-        Error(_) -> state
-        Ok(handle) -> {
-          hub.update_status(
-            state.event_hub,
-            handle.session_id,
-            session_event.Stopping,
-          )
-          event_publisher.lifecycle(
-            state.event_hub,
-            handle.session_id,
-            session_event.StopRequested,
-            Some(reason_text),
-          )
-          process.demonitor_process(handle.monitor)
-          stop_worker(handle)
-          event_publisher.lifecycle(
-            state.event_hub,
-            handle.session_id,
-            session_event.WorkerExited,
-            Some(session_reason.to_string(session_reason.Stopped)),
-          )
-          hub.finish_session(
-            state.event_hub,
-            handle.session_id,
-            session_reason.Stopped,
-          )
-          log_state(state, "warn", "worker_stop_requested", [
-            #("issue_id", issue_id),
-            #("reason", reason_text),
-          ])
-          State(
-            ..state,
-            registry: worker_registry.remove_worker_handle(
-              state.registry,
-              handle,
-            ),
-          )
-        }
-      }
-    }
-    core.ReleaseClaim(issue_id) -> {
-      log_state(state, "info", "claim_released", [#("issue_id", issue_id)])
-      state
-    }
-    core.ParkIssue(issue_id, reason) -> {
-      let reason_text = orchestrator_reason.park_to_string(reason)
-      log_state(state, "warn", "issue_parked", [
-        #("issue_id", issue_id),
-        #("reason", reason_text),
-      ])
-      case append_parked_record_for_runtime(state, issue_id, reason_text) {
-        False -> state
-        True -> enqueue_park_report_for_runtime(state, issue_id, source_run_id)
-      }
-    }
-  }
-}
-
 fn counter_for_runtime(
   runtime: orchestrator_state.RuntimeState,
   issue_id: String,
@@ -6670,24 +6421,6 @@ fn counter_for_runtime(
   case dict.get(runtime.issue_counters, issue_id) {
     Ok(counter) -> counter
     Error(_) -> orchestrator_state.new_issue_counter()
-  }
-}
-
-fn identifier_for_runtime(
-  runtime: orchestrator_state.RuntimeState,
-  issue_id: String,
-) -> String {
-  case dict.get(runtime.claimed, issue_id) {
-    Ok(identifier) -> identifier
-    Error(_) ->
-      case dict.get(runtime.completed, issue_id) {
-        Ok(issue) -> issue.identifier
-        Error(_) ->
-          case dict.get(runtime.parked, issue_id) {
-            Ok(parked) -> parked.identifier
-            Error(_) -> issue_id
-          }
-      }
   }
 }
 
@@ -6714,32 +6447,6 @@ fn enqueue_park_report(
   )
 }
 
-fn enqueue_park_report_for_runtime(
-  state: State,
-  issue_id: String,
-  source_run_id: Option(String),
-) -> State {
-  case dict.get(state.runtime.parked, issue_id) {
-    Error(_) -> state
-    Ok(parked) ->
-      enqueue_side_effect(
-        state,
-        effect_runner.ReportPark(
-          handoff.ParkReport(
-            issue_id: parked.issue_id,
-            issue_identifier: parked.identifier,
-            reason: orchestrator_reason.park_to_string(parked.reason),
-            release_policy: Some(park_release_policy_to_string(
-              parked.release_policy,
-            )),
-            run_id: source_run_id,
-          ),
-          state.handoff_client,
-        ),
-      )
-  }
-}
-
 fn park_release_policy_to_string(
   release_policy: orchestrator_state.ParkReleasePolicy,
 ) -> String {
@@ -6747,39 +6454,6 @@ fn park_release_policy_to_string(
     orchestrator_state.ExplicitUnparkOnly -> "explicit_unpark_only"
     orchestrator_state.AutoUnparkOnIssueChange(_) ->
       "auto_unpark_on_issue_change"
-  }
-}
-
-fn append_parked_record_for_runtime(
-  state: State,
-  issue_id: String,
-  reason_text: String,
-) -> Bool {
-  case dict.get(state.runtime.parked, issue_id) {
-    Error(_) -> False
-    Ok(parked) -> {
-      let #(release_policy, issue_fingerprint) = case parked.release_policy {
-        orchestrator_state.ExplicitUnparkOnly -> #("explicit_unpark_only", "")
-        orchestrator_state.AutoUnparkOnIssueChange(fingerprint) -> #(
-          park_release_policy_to_string(parked.release_policy),
-          fingerprint,
-        )
-      }
-      append_ledger_bodies(
-        state,
-        [
-          record.IssueParkedV2(
-            issue_id,
-            parked.identifier,
-            reason_text,
-            release_policy,
-            issue_fingerprint,
-            state.dependencies.now_ms(),
-          ),
-        ],
-        "ledger_append_failed",
-      )
-    }
   }
 }
 
@@ -6893,7 +6567,7 @@ fn shutdown_step_attempt_interruption_bodies(
   })
 }
 
-fn shutdown_state_internal(state: State, stop_effect_runner: Bool) -> State {
+fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
   process.demonitor_process(state.effect_runner_monitor)
   case stop_effect_runner {
     True -> {
