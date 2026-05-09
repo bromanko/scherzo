@@ -1,6 +1,7 @@
 version: 1
 id: execplan
 description: Turn a Linear ticket into a reviewed ExecPlan under docs/plans, open a ready PR for review, and create the follow-up implementation issue.
+workspace_profile: dogfood-jj
 max_parallel_steps: 1
 steps:
   - id: draft_plan

@@ -1,6 +1,7 @@
 version: 1
 id: research
 description: Investigate an issue, write Markdown findings, verify the findings file, and use it as the Linear result artifact.
+workspace_profile: dogfood-jj
 max_parallel_steps: 1
 steps:
   - id: research

@@ -10,7 +10,7 @@ This umbrella deliberately does not implement the whole feature in one change. I
 
 ## Problem Framing and Constraints
 
-Scherzo already has workflow DAG files under `.scherzo/workflows/` and examples under `examples/workflows/`. The dogfood workflows in this repository are useful, but they are not all shareable. The current checked-in dogfood config in `.scherzo/scherzo.yaml` uses legacy direct `workspace.hooks` that call `scripts/scherzo-jj-workspace`, and the checked-in workflow YAML files omit `workspace_profile`, so they all implicitly use the synthetic legacy `default` profile. Many prompts also say things such as "You are already inside a dedicated jj workspace" and tell the agent to use `jj status --color=never`. Implementation-style helper scripts such as `scripts/scherzo-implementation`, `scripts/scherzo-execplan`, `scripts/scherzo-execplan-revision`, and `scripts/scherzo-merge-conflict` use jj not only for workspace setup but also for diffing, base refresh, bookmarking, pushing, and external review/change publication.
+Scherzo already has workflow DAG files under `.scherzo/workflows/` and examples under `examples/workflows/`. The dogfood workflows in this repository are useful, but they are not all shareable. As of LIV-168, the checked-in dogfood config in `.scherzo/scherzo.yaml` uses a named `workspace.profiles.dogfood-jj` profile that calls `scripts/scherzo-jj-workspace`, and the checked-in workflow YAML files explicitly select it with `workspace_profile: dogfood-jj`. Many prompts still say things such as "You are already inside a dedicated jj workspace" and tell the agent to use `jj status --color=never`. Implementation-style helper scripts such as `scripts/scherzo-implementation`, `scripts/scherzo-execplan`, `scripts/scherzo-execplan-revision`, and `scripts/scherzo-merge-conflict` use jj not only for workspace setup but also for diffing, base refresh, bookmarking, pushing, and external review/change publication.
 
 The immediate operator pain is that workflows are hard to package for others. A simple research workflow only needs a workspace and a way to collect or assert its `research-findings.md` artifact, but today the dogfood prompt and collection step mention Linear and jj. Larger workflows need more than a workspace; they need a standard way to ask for change lifecycle operations without hardcoding jj. If Scherzo exposes only raw hooks, every workflow must either know which VCS the repository uses or call repo-local scripts that third parties cannot reuse.
 
@@ -92,7 +92,7 @@ The main recovery/fingerprint risk is changing workspace profile semantics witho
 
 The main security risk is that driver commands are shell configured by operators and can perform destructive actions. Countermeasure: keep drivers in orchestrator config, never allow workflow YAML to define driver shell, and document that drivers are trusted like lifecycle hooks. Workflow prompts should tell agents to use the configured driver, but Scherzo should not execute arbitrary driver capability subcommands automatically beyond deliberate validation/probe steps.
 
-The main scope risk is trying to convert all jj-heavy dogfood scripts in one pass. Countermeasure: start with driver-backed named profiles and the portable research workflow. Convert implementation, ExecPlan, ExecPlan revision, and merge-conflict workflows through later child plans after the driver contract has passed real use in a small workflow.
+The main scope risk is trying to convert all jj-heavy dogfood scripts in one pass. Countermeasure: start with an explicit dogfood named profile, then move to driver-backed profiles and the portable research workflow. Convert implementation, ExecPlan, ExecPlan revision, and merge-conflict workflows through later child plans after the driver contract has passed real use in a small workflow.
 
 ## Progress
 
@@ -104,7 +104,7 @@ The main scope risk is trying to convert all jj-heavy dogfood scripts in one pas
 - [x] (2026-05-09 00:00Z) Revised the migration stance to prefer detecting legacy direct `workspace.hooks` and pointing operators to a migration guide instead of preserving a long-lived compatibility path.
 - [ ] Review this umbrella with the operator and adjust vocabulary, capability names, and child plan sequencing.
 - [ ] File or update Linear planning tickets for the child ExecPlans once the umbrella vocabulary is accepted.
-- [ ] Write the first child ExecPlan for LIV-168 dogfood named profiles or driver profiles.
+- [x] (2026-05-09 00:00Z) Implemented LIV-168 as the temporary dogfood migration from legacy direct hooks to an explicit `dogfood-jj` named workspace profile.
 - [ ] Write the child ExecPlan for core driver and capability schema support.
 - [ ] Write the child ExecPlan for the initial driver contract and built-in jj/noop adapters.
 - [ ] Write the child ExecPlan for a portable research workflow example.
@@ -114,8 +114,8 @@ The main scope risk is trying to convert all jj-heavy dogfood scripts in one pas
 - Observation: Scherzo already has most of the profile-selection foundation needed for this design.
   Evidence: `src/scherzo/workflow_dag.gleam` defines `WorkflowDag.workspace_profile`; `src/scherzo/config.gleam` parses `workspace.profiles`; `src/scherzo/runtime_bundle.gleam` validates selected profiles during bundle loading; `src/scherzo/workspace_profile.gleam` resolves the selected profile and reports unknown-profile errors.
 
-- Observation: The checked-in dogfood config still uses the legacy compatibility path even though named profiles exist.
-  Evidence: `.scherzo/scherzo.yaml` contains direct `workspace.hooks` and none of `.scherzo/workflows/*.yaml` currently contains a `workspace_profile` field.
+- Observation: The checked-in dogfood config now uses the named-profile compatibility path instead of legacy direct hooks.
+  Evidence: `.scherzo/scherzo.yaml` defines `workspace.profiles.dogfood-jj` and every `.scherzo/workflows/*.yaml` file selects `workspace_profile: dogfood-jj`.
 
 - Observation: The reusable examples already demonstrate named profiles, including a no-op profile.
   Evidence: `examples/scherzo.yaml` defines `workspace.default_profile: isolated` and profiles named `isolated` and `noop`; `examples/workflows/research.yaml` selects `workspace_profile: noop`.
@@ -166,7 +166,7 @@ The main scope risk is trying to convert all jj-heavy dogfood scripts in one pas
 
 ## Outcomes & Retrospective
 
-This umbrella has not been implemented yet. It establishes the proposed vocabulary and divides the work into child ExecPlans. LIV-168 already exists for the prerequisite dogfood migration from legacy direct hooks to named workspace profiles; that ticket may be implemented as a temporary named-profile migration or refined to target final driver-backed profiles once the driver schema is planned. The next outcome should be an operator-approved vocabulary and a set of Linear tickets for the remaining child ExecPlans.
+This umbrella is partially implemented. It establishes the proposed vocabulary and divides the work into child ExecPlans. LIV-168 completed the prerequisite dogfood migration from legacy direct hooks to an explicit named `dogfood-jj` workspace profile, preserving the existing jj lifecycle while avoiding the synthetic legacy `default` profile. The next outcome should be an operator-approved vocabulary and a set of Linear tickets for the remaining driver, capability, runtime-exposure, portable-research, and documentation work.
 
 ## Context and Orientation
 
@@ -174,7 +174,7 @@ Scherzo is a Gleam application that polls a tracker, dispatches issues into work
 
 The current config and parsing code is spread across several files. `src/scherzo/config/types.gleam` defines `DagHooksConfig`, `WorkspaceHookProfile`, and `WorkspaceHookProfiles`. `src/scherzo/config.gleam` parses `workspace.hooks`, `workspace.profiles`, `workspace.default_profile`, and validates profile names. `src/scherzo/workflow_dag.gleam` parses workflow files, including the optional top-level `workspace_profile` selector. `src/scherzo/workspace_profile.gleam` resolves the selected profile for a workflow. `src/scherzo/runtime_bundle.gleam` loads workflows and rejects unknown selected profiles. `src/scherzo/workflow_fingerprint.gleam` hashes workflow definitions and selected profile hook bodies into execution fingerprints. `src/scherzo/workspace_run.gleam` prepares workspaces and runs lifecycle hooks. `src/scherzo/workflow_run.gleam` executes workflow steps, prepares command-step environments, and renders agent prompts with step artifact locals.
 
-The checked-in dogfood workflow config lives in `.scherzo/scherzo.yaml`. It still uses direct `workspace.hooks` and calls `scripts/scherzo-jj-workspace` for create, before-step, and remove behavior. The dogfood workflows are `.scherzo/workflows/research.yaml`, `.scherzo/workflows/implementation.yaml`, `.scherzo/workflows/execplan.yaml`, `.scherzo/workflows/execplan-revision.yaml`, `.scherzo/workflows/execplan-implementation.yaml`, and `.scherzo/workflows/merge-conflict-resolution.yaml`. Their prompts live under `.scherzo/workflows/prompts/`. Most prompts mention jj directly. The reusable examples live under `examples/`, and `examples/scherzo.yaml` already demonstrates named profiles.
+The checked-in dogfood workflow config lives in `.scherzo/scherzo.yaml`. It defines `workspace.profiles.dogfood-jj`, whose hooks call `scripts/scherzo-jj-workspace` for create, before-step, and remove behavior, and the dogfood workflows explicitly select that profile. The dogfood workflows are `.scherzo/workflows/research.yaml`, `.scherzo/workflows/implementation.yaml`, `.scherzo/workflows/execplan.yaml`, `.scherzo/workflows/execplan-revision.yaml`, `.scherzo/workflows/execplan-implementation.yaml`, and `.scherzo/workflows/merge-conflict-resolution.yaml`. Their prompts live under `.scherzo/workflows/prompts/`. Most prompts mention jj directly. The reusable examples live under `examples/`, and `examples/scherzo.yaml` already demonstrates named profiles.
 
 ## Preconditions and Verified Facts
 
@@ -213,7 +213,7 @@ Child Plan 1 is the core schema, migration, and validation plan for workspace dr
 
 Child Plan 2 is the initial workspace driver command contract and adapters plan. It should define the first fixed lifecycle command shapes and capability command shapes, probably lifecycle operations `create`, `before-step`, `after-step`, and `remove`, plus capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. It should implement a dogfood jj driver script, likely `scripts/scherzo-workspace-jj`, that delegates to existing jj operations where safe. It should implement a no-op or artifact-only driver for workflows that only need `assert-only`. It should include contract tests showing consistent exit codes, JSON output where applicable, human output where applicable, and secret-safe diagnostics.
 
-Child Plan 3 is the dogfood migration plan. It is already represented by Linear issue LIV-168, titled "Switch dogfood workflows to named workspace profiles". It should be refined to target driver-backed profiles once Child Plans 1 and 2 exist. This plan should replace direct `.scherzo/scherzo.yaml` `workspace.hooks` with named `workspace.profiles` that use the jj driver, and make checked-in workflows either select that profile explicitly or intentionally rely on a documented named default.
+Child Plan 3 is the remaining driver-backed dogfood migration plan. LIV-168, titled "Switch dogfood workflows to named workspace profiles", completed the interim migration from direct `.scherzo/scherzo.yaml` `workspace.hooks` to a named `dogfood-jj` hook profile. A later driver-backed plan should replace that hook profile with a driver profile once Child Plans 1 and 2 exist.
 
 Child Plan 4 is the runtime exposure plan. It should add `SCHERZO_WORKSPACE_PROFILE`, `SCHERZO_WORKSPACE_DRIVER`, and `SCHERZO_WORKSPACE_CAPABILITIES` to command-step environments. It should also expose prompt locals such as `workspace.profile`, `workspace.driver`, and `workspace.capabilities` so agent prompts can instruct agents without hardcoding jj. If the design chooses to put these variables into the actual pi process environment, this child plan must thread step-specific environment into pi launch for both shell-command and argv-command pi launch paths and test both persistent and non-persistent launch modes.
 
@@ -261,13 +261,13 @@ Check the current dogfood and example workspace profile state:
 
     grep -R "workspace_profile\|workspace:" -n .scherzo/scherzo.yaml .scherzo/workflows examples/scherzo.yaml examples/workflows
 
-The expected current result before Child Plan 1 is that `.scherzo/scherzo.yaml` has direct `workspace.hooks`, examples use named profiles, and dogfood workflow files do not yet select profiles.
+The expected current result after LIV-168 is that `.scherzo/scherzo.yaml` defines `workspace.profiles.dogfood-jj`, examples use named profiles, and dogfood workflow files select `workspace_profile: dogfood-jj`.
 
 After the operator accepts the vocabulary, create or update Linear tickets for Child Plans 2 through 7. Use `direnv exec . linear issue create` from the repository root, choose the LIV team, the Scherzo project, Backlog state, and `workflow:execplan` label for tickets that should produce child ExecPlans. LIV-168 already exists for Child Plan 1.
 
 Write Child Plan 1 at a new `docs/plans/` path for core driver schema, legacy detection, doctor guidance, and migration documentation. Validate that plan with the ExecPlan review skill before implementation.
 
-Refine LIV-168 after Child Plan 1 is reviewed. If the issue remains the dogfood migration ticket, write its child plan at a path such as `docs/plans/LIV-168-dogfood-workspace-driver-profiles.md` and make it depend on the driver schema and adapter facts that actually exist.
+File a follow-up dogfood driver migration after Child Plan 1 is reviewed. That child plan can use a path such as `docs/plans/dogfood-workspace-driver-profiles.md` and should depend on the driver schema and adapter facts that actually exist.
 
 Repeat for the remaining child plans only after the preceding plan's vocabulary and interfaces are stable. Each child plan must be self-contained and must not rely on this umbrella alone for implementation details.
 

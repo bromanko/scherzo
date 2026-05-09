@@ -1,6 +1,7 @@
 version: 1
 id: execplan-implementation
 description: Implement an existing ExecPlan, verify the plan is complete, review the changed files, validate, publish a PR, and clean up safely.
+workspace_profile: dogfood-jj
 max_parallel_steps: 1
 steps:
   - id: prepare_plan

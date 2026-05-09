@@ -1,6 +1,7 @@
 version: 1
 id: merge-conflict-resolution
 description: Manually resolve merge conflicts on a same-repository PR or branch without intentional functionality changes.
+workspace_profile: dogfood-jj
 max_parallel_steps: 1
 steps:
   - id: prepare_target
