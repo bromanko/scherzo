@@ -1,12 +1,35 @@
 # Scherzo
 
-Scherzo is a Gleam/Erlang orchestration daemon for running pi coding-agent workflows against Linear issues. It is now YAML-orchestrator / YAML-DAG only: runtime settings live in a `scherzo.yaml` orchestrator config, and issue workflows live in YAML DAG files that reference Markdown prompt templates.
+Scherzo turns Linear issues into supervised, repeatable coding-agent workflows. It is a Gleam/Erlang daemon that polls Linear, selects issues by workflow labels, prepares per-run workspaces, executes YAML DAGs made of `pi` agent steps and shell command steps, records durable artifacts, and hands results back to Linear for humans to review.
 
-Legacy Markdown runtime workflows (`WORKFLOW.md` or `.scherzo/workflows/*.md`) are no longer supported. Markdown remains supported for prompt templates only.
+Use Scherzo when you want agents to do more than one-off chat: keep a queue of issues, run the same workflow every time, validate work in isolated workspaces, recover after restarts, and give operators visibility and control while agents are running. The checked-in workflows cover research and implementation, and the workflow format is intended for repository-local customization.
+
+Scherzo is not a hosted product or a fully stable public platform. It currently assumes Linear for issue tracking and `pi` for agent execution, and it works best for teams comfortable with Nix/devenv, Gleam/Erlang tooling, and hands-on operator supervision.
+
+## Development status
+
+Scherzo is in active development and is actively used by a small number of people for real project work. It is ready to dogfood and adapt if you are willing to read the configuration, run readiness checks, and keep an operator in the loop.
+
+Expect rough edges:
+
+- Runtime configuration and workflow definitions are YAML-only and may still change; legacy Markdown runtime workflows (`WORKFLOW.md` or `.scherzo/workflows/*.md`) are no longer supported. Markdown remains supported for prompt templates only.
+- The default integration path is Linear + `pi`; other trackers and agent runtimes are not yet first-class.
+- Workspaces, hooks, credentials, and model/provider settings are intentionally explicit. Scherzo will not hide project-specific setup from you.
+- Operator docs and examples are improving, but you should expect to inspect logs, artifacts, and `scherzoctl` output when something goes wrong.
 
 Agents making architecture or workflow changes should start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the current module map, invariants, change checklists, and validation guidance.
 
-## Quick start
+## Getting started
+
+The quickest orientation path is:
+
+1. Read `examples/scherzo.yaml` and `examples/workflows/implementation.yaml` to understand the config/workflow shape.
+2. Add Scherzo to your project (see [Using Scherzo from another devenv](#using-scherzo-from-another-devenv)) or work from this repository's dogfood config.
+3. Set `LINEAR_API_KEY`, point Scherzo at a YAML orchestrator config, and run `doctor`.
+4. Start with `--once` against a single eligible issue before running daemon mode.
+5. Use `scherzoctl ps`, retained artifacts, and Linear comments to monitor outcomes.
+
+For local development of this repository:
 
 ```sh
 direnv allow
@@ -31,6 +54,9 @@ LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.ya
 
 # Run daemon mode through the Ctrl-C-friendly devenv helper
 LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
+
+# Inspect active/retained sessions from another terminal
+direnv exec . scherzoctl ps
 ```
 
 ## Test suites
