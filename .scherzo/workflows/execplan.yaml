@@ -49,13 +49,13 @@ steps:
   - id: create_pr
     kind: command
     depends_on: [final_validate]
-    run: scripts/scherzo-execplan create-pr
+    run: scripts/scherzo-execplan create-pr --publish-context tmp/scherzo-execplan-publish-context.json
     timeout_ms: 300000
     workspace: main
 
   - id: create_implementation_issue
     kind: command
     depends_on: [create_pr]
-    run: scripts/scherzo-execplan create-implementation-issue
+    run: scripts/scherzo-execplan create-implementation-issue --publish-context tmp/scherzo-execplan-publish-context.json
     timeout_ms: 300000
     workspace: main
