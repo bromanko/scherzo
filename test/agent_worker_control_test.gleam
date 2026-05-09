@@ -16,6 +16,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import simplifile
+import test_async
 
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
@@ -143,6 +144,8 @@ fn tracker_returning(final_issue: tracker_issue.Issue) -> tracker.Client {
     fetch_issue_states_by_ids: fn(_) { Ok([final_issue]) },
   )
 }
+
+const external_fixture_timeout_ms = 5000
 
 fn receive_update_named(
   subject: process.Subject(agent_types.RunnerUpdate),
@@ -278,7 +281,6 @@ pub fn operator_ui_request_timeout_cancels_before_read_timeout_test() {
   let _pid =
     process.spawn_unlinked(fn() {
       let command_subject = process.new_subject()
-      process.send(ready_subject, command_subject)
       let cfg = config(root, pi_command, 1, config_types.Operator)
       let cfg =
         config_types.EffectiveConfig(
@@ -286,12 +288,11 @@ pub fn operator_ui_request_timeout_cancels_before_read_timeout_test() {
           pi: config_types.PiConfig(
             ..cfg.pi,
             read_timeout_ms: 1000,
-            stall_timeout_ms: 10,
             ui_request_timeout_ms: 50,
           ),
         )
       let result =
-        runner.run_attempt_with_commands(
+        runner.run_attempt_with_command_ready(
           issue("Todo"),
           None,
           workflow("Original task"),
@@ -299,16 +300,19 @@ pub fn operator_ui_request_timeout_cancels_before_read_timeout_test() {
           tracker_returning(issue("Done")),
           fn(_, update) { process.send(updates, update) },
           command_subject,
+          fn() { process.send(ready_subject, Nil) },
         )
       process.send(result_subject, result)
     })
-  let assert Ok(_) = process.receive(ready_subject, within: 1000)
+  let _ =
+    test_async.expect_message_within(ready_subject, external_fixture_timeout_ms)
 
-  let assert Ok(_) = receive_update_named(updates, "extension_ui_request", 20)
+  let assert Ok(_) = receive_update_named(updates, "extension_ui_request", 50)
   let assert Ok(timeout_update) =
-    receive_update_named(updates, "operator_ui_timeout", 20)
+    receive_update_named(updates, "operator_ui_timeout", 50)
   assert timeout_update.request_id == Some("ui-1")
-  let assert Ok(Ok(success)) = process.receive(result_subject, within: 3000)
+  let assert Ok(Ok(success)) =
+    process.receive(result_subject, within: external_fixture_timeout_ms)
   assert success.final_classification == agent_types.FinalTerminal
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "extension_ui_response")
@@ -320,8 +324,10 @@ pub fn operator_ui_request_cancel_response_test() {
   reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
+  // Exercise the UI path with a fixture response delay longer than the old
+  // 100ms test read timeout, matching the scheduler-load failure mode.
   let pi_command =
-    "FAKE_PI_UI_DIALOG=1 FAKE_PI_UI_DIALOG_WAITS=1 FAKE_PI_TRANSCRIPT="
+    "FAKE_PI_UI_DIALOG=1 FAKE_PI_UI_DIALOG_WAITS=1 FAKE_PI_DELAY_MS=150 FAKE_PI_TRANSCRIPT="
     <> transcript
     <> " "
     <> fake_pi()
@@ -331,23 +337,34 @@ pub fn operator_ui_request_cancel_response_test() {
   let _pid =
     process.spawn_unlinked(fn() {
       let command_subject = process.new_subject()
-      process.send(ready_subject, command_subject)
+      let cfg = config(root, pi_command, 1, config_types.Operator)
+      let cfg =
+        config_types.EffectiveConfig(
+          ..cfg,
+          pi: config_types.PiConfig(
+            ..cfg.pi,
+            read_timeout_ms: external_fixture_timeout_ms,
+            ui_request_timeout_ms: 2000,
+          ),
+        )
       let result =
-        runner.run_attempt_with_commands(
+        runner.run_attempt_with_command_ready(
           issue("Todo"),
           None,
           workflow("Original task"),
-          config(root, pi_command, 1, config_types.Operator),
+          cfg,
           tracker_returning(issue("Done")),
           fn(_, update) { process.send(updates, update) },
           command_subject,
+          fn() { process.send(ready_subject, command_subject) },
         )
       process.send(result_subject, result)
     })
-  let assert Ok(command_subject) = process.receive(ready_subject, within: 1000)
+  let command_subject =
+    test_async.expect_message_within(ready_subject, external_fixture_timeout_ms)
 
   let assert Ok(ui_update) =
-    receive_update_named(updates, "extension_ui_request", 20)
+    receive_update_named(updates, "extension_ui_request", 50)
   assert ui_update.request_id == Some("ui-1")
   assert ui_update.message == Some("continue?")
   let reply = process.new_subject()
@@ -355,9 +372,10 @@ pub fn operator_ui_request_cancel_response_test() {
     command_subject,
     worker_command.RespondToUi("ui-1", command.UiCancel, reply),
   )
-  let assert Ok(worker_command.Applied(_)) =
-    process.receive(reply, within: 1000)
-  let assert Ok(Ok(success)) = process.receive(result_subject, within: 3000)
+  let assert worker_command.Applied(_) =
+    test_async.expect_message_within(reply, external_fixture_timeout_ms)
+  let assert Ok(Ok(success)) =
+    process.receive(result_subject, within: external_fixture_timeout_ms)
   assert success.final_classification == agent_types.FinalTerminal
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "extension_ui_response")
