@@ -21,6 +21,10 @@ const max_tool_text_chars = 4096
 
 const tool_text_truncated_suffix = "… [truncated]"
 
+// While an operator UI request is pending, keep stdout reads short so
+// command-subject responses are observed before the UI deadline expires.
+const pending_ui_command_poll_ms = 50
+
 pub type Context {
   Context(
     issue_id: String,
@@ -124,10 +128,15 @@ fn active_turn_loop(
         Some(ui) -> ui.deadline_ms
         None -> stall_deadline_ms
       }
+      let read_timeout_ms =
+        read_timeout_for_pending_ui(
+          context.config.pi.read_timeout_ms,
+          pending_ui,
+        )
       case
         client.read_turn_record(
           session,
-          context.config.pi.read_timeout_ms,
+          read_timeout_ms,
           context.turn_deadline_ms,
           effective_stall_deadline,
         )
@@ -753,6 +762,23 @@ fn is_blocking_ui_method(method: Option(String)) -> Bool {
   case method {
     Some("select") | Some("confirm") | Some("input") | Some("editor") -> True
     _ -> False
+  }
+}
+
+fn read_timeout_for_pending_ui(
+  configured_read_timeout_ms: Int,
+  pending_ui: Option(operator_control.PendingUi),
+) -> Int {
+  case pending_ui {
+    Some(_) -> min_int(configured_read_timeout_ms, pending_ui_command_poll_ms)
+    None -> configured_read_timeout_ms
+  }
+}
+
+fn min_int(a: Int, b: Int) -> Int {
+  case a < b {
+    True -> a
+    False -> b
   }
 }
 
