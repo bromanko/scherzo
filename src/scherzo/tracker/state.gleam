@@ -53,6 +53,27 @@ pub fn equals_normalized(left: IssueState, right: IssueState) -> Bool {
   key(left) == key(right)
 }
 
+pub fn contains_normalized(
+  states: List(IssueState),
+  state: IssueState,
+) -> Bool {
+  list.any(states, fn(candidate) { equals_normalized(candidate, state) })
+}
+
+pub fn canonicalize_against(
+  states: List(IssueState),
+  candidate: IssueState,
+) -> Result(IssueState, IssueState) {
+  case states {
+    [] -> Error(candidate)
+    [state, ..rest] ->
+      case equals_normalized(state, candidate) {
+        True -> Ok(state)
+        False -> canonicalize_against(rest, candidate)
+      }
+  }
+}
+
 pub fn todo_state() -> IssueState {
   from_string_unchecked("Todo")
 }

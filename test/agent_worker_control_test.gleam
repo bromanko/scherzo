@@ -59,6 +59,7 @@ fn config(
       api_key: Some("key"),
       project_slug: Some("PROJ"),
       active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+      dispatch_states: issue_state.list_from_strings(["Todo"]),
       terminal_states: issue_state.list_from_strings(["Done"]),
     ),
     polling: config_types.PollingConfig(interval_ms: 30_000),

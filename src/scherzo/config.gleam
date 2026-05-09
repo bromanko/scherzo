@@ -38,6 +38,7 @@ pub fn default_tracker_config() -> config_types.TrackerConfig {
     api_key: None,
     project_slug: None,
     active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+    dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings([
       "Closed",
       "Cancelled",
@@ -311,9 +312,19 @@ fn resolve_tracker(
         get_string(tracker_node, "endpoint")
         |> option.unwrap("https://api.linear.app/graphql")
       use endpoint <- result.try(validate_https_endpoint(endpoint))
-      let active_states =
+      let active_state_strings =
         get_string_list(tracker_node, "active_states")
         |> list_default(["Todo", "In Progress"])
+      let active_states = issue_state.list_from_strings(active_state_strings)
+      use dispatch_state_strings <- result.try(get_required_string_list_strict(
+        tracker_node,
+        "dispatch_states",
+        "tracker.dispatch_states",
+      ))
+      use dispatch_states <- result.try(resolve_dispatch_states(
+        active_states,
+        dispatch_state_strings,
+      ))
       let terminal_states =
         get_string_list(tracker_node, "terminal_states")
         |> list_default(["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -337,11 +348,48 @@ fn resolve_tracker(
         endpoint: endpoint,
         api_key: Some(api_key),
         project_slug: Some(project_slug),
-        active_states: issue_state.list_from_strings(active_states),
+        active_states: active_states,
+        dispatch_states: dispatch_states,
         terminal_states: issue_state.list_from_strings(terminal_states),
       ))
     }
     Error(_) -> Error(error.UnsupportedTrackerKind(normalized_kind))
+  }
+}
+
+fn resolve_dispatch_states(
+  active_states: List(issue_state.IssueState),
+  raw_dispatch_states: List(String),
+) -> Result(List(issue_state.IssueState), error.ConfigError) {
+  case raw_dispatch_states {
+    [] ->
+      Error(error.InvalidConfig(
+        "tracker.dispatch_states must contain at least one state",
+      ))
+    _ -> canonicalize_dispatch_states(active_states, raw_dispatch_states, [])
+  }
+}
+
+fn canonicalize_dispatch_states(
+  active_states: List(issue_state.IssueState),
+  raw_dispatch_states: List(String),
+  acc: List(issue_state.IssueState),
+) -> Result(List(issue_state.IssueState), error.ConfigError) {
+  case raw_dispatch_states {
+    [] -> Ok(list.reverse(acc))
+    [raw, ..rest] -> {
+      let candidate = issue_state.from_string_unchecked(raw)
+      case issue_state.canonicalize_against(active_states, candidate) {
+        Ok(canonical) ->
+          canonicalize_dispatch_states(active_states, rest, [canonical, ..acc])
+        Error(_) ->
+          Error(error.InvalidConfig(
+            "tracker.dispatch_states must be a subset of tracker.active_states; invalid dispatch state "
+            <> issue_state.to_string(candidate)
+            <> ". Remove it from dispatch_states or add it to active_states only if it is truly lifecycle-active.",
+          ))
+      }
+    }
   }
 }
 
@@ -1450,6 +1498,21 @@ fn reject_schedule_payload_entries(
   }
 }
 
+fn get_required_string_list_strict(
+  node: yay.Node,
+  key: String,
+  path: String,
+) -> Result(List(String), error.ConfigError) {
+  case get_node(node, key) {
+    None ->
+      Error(error.InvalidConfig(
+        path <> " is required; add dispatch_states: [Todo] under tracker",
+      ))
+    Some(yay.NodeSeq(values)) -> read_string_values(values, path, [])
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a string list"))
+  }
+}
+
 fn get_optional_string_list_strict(
   node: yay.Node,
   key: String,
@@ -2053,7 +2116,7 @@ fn list_default(value: Option(List(a)), default: List(a)) -> List(a) {
 }
 
 fn config_error_message(err: error.ConfigError) -> String {
-  error.config_code(err)
+  error.config_message(err)
 }
 
 @external(erlang, "scherzo_config_ffi", "home")

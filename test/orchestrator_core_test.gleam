@@ -19,6 +19,7 @@ fn config() -> config_types.EffectiveConfig {
       api_key: Some("key"),
       project_slug: Some("PROJ"),
       active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+      dispatch_states: issue_state.list_from_strings(["Todo"]),
       terminal_states: issue_state.list_from_strings([
         "Done",
         "Closed",
@@ -759,6 +760,34 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
     == [
       core.ParkIssue("a", reason.ParkMaxSessionsPerIssue),
       core.ReleaseClaim("a"),
+    ]
+}
+
+pub fn worker_success_in_progress_remains_lifecycle_active_test() {
+  let initial = issue("a", "ABC-1", "Todo", Some(1))
+  let final =
+    tracker_issue.Issue(
+      ..initial,
+      state: issue_state.from_string_unchecked("In Progress"),
+    )
+  let state =
+    core.apply_worker_start(core.new_state(config()), initial, "/tmp/ws")
+  let core.Transition(state: next, effects:) =
+    core.apply_worker_success_with_workspace_path(
+      state,
+      config(),
+      "a",
+      final,
+      "/tmp/ws",
+      session_tokens.zero_token_totals(),
+      100,
+    )
+
+  assert dict.has_key(next.completed, "a")
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "reschedule_retry"),
+      core.ScheduleRetry("a", 1000, 1, reason.RetryAfterContinuation),
     ]
 }
 

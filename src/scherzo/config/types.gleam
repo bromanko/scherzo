@@ -11,6 +11,7 @@ pub type TrackerConfig {
     api_key: Option(String),
     project_slug: Option(String),
     active_states: List(issue_state.IssueState),
+    dispatch_states: List(issue_state.IssueState),
     terminal_states: List(issue_state.IssueState),
   )
 }

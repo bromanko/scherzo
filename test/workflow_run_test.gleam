@@ -57,6 +57,7 @@ fn effective() -> config_types.EffectiveConfig {
       api_key: Some("test-key"),
       project_slug: Some("TEST"),
       active_states: issue_state.list_from_strings(["Todo"]),
+      dispatch_states: issue_state.list_from_strings(["Todo"]),
       terminal_states: issue_state.list_from_strings(["Done"]),
     ),
     polling: config.default_polling_config(),

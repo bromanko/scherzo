@@ -26,6 +26,7 @@ fn tracker_config() -> config_types.TrackerConfig {
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
     active_states: issue_state.list_from_strings(["Todo"]),
+    dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }

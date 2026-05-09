@@ -512,7 +512,8 @@ fn map_config_error(
 ) -> Result(a, BundleError) {
   case result {
     Ok(value) -> Ok(value)
-    Error(err) -> Error(BundleError(error.config_code(err), "config error"))
+    Error(err) ->
+      Error(BundleError(error.config_code(err), error.config_message(err)))
   }
 }
 

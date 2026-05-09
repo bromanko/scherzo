@@ -95,6 +95,7 @@ tracker:
   api_key: test-key
   project_slug: TEST
   active_states: [Todo]
+  dispatch_states: [Todo]
   terminal_states: [Done]
 workspace:
   root: " <> root <> "
@@ -136,6 +137,24 @@ fn write_enforcing_workflow(dir: String, max_concurrent: Int) -> String {
     max_concurrent,
     enforcing_linear_contract_text(),
   )
+}
+
+fn write_enforcing_split_state_workflow(
+  dir: String,
+  max_concurrent: Int,
+) -> String {
+  reset_dir(dir)
+  let config_text =
+    workflow_text_with_linear_contract(
+      dir <> "/workspaces",
+      max_concurrent,
+      enforcing_linear_contract_text(),
+    )
+    |> string.replace(
+      each: "  active_states: [Todo]\n  dispatch_states: [Todo]",
+      with: "  active_states: [Todo, In Progress]\n  dispatch_states: [Todo]",
+    )
+  write_workflow_files(dir, config_text)
 }
 
 fn write_yaml_agent_workflow(dir: String) -> String {
@@ -1374,6 +1393,78 @@ pub fn daemon_skips_invalid_workflow_candidate_and_reports_once_test() {
 
   process.send(started.data, daemon.PollTick(2))
   test_async.assert_no_extra_message_within(triage_subject, 200)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_ignores_unlabeled_non_dispatch_state_candidate_test() {
+  let workflow_path =
+    write_enforcing_split_state_workflow(
+      "test/tmp/daemon-invalid-in-progress-ignored",
+      1,
+    )
+  let candidate = issue("issue-id", "ABC-1", "In Progress")
+  let refresh_subject = process.new_subject()
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) {
+        process.send(refresh_subject, "refresh")
+        Ok([candidate])
+      },
+    )
+  let log_subject = process.new_subject()
+  let triage_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      make_triage: fn(_, _) { fake_triage(triage_subject) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  test_async.assert_no_extra_message_within(triage_subject, 200)
+  test_async.assert_no_extra_message_within(refresh_subject, 200)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.size(snapshot.running) == 0
+  assert !dict.has_key(snapshot.invalid_workflow_reports, "issue-id")
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_ignores_workflow_labeled_non_dispatch_state_candidate_test() {
+  let workflow_path =
+    write_enforcing_split_state_workflow(
+      "test/tmp/daemon-valid-in-progress-ignored",
+      1,
+    )
+  let candidate =
+    tracker_issue.Issue(..issue("issue-id", "ABC-1", "In Progress"), labels: [
+      "workflow:implementation",
+    ])
+  let refresh_subject = process.new_subject()
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) {
+        process.send(refresh_subject, "refresh")
+        Ok([candidate])
+      },
+    )
+  let log_subject = process.new_subject()
+  let triage_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      make_triage: fn(_, _) { fake_triage(triage_subject) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+  test_async.assert_no_extra_message_within(triage_subject, 200)
+  test_async.assert_no_extra_message_within(refresh_subject, 200)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.size(snapshot.running) == 0
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 

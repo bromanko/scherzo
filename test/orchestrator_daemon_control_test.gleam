@@ -56,6 +56,7 @@ tracker:
   api_key: test-key
   project_slug: TEST
   active_states: [Todo]
+  dispatch_states: [Todo]
   terminal_states: [Done]
 workspace:
   root: " <> root <> "
