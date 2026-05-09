@@ -12,15 +12,14 @@ Usage:
   scherzo-execplan create-implementation-issue --plan PLAN --pr-url URL [--branch BRANCH] [--source-issue ISSUE]
 
 Run from the Scherzo jj workspace root. The workflow must leave exactly one
-changed ExecPlan source file under docs/plans/. validate and create-pr render a
-Carbon-style single-file HTML review artifact and print PRIMARY_PLAN_ARTIFACT
-and PLAN_HTML_PATH; the output defaults to $SCHERZO_RUN_ROOT/artifacts/execplan
-when SCHERZO_RUN_ROOT is set, otherwise tmp/execplan-artifacts. create-pr
-validates, pushes a jj bookmark to origin, opens a ready GitHub PR against main,
-and writes a durable publish context artifact. create-implementation-issue
-creates or finds the follow-up Linear issue that will run
-workflow:execplan-implementation after the plan PR is merged, using the publish
-context or explicit inputs instead of the current jj diff.
+changed ExecPlan HTML artifact under docs/plans/. validate and create-pr treat
+that docs/plans/*.html file as the primary retained plan artifact and print
+PRIMARY_PLAN_ARTIFACT and PLAN_HTML_PATH pointing at it. create-pr validates,
+pushes a jj bookmark to origin, opens a ready GitHub PR against main, and writes
+a durable publish context artifact. create-implementation-issue creates or finds
+the follow-up Linear issue that will run workflow:execplan-implementation after
+the plan PR is merged, using the publish context or explicit inputs instead of
+the current jj diff.
 EOF
 }
 
@@ -29,32 +28,17 @@ fail() {
   exit 1
 }
 
-script_dir() {
-  CDPATH= cd -- "$(dirname -- "$0")" && pwd -P
+plan_stem() {
+  base=$(basename "$1")
+  base=${base%.html}
+  base=${base%.md}
+  printf '%s\n' "$base"
 }
 
-plan_html_artifact_dir() {
-  if [ -n "${SCHERZO_EXECPLAN_HTML_DIR:-}" ]; then
-    printf '%s\n' "$SCHERZO_EXECPLAN_HTML_DIR"
-  elif [ -n "${SCHERZO_RUN_ROOT:-}" ]; then
-    printf '%s\n' "$SCHERZO_RUN_ROOT/artifacts/execplan"
-  else
-    printf '%s\n' "tmp/execplan-artifacts"
-  fi
-}
-
-render_plan_html_artifact() {
+print_primary_plan_artifact() {
   plan=$1
-  require_command python3
-  output_dir=$(plan_html_artifact_dir)
-  mkdir -p "$output_dir"
-  html_path="$output_dir/$(basename "$plan" .md).html"
-  renderer=$(script_dir)/scherzo-execplan-html
-  [ -f "$renderer" ] || fail "HTML renderer not found: $renderer"
-  python3 "$renderer" render "$plan" "$html_path" >/dev/null
-  echo "PRIMARY_PLAN_ARTIFACT=$html_path"
-  echo "PLAN_HTML_PATH=$html_path"
-  echo "PLAN_MARKDOWN_PATH=$plan"
+  echo "PRIMARY_PLAN_ARTIFACT=$plan"
+  echo "PLAN_HTML_PATH=$plan"
 }
 
 require_command() {
@@ -80,9 +64,9 @@ find_plan_path() {
   files=$(changed_files | sed '/^[[:space:]]*$/d')
   [ -n "$files" ] || fail "no changed files found"
 
-  plan_files=$(printf '%s\n' "$files" | grep -E '^docs/plans/[^/]+\.md$' || true)
+  plan_files=$(printf '%s\n' "$files" | grep -E '^docs/plans/[^/]+\.html$' || true)
   plan_count=$(printf '%s\n' "$plan_files" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
-  [ "$plan_count" = "1" ] || fail "expected exactly one changed docs/plans/*.md file, found $plan_count"
+  [ "$plan_count" = "1" ] || fail "expected exactly one changed docs/plans/*.html file, found $plan_count"
 
   plan=$(printf '%s\n' "$plan_files" | sed -n '1p')
   [ -f "$plan" ] || fail "plan file does not exist: $plan"
@@ -99,56 +83,86 @@ EOF_FILES
   printf '%s\n' "$plan"
 }
 
-require_heading() {
-  plan=$1
-  heading=$2
-  grep -Fx "## $heading" "$plan" >/dev/null 2>&1 || fail "missing required heading: ## $heading"
-}
-
-warn_heading() {
-  plan=$1
-  heading=$2
-  if ! grep -Fx "## $heading" "$plan" >/dev/null 2>&1; then
-    echo "scherzo-execplan: warning: missing expected heading: ## $heading" >&2
-  fi
-}
-
 validate_plan() {
   plan=$1
 
-  grep -Eq '^# .+' "$plan" || fail "plan must start with a level-1 title"
+  printf '%s\n' "$plan" | grep -Eq '^docs/plans/[^/]+\.html$' || \
+    fail "invalid ExecPlan artifact path: $plan; expected docs/plans/<file>.html"
 
-  warn_heading "$plan" "Purpose / Big Picture"
-  warn_heading "$plan" "Problem Framing and Constraints"
-  warn_heading "$plan" "Strategy Overview"
-  warn_heading "$plan" "Alternatives Considered"
-  warn_heading "$plan" "Risks and Countermeasures"
-  require_heading "$plan" "Progress"
-  warn_heading "$plan" "Surprises & Discoveries"
-  warn_heading "$plan" "Decision Log"
-  warn_heading "$plan" "Outcomes & Retrospective"
-  warn_heading "$plan" "Context and Orientation"
-  warn_heading "$plan" "Preconditions and Verified Facts"
-  warn_heading "$plan" "Scope Boundaries"
-  warn_heading "$plan" "Milestones"
-  warn_heading "$plan" "Plan of Work"
-  warn_heading "$plan" "Concrete Steps"
-  warn_heading "$plan" "Testing and Falsifiability"
-  warn_heading "$plan" "Validation and Acceptance"
-  warn_heading "$plan" "Rollout, Recovery, and Idempotence"
-  warn_heading "$plan" "Artifacts and Notes"
-  warn_heading "$plan" "Interfaces and Dependencies"
-  require_heading "$plan" "Open Questions and Clarifications Needed"
+  python3 - "$plan" <<'PY'
+import html
+import re
+import sys
+from pathlib import Path
 
-  grep -Eq '^- \[[ xX]\] ' "$plan" || fail "Progress must contain at least one checklist item"
+path = Path(sys.argv[1])
 
-  if grep -nE '/Users/|/home/|/private/|/var/folders/' "$plan" >&2; then
-    fail "plan contains absolute local paths; use repository-relative paths only"
-  fi
+def fail(message: str) -> None:
+    print(f"scherzo-execplan: {message}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    text = path.read_text(encoding="utf-8")
+except OSError as exc:
+    fail(f"could not read plan artifact: {exc}")
+
+if not re.search(r"<!doctype\s+html", text, flags=re.IGNORECASE):
+    fail("plan artifact must be a complete HTML document starting with <!doctype html>")
+if not re.search(r"<html\b", text, flags=re.IGNORECASE):
+    fail("plan artifact must contain an <html> root")
+if not re.search(r"<h1\b[^>]*\bcommentable\b[^>]*data-comment-id=", text, flags=re.IGNORECASE | re.DOTALL):
+    fail("plan artifact must contain a commentable <h1> with data-comment-id")
+if "carbon-shell" not in text or "toc-panel" not in text:
+    fail("plan artifact must use the Carbon structured shell with sidebar navigation")
+if "commentable" not in text or "data-comment-id=" not in text:
+    fail("plan artifact must include commentable DOM metadata")
+if "comment-hint" in text or "Stable DOM targets" in text:
+    fail("plan artifact must not include visible comment UI hints or target-count messaging")
+if re.search(r"/Users/|/home/|/private/|/var/folders/", text):
+    fail("plan contains absolute local paths; use repository-relative paths only")
+
+body_without_code = re.sub(r"<script\b.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+body_without_code = re.sub(r"<style\b.*?</style>", " ", body_without_code, flags=re.IGNORECASE | re.DOTALL)
+visible = html.unescape(re.sub(r"<[^>]+>", " ", body_without_code))
+visible = re.sub(r"\s+", " ", visible)
+
+if not re.search(r"\bProgress\b", visible):
+    fail("missing required section: Progress")
+if "Open Questions and Clarifications Needed" not in visible:
+    fail("missing required section: Open Questions and Clarifications Needed")
+if not re.search(r"<input\b[^>]*type=[\"']checkbox[\"']|checklist-item", text, flags=re.IGNORECASE):
+    fail("Progress must contain at least one checklist item")
+
+expected = [
+    "Purpose / Big Picture",
+    "Problem Framing and Constraints",
+    "Strategy Overview",
+    "Alternatives Considered",
+    "Risks and Countermeasures",
+    "Surprises & Discoveries",
+    "Decision Log",
+    "Outcomes & Retrospective",
+    "Context and Orientation",
+    "Preconditions and Verified Facts",
+    "Scope Boundaries",
+    "Milestones",
+    "Plan of Work",
+    "Concrete Steps",
+    "Testing and Falsifiability",
+    "Validation and Acceptance",
+    "Rollout, Recovery, and Idempotence",
+    "Artifacts and Notes",
+    "Interfaces and Dependencies",
+]
+for heading in expected:
+    if heading not in visible:
+        print(f"scherzo-execplan: warning: missing expected section: {heading}", file=sys.stderr)
+PY
 }
 
 validate_command() {
   require_command jj
+  require_command python3
   explicit_plan=${1:-}
   if [ -n "$explicit_plan" ]; then
     [ -f "$explicit_plan" ] || fail "plan file does not exist: $explicit_plan"
@@ -157,7 +171,7 @@ validate_command() {
     plan=$(find_plan_path)
   fi
   validate_plan "$plan"
-  render_plan_html_artifact "$plan"
+  print_primary_plan_artifact "$plan"
   echo "PLAN_PATH=$plan"
   echo "VALIDATION=ok"
 }
@@ -211,7 +225,7 @@ current_change_id_short() {
 
 execplan_branch_name() {
   plan=$1
-  slug=$(sanitize_ref_part "$(basename "$plan" .md)" | cut -c 1-60)
+  slug=$(sanitize_ref_part "$(plan_stem "$plan")" | cut -c 1-60)
   [ -n "$slug" ] || slug=plan
   change_id=$(current_change_id_short)
   [ -n "$change_id" ] || fail "could not determine jj change id"
@@ -226,7 +240,7 @@ maybe_source_issue_identifier() {
     return
   fi
 
-  stem=$(basename "$plan" .md)
+  stem=$(plan_stem "$plan")
   issue=$(printf '%s\n' "$stem" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p')
   if [ -n "$issue" ]; then
     printf '%s\n' "$issue"
@@ -254,6 +268,28 @@ infer_source_issue_identifier() {
   issue=$(maybe_source_issue_identifier "$plan")
   [ -n "$issue" ] || fail "could not infer source Linear issue identifier from cwd or plan filename: $plan"
   printf '%s\n' "$issue"
+}
+
+plan_title() {
+  plan=$1
+  python3 - "$plan" <<'PY'
+import html
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+for pattern in [r"<h1\b[^>]*>(.*?)</h1>", r"<title\b[^>]*>(.*?)</title>"]:
+    match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+    if match:
+        value = re.sub(r"<[^>]+>", " ", match.group(1))
+        value = html.unescape(re.sub(r"\s+", " ", value)).strip()
+        value = re.sub(r"\s+[—-]\s+Scherzo ExecPlan.*$", "", value).strip()
+        if value:
+            print(value)
+            raise SystemExit(0)
+print("")
+PY
 }
 
 write_publish_context() {
@@ -431,14 +467,14 @@ create_pr_command() {
     validate_plan "$plan"
   fi
 
-  title=$(sed -n 's/^# //p' "$plan" | sed -n '1p')
-  [ -n "$title" ] || title="Add ExecPlan $(basename "$plan" .md)"
+  title=$(plan_title "$plan")
+  [ -n "$title" ] || title="Add ExecPlan $(plan_stem "$plan")"
   case "$title" in
     ExecPlan:*|execplan:*) pr_title=$title ;;
     *) pr_title="ExecPlan: $title" ;;
   esac
 
-  slug=$(sanitize_ref_part "$(basename "$plan" .md)" | cut -c 1-60)
+  slug=$(sanitize_ref_part "$(plan_stem "$plan")" | cut -c 1-60)
   [ -n "$slug" ] || slug=plan
   branch=$(execplan_branch_name "$plan")
 
@@ -450,9 +486,9 @@ create_pr_command() {
   mkdir -p tmp
   body_file=tmp/execplan-pr-body.md
   cat >"$body_file" <<EOF_BODY
-Adds an ExecPlan generated from a Linear \`workflow:execplan\` ticket.
+Adds a Carbon HTML ExecPlan artifact generated from a Linear \`workflow:execplan\` ticket.
 
-Plan: \`$plan\`
+Plan artifact: \`$plan\`
 
 This PR is ready for review. If the source ticket left unresolved design choices, they are recorded in the plan's \`Open Questions and Clarifications Needed\` section.
 EOF_BODY
@@ -472,7 +508,7 @@ EOF_BODY
 
   source_issue=$(maybe_source_issue_identifier "$plan")
   write_publish_context "$context_path" "$plan" "$branch" "$pr_url" "$source_issue"
-  render_plan_html_artifact "$plan"
+  print_primary_plan_artifact "$plan"
 
   echo "PLAN_PATH=$plan"
   echo "BRANCH=$branch"
@@ -575,6 +611,7 @@ EOF_CONTEXT
   implementation_state=${SCHERZO_EXECPLAN_IMPLEMENTATION_STATE:-Backlog}
 
   python3 - "$plan" "$pr_url" "$source_issue" "$implementation_state" <<'PY'
+import html
 import json
 import os
 import pathlib
@@ -659,13 +696,22 @@ def domain_labels_for_followup(issue: dict[str, Any]) -> list[str]:
 
 def first_heading(path: str) -> str:
     try:
-        for line in pathlib.Path(path).read_text().splitlines():
-            if line.startswith("# "):
-                title = line.removeprefix("# ").strip()
-                if title:
-                    return title
+        text = pathlib.Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         fail(f"could not read plan title from {path}: {exc}")
+    for pattern in [r"<h1\b[^>]*>(.*?)</h1>", r"<title\b[^>]*>(.*?)</title>"]:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if match is not None:
+            title = re.sub(r"<[^>]+>", " ", match.group(1))
+            title = html.unescape(re.sub(r"\s+", " ", title)).strip()
+            title = re.sub(r"\s+[—-]\s+Scherzo ExecPlan.*$", "", title).strip()
+            if title:
+                return title
+    for line in text.splitlines():
+        if line.startswith("# "):
+            title = line.removeprefix("# ").strip()
+            if title:
+                return title
     return f"ExecPlan {path}"
 
 

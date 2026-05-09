@@ -47,15 +47,15 @@ fn list_drop_last(parts: List(String)) -> List(String) {
 
 fn render_plan(dir: String, markdown: String) -> String {
   reset_dir(dir)
-  write_plan(dir <> "/docs/plans/sample.md", markdown)
+  write_plan(dir <> "/tmp/execplan-source.md", markdown)
   let artifact =
     run_in(
       dir,
-      "python3 ../../../scripts/scherzo-execplan-html render docs/plans/sample.md html/sample.html",
+      "python3 ../../../scripts/scherzo-execplan-html render tmp/execplan-source.md docs/plans/sample.html docs/plans/sample.html",
     )
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
-  let assert Ok(html) = simplifile.read(dir <> "/html/sample.html")
+  let assert Ok(html) = simplifile.read(dir <> "/docs/plans/sample.html")
   html
 }
 
@@ -194,29 +194,29 @@ pub fn renderer_uses_deterministic_unique_heading_ids_test() {
     <> "None.\n"
   reset_dir("test/tmp/execplan-html-renderer-deterministic")
   write_plan(
-    "test/tmp/execplan-html-renderer-deterministic/docs/plans/sample.md",
+    "test/tmp/execplan-html-renderer-deterministic/tmp/execplan-source.md",
     markdown,
   )
 
   let first =
     run_in(
       "test/tmp/execplan-html-renderer-deterministic",
-      "python3 ../../../scripts/scherzo-execplan-html render docs/plans/sample.md html/first.html",
+      "python3 ../../../scripts/scherzo-execplan-html render tmp/execplan-source.md docs/plans/first.html docs/plans/sample.html",
     )
   let second =
     run_in(
       "test/tmp/execplan-html-renderer-deterministic",
-      "python3 ../../../scripts/scherzo-execplan-html render docs/plans/sample.md html/second.html",
+      "python3 ../../../scripts/scherzo-execplan-html render tmp/execplan-source.md docs/plans/second.html docs/plans/sample.html",
     )
   assert first.status == step_artifact.StepSucceeded
   assert second.status == step_artifact.StepSucceeded
   let assert Ok(first_html) =
     simplifile.read(
-      "test/tmp/execplan-html-renderer-deterministic/html/first.html",
+      "test/tmp/execplan-html-renderer-deterministic/docs/plans/first.html",
     )
   let assert Ok(second_html) =
     simplifile.read(
-      "test/tmp/execplan-html-renderer-deterministic/html/second.html",
+      "test/tmp/execplan-html-renderer-deterministic/docs/plans/second.html",
     )
 
   assert first_html == second_html
@@ -224,32 +224,45 @@ pub fn renderer_uses_deterministic_unique_heading_ids_test() {
   assert string.contains(first_html, "id=\"sec-repeat-2\"")
 }
 
-pub fn execplan_validate_writes_html_as_primary_plan_artifact_test() {
+pub fn execplan_validate_uses_checked_in_html_as_primary_plan_artifact_test() {
   let dir = "test/tmp/execplan-html-validate-primary"
-  reset_dir(dir)
-  write_plan(dir <> "/docs/plans/sample.md", representative_plan("None.\n"))
+  let html = render_plan(dir, representative_plan("None.\n"))
+  assert string.contains(
+    html,
+    "Plan artifact: <code>docs/plans/sample.html</code>",
+  )
 
   let artifact =
     run_in(
       dir,
-      "SCHERZO_EXECPLAN_HTML_DIR= SCHERZO_RUN_ROOT= ../../../scripts/scherzo-execplan validate docs/plans/sample.md",
+      "../../../scripts/scherzo-execplan validate docs/plans/sample.html",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(
     artifact.stdout,
-    "PRIMARY_PLAN_ARTIFACT=tmp/execplan-artifacts/sample.html",
+    "PRIMARY_PLAN_ARTIFACT=docs/plans/sample.html",
   )
   assert string.contains(
     artifact.stdout,
-    "PLAN_HTML_PATH=tmp/execplan-artifacts/sample.html",
+    "PLAN_HTML_PATH=docs/plans/sample.html",
   )
-  assert string.contains(
-    artifact.stdout,
-    "PLAN_MARKDOWN_PATH=docs/plans/sample.md",
-  )
-  let assert Ok(html) =
-    simplifile.read(dir <> "/tmp/execplan-artifacts/sample.html")
-  assert string.contains(html, "Scherzo ExecPlan HTML artifact")
+  assert string.contains(artifact.stdout, "PLAN_PATH=docs/plans/sample.html")
+  assert !string.contains(artifact.stdout, "PLAN_MARKDOWN_PATH")
+}
+
+pub fn execplan_validate_rejects_markdown_plan_artifact_test() {
+  let dir = "test/tmp/execplan-html-validate-rejects-markdown"
+  reset_dir(dir)
+  write_plan(dir <> "/docs/plans/sample.md", representative_plan("None.\n"))
+
+  let artifact =
+    run_in(
+      dir,
+      "../../../scripts/scherzo-execplan validate docs/plans/sample.md",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(artifact.stderr, "expected docs/plans/<file>.html")
 }

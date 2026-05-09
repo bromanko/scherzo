@@ -68,8 +68,10 @@ class IdRegistry:
 
 def usage() -> None:
     print(
-        "Usage: scherzo-execplan-html render PLAN OUTPUT\n"
-        "Render PLAN Markdown into a self-contained Carbon-style HTML artifact.",
+        "Usage: scherzo-execplan-html render PLAN OUTPUT [DISPLAY_PATH]\n"
+        "Render PLAN Markdown into a self-contained Carbon-style HTML artifact. "
+        "DISPLAY_PATH, when provided, is shown in the artifact metadata instead "
+        "of the temporary Markdown source path.",
         file=sys.stderr,
     )
 
@@ -543,7 +545,7 @@ def render_toc(toc: Sequence[TocEntry]) -> str:
     return '<ol class="toc-list">' + "\n".join(items) + "</ol>"
 
 
-def render_plan(plan_path: Path) -> str:
+def render_plan(plan_path: Path, display_path: str | None = None) -> str:
     try:
         raw_lines = plan_path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
@@ -578,13 +580,14 @@ def render_plan(plan_path: Path) -> str:
             f"{render_inline(heading_title)}</h2>{body_html}</section>"
         )
 
-    source_display = html.escape(str(plan_path), quote=False)
+    source_value = display_path or str(plan_path)
+    source_display = html.escape(source_value, quote=False)
     section_count = len(section_blocks(lines))
     return HTML_TEMPLATE.format(
         title=html.escape(title, quote=False),
         title_attr=html.escape(title, quote=True),
         source_path=source_display,
-        source_path_attr=html.escape(str(plan_path), quote=True),
+        source_path_attr=html.escape(source_value, quote=True),
         title_id=html.escape(title_id, quote=True),
         title_line=title_line,
         toc=render_toc(toc),
@@ -710,7 +713,7 @@ th {{ background: var(--gray-10); }}
           <p class="eyebrow">Scherzo ExecPlan HTML artifact</p>
           <h1 id="{title_id}" class="commentable plan-heading" data-comment-id="{title_id}" data-source-line="{title_line}">{title}</h1>
           <div class="doc-meta" aria-label="Document metadata">
-            <span>Source: <code>{source_path}</code></span>
+            <span>Plan artifact: <code>{source_path}</code></span>
             <span>{section_count} sections</span>
           </div>
         </header>
@@ -725,14 +728,15 @@ th {{ background: var(--gray-10); }}
 
 
 def main(argv: Sequence[str]) -> None:
-    if len(argv) != 4 or argv[1] != "render":
+    if len(argv) not in {4, 5} or argv[1] != "render":
         usage()
         sys.exit(2)
     plan_path = Path(argv[2])
     output_path = Path(argv[3])
+    display_path = argv[4] if len(argv) == 5 else None
     if not plan_path.exists():
         fail(f"plan file does not exist: {plan_path}")
-    html_text = render_plan(plan_path)
+    html_text = render_plan(plan_path, display_path)
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(html_text, encoding="utf-8")
