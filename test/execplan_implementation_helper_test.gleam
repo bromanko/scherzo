@@ -239,7 +239,7 @@ pub fn languages_detects_gleam_and_reports_unsupported_files_test() {
   assert string.contains(artifact.stdout, "LANGUAGES=gleam")
   assert string.contains(artifact.stdout, "- src/scherzo/config.gleam")
   assert string.contains(artifact.stdout, "- src/scherzo_config_ffi.erl")
-  assert string.contains(artifact.stdout, "/review gleam --fix medium")
+  assert string.contains(artifact.stdout, "REVIEW_COMMANDS:\n- None")
 }
 
 pub fn ticket_brief_renders_linear_context_test() {

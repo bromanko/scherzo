@@ -25,6 +25,7 @@ Workflow contract:
 - Do not use `gh` to post comments. The final command step posts one top-level PR acknowledgement from your summary.
 - Read `tmp/execplan-revision-pr.json` for PR metadata.
 - Read `tmp/execplan-revision-feedback.md` for normalized GitHub PR feedback. It includes top-level PR comments, review summaries, and inline review comments.
+- Read `.pi/skills/exec-plan/SKILL.md` from this repository and use its living-document and portability rules when revising.
 - Read the target plan path printed as `PLAN_PATH=<path>` above.
 - Edit only that ExecPlan file. Do not edit source code, tests, config, workflow files, or any other docs.
 - If no trusted/actionable feedback requires a plan change, leave the plan unchanged and still write the required summary file.
@@ -53,11 +54,12 @@ Revision process:
 
 1. Read `tmp/execplan-revision-pr.json`.
 2. Read `tmp/execplan-revision-feedback.md`.
-3. Read the ExecPlan at the printed `PLAN_PATH`.
-4. Apply focused plan edits for current, trusted, actionable feedback.
-5. Preserve the ExecPlan as a self-contained living document. Update `## Decision Log`, `## Risks and Countermeasures`, `## Concrete Steps`, `## Testing and Falsifiability`, or `## Open Questions and Clarifications Needed` when those are the right places for review feedback.
-6. Ensure `## Open Questions and Clarifications Needed` remains present; write `None.` only if there are truly no open questions.
-7. Write `tmp/execplan-revision-summary.md` with this exact structure:
+3. Read `.pi/skills/exec-plan/SKILL.md`.
+4. Read the ExecPlan at the printed `PLAN_PATH`.
+5. Apply focused plan edits for current, trusted, actionable feedback.
+6. Preserve the ExecPlan as a self-contained living document. Update `## Decision Log`, `## Risks and Countermeasures`, `## Concrete Steps`, `## Testing and Falsifiability`, or `## Open Questions and Clarifications Needed` when those are the right places for review feedback.
+7. Ensure `## Open Questions and Clarifications Needed` remains present; write `None.` only if there are truly no open questions.
+8. Write `tmp/execplan-revision-summary.md` with this exact structure:
 
 ```markdown
 # ExecPlan revision summary

@@ -69,8 +69,8 @@ prepare --source ticket
               Fetch the Linear issue, write a ticket-context brief under tmp/,
               record the starting jj parent, and mark the run for retention
               until a PR is safely published.
-analyze       Diff from the recorded starting parent to @, detect supported
-              review languages, and print review commands.
+analyze       Diff from the recorded starting parent to @, detect review-
+              relevant languages/files, and print review metadata.
 plan-completion-context
               Write and print the current ExecPlan implementation patch
               fingerprint that a plan-completion verifier must copy into its
@@ -93,7 +93,7 @@ extract-plan <text-file> [repo-root]
               references. If repo-root is supplied, the path must exist under
               that root.
 languages <file-list>
-              Detect supported review languages from a newline-separated list.
+              Detect review-relevant languages from a newline-separated list.
 ticket-brief <issue-json>
               Render a ticket-context Markdown brief from a saved Linear issue
               JSON object and print it to stdout.
@@ -985,8 +985,11 @@ def is_review_relevant(file: str) -> bool:
     )
 
 
-def review_commands(languages: list[str]) -> list[str]:
-    return [f"/review {language} --fix medium" for language in languages]
+def review_commands(_languages: list[str]) -> list[str]:
+    # Review is performed by repo-local staged `scripts/scherzo-review` lanes in
+    # the workflow DAG. Keep this compatibility field empty so prompts do not
+    # depend on a local pi `/review` command or language-specific local skills.
+    return []
 
 
 def run_root_for_current_workspace() -> Path:
