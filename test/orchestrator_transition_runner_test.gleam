@@ -5,6 +5,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import orchestrator_transition_test
 import scherzo/agent/types as agent_types
+import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/linear_parser
 import scherzo/handoff
@@ -20,6 +21,7 @@ import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
+import scherzo/tracker/state as issue_state
 
 pub fn transition_runner_applies_effects_and_follow_ups_in_order_test() {
   let issue = orchestrator_transition_test.fixture_issue()
@@ -118,6 +120,58 @@ pub fn transition_runner_retry_continue_regardless_keeps_timer_after_append_fail
       "retry:cancel:issue-1",
       "append:retry_schedule:issue-1:2",
       "retry:schedule:issue-1",
+    ]
+}
+
+pub fn running_refresh_releases_stale_context_slot_before_candidate_fetch_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let terminal_issue =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Done"),
+    )
+  let effective = orchestrator_transition_test.fixture_effective()
+  let context =
+    transition_types.DispatchContext(
+      ..orchestrator_transition_test.fixture_context(),
+      effective: config_types.EffectiveConfig(
+        ..effective,
+        agent: config_types.AgentConfig(
+          ..effective.agent,
+          max_concurrent_agents: 1,
+        ),
+      ),
+      active_issue_ids: [issue.id],
+      active_issues: [issue],
+    )
+
+  let transition_runner.RunResult(
+    state: next,
+    shell: shell,
+    exhausted: exhausted,
+  ) =
+    transition_runner.run(
+      state: state_with_running_worker(issue),
+      shell: event_shell(),
+      messages: [
+        transition_types.RunningRefreshCompleted(
+          1,
+          transition_types.PollSnapshot(1, Some(1)),
+          Ok([terminal_issue]),
+          context,
+        ),
+      ],
+      max_messages: 8,
+    )
+
+  assert exhausted == False
+  assert dict.get(next.runtime.running, issue.id) == Error(Nil)
+  assert dict.get(next.workers.by_issue, issue.id) == Error(Nil)
+  assert interpreter.data(shell)
+    == [
+      "stop_refresh:issue-1",
+      "cleanup:test/tmp/workspaces/ABC-1",
+      "fetch:1",
     ]
 }
 
@@ -372,7 +426,7 @@ pub fn worker_finish_removes_running_and_reports_success_test() {
         transition_types.WorkerFinished(
           issue.id,
           "run-1",
-          transition_types.WorkerSucceeded(success),
+          Ok(success),
           lifecycle_context(),
         ),
       ],
@@ -624,6 +678,7 @@ fn lifecycle_context() -> transition_types.WorkerLifecycleContext {
   transition_types.WorkerLifecycleContext(
     effective: orchestrator_transition_test.fixture_effective(),
     now_ms: 456,
+    secrets: [],
   )
 }
 
@@ -763,6 +818,9 @@ fn shell_with_append_and_start_result(
     },
     stop_worker: fn(events, identity, _) {
       list.append(events, ["stop:" <> identity.issue_id])
+    },
+    stop_worker_after_issue_refresh: fn(events, identity, _) {
+      list.append(events, ["stop_refresh:" <> identity.issue_id])
     },
     register_yaml_step_started: fn(events, session_id, _) {
       list.append(events, ["yaml_start:" <> session_id])

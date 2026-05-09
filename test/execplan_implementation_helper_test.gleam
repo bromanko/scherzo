@@ -704,6 +704,21 @@ pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
     artifact.stdout,
     "PR_URL=https://github.com/example/repo/pull/123",
   )
+  assert string.contains(
+    artifact.stdout,
+    "PUBLISH_CONTEXT=tmp/scherzo-execplan-publish-context.json",
+  )
+  let assert Ok(context) =
+    simplifile.read(dir <> "/tmp/scherzo-execplan-publish-context.json")
+  assert string.contains(context, "\"plan_path\": \"docs/plans/example.md\"")
+  assert string.contains(
+    context,
+    "\"branch\": \"scherzo/execplan/example-execchange\"",
+  )
+  assert string.contains(
+    context,
+    "\"pr_url\": \"https://github.com/example/repo/pull/123\"",
+  )
   let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
   assert string.contains(jj_log, "git fetch --remote origin --branch main")
   assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
@@ -717,6 +732,69 @@ pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
   )
 }
 
+pub fn create_implementation_issue_uses_publish_context_after_empty_diff_test() {
+  let dir = "test/tmp/execplan-publish-context-empty-diff"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/example.md",
+      "# Example ExecPlan\n\n"
+        <> "## Progress\n\n"
+        <> "- [x] Drafted.\n\n"
+        <> "## Open Questions and Clarifications Needed\n\n"
+        <> "None.\n",
+    )
+  write_source_issue(dir)
+  write_created_issue(dir)
+  write_fake_execplan_jj(dir <> "/bin/jj")
+  write_fake_gh(dir <> "/bin/gh")
+  write_fake_execplan_handoff_linear(
+    dir <> "/bin/linear",
+    "{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
+  )
+  chmod_executable(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/gh")
+  chmod_executable(dir <> "/bin/linear")
+
+  let publish =
+    run_helper_in(
+      dir,
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-pr",
+    )
+
+  assert publish.status == step_artifact.StepSucceeded
+  assert publish.exit_code == Some(0)
+  let assert Ok(context) =
+    simplifile.read(dir <> "/tmp/scherzo-execplan-publish-context.json")
+  assert string.contains(context, "\"plan_path\": \"docs/plans/example.md\"")
+  assert string.contains(
+    context,
+    "\"pr_url\": \"https://github.com/example/repo/pull/123\"",
+  )
+  assert string.contains(context, "\"source_issue\": \"LIV-123\"")
+  let assert Ok(Nil) = simplifile.write(dir <> "/jj.log", "")
+  let assert Ok(Nil) = simplifile.write(dir <> "/gh.log", "")
+
+  let followup =
+    run_helper_in(
+      dir,
+      "SCHERZO_ISSUE_IDENTIFIER= SCHERZO_FAKE_EXECPLAN_EMPTY_DIFF=1 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
+    )
+
+  assert followup.status == step_artifact.StepSucceeded
+  assert followup.exit_code == Some(0)
+  assert string.contains(followup.stdout, "IMPLEMENTATION_ISSUE_STATUS=created")
+  assert string.contains(followup.stdout, "PLAN_PATH=docs/plans/example.md")
+  assert string.contains(
+    followup.stdout,
+    "PR_URL=https://github.com/example/repo/pull/123",
+  )
+  let assert Ok(jj_log_after_followup) = simplifile.read(dir <> "/jj.log")
+  assert !string.contains(jj_log_after_followup, "diff")
+}
+
 pub fn execplan_workflow_creates_followup_issue_after_pr_test() {
   let assert Ok(workflow) = simplifile.read(".scherzo/workflows/execplan.yaml")
 
@@ -724,7 +802,11 @@ pub fn execplan_workflow_creates_followup_issue_after_pr_test() {
   assert string.contains(workflow, "depends_on: [create_pr]")
   assert string.contains(
     workflow,
-    "scripts/scherzo-execplan create-implementation-issue",
+    "scripts/scherzo-execplan create-pr --publish-context tmp/scherzo-execplan-publish-context.json",
+  )
+  assert string.contains(
+    workflow,
+    "scripts/scherzo-execplan create-implementation-issue --publish-context tmp/scherzo-execplan-publish-context.json",
   )
 }
 
@@ -749,7 +831,7 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue --plan docs/plans/LIV-123-example.md --pr-url https://github.com/example/repo/pull/123 --branch scherzo/execplan/liv-123-example-execchange",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -802,7 +884,7 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue --plan docs/plans/LIV-123-example.md --pr-url https://github.com/example/repo/pull/123 --branch scherzo/execplan/liv-123-example-execchange",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1597,6 +1679,7 @@ fn write_fake_execplan_jj(path: String) -> Nil {
         <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then exit 0; fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
         <> "if [ \"$1\" = diff ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_EXECPLAN_EMPTY_DIFF:-}\" = 1 ]; then exit 0; fi\n"
         <> "  case \" $* \" in *\" --summary \"*) echo 'A docs/plans/example.md';; *) echo 'docs/plans/example.md';; esac\n"
         <> "  exit 0\n"
         <> "fi\n"

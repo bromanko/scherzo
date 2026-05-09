@@ -41,6 +41,12 @@ pub type Message {
   )
   PollTick(generation: Int, poll: PollSnapshot)
   CandidateFetchStartRequested(generation: Int, context: DispatchContext)
+  RunningRefreshCompleted(
+    generation: Int,
+    poll: PollSnapshot,
+    result: Result(List(tracker_issue.Issue), String),
+    context: DispatchContext,
+  )
   CandidateFetchCompleted(
     generation: Int,
     poll: PollSnapshot,
@@ -130,7 +136,7 @@ pub type Message {
   WorkerFinished(
     issue_id: String,
     run_id: String,
-    result: WorkerFinishResult,
+    result: Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
     context: WorkerLifecycleContext,
   )
   WorkerDown(resolution: WorkerDownResolution, context: WorkerLifecycleContext)
@@ -180,7 +186,11 @@ pub type WorkerStatus {
 }
 
 pub type WorkerLifecycleContext {
-  WorkerLifecycleContext(effective: config_types.EffectiveConfig, now_ms: Int)
+  WorkerLifecycleContext(
+    effective: config_types.EffectiveConfig,
+    now_ms: Int,
+    secrets: List(String),
+  )
 }
 
 pub type WorkerFinishResult {
