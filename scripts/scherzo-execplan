@@ -5,13 +5,19 @@ set -eu
 
 usage() {
   cat >&2 <<'EOF'
-Usage: scherzo-execplan <validate|create-pr|create-implementation-issue>
+Usage:
+  scherzo-execplan validate [PLAN]
+  scherzo-execplan create-pr [--publish-context FILE]
+  scherzo-execplan create-implementation-issue [--publish-context FILE]
+  scherzo-execplan create-implementation-issue --plan PLAN --pr-url URL [--branch BRANCH] [--source-issue ISSUE]
 
 Run from the Scherzo jj workspace root. The workflow must leave exactly one
 changed ExecPlan file under docs/plans/. create-pr validates, pushes a jj
-bookmark to origin, and opens a ready GitHub PR against main.
-create-implementation-issue creates or finds the follow-up Linear issue that
-will run workflow:execplan-implementation after the plan PR is merged.
+bookmark to origin, opens a ready GitHub PR against main, and writes a durable
+publish context artifact. create-implementation-issue creates or finds the
+follow-up Linear issue that will run workflow:execplan-implementation after the
+plan PR is merged, using the publish context or explicit inputs instead of the
+current jj diff.
 EOF
 }
 
@@ -22,6 +28,10 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+default_publish_context_path() {
+  printf '%s\n' "${SCHERZO_EXECPLAN_PUBLISH_CONTEXT:-tmp/scherzo-execplan-publish-context.json}"
 }
 
 sanitize_ref_part() {
@@ -176,7 +186,7 @@ execplan_branch_name() {
   printf '%s\n' "scherzo/execplan/${slug}-${change_id}"
 }
 
-infer_source_issue_identifier() {
+maybe_source_issue_identifier() {
   plan=$1
 
   if [ -n "${SCHERZO_ISSUE_IDENTIFIER:-}" ]; then
@@ -204,7 +214,79 @@ infer_source_issue_identifier() {
       ;;
   esac
 
-  fail "could not infer source Linear issue identifier from cwd or plan filename: $plan"
+  return 0
+}
+
+infer_source_issue_identifier() {
+  plan=$1
+  issue=$(maybe_source_issue_identifier "$plan")
+  [ -n "$issue" ] || fail "could not infer source Linear issue identifier from cwd or plan filename: $plan"
+  printf '%s\n' "$issue"
+}
+
+write_publish_context() {
+  context_path=$1
+  plan=$2
+  branch=$3
+  pr_url=$4
+  source_issue=$5
+  context_dir=$(dirname "$context_path")
+  mkdir -p "$context_dir"
+  python3 - "$context_path" "$plan" "$branch" "$pr_url" "$source_issue" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+context_path, plan_path, branch, pr_url, source_issue = sys.argv[1:6]
+path = pathlib.Path(context_path)
+data = {
+    "plan_path": plan_path,
+    "branch": branch,
+    "pr_url": pr_url,
+    "source_issue": source_issue,
+}
+tmp = path.with_name(path.name + ".tmp")
+tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.replace(tmp, path)
+PY
+}
+
+load_publish_context() {
+  context_path=$1
+  [ -f "$context_path" ] || fail "publish context file not found: $context_path"
+  python3 - "$context_path" <<'PY'
+import json
+import pathlib
+import sys
+from typing import Any
+
+context_path = sys.argv[1]
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-execplan: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+try:
+    data: Any = json.loads(pathlib.Path(context_path).read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    fail(f"could not read publish context {context_path}: {exc}")
+
+if not isinstance(data, dict):
+    fail(f"publish context {context_path} must contain a JSON object")
+
+for key in ["plan_path", "branch", "pr_url", "source_issue"]:
+    value = data.get(key, "")
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        fail(f"publish context field {key!r} must be a string")
+    if "\n" in value or "\r" in value:
+        fail(f"publish context field {key!r} must not contain newlines")
+    print(f"{key}={value}")
+PY
 }
 
 fetch_publish_base() {
@@ -281,6 +363,21 @@ ensure_no_empty_descriptions_to_push() {
 create_pr_command() {
   require_command jj
   require_command gh
+  require_command python3
+
+  context_path=$(default_publish_context_path)
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --publish-context)
+        [ "$#" -gt 1 ] || fail "--publish-context requires a value"
+        context_path=$2
+        shift 2
+        ;;
+      *)
+        fail "unknown create-pr option: $1"
+        ;;
+    esac
+  done
 
   plan=$(find_plan_path)
   validate_plan "$plan"
@@ -339,35 +436,109 @@ EOF_BODY
       fi
     }
   fi
+  [ -n "$pr_url" ] || fail "ExecPlan PR URL was empty for branch $branch"
+
+  source_issue=$(maybe_source_issue_identifier "$plan")
+  write_publish_context "$context_path" "$plan" "$branch" "$pr_url" "$source_issue"
 
   echo "PLAN_PATH=$plan"
   echo "BRANCH=$branch"
   echo "PUBLISH_BASE=$base_revision"
   echo "PR_URL=$pr_url"
+  echo "PUBLISH_CONTEXT=$context_path"
 }
 
 create_implementation_issue_command() {
-  require_command jj
-  require_command gh
   require_command linear
   require_command python3
 
-  plan=$(find_plan_path)
+  context_path=$(default_publish_context_path)
+  explicit_context=0
+  direct_inputs=0
+  plan=
+  branch=
+  pr_url=
+  source_issue=
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --publish-context)
+        [ "$#" -gt 1 ] || fail "--publish-context requires a value"
+        context_path=$2
+        explicit_context=1
+        shift 2
+        ;;
+      --plan)
+        [ "$#" -gt 1 ] || fail "--plan requires a value"
+        plan=$2
+        direct_inputs=1
+        shift 2
+        ;;
+      --pr-url)
+        [ "$#" -gt 1 ] || fail "--pr-url requires a value"
+        pr_url=$2
+        direct_inputs=1
+        shift 2
+        ;;
+      --branch)
+        [ "$#" -gt 1 ] || fail "--branch requires a value"
+        branch=$2
+        direct_inputs=1
+        shift 2
+        ;;
+      --source-issue)
+        [ "$#" -gt 1 ] || fail "--source-issue requires a value"
+        source_issue=$2
+        direct_inputs=1
+        shift 2
+        ;;
+      *)
+        fail "unknown create-implementation-issue option: $1"
+        ;;
+    esac
+  done
+
+  if [ "$explicit_context" = "1" ] || [ "$direct_inputs" = "0" ]; then
+    if [ -f "$context_path" ]; then
+      context_values=$(load_publish_context "$context_path")
+      while IFS='=' read -r key value; do
+        case "$key" in
+          plan_path) [ -n "$plan" ] || plan=$value ;;
+          branch) [ -n "$branch" ] || branch=$value ;;
+          pr_url) [ -n "$pr_url" ] || pr_url=$value ;;
+          source_issue) [ -n "$source_issue" ] || source_issue=$value ;;
+        esac
+      done <<EOF_CONTEXT
+$context_values
+EOF_CONTEXT
+    elif [ "$explicit_context" = "1" ]; then
+      fail "publish context file not found: $context_path"
+    fi
+  fi
+
+  [ -n "$plan" ] || fail "missing ExecPlan path; run create-pr first or pass --publish-context/--plan"
+  [ -f "$plan" ] || fail "plan file does not exist: $plan"
   validate_plan "$plan"
 
-  remote=${SCHERZO_PR_REMOTE:-origin}
-  repo=${SCHERZO_PR_REPO:-}
-  if [ -z "$repo" ]; then
-    url=$(remote_url "$remote")
-    [ -n "$url" ] || fail "could not find jj git remote: $remote"
-    repo=$(owner_repo_from_url "$url") || fail "could not infer GitHub owner/repo from remote URL: $url"
+  if [ -z "$pr_url" ]; then
+    [ -n "$branch" ] || fail "missing ExecPlan PR URL; run create-pr first or pass --pr-url"
+    require_command jj
+    require_command gh
+    remote=${SCHERZO_PR_REMOTE:-origin}
+    repo=${SCHERZO_PR_REPO:-}
+    if [ -z "$repo" ]; then
+      url=$(remote_url "$remote")
+      [ -n "$url" ] || fail "could not find jj git remote: $remote"
+      repo=$(owner_repo_from_url "$url") || fail "could not infer GitHub owner/repo from remote URL: $url"
+    fi
+    pr_url=$(gh pr view "$branch" --repo "$repo" --json url --jq .url 2>/dev/null) || \
+      fail "could not find ExecPlan PR for branch $branch; pass --pr-url or rerun create-pr"
   fi
-  branch=$(execplan_branch_name "$plan")
-  pr_url=$(gh pr view "$branch" --repo "$repo" --json url --jq .url 2>/dev/null) || \
-    fail "could not find ExecPlan PR for branch $branch; run create-pr before create-implementation-issue"
-  [ -n "$pr_url" ] || fail "ExecPlan PR URL was empty for branch $branch"
+  [ -n "$pr_url" ] || fail "ExecPlan PR URL was empty"
 
-  source_issue=$(infer_source_issue_identifier "$plan")
+  if [ -z "$source_issue" ]; then
+    source_issue=$(infer_source_issue_identifier "$plan")
+  fi
   implementation_state=${SCHERZO_EXECPLAN_IMPLEMENTATION_STATE:-Backlog}
 
   python3 - "$plan" "$pr_url" "$source_issue" "$implementation_state" <<'PY'
@@ -704,13 +875,16 @@ PY
 
 case "${1:-}" in
   validate)
-    validate_command "${2:-}"
+    shift
+    validate_command "${1:-}"
     ;;
   create-pr)
-    create_pr_command
+    shift
+    create_pr_command "$@"
     ;;
   create-implementation-issue)
-    create_implementation_issue_command
+    shift
+    create_implementation_issue_command "$@"
     ;;
   -h|--help|help)
     usage
