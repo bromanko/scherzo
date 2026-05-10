@@ -1,0 +1,11 @@
+version: 1
+id: github-pr-conflict-scout
+description: Scan open same-repository GitHub pull requests and enqueue merge-conflict resolver issues.
+workspace_profile: dogfood-jj
+max_parallel_steps: 1
+steps:
+  - id: scan_open_prs
+    kind: command
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-github-pr-conflict-scout" scan --repo bromanko/scherzo --linear-project-slug scherzo-f6f4bc92d6d7 --create-state Todo --workflow-label workflow:merge-conflict-resolution'
+    timeout_ms: 300000
+    workspace: main

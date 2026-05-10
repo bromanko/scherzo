@@ -1,0 +1,1035 @@
+#!/usr/bin/env python3
+"""Scheduled scout for same-repository GitHub PR merge conflicts.
+
+The command is intentionally conservative. It only creates Linear resolver work
+for open, non-draft pull requests whose base and head repositories are the
+configured repository, and only after GitHub metadata or an isolated local merge
+preflight indicates a likely merge conflict.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Any, Callable, Iterable
+import urllib.error
+import urllib.parse
+import urllib.request
+
+DEFAULT_REPO = "bromanko/scherzo"
+DEFAULT_PROJECT_SLUG = "scherzo-f6f4bc92d6d7"
+DEFAULT_CREATE_STATE = "Todo"
+DEFAULT_WORKFLOW_LABEL = "workflow:merge-conflict-resolution"
+ACTIVE_DEDUPE_STATES = {"Todo", "In Progress"}
+NON_ACTIVE_STATE_TYPES = {"completed", "canceled", "duplicate"}
+USER_AGENT = "scherzo-github-pr-conflict-scout"
+
+
+class ScoutError(Exception):
+    """Expected CLI failure with a sanitized message."""
+
+
+@dataclass(frozen=True)
+class Options:
+    repo: str
+    linear_project_slug: str
+    create_state: str
+    workflow_label: str
+    json_summary: bool
+    skip_local_preflight: bool
+    observed_at: str | None = None
+
+
+@dataclass(frozen=True)
+class SafePullRequest:
+    repo: str
+    number: int
+    url: str
+    base_branch: str
+    head_branch: str
+    base_sha: str | None
+    head_sha: str | None
+
+
+@dataclass(frozen=True)
+class ConflictObservation:
+    status: str
+    pr: SafePullRequest | None = None
+    detection: str | None = None
+    reason: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class LinearContext:
+    project_id: str
+    team_id: str
+    state_id: str
+    state_name: str
+    workflow_label_id: str
+
+
+def marker(repo: str, number: int) -> str:
+    return f"github-pr-conflict:{repo}#{number}"
+
+
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def fail(message: str) -> int:
+    print(f"scherzo-github-pr-conflict-scout: {message}", file=sys.stderr)
+    return 1
+
+
+def load_json_file(path: str) -> Any:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except FileNotFoundError as exc:
+        raise ScoutError(f"fixture file not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ScoutError(f"invalid JSON fixture {path}: {exc.msg}") from exc
+
+
+def as_mapping(value: Any, context: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ScoutError(f"malformed GitHub PR payload: {context} must be an object")
+    return value
+
+
+def require_mapping(value: dict[str, Any], key: str, context: str) -> dict[str, Any]:
+    if key not in value or not isinstance(value[key], dict):
+        raise ScoutError(
+            f"malformed GitHub PR payload: {context}.{key} must be an object"
+        )
+    return value[key]
+
+
+def require_string(value: dict[str, Any], key: str, context: str) -> str:
+    if key not in value or not isinstance(value[key], str) or not value[key].strip():
+        raise ScoutError(
+            f"malformed GitHub PR payload: {context}.{key} must be a string"
+        )
+    return value[key]
+
+
+def optional_string(value: dict[str, Any], key: str) -> str | None:
+    candidate = value.get(key)
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate
+    return None
+
+
+def parse_bool(value: Any, context: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (0, 1):
+        return bool(value)
+    raise ScoutError(f"malformed GitHub PR payload: {context} must be a boolean")
+
+
+def parse_pull_request(raw: Any, repo: str) -> tuple[SafePullRequest | None, dict[str, Any] | None]:
+    pr = as_mapping(raw, "pull")
+    number = pr.get("number")
+    if type(number) is not int:
+        raise ScoutError("malformed GitHub PR payload: pull.number must be an integer")
+    url = require_string(pr, "html_url", "pull")
+    draft = parse_bool(pr.get("draft", False), "pull.draft")
+    base = require_mapping(pr, "base", "pull")
+    head = require_mapping(pr, "head", "pull")
+    base_repo = require_mapping(base, "repo", "pull.base")
+    base_repo_name = require_string(base_repo, "full_name", "pull.base.repo")
+    base_ref = require_string(base, "ref", "pull.base")
+
+    if draft:
+        return None, skipped_pr(number, url, "draft")
+    if base_repo_name != repo:
+        return None, skipped_pr(number, url, "base_repository")
+
+    head_repo = head.get("repo")
+    if head_repo is None:
+        return None, skipped_pr(number, url, "deleted_head_repo")
+    if not isinstance(head_repo, dict):
+        raise ScoutError("malformed GitHub PR payload: pull.head.repo must be an object")
+    head_repo_name = require_string(head_repo, "full_name", "pull.head.repo")
+    head_ref = require_string(head, "ref", "pull.head")
+    if head_repo_name != base_repo_name:
+        return None, skipped_pr(number, url, "cross_repository")
+
+    return SafePullRequest(
+        repo=repo,
+        number=number,
+        url=url,
+        base_branch=base_ref,
+        head_branch=head_ref,
+        base_sha=optional_string(base, "sha"),
+        head_sha=optional_string(head, "sha"),
+    ), None
+
+
+def skipped_pr(number: int | None, url: str | None, reason: str, detail: str | None = None) -> dict[str, Any]:
+    value: dict[str, Any] = {"reason": reason}
+    if number is not None:
+        value["number"] = number
+    if url:
+        value["url"] = url
+    if detail:
+        value["detail"] = detail
+    return value
+
+
+def merge_detail_into_pr(pr: SafePullRequest, detail: dict[str, Any]) -> SafePullRequest:
+    base_sha = pr.base_sha
+    head_sha = pr.head_sha
+    base = detail.get("base")
+    if isinstance(base, dict):
+        base_sha = optional_string(base, "sha") or base_sha
+    head = detail.get("head")
+    if isinstance(head, dict):
+        head_sha = optional_string(head, "sha") or head_sha
+    return SafePullRequest(
+        repo=pr.repo,
+        number=pr.number,
+        url=pr.url,
+        base_branch=pr.base_branch,
+        head_branch=pr.head_branch,
+        base_sha=base_sha,
+        head_sha=head_sha,
+    )
+
+
+def classify_pr(
+    options: Options,
+    github_client: Any,
+    pr: SafePullRequest,
+    preflight: Callable[[SafePullRequest], dict[str, Any]],
+) -> ConflictObservation:
+    detail = github_client.pull_detail(pr.number)
+    if not isinstance(detail, dict):
+        raise ScoutError("malformed GitHub PR detail payload: expected object")
+    pr = merge_detail_into_pr(pr, detail)
+    mergeable = detail.get("mergeable")
+    mergeable_state = detail.get("mergeable_state")
+    if mergeable_state == "dirty":
+        return ConflictObservation(status="conflicted", pr=pr, detection="github:dirty")
+    if mergeable is True:
+        return ConflictObservation(status="clean", pr=pr, detection="github:mergeable")
+
+    if options.skip_local_preflight:
+        return ConflictObservation(
+            status="skipped",
+            pr=pr,
+            reason="preflight_skipped",
+            detail="local preflight disabled",
+        )
+
+    result = preflight(pr)
+    status = result.get("status")
+    if status == "conflicted":
+        return ConflictObservation(status="conflicted", pr=pr, detection="local-preflight")
+    if status == "clean":
+        return ConflictObservation(status="clean", pr=pr, detection="local-preflight")
+    return ConflictObservation(
+        status="skipped",
+        pr=pr,
+        reason="preflight_unavailable",
+        detail=str(result.get("reason") or "local merge preflight unavailable"),
+    )
+
+
+def empty_summary() -> dict[str, Any]:
+    return {
+        "created": [],
+        "updated": [],
+        "noop": [],
+        "skipped_prs": [],
+        "conflicted_prs": [],
+        "warnings": [],
+        "historical_marker_issues_ignored": [],
+    }
+
+
+def scan_with_clients(
+    options: Options,
+    github_client: Any,
+    linear_client_factory: Callable[[], Any],
+    preflight: Callable[[SafePullRequest], dict[str, Any]],
+) -> dict[str, Any]:
+    summary = empty_summary()
+    raw_pulls = github_client.list_open_pulls()
+    if not isinstance(raw_pulls, list):
+        raise ScoutError("malformed GitHub PR payload: list response must be an array")
+
+    safe_prs: list[SafePullRequest] = []
+    for raw in raw_pulls:
+        pr, skipped = parse_pull_request(raw, options.repo)
+        if skipped is not None:
+            summary["skipped_prs"].append(skipped)
+        elif pr is not None:
+            safe_prs.append(pr)
+
+    conflicts: list[tuple[SafePullRequest, str]] = []
+    for pr in safe_prs:
+        observation = classify_pr(options, github_client, pr, preflight)
+        if observation.status == "conflicted" and observation.pr is not None:
+            detection = observation.detection or "unknown"
+            conflicts.append((observation.pr, detection))
+            summary["conflicted_prs"].append(
+                {
+                    "number": observation.pr.number,
+                    "url": observation.pr.url,
+                    "marker": marker(observation.pr.repo, observation.pr.number),
+                    "detection": detection,
+                }
+            )
+        elif observation.status == "skipped" and observation.pr is not None:
+            summary["skipped_prs"].append(
+                skipped_pr(
+                    observation.pr.number,
+                    observation.pr.url,
+                    observation.reason or "skipped",
+                    observation.detail,
+                )
+            )
+
+    if not conflicts:
+        return summary
+
+    linear_client = linear_client_factory()
+    context = prepare_linear_context(linear_client, options)
+    candidate_issues = linear_client.fetch_candidate_issues(
+        options.linear_project_slug, options.workflow_label
+    )
+    observed_at = options.observed_at or utc_now()
+    for pr, detection in conflicts:
+        apply_linear_plan(
+            options,
+            linear_client,
+            context,
+            candidate_issues,
+            pr,
+            detection,
+            observed_at,
+            summary,
+        )
+    return summary
+
+
+def connection_nodes(value: Any) -> list[Any]:
+    if isinstance(value, dict):
+        nodes = value.get("nodes")
+        if isinstance(nodes, list):
+            return nodes
+        return []
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def node_id(node: dict[str, Any]) -> str | None:
+    value = node.get("id")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def node_name(node: dict[str, Any]) -> str | None:
+    value = node.get("name")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def prepare_linear_context(linear_client: Any, options: Options) -> LinearContext:
+    project = linear_client.fetch_project(options.linear_project_slug)
+    if not isinstance(project, dict):
+        raise ScoutError("malformed Linear project payload: expected object")
+    project_id = node_id(project)
+    if not project_id:
+        raise ScoutError("malformed Linear project payload: project id is required")
+    teams = connection_nodes(project.get("teams"))
+    if not teams or not isinstance(teams[0], dict):
+        raise ScoutError("Linear project has no teams")
+    team = teams[0]
+    team_id = node_id(team)
+    if not team_id:
+        raise ScoutError("malformed Linear project payload: team id is required")
+
+    states = [s for s in connection_nodes(team.get("states")) if isinstance(s, dict)]
+    state = next((s for s in states if node_name(s) == options.create_state), None)
+    if not state or not node_id(state):
+        raise ScoutError(f"Linear state not found for scout-created issues: {options.create_state}")
+
+    labels = [l for l in connection_nodes(team.get("labels")) if isinstance(l, dict)]
+    labels.extend(
+        l
+        for l in connection_nodes(project.get("workspace_labels"))
+        if isinstance(l, dict)
+    )
+    labels.extend(
+        l
+        for l in connection_nodes(project.get("issueLabels"))
+        if isinstance(l, dict)
+    )
+    workflow_label = next((label for label in labels if node_name(label) == options.workflow_label), None)
+    if not workflow_label or not node_id(workflow_label):
+        raise ScoutError(f"Linear workflow label not found: {options.workflow_label}")
+
+    return LinearContext(
+        project_id=project_id,
+        team_id=team_id,
+        state_id=node_id(state) or "",
+        state_name=options.create_state,
+        workflow_label_id=node_id(workflow_label) or "",
+    )
+
+
+def issue_state_name(issue: dict[str, Any]) -> str:
+    state = issue.get("state")
+    if isinstance(state, dict) and isinstance(state.get("name"), str):
+        return state["name"]
+    value = issue.get("state_name")
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def issue_state_type(issue: dict[str, Any]) -> str:
+    state = issue.get("state")
+    if isinstance(state, dict) and isinstance(state.get("type"), str):
+        return state["type"]
+    value = issue.get("state_type")
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def issue_label_names(issue: dict[str, Any]) -> list[str]:
+    labels = issue.get("labels")
+    names: list[str] = []
+    for label in connection_nodes(labels):
+        if isinstance(label, str):
+            names.append(label)
+        elif isinstance(label, dict):
+            name = node_name(label)
+            if name:
+                names.append(name)
+    return names
+
+
+def issue_contains_marker(issue: dict[str, Any], issue_marker: str) -> bool:
+    title = issue.get("title") if isinstance(issue.get("title"), str) else ""
+    description = (
+        issue.get("description") if isinstance(issue.get("description"), str) else ""
+    )
+    return issue_marker in title or issue_marker in description
+
+
+def issue_identifier(issue: dict[str, Any]) -> str:
+    value = issue.get("identifier")
+    if isinstance(value, str) and value:
+        return value
+    value = issue.get("id")
+    if isinstance(value, str):
+        return value
+    return "unknown"
+
+
+def choose_dispatchable_issue(issues: list[dict[str, Any]]) -> dict[str, Any] | None:
+    in_progress = [issue for issue in issues if issue_state_name(issue) == "In Progress"]
+    if in_progress:
+        return sorted(in_progress, key=lambda issue: str(issue.get("createdAt") or ""))[0]
+    todo = [issue for issue in issues if issue_state_name(issue) == "Todo"]
+    if todo:
+        return sorted(todo, key=lambda issue: str(issue.get("createdAt") or ""))[0]
+    return None
+
+
+def generated_title(pr: SafePullRequest) -> str:
+    return f"Resolve merge conflicts for PR #{pr.number}"
+
+
+def generated_description(
+    pr: SafePullRequest, detection: str, observed_at: str, workflow_label: str
+) -> str:
+    return "\n".join(
+        [
+            marker(pr.repo, pr.number),
+            "",
+            f"GitHub PR: {pr.url}",
+            f"Repository: {pr.repo}",
+            f"Base branch: {pr.base_branch}",
+            f"Head branch: {pr.head_branch}",
+            f"Base SHA: {pr.base_sha or '-'}",
+            f"Head SHA: {pr.head_sha or '-'}",
+            f"Detection: {detection}",
+            f"Observed at: {observed_at}",
+            "",
+            f"Scherzo's {workflow_label} resolver should repair this same-repository PR.",
+        ]
+    )
+
+
+def apply_linear_plan(
+    options: Options,
+    linear_client: Any,
+    context: LinearContext,
+    candidate_issues: list[dict[str, Any]],
+    pr: SafePullRequest,
+    detection: str,
+    observed_at: str,
+    summary: dict[str, Any],
+) -> None:
+    issue_marker = marker(pr.repo, pr.number)
+    marker_issues = [
+        issue
+        for issue in candidate_issues
+        if isinstance(issue, dict)
+        and options.workflow_label in issue_label_names(issue)
+        and issue_state_type(issue) not in NON_ACTIVE_STATE_TYPES
+        and issue_contains_marker(issue, issue_marker)
+    ]
+    dispatchable = [
+        issue
+        for issue in marker_issues
+        if issue_state_name(issue) in ACTIVE_DEDUPE_STATES
+    ]
+    historical = [
+        issue for issue in marker_issues if issue_state_name(issue) not in ACTIVE_DEDUPE_STATES
+    ]
+    for issue in historical:
+        summary["historical_marker_issues_ignored"].append(
+            {
+                "number": pr.number,
+                "identifier": issue_identifier(issue),
+                "state": issue_state_name(issue),
+            }
+        )
+
+    description = generated_description(pr, detection, observed_at, options.workflow_label)
+    existing = choose_dispatchable_issue(dispatchable)
+    if existing is not None:
+        existing_description = existing.get("description")
+        if existing_description == description:
+            summary["noop"].append(
+                {
+                    "number": pr.number,
+                    "issue_id": existing.get("id"),
+                    "identifier": issue_identifier(existing),
+                    "url": existing.get("url"),
+                }
+            )
+            return
+        updated = linear_client.update_issue_description(existing.get("id"), description)
+        summary["updated"].append(
+            {
+                "number": pr.number,
+                "issue_id": existing.get("id"),
+                "identifier": issue_identifier(updated if isinstance(updated, dict) else existing),
+                "url": (updated if isinstance(updated, dict) else existing).get("url"),
+                "description": description,
+            }
+        )
+        return
+
+    input_payload = {
+        "teamId": context.team_id,
+        "projectId": context.project_id,
+        "stateId": context.state_id,
+        "title": generated_title(pr),
+        "description": description,
+        "labelIds": [context.workflow_label_id],
+    }
+    created = linear_client.create_issue(input_payload)
+    created_id = created.get("id") if isinstance(created, dict) else None
+    created_identifier = issue_identifier(created) if isinstance(created, dict) else None
+    created_url = created.get("url") if isinstance(created, dict) else None
+    summary["created"].append(
+        {
+            "number": pr.number,
+            "issue_id": created_id,
+            "identifier": created_identifier,
+            "url": created_url,
+            "state": context.state_name,
+            "title": generated_title(pr),
+            "description": description,
+            "label_ids": [context.workflow_label_id],
+        }
+    )
+
+
+def local_merge_preflight(repo: str, base_ref: str, head_ref: str) -> dict[str, Any]:
+    origin = discover_origin_url()
+    if not origin:
+        return {"status": "unavailable", "reason": "missing_origin_url"}
+    try:
+        with tempfile.TemporaryDirectory(prefix="scherzo-pr-conflict-") as tmp:
+            if run_proc(["git", "init"], tmp).returncode != 0:
+                return {"status": "unavailable", "reason": "git_init_failed"}
+            if run_proc(["git", "remote", "add", "origin", origin], tmp).returncode != 0:
+                return {"status": "unavailable", "reason": "git_remote_failed"}
+            base_refspec = f"refs/heads/{base_ref}:refs/remotes/origin/__scherzo_base"
+            head_refspec = f"refs/heads/{head_ref}:refs/remotes/origin/__scherzo_head"
+            if run_proc(["git", "fetch", "--no-tags", "origin", base_refspec], tmp).returncode != 0:
+                return {"status": "unavailable", "reason": "base_fetch_failed"}
+            if run_proc(["git", "fetch", "--no-tags", "origin", head_refspec], tmp).returncode != 0:
+                return {"status": "unavailable", "reason": "head_fetch_failed"}
+            if (
+                run_proc(
+                    ["git", "checkout", "-B", "__scherzo_base", "refs/remotes/origin/__scherzo_base"],
+                    tmp,
+                ).returncode
+                != 0
+            ):
+                return {"status": "unavailable", "reason": "checkout_failed"}
+            merge = run_proc(
+                ["git", "merge", "--no-commit", "--no-ff", "refs/remotes/origin/__scherzo_head"],
+                tmp,
+            )
+            if merge.returncode == 0:
+                return {"status": "clean"}
+            unmerged = run_proc(["git", "diff", "--name-only", "--diff-filter=U"], tmp)
+            paths = [line for line in unmerged.stdout.splitlines() if line.strip()]
+            if paths:
+                return {"status": "conflicted", "paths": paths}
+            return {"status": "unavailable", "reason": "merge_failed_without_unmerged_paths"}
+    except FileNotFoundError:
+        return {"status": "unavailable", "reason": "git_not_found"}
+
+
+def run_proc(args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def discover_origin_url() -> str | None:
+    try:
+        proc = run_proc(["git", "remote", "get-url", "origin"])
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip().splitlines()[0]
+    except FileNotFoundError:
+        pass
+    try:
+        proc = run_proc(["jj", "git", "remote", "list", "--color=never"])
+    except FileNotFoundError:
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "origin":
+            return parts[1]
+    return None
+
+
+class ProductionGithubClient:
+    def __init__(self, repo: str) -> None:
+        self.repo = repo
+        self.base = "https://api.github.com"
+        self.token = os.environ.get("GITHUB_TOKEN", "").strip() or os.environ.get(
+            "GH_TOKEN", ""
+        ).strip()
+
+    def list_open_pulls(self) -> list[Any]:
+        pulls: list[Any] = []
+        page = 1
+        owner, repo_name = self.repo.split("/", 1)
+        while True:
+            path = f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}/pulls"
+            query = urllib.parse.urlencode(
+                {"state": "open", "per_page": "100", "page": str(page)}
+            )
+            response = self.get_json(f"{path}?{query}")
+            if not isinstance(response, list):
+                raise ScoutError("malformed GitHub PR payload: list response must be an array")
+            pulls.extend(response)
+            if len(response) < 100:
+                break
+            page += 1
+        return pulls
+
+    def pull_detail(self, number: int) -> dict[str, Any]:
+        owner, repo_name = self.repo.split("/", 1)
+        path = f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}/pulls/{number}"
+        last: Any = None
+        for attempt in range(3):
+            last = self.get_json(path)
+            if not isinstance(last, dict):
+                raise ScoutError("malformed GitHub PR detail payload: expected object")
+            if last.get("mergeable") is not None or attempt == 2:
+                return last
+            time.sleep(1)
+        return last if isinstance(last, dict) else {}
+
+    def get_json(self, path_and_query: str) -> Any:
+        req = urllib.request.Request(
+            self.base + path_and_query,
+            headers=self.headers(),
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = read_error_body(exc)
+            raise ScoutError(f"GitHub API request failed with HTTP {exc.code}: {body}") from exc
+        except urllib.error.URLError as exc:
+            raise ScoutError(f"GitHub API request failed: {exc.reason}") from exc
+        except json.JSONDecodeError as exc:
+            raise ScoutError("GitHub API returned invalid JSON") from exc
+
+    def headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": USER_AGENT,
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+
+class ProductionLinearClient:
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self.endpoint = "https://api.linear.app/graphql"
+
+    @classmethod
+    def from_env(cls) -> "ProductionLinearClient":
+        token = os.environ.get("LINEAR_API_KEY", "").strip() or os.environ.get(
+            "SCHERZO_AGENT_LINEAR_API_KEY", ""
+        ).strip()
+        if not token:
+            raise ScoutError("Linear API key is required to create merge-conflict issues")
+        return cls(token)
+
+    def fetch_project(self, project_slug: str) -> dict[str, Any]:
+        query = (
+            "query ScherzoLinearContract($projectSlug: String!) { "
+            "projects(first: 2, filter: { slugId: { eq: $projectSlug } }) { "
+            "nodes { id name slugId teams(first: 10) { nodes { id key name "
+            "states(first: 50) { nodes { id name type } pageInfo { hasNextPage endCursor } } "
+            "labels(first: 140) { nodes { id name } pageInfo { hasNextPage endCursor } } "
+            "} pageInfo { hasNextPage endCursor } } } } "
+            "issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } pageInfo { hasNextPage endCursor } } "
+            "}"
+        )
+        data = self.graphql(query, {"projectSlug": project_slug})
+        projects = connection_nodes(data.get("projects"))
+        if not projects:
+            raise ScoutError(f"Linear project not found: {project_slug}")
+        if len(projects) > 1:
+            raise ScoutError(f"Linear project slug is ambiguous: {project_slug}")
+        project = projects[0]
+        if not isinstance(project, dict):
+            raise ScoutError("malformed Linear project payload: expected object")
+        project["workspace_labels"] = connection_nodes(data.get("issueLabels"))
+        return project
+
+    def fetch_candidate_issues(self, project_slug: str, workflow_label: str) -> list[dict[str, Any]]:
+        query = (
+            "query GithubPrConflictScoutIssues($projectSlug: String!, $workflowLabel: String!, $after: String) { "
+            "issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, labels: { name: { eq: $workflowLabel } } }) { "
+            "nodes { id identifier title description url createdAt updatedAt state { name type } labels { nodes { id name } } } "
+            "pageInfo { hasNextPage endCursor } } }"
+        )
+        after: str | None = None
+        issues: list[dict[str, Any]] = []
+        while True:
+            data = self.graphql(
+                query,
+                {"projectSlug": project_slug, "workflowLabel": workflow_label, "after": after},
+            )
+            page = data.get("issues")
+            if not isinstance(page, dict):
+                raise ScoutError("malformed Linear issues payload: missing issues page")
+            for node in connection_nodes(page):
+                if isinstance(node, dict) and issue_state_type(node) not in NON_ACTIVE_STATE_TYPES:
+                    issues.append(node)
+            page_info = page.get("pageInfo")
+            if not isinstance(page_info, dict) or not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            after = cursor if isinstance(cursor, str) else None
+            if after is None:
+                break
+        return issues
+
+    def create_issue(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+        query = (
+            "mutation GithubPrConflictScoutCreate($input: IssueCreateInput!) { "
+            "issueCreate(input: $input) { success issue { id identifier title description url createdAt updatedAt state { name type } labels { nodes { id name } } } } }"
+        )
+        data = self.graphql(query, {"input": input_payload})
+        payload = data.get("issueCreate")
+        if not isinstance(payload, dict) or not payload.get("success"):
+            raise ScoutError("Linear issueCreate did not report success")
+        issue = payload.get("issue")
+        if not isinstance(issue, dict):
+            raise ScoutError("Linear issueCreate returned no issue")
+        return issue
+
+    def update_issue_description(self, issue_id: str, description: str) -> dict[str, Any]:
+        query = (
+            "mutation GithubPrConflictScoutUpdate($issueId: String!, $description: String!) { "
+            "issueUpdate(id: $issueId, input: { description: $description }) { success issue { id identifier title description url createdAt updatedAt state { name type } labels { nodes { id name } } } } }"
+        )
+        data = self.graphql(query, {"issueId": issue_id, "description": description})
+        payload = data.get("issueUpdate")
+        if not isinstance(payload, dict) or not payload.get("success"):
+            raise ScoutError("Linear issueUpdate did not report success")
+        issue = payload.get("issue")
+        if not isinstance(issue, dict):
+            raise ScoutError("Linear issueUpdate returned no issue")
+        return issue
+
+    def graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        req = urllib.request.Request(
+            self.endpoint,
+            data=json.dumps({"query": query, "variables": variables}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": self.api_key},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                response = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = read_error_body(exc)
+            raise ScoutError(f"Linear GraphQL request failed with HTTP {exc.code}: {body}") from exc
+        except urllib.error.URLError as exc:
+            raise ScoutError(f"Linear GraphQL request failed: {exc.reason}") from exc
+        except json.JSONDecodeError as exc:
+            raise ScoutError("Linear GraphQL returned invalid JSON") from exc
+        if not isinstance(response, dict):
+            raise ScoutError("Linear GraphQL returned an unexpected payload")
+        errors = response.get("errors")
+        if errors:
+            raise ScoutError("Linear GraphQL returned errors: " + json.dumps(errors, sort_keys=True))
+        data = response.get("data")
+        if not isinstance(data, dict):
+            raise ScoutError("Linear GraphQL returned no data object")
+        return data
+
+
+def read_error_body(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = exc.read(500).decode("utf-8", errors="replace")
+    except Exception:
+        body = ""
+    body = re.sub(r"gh[pousr]_[A-Za-z0-9_]+", "<redacted>", body)
+    body = re.sub(r"lin_api_[A-Za-z0-9_]+", "<redacted>", body)
+    return body.strip() or exc.reason
+
+
+class FixtureGithubClient:
+    def __init__(self, fixture: dict[str, Any]) -> None:
+        github = fixture.get("github", {})
+        if not isinstance(github, dict):
+            raise ScoutError("fixture.github must be an object")
+        self.pulls = github.get("pulls", fixture.get("pulls", []))
+        self.details = github.get("details", github.get("pull_details", {}))
+        if not isinstance(self.details, dict):
+            raise ScoutError("fixture.github.details must be an object")
+
+    def list_open_pulls(self) -> Any:
+        return self.pulls
+
+    def pull_detail(self, number: int) -> dict[str, Any]:
+        detail = self.details.get(str(number), self.details.get(number))
+        if detail is None:
+            return {}
+        if not isinstance(detail, dict):
+            raise ScoutError("malformed GitHub PR detail payload: expected object")
+        return detail
+
+
+class FixtureLinearClient:
+    def __init__(self, linear: dict[str, Any]) -> None:
+        if linear.get("fail_if_called") is True:
+            raise ScoutError("fixture Linear client was called")
+        self.linear = linear
+        self.issues = [issue for issue in linear.get("issues", []) if isinstance(issue, dict)]
+
+    def fetch_project(self, project_slug: str) -> dict[str, Any]:
+        project = self.linear.get("project")
+        if isinstance(project, dict):
+            return project
+        return {
+            "id": "project-id",
+            "teams": [
+                {
+                    "id": "team-id",
+                    "states": [
+                        {"id": "todo-state-id", "name": "Todo", "type": "unstarted"},
+                        {"id": "in-progress-state-id", "name": "In Progress", "type": "started"},
+                    ],
+                    "labels": [
+                        {"id": "workflow-label-id", "name": DEFAULT_WORKFLOW_LABEL},
+                    ],
+                }
+            ],
+        }
+
+    def fetch_candidate_issues(self, project_slug: str, workflow_label: str) -> list[dict[str, Any]]:
+        return [
+            issue
+            for issue in self.issues
+            if workflow_label in issue_label_names(issue)
+            and issue_state_type(issue) not in NON_ACTIVE_STATE_TYPES
+        ]
+
+    def create_issue(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+        identifier = f"LIV-SCOUT-{len(self.issues) + 1}"
+        issue = {
+            "id": f"created-{len(self.issues) + 1}",
+            "identifier": identifier,
+            "title": input_payload.get("title"),
+            "description": input_payload.get("description"),
+            "url": f"https://linear.app/living-systems/issue/{identifier}",
+            "createdAt": utc_now(),
+            "updatedAt": utc_now(),
+            "state": {"name": "Todo", "type": "unstarted"},
+            "labels": {
+                "nodes": [
+                    {"id": label_id, "name": DEFAULT_WORKFLOW_LABEL}
+                    for label_id in input_payload.get("labelIds", [])
+                ]
+            },
+        }
+        self.issues.append(issue)
+        return issue
+
+    def update_issue_description(self, issue_id: str, description: str) -> dict[str, Any]:
+        for issue in self.issues:
+            if issue.get("id") == issue_id:
+                issue["description"] = description
+                return issue
+        return {"id": issue_id, "identifier": issue_id, "description": description}
+
+
+def fixture_preflight(fixture: dict[str, Any]) -> Callable[[SafePullRequest], dict[str, Any]]:
+    raw = fixture.get("preflight", {})
+    preflight_map = raw if isinstance(raw, dict) else {}
+
+    def run(pr: SafePullRequest) -> dict[str, Any]:
+        value = preflight_map.get(str(pr.number), preflight_map.get(pr.number, "unavailable"))
+        if isinstance(value, str):
+            if value in {"conflicted", "clean", "unavailable"}:
+                return {"status": value}
+            return {"status": "unavailable", "reason": value}
+        if isinstance(value, dict):
+            status = value.get("status")
+            if status in {"conflicted", "clean", "unavailable"}:
+                return value
+        return {"status": "unavailable", "reason": "missing fixture preflight result"}
+
+    return run
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="scherzo-github-pr-conflict-scout")
+    subcommands = parser.add_subparsers(dest="command", required=True)
+
+    scan = subcommands.add_parser("scan")
+    add_common_scan_args(scan, fixture=False)
+
+    fixture = subcommands.add_parser("scan-fixture")
+    fixture.add_argument("fixture")
+    add_common_scan_args(fixture, fixture=True)
+    return parser.parse_args(argv)
+
+
+def add_common_scan_args(parser: argparse.ArgumentParser, *, fixture: bool) -> None:
+    parser.add_argument("--repo", default=DEFAULT_REPO)
+    parser.add_argument("--linear-project-slug", default=DEFAULT_PROJECT_SLUG)
+    parser.add_argument("--create-state", default=DEFAULT_CREATE_STATE)
+    parser.add_argument("--workflow-label", default=DEFAULT_WORKFLOW_LABEL)
+    parser.add_argument("--json-summary", action="store_true")
+    parser.add_argument("--skip-local-preflight", action="store_true")
+
+
+def options_from_args(args: argparse.Namespace, observed_at: str | None = None) -> Options:
+    return Options(
+        repo=args.repo,
+        linear_project_slug=args.linear_project_slug,
+        create_state=args.create_state,
+        workflow_label=args.workflow_label,
+        json_summary=args.json_summary,
+        skip_local_preflight=args.skip_local_preflight,
+        observed_at=observed_at,
+    )
+
+
+def run_scan(args: argparse.Namespace) -> dict[str, Any]:
+    options = options_from_args(args)
+    github = ProductionGithubClient(options.repo)
+    return scan_with_clients(
+        options,
+        github,
+        ProductionLinearClient.from_env,
+        lambda pr: local_merge_preflight(pr.repo, pr.base_branch, pr.head_branch),
+    )
+
+
+def run_scan_fixture(args: argparse.Namespace) -> dict[str, Any]:
+    fixture = load_json_file(args.fixture)
+    if not isinstance(fixture, dict):
+        raise ScoutError("fixture root must be an object")
+    observed_at = fixture.get("observed_at") if isinstance(fixture.get("observed_at"), str) else None
+    options = options_from_args(args, observed_at=observed_at)
+    github = FixtureGithubClient(fixture)
+    linear_data = fixture.get("linear", {})
+    if not isinstance(linear_data, dict):
+        raise ScoutError("fixture.linear must be an object")
+    return scan_with_clients(
+        options,
+        github,
+        lambda: FixtureLinearClient(linear_data),
+        fixture_preflight(fixture),
+    )
+
+
+def print_default_summary(summary: dict[str, Any]) -> None:
+    for item in summary.get("created", []):
+        identifier = item.get("identifier") or item.get("issue_id") or "unknown"
+        number = item.get("number") or "?"
+        print(f"created resolver issue {identifier} for PR #{number}")
+    for item in summary.get("updated", []):
+        identifier = item.get("identifier") or item.get("issue_id") or "unknown"
+        number = item.get("number") or "?"
+        print(f"updated resolver issue {identifier} for PR #{number}")
+
+
+def main(argv: list[str]) -> int:
+    try:
+        args = parse_args(argv)
+        if args.command == "scan":
+            summary = run_scan(args)
+        elif args.command == "scan-fixture":
+            summary = run_scan_fixture(args)
+        else:
+            raise ScoutError(f"unknown command: {args.command}")
+        if args.json_summary:
+            print(json.dumps(summary, indent=2, sort_keys=True))
+        else:
+            print_default_summary(summary)
+        return 0
+    except ScoutError as exc:
+        return fail(str(exc))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

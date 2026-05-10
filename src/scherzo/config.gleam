@@ -212,6 +212,7 @@ pub fn resolve_orchestrator_root(
     root,
     effective.linear_contract,
     routing,
+    scheduled_jobs,
   ))
   let effective = config_types.EffectiveConfig(..effective, linear_contract:)
   Ok(config_types.OrchestratorConfig(
@@ -1703,64 +1704,19 @@ fn resolve_orchestrator_linear_contract(
   root: yay.Node,
   contract: config_types.LinearContractConfig,
   routing: config_types.RoutingConfig,
+  scheduled_jobs: List(config_types.ScheduledJobConfig),
 ) -> Result(config_types.LinearContractConfig, error.ConfigError) {
-  let workflow_names =
-    dict.keys(routing.workflows)
-    |> normalize_label_list
-    |> list.sort(by: string.compare)
-  let has_labels = linear_contract_field_present(root, "workflow_labels")
-  let has_prefix = linear_contract_field_present(root, "workflow_label_prefix")
-  let contract_prefix = case has_prefix {
-    True -> contract.workflow_label_prefix
-    False -> routing.workflow_label_prefix
-  }
-  case
-    has_prefix
-    && contract.workflow_label_prefix != routing.workflow_label_prefix
-  {
-    True ->
-      Error(error.InvalidConfig(
-        "linear_contract.workflow_label_prefix must match routing.workflow_label_prefix",
-      ))
-    False -> {
-      let contract_names =
-        contract.workflow_labels
-        |> normalize_label_list
-        |> list.sort(by: string.compare)
-      case routing.require_exactly_one_workflow_label, has_labels {
-        True, False ->
-          Ok(
-            config_types.LinearContractConfig(
-              ..contract,
-              workflow_label_prefix: contract_prefix,
-              workflow_labels: workflow_names,
-            ),
-          )
-        True, True ->
-          case contract_names == workflow_names {
-            True ->
-              Ok(
-                config_types.LinearContractConfig(
-                  ..contract,
-                  workflow_label_prefix: contract_prefix,
-                  workflow_labels: workflow_names,
-                ),
-              )
-            False ->
-              Error(error.InvalidConfig(
-                "linear_contract.workflow_labels must match routing.workflows when routing requires exactly one workflow label",
-              ))
-          }
-        _, _ ->
-          Ok(
-            config_types.LinearContractConfig(
-              ..contract,
-              workflow_label_prefix: contract_prefix,
-            ),
-          )
-      }
-    }
-  }
+  let result =
+    config_types.resolve_linear_contract_for_routing(
+      contract,
+      routing,
+      scheduled_jobs,
+      linear_contract_field_present(root, "workflow_labels"),
+      linear_contract_field_present(root, "workflow_label_prefix"),
+    )
+  result.map_error(result, fn(err) {
+    error.InvalidConfig(config_types.linear_contract_routing_error_message(err))
+  })
 }
 
 fn linear_contract_field_present(root: yay.Node, key: String) -> Bool {

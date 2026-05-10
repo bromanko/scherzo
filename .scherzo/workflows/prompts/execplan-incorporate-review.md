@@ -36,9 +36,9 @@ Workflow contract:
 - You are already inside the same dedicated jj workspace as the draft plan. Do not create, forget, finish, switch, push, or otherwise manage jj workspaces.
 - Use the repo-local exec-plan skill by reading `.pi/skills/exec-plan/SKILL.md` before revising.
 - Use the repo-local exec-plan-review skill by reading `.pi/skills/exec-plan-review/SKILL.md` before interpreting the review.
-- Read `tmp/execplan-review.md` and the plan under `docs/plans/`.
+- Read `tmp/execplan-review.md` and the HTML plan artifact under `docs/plans/`.
 - Keep the incorporation bounded: focus on the review findings and inspect only files needed to resolve concrete uncertainty.
-- Revise only the plan file. Do not edit source code, tests, config, existing docs, or the review file.
+- Revise only the `docs/plans/*.html` plan artifact. Do not create a tracked Markdown plan file, and do not edit source code, tests, config, existing docs, or the review file. If an ignored `tmp/execplan-source.md` draft exists, you may update it and rerender the HTML artifact.
 - Incorporate every BLOCKING and GAP finding unless it is demonstrably inapplicable. If you reject a finding, record the rationale in the plan's `## Decision Log`.
 - Consider SUGGESTION findings and incorporate the ones that materially improve safety, executability, or scope clarity.
 - Preserve the ExecPlan as a living document and keep all sections self-contained.
@@ -54,7 +54,7 @@ Dogfood time budget:
 Incorporation process:
 
 1. Read both repo-local skill files.
-2. Read the plan path printed as `PLAN_PATH=<path>` in the final validation stdout above, or discover it with `jj diff --from @- --to @ --name-only --color=never` if needed.
+2. Read the HTML plan path printed as `PLAN_PATH=<path>` in the final validation stdout above, or discover it with `jj diff --from @- --to @ --name-only --color=never` if needed.
 3. Read `tmp/execplan-review.md`.
 4. Update the plan so a later implementation workflow can start from the plan alone.
 5. Re-read the final plan for consistency across purpose, scope, milestones, concrete steps, tests, validation, rollout, risks, and open questions.
@@ -63,7 +63,7 @@ Incorporation process:
 Final response format:
 
 ## Summary
-One short paragraph stating that the reviewed ExecPlan was updated.
+One short paragraph stating that the reviewed HTML ExecPlan artifact was updated.
 
 ## Incorporated changes
 - Bullet list of the most important review findings addressed.

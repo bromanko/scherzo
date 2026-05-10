@@ -3,14 +3,19 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/string
 import scherzo/session/event
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/turn_telemetry
 
-pub const default_max_events_per_session = 2000
+pub const default_max_events_per_session = 200
 
-pub const default_max_sessions = 500
+pub const default_max_sessions = 100
+
+pub const default_max_exited_events_per_session = 25
+
+const max_exited_event_text_chars = 4096
 
 pub type HubError {
   HubUnavailable
@@ -335,13 +340,19 @@ fn update_summary_status(
   session_id: String,
   status: event.SessionStatus,
 ) -> State {
-  update_summary(state, session_id, fn(summary) {
-    event.SessionSummary(
-      ..summary,
-      status: status,
-      last_event_at_ms: state.now_ms(),
-    )
-  })
+  let updated =
+    update_summary(state, session_id, fn(summary) {
+      event.SessionSummary(
+        ..summary,
+        status: status,
+        last_event_at_ms: state.now_ms(),
+      )
+    })
+
+  case status {
+    event.Exited(_) -> prune_exited_session_events(updated, session_id)
+    _ -> updated
+  }
 }
 
 fn update_summary_recovery(
@@ -423,22 +434,22 @@ fn publish_payload(
     Ok(summary) -> {
       let now = state.now_ms()
       let #(summary, payload) = apply_publish_payload(summary, payload, now)
+      let retention_limit = max_events_for_summary(state, summary)
       let stored_event =
         event.SessionEvent(
           cursor: state.next_cursor,
           at_ms: now,
           session_id: session_id,
           issue_id: summary.issue_id,
-          payload: payload,
+          payload: payload_for_retention(summary, payload),
         )
       let existing_events = case dict.get(state.events, session_id) {
         Ok(events) -> events
         Error(_) -> []
       }
       let all_events = list.append(existing_events, [stored_event])
-      let dropped_now = list.length(all_events) > state.max_events_per_session
-      let retained_events =
-        retain_latest(all_events, state.max_events_per_session)
+      let dropped_now = list.length(all_events) > retention_limit
+      let retained_events = retain_latest(all_events, retention_limit)
       let dropped_before = case dict.get(state.dropped_old_events, session_id) {
         Ok(value) -> value
         Error(_) -> False
@@ -654,6 +665,97 @@ fn token_totals_are_nonzero(tokens: session_tokens.TokenTotals) -> Bool {
 fn clamp_nonnegative(value: Int) -> Int {
   case value < 0 {
     True -> 0
+    False -> value
+  }
+}
+
+fn prune_exited_session_events(state: State, session_id: String) -> State {
+  case dict.get(state.summaries, session_id) {
+    Error(Nil) -> state
+    Ok(summary) -> {
+      let events = case dict.get(state.events, session_id) {
+        Ok(events) -> events
+        Error(Nil) -> []
+      }
+      let retention_limit = max_events_for_summary(state, summary)
+      let retained_events =
+        compact_exited_events(retain_latest(events, retention_limit))
+      let dropped_now = list.length(events) > retention_limit
+      let dropped_before = case dict.get(state.dropped_old_events, session_id) {
+        Ok(value) -> value
+        Error(Nil) -> False
+      }
+      State(
+        ..state,
+        events: dict.insert(state.events, session_id, retained_events),
+        dropped_old_events: dict.insert(
+          state.dropped_old_events,
+          session_id,
+          dropped_before || dropped_now,
+        ),
+      )
+    }
+  }
+}
+
+fn max_events_for_summary(state: State, summary: event.SessionSummary) -> Int {
+  case summary.status {
+    event.Exited(_) -> exited_event_limit(state)
+    _ -> state.max_events_per_session
+  }
+}
+
+fn exited_event_limit(state: State) -> Int {
+  min_int(state.max_events_per_session, default_max_exited_events_per_session)
+}
+
+fn payload_for_retention(
+  summary: event.SessionSummary,
+  payload: event.EventPayload,
+) -> event.EventPayload {
+  case summary.status {
+    event.Exited(_) -> compact_exited_payload(payload)
+    _ -> payload
+  }
+}
+
+fn compact_exited_events(
+  events: List(event.SessionEvent),
+) -> List(event.SessionEvent) {
+  list.map(events, fn(stored_event) { compact_exited_event(stored_event) })
+}
+
+fn compact_exited_event(
+  stored_event: event.SessionEvent,
+) -> event.SessionEvent {
+  event.SessionEvent(
+    ..stored_event,
+    payload: compact_exited_payload(stored_event.payload),
+  )
+}
+
+fn compact_exited_payload(payload: event.EventPayload) -> event.EventPayload {
+  event.EventPayload(
+    ..payload,
+    message: compact_optional_text(payload.message),
+    tool_input: compact_optional_text(payload.tool_input),
+    tool_output: compact_optional_text(payload.tool_output),
+    raw_json: None,
+  )
+}
+
+fn compact_optional_text(value: Option(String)) -> Option(String) {
+  case value {
+    Some(value) -> Some(compact_text(value))
+    None -> None
+  }
+}
+
+fn compact_text(value: String) -> String {
+  case string.length(value) > max_exited_event_text_chars {
+    True ->
+      string.slice(value, 0, max_exited_event_text_chars)
+      <> "… [truncated after session exit]"
     False -> value
   }
 }
