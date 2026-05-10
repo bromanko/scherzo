@@ -175,18 +175,38 @@ pub fn driver_workspace_profile_parses_schema_test() {
   assert orchestrator.dag_hooks == config_types.empty_dag_hooks()
 }
 
+pub fn hook_workspace_profile_can_include_driver_context_test() {
+  let source =
+    base_config_with_workspace(
+      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        timeout_ms: 111\n      driver:\n        command: scripts/scherzo-workspace-jj\n        capabilities: [assert-only, changed-files]\n",
+    )
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  let assert Ok(profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "noop")
+  assert profile.source == config_types.ConfiguredWorkspaceHooks
+  let assert Some(hooks) = profile.hooks
+  let assert Some(driver) = profile.driver
+  assert hooks.timeout_ms == 111
+  assert driver.command == "scripts/scherzo-workspace-jj"
+  assert driver.capabilities
+    == [
+      config_types.WorkspaceAssertOnly,
+      config_types.WorkspaceChangedFiles,
+    ]
+  assert orchestrator.dag_hooks == hooks
+}
+
 pub fn workspace_profiles_reject_invalid_driver_shapes_test() {
   let missing_shape =
     invalid_workspace_error(
       "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop: {}\n",
     )
   assert string.contains(missing_shape, "must define hooks")
-
-  let mixed_shape =
-    invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks: {}\n      driver:\n        command: run\n",
-    )
-  assert string.contains(mixed_shape, "must not mix hooks and driver")
 
   let empty_command =
     invalid_workspace_error(

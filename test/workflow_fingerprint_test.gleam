@@ -44,6 +44,25 @@ fn driver_profile(
   driver_profile_with_timeout(command, lifecycle, capabilities, 1000)
 }
 
+fn hook_profile_with_driver(
+  name: String,
+  hooks: config_types.DagHooksConfig,
+  command: String,
+  capabilities: List(config_types.WorkspaceCapability),
+) -> config_types.WorkspaceHookProfile {
+  config_types.WorkspaceHookProfile(
+    name: name,
+    hooks: Some(hooks),
+    driver: Some(config_types.WorkspaceDriverConfig(
+      command: command,
+      lifecycle: [],
+      capabilities: capabilities,
+      timeout_ms: hooks.timeout_ms,
+    )),
+    source: config_types.ConfiguredWorkspaceHooks,
+  )
+}
+
 fn driver_profile_with_timeout(
   command: String,
   lifecycle: List(config_types.WorkspaceLifecycleOperation),
@@ -354,6 +373,51 @@ pub fn execution_fingerprint_includes_selected_driver_metadata_test() {
     ),
     "workspace_driver",
   )
+}
+
+pub fn execution_fingerprint_changes_for_hook_profile_driver_context_test() {
+  let dag =
+    parse(
+      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let settings = model_config.default_settings()
+  let base =
+    hook_profile_with_driver("noop", hooks(Some("create")), "scripts/noop", [
+      config_types.WorkspaceAssertOnly,
+    ])
+  let changed_command =
+    hook_profile_with_driver("noop", hooks(Some("create")), "scripts/changed", [
+      config_types.WorkspaceAssertOnly,
+    ])
+  let changed_capabilities =
+    hook_profile_with_driver("noop", hooks(Some("create")), "scripts/noop", [
+      config_types.WorkspaceChangedFiles,
+    ])
+  let fingerprint =
+    workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      base,
+      limits(1000),
+      settings,
+    )
+
+  assert fingerprint
+    != workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      changed_command,
+      limits(1000),
+      settings,
+    )
+  assert fingerprint
+    != workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      changed_capabilities,
+      limits(1000),
+      settings,
+    )
 }
 
 pub fn execution_fingerprint_canonicalizes_driver_list_order_test() {

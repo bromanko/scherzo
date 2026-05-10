@@ -58,6 +58,7 @@ pub type StepContext {
     attempt_index: Int,
     workspace_name: String,
     workspace_path: String,
+    workspace_context: workspace_profile.WorkspaceDriverContext,
     config_dir: String,
     issue_id: String,
     issue_identifier: String,
@@ -2172,7 +2173,7 @@ fn run_step(
   Option(tracker_issue.Issue),
   Int,
 ) {
-  let context = step_context(step, workspace, issue, orchestrator)
+  let context = step_context(step, workspace, issue, orchestrator, profile)
   case step.kind {
     workflow_dag.CommandStep(run, timeout_ms) -> {
       let timeout_ms =
@@ -2237,6 +2238,7 @@ fn run_agent_step(
       issue,
       artifacts,
       pi_session_continuations,
+      context,
     )
   {
     Error(Nil) -> #(
@@ -2869,6 +2871,7 @@ fn prompt_mode_for_step(
   issue: tracker_issue.Issue,
   artifacts: Dict(String, step_artifact.StepArtifact),
   pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+  context: StepContext,
 ) -> Result(workflow_attempt.AgentPromptMode, Nil) {
   case dict.get(pi_session_continuations, step.id) {
     Ok(continuation) ->
@@ -2878,14 +2881,14 @@ fn prompt_mode_for_step(
         workflow_dag.PromptInline(prompt) -> prompt
         workflow_dag.PromptFile(path) -> path
       }
-      case
-        template.render_with_locals(
-          prompt_template,
-          issue,
-          None,
+      let locals =
+        list.append(
           step_artifact.to_template_locals(artifacts),
+          workspace_profile.driver_context_template_locals(
+            context.workspace_context,
+          ),
         )
-      {
+      case template.render_with_locals(prompt_template, issue, None, locals) {
         Ok(prompt) -> Ok(workflow_attempt.OriginalPrompt(prompt))
         Error(_) -> Error(Nil)
       }
@@ -2941,6 +2944,7 @@ fn step_context(
   workspace: workspace_run.PreparedStepWorkspace,
   issue: tracker_issue.Issue,
   orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
 ) -> StepContext {
   StepContext(
     workflow_id: workspace.workflow_id,
@@ -2950,6 +2954,7 @@ fn step_context(
     attempt_index: workspace.attempt_index,
     workspace_name: workspace.workspace_name,
     workspace_path: workspace.path,
+    workspace_context: workspace_profile.driver_context_from_profile(profile),
     config_dir: orchestrator.config_dir,
     issue_id: issue.id,
     issue_identifier: issue.identifier,
@@ -2991,6 +2996,9 @@ fn step_command_env(context: StepContext) -> List(#(String, String)) {
     #("SCHERZO_WORKSPACE_NAME", context.workspace_name),
     #("SCHERZO_WORKSPACE_PATH", context.workspace_path),
   ]
+  |> list.append(workspace_profile.driver_context_env_vars(
+    context.workspace_context,
+  ))
 }
 
 fn effective_for_step(

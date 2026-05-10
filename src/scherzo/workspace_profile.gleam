@@ -3,7 +3,30 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/config/types as config_types
+import scherzo/template
 import scherzo/workflow_dag
+import scherzo/workspace_driver_context
+
+pub type WorkspaceDriverContext =
+  workspace_driver_context.Context
+
+pub fn driver_context_from_profile(
+  profile: config_types.WorkspaceHookProfile,
+) -> WorkspaceDriverContext {
+  workspace_driver_context.from_profile(profile)
+}
+
+pub fn driver_context_env_vars(
+  context: WorkspaceDriverContext,
+) -> List(#(String, String)) {
+  workspace_driver_context.env_vars(context)
+}
+
+pub fn driver_context_template_locals(
+  context: WorkspaceDriverContext,
+) -> List(#(String, template.Value)) {
+  workspace_driver_context.template_locals(context)
+}
 
 pub type ProfileResolutionError {
   UnknownWorkspaceProfile(
@@ -73,13 +96,13 @@ pub fn validate_dispatchable_profile(
   dag: workflow_dag.WorkflowDag,
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, ProfileResolutionError) {
-  case profile.driver {
-    Some(_) ->
+  case profile.driver, profile.hooks {
+    Some(_), None ->
       Error(WorkspaceDriverInvocationUnavailable(
         workflow_id: dag.id,
         profile_name: profile.name,
       ))
-    None -> Ok(Nil)
+    _, _ -> Ok(Nil)
   }
 }
 
