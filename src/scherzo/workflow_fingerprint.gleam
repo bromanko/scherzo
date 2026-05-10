@@ -60,7 +60,8 @@ pub fn for_execution_options(
   let profile =
     config_types.WorkspaceHookProfile(
       name: "default",
-      hooks: dag_hooks,
+      hooks: Some(dag_hooks),
+      driver: None,
       source: config_types.LegacyWorkspaceHooks,
     )
   for_execution_profile_options(
@@ -109,7 +110,8 @@ pub fn canonical_execution_input_for(
   let profile =
     config_types.WorkspaceHookProfile(
       name: "default",
-      hooks: dag_hooks,
+      hooks: Some(dag_hooks),
+      driver: None,
       source: config_types.LegacyWorkspaceHooks,
     )
   canonical_execution_input_for_profile(
@@ -139,23 +141,34 @@ fn execution_to_json(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> json.Json {
-  let fields = [
-    #("dag", dag_to_json(workflow_id, dag)),
-    #("dag_hooks", dag_hooks_to_json(profile.hooks)),
-    #("artifact_limits", artifact_limits_to_json(artifact_limits)),
-    #("global_model_settings", model_settings_to_json(model_settings)),
-  ]
-  case profile.source {
-    config_types.LegacyWorkspaceHooks -> json.object(fields)
-    config_types.ConfiguredWorkspaceProfile ->
-      json.object([
-        #("dag", dag_to_json(workflow_id, dag)),
+  let fields = [#("dag", dag_to_json(workflow_id, dag))]
+  let fields = case profile.source {
+    config_types.LegacyWorkspaceHooks
+    | config_types.SyntheticDefaultWorkspace -> fields
+    config_types.ConfiguredWorkspaceHooks
+    | config_types.ConfiguredWorkspaceDriver ->
+      list.append(fields, [
         #("workspace_profile", workspace_profile_to_json(profile)),
-        #("dag_hooks", dag_hooks_to_json(profile.hooks)),
-        #("artifact_limits", artifact_limits_to_json(artifact_limits)),
-        #("global_model_settings", model_settings_to_json(model_settings)),
       ])
   }
+  let fields = case profile.hooks {
+    Some(hooks) ->
+      list.append(fields, [#("dag_hooks", dag_hooks_to_json(hooks))])
+    None -> fields
+  }
+  let fields = case profile.driver {
+    Some(driver) ->
+      list.append(fields, [
+        #("workspace_driver", workspace_driver_to_json(driver)),
+      ])
+    None -> fields
+  }
+  json.object(
+    list.append(fields, [
+      #("artifact_limits", artifact_limits_to_json(artifact_limits)),
+      #("global_model_settings", model_settings_to_json(model_settings)),
+    ]),
+  )
 }
 
 fn dag_to_json(
@@ -170,6 +183,16 @@ fn dag_to_json(
     None -> prefix
     Some(profile) ->
       list.append(prefix, [#("workspace_profile", json.string(profile))])
+  }
+  let prefix = case dag.workspace_capabilities {
+    [] -> prefix
+    capabilities ->
+      list.append(prefix, [
+        #(
+          "workspace_capabilities",
+          workspace_capabilities_to_json(capabilities),
+        ),
+      ])
   }
   json.object(
     list.append(prefix, [
@@ -274,13 +297,55 @@ fn workspace_to_json(workspace: workflow_dag.WorkspaceRef) -> json.Json {
   ])
 }
 
+fn workspace_capabilities_to_json(
+  capabilities: List(config_types.WorkspaceCapability),
+) -> json.Json {
+  capabilities
+  |> config_types.canonical_workspace_capabilities
+  |> json.array(of: fn(capability) {
+    json.string(config_types.workspace_capability_to_string(capability))
+  })
+}
+
+fn workspace_lifecycle_to_json(
+  operations: List(config_types.WorkspaceLifecycleOperation),
+) -> json.Json {
+  operations
+  |> config_types.canonical_lifecycle_operations
+  |> json.array(of: fn(operation) {
+    json.string(config_types.workspace_lifecycle_operation_to_string(operation))
+  })
+}
+
+fn workspace_driver_to_json(
+  driver: config_types.WorkspaceDriverConfig,
+) -> json.Json {
+  json.object([
+    #("command", json.string(driver.command)),
+    #("lifecycle", workspace_lifecycle_to_json(driver.lifecycle)),
+    #("capabilities", workspace_capabilities_to_json(driver.capabilities)),
+    #("timeout_ms", json.int(driver.timeout_ms)),
+  ])
+}
+
 fn workspace_profile_to_json(
   profile: config_types.WorkspaceHookProfile,
 ) -> json.Json {
   json.object([
     #("name", json.string(profile.name)),
-    #("source", json.string("configured")),
+    #("source", json.string(workspace_profile_source_to_string(profile.source))),
   ])
+}
+
+fn workspace_profile_source_to_string(
+  source: config_types.WorkspaceProfileSource,
+) -> String {
+  case source {
+    config_types.LegacyWorkspaceHooks -> "legacy-hooks"
+    config_types.ConfiguredWorkspaceHooks -> "configured-hooks"
+    config_types.ConfiguredWorkspaceDriver -> "configured-driver"
+    config_types.SyntheticDefaultWorkspace -> "synthetic-default"
+  }
 }
 
 fn dag_hooks_to_json(hooks: config_types.DagHooksConfig) -> json.Json {
@@ -321,6 +386,14 @@ fn workspace_profile_error_to_fingerprint_error(
   case err {
     workspace_profile.UnknownWorkspaceProfile(profile_name: profile_name, ..) ->
       WorkspaceProfileUnavailable(profile_name)
+    workspace_profile.WorkspaceCapabilitiesUnavailable(
+      profile_name: profile_name,
+      ..,
+    ) -> WorkspaceProfileUnavailable(profile_name)
+    workspace_profile.WorkspaceDriverInvocationUnavailable(
+      profile_name: profile_name,
+      ..,
+    ) -> WorkspaceProfileUnavailable(profile_name)
   }
 }
 

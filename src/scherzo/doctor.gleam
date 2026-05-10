@@ -242,7 +242,7 @@ fn human_pass_body(result: CheckResult) -> String {
       indent(["Local instance lock can be acquired and released."])
     WorkspaceHooks ->
       indent([
-        "Scratch workspace was prepared and cleaned up.",
+        "Scratch workspace was prepared and cleaned up during the workspace driver migration transition.",
         "Hooks: " <> field_or(result.fields, "hooks", "none") <> ".",
       ])
     PiProbe -> indent(["pi RPC launched successfully and no prompt was sent."])
@@ -371,7 +371,7 @@ fn check_title(check: CheckName) -> String {
     LinearContract -> "Linear contract"
     LinearSmoke -> "Linear smoke"
     InstanceLock -> "Instance lock"
-    WorkspaceHooks -> "Workspace hooks"
+    WorkspaceHooks -> "Workspace driver migration"
     PiProbe -> "Pi probe"
   }
 }
@@ -388,7 +388,8 @@ fn impact(check: CheckName) -> String {
       "Scherzo may not be able to read candidate issues from Linear."
     InstanceLock ->
       "Another local Scherzo process may be active, or a stale lock may need operator cleanup."
-    WorkspaceHooks -> "Scherzo may not be able to prepare per-issue workspaces."
+    WorkspaceHooks ->
+      "Legacy hook-based workspace configuration still runs during this transition, but operators need migration guidance before future driver-backed profiles become dispatchable."
     PiProbe ->
       "Scherzo may not be able to launch pi RPC in prepared workspaces."
   }
@@ -422,8 +423,9 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- If no process is active, remove the stale instance.lock file manually.",
     ]
     WorkspaceHooks -> [
-      "- Inspect the selected workspace profile hooks or legacy workspace.hooks in the YAML config.",
-      "- Re-run this check after fixing hook commands or workspace permissions.",
+      "- Inspect any legacy workspace.hooks or workspace.profiles.<name>.hooks entries in the YAML config.",
+      "- Plan migration to workspace.profiles.<name>.driver after driver invocation support lands.",
+      "- Read docs/runbooks/workspace-driver-migration.md for before-and-after examples and rollout guidance.",
     ]
     PiProbe -> [
       "- Confirm pi is installed and the configured pi.command supports --mode rpc.",

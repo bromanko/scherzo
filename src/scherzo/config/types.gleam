@@ -1,6 +1,6 @@
 import gleam/dict.{type Dict}
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/model_config
 import scherzo/tracker/kind as tracker_kind
@@ -283,17 +283,154 @@ pub type DagHooksConfig {
   )
 }
 
+pub type WorkspaceLifecycleOperation {
+  LifecycleCreate
+  LifecycleBeforeStep
+  LifecycleAfterStep
+  LifecycleRemove
+}
+
+pub type WorkspaceCapability {
+  WorkspaceStatus
+  WorkspaceDiff
+  WorkspaceChangedFiles
+  WorkspaceAssertOnly
+  WorkspaceBaseline
+  WorkspaceRefreshBase
+  WorkspacePublishChange
+}
+
+pub type WorkspaceDriverConfig {
+  WorkspaceDriverConfig(
+    command: String,
+    lifecycle: List(WorkspaceLifecycleOperation),
+    capabilities: List(WorkspaceCapability),
+    timeout_ms: Int,
+  )
+}
+
 pub type WorkspaceProfileSource {
   LegacyWorkspaceHooks
-  ConfiguredWorkspaceProfile
+  ConfiguredWorkspaceHooks
+  ConfiguredWorkspaceDriver
+  SyntheticDefaultWorkspace
 }
 
 pub type WorkspaceHookProfile {
   WorkspaceHookProfile(
     name: String,
-    hooks: DagHooksConfig,
+    hooks: Option(DagHooksConfig),
+    driver: Option(WorkspaceDriverConfig),
     source: WorkspaceProfileSource,
   )
+}
+
+pub fn empty_dag_hooks() -> DagHooksConfig {
+  DagHooksConfig(
+    create: None,
+    before_step: None,
+    after_step: None,
+    remove: None,
+    timeout_ms: 60_000,
+  )
+}
+
+pub fn profile_hooks(profile: WorkspaceHookProfile) -> DagHooksConfig {
+  case profile.hooks {
+    Some(hooks) -> hooks
+    None -> empty_dag_hooks()
+  }
+}
+
+pub fn workspace_lifecycle_operation_from_string(
+  value: String,
+) -> Result(WorkspaceLifecycleOperation, Nil) {
+  case value |> string.trim |> string.lowercase {
+    "create" -> Ok(LifecycleCreate)
+    "before-step" -> Ok(LifecycleBeforeStep)
+    "after-step" -> Ok(LifecycleAfterStep)
+    "remove" -> Ok(LifecycleRemove)
+    _ -> Error(Nil)
+  }
+}
+
+pub fn workspace_lifecycle_operation_to_string(
+  operation: WorkspaceLifecycleOperation,
+) -> String {
+  case operation {
+    LifecycleCreate -> "create"
+    LifecycleBeforeStep -> "before-step"
+    LifecycleAfterStep -> "after-step"
+    LifecycleRemove -> "remove"
+  }
+}
+
+pub fn workspace_capability_from_string(
+  value: String,
+) -> Result(WorkspaceCapability, Nil) {
+  case value |> string.trim |> string.lowercase {
+    "status" -> Ok(WorkspaceStatus)
+    "diff" -> Ok(WorkspaceDiff)
+    "changed-files" -> Ok(WorkspaceChangedFiles)
+    "assert-only" -> Ok(WorkspaceAssertOnly)
+    "baseline" -> Ok(WorkspaceBaseline)
+    "refresh-base" -> Ok(WorkspaceRefreshBase)
+    "publish-change" -> Ok(WorkspacePublishChange)
+    _ -> Error(Nil)
+  }
+}
+
+pub fn workspace_capability_to_string(
+  capability: WorkspaceCapability,
+) -> String {
+  case capability {
+    WorkspaceStatus -> "status"
+    WorkspaceDiff -> "diff"
+    WorkspaceChangedFiles -> "changed-files"
+    WorkspaceAssertOnly -> "assert-only"
+    WorkspaceBaseline -> "baseline"
+    WorkspaceRefreshBase -> "refresh-base"
+    WorkspacePublishChange -> "publish-change"
+  }
+}
+
+pub fn canonical_lifecycle_operations(
+  operations: List(WorkspaceLifecycleOperation),
+) -> List(WorkspaceLifecycleOperation) {
+  [LifecycleCreate, LifecycleBeforeStep, LifecycleAfterStep, LifecycleRemove]
+  |> list.filter(fn(operation) { list.contains(operations, operation) })
+}
+
+pub fn canonical_workspace_capabilities(
+  capabilities: List(WorkspaceCapability),
+) -> List(WorkspaceCapability) {
+  [
+    WorkspaceStatus,
+    WorkspaceDiff,
+    WorkspaceChangedFiles,
+    WorkspaceAssertOnly,
+    WorkspaceBaseline,
+    WorkspaceRefreshBase,
+    WorkspacePublishChange,
+  ]
+  |> list.filter(fn(capability) { list.contains(capabilities, capability) })
+}
+
+pub fn workspace_capability_names(
+  capabilities: List(WorkspaceCapability),
+) -> List(String) {
+  capabilities
+  |> canonical_workspace_capabilities
+  |> list.map(workspace_capability_to_string)
+}
+
+pub fn workspace_capabilities_to_string(
+  capabilities: List(WorkspaceCapability),
+) -> String {
+  case workspace_capability_names(capabilities) {
+    [] -> "none"
+    names -> string.join(names, with: ", ")
+  }
 }
 
 pub type WorkspaceHookProfiles {
