@@ -1,3 +1,5 @@
+import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -139,6 +141,58 @@ pub fn hub_truncates_old_events_test() {
   assert event_cursors(page.events) == [2, 3]
   assert page.next_cursor == 3
   assert page.truncated == True
+  hub.stop(subject)
+}
+
+pub fn hub_prunes_exited_session_events_to_smaller_tail_test() {
+  let assert Ok(subject) = hub.start_with_limits(100, 50, fn() { 1 })
+  hub.register_session(subject, summary("session-1"))
+  publish_numbered_events(subject, "session-1", 1, 30)
+
+  hub.finish_session(subject, "session-1", reason.Normal)
+
+  let assert Ok(page) = hub.events_after(subject, "session-1", 0, 50, 1000)
+  assert list.length(page.events) == hub.default_max_exited_events_per_session
+  let assert Ok(first_event) = list.first(page.events)
+  let assert Ok(last_event) = list.last(page.events)
+  assert first_event.cursor
+    == 30 - hub.default_max_exited_events_per_session + 1
+  assert last_event.cursor == 30
+  assert page.truncated == True
+
+  let assert Ok(recent_page) =
+    hub.events_after(subject, "session-1", first_event.cursor, 50, 1000)
+  assert recent_page.truncated == False
+  hub.stop(subject)
+}
+
+pub fn hub_compacts_exited_session_heavy_event_fields_test() {
+  let assert Ok(subject) = hub.start_with_limits(100, 50, fn() { 1 })
+  let long_text = string.repeat("x", times: 10_000)
+  hub.register_session(subject, summary("session-1"))
+  hub.publish(
+    subject,
+    "session-1",
+    event.EventPayload(
+      ..payload("heavy"),
+      kind: event.Tool,
+      message: Some(long_text),
+      tool_input: Some(long_text),
+      tool_output: Some(long_text),
+      raw_json: Some(event.RedactedRawJson(value: long_text, truncated: False)),
+    ),
+  )
+
+  hub.finish_session(subject, "session-1", reason.Normal)
+
+  let assert Ok(page) = hub.events_after(subject, "session-1", 0, 10, 1000)
+  let assert [stored_event] = page.events
+  let expected_compacted_text =
+    string.slice(long_text, 0, 4096) <> "… [truncated after session exit]"
+  assert stored_event.payload.message == Some(expected_compacted_text)
+  assert stored_event.payload.tool_input == Some(expected_compacted_text)
+  assert stored_event.payload.tool_output == Some(expected_compacted_text)
+  assert stored_event.payload.raw_json == None
   hub.stop(subject)
 }
 
@@ -343,4 +397,19 @@ fn event_cursors(events: List(event.SessionEvent)) -> List(Int) {
 
 fn event_timestamps(events: List(event.SessionEvent)) -> List(Int) {
   list.map(events, fn(stored_event) { stored_event.at_ms })
+}
+
+fn publish_numbered_events(
+  subject: process.Subject(hub.Message),
+  session_id: String,
+  next: Int,
+  remaining: Int,
+) -> Nil {
+  case remaining <= 0 {
+    True -> Nil
+    False -> {
+      hub.publish(subject, session_id, payload("event-" <> int.to_string(next)))
+      publish_numbered_events(subject, session_id, next + 1, remaining - 1)
+    }
+  }
 }

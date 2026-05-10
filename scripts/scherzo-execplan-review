@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""Local helpers for reviewing Scherzo ExecPlan PR artifacts.
+
+The initial command is intentionally read-only: given a PR number for the
+current GitHub repository, find the changed ExecPlan file under docs/plans/,
+download the PR-head version into tmp/, render Markdown plans to the standard
+ExecPlan HTML shell when needed, and open the preview in a browser.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import re
+import shutil
+import subprocess
+import sys
+import urllib.parse
+import webbrowser
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+PLAN_RE = re.compile(r"^docs/plans/[^/]+\.(?:html|md)$", re.IGNORECASE)
+DEFAULT_OUTPUT_DIR = Path("tmp") / "scherzo-execplan-review"
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-execplan-review: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def run(args: list[str], *, check: bool = True) -> str:
+    proc = subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if check and proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        stdout = proc.stdout.strip()
+        details = stderr or stdout or f"exit code {proc.returncode}"
+        fail(f"command failed: {' '.join(args)}\n{details}")
+    return proc.stdout
+
+
+def run_gh(args: list[str]) -> str:
+    if shutil.which("gh") is None:
+        fail("required command not found: gh")
+    return run(["gh", *args])
+
+
+def gh_json(endpoint: str) -> Any:
+    output = run_gh(["api", endpoint])
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as exc:
+        fail(f"gh api returned malformed JSON for {endpoint}: {exc}")
+
+
+def infer_current_repo() -> str:
+    output = run_gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
+    repo = output.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        fail(f"could not infer GitHub owner/repo from current directory: {repo!r}")
+    return repo
+
+
+def validate_repo(repo: str) -> str:
+    repo = repo.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        fail(f"invalid GitHub owner/repo: {repo!r}")
+    return repo
+
+
+def parse_pr_number(value: str) -> int:
+    try:
+        number = int(value, 10)
+    except ValueError:
+        fail(f"invalid PR number: {value!r}")
+    if number <= 0:
+        fail(f"invalid PR number: {value!r}")
+    return number
+
+
+def paginated_pr_files(repo: str, pr_number: int) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        endpoint = f"repos/{repo}/pulls/{pr_number}/files?per_page=100&page={page}"
+        page_items = gh_json(endpoint)
+        if not isinstance(page_items, list):
+            fail(f"unexpected GitHub response for PR files: {type(page_items).__name__}")
+        files.extend(item for item in page_items if isinstance(item, dict))
+        if len(page_items) < 100:
+            return files
+        page += 1
+
+
+def find_plan_file(files: list[dict[str, Any]]) -> str:
+    candidates: list[str] = []
+    removed_candidates: list[str] = []
+    for item in files:
+        path = str(item.get("filename") or "")
+        if not PLAN_RE.fullmatch(path):
+            continue
+        if item.get("status") == "removed":
+            removed_candidates.append(path)
+        else:
+            candidates.append(path)
+
+    unique_candidates = sorted(set(candidates))
+    if len(unique_candidates) == 1:
+        return unique_candidates[0]
+
+    if not unique_candidates:
+        details = ""
+        if removed_candidates:
+            details = "; removed plan files are not previewable: " + ", ".join(
+                sorted(set(removed_candidates))
+            )
+        fail(f"expected exactly one changed docs/plans/*.html or *.md plan file, found 0{details}")
+
+    fail(
+        "expected exactly one changed docs/plans/*.html or *.md plan file, found "
+        f"{len(unique_candidates)}: " + ", ".join(unique_candidates)
+    )
+
+
+def pr_metadata(repo: str, pr_number: int) -> dict[str, Any]:
+    data = gh_json(f"repos/{repo}/pulls/{pr_number}")
+    if not isinstance(data, dict):
+        fail("unexpected GitHub response for PR metadata")
+    return data
+
+
+def head_repo_and_sha(pr: dict[str, Any]) -> tuple[str, str]:
+    head = pr.get("head")
+    if not isinstance(head, dict):
+        fail("PR metadata did not include head information")
+    sha = str(head.get("sha") or "").strip()
+    repo = head.get("repo")
+    if not isinstance(repo, dict):
+        fail("PR head repository is unavailable; the source branch may have been deleted")
+    full_name = str(repo.get("full_name") or "").strip()
+    if not sha:
+        fail("PR metadata did not include a head SHA")
+    return validate_repo(full_name), sha
+
+
+def repo_file_bytes(repo: str, ref: str, path: str) -> bytes:
+    encoded_path = urllib.parse.quote(path, safe="/")
+    encoded_ref = urllib.parse.quote(ref, safe="")
+    data = gh_json(f"repos/{repo}/contents/{encoded_path}?ref={encoded_ref}")
+    if isinstance(data, list):
+        fail(f"expected a file but GitHub returned a directory: {path}")
+    if not isinstance(data, dict):
+        fail(f"unexpected GitHub response while downloading {path}")
+    encoding = data.get("encoding")
+    content = data.get("content")
+    if encoding != "base64" or not isinstance(content, str):
+        fail(f"GitHub contents response for {path} did not include base64 file content")
+    try:
+        return base64.b64decode(content)
+    except Exception as exc:  # pragma: no cover - defensive CLI boundary
+        fail(f"could not decode {path}: {exc}")
+
+
+def safe_local_path(root: Path, repo_path: str) -> Path:
+    parts = PurePosixPath(repo_path).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        fail(f"unsafe repository path from GitHub: {repo_path!r}")
+    return root.joinpath(*parts)
+
+
+def render_markdown(source_path: Path, preview_path: Path, display_path: str) -> None:
+    renderer = Path(__file__).resolve().with_name("scherzo-execplan-html")
+    if not renderer.exists():
+        fail(f"missing ExecPlan HTML renderer: {renderer}")
+
+    proc = subprocess.run(
+        [sys.executable, str(renderer), "render", str(source_path), str(preview_path), display_path],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        fail(f"failed to render Markdown plan {source_path}:\n{details}")
+    if proc.stderr:
+        print(proc.stderr, file=sys.stderr, end="")
+
+
+def browser_open(url: str) -> bool:
+    try:
+        return bool(webbrowser.open(url, new=2))
+    except webbrowser.Error:
+        return False
+
+
+def normalize_args(argv: list[str]) -> list[str]:
+    if argv and argv[0] in {"open", "preview"}:
+        return argv[1:]
+    return argv
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="scherzo-execplan-review",
+        usage="%(prog)s [open|preview] PR_NUMBER [--repo OWNER/REPO] [--output-dir DIR] [--no-open]",
+        description=(
+            "Download the single docs/plans ExecPlan changed by a GitHub PR "
+            "for this repository and open a local browser preview."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  scripts/scherzo-execplan-review 123\n"
+            "  scripts/scherzo-execplan-review open 123 --no-open\n"
+            "  scripts/scherzo-execplan-review 123 --repo bromanko/scherzo"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("pr_number", help="GitHub pull request number")
+    parser.add_argument(
+        "--repo",
+        help="GitHub owner/repo. Defaults to the repository for the current directory.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help=f"directory for local preview files (default: {DEFAULT_OUTPUT_DIR})",
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="download/render the preview but do not launch a browser",
+    )
+    return parser.parse_args(normalize_args(argv))
+
+
+def preview_pr(args: argparse.Namespace) -> int:
+    pr_number = parse_pr_number(args.pr_number)
+    repo = validate_repo(args.repo) if args.repo else infer_current_repo()
+
+    pr = pr_metadata(repo, pr_number)
+    head_repo, head_sha = head_repo_and_sha(pr)
+    plan_path = find_plan_file(paginated_pr_files(repo, pr_number))
+
+    session_root = Path(args.output_dir) / repo.replace("/", "__") / f"pr-{pr_number}"
+    source_path = safe_local_path(session_root, plan_path)
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(repo_file_bytes(head_repo, head_sha, plan_path))
+
+    if plan_path.lower().endswith(".md"):
+        preview_path = source_path.with_suffix(".html")
+        render_markdown(source_path, preview_path, plan_path)
+        preview_kind = "rendered-markdown"
+    else:
+        preview_path = source_path
+        preview_kind = "html"
+
+    preview_url = preview_path.resolve().as_uri()
+    opened = False
+    if not args.no_open:
+        print(
+            "scherzo-execplan-review: warning: opening HTML content from a PR locally; "
+            "only preview PRs you trust.",
+            file=sys.stderr,
+        )
+        opened = browser_open(preview_url)
+        if not opened:
+            print(
+                "scherzo-execplan-review: warning: could not launch a browser; "
+                "open PLAN_PREVIEW_URL manually.",
+                file=sys.stderr,
+            )
+
+    print(f"PR_NUMBER={pr_number}")
+    print(f"PR_URL={pr.get('html_url') or ''}")
+    print(f"REPO={repo}")
+    print(f"PLAN_PR_PATH={plan_path}")
+    print(f"PLAN_HEAD_REPO={head_repo}")
+    print(f"PLAN_HEAD_SHA={head_sha}")
+    print(f"PLAN_SOURCE_PATH={source_path.resolve()}")
+    print(f"PLAN_PREVIEW_KIND={preview_kind}")
+    print(f"PLAN_PREVIEW_PATH={preview_path.resolve()}")
+    print(f"PLAN_PREVIEW_URL={preview_url}")
+    print(f"PLAN_REMOTE_MUTATIONS=none")
+    print(f"OPENED={'true' if opened else 'false'}")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    return preview_pr(parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

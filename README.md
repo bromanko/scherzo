@@ -19,6 +19,10 @@ Expect rough edges:
 
 Agents making architecture or workflow changes should start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the current module map, invariants, change checklists, and validation guidance.
 
+## License
+
+Scherzo is licensed under Apache-2.0. See [`LICENSE`](LICENSE) for the full license text.
+
 ## Getting started
 
 The quickest orientation path is:
