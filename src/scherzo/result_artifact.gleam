@@ -4,16 +4,37 @@ import gleam/string
 import scherzo/log
 import scherzo/pi/protocol
 
+/// Captured assistant result text.
+///
+/// `final_response` is the display-safe response used by handoff and step
+/// summaries. `structured_response` is redacted but not display-truncated so
+/// workflow structured-output validation can run before presentation caps.
 pub type ResultArtifact {
   ResultArtifact(
     final_response: Option(String),
     truncated: Bool,
     source: String,
+    structured_response: Option(String),
+    structured_response_truncated: Bool,
   )
 }
 
 pub fn empty() -> ResultArtifact {
-  ResultArtifact(final_response: None, truncated: False, source: "none")
+  from_final_response(None, False, "none")
+}
+
+pub fn from_final_response(
+  final_response: Option(String),
+  truncated: Bool,
+  source: String,
+) -> ResultArtifact {
+  ResultArtifact(
+    final_response: final_response,
+    truncated: truncated,
+    source: source,
+    structured_response: final_response,
+    structured_response_truncated: truncated,
+  )
 }
 
 pub fn from_records(
@@ -33,8 +54,38 @@ pub fn append(
   next: ResultArtifact,
   max_chars: Int,
 ) -> ResultArtifact {
+  let #(final_response, truncated, source) =
+    append_display(existing, next, max_chars)
+  let #(structured_response, structured_response_truncated) =
+    append_structured(existing, next)
+  ResultArtifact(
+    final_response: final_response,
+    truncated: truncated,
+    source: source,
+    structured_response: structured_response,
+    structured_response_truncated: structured_response_truncated,
+  )
+}
+
+pub fn structured_final_response(artifact: ResultArtifact) -> Option(String) {
+  case artifact.structured_response {
+    Some(response) -> Some(response)
+    None -> artifact.final_response
+  }
+}
+
+pub fn structured_final_response_truncated(artifact: ResultArtifact) -> Bool {
+  artifact.structured_response_truncated
+  || { artifact.structured_response == None && artifact.truncated }
+}
+
+fn append_display(
+  existing: ResultArtifact,
+  next: ResultArtifact,
+  max_chars: Int,
+) -> #(Option(String), Bool, String) {
   case existing.final_response, next.final_response {
-    None, None -> empty()
+    None, None -> #(None, False, "none")
     Some(text), None ->
       cap_existing(text, existing.truncated, existing.source, max_chars)
     None, Some(text) ->
@@ -42,12 +93,31 @@ pub fn append(
     Some(left), Some(right) -> {
       let combined = left <> "\n\n" <> right
       let newly_truncated = string.length(combined) > max_chars
-      ResultArtifact(
-        final_response: Some(log.truncate(combined, max_chars)),
-        truncated: existing.truncated || next.truncated || newly_truncated,
-        source: "combined_turns",
+      #(
+        Some(log.truncate(combined, max_chars)),
+        existing.truncated || next.truncated || newly_truncated,
+        "combined_turns",
       )
     }
+  }
+}
+
+fn append_structured(
+  existing: ResultArtifact,
+  next: ResultArtifact,
+) -> #(Option(String), Bool) {
+  let existing_response = structured_final_response(existing)
+  let next_response = structured_final_response(next)
+  let existing_truncated = structured_final_response_truncated(existing)
+  let next_truncated = structured_final_response_truncated(next)
+  case existing_response, next_response {
+    None, None -> #(None, existing_truncated || next_truncated)
+    Some(text), None -> #(Some(text), existing_truncated)
+    None, Some(text) -> #(Some(text), next_truncated)
+    Some(left), Some(right) -> #(
+      Some(left <> "\n\n" <> right),
+      existing_truncated || next_truncated,
+    )
   }
 }
 
@@ -62,6 +132,8 @@ fn build_result(
     final_response: Some(log.truncate(redacted, max_chars)),
     truncated: string.length(redacted) > max_chars,
     source: source,
+    structured_response: Some(redacted),
+    structured_response_truncated: False,
   )
 }
 
@@ -70,12 +142,12 @@ fn cap_existing(
   already_truncated: Bool,
   source: String,
   max_chars: Int,
-) -> ResultArtifact {
+) -> #(Option(String), Bool, String) {
   let newly_truncated = string.length(text) > max_chars
-  ResultArtifact(
-    final_response: Some(log.truncate(text, max_chars)),
-    truncated: already_truncated || newly_truncated,
-    source: source,
+  #(
+    Some(log.truncate(text, max_chars)),
+    already_truncated || newly_truncated,
+    source,
   )
 }
 

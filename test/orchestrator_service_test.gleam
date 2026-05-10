@@ -199,10 +199,10 @@ fn workflow_deps() -> workflow_run.Dependencies {
         workspace_path: context.workspace_path,
         tokens: session_tokens.zero_token_totals(),
         turns: 1,
-        result: result_artifact.ResultArtifact(
-          final_response: Some(prompt_text(prompt_mode)),
-          truncated: False,
-          source: "test",
+        result: result_artifact.from_final_response(
+          Some(prompt_text(prompt_mode)),
+          False,
+          "test",
         ),
       ))
     },

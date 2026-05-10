@@ -355,11 +355,7 @@ fn success(
     workspace_path: workspace_path,
     tokens: session_tokens.zero_token_totals(),
     turns: 1,
-    result: result_artifact.ResultArtifact(
-      final_response: None,
-      truncated: False,
-      source: "none",
-    ),
+    result: result_artifact.from_final_response(None, False, "none"),
   )
 }
 
@@ -569,11 +565,7 @@ fn fake_workflow_run_dependencies(
         workspace_path: context.workspace_path,
         tokens: session_tokens.zero_token_totals(),
         turns: 1,
-        result: result_artifact.ResultArtifact(
-          final_response: Some(prompt),
-          truncated: False,
-          source: "test",
-        ),
+        result: result_artifact.from_final_response(Some(prompt), False, "test"),
       ))
     },
     checkpoint: workflow_checkpoint.noop_writer(),
@@ -770,10 +762,10 @@ fn command_ready_workflow_run_dependencies(
             workspace_path: context.workspace_path,
             tokens: session_tokens.zero_token_totals(),
             turns: 1,
-            result: result_artifact.ResultArtifact(
-              final_response: Some(prompt <> ":" <> message),
-              truncated: False,
-              source: "test",
+            result: result_artifact.from_final_response(
+              Some(prompt <> ":" <> message),
+              False,
+              "test",
             ),
           ))
         }

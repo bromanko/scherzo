@@ -25,11 +25,7 @@ fn agent_success(text: String) -> agent_types.WorkerSuccess {
     workspace_path: "workspace",
     tokens: session_tokens.zero_token_totals(),
     turns: 1,
-    result: result_artifact.ResultArtifact(
-      final_response: Some(text),
-      truncated: False,
-      source: "test",
-    ),
+    result: result_artifact.from_final_response(Some(text), False, "test"),
   )
 }
 
@@ -67,11 +63,7 @@ pub fn agent_success_without_final_response_stays_successful_test() {
       workspace_path: "workspace",
       tokens: session_tokens.zero_token_totals(),
       turns: 1,
-      result: result_artifact.ResultArtifact(
-        final_response: None,
-        truncated: False,
-        source: "none",
-      ),
+      result: result_artifact.from_final_response(None, False, "none"),
     )
   let artifact =
     step_artifact.from_agent_success("research", success, [], limits())

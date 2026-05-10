@@ -1,9 +1,11 @@
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/pi_rpc
 import scherzo/agent/types as agent_types
 import scherzo/config
 import scherzo/config/types as config_types
@@ -166,17 +168,23 @@ fn success_agent_with_response(
   final_response: Option(String),
   truncated: Bool,
 ) -> agent_types.WorkerSuccess {
+  success_agent_with_result(result_artifact.from_final_response(
+    final_response,
+    truncated,
+    "test",
+  ))
+}
+
+fn success_agent_with_result(
+  result: result_artifact.ResultArtifact,
+) -> agent_types.WorkerSuccess {
   agent_types.WorkerSuccess(
     final_issue: Some(issue()),
     final_classification: agent_types.FinalTerminal,
     workspace_path: "workspace",
     tokens: session_tokens.zero_token_totals(),
     turns: 1,
-    result: result_artifact.ResultArtifact(
-      final_response: final_response,
-      truncated: truncated,
-      source: "test",
-    ),
+    result: result,
   )
 }
 
@@ -292,6 +300,18 @@ fn deps_with_structured_agent_response(
   truncated: Bool,
   checkpoint: workflow_checkpoint.Writer,
 ) -> workflow_run.Dependencies {
+  deps_with_structured_agent_result(
+    subject,
+    result_artifact.from_final_response(final_response, truncated, "test"),
+    checkpoint,
+  )
+}
+
+fn deps_with_structured_agent_result(
+  subject: process.Subject(String),
+  result: result_artifact.ResultArtifact,
+  checkpoint: workflow_checkpoint.Writer,
+) -> workflow_run.Dependencies {
   let base = deps(subject, None)
   workflow_run.Dependencies(
     ..base,
@@ -310,7 +330,7 @@ fn deps_with_structured_agent_response(
         subject,
         "agent:" <> context.step_id <> ":" <> prompt_text(prompt_mode),
       )
-      Ok(success_agent_with_response(final_response, truncated))
+      Ok(success_agent_with_result(result))
     },
     checkpoint: checkpoint,
   )
@@ -396,6 +416,45 @@ fn structured_output_downstream_dag() -> workflow_dag.WorkflowDag {
       "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n  - id: followup\n    kind: agent\n    depends_on: [review_json]\n    prompt: use {{ steps.review_json.structured_output.ref }} {{ steps.review_json.structured_output.path }}\n    workspace: main\n",
     )
   dag
+}
+
+fn final_message_record(content: String) -> pi_rpc.RpcRecord {
+  let line =
+    json.object([
+      #("type", json.string("agent_end")),
+      #(
+        "messages",
+        json.array(
+          [
+            json.object([
+              #("role", json.string("assistant")),
+              #("content", json.string(content)),
+            ]),
+          ],
+          of: fn(value) { value },
+        ),
+      ),
+    ])
+    |> json.to_string
+  let assert Ok(record) = pi_rpc.decode_record(line)
+  record
+}
+
+fn over_display_limit_result(
+  response: String,
+) -> result_artifact.ResultArtifact {
+  let result =
+    result_artifact.from_records([final_message_record(response)], [], 40)
+  let assert result_artifact.ResultArtifact(
+    final_response: Some(display_response),
+    truncated: True,
+    source: "completed_assistant_messages",
+    structured_response: Some(structured_response),
+    structured_response_truncated: False,
+  ) = result
+  assert display_response == string.slice(response, 0, 40) <> "..."
+  assert structured_response == response
+  result
 }
 
 fn command_dag_with_profile(profile: String) -> workflow_dag.WorkflowDag {
@@ -645,6 +704,76 @@ pub fn structured_output_validation_retry_recovers_and_records_diagnostics_test(
   assert initial.failure_code == Some("structured_output_invalid_json")
   assert retried.status == "valid"
   let assert Ok(_) = simplifile.read(metadata.path)
+}
+
+pub fn over_display_limit_valid_json_still_retains_structured_artifact_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/structured-over-limit"
+  reset_dir(root)
+  let large_summary = string.repeat("x", times: 180)
+  let response = "{\"summary\":\"" <> large_summary <> "\",\"findings\":[]}"
+  let result = over_display_limit_result(response)
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      structured_output_dag(True),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_result(
+        subject,
+        result,
+        workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+      ),
+    )
+
+  let assert Ok(step_artifact.StepArtifact(
+    status: step_artifact.StepSucceeded,
+    final_response_truncated: True,
+    structured_output: Some(step_artifact.StructuredOutputValid(metadata)),
+    ..,
+  )) = dict.get(success.artifacts, "review_json")
+  let assert Ok(contents) = simplifile.read(metadata.path)
+  assert string.contains(contents, large_summary)
+}
+
+pub fn over_display_limit_malformed_json_reports_invalid_not_truncated_test() {
+  let subject = process.new_subject()
+  let response = "{\"summary\":\"" <> string.repeat("x", times: 180)
+  let result = over_display_limit_result(response)
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      structured_output_dag(True),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_result(
+        subject,
+        result,
+        workflow_checkpoint.noop_writer(),
+      ),
+    )
+
+  assert failure.failed_step_id == Some("review_json")
+  assert string.contains(failure.reason, "structured_output_invalid_json")
+  let assert Ok(step_artifact.StepArtifact(
+    status: step_artifact.StepFailed,
+    final_response_truncated: True,
+    failure_code: Some("structured_output_invalid_json"),
+    structured_output: Some(step_artifact.StructuredOutputError(
+      _,
+      _,
+      message,
+      _,
+    )),
+    ..,
+  )) = dict.get(failure.artifacts, "review_json")
+  assert string.contains(message, "required a JSON-only final response")
 }
 
 pub fn invalid_json_structured_output_fails_agent_step_clearly_test() {

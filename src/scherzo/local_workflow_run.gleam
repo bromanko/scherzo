@@ -365,19 +365,21 @@ fn native_fixture_agent_step(
         tokens: session_tokens.zero_token_totals(),
         final_issue: Some(issue),
       ))
-    False ->
+    False -> {
+      let final_response = fixture_final_response(scenario_id, context)
       Ok(agent_types.WorkerSuccess(
         final_issue: Some(issue),
         final_classification: agent_types.FinalTerminal,
         workspace_path: context.workspace_path,
         tokens: session_tokens.zero_token_totals(),
         turns: 1,
-        result: result_artifact.ResultArtifact(
-          final_response: Some(fixture_final_response(scenario_id, context)),
-          truncated: False,
-          source: "native_review_fixture_agent",
+        result: result_artifact.from_final_response(
+          Some(final_response),
+          False,
+          "native_review_fixture_agent",
         ),
       ))
+    }
   }
 }
 

@@ -141,11 +141,7 @@ fn success(
       total: 3,
     ),
     turns: 1,
-    result: result_artifact.ResultArtifact(
-      final_response: None,
-      truncated: False,
-      source: "none",
-    ),
+    result: result_artifact.from_final_response(None, False, "none"),
   )
 }
 
