@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config/types as config_types
+import scherzo/path
 import scherzo/runtime_bundle
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
@@ -131,6 +132,44 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   let assert workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), None) =
     step.kind
   assert prompt == "Implement {{ issue.identifier }}"
+}
+
+pub fn runtime_bundle_records_config_workflow_and_prompt_dependencies_test() {
+  let dir = "test/tmp/runtime-bundle-dependencies"
+  let config_path = dir <> "/scherzo.yaml"
+  let workflow_path = dir <> "/workflows/implementation.yaml"
+  let prompt_path = dir <> "/workflows/prompts/implement.md"
+  let prompt_text = "Implement dependency manifest"
+  reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts")
+  let assert Ok(Nil) = simplifile.write(prompt_path, prompt_text)
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_path,
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      config_path,
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+
+  let assert Ok(bundle) = runtime_bundle.load_with_env(Some(config_path), env)
+  let assert Ok(resolved_workflow_path) = path.absolute(workflow_path)
+  let assert Ok(resolved_prompt_path) = path.absolute(prompt_path)
+  let dependency_paths =
+    bundle.dependencies
+    |> list.map(fn(dependency) { dependency.path })
+  let assert Ok(prompt_dependency) =
+    list.find(bundle.dependencies, fn(dependency) {
+      dependency.path == resolved_prompt_path
+    })
+
+  assert list.contains(dependency_paths, config_path)
+  assert list.contains(dependency_paths, resolved_workflow_path)
+  assert list.contains(dependency_paths, resolved_prompt_path)
+  assert prompt_dependency.contents == prompt_text
 }
 
 pub fn loads_workflows_with_workspace_profiles_test() {
