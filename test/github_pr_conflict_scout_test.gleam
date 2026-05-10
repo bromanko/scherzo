@@ -154,8 +154,8 @@ fn generated_description(detection: String) -> String {
   <> "\n"
   <> "GitHub PR: https://github.com/bromanko/scherzo/pull/123\n"
   <> "Repository: bromanko/scherzo\n"
-  <> "Base branch: main\n"
-  <> "Head branch: feature/conflicted-change\n"
+  <> "PR base ref: main\n"
+  <> "PR head ref: feature/conflicted-change\n"
   <> "Base SHA: base-sha\n"
   <> "Head SHA: head-sha\n"
   <> "Detection: "
@@ -220,6 +220,11 @@ pub fn scout_conflicted_same_repo_pr_creates_resolver_issue_test() {
     artifact.stdout,
     "github-pr-conflict:bromanko/scherzo#123",
   )
+  assert string.contains(
+    artifact.stdout,
+    "PR head ref: feature/conflicted-change",
+  )
+  assert !string.contains(artifact.stdout, "Head branch:")
   assert string.contains(artifact.stdout, "workflow-label-id")
   assert !string.contains(artifact.stdout, "support-label-id")
   assert artifact.stderr == ""
