@@ -2353,8 +2353,8 @@ fn agent_success_with_structured_output(
   case
     structured_output.validate_final_response(
       spec,
-      success.result.final_response,
-      base.final_response_truncated,
+      success.result.structured_response,
+      success.result.structured_response_truncated,
       secrets,
     )
   {

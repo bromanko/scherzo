@@ -21,13 +21,13 @@ pub type StructuredOutputError {
 pub fn validate_final_response(
   spec: workflow_dag.StructuredOutputSpec,
   final_response: Option(String),
-  truncated: Bool,
+  capture_truncated: Bool,
   secrets: List(String),
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
-  case truncated {
+  case capture_truncated {
     True ->
       Error(StructuredOutputTruncated(
-        "returned a truncated final response; cannot validate structured JSON",
+        "structured output capture was truncated before validation; cannot validate structured JSON",
       ))
     False -> validate_nontruncated_response(spec, final_response, secrets)
   }

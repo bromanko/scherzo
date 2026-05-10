@@ -84,10 +84,10 @@ fn success() -> agent_types.WorkerSuccess {
       total: 3,
     ),
     turns: 1,
-    result: result_artifact.ResultArtifact(
-      final_response: Some("Implemented secret-key"),
-      truncated: False,
-      source: "agent_end_messages",
+    result: result_artifact.from_final_response(
+      Some("Implemented secret-key"),
+      False,
+      "agent_end_messages",
     ),
   )
 }
