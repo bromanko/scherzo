@@ -1385,6 +1385,44 @@ pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
   assert invalid_publish.status == step_artifact.StepFailed
 }
 
+pub fn legacy_pr_smoke_lists_curated_prs_with_rationale_test() {
+  let artifact =
+    run_command("scripts/scherzo-review legacy-pr-smoke --list-curated")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "LEGACY_PR_SMOKE_CURATED_SET=")
+  assert string.contains(artifact.stdout, "\"pr\": 116")
+  assert string.contains(artifact.stdout, "small_clean")
+  assert string.contains(
+    artifact.stdout,
+    "workflow_control_plane_orchestration",
+  )
+  assert string.contains(artifact.stdout, "test_heavy_artifact_schema")
+  assert string.contains(
+    artifact.stdout,
+    "security_performance_correctness_sensitive",
+  )
+  assert string.contains(artifact.stdout, "rationale")
+}
+
+pub fn legacy_pr_smoke_rejects_scenario_environment_test() {
+  let dir = "test/tmp/legacy-pr-smoke-rejects-env"
+  reset_dir(dir)
+  let artifact =
+    run_command(
+      "SCHERZO_NATIVE_REVIEW_SCENARIO=fixture scripts/scherzo-review legacy-pr-smoke --pr 116 --output-dir "
+      <> dir,
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(
+    artifact.stderr,
+    "legacy-pr-smoke refuses fixture/scenario/heuristic override environment variables",
+  )
+  assert string.contains(artifact.stderr, "SCHERZO_NATIVE_REVIEW_SCENARIO")
+}
+
 pub fn native_preflight_requires_runner_provenance_test() {
   let dir = "test/tmp/native-preflight-provenance"
   reset_dir(dir)
