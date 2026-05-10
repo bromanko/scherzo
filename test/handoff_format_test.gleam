@@ -26,6 +26,14 @@ fn issue() -> tracker_issue.Issue {
   )
 }
 
+fn result(
+  final_response: Option(String),
+  truncated: Bool,
+  source: String,
+) -> result_artifact.ResultArtifact {
+  result_artifact.from_final_response(final_response, truncated, source)
+}
+
 fn success(
   result: result_artifact.ResultArtifact,
 ) -> agent_types.WorkerSuccess {
@@ -69,11 +77,7 @@ pub fn success_comment_includes_result_and_token_table_test() {
   let body =
     handoff_format.success_comment(
       issue(),
-      success(result_artifact.ResultArtifact(
-        final_response: Some("Implemented the fix."),
-        truncated: False,
-        source: "agent_end_messages",
-      )),
+      success(result(Some("Implemented the fix."), False, "agent_end_messages")),
       "run-1",
       options(True, None),
       [],
@@ -96,11 +100,7 @@ pub fn success_comment_omits_inline_result_and_artifacts_when_disabled_test() {
   let body =
     handoff_format.success_comment(
       issue(),
-      success(result_artifact.ResultArtifact(
-        final_response: Some("Implemented the fix."),
-        truncated: False,
-        source: "agent_end_messages",
-      )),
+      success(result(Some("Implemented the fix."), False, "agent_end_messages")),
       "run-1",
       options(False, None),
       [],
@@ -116,11 +116,7 @@ pub fn success_comment_reports_missing_and_truncated_result_text_test() {
   let missing =
     handoff_format.success_comment(
       issue(),
-      success(result_artifact.ResultArtifact(
-        final_response: None,
-        truncated: False,
-        source: "none",
-      )),
+      success(result(None, False, "none")),
       "run-1",
       options(True, None),
       [],
@@ -130,11 +126,7 @@ pub fn success_comment_reports_missing_and_truncated_result_text_test() {
   let truncated =
     handoff_format.success_comment(
       issue(),
-      success(result_artifact.ResultArtifact(
-        final_response: Some("partial"),
-        truncated: True,
-        source: "message_update_delta",
-      )),
+      success(result(Some("partial"), True, "message_update_delta")),
       "run-1",
       options(True, None),
       [],
@@ -147,11 +139,7 @@ pub fn success_comment_redacts_tracker_secret_test() {
   let body =
     handoff_format.success_comment(
       issue(),
-      success(result_artifact.ResultArtifact(
-        final_response: Some("answer secret-key"),
-        truncated: False,
-        source: "agent_end_messages",
-      )),
+      success(result(Some("answer secret-key"), False, "agent_end_messages")),
       "run-1",
       options(True, None),
       ["secret-key"],
@@ -173,11 +161,7 @@ pub fn success_comment_with_attachment_intent_is_truthful_test() {
   let without_inline =
     handoff_format.success_comment(
       issue(),
-      success(result_artifact.ResultArtifact(
-        final_response: Some("Implemented the fix."),
-        truncated: False,
-        source: "agent_end_messages",
-      )),
+      success(result(Some("Implemented the fix."), False, "agent_end_messages")),
       "run-attach",
       options(False, Some(filename)),
       [],
@@ -193,11 +177,7 @@ pub fn success_comment_with_attachment_intent_is_truthful_test() {
   let with_inline =
     handoff_format.success_comment(
       issue(),
-      success(result_artifact.ResultArtifact(
-        final_response: Some("Implemented the fix."),
-        truncated: False,
-        source: "agent_end_messages",
-      )),
+      success(result(Some("Implemented the fix."), False, "agent_end_messages")),
       "run-attach",
       options(True, Some(filename)),
       [],
@@ -210,11 +190,7 @@ pub fn success_result_attachment_markdown_includes_result_metadata_and_redaction
   let assert Some(markdown) =
     handoff_format.success_result_attachment_markdown(
       issue(),
-      success(result_artifact.ResultArtifact(
-        final_response: Some("answer secret-key"),
-        truncated: True,
-        source: "agent_end_messages",
-      )),
+      success(result(Some("answer secret-key"), True, "agent_end_messages")),
       "run-attachment",
       ["secret-key"],
     )
@@ -233,11 +209,7 @@ pub fn success_result_attachment_markdown_includes_result_metadata_and_redaction
 pub fn success_result_attachment_markdown_returns_none_without_result_test() {
   assert handoff_format.success_result_attachment_markdown(
       issue(),
-      success(result_artifact.ResultArtifact(
-        final_response: None,
-        truncated: False,
-        source: "none",
-      )),
+      success(result(None, False, "none")),
       "run-attachment",
       [],
     )

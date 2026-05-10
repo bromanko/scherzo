@@ -871,23 +871,11 @@ pub fn workflow_result_artifact(
   let truncated =
     string.length(text) > limits.workflow_summary_max_chars
     || any_truncated(dict.values(artifacts))
-  case text == "" {
-    True ->
-      result_artifact.ResultArtifact(
-        final_response: None,
-        truncated: truncated,
-        source: "workflow_dag",
-      )
-    False ->
-      result_artifact.ResultArtifact(
-        final_response: Some(log.truncate(
-          text,
-          limits.workflow_summary_max_chars,
-        )),
-        truncated: truncated,
-        source: "workflow_dag",
-      )
+  let final_response = case text == "" {
+    True -> None
+    False -> Some(log.truncate(text, limits.workflow_summary_max_chars))
   }
+  result_artifact.from_final_response(final_response, truncated, "workflow_dag")
 }
 
 fn artifact_locals(

@@ -39,7 +39,7 @@ let
     # recursive hash.
     outputHashAlgo = "sha256";
     outputHashMode = "recursive";
-    outputHash = "sha256-bSNCw1RRmAXroZY29w/W3a2h+nzgkkbfwvz/HlJTClg=";
+    outputHash = "sha256-SZDaGZXvW5n1Er8sSaflVCmNt6B0j58GWj3soXvWOAs=";
 
     dontConfigure = true;
 
