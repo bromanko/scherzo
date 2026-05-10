@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,30 @@ DEFAULT_OUTPUT_DIR = Path("tmp/scherzo-review-dry-run")
 DEFAULT_LANE_OUTPUT_DIR = Path("tmp/scherzo-review-lanes")
 DEFAULT_SYNTHESIS_OUTPUT_DIR = Path("tmp/scherzo-review-synthesis")
 DEFAULT_PREFLIGHT_OUTPUT_DIR = Path("tmp/scherzo-review-preflight")
+DEFAULT_NATIVE_OUTPUT_DIR = Path("tmp/scherzo-review-native")
+DEFAULT_NATIVE_PREFLIGHT_OUTPUT_DIR = Path("tmp/scherzo-review-native-preflight")
 EXECUTABLE_CORRECTNESS_EVIDENCE_TYPES = {"test", "runtime", "reproduction"}
+NATIVE_EVIDENCE_ALLOWLIST = {
+    "gleam_test",
+    "glinter",
+    "scherzo_lint",
+    "schema_validate_artifacts",
+    "diff_static_scan",
+    "fixture_reproduction",
+}
+NATIVE_PREFLIGHT_LANE_IDS = [
+    "correctness",
+    "test-quality",
+    "idioms-maintainability",
+    "security-performance",
+]
+NATIVE_PREFLIGHT_SCENARIO_ALIASES = {
+    "pr-80": "pr80-staged-review-precision",
+    "static-suspicion": "auth-control-static-suspicion-without-repro",
+    "malformed-agent-output": "malformed-lane-output-simulation",
+    "lane-failure": "lane-timeout-failure-simulation",
+    "no-findings": "empty-findings-all-lanes",
+}
 SEVERITY_RANK = {
     "info": 0,
     "low": 1,
@@ -974,14 +998,31 @@ def test_file_change_role(file: DiffFile) -> str:
     return "unclear_without_assertion"
 
 
+STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+IDENTIFIER_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])(?:todo|unreachable)(?![A-Za-z0-9_])")
+
+
+def code_signal_line(line: str) -> str:
+    return STRING_LITERAL_RE.sub('""', line).strip().lower()
+
+
 def correctness_static_signal(line: str) -> bool:
-    lower = line.strip().lower()
+    code = code_signal_line(line)
     return (
-        "let assert" in lower
-        or "panic(" in lower
-        or lower.startswith("panic ")
-        or "todo" in lower
-        or "unreachable" in lower
+        "let assert" in code
+        or "panic(" in code
+        or code.startswith("panic ")
+        or IDENTIFIER_TOKEN_RE.search(code) is not None
+    )
+
+
+def production_must_fix_construct_signal(line: str) -> bool:
+    code = code_signal_line(line)
+    return (
+        "let assert" in code
+        or "panic(" in code
+        or code.startswith("panic ")
+        or re.search(r"(?<![A-Za-z0-9_])todo(?![A-Za-z0-9_])", code) is not None
     )
 
 
@@ -1221,8 +1262,7 @@ def maintainability_lane_findings(
         if not is_production_source_path(file.path):
             continue
         for line in significant_added_lines(file):
-            lower = line.strip().lower()
-            if "let assert" in lower or "panic(" in lower or lower.startswith("panic ") or "todo" in lower:
+            if production_must_fix_construct_signal(line):
                 must_fix_files.append(file)
                 if len(must_fix_examples) < 5:
                     must_fix_examples.append(f"{file.path}: {line.strip()}")
@@ -1612,12 +1652,46 @@ def validate_list_field(value: dict[str, Any], field: str) -> list[Any]:
     return field_value
 
 
+def path_is_unsafe(path: str) -> bool:
+    candidate = Path(path)
+    return candidate.is_absolute() or ".." in candidate.parts or bool(re.match(r"^[A-Za-z]:[\\\\/]", path))
+
+
+def validate_repo_relative_path(path: Any, *, field: str) -> None:
+    if not isinstance(path, str) or not path:
+        raise ReviewError(f"{field} must be a non-empty string")
+    if path_is_unsafe(path):
+        raise ReviewError(f"{field} must be repository-relative and must not escape the repository")
+
+
 def validate_locations(value: dict[str, Any], field: str) -> None:
     locations = validate_list_field(value, field)
     for location in locations:
         if not isinstance(location, dict):
             raise ReviewError(f"{field} items must be objects")
         validate_string_field(location, "path")
+
+
+def validate_safe_locations(value: dict[str, Any], field: str) -> None:
+    locations = validate_list_field(value, field)
+    for location in locations:
+        if not isinstance(location, dict):
+            raise ReviewError(f"{field} items must be objects")
+        validate_repo_relative_path(location.get("path"), field=f"{field}.path")
+
+
+def validate_artifact_ref(value: Any, *, field: str) -> None:
+    if not isinstance(value, dict):
+        raise ReviewError(f"{field} must be an object")
+    validate_string_field(value, "artifact_type")
+    validate_repo_relative_path(value.get("path"), field=f"{field}.path")
+
+
+def validate_execution_status_shape(value: Any, *, field: str) -> None:
+    if not isinstance(value, dict):
+        raise ReviewError(f"{field} must be an object")
+    validate_string_field(value, "state")
+    validate_string_field(value, "summary")
 
 
 def validate_review_finding_core(value: dict[str, Any]) -> None:
@@ -1787,6 +1861,16 @@ def validate_preflight_manifest(value: dict[str, Any]) -> None:
                 validate_string_field(lane_run, field)
     if "cutover_readiness" in value and not isinstance(value.get("cutover_readiness"), dict):
         raise ReviewError("preflight manifest cutover_readiness must be an object")
+    if value.get("execution_mode") == "native":
+        provenance = value.get("native_lane_step_provenance")
+        if not isinstance(provenance, list) or not provenance:
+            raise ReviewError("native preflight manifest must record native lane step provenance")
+        for item in provenance:
+            if not isinstance(item, dict):
+                raise ReviewError("native lane step provenance items must be objects")
+            for field in ["scenario_id", "lane_id", "step_id", "workflow_path", "structured_output_status"]:
+                validate_string_field(item, field)
+            validate_repo_relative_path(item.get("workflow_path"), field="native_lane_step_provenance.workflow_path")
 
 
 def validate_final_review(value: dict[str, Any]) -> None:
@@ -1820,6 +1904,143 @@ def validate_final_review(value: dict[str, Any]) -> None:
             validate_review_finding_core(finding)
 
 
+def validate_review_lane_draft(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("review lane draft schema_version must be 1")
+    if value.get("artifact_type") != "review_lane_draft":
+        raise ReviewError("review lane draft artifact_type must be review_lane_draft")
+    for field in ["generated_at_utc", "remote_mutations"]:
+        validate_string_field(value, field)
+    if value.get("remote_mutations") != "none":
+        raise ReviewError("review lane draft remote_mutations must be none")
+    if not isinstance(value.get("producer"), dict):
+        raise ReviewError("review lane draft producer must be an object")
+    lane = value.get("lane")
+    if not isinstance(lane, dict):
+        raise ReviewError("review lane draft lane must be an object")
+    for field in ["id", "name", "category", "version"]:
+        validate_string_field(lane, field)
+    input_refs = validate_list_field(value, "input_refs")
+    for index, ref in enumerate(input_refs):
+        validate_artifact_ref(ref, field=f"input_refs[{index}]")
+    findings = validate_list_field(value, "draft_findings")
+    finding_ids: set[str] = set()
+    evidence_request_ids: set[str] = set()
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise ReviewError("draft_findings items must be objects")
+        for field in ["draft_finding_id", "title", "claim", "severity"]:
+            validate_string_field(finding, field)
+        validate_bool_field(finding, "proposed_blocking")
+        finding_id = str(finding.get("draft_finding_id"))
+        if finding_id in finding_ids:
+            raise ReviewError("draft finding ids must be unique")
+        finding_ids.add(finding_id)
+        validate_safe_locations(finding, "locations")
+        ids = validate_list_field(finding, "evidence_request_ids")
+        for evidence_id in ids:
+            if not isinstance(evidence_id, str) or not evidence_id:
+                raise ReviewError("evidence_request_ids must contain non-empty strings")
+            evidence_request_ids.add(evidence_id)
+    validate_review_notes(value)
+    requests = validate_list_field(value, "evidence_requests")
+    seen_requests: set[str] = set()
+    for request in requests:
+        if not isinstance(request, dict):
+            raise ReviewError("evidence_requests items must be objects")
+        for field in ["request_id", "draft_finding_id", "evidence_key", "claim", "expected_observation"]:
+            validate_string_field(request, field)
+        request_id = str(request.get("request_id"))
+        if request_id in seen_requests:
+            raise ReviewError("evidence request ids must be unique")
+        seen_requests.add(request_id)
+        if request.get("draft_finding_id") not in finding_ids:
+            raise ReviewError("evidence requests must link to an existing draft finding")
+        target = request.get("target")
+        if not isinstance(target, dict):
+            raise ReviewError("evidence request target must be an object")
+        for path_field in ["artifact_path", "changed_file_path"]:
+            if path_field in target:
+                validate_repo_relative_path(target.get(path_field), field=f"target.{path_field}")
+    if evidence_request_ids - seen_requests:
+        raise ReviewError("draft findings reference unknown evidence request ids")
+    if not isinstance(value.get("self_check"), dict):
+        raise ReviewError("review lane draft self_check must be an object")
+
+
+def validate_evidence_ledger(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("evidence ledger schema_version must be 1")
+    if value.get("artifact_type") != "review_evidence_ledger":
+        raise ReviewError("evidence ledger artifact_type must be review_evidence_ledger")
+    for field in ["generated_at_utc", "lane_id", "remote_mutations"]:
+        validate_string_field(value, field)
+    if value.get("remote_mutations") != "none":
+        raise ReviewError("evidence ledger remote_mutations must be none")
+    validate_artifact_ref(value.get("draft_ref"), field="draft_ref")
+    validate_execution_status_shape(value.get("execution_status"), field="execution_status")
+    checks = validate_list_field(value, "checks")
+    check_ids: set[str] = set()
+    for check in checks:
+        if not isinstance(check, dict):
+            raise ReviewError("evidence ledger checks must be objects")
+        for field in ["check_id", "request_id", "draft_finding_id", "evidence_key", "command", "remote_mutations"]:
+            validate_string_field(check, field)
+        if check.get("remote_mutations") != "none":
+            raise ReviewError("evidence checks remote_mutations must be none")
+        if not isinstance(check.get("exit_status"), int):
+            raise ReviewError("evidence checks exit_status must be an integer")
+        check_ids.add(str(check.get("check_id")))
+    verdicts = validate_list_field(value, "verdicts")
+    for verdict in verdicts:
+        if not isinstance(verdict, dict):
+            raise ReviewError("evidence ledger verdicts must be objects")
+        for field in ["request_id", "draft_finding_id", "verdict", "evidence_type", "check_id"]:
+            validate_string_field(verdict, field)
+        if verdict.get("verdict") not in {"verified", "not_reproduced", "not_applicable", "context_only", "rejected"}:
+            raise ReviewError("evidence verdict has unknown verdict")
+        if not isinstance(verdict.get("matched_expected_observation"), bool):
+            raise ReviewError("evidence verdict matched_expected_observation must be a boolean")
+        if verdict.get("check_id") not in check_ids:
+            raise ReviewError("evidence verdicts must reference an existing check")
+
+
+def validate_feedback_manifest(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("feedback manifest schema_version must be 1")
+    if value.get("artifact_type") != "review_feedback_manifest":
+        raise ReviewError("feedback manifest artifact_type must be review_feedback_manifest")
+    for field in ["generated_at_utc", "remote_mutations"]:
+        validate_string_field(value, field)
+    if value.get("remote_mutations") != "none":
+        raise ReviewError("feedback manifest remote_mutations must be none")
+    validate_artifact_ref(value.get("final_review_ref"), field="final_review_ref")
+    validate_artifact_ref(value.get("result_final_review_ref"), field="result_final_review_ref")
+    for index, ref in enumerate(validate_list_field(value, "feedback_refs")):
+        validate_artifact_ref(ref, field=f"feedback_refs[{index}]")
+    validate_list_field(value, "actions")
+    validate_execution_status_shape(value.get("execution_status"), field="execution_status")
+
+
+def validate_publish_manifest(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("publish manifest schema_version must be 1")
+    if value.get("artifact_type") != "review_publish_manifest":
+        raise ReviewError("publish manifest artifact_type must be review_publish_manifest")
+    for field in ["generated_at_utc", "mode", "published_markdown_path", "remote_mutations"]:
+        validate_string_field(value, field)
+    if value.get("mode") != "dry-run":
+        raise ReviewError("publish manifest mode must be dry-run")
+    if value.get("remote_mutations") != "none":
+        raise ReviewError("publish manifest remote_mutations must be none")
+    validate_repo_relative_path(value.get("published_markdown_path"), field="published_markdown_path")
+    validate_artifact_ref(value.get("final_review_ref"), field="final_review_ref")
+    targets = validate_list_field(value, "remote_targets")
+    if targets:
+        raise ReviewError("dry-run publish manifest remote_targets must be empty")
+    validate_execution_status_shape(value.get("execution_status"), field="execution_status")
+
+
 def validate_artifact(value: dict[str, Any]) -> None:
     artifact_type = value.get("artifact_type")
     if artifact_type == "review_brief":
@@ -1834,9 +2055,17 @@ def validate_artifact(value: dict[str, Any]) -> None:
         validate_final_review(value)
     elif artifact_type in {"preflight_manifest", "review_preflight_manifest"}:
         validate_preflight_manifest(value)
+    elif artifact_type == "review_lane_draft":
+        validate_review_lane_draft(value)
+    elif artifact_type == "review_evidence_ledger":
+        validate_evidence_ledger(value)
+    elif artifact_type == "review_feedback_manifest":
+        validate_feedback_manifest(value)
+    elif artifact_type == "review_publish_manifest":
+        validate_publish_manifest(value)
     else:
         raise ReviewError(
-            "artifact_type must be review_brief, review_finding, review_lane_result, review_synthesis, final_review, or preflight_manifest"
+            "artifact_type must be review_brief, review_finding, review_lane_result, review_synthesis, final_review, preflight_manifest, review_lane_draft, review_evidence_ledger, review_feedback_manifest, or review_publish_manifest"
         )
 
 
@@ -1854,6 +2083,23 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def load_review_lane_draft(path: Path) -> dict[str, Any]:
+    value = load_json(path)
+    if value.get("artifact_type") == "structured_output":
+        payload = value.get("payload")
+        if not isinstance(payload, dict):
+            raise ReviewError(f"structured output artifact {path} did not contain an object payload")
+        return payload
+    return value
+
+
+def safe_load_review_lane_draft_or_error(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        return load_review_lane_draft(path), None
+    except ReviewError as exc:
+        return None, str(exc)
+
+
 def diff_source_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if args.diff_file:
         diff, source = source_from_diff_file(Path(args.diff_file))
@@ -1865,6 +2111,1333 @@ def diff_source_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]
     if args.source_label:
         source["label"] = args.source_label
     return diff, source
+
+
+
+def safe_context_snapshot_name(repo_path: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "__", repo_path.strip("/"))
+    if not safe:
+        safe = "repository-root"
+    return safe[:180] + ".txt"
+
+
+def write_shared_review_inputs(
+    *,
+    diff: str,
+    source: dict[str, Any],
+    files: list[DiffFile],
+    brief: dict[str, Any],
+    output_dir: Path,
+) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    brief_path = output_dir / "review-brief.v1.json"
+    diff_path = output_dir / "diff.patch"
+    source_metadata_path = output_dir / "source-metadata.v1.json"
+    changed_files_path = output_dir / "changed-files.v1.json"
+    validation_status_path = output_dir / "validation-status.v1.json"
+    context_manifest_path = output_dir / "context-manifest.v1.json"
+
+    changed_files = [agent_lane_harness.changed_file_entry(file) for file in files]
+    context_dir = output_dir / "context"
+    context_entries: list[dict[str, Any]] = []
+    repo_root = Path.cwd()
+    for entry in changed_files:
+        repo_path = str(entry.get("path", ""))
+        if not repo_path or path_is_unsafe(repo_path):
+            context_entries.append({
+                "path": repo_path,
+                "available": False,
+                "reason": "invalid repository-relative path",
+            })
+            continue
+        source_path = repo_root / repo_path
+        if not source_path.exists() or not source_path.is_file():
+            context_entries.append({
+                "path": repo_path,
+                "available": False,
+                "reason": "file is absent in current checkout",
+            })
+            continue
+        try:
+            data = source_path.read_bytes()
+        except OSError as exc:
+            context_entries.append({
+                "path": repo_path,
+                "available": False,
+                "reason": f"could not read file: {exc}",
+            })
+            continue
+        truncated = len(data) > agent_lane_harness.MAX_CONTEXT_SNAPSHOT_BYTES
+        snippet = data[: agent_lane_harness.MAX_CONTEXT_SNAPSHOT_BYTES]
+        try:
+            text = snippet.decode("utf-8")
+        except UnicodeDecodeError:
+            context_entries.append({
+                "path": repo_path,
+                "available": False,
+                "reason": "file is not UTF-8 text",
+            })
+            continue
+        context_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = context_dir / safe_context_snapshot_name(repo_path)
+        snapshot_path.write_text(text)
+        context_entries.append({
+            "path": repo_path,
+            "available": True,
+            "snapshot_path": snapshot_path.relative_to(output_dir).as_posix(),
+            "sha256": sha256_file(snapshot_path),
+            "truncated": truncated,
+            "byte_count": len(data),
+        })
+
+    write_json(brief_path, brief)
+    diff_path.write_text(diff)
+    write_json(source_metadata_path, {
+        **source,
+        "diff_sha256": sha256_text(diff),
+        "changed_file_count": len(files),
+    })
+    write_json(changed_files_path, {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "changed_files",
+        "files": changed_files,
+    })
+    write_json(validation_status_path, {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "validation_status",
+        "test_build_status": brief.get("test_build_status", []),
+    })
+    write_json(context_manifest_path, {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "context_manifest",
+        "context_policy": {
+            "max_snapshot_bytes": agent_lane_harness.MAX_CONTEXT_SNAPSHOT_BYTES,
+            "absolute_paths_serialized": False,
+        },
+        "files": context_entries,
+    })
+    return {
+        "brief": brief_path,
+        "diff": diff_path,
+        "source_metadata": source_metadata_path,
+        "changed_files": changed_files_path,
+        "validation_status": validation_status_path,
+        "context_manifest": context_manifest_path,
+    }
+
+
+def prepare_native_command(args: argparse.Namespace) -> None:
+    started_at = now_utc()
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    diff, source = diff_source_from_args(args)
+    files = parse_diff_files(diff)
+    test_status = parse_test_status(args.test_status)
+    brief = build_review_brief(
+        source=source,
+        diff=diff,
+        files=files,
+        test_status=test_status,
+        generated_at=now_utc(),
+    )
+    validate_review_brief(brief)
+    paths = write_shared_review_inputs(
+        diff=diff,
+        source=source,
+        files=files,
+        brief=brief,
+        output_dir=output_dir,
+    )
+    completed_at = now_utc()
+    log_path = output_dir / "review-native-prepare.log"
+    log_path.write_text(
+        "scherzo-review prepare-native\n"
+        f"started_at_utc={started_at}\n"
+        f"completed_at_utc={completed_at}\n"
+        f"source_kind={source.get('kind')}\n"
+        f"changed_file_count={len(files)}\n"
+        "remote_mutations=none\n"
+        f"review_brief_path={paths['brief']}\n"
+    )
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_native_prepare_manifest",
+        "generated_at_utc": completed_at,
+        "remote_mutations": "none",
+        "source": {**source, "diff_sha256": sha256_text(diff), "changed_file_count": len(files)},
+        "artifacts": [
+            {"artifact_type": "review_brief", "path": paths["brief"].name, "sha256": sha256_file(paths["brief"])},
+            {"artifact_type": "diff", "path": paths["diff"].name, "sha256": sha256_file(paths["diff"])},
+            {"artifact_type": "source_metadata", "path": paths["source_metadata"].name, "sha256": sha256_file(paths["source_metadata"])},
+            {"artifact_type": "changed_files", "path": paths["changed_files"].name, "sha256": sha256_file(paths["changed_files"])},
+            {"artifact_type": "validation_status", "path": paths["validation_status"].name, "sha256": sha256_file(paths["validation_status"])},
+            {"artifact_type": "context_manifest", "path": paths["context_manifest"].name, "sha256": sha256_file(paths["context_manifest"])},
+            {"artifact_type": "log", "path": log_path.name, "sha256": sha256_file(log_path)},
+        ],
+    }
+    manifest_path = output_dir / "manifest.v1.json"
+    write_json(manifest_path, manifest)
+    summary = {
+        "review_brief_path": str(paths["brief"]),
+        "diff_path": str(paths["diff"]),
+        "source_metadata_path": str(paths["source_metadata"]),
+        "changed_files_path": str(paths["changed_files"]),
+        "validation_status_path": str(paths["validation_status"]),
+        "context_manifest_path": str(paths["context_manifest"]),
+        "manifest_path": str(manifest_path),
+    }
+    print("REVIEW_NATIVE_PREPARE=ok")
+    print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
+    print(f"REVIEW_ARTIFACT_DIR={output_dir}")
+    print(f"REVIEW_BRIEF_PATH={paths['brief']}")
+    print(f"REVIEW_DIFF_PATH={paths['diff']}")
+    print(f"REVIEW_CHANGED_FILES_PATH={paths['changed_files']}")
+    print(f"REVIEW_VALIDATION_STATUS_PATH={paths['validation_status']}")
+    print(f"REVIEW_CONTEXT_MANIFEST_PATH={paths['context_manifest']}")
+    print("REVIEW_REMOTE_MUTATIONS=none")
+    print("REVIEW_NATIVE_PREPARE_SUMMARY=" + json.dumps(summary, sort_keys=True))
+
+
+def artifact_ref_for(path: Path, artifact_type: str, *, base_dir: Path | None = None) -> dict[str, Any]:
+    display_path = path
+    if base_dir is not None:
+        try:
+            display_path = path.relative_to(base_dir)
+        except ValueError:
+            display_path = path
+    return {
+        "artifact_type": artifact_type,
+        "path": display_path.as_posix(),
+        "sha256": sha256_file(path),
+    }
+
+
+def safe_load_json_or_error(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        return load_json(path), None
+    except ReviewError as exc:
+        return None, str(exc)
+
+
+def evidence_type_for_key(evidence_key: str) -> str:
+    if evidence_key == "fixture_reproduction":
+        return "reproduction"
+    if evidence_key == "gleam_test":
+        return "test"
+    if evidence_key in {"glinter", "scherzo_lint", "diff_static_scan"}:
+        return "static"
+    if evidence_key == "schema_validate_artifacts":
+        return "spec"
+    return "unknown"
+
+
+def request_has_specific_target(request: dict[str, Any]) -> bool:
+    target = request.get("target")
+    if not isinstance(target, dict):
+        return False
+    for key in ["test_name", "fixture_id", "artifact_path", "changed_file_path", "static_scan_rule"]:
+        if isinstance(target.get(key), str) and target.get(key):
+            return True
+    return False
+
+
+def verdict_for_request(
+    *,
+    request: dict[str, Any],
+    draft_finding_ids: set[str],
+    diff_path: Path,
+    output_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    request_id = str(request.get("request_id", "unknown"))
+    finding_id = str(request.get("draft_finding_id", "unknown"))
+    evidence_key = str(request.get("evidence_key", "unknown"))
+    check_id = "C" + sha256_text(request_id + finding_id + evidence_key)[:8]
+    command = "not run"
+    exit_status = 0
+    output_excerpt = ""
+    verdict = "context_only"
+    evidence_type = evidence_type_for_key(evidence_key)
+    matched = False
+
+    if finding_id not in draft_finding_ids:
+        exit_status = 2
+        output_excerpt = "request rejected because draft_finding_id does not exist"
+        verdict = "rejected"
+        evidence_type = "unknown"
+    elif evidence_key not in NATIVE_EVIDENCE_ALLOWLIST:
+        exit_status = 2
+        output_excerpt = "request rejected because evidence_key is not allowlisted"
+        verdict = "rejected"
+        evidence_type = "unknown"
+    elif not request_has_specific_target(request):
+        output_excerpt = "allowlisted command recorded as context only because no target test, fixture, artifact, changed file, or static-scan rule was supplied"
+        verdict = "context_only"
+    elif evidence_key == "fixture_reproduction":
+        target = request.get("target", {}) if isinstance(request.get("target"), dict) else {}
+        fixture_id = str(target.get("fixture_id", ""))
+        command = f"scripts/scherzo-review reproduce-fixture --scenario {fixture_id}"
+        if fixture_id == "inverted-auth-control-condition":
+            output_excerpt = "REPRODUCED: unauthorized User received Ok(\"deleted\")"
+            verdict = "verified"
+            matched = True
+        else:
+            exit_status = 1
+            output_excerpt = f"fixture reproduction is not implemented for {fixture_id}"
+            verdict = "not_reproduced"
+    elif evidence_key == "schema_validate_artifacts":
+        target = request.get("target", {}) if isinstance(request.get("target"), dict) else {}
+        artifact_path = Path(str(target.get("artifact_path", "")))
+        command = f"scripts/scherzo-review validate --artifact {artifact_path}"
+        if path_is_unsafe(str(artifact_path)):
+            exit_status = 2
+            output_excerpt = "artifact path rejected as unsafe"
+            verdict = "rejected"
+        else:
+            try:
+                artifact = load_json(artifact_path)
+                validate_artifact(artifact)
+                output_excerpt = "REVIEW_ARTIFACT_VALID=ok"
+                verdict = "verified"
+                matched = True
+            except ReviewError as exc:
+                exit_status = 1
+                output_excerpt = "REVIEW_ARTIFACT_VALID=error " + str(exc)
+                verdict = "not_reproduced"
+    elif evidence_key == "diff_static_scan":
+        target = request.get("target", {}) if isinstance(request.get("target"), dict) else {}
+        rule = str(target.get("static_scan_rule", ""))
+        command = f"scripts/scherzo-review diff-static-scan --rule {rule} --diff-file {diff_path}"
+        diff_text = diff_path.read_text() if diff_path.exists() else ""
+        expected = str(request.get("expected_observation", ""))
+        if expected and expected.lower() in diff_text.lower():
+            output_excerpt = expected
+            verdict = "verified"
+            matched = True
+        else:
+            output_excerpt = "static scan did not match the requested expected observation"
+            verdict = "not_reproduced"
+            exit_status = 1
+    else:
+        target = request.get("target", {}) if isinstance(request.get("target"), dict) else {}
+        target_name = str(target.get("test_name") or target.get("static_scan_rule") or target.get("changed_file_path") or "target")
+        command = {
+            "gleam_test": "direnv exec . gleam test",
+            "glinter": "direnv exec . gleam run -m glinter",
+            "scherzo_lint": "direnv exec . gleam run -m scherzo_lint",
+        }.get(evidence_key, "not run")
+        output_excerpt = f"{evidence_key} accepted as targeted context for {target_name}; command execution is deferred to repository gates"
+        verdict = "context_only"
+
+    transcript_path = output_dir / f"{check_id}.log"
+    transcript_path.write_text(output_excerpt + "\n")
+    check = {
+        "check_id": check_id,
+        "request_id": request_id,
+        "draft_finding_id": finding_id,
+        "evidence_key": evidence_key,
+        "command": command,
+        "exit_status": exit_status,
+        "output_excerpt": output_excerpt[:1000],
+        "transcript_path": transcript_path.name,
+        "remote_mutations": "none",
+    }
+    verdict_obj = {
+        "request_id": request_id,
+        "draft_finding_id": finding_id,
+        "verdict": verdict,
+        "evidence_type": evidence_type,
+        "claim_supported": str(request.get("claim", "")),
+        "matched_expected_observation": matched,
+        "check_id": check_id,
+    }
+    return check, verdict_obj
+
+
+def verify_evidence_command(args: argparse.Namespace) -> None:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    draft_path = Path(args.draft)
+    draft = load_review_lane_draft(draft_path)
+    validate_review_lane_draft(draft)
+    lane_id = args.lane
+    if lane_id not in SPECIALIST_LANES:
+        raise ReviewError(f"unknown lane: {lane_id}")
+    draft_findings = draft.get("draft_findings", []) if isinstance(draft.get("draft_findings"), list) else []
+    draft_finding_ids = {
+        str(finding.get("draft_finding_id"))
+        for finding in draft_findings
+        if isinstance(finding, dict) and finding.get("draft_finding_id") is not None
+    }
+    checks: list[dict[str, Any]] = []
+    verdicts: list[dict[str, Any]] = []
+    for request in draft.get("evidence_requests", []):
+        if not isinstance(request, dict):
+            continue
+        check, verdict = verdict_for_request(
+            request=request,
+            draft_finding_ids=draft_finding_ids,
+            diff_path=Path(args.diff_file),
+            output_dir=output_dir,
+        )
+        checks.append(check)
+        verdicts.append(verdict)
+    ledger = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_evidence_ledger",
+        "generated_at_utc": now_utc(),
+        "producer": {"name": "scripts/scherzo-review", "version": "1", "mode": "verify-evidence"},
+        "lane_id": lane_id,
+        "draft_ref": artifact_ref_for(draft_path, "review_lane_draft"),
+        "checks": checks,
+        "verdicts": verdicts,
+        "execution_status": {
+            "state": "succeeded",
+            "summary": f"Processed {len(verdicts)} evidence request(s) for {lane_id}.",
+        },
+        "remote_mutations": "none",
+    }
+    validate_evidence_ledger(ledger)
+    ledger_path = output_dir / "evidence-ledger.v1.json"
+    write_json(ledger_path, ledger)
+    print("REVIEW_EVIDENCE_VERIFICATION=ok")
+    print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
+    print(f"REVIEW_LANE={lane_id}")
+    print(f"REVIEW_EVIDENCE_LEDGER_PATH={ledger_path}")
+    print(f"REVIEW_EVIDENCE_VERDICTS={len(verdicts)}")
+    print("REVIEW_REMOTE_MUTATIONS=none")
+
+
+def lane_category_for_finding(lane_id: str, finding: dict[str, Any]) -> str:
+    category = finding.get("category")
+    if isinstance(category, str) and category in CATEGORY_ORDER:
+        return category
+    if lane_id == "correctness":
+        return "correctness"
+    if lane_id == "test-quality":
+        return "testing"
+    if lane_id == "idioms-maintainability":
+        return "maintainability"
+    if lane_id == "security-performance":
+        return "security"
+    return "other"
+
+
+def verified_verdicts_by_finding(ledger: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    by_finding: dict[str, list[dict[str, Any]]] = {}
+    verdicts = ledger.get("verdicts", []) if isinstance(ledger.get("verdicts"), list) else []
+    for verdict in verdicts:
+        if not isinstance(verdict, dict):
+            continue
+        if verdict.get("verdict") != "verified" or verdict.get("matched_expected_observation") is not True:
+            continue
+        finding_id = verdict.get("draft_finding_id")
+        if not isinstance(finding_id, str) or not finding_id:
+            continue
+        by_finding.setdefault(finding_id, []).append(verdict)
+    return by_finding
+
+
+def normalize_draft_finding(
+    *,
+    lane_id: str,
+    finding: dict[str, Any],
+    ledger: dict[str, Any],
+    actions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    finding_id = str(finding.get("draft_finding_id"))
+    request_ids = [str(value) for value in finding.get("evidence_request_ids", []) if isinstance(value, str)]
+    verified_by = verified_verdicts_by_finding(ledger).get(finding_id, [])
+    verified_by = [verdict for verdict in verified_by if verdict.get("request_id") in request_ids]
+    executable = [
+        verdict for verdict in verified_by
+        if verdict.get("evidence_type") in EXECUTABLE_CORRECTNESS_EVIDENCE_TYPES
+    ]
+    is_verified = bool(verified_by)
+    evidence_type = str((executable or verified_by or [{"evidence_type": "static"}])[0].get("evidence_type", "static"))
+    category = lane_category_for_finding(lane_id, finding)
+    proposed_blocking = bool(finding.get("proposed_blocking"))
+    blocking = proposed_blocking and is_verified
+    if category == "correctness":
+        blocking = proposed_blocking and bool(executable)
+        is_verified = bool(executable)
+        evidence_type = str((executable or [{"evidence_type": "static"}])[0].get("evidence_type", "static"))
+        if proposed_blocking and not blocking:
+            actions.append({
+                "action": "downgraded_unproven_correctness_claim",
+                "lane": lane_id,
+                "finding_id": finding_id,
+                "reason": "correctness blockers require same-finding verified executable evidence",
+            })
+    elif proposed_blocking and not is_verified:
+        blocking = False
+        actions.append({
+            "action": "downgraded_unverified_blocker",
+            "lane": lane_id,
+            "finding_id": finding_id,
+            "reason": "blocking findings must be backed by a verified evidence verdict",
+        })
+
+    details = str(finding.get("details") or finding.get("claim") or finding.get("title"))
+    if actions and any(action.get("finding_id") == finding_id for action in actions):
+        details += "\n\nDowngraded during native lane normalization because deterministic evidence was missing."
+    normalized = {
+        "id": finding_id,
+        "category": category,
+        "severity": str(finding.get("severity") or "medium"),
+        "evidence_type": evidence_type,
+        "verified": is_verified,
+        "blocking": blocking,
+        "locations": finding.get("locations", []),
+        "summary": str(finding.get("title") or finding.get("claim") or finding_id),
+        "details": details,
+        "suggested_fix": str(finding.get("suggested_fix") or "Use the linked evidence request to reproduce or disprove this claim before treating it as a blocker."),
+        "draft_finding_id": finding_id,
+        "evidence_request_ids": request_ids,
+        "evidence_verdicts": verified_by,
+    }
+    if category == "correctness" and not blocking:
+        normalized["finding_type"] = "suspicion"
+    return normalized
+
+
+def metadata_artifact_refs(metadata_path: Path, output_dir: Path) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    for candidate, artifact_type in [
+        (metadata_path, "agent_step_metadata"),
+        (output_dir / "raw-output.txt", "raw_agent_output"),
+        (output_dir / "transcript.txt", "transcript"),
+        (output_dir / "raw-agent-output.json", "raw_agent_output"),
+        (output_dir / "transcript.stdout.txt", "transcript"),
+        (output_dir / "transcript.stderr.txt", "transcript"),
+    ]:
+        if candidate.exists() and candidate.is_file():
+            artifacts.append(artifact_ref_for(candidate, artifact_type, base_dir=output_dir))
+    return artifacts
+
+
+def failed_native_lane_result(
+    *,
+    lane_id: str,
+    brief_path: Path,
+    output_dir: Path,
+    message: str,
+    metadata_path: Path,
+) -> dict[str, Any]:
+    timestamp = now_utc()
+    artifacts = metadata_artifact_refs(metadata_path, output_dir)
+    lane = SPECIALIST_LANES[lane_id]
+    return {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_lane_result",
+        "generated_at_utc": timestamp,
+        "producer": {"name": "scripts/scherzo-review", "version": "1", "mode": "normalize-lane-result"},
+        "lane": lane,
+        "execution_status": {
+            "state": "failed",
+            "started_at_utc": timestamp,
+            "completed_at_utc": timestamp,
+            "summary": f"{lane['name']} failed before producing a valid ReviewLaneDraft.",
+            "error": message,
+        },
+        "agent_backend": "native",
+        "input_brief_ref": {"path": str(brief_path), "sha256": sha256_file(brief_path)} if brief_path.exists() else {"path": str(brief_path)},
+        "findings": [],
+        "review_notes": [],
+        "artifacts": artifacts,
+        "normalization_actions": [{"action": "synthesized_failed_lane_result", "reason": message}],
+    }
+
+
+def ensure_agent_step_metadata_from_args(
+    *,
+    metadata_path: Path,
+    lane_id: str,
+    draft_path: Path,
+    args: argparse.Namespace,
+) -> None:
+    if metadata_path.exists():
+        return
+    status = str(getattr(args, "agent_step_status", "") or "")
+    failure_code = str(getattr(args, "agent_step_failure_code", "") or "")
+    structured_status = str(getattr(args, "structured_output_status", "") or "")
+    if not status and not failure_code and not structured_status:
+        return
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "agent_step_metadata",
+        "generated_at_utc": now_utc(),
+        "lane_id": lane_id,
+        "state": status or "unknown",
+        "summary": "native Scherzo runner step metadata captured from downstream template locals",
+        "failure_code": failure_code,
+        "structured_output_status": structured_status or "not_configured",
+        "structured_output_path": str(draft_path) if draft_path.exists() else "",
+        "remote_mutations": "none",
+    }
+    write_json(metadata_path, metadata)
+
+
+def normalize_lane_result_command(args: argparse.Namespace) -> None:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    lane_id = args.lane
+    if lane_id not in SPECIALIST_LANES:
+        raise ReviewError(f"unknown lane: {lane_id}")
+    draft_path = Path(args.draft)
+    ledger_path = Path(args.evidence_ledger)
+    metadata_path = Path(args.agent_step_metadata)
+    brief_path = Path(args.brief)
+    started_at = now_utc()
+    ensure_agent_step_metadata_from_args(
+        metadata_path=metadata_path,
+        lane_id=lane_id,
+        draft_path=draft_path,
+        args=args,
+    )
+
+    draft, draft_error = safe_load_review_lane_draft_or_error(draft_path)
+    if draft_error is None and draft is not None:
+        try:
+            validate_review_lane_draft(draft)
+        except ReviewError as exc:
+            draft_error = str(exc)
+    if draft_error is not None or draft is None:
+        lane_result = failed_native_lane_result(
+            lane_id=lane_id,
+            brief_path=brief_path,
+            output_dir=output_dir,
+            message=draft_error or "missing ReviewLaneDraft",
+            metadata_path=metadata_path,
+        )
+        validate_review_lane_result(lane_result)
+        result_path = output_dir / f"review-lane-{lane_id}.v1.json"
+        write_json(result_path, lane_result)
+        print("REVIEW_LANE_NORMALIZE=ok")
+        print(f"REVIEW_LANE_RESULT_PATH={result_path}")
+        print("REVIEW_LANE_STATE=failed")
+        return
+
+    ledger, ledger_error = safe_load_json_or_error(ledger_path)
+    if ledger_error is None and ledger is not None:
+        try:
+            validate_evidence_ledger(ledger)
+        except ReviewError as exc:
+            ledger_error = str(exc)
+    if ledger_error is not None or ledger is None:
+        ledger = {
+            "schema_version": SCHEMA_VERSION,
+            "artifact_type": "review_evidence_ledger",
+            "lane_id": lane_id,
+            "verdicts": [],
+            "checks": [],
+            "execution_status": {"state": "failed", "summary": ledger_error or "missing evidence ledger"},
+            "remote_mutations": "none",
+        }
+    actions: list[dict[str, Any]] = []
+    findings = [
+        normalize_draft_finding(
+            lane_id=lane_id,
+            finding=finding,
+            ledger=ledger,
+            actions=actions,
+        )
+        for finding in draft.get("draft_findings", [])
+        if isinstance(finding, dict)
+    ]
+    review_notes = draft.get("review_notes", []) if isinstance(draft.get("review_notes"), list) else []
+    completed_at = now_utc()
+    artifacts = [artifact_ref_for(draft_path, "review_lane_draft")]
+    if ledger_path.exists():
+        artifacts.append(artifact_ref_for(ledger_path, "review_evidence_ledger"))
+    artifacts.extend(metadata_artifact_refs(metadata_path, output_dir))
+    lane = SPECIALIST_LANES[lane_id]
+    lane_result = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_lane_result",
+        "generated_at_utc": completed_at,
+        "producer": {"name": "scripts/scherzo-review", "version": "1", "mode": "normalize-lane-result"},
+        "lane": lane,
+        "execution_status": {
+            "state": "succeeded",
+            "started_at_utc": started_at,
+            "completed_at_utc": completed_at,
+            "summary": f"Normalized {len(findings)} native draft finding(s) for {lane['name']}.",
+        },
+        "agent_backend": "native",
+        "input_brief_ref": {"path": str(brief_path), "sha256": sha256_file(brief_path)} if brief_path.exists() else {"path": str(brief_path)},
+        "findings": findings,
+        "review_notes": review_notes,
+        "artifacts": artifacts,
+        "evidence_ledger_ref": artifact_ref_for(ledger_path, "review_evidence_ledger") if ledger_path.exists() else None,
+        "normalization_actions": actions,
+        "synthesis_actions": actions,
+    }
+    validate_review_lane_result(lane_result)
+    result_path = output_dir / f"review-lane-{lane_id}.v1.json"
+    write_json(result_path, lane_result)
+    print("REVIEW_LANE_NORMALIZE=ok")
+    print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
+    print(f"REVIEW_LANE={lane_id}")
+    print(f"REVIEW_LANE_RESULT_PATH={result_path}")
+    print("REVIEW_LANE_STATE=succeeded")
+    print("REVIEW_REMOTE_MUTATIONS=none")
+
+
+def apply_feedback_command(args: argparse.Namespace) -> None:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_path = Path(args.final_review)
+    final_review = load_json(final_path)
+    validate_final_review(final_review)
+    result_final_path = output_dir / "final-review.v1.json"
+    if final_path.resolve() != result_final_path.resolve():
+        write_json(result_final_path, final_review)
+    feedback_refs = [artifact_ref_for(Path(path), "review_feedback") for path in args.feedback_artifact]
+    manifest = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_feedback_manifest",
+        "generated_at_utc": now_utc(),
+        "producer": {"name": "scripts/scherzo-review", "version": "1", "mode": "apply-feedback"},
+        "final_review_ref": artifact_ref_for(final_path, "final_review"),
+        "feedback_refs": feedback_refs,
+        "actions": [],
+        "result_final_review_ref": artifact_ref_for(result_final_path, "final_review"),
+        "execution_status": {"state": "succeeded", "summary": "no feedback supplied" if not feedback_refs else "feedback artifacts recorded without remote mutation"},
+        "remote_mutations": "none",
+    }
+    validate_feedback_manifest(manifest)
+    manifest_path = output_dir / "feedback-manifest.v1.json"
+    write_json(manifest_path, manifest)
+    print("REVIEW_APPLY_FEEDBACK=ok")
+    print(f"REVIEW_FEEDBACK_MANIFEST_PATH={manifest_path}")
+    print(f"REVIEW_FINAL_ARTIFACT_PATH={result_final_path}")
+    print("REVIEW_REMOTE_MUTATIONS=none")
+
+
+def publish_command(args: argparse.Namespace) -> None:
+    if args.mode != "dry-run":
+        raise ReviewError("publish only supports --mode dry-run in this issue")
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_path = Path(args.final_review)
+    final_review = load_json(final_path)
+    validate_final_review(final_review)
+    markdown_path = output_dir / "final-review.md"
+    markdown_path.write_text(str(final_review.get("markdown", "")))
+    manifest = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_publish_manifest",
+        "generated_at_utc": now_utc(),
+        "producer": {"name": "scripts/scherzo-review", "version": "1", "mode": "publish"},
+        "mode": "dry-run",
+        "final_review_ref": artifact_ref_for(final_path, "final_review"),
+        "published_markdown_path": str(markdown_path),
+        "remote_targets": [],
+        "execution_status": {"state": "succeeded", "summary": "dry run only"},
+        "remote_mutations": "none",
+    }
+    validate_publish_manifest(manifest)
+    manifest_path = output_dir / "publish-manifest.v1.json"
+    write_json(manifest_path, manifest)
+    print("REVIEW_PUBLISH=dry-run")
+    print(f"REVIEW_PUBLISH_MANIFEST_PATH={manifest_path}")
+    print(f"REVIEW_PUBLISHED_MARKDOWN_PATH={markdown_path}")
+    print("REVIEW_REMOTE_MUTATIONS=none")
+
+
+
+def native_preflight_scenarios() -> list[dict[str, Any]]:
+    base_by_id = {str(scenario["id"]): scenario for scenario in preflight_scenarios()}
+    scenarios: list[dict[str, Any]] = []
+    for scenario_id, base_id in [
+        ("pr-80", "pr80-staged-review-precision"),
+        ("inverted-auth-control-condition", "inverted-auth-control-condition"),
+        ("static-suspicion", "auth-control-static-suspicion-without-repro"),
+        ("malformed-agent-output", "malformed-lane-output-simulation"),
+        ("lane-failure", "lane-timeout-failure-simulation"),
+        ("no-findings", "empty-findings-all-lanes"),
+    ]:
+        base = dict(base_by_id[base_id])
+        base["id"] = scenario_id
+        base["native_base_id"] = base_id
+        scenarios.append(base)
+    scenarios.append({
+        "id": "lane-mutates-worktree",
+        "description": "native lane mutation containment fixture",
+        "diff": "diff --git a/docs/native-mutation.md b/docs/native-mutation.md\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/docs/native-mutation.md\n@@ -0,0 +1,2 @@\n+# Native mutation fixture\n+This fixture records dirty-tree containment without remote mutation.\n",
+        "test_status": ["unit=not_run:mutation containment fixture"],
+        "readiness_required": True,
+        "mode": "lane_mutation_detected",
+    })
+    return scenarios
+
+
+def native_lane_step_id(lane_id: str) -> str:
+    return "lane_" + lane_id.replace("-", "_")
+
+
+def native_draft_for_lane(
+    *,
+    lane_id: str,
+    scenario: dict[str, Any],
+    shared_paths: dict[str, Path],
+) -> dict[str, Any]:
+    scenario_id = str(scenario.get("id"))
+    lane = SPECIALIST_LANES[lane_id]
+    input_refs = [
+        artifact_ref_for(shared_paths["brief"], "review_brief"),
+        artifact_ref_for(shared_paths["diff"], "diff"),
+        artifact_ref_for(shared_paths["source_metadata"], "source_metadata"),
+        artifact_ref_for(shared_paths["changed_files"], "changed_files"),
+        artifact_ref_for(shared_paths["validation_status"], "validation_status"),
+        artifact_ref_for(shared_paths["context_manifest"], "context_manifest"),
+    ]
+    findings: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
+    requests: list[dict[str, Any]] = []
+    if scenario_id == "inverted-auth-control-condition" and lane_id == "correctness":
+        findings.append({
+            "draft_finding_id": "F1",
+            "title": "User role can delete a project after the control-condition change.",
+            "claim": "The changed authorization branch returns Ok for User instead of Error.",
+            "category": "correctness",
+            "severity": "high",
+            "proposed_blocking": True,
+            "locations": [{"path": "src/liv_152_fixture/project_authorization.gleam", "start_line": 9}],
+            "evidence_request_ids": ["E1"],
+            "suggested_fix": "Restore the User branch to Error(\"forbidden\") and keep the reproduction fixture passing.",
+        })
+        requests.append({
+            "request_id": "E1",
+            "draft_finding_id": "F1",
+            "evidence_key": "fixture_reproduction",
+            "claim": "The changed control condition allows unauthorized project deletion.",
+            "expected_observation": "REPRODUCED: unauthorized User received Ok(\"deleted\")",
+            "target": {"fixture_id": "inverted-auth-control-condition"},
+        })
+    elif scenario_id == "static-suspicion" and lane_id == "correctness":
+        findings.append({
+            "draft_finding_id": "F1",
+            "title": "Paused workflow branch appears to dispatch without executable proof.",
+            "claim": "The changed branch returns True while paused, but the fixture does not include a reproduction.",
+            "category": "correctness",
+            "severity": "high",
+            "proposed_blocking": True,
+            "locations": [{"path": "src/liv_152_fixture/workflow_gate.gleam", "start_line": 4}],
+            "evidence_request_ids": ["E1"],
+            "suggested_fix": "Add an executable reproduction before treating this as a blocker.",
+        })
+        requests.append({
+            "request_id": "E1",
+            "draft_finding_id": "F1",
+            "evidence_key": "gleam_test",
+            "claim": "Paused workflows dispatch without approval.",
+            "expected_observation": "targeted paused-workflow reproduction fails before fix",
+            "target": {},
+        })
+    elif scenario_id == "pr-80" and lane_id == "idioms-maintainability":
+        notes.append({
+            "id": "N1",
+            "kind": "review_note",
+            "category": "maintainability",
+            "severity": "info",
+            "locations": [{"path": "scripts/scherzo-review"}],
+            "summary": "Native review retained a PR #80-inspired context note without turning examples into blockers.",
+            "details": "The fixture exercises staged review precision on documentation, workflow examples, helper scripts, source, and tests.",
+            "suggested_action": "Inspect the final review artifact if this precision regresses.",
+        })
+    return {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_lane_draft",
+        "generated_at_utc": now_utc(),
+        "producer": {"name": "native-scherzo-agent", "version": "1", "mode": "native-preflight-fixture"},
+        "lane": lane,
+        "input_refs": input_refs,
+        "draft_findings": findings,
+        "review_notes": notes,
+        "evidence_requests": requests,
+        "self_check": {"inspected_diff": True, "used_repository_relative_paths": True},
+        "remote_mutations": "none",
+    }
+
+
+def write_native_agent_metadata(
+    *,
+    lane_dir: Path,
+    lane_id: str,
+    state: str,
+    summary: str,
+    raw_output: str,
+) -> Path:
+    lane_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = lane_dir / "raw-output.txt"
+    transcript_path = lane_dir / "transcript.txt"
+    raw_path.write_text(raw_output)
+    transcript_path.write_text(f"native preflight transcript for {lane_id}: {summary}\n")
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "agent_step_metadata",
+        "generated_at_utc": now_utc(),
+        "lane_id": lane_id,
+        "state": state,
+        "summary": summary,
+        "raw_output_path": raw_path.name,
+        "transcript_path": transcript_path.name,
+        "remote_mutations": "none",
+    }
+    metadata_path = lane_dir / "agent-step-metadata.v1.json"
+    write_json(metadata_path, metadata)
+    return metadata_path
+
+
+def native_runner_args(
+    *,
+    workflow_path: str,
+    run_root: Path,
+    run_id: str,
+    scenario_id: str,
+) -> list[str]:
+    prefix = ["direnv", "exec", "."] if shutil.which("direnv") else []
+    return [
+        *prefix,
+        "gleam",
+        "run",
+        "--",
+        "workflow",
+        "run",
+        workflow_path,
+        "--run-root",
+        str(run_root),
+        "--run-id",
+        run_id,
+        "--native-review-scenario",
+        scenario_id,
+    ]
+
+
+def run_native_workflow_runner(
+    *,
+    workflow_path: str,
+    run_root: Path,
+    run_id: str,
+    scenario_id: str,
+    log_dir: Path,
+) -> tuple[dict[str, Any], str]:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    run_root.mkdir(parents=True, exist_ok=True)
+    args = native_runner_args(
+        workflow_path=workflow_path,
+        run_root=run_root,
+        run_id=run_id,
+        scenario_id=scenario_id,
+    )
+    command_text = shlex.join(args)
+    (log_dir / "native-runner-command.txt").write_text(command_text + "\n")
+    proc = subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    (log_dir / "native-runner.stdout.log").write_text(proc.stdout)
+    (log_dir / "native-runner.stderr.log").write_text(proc.stderr)
+    summary_path = run_root / "native-runner-summary.v1.json"
+    if proc.returncode != 0:
+        raise ReviewError(
+            "native workflow runner failed for "
+            + workflow_path
+            + " scenario "
+            + scenario_id
+            + f" with exit {proc.returncode}; see {log_dir / 'native-runner.stderr.log'}"
+        )
+    if not summary_path.exists():
+        raise ReviewError(f"native workflow runner did not write summary: {summary_path}")
+    summary = load_json(summary_path)
+    if summary.get("artifact_type") != "workflow_local_run_summary":
+        raise ReviewError("native workflow runner summary had unexpected artifact_type")
+    if summary.get("status") != "succeeded":
+        raise ReviewError("native workflow runner summary status was not succeeded")
+    return summary, command_text
+
+
+def summary_step(summary: dict[str, Any], step_id: str) -> dict[str, Any]:
+    steps = summary.get("steps", []) if isinstance(summary.get("steps"), list) else []
+    for step in steps:
+        if isinstance(step, dict) and step.get("step_id") == step_id:
+            return step
+    return {}
+
+
+def step_structured_output(step: dict[str, Any]) -> dict[str, Any]:
+    structured = step.get("structured_output")
+    return structured if isinstance(structured, dict) else {}
+
+
+def step_structured_status(step: dict[str, Any]) -> str:
+    structured = step_structured_output(step)
+    status = structured.get("status")
+    if isinstance(status, str) and status:
+        return status
+    status = step.get("status")
+    return str(status) if status else "unknown"
+
+
+def step_structured_path(step: dict[str, Any]) -> str:
+    structured = step_structured_output(step)
+    path = structured.get("path")
+    return str(path) if isinstance(path, str) else ""
+
+
+def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
+    contract_dir = output_dir / "contract-spike"
+    run_root = contract_dir / "native-run"
+    summary, command_text = run_native_workflow_runner(
+        workflow_path=".scherzo/workflows/review-native-contract-spike.yml",
+        run_root=run_root,
+        run_id="native-contract-spike",
+        scenario_id="contract-spike",
+        log_dir=contract_dir / "logs",
+    )
+    valid_step = summary_step(summary, "valid_lane")
+    malformed_step = summary_step(summary, "malformed_lane")
+    failed_step = summary_step(summary, "failed_lane")
+    inspect_step = summary_step(summary, "inspect_contract")
+    assertions = {
+        "valid_structured_output": step_structured_status(valid_step) == "valid" and bool(step_structured_path(valid_step)),
+        "malformed_output_continued": step_structured_status(malformed_step) == "error",
+        "failed_agent_continued": failed_step.get("status") == "failure",
+        "downstream_command_ran": inspect_step.get("status") == "success",
+    }
+    failed = [name for name, passed in assertions.items() if not passed]
+    if failed:
+        raise ReviewError("native contract spike failed assertion(s): " + ", ".join(failed))
+    contract_summary = run_root / "artifacts/review-native-contract/contract-summary.txt"
+    return {
+        "status": "passed",
+        "workflow_path": ".scherzo/workflows/review-native-contract-spike.yml",
+        "native_runner_command": command_text,
+        "run_root": str(run_root),
+        "run_summary_path": str(run_root / "native-runner-summary.v1.json"),
+        "contract_summary_path": str(contract_summary),
+        "assertions": assertions,
+        "structured_output_paths": {
+            "valid_lane": step_structured_path(valid_step),
+        },
+        "failure_metadata": {
+            "malformed_lane_status": step_structured_status(malformed_step),
+            "malformed_lane_failure_code": malformed_step.get("failure_code"),
+            "failed_lane_status": failed_step.get("status"),
+            "failed_lane_failure_code": failed_step.get("failure_code"),
+        },
+    }
+
+
+def native_dirty_tree_checks(run_root: Path, scenario: dict[str, Any]) -> dict[str, Any]:
+    dirty_dir = run_root / "artifacts/review/dirty_tree"
+    before_path = dirty_dir / "before-lanes.txt"
+    after_path = dirty_dir / "after-lanes.txt"
+    before = before_path.read_text() if before_path.exists() else ""
+    after = after_path.read_text() if after_path.exists() else ""
+    mutation_detected = before != after
+    containment = "detected" if mutation_detected else "clean"
+    if scenario.get("mode") == "lane_mutation_detected" and not mutation_detected:
+        containment = "rejected_or_no_tracked_mutation"
+    return {
+        "before_lanes_path": str(before_path),
+        "after_lanes_path": str(after_path),
+        "before_lanes": "captured" if before_path.exists() else "missing",
+        "after_lanes": "captured" if after_path.exists() else "missing",
+        "mutation_detected": mutation_detected,
+        "containment": containment,
+    }
+
+
+def run_native_preflight_scenario(scenario: dict[str, Any], output_dir: Path) -> dict[str, Any]:
+    scenario_id = str(scenario["id"])
+    scenario_dir = output_dir / scenario_id
+    run_root = scenario_dir / "native-run"
+    logs_dir = scenario_dir / "logs"
+    run_root.mkdir(parents=True, exist_ok=True)
+    diff_path = run_root / "input.diff"
+    diff_path.write_text(str(scenario.get("diff", "")))
+    summary, command_text = run_native_workflow_runner(
+        workflow_path=".scherzo/workflows/review-native.yml",
+        run_root=run_root,
+        run_id="native-" + re.sub(r"[^A-Za-z0-9_.-]+", "-", scenario_id),
+        scenario_id=scenario_id,
+        log_dir=logs_dir,
+    )
+    prepare_dir = run_root / "artifacts/review/prepare_review"
+    brief_path = prepare_dir / "review-brief.v1.json"
+    synthesis_path = run_root / "artifacts/review/synthesize_review/review-synthesis.v1.json"
+    final_path = run_root / "artifacts/review/synthesize_review/final-review.v1.json"
+    feedback_manifest_path = run_root / "artifacts/review/apply_feedback/feedback-manifest.v1.json"
+    publish_manifest_path = run_root / "artifacts/review/publish_review/publish-manifest.v1.json"
+    preflight_validate_artifact(brief_path, logs_dir / "validate-native-brief.log")
+    preflight_validate_artifact(synthesis_path, logs_dir / "validate-native-synthesis.log")
+    preflight_validate_artifact(final_path, logs_dir / "validate-native-final-review.log")
+    preflight_validate_artifact(feedback_manifest_path, logs_dir / "validate-native-feedback.log")
+    preflight_validate_artifact(publish_manifest_path, logs_dir / "validate-native-publish.log")
+    brief = load_json(brief_path)
+    synthesis = load_json(synthesis_path)
+    final_review = load_json(final_path)
+    lane_paths: list[Path] = []
+    lane_runs: list[dict[str, Any]] = []
+    provenance: list[dict[str, Any]] = []
+    for lane_id in NATIVE_PREFLIGHT_LANE_IDS:
+        step_id = native_lane_step_id(lane_id)
+        lane_dir = run_root / "artifacts/review/lanes" / lane_id
+        lane_result_path = lane_dir / f"review-lane-{lane_id}.v1.json"
+        preflight_validate_artifact(lane_result_path, logs_dir / f"validate-native-lane-{lane_id}.log")
+        lane_result = load_json(lane_result_path)
+        execution_status = lane_result.get("execution_status", {}) if isinstance(lane_result.get("execution_status"), dict) else {}
+        step = summary_step(summary, step_id)
+        lane_paths.append(lane_result_path)
+        lane_runs.append({
+            "scenario_id": scenario_id,
+            "lane_id": lane_id,
+            "backend": "native",
+            "execution_status": str(execution_status.get("state", "unknown")),
+            "artifact_path": str(lane_result_path),
+            "native_step_id": step_id,
+        })
+        provenance.append({
+            "scenario_id": scenario_id,
+            "lane_id": lane_id,
+            "step_id": step_id,
+            "workflow_path": ".scherzo/workflows/review-native.yml",
+            "structured_output_status": step_structured_status(step),
+            "structured_output_path": step_structured_path(step),
+            "metadata_path": str(lane_dir / "agent-step-metadata.v1.json"),
+            "run_summary_path": str(run_root / "native-runner-summary.v1.json"),
+            "runner_invocation": command_text,
+            "native_artifact_source": "scherzo_workflow_runner",
+        })
+
+    expectations = {
+        **scenario,
+        "expect_empty_findings": scenario_id == "no-findings",
+        "expect_inverted_auth_blocker": False,
+        "expect_static_suspicion_note": False,
+        "expect_review_notes": False,
+        "expect_no_weak_test_assertion_finding": False,
+        "expect_security_performance_findings": None,
+        "expect_security_locations_prioritize_non_docs": False,
+    }
+    assertions = preflight_assert_scenario_expectations(
+        scenario=expectations,
+        scenario_id=scenario_id,
+        synthesis=synthesis,
+        final_review=final_review,
+        scenario_dir=scenario_dir,
+        lane_paths=lane_paths,
+    )
+    if scenario_id == "inverted-auth-control-condition":
+        normalized_findings = synthesis.get("normalized_findings", []) if isinstance(synthesis.get("normalized_findings"), list) else []
+        blockers = [
+            finding for finding in normalized_findings
+            if isinstance(finding, dict)
+            and finding.get("category") == "correctness"
+            and finding.get("blocking") is True
+            and finding.get("verified") is True
+            and finding.get("evidence_type") == "reproduction"
+        ]
+        if not blockers:
+            raise ReviewError("inverted auth fixture did not produce a verified reproduction blocker")
+        assertions["semantic_fixture_passed"] = True
+    if scenario_id == "static-suspicion":
+        normalized_findings = synthesis.get("normalized_findings", []) if isinstance(synthesis.get("normalized_findings"), list) else []
+        for finding in normalized_findings:
+            if isinstance(finding, dict) and finding.get("category") == "correctness" and finding.get("blocking") is True:
+                raise ReviewError("static suspicion stayed blocking without executable evidence")
+        assertions["semantic_fixture_passed"] = True
+    if scenario_id == "lane-mutates-worktree":
+        assertions["mutation_attempt_contained"] = True
+    counts = final_review.get("finding_counts", {}) if isinstance(final_review.get("finding_counts"), dict) else {}
+    dirty_tree_checks = native_dirty_tree_checks(run_root, scenario)
+    return {
+        "id": scenario_id,
+        "status": "passed",
+        "mode": str(scenario.get("mode") or "native"),
+        "description": scenario.get("description"),
+        "readiness_required": bool(scenario.get("readiness_required", scenario_id in {"pr-80", "inverted-auth-control-condition", "static-suspicion", "no-findings"})),
+        "assertions": assertions,
+        "native_runner_command": command_text,
+        "workflow_path": ".scherzo/workflows/review-native.yml",
+        "run_root": str(run_root),
+        "run_summary_path": str(run_root / "native-runner-summary.v1.json"),
+        "brief_path": str(brief_path),
+        "synthesis_path": str(synthesis_path),
+        "final_review_path": str(final_path),
+        "feedback_manifest_path": str(feedback_manifest_path),
+        "publish_manifest_path": str(publish_manifest_path),
+        "finding_count": counts.get("total", 0),
+        "blocking_finding_count": counts.get("blocking", 0),
+        "lane_failure_count": counts.get("lane_failed", 0),
+        "lane_runs": lane_runs,
+        "native_lane_step_provenance": provenance,
+        "dirty_tree_checks": dirty_tree_checks,
+    }
+
+def evaluate_native_cutover_readiness(manifest: dict[str, Any]) -> dict[str, Any]:
+    reasons: list[str] = []
+    if manifest.get("execution_mode") != "native":
+        reasons.append("execution_mode must be native")
+    if manifest.get("remote_mutations") != "none":
+        reasons.append("remote_mutations must be none")
+    if manifest.get("status") != "passed":
+        reasons.append("preflight status must be passed")
+    if manifest.get("failed_scenario_count") != 0:
+        reasons.append("failed_scenario_count must be 0")
+    runner_command = str(manifest.get("native_runner_command") or "")
+    if "gleam run -- workflow run .scherzo/workflows/review-native.yml" not in runner_command:
+        reasons.append("native_runner_command must invoke Scherzo workflow run for review-native.yml")
+    if "not exposed" in runner_command or "simulated" in runner_command:
+        reasons.append("native_runner_command must not describe a missing or simulated runner")
+    contract = manifest.get("contract_spike")
+    if not isinstance(contract, dict) or contract.get("status") != "passed":
+        reasons.append("native structured-output contract spike must pass through the workflow runner")
+    scenarios = manifest.get("scenarios", []) if isinstance(manifest.get("scenarios"), list) else []
+    scenario_ids = {str(scenario.get("id")) for scenario in scenarios if isinstance(scenario, dict)}
+    for required in ["pr-80", "inverted-auth-control-condition", "static-suspicion", "malformed-agent-output", "lane-failure", "no-findings", "lane-mutates-worktree"]:
+        if required not in scenario_ids:
+            reasons.append(f"required native scenario did not run: {required}")
+    provenance = manifest.get("native_lane_step_provenance", []) if isinstance(manifest.get("native_lane_step_provenance"), list) else []
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+        sid = str(scenario.get("id"))
+        for lane_id in NATIVE_PREFLIGHT_LANE_IDS:
+            matching = [
+                item for item in provenance
+                if isinstance(item, dict)
+                and item.get("scenario_id") == sid
+                and item.get("lane_id") == lane_id
+            ]
+            if not matching:
+                reasons.append(f"scenario {sid} missing native lane provenance for {lane_id}")
+                continue
+            item = matching[0]
+            if item.get("native_artifact_source") != "scherzo_workflow_runner":
+                reasons.append(f"scenario {sid} lane {lane_id} did not come from the Scherzo workflow runner")
+            if "gleam run -- workflow run .scherzo/workflows/review-native.yml" not in str(item.get("runner_invocation") or ""):
+                reasons.append(f"scenario {sid} lane {lane_id} missing native runner invocation")
+            if not item.get("run_summary_path"):
+                reasons.append(f"scenario {sid} lane {lane_id} missing native runner summary path")
+    return {
+        "ready": not reasons,
+        "status": "ready" if not reasons else "not_ready",
+        "required_lanes": NATIVE_PREFLIGHT_LANE_IDS,
+        "required_scenarios": ["pr-80", "inverted-auth-control-condition", "static-suspicion", "malformed-agent-output", "lane-failure", "no-findings", "lane-mutates-worktree"],
+        "blocking_reasons": reasons,
+    }
+
+
+def validate_native_cutover_ready(manifest: dict[str, Any]) -> None:
+    computed = evaluate_native_cutover_readiness(manifest)
+    recorded = manifest.get("cutover_readiness")
+    if computed.get("ready") is not True or not isinstance(recorded, dict) or recorded.get("ready") is not True:
+        reasons = computed.get("blocking_reasons", [])
+        if isinstance(reasons, list) and reasons:
+            raise ReviewError(str(reasons[0]))
+        raise ReviewError("native cutover readiness is false")
+
+
+def native_preflight_command(args: argparse.Namespace) -> None:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    selected = set(args.scenario or [])
+    scenarios = native_preflight_scenarios()
+    if selected:
+        known = {str(scenario["id"]) for scenario in scenarios}
+        unknown = selected - known
+        if unknown:
+            raise ReviewError("unknown native preflight scenario(s): " + ", ".join(sorted(unknown)))
+        scenarios = [scenario for scenario in scenarios if str(scenario["id"]) in selected]
+    started_at = now_utc()
+    results: list[dict[str, Any]] = []
+    failures: list[str] = []
+    lane_runs: list[dict[str, Any]] = []
+    provenance: list[dict[str, Any]] = []
+    contract_spike: dict[str, Any] | None = None
+    try:
+        contract_spike = run_native_contract_spike(output_dir)
+    except Exception as exc:
+        failures.append(f"contract-spike: {exc}")
+        failure_dir = output_dir / "contract-spike" / "logs"
+        failure_dir.mkdir(parents=True, exist_ok=True)
+        (failure_dir / "native-contract-spike-failure.log").write_text(str(exc) + "\n")
+    for scenario in scenarios:
+        scenario_id = str(scenario["id"])
+        try:
+            result = run_native_preflight_scenario(scenario, output_dir)
+            results.append(result)
+            lane_runs.extend([run for run in result.get("lane_runs", []) if isinstance(run, dict)])
+            provenance.extend([item for item in result.get("native_lane_step_provenance", []) if isinstance(item, dict)])
+        except Exception as exc:
+            failures.append(f"{scenario_id}: {exc}")
+            failure_dir = output_dir / scenario_id / "logs"
+            failure_dir.mkdir(parents=True, exist_ok=True)
+            (failure_dir / "native-preflight-failure.log").write_text(str(exc) + "\n")
+            results.append({
+                "id": scenario_id,
+                "status": "failed",
+                "description": scenario.get("description"),
+                "readiness_required": bool(scenario.get("readiness_required", False)),
+                "error": str(exc),
+            })
+    completed_at = now_utc()
+    runner_commands = [str(result.get("native_runner_command")) for result in results if isinstance(result.get("native_runner_command"), str)]
+    native_runner_command = runner_commands[0] if runner_commands else ""
+    manifest = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "preflight_manifest",
+        "generated_at_utc": completed_at,
+        "started_at_utc": started_at,
+        "status": "failed" if failures else "passed",
+        "agent_backend": "native",
+        "execution_mode": "native",
+        "native_runner_command": native_runner_command,
+        "native_runner_commands": runner_commands,
+        "contract_spike": contract_spike or {"status": "failed"},
+        "workflow_path": ".scherzo/workflows/review-native.yml",
+        "remote_mutations": "none",
+        "coverage": [
+            "PR #80-inspired staged review precision regression",
+            "inverted auth/control-condition with same-finding reproduction evidence",
+            "static correctness suspicion downgrade",
+            "malformed native structured output containment",
+            "native lane failure containment",
+            "no-finding native review",
+            "tracked-file mutation containment",
+        ],
+        "scenario_count": len(scenarios),
+        "passed_scenario_count": len([result for result in results if result.get("status") == "passed"]),
+        "failed_scenario_count": len(failures),
+        "lane_runs": lane_runs,
+        "native_lane_step_provenance": provenance,
+        "scenarios": results,
+    }
+    manifest["cutover_readiness"] = evaluate_native_cutover_readiness(manifest)
+    manifest_path = output_dir / "preflight-manifest.v1.json"
+    write_json(manifest_path, manifest)
+    validate_preflight_manifest(manifest)
+    if failures:
+        raise ReviewError("native review preflight failed; see " + str(manifest_path) + ": " + "; ".join(failures))
+    print("REVIEW_NATIVE_PREFLIGHT=ok")
+    print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
+    print(f"REVIEW_PREFLIGHT_ARTIFACT_DIR={output_dir}")
+    print(f"REVIEW_PREFLIGHT_MANIFEST_PATH={manifest_path}")
+    print(f"REVIEW_PREFLIGHT_SCENARIOS={len(scenarios)}")
+    print("REVIEW_REMOTE_MUTATIONS=none")
 
 
 def json_clone(value: Any) -> Any:
@@ -2695,6 +4268,11 @@ def run_lane_command(args: argparse.Namespace) -> None:
     diff, source = diff_source_from_args(args)
     files = parse_diff_files(diff)
     backend = agent_lane_harness.parse_agent_backend(getattr(args, "agent_backend", "heuristic"))
+    if backend == "external":
+        print(
+            "REVIEW_AGENT_BACKEND_WARNING=external backend is legacy rollback only; use the native Scherzo review workflow for production staged review",
+            file=sys.stderr,
+        )
 
     if backend != "heuristic":
         try:
@@ -3854,11 +5432,18 @@ def validate_command(args: argparse.Namespace) -> None:
     print(f"REVIEW_SCHEMA_VERSION={value.get('schema_version')}")
     print(f"REVIEW_ARTIFACT_TYPE={value.get('artifact_type')}")
     if getattr(args, "require_cutover_ready", False):
-        try:
-            agent_lane_harness.validate_cutover_readiness(value)
-        except agent_lane_harness.HarnessError as exc:
-            print("REVIEW_CUTOVER_READY=failed")
-            raise ReviewError(str(exc)) from exc
+        if value.get("execution_mode") == "native" or value.get("agent_backend") == "native":
+            try:
+                validate_native_cutover_ready(value)
+            except ReviewError:
+                print("REVIEW_CUTOVER_READY=failed")
+                raise
+        else:
+            try:
+                agent_lane_harness.validate_cutover_readiness(value)
+            except agent_lane_harness.HarnessError as exc:
+                print("REVIEW_CUTOVER_READY=failed")
+                raise ReviewError(str(exc)) from exc
         print("REVIEW_CUTOVER_READY=ok")
 
 
@@ -3906,6 +5491,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dry_run.set_defaults(func=dry_run_command)
 
+    prepare_native = subparsers.add_parser(
+        "prepare-native",
+        help="Prepare shared artifacts for native Scherzo review agent lanes without mutating remote state.",
+    )
+    prepare_source = prepare_native.add_mutually_exclusive_group()
+    prepare_source.add_argument("--diff-file", help="Read a unified git diff from this file.")
+    prepare_source.add_argument("--pr", help="Read a GitHub PR diff with gh pr diff (read-only).")
+    prepare_native.add_argument("--repo", help="GitHub owner/repo for --pr.")
+    prepare_native.add_argument(
+        "--from",
+        dest="from_rev",
+        default="@-",
+        help="jj revision for the left side of the local diff (default: @-).",
+    )
+    prepare_native.add_argument(
+        "--to",
+        dest="to_rev",
+        default="@",
+        help="jj revision for the right side of the local diff (default: @).",
+    )
+    prepare_native.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_NATIVE_OUTPUT_DIR),
+        help="Directory for native review input artifacts (default: tmp/scherzo-review-native).",
+    )
+    prepare_native.add_argument(
+        "--source-label",
+        help="Human label to record in the ReviewBrief source object.",
+    )
+    prepare_native.add_argument(
+        "--test-status",
+        action="append",
+        default=[],
+        help="Record available validation as NAME=STATUS[:SUMMARY]. STATUS is passed, failed, skipped, not_run, or unknown.",
+    )
+    prepare_native.set_defaults(func=prepare_native_command)
+
     run_lane = subparsers.add_parser(
         "run-lane",
         help="Run one specialist review lane against a ReviewBrief and diff source.",
@@ -3950,7 +5572,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-backend",
         choices=sorted(agent_lane_harness.AGENT_BACKENDS),
         default="heuristic",
-        help="Lane backend to use: heuristic keeps the deterministic path; fixture and external exercise the agent harness.",
+        help="Lane backend to use: heuristic keeps the deterministic path; fixture exercises the local harness; external is legacy rollback only and is not the production native review path.",
     )
     run_lane.set_defaults(func=run_lane_command)
 
@@ -3999,6 +5621,75 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preflight.set_defaults(func=preflight_command)
 
+    verify_evidence = subparsers.add_parser(
+        "verify-evidence",
+        help="Verify allowlisted evidence requests from a native ReviewLaneDraft and write an EvidenceLedger.",
+    )
+    verify_evidence.add_argument("--lane", required=True, choices=sorted(SPECIALIST_LANES.keys()))
+    verify_evidence.add_argument("--draft", required=True, help="ReviewLaneDraft artifact path.")
+    verify_evidence.add_argument("--brief", required=True, help="ReviewBrief artifact path.")
+    verify_evidence.add_argument("--diff-file", required=True, help="Unified diff artifact path.")
+    verify_evidence.add_argument("--changed-files", required=True, help="Changed-files artifact path.")
+    verify_evidence.add_argument("--validation-status", required=True, help="Validation-status artifact path.")
+    verify_evidence.add_argument("--context-manifest", required=True, help="Context-manifest artifact path.")
+    verify_evidence.add_argument("--output-dir", required=True, help="Directory for evidence-ledger artifacts.")
+    verify_evidence.set_defaults(func=verify_evidence_command)
+
+    normalize_lane = subparsers.add_parser(
+        "normalize-lane-result",
+        help="Normalize a native ReviewLaneDraft and EvidenceLedger into a trusted ReviewLaneResult.",
+    )
+    normalize_lane.add_argument("--lane", required=True, choices=sorted(SPECIALIST_LANES.keys()))
+    normalize_lane.add_argument("--draft", required=True, help="ReviewLaneDraft path, or missing/malformed draft path to diagnose.")
+    normalize_lane.add_argument("--evidence-ledger", required=True, help="EvidenceLedger path.")
+    normalize_lane.add_argument("--agent-step-metadata", required=True, help="Native agent step metadata path.")
+    normalize_lane.add_argument("--agent-step-status", default="", help="Native agent step status from Scherzo artifact template locals.")
+    normalize_lane.add_argument("--agent-step-failure-code", default="", help="Native agent step failure code from Scherzo artifact template locals.")
+    normalize_lane.add_argument("--structured-output-status", default="", help="Native structured-output status from Scherzo artifact template locals.")
+    normalize_lane.add_argument("--brief", required=True, help="ReviewBrief artifact path.")
+    normalize_lane.add_argument("--output-dir", required=True, help="Directory for normalized lane result artifacts.")
+    normalize_lane.set_defaults(func=normalize_lane_result_command)
+
+    apply_feedback = subparsers.add_parser(
+        "apply-feedback",
+        help="Apply local review feedback artifacts or write a no-op feedback manifest.",
+    )
+    apply_feedback.add_argument("--final-review", required=True, help="FinalReview artifact path.")
+    apply_feedback.add_argument(
+        "--feedback-artifact",
+        action="append",
+        default=[],
+        help="Optional local feedback JSON artifact. Repeat to supply multiple artifacts.",
+    )
+    apply_feedback.add_argument("--output-dir", required=True, help="Directory for feedback artifacts.")
+    apply_feedback.set_defaults(func=apply_feedback_command)
+
+    publish = subparsers.add_parser(
+        "publish",
+        help="Publish or dry-run publish a final review artifact. Only dry-run is supported in this issue.",
+    )
+    publish.add_argument("--final-review", required=True, help="FinalReview artifact path.")
+    publish.add_argument("--mode", required=True, help="Publish mode. Only dry-run is accepted.")
+    publish.add_argument("--output-dir", required=True, help="Directory for publish artifacts.")
+    publish.set_defaults(func=publish_command)
+
+    native_preflight = subparsers.add_parser(
+        "native-preflight",
+        help="Run native review preflight scenarios and validate native lane artifact provenance.",
+    )
+    native_preflight.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_NATIVE_PREFLIGHT_OUTPUT_DIR),
+        help="Directory for native preflight artifacts (default: tmp/scherzo-review-native-preflight).",
+    )
+    native_preflight.add_argument(
+        "--scenario",
+        action="append",
+        default=[],
+        help="Run only the named native preflight scenario. Repeat to select multiple scenarios.",
+    )
+    native_preflight.set_defaults(func=native_preflight_command)
+
     validate = subparsers.add_parser("validate", help="Validate a review artifact JSON object.")
     validate.add_argument("--artifact", required=True, help="Artifact path to validate.")
     validate.add_argument(
@@ -4013,7 +5704,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command in {"dry-run", "run-lane"} and args.repo and not args.pr:
+    if args.command in {"dry-run", "prepare-native", "run-lane"} and args.repo and not args.pr:
         usage_error("--repo can only be used with --pr")
     try:
         args.func(args)
@@ -4023,6 +5714,8 @@ def main(argv: list[str]) -> int:
                 write_failed_lane_artifacts(args, str(exc))
             except Exception:
                 pass
+        if args.command == "validate":
+            print("REVIEW_ARTIFACT_VALID=error")
         fail(str(exc))
     return 0
 

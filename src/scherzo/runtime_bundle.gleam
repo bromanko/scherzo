@@ -180,6 +180,12 @@ fn load_workflow_map(
   }
 }
 
+pub fn load_workflow_file(
+  workflow_path: String,
+) -> Result(workflow_dag.WorkflowDag, BundleError) {
+  load_workflow_dag(workflow_path)
+}
+
 fn load_workflow_dag(
   workflow_path: String,
 ) -> Result(workflow_dag.WorkflowDag, BundleError) {

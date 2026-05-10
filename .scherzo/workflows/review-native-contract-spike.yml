@@ -1,0 +1,68 @@
+version: 1
+id: review-native-contract-spike
+description: Minimal native structured-output contract spike for review lane drafts, malformed output, failure continuation, and downstream metadata inspection.
+workspace_profile: dogfood-jj
+max_parallel_steps: 3
+steps:
+  - id: valid_lane
+    kind: agent
+    prompt: prompts/review-native-contract-valid.md
+    on_failure: continue
+    workspace: main
+    structured_output:
+      format: json
+      artifact_name: valid_draft
+      required: true
+      schema:
+        type: object
+        required:
+          - schema_version
+          - artifact_type
+          - lane
+          - draft_findings
+          - evidence_requests
+          - remote_mutations
+
+  - id: malformed_lane
+    kind: agent
+    prompt: prompts/review-native-contract-malformed.md
+    on_failure: continue
+    workspace: main
+    structured_output:
+      format: json
+      artifact_name: malformed_draft
+      required: true
+      schema:
+        type: object
+        required:
+          - schema_version
+          - artifact_type
+          - lane
+          - draft_findings
+          - evidence_requests
+          - remote_mutations
+
+  - id: failed_lane
+    kind: agent
+    prompt: prompts/review-native-contract-failed.md
+    on_failure: continue
+    workspace: main
+    structured_output:
+      format: json
+      artifact_name: failed_draft
+      required: true
+      schema:
+        type: object
+        required:
+          - schema_version
+          - artifact_type
+          - lane
+          - draft_findings
+          - evidence_requests
+          - remote_mutations
+
+  - id: inspect_contract
+    kind: command
+    depends_on: [valid_lane, malformed_lane, failed_lane]
+    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review-native-contract"; valid_path="$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/valid_lane/attempt-1/structured/valid_draft.json"; malformed_step="$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/malformed_lane/attempt-1.json"; failed_step="$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/failed_lane/attempt-1.json"; test -f "$valid_path"; test -f "$malformed_step"; test -f "$failed_step"; printf "runner=direnv exec . gleam run -- workflow run .scherzo/workflows/review-native-contract-spike.yml --run-root %s --run-id %s --native-review-scenario contract-spike\nrun_id=%s\nworkflow_id=%s\nvalid_path=%s\nmalformed_step_artifact=%s\nfailed_step_artifact=%s\n" "$SCHERZO_RUN_ROOT" "$SCHERZO_RUN_ID" "$SCHERZO_RUN_ID" "$SCHERZO_WORKFLOW_ID" "$valid_path" "$malformed_step" "$failed_step" > "$SCHERZO_RUN_ROOT/artifacts/review-native-contract/contract-summary.txt"'
+    workspace: main

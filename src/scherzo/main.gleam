@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/ctl
 import scherzo/doctor
+import scherzo/local_workflow_run
 import scherzo/log
 import scherzo/orchestrator/service
 import scherzo/version
@@ -19,6 +20,7 @@ pub type RunMode {
 pub type CliResult {
   Run(RunMode, Option(String))
   LinearAttachCommentFile(String, String, Option(String))
+  WorkflowRun(local_workflow_run.Options)
   Control(List(String))
   Doctor(doctor.Options)
   Version
@@ -35,6 +37,16 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
     ["--help"] | ["-h"] -> Ok(Help)
     ["--version"] -> Ok(Version)
     ["ctl", ..rest] -> Ok(Control(rest))
+    ["workflow", "run", workflow_path, ..rest] ->
+      parse_workflow_run_args(
+        rest,
+        local_workflow_run.Options(
+          workflow_path: workflow_path,
+          run_root: "tmp/scherzo-workflow-run",
+          run_id: "local-workflow-run",
+          native_review_scenario: None,
+        ),
+      )
     ["doctor", ..rest] ->
       parse_doctor_args(rest, doctor.Options(None, [], False, doctor.Human))
     ["--once"] -> Ok(Run(Once, None))
@@ -55,6 +67,34 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
         True -> Error(UsageError)
         False -> Ok(Run(Daemon, Some(path)))
       }
+    _ -> Error(UsageError)
+  }
+}
+
+fn parse_workflow_run_args(
+  args: List(String),
+  options: local_workflow_run.Options,
+) -> Result(CliResult, CliError) {
+  case args {
+    [] -> Ok(WorkflowRun(options))
+    ["--run-root", run_root, ..rest] ->
+      parse_workflow_run_args(
+        rest,
+        local_workflow_run.Options(..options, run_root: run_root),
+      )
+    ["--run-id", run_id, ..rest] ->
+      parse_workflow_run_args(
+        rest,
+        local_workflow_run.Options(..options, run_id: run_id),
+      )
+    ["--native-review-scenario", scenario, ..rest] ->
+      parse_workflow_run_args(
+        rest,
+        local_workflow_run.Options(
+          ..options,
+          native_review_scenario: Some(scenario),
+        ),
+      )
     _ -> Error(UsageError)
   }
 }
@@ -92,7 +132,7 @@ fn parse_doctor_args(
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo [mode] [path-to-scherzo.yaml]\n       scherzo --version\n       scherzo --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n       scherzo doctor [options] [path-to-scherzo.yaml]\n       scherzo ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, linear-contract, linear-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke          Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --linear-contract-check Compare workflow state/label policy to the Linear project board; read-only.\n  --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n                          Upload a local Markdown file to Linear and attach it to an existing comment; mutates Linear.\n  --pi-probe              Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                     Inspect a running daemon through the local read-only control API.\n  --version               Print source/build identity for logs and bug reports.\n  --help, -h              Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace.hooks or workspace profiles that create or verify each step workspace.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. The repository scherzo-start helper translates Ctrl-C/SIGINT into SIGTERM for this path; direct gleam run Ctrl-C may still terminate abruptly, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
+  "Usage: scherzo [mode] [path-to-scherzo.yaml]\n       scherzo --version\n       scherzo --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n       scherzo doctor [options] [path-to-scherzo.yaml]\n       scherzo workflow run <workflow.yml> [--run-root <dir>] [--run-id <id>] [--native-review-scenario <id>]\n       scherzo ctl <command> [options]\n\nScherzo polls Linear and runs pi agents in per-issue workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, linear-contract, linear-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  workflow run            Run one workflow DAG file locally through Scherzo's workflow runner; native-review scenarios use fixture agent responses but retain native structured-output artifacts.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  --linear-smoke          Perform a bounded read-only Linear API check; no hooks, workspace, or pi prompt.\n  --linear-contract-check Compare workflow state/label policy to the Linear project board; read-only.\n  --linear-attach-comment-file <comment-id> <file.md> [path-to-scherzo.yaml]\n                          Upload a local Markdown file to Linear and attach it to an existing comment; mutates Linear.\n  --pi-probe              Prepare a scratch workspace and launch pi RPC without sending a prompt.\n  ctl                     Inspect a running daemon through the local read-only control API.\n  --version               Print source/build identity for logs and bug reports.\n  --help, -h              Show this help.\n\nControl commands:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl ... --control-file <path>\n\nRequired runtime inputs: LINEAR_API_KEY, a Linear project slug, pi --mode rpc, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace.hooks or workspace profiles that create or verify each step workspace.\n\nSet agent.max_concurrent_agents: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per Linear project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. The repository scherzo-start helper translates Ctrl-C/SIGINT into SIGTERM for this path; direct gleam run Ctrl-C may still terminate abruptly, and kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
 }
 
 pub fn main() -> Nil {
@@ -144,6 +184,19 @@ pub fn main() -> Nil {
         Error(err) -> {
           io.println_error(
             log.error("startup_failed", [
+              #("code", err.code),
+              #("message", err.message),
+            ]),
+          )
+          halt(1)
+        }
+      }
+    Ok(WorkflowRun(options)) ->
+      case local_workflow_run.run(options) {
+        Ok(Nil) -> Nil
+        Error(err) -> {
+          io.println_error(
+            log.error("workflow_run_failed", [
               #("code", err.code),
               #("message", err.message),
             ]),

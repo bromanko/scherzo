@@ -995,3 +995,427 @@ pub fn review_artifact_validator_rejects_missing_required_brief_fields_test() {
     "artifact field 'generated_at_utc' must be a non-empty string",
   )
 }
+
+fn review_lane_draft_json(
+  location_path: String,
+  remote_mutations: String,
+) -> String {
+  "{\n"
+  <> "  \"schema_version\": 1,\n"
+  <> "  \"artifact_type\": \"review_lane_draft\",\n"
+  <> "  \"generated_at_utc\": \"2026-05-09T00:00:00Z\",\n"
+  <> "  \"producer\": { \"name\": \"test\", \"version\": \"1\", \"mode\": \"native\" },\n"
+  <> "  \"lane\": { \"id\": \"correctness\", \"name\": \"Correctness reviewer\", \"category\": \"correctness\", \"version\": \"1\" },\n"
+  <> "  \"input_refs\": [{ \"artifact_type\": \"review_brief\", \"path\": \"review-brief.v1.json\" }],\n"
+  <> "  \"draft_findings\": [{\n"
+  <> "    \"draft_finding_id\": \"F1\",\n"
+  <> "    \"title\": \"Draft finding\",\n"
+  <> "    \"claim\": \"A claim that needs deterministic evidence.\",\n"
+  <> "    \"category\": \"correctness\",\n"
+  <> "    \"severity\": \"high\",\n"
+  <> "    \"proposed_blocking\": true,\n"
+  <> "    \"locations\": [{ \"path\": \""
+  <> location_path
+  <> "\" }],\n"
+  <> "    \"evidence_request_ids\": [\"E1\"],\n"
+  <> "    \"suggested_fix\": \"Add a reproduction.\"\n"
+  <> "  }],\n"
+  <> "  \"review_notes\": [],\n"
+  <> "  \"evidence_requests\": [{\n"
+  <> "    \"request_id\": \"E1\",\n"
+  <> "    \"draft_finding_id\": \"F1\",\n"
+  <> "    \"evidence_key\": \"gleam_test\",\n"
+  <> "    \"claim\": \"A claim that needs deterministic evidence.\",\n"
+  <> "    \"expected_observation\": \"targeted test fails before the fix\",\n"
+  <> "    \"target\": {}\n"
+  <> "  }],\n"
+  <> "  \"self_check\": { \"inspected_diff\": true, \"used_repository_relative_paths\": true },\n"
+  <> "  \"remote_mutations\": \""
+  <> remote_mutations
+  <> "\"\n"
+  <> "}\n"
+}
+
+fn write_native_brief(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_brief\",\n"
+        <> "  \"generated_at_utc\": \"2026-05-09T00:00:00Z\",\n"
+        <> "  \"producer\": { \"name\": \"test\", \"version\": \"1\", \"mode\": \"test\" },\n"
+        <> "  \"source\": { \"kind\": \"diff_file\", \"label\": \"test\", \"diff_sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\", \"changed_file_count\": 1 },\n"
+        <> "  \"implementation_summary\": \"Test summary\",\n"
+        <> "  \"changed_areas\": [{ \"path\": \"src/example.gleam\", \"subsystem\": \"tests\", \"language\": \"gleam\", \"change_kind\": \"modified\", \"additions\": 1, \"deletions\": 0, \"hunks\": 1 }],\n"
+        <> "  \"inferred_acceptance_criteria\": [\"works\"],\n"
+        <> "  \"risk_profile\": { \"level\": \"medium\", \"rationale\": \"test\", \"risk_areas\": [\"tests\"] },\n"
+        <> "  \"suggested_review_lanes\": [{ \"id\": \"correctness\", \"name\": \"Correctness reviewer\", \"reason\": \"test\" }],\n"
+        <> "  \"test_build_status\": [],\n"
+        <> "  \"notes\": []\n"
+        <> "}\n",
+    )
+  Nil
+}
+
+fn write_native_support_files(dir: String) -> Nil {
+  write_native_brief(dir <> "/review-brief.v1.json")
+  let assert Ok(Nil) = simplifile.write(dir <> "/diff.patch", "")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/changed-files.v1.json",
+      "{\"schema_version\":1,\"artifact_type\":\"changed_files\",\"files\":[]}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/validation-status.v1.json",
+      "{\"schema_version\":1,\"artifact_type\":\"validation_status\",\"test_build_status\":[]}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/context-manifest.v1.json",
+      "{\"schema_version\":1,\"artifact_type\":\"context_manifest\",\"files\":[]}",
+    )
+  Nil
+}
+
+fn write_metadata(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "{\"schema_version\":1,\"artifact_type\":\"agent_step_metadata\",\"state\":\"succeeded\",\"remote_mutations\":\"none\"}\n",
+    )
+  Nil
+}
+
+fn write_wrong_finding_ledger(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"review_evidence_ledger\",\n"
+        <> "  \"generated_at_utc\": \"2026-05-09T00:00:00Z\",\n"
+        <> "  \"lane_id\": \"correctness\",\n"
+        <> "  \"draft_ref\": { \"artifact_type\": \"review_lane_draft\", \"path\": \"draft.v1.json\" },\n"
+        <> "  \"checks\": [{ \"check_id\": \"C1\", \"request_id\": \"E1\", \"draft_finding_id\": \"F2\", \"evidence_key\": \"fixture_reproduction\", \"command\": \"fixed\", \"exit_status\": 0, \"output_excerpt\": \"verified\", \"remote_mutations\": \"none\" }],\n"
+        <> "  \"verdicts\": [{ \"request_id\": \"E1\", \"draft_finding_id\": \"F2\", \"verdict\": \"verified\", \"evidence_type\": \"reproduction\", \"claim_supported\": \"other\", \"matched_expected_observation\": true, \"check_id\": \"C1\" }],\n"
+        <> "  \"execution_status\": { \"state\": \"succeeded\", \"summary\": \"wrong finding\" },\n"
+        <> "  \"remote_mutations\": \"none\"\n"
+        <> "}\n",
+    )
+  Nil
+}
+
+pub fn review_lane_draft_path_safety_validation_test() {
+  let dir = "test/tmp/review-lane-draft-path-safety"
+  reset_dir(dir)
+  let absolute_path = "/tmp/scherzo-review-absolute-path-fixture.gleam"
+  let absolute_draft = dir <> "/absolute.json"
+  let parent_draft = dir <> "/parent.json"
+  let remote_draft = dir <> "/remote.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      absolute_draft,
+      review_lane_draft_json(absolute_path, "none"),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      parent_draft,
+      review_lane_draft_json("../secret.txt", "none"),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      remote_draft,
+      review_lane_draft_json("src/example.gleam", "github"),
+    )
+
+  let absolute =
+    run_command("scripts/scherzo-review validate --artifact " <> absolute_draft)
+  assert absolute.status == step_artifact.StepFailed
+  assert absolute.exit_code == Some(1)
+
+  let parent =
+    run_command("scripts/scherzo-review validate --artifact " <> parent_draft)
+  assert parent.status == step_artifact.StepFailed
+  assert parent.exit_code == Some(1)
+
+  let remote =
+    run_command("scripts/scherzo-review validate --artifact " <> remote_draft)
+  assert remote.status == step_artifact.StepFailed
+  assert remote.exit_code == Some(1)
+}
+
+pub fn evidence_verdict_must_link_to_finding_test() {
+  let dir = "test/tmp/native-evidence-linkage"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let draft_path = dir <> "/draft.v1.json"
+  let ledger_path = dir <> "/evidence-ledger.v1.json"
+  let metadata_path = dir <> "/agent-step-metadata.v1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      draft_path,
+      review_lane_draft_json("src/example.gleam", "none"),
+    )
+  write_wrong_finding_ledger(ledger_path)
+  write_metadata(metadata_path)
+
+  let normalized =
+    run_command(
+      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      <> draft_path
+      <> " --evidence-ledger "
+      <> ledger_path
+      <> " --agent-step-metadata "
+      <> metadata_path
+      <> " --brief "
+      <> dir
+      <> "/review-brief.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert normalized.status == step_artifact.StepSucceeded
+  let assert Ok(result) =
+    simplifile.read(lane_dir <> "/review-lane-correctness.v1.json")
+  assert string.contains(result, "\"verified\": false")
+  assert string.contains(result, "\"blocking\": false")
+  assert string.contains(result, "downgraded_unproven_correctness_claim")
+}
+
+pub fn generic_gleam_test_does_not_verify_arbitrary_correctness_claim_test() {
+  let dir = "test/tmp/native-generic-gleam-test"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let draft_path = dir <> "/draft.v1.json"
+  let metadata_path = dir <> "/agent-step-metadata.v1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      draft_path,
+      review_lane_draft_json("src/example.gleam", "none"),
+    )
+  write_metadata(metadata_path)
+
+  let verify =
+    run_command(
+      "scripts/scherzo-review verify-evidence --lane correctness --draft "
+      <> draft_path
+      <> " --brief "
+      <> dir
+      <> "/review-brief.v1.json --diff-file "
+      <> dir
+      <> "/diff.patch --changed-files "
+      <> dir
+      <> "/changed-files.v1.json --validation-status "
+      <> dir
+      <> "/validation-status.v1.json --context-manifest "
+      <> dir
+      <> "/context-manifest.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert verify.status == step_artifact.StepSucceeded
+  let assert Ok(ledger) =
+    simplifile.read(lane_dir <> "/evidence-ledger.v1.json")
+  assert string.contains(ledger, "\"verdict\": \"context_only\"")
+
+  let normalized =
+    run_command(
+      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      <> draft_path
+      <> " --evidence-ledger "
+      <> lane_dir
+      <> "/evidence-ledger.v1.json --agent-step-metadata "
+      <> metadata_path
+      <> " --brief "
+      <> dir
+      <> "/review-brief.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert normalized.status == step_artifact.StepSucceeded
+  let assert Ok(result) =
+    simplifile.read(lane_dir <> "/review-lane-correctness.v1.json")
+  assert string.contains(result, "\"verified\": false")
+  assert string.contains(result, "\"blocking\": false")
+}
+
+pub fn correctness_blocker_downgraded_without_verified_reproduction_test() {
+  let dir = "test/tmp/native-correctness-downgrade"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let draft_path = dir <> "/draft.v1.json"
+  let ledger_path = dir <> "/evidence-ledger.v1.json"
+  let metadata_path = dir <> "/agent-step-metadata.v1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      draft_path,
+      review_lane_draft_json("src/example.gleam", "none"),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      ledger_path,
+      "{\"schema_version\":1,\"artifact_type\":\"review_evidence_ledger\",\"generated_at_utc\":\"2026-05-09T00:00:00Z\",\"lane_id\":\"correctness\",\"draft_ref\":{\"artifact_type\":\"review_lane_draft\",\"path\":\"draft.v1.json\"},\"checks\":[],\"verdicts\":[],\"execution_status\":{\"state\":\"succeeded\",\"summary\":\"none\"},\"remote_mutations\":\"none\"}\n",
+    )
+  write_metadata(metadata_path)
+
+  let normalized =
+    run_command(
+      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      <> draft_path
+      <> " --evidence-ledger "
+      <> ledger_path
+      <> " --agent-step-metadata "
+      <> metadata_path
+      <> " --brief "
+      <> dir
+      <> "/review-brief.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert normalized.status == step_artifact.StepSucceeded
+  let assert Ok(result) =
+    simplifile.read(lane_dir <> "/review-lane-correctness.v1.json")
+  assert string.contains(result, "\"blocking\": false")
+  assert string.contains(result, "\"verified\": false")
+  assert string.contains(result, "downgraded_unproven_correctness_claim")
+}
+
+pub fn missing_or_malformed_draft_produces_failed_lane_result_test() {
+  let dir = "test/tmp/native-malformed-draft"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let draft_path = dir <> "/draft.v1.json"
+  let metadata_path = dir <> "/agent-step-metadata.v1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) = simplifile.write(draft_path, "{ this is not json\n")
+  write_metadata(metadata_path)
+
+  let normalized =
+    run_command(
+      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      <> draft_path
+      <> " --evidence-ledger "
+      <> dir
+      <> "/missing-ledger.json --agent-step-metadata "
+      <> metadata_path
+      <> " --brief "
+      <> dir
+      <> "/review-brief.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert normalized.status == step_artifact.StepSucceeded
+  let assert Ok(result) =
+    simplifile.read(lane_dir <> "/review-lane-correctness.v1.json")
+  assert string.contains(result, "\"state\": \"failed\"")
+  assert string.contains(result, "\"findings\": []")
+}
+
+fn final_review_json() -> String {
+  "{\n"
+  <> "  \"schema_version\": 1,\n"
+  <> "  \"artifact_type\": \"final_review\",\n"
+  <> "  \"generated_at_utc\": \"2026-05-09T00:00:00Z\",\n"
+  <> "  \"producer\": { \"name\": \"test\", \"version\": \"1\", \"mode\": \"test\" },\n"
+  <> "  \"brief_ref\": { \"artifact_type\": \"review_brief\", \"path\": \"review-brief.v1.json\" },\n"
+  <> "  \"synthesis_ref\": { \"artifact_type\": \"review_synthesis\", \"path\": \"review-synthesis.v1.json\" },\n"
+  <> "  \"title\": \"Final review\",\n"
+  <> "  \"summary\": \"No findings.\",\n"
+  <> "  \"finding_counts\": { \"total\": 0, \"blocking\": 0, \"by_severity\": {}, \"by_category\": {} },\n"
+  <> "  \"grouped_findings\": {},\n"
+  <> "  \"blockers\": [],\n"
+  <> "  \"lane_statuses\": [],\n"
+  <> "  \"execution_issues\": [],\n"
+  <> "  \"markdown\": \"# Final review\\nNo findings.\",\n"
+  <> "  \"remote_mutations\": \"none\"\n"
+  <> "}\n"
+}
+
+pub fn publish_and_feedback_manifests_are_schema_valid_and_local_only_test() {
+  let dir = "test/tmp/native-publish-feedback"
+  reset_dir(dir)
+  let final_path = dir <> "/final-review.v1.json"
+  let feedback_dir = dir <> "/feedback"
+  let publish_dir = dir <> "/publish"
+  let assert Ok(Nil) = simplifile.write(final_path, final_review_json())
+
+  let feedback =
+    run_command(
+      "scripts/scherzo-review apply-feedback --final-review "
+      <> final_path
+      <> " --output-dir "
+      <> feedback_dir,
+    )
+  assert feedback.status == step_artifact.StepSucceeded
+  let feedback_manifest = feedback_dir <> "/feedback-manifest.v1.json"
+  let feedback_validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> feedback_manifest,
+    )
+  assert feedback_validation.status == step_artifact.StepSucceeded
+  let assert Ok(feedback_json) = simplifile.read(feedback_manifest)
+  assert string.contains(feedback_json, "\"remote_mutations\": \"none\"")
+  assert string.contains(feedback_json, "\"actions\": []")
+
+  let publish =
+    run_command(
+      "scripts/scherzo-review publish --final-review "
+      <> final_path
+      <> " --mode dry-run --output-dir "
+      <> publish_dir,
+    )
+  assert publish.status == step_artifact.StepSucceeded
+  let publish_manifest = publish_dir <> "/publish-manifest.v1.json"
+  let publish_validation =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> publish_manifest,
+    )
+  assert publish_validation.status == step_artifact.StepSucceeded
+  let assert Ok(publish_json) = simplifile.read(publish_manifest)
+  assert string.contains(publish_json, "\"mode\": \"dry-run\"")
+  assert string.contains(publish_json, "\"remote_mutations\": \"none\"")
+
+  let invalid_publish =
+    run_command(
+      "scripts/scherzo-review publish --final-review "
+      <> final_path
+      <> " --mode live --output-dir "
+      <> dir
+      <> "/invalid-publish",
+    )
+  assert invalid_publish.status == step_artifact.StepFailed
+}
+
+pub fn native_preflight_requires_runner_provenance_test() {
+  let dir = "test/tmp/native-preflight-provenance"
+  reset_dir(dir)
+  let manifest_path = dir <> "/preflight-manifest.v1.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      manifest_path,
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"artifact_type\": \"preflight_manifest\",\n"
+        <> "  \"generated_at_utc\": \"2026-05-09T00:00:00Z\",\n"
+        <> "  \"started_at_utc\": \"2026-05-09T00:00:00Z\",\n"
+        <> "  \"status\": \"passed\",\n"
+        <> "  \"agent_backend\": \"native\",\n"
+        <> "  \"execution_mode\": \"native\",\n"
+        <> "  \"remote_mutations\": \"none\",\n"
+        <> "  \"coverage\": [\"native\"],\n"
+        <> "  \"scenario_count\": 1,\n"
+        <> "  \"passed_scenario_count\": 1,\n"
+        <> "  \"failed_scenario_count\": 0,\n"
+        <> "  \"lane_runs\": [],\n"
+        <> "  \"scenarios\": [],\n"
+        <> "  \"cutover_readiness\": { \"ready\": true }\n"
+        <> "}\n",
+    )
+
+  let validation =
+    run_command("scripts/scherzo-review validate --artifact " <> manifest_path)
+  assert validation.status == step_artifact.StepFailed
+  assert string.contains(
+    validation.stderr,
+    "native preflight manifest must record native lane step provenance",
+  )
+}

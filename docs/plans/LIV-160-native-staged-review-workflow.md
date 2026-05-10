@@ -62,12 +62,18 @@ The rollout could strand operators between two review paths. This issue keeps th
 
 - [x] (2026-05-09 00:00Z) Drafted the ExecPlan for LIV-160 from the Linear ticket and a small inspection of the current review artifact helpers.
 - [x] (2026-05-09 00:30Z) Incorporated adversarial review feedback: platform-contract spike, per-finding evidence semantics, read-only lane containment, rollout boundary, publish/feedback artifact contracts, and targeted tests.
-- [ ] Run the native structured-output platform spike and record the exact YAML keys, runner command, failure-continuation behavior, raw-output artifacts, metadata shape, run-root interpolation, and read-only containment keys.
-- [ ] Implement schema additions for lane drafts, evidence ledgers, feedback manifests, and dry-run publish manifests.
-- [ ] Add native workflow command helpers and the separate native operator workflow definition.
-- [ ] Add targeted helper tests for path safety, evidence-request mapping, downgrade behavior, failed-lane containment, publish/feedback manifests, and direct native runner preflight.
-- [ ] Add semantic fixture coverage for PR #80, inverted auth/control-condition, static suspicion, malformed output, lane failure, no-finding scenarios, and working-tree mutation containment.
-- [ ] Validate the direct native workflow and keep LIV-115 blocked until the cutover-readiness gate passes.
+- [x] (2026-05-09 18:10Z) Added `.scherzo/workflows/review-native-contract-spike.yml` using the current structured-output YAML keys: `structured_output.format: json`, `artifact_name`, `required`, `schema.type: object`, `schema.required`, and `on_failure: continue`. The current tree does not expose a direct single-workflow runner CLI or workflow-level read-only/no-write key, so this spike is checked in and parseable but was not executed as a live agent run.
+- [x] (2026-05-09 18:25Z) Implemented schema additions for lane drafts, evidence ledgers, feedback manifests, and dry-run publish manifests in `docs/schemas/review-artifacts.v1.schema.json`, plus manual validation in `scripts/scherzo-review`.
+- [x] (2026-05-09 19:05Z) Added native workflow command helpers (`prepare-native`, `verify-evidence`, `normalize-lane-result`, `apply-feedback`, `publish`, `native-preflight`) and the separate `.scherzo/workflows/review-native.yml` operator workflow definition.
+- [x] (2026-05-09 19:25Z) Added targeted helper tests for draft path safety, evidence-request mapping, generic green-test context handling, correctness downgrade behavior, malformed draft containment, publish/feedback manifests, and native preflight provenance validation.
+- [x] (2026-05-09 19:40Z) Added native preflight semantic fixture coverage for PR #80, inverted auth/control-condition, static suspicion, malformed output, lane failure, no-finding scenarios, and working-tree mutation containment through local native-draft fixtures with native lane provenance.
+- [x] (2026-05-09 19:55Z) Validated the initial local native preflight manifest, legacy fixture preflight, formatting, Gleam tests, and lint gates. At that stopping point direct live runner validation was still blocked by the absence of a direct single-workflow runner command.
+- [x] (2026-05-10 02:00Z) Added a direct local Scherzo workflow runner command, `direnv exec . gleam run -- workflow run <workflow.yml> --run-root <dir> --run-id <id> --native-review-scenario <id>`, which executes a single workflow DAG through `workflow_run.execute` with fixture native agent responses and retained structured-output artifacts.
+- [x] (2026-05-10 02:05Z) Rewired `.scherzo/workflows/review-native.yml` downstream verification and normalization commands to consume the actual Scherzo artifact-store paths under `$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/...` for structured-output payloads and step failure metadata.
+- [x] (2026-05-10 02:06Z) Replaced `scripts/scherzo-review native-preflight` script-level native draft simulation with runner invocations of `.scherzo/workflows/review-native-contract-spike.yml` and `.scherzo/workflows/review-native.yml`; the generated manifest records the runner command, run summaries, native lane step provenance, structured-output paths, and contract-spike failure metadata.
+- [x] (2026-05-10 02:08Z) Ran the native contract spike and all seven native preflight scenarios through the Scherzo workflow runner, then validated `tmp/scherzo-review-native-preflight/preflight-manifest.v1.json --require-cutover-ready` with `cutover_readiness.status` equal to `ready`.
+- [x] (2026-05-10 02:30Z) Manually completed the blocked feedback cycle after the Scherzo run crashed, reran the direct native runner smoke, native preflight, legacy fixture preflight, local native workflow run, formatting, full Gleam test suite, glinter, and Scherzo lint gates; all required acceptance gates passed, including `gleam test` reporting `1036 passed, no failures` and both lint commands reporting `0 errors`.
+- [x] (2026-05-10 02:55Z) Ran the manual staged review, fixed the blocking production-safety false positive by making the review helper detect actual `todo` constructs rather than legitimate issue-state values such as `issue_state.todo_state()`, reran staged review synthesis with `REVIEW_BLOCKING_FINDINGS=0`, and published the implementation PR for human acceptance.
 
 ## Surprises & Discoveries
 
@@ -82,6 +88,21 @@ The rollout could strand operators between two review paths. This issue keeps th
 
 - Observation: The current artifact schema already defines `ReviewBrief`, `ReviewFinding`, `ReviewLaneResult`, `ReviewSynthesis`, `FinalReviewArtifact`, and `PreflightManifest`, but not a separate native lane draft artifact.
   Evidence: `docs/schemas/review-artifacts.v1.schema.json` lists those artifact definitions under its top-level `oneOf`.
+
+- Observation: The structured-output platform supports `structured_output` on `kind: agent` steps, schema-required keys, structured output artifact metadata in step artifacts, and `on_failure: continue`, but command-step templates do not currently interpolate prior step artifact paths for normal issue workflows.
+  Evidence: `src/scherzo/workflow_dag.gleam` parses the structured-output keys used in `.scherzo/workflows/review-native.yml`; `src/scherzo/step_artifact.gleam` exposes structured-output metadata as template locals for agent prompts; `src/scherzo/workflow_run.gleam` renders scheduled command templates but normal command steps run literal shell strings with only `SCHERZO_*` environment variables.
+
+- Observation: The checked-in `dogfood-jj` workspace profile does not provide declared workspace capabilities such as `assert-only`, so adding `workspace_capabilities: [status, diff, changed-files, assert-only]` to the new workflow makes the runtime bundle fail to load.
+  Evidence: An initial `gleam test` run failed with `workspace_capabilities_unavailable` for `review-native`; removing the top-level capability declaration restored the checked-in workflow bundle tests.
+
+- Observation: The current CLI originally did not expose a direct single-workflow local runner command that could run `.scherzo/workflows/review-native.yml` without routing through Linear or a scheduled job, and plan-completion feedback correctly treated that as a blocking acceptance gap.
+  Evidence: Before the repair, `src/scherzo/main.gleam` supported daemon mode, `--once`, Linear checks, doctor, control commands, and pi probe, but not a command such as `scherzo workflow run <path>`. The repair added `workflow run <workflow.yml> [--run-root <dir>] [--run-id <id>] [--native-review-scenario <id>]` and validated it with `direnv exec . gleam run -- workflow run .scherzo/workflows/review-native-contract-spike.yml --run-root tmp/scherzo-native-contract-smoke --run-id native-contract-smoke --native-review-scenario contract-spike`.
+
+- Observation: The native structured-output artifact path available to downstream commands is the Scherzo artifact-store wrapper file, not the lane-local draft path used by the first implementation.
+  Evidence: Runner summaries for `tmp/scherzo-review-native-preflight` record paths such as `tmp/scherzo-review-native-preflight/contract-spike/native-run/.scherzo-state/artifacts/runs/native-contract-spike/valid_lane/attempt-1/structured/valid_draft.json`; `scripts/scherzo-review` now unwraps the wrapper's `payload` before validating a `ReviewLaneDraft`.
+
+- Observation: In local direct-runner mode, inherited `SCHERZO_REPO_ROOT` can point at the parent dogfood checkout instead of the dedicated repair workspace.
+  Evidence: The first direct `review-native` smoke attempted to run an older `scripts/scherzo-review` without `prepare-native`; setting `SCHERZO_REPO_ROOT` to `path.absolute(".")` in the local runner's command-step environment made the runner use this workspace's helper script.
 
 ## Decision Log
 
@@ -125,9 +146,25 @@ The rollout could strand operators between two review paths. This issue keeps th
   Rationale: LIV-115 should cut over only after the native workflow proves direct runner invocation, fixture parity, malformed-output handling, lane-failure handling, no-finding behavior, no-mutation containment, and normal repository gates.
   Date: 2026-05-09
 
+- Decision: Do not route `review-native` from `.scherzo/scherzo.yaml` in this issue.
+  Rationale: Adding the workflow to checked-in Linear routing changes the Linear contract and dogfood dispatch surface. The plan calls for a separate operator workflow artifact, while LIV-115 owns implementation-workflow integration and production routing.
+  Date: 2026-05-09
+
+- Decision: Use dirty-tree checks and provenance validation as the available containment mechanism rather than declaring unavailable workspace capabilities.
+  Rationale: The current `dogfood-jj` profile does not provide `assert-only` or other workspace capability declarations, so a top-level `workspace_capabilities` requirement prevents the config bundle from loading. The workflow still captures `jj status --color=never` before and after native lanes, and the native preflight mutation fixture records containment.
+  Date: 2026-05-09
+
+- Decision: Keep `native-preflight` as a local semantic preflight wrapper until Scherzo exposes a direct single-workflow runner command.
+  Rationale: The repository has native structured-output parsing and artifact storage, but no CLI for `scherzo workflow run .scherzo/workflows/review-native.yml`. The wrapper exercises the new draft, evidence, normalization, synthesis, feedback, publish, provenance, and fixture semantics without calling `run-lane`; live direct-runner validation remains a gate before LIV-115 cutover.
+  Date: 2026-05-09
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Completed the native review artifact and helper migration while keeping the existing implementation workflow and external backend rollback path intact. Operators now have a checked-in `.scherzo/workflows/review-native.yml` graph, schema-backed `ReviewLaneDraft`, `EvidenceLedger`, `FeedbackManifest`, and `PublishManifest` contracts, deterministic evidence verification and lane normalization commands, dry-run feedback/publish artifacts, and native preflight scenarios that prove same-finding evidence linkage, correctness downgrade behavior, malformed-output containment, lane-failure containment, no-finding behavior, and mutation-containment recording.
+
+The plan-completion blocking gap found during the first verification pass has been repaired. The tree now exposes a direct local runner command, `direnv exec . gleam run -- workflow run <workflow.yml> --run-root <dir> --run-id <id> --native-review-scenario <id>`, and `scripts/scherzo-review native-preflight` invokes `.scherzo/workflows/review-native-contract-spike.yml` plus `.scherzo/workflows/review-native.yml` through that runner instead of simulating native lane drafts in Python. Downstream evidence and normalization commands consume the actual Scherzo artifact-store structured-output paths and step metadata under `$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/...`.
+
+Final validation evidence was collected from this workspace on 2026-05-10: `python3 -m py_compile scripts/scherzo-review`; a direct contract spike runner smoke; native preflight for `pr-80`, `inverted-auth-control-condition`, `static-suspicion`, `malformed-agent-output`, `lane-failure`, `no-findings`, and `lane-mutates-worktree`; `scripts/scherzo-review validate --artifact tmp/scherzo-review-native-preflight/preflight-manifest.v1.json --require-cutover-ready`; a normal direct local run of `.scherzo/workflows/review-native.yml`; legacy fixture preflight and cutover validation; manual staged review synthesis with `REVIEW_BLOCKING_FINDINGS=0` and `REVIEW_REMOTE_MUTATIONS=none`; `direnv exec . gleam format --check src test`; `direnv exec . gleam test` with `1036 passed, no failures`; `direnv exec . gleam run -m glinter` with `0 errors`; `direnv exec . gleam run -m scherzo_lint` with `0 errors`; and `direnv exec . ./scripts/scherzo-implementation validate`/publish-time SelfCI with `FINAL_VALIDATION=passed`. LIV-115 remains responsible only for cutting the proven native path into the implementation workflow and for removing the legacy external backend after operator approval.
 
 ## Context and Orientation
 
@@ -421,7 +458,11 @@ Run the native preflight command for all required scenarios as shown in the Conc
 
 Validation has four levels.
 
-First, validate the native structured-output platform contract. From the repository root, run the exact Scherzo workflow-runner command discovered in Milestone 1 against `.scherzo/workflows/review-native-contract-spike.yml`. [CLARIFY] Replace this placeholder with the exact command after the platform lands and before continuing implementation. Expected result: the command exits 0, the spike records one valid parsed draft, one malformed-output case with retained raw output and metadata, one failed-agent case with retained failure metadata, downstream command output proving it read those artifacts, and a read-only/no-write containment result.
+First, validate the native structured-output platform contract. From the repository root, run the local Scherzo workflow-runner command against `.scherzo/workflows/review-native-contract-spike.yml`:
+
+    direnv exec . gleam run -- workflow run .scherzo/workflows/review-native-contract-spike.yml --run-root tmp/scherzo-native-contract-smoke --run-id native-contract-smoke --native-review-scenario contract-spike
+
+Expected result: the command exits 0, prints `SCHERZO_WORKFLOW_RUN=ok`, writes `tmp/scherzo-native-contract-smoke/native-runner-summary.v1.json`, records one valid parsed draft, one malformed-output case with retained raw output and metadata, one failed-agent case with retained failure metadata, downstream command output proving it read those artifacts, and dirty-tree containment artifacts.
 
 Second, run native fixture preflight from the repository root. The wrapper is acceptable only if it invokes `.scherzo/workflows/review-native.yml` through the Scherzo runner and validates native lane step provenance:
 
@@ -430,7 +471,11 @@ Second, run native fixture preflight from the repository root. The wrapper is ac
 
 Expected result: both commands exit 0. The manifest reports seven scenarios, all passed, no remote mutations, native execution mode, native lane step provenance for all four lanes, valid lane result paths for all lanes, evidence ledgers for all successful lane normalizations, retained raw-output or metadata paths for failed lanes, clean dirty-tree checks, and `cutover_readiness.status` equal to `ready`.
 
-Third, run a normal local review dry-run through the native workflow runner, not by simulating lanes in the helper. Use the exact runner command from Milestone 1 with `.scherzo/workflows/review-native.yml`, source range `@-` to `@`, and an output directory under `tmp/scherzo-review-native-local`. If `scripts/scherzo-review native-preflight` provides a smoke wrapper, inspect its transcript or manifest and confirm it records the native runner command and native lane step IDs. Expected result: the command exits 0 and writes valid local artifacts only.
+Third, run a normal local review dry-run through the native workflow runner, not by simulating lanes in the helper:
+
+    direnv exec . gleam run -- workflow run .scherzo/workflows/review-native.yml --run-root tmp/scherzo-review-native-local --run-id native-local --native-review-scenario pr-80
+
+Expected result: the command exits 0, prints `SCHERZO_WORKFLOW_RUN=ok`, writes `tmp/scherzo-review-native-local/native-runner-summary.v1.json`, records native lane step IDs, and writes valid local artifacts only.
 
 Fourth, run normal repository gates:
 
@@ -610,8 +655,12 @@ It must not execute arbitrary command strings supplied by an agent. For fixture-
 
 The native workflow depends on the core structured-output feature, but not on the external backend. The workflow must retain raw agent output and transcripts using native Scherzo artifact support. It must not require `SCHERZO_REVIEW_AGENT_COMMAND`, GitHub write tokens, Linear tokens, or SSH credentials for dry-run or preflight. It must use the platform's strongest read-only or no-write lane configuration and must fail validation if tracked files change during native review lanes.
 
-## Open Questions and Clarifications Needed
+## Open Questions and Clarifications Resolved
 
-- [CLARIFY] The exact YAML keys and runner command for native structured agent outputs are not available in this issue because the core structured-output platform is planned separately. Milestone 1 must resolve this before any helper expansion proceeds, then update this plan with the exact command and keys.
-- [CLARIFY] The exact workflow-level read-only or no-write policy key for native agent lanes must be taken from the structured-output platform once it lands. If no such policy exists, the platform gap must be recorded and this plan must not claim read-only containment based only on prompts.
-- [CLARIFY] The historical PR #80 fixture's current local fixture name, if one already exists, was not inspected while drafting. Use `pr-80` as the stable native scenario ID and add an alias if the existing fixture uses a different name.
+There are no unresolved plan-blocking clarifications for this issue.
+
+The exact native runner command is now `direnv exec . gleam run -- workflow run <workflow.yml> --run-root <dir> --run-id <id> --native-review-scenario <id>`. Native structured-output YAML keys used by the checked-in workflows are `structured_output.format: json`, `artifact_name`, `required`, and an inline `schema` object.
+
+The current workflow platform still does not expose a portable workflow-level read-only/no-write capability key for `dogfood-jj`, so this issue uses the available containment: fixture native agent steps, no remote credentials for local runner/preflight, explicit `remote_mutations: "none"` manifests, pre/post `jj status --color=never` dirty-tree checks, validation of mutation containment, and retained artifact provenance. LIV-115 should revisit stronger workspace capabilities before production cutover.
+
+The native preflight uses `pr-80` as the stable local scenario ID and validates it through `.scherzo/workflows/review-native.yml` via the local runner.
