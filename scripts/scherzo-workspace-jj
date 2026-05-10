@@ -1,0 +1,220 @@
+#!/bin/sh
+case "$0" in
+  */*) SCHERZO_DRIVER_SCRIPT=$0 ;;
+  *) SCHERZO_DRIVER_SCRIPT=$(command -v "$0" 2>/dev/null || printf '%s\n' "$0") ;;
+esac
+export SCHERZO_DRIVER_SCRIPT
+exec python3 - "$@" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+USAGE = """Usage:
+  scherzo-workspace-jj lifecycle <create|before-step|after-step|remove>
+  scherzo-workspace-jj status --human
+  scherzo-workspace-jj diff --human
+  scherzo-workspace-jj changed-files --json
+  scherzo-workspace-jj assert-only --path <relative-file>
+"""
+
+WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def usage_error(message: str | None = None) -> None:
+    if message:
+        print(f"scherzo-workspace-jj: {message}", file=sys.stderr)
+    print(USAGE, file=sys.stderr, end="")
+    raise SystemExit(2)
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-workspace-jj: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def safe_resolve(raw: str) -> Path:
+    try:
+        return Path(raw).resolve(strict=False)
+    except OSError as exc:
+        fail(f"could not resolve workspace path: {exc}")
+
+
+def capability_root() -> Path:
+    raw = os.environ.get("SCHERZO_WORKSPACE_PATH")
+    if raw:
+        return safe_resolve(raw)
+    try:
+        return Path.cwd().resolve(strict=False)
+    except OSError as exc:
+        fail(f"could not resolve current workspace: {exc}")
+
+
+def helper_path() -> Path:
+    script = Path(os.environ.get("SCHERZO_DRIVER_SCRIPT", "scripts/scherzo-workspace-jj"))
+    script = script.resolve(strict=False)
+    helper = script.with_name("scherzo-jj-workspace")
+    if helper.is_file():
+        return helper
+    fallback = script.parent.parent / "scripts" / "scherzo-jj-workspace"
+    if fallback.is_file():
+        return fallback
+    fail("could not find sibling scherzo-jj-workspace helper")
+
+
+def validate_relative_path(value: str) -> str:
+    if value == "":
+        usage_error("assert-only path must not be empty")
+    if value == ".":
+        usage_error("assert-only path must name a file, not .")
+    if Path(value).is_absolute() or WINDOWS_ABSOLUTE_RE.match(value):
+        usage_error("assert-only path must be relative to the workspace root")
+    segments = value.replace("\\", "/").split("/")
+    if any(segment == ".." for segment in segments):
+        usage_error("assert-only path must not contain .. segments")
+    return value
+
+
+def parse_path_argument(args: list[str]) -> str:
+    if len(args) != 2 or args[0] != "--path":
+        usage_error("assert-only requires --path <relative-file>")
+    return validate_relative_path(args[1])
+
+
+def require_explicit_workspace_path(operation: str) -> None:
+    raw = os.environ.get("SCHERZO_WORKSPACE_PATH")
+    if raw is None or raw == "":
+        usage_error(f"SCHERZO_WORKSPACE_PATH is required for lifecycle {operation}")
+
+
+def run_helper(legacy_operation: str) -> None:
+    workflow = os.environ.get("SCHERZO_WORKFLOW_ID") or "workflow"
+    try:
+        status = subprocess.call([str(helper_path()), legacy_operation, workflow])
+    except FileNotFoundError:
+        fail("could not execute scherzo-jj-workspace helper")
+    raise SystemExit(0 if status == 0 else 1)
+
+
+def lifecycle(args: list[str]) -> None:
+    if len(args) != 1:
+        usage_error("lifecycle requires one operation")
+    operation = args[0]
+    if operation == "create":
+        run_helper("after-create")
+    if operation == "before-step":
+        run_helper("before-run")
+    if operation == "after-step":
+        return
+    if operation == "remove":
+        require_explicit_workspace_path("remove")
+        run_helper("before-remove")
+    usage_error(f"unsupported lifecycle operation: {operation}")
+
+
+def run_jj_stream(root: Path, args: list[str]) -> None:
+    if not root.is_dir():
+        fail("workspace directory does not exist")
+    try:
+        status = subprocess.call(["jj", *args], cwd=str(root))
+    except FileNotFoundError:
+        fail("jj executable not found")
+    raise SystemExit(0 if status == 0 else 1)
+
+
+def run_jj_capture(root: Path, args: list[str]) -> str:
+    if not root.is_dir():
+        fail("workspace directory does not exist")
+    try:
+        completed = subprocess.run(
+            ["jj", *args],
+            cwd=str(root),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError:
+        fail("jj executable not found")
+    if completed.returncode != 0:
+        if completed.stderr:
+            sys.stderr.write(completed.stderr[:4000])
+            if not completed.stderr.endswith("\n"):
+                sys.stderr.write("\n")
+        fail("jj command failed")
+    return completed.stdout
+
+
+def changed_files(root: Path) -> list[str]:
+    output = run_jj_capture(
+        root,
+        ["diff", "--from", "@-", "--to", "@", "--name-only", "--color=never"],
+    )
+    paths: set[str] = set()
+    for line in output.splitlines():
+        path = line.rstrip("\r")
+        if path != "":
+            paths.add(path)
+    return sorted(paths)
+
+
+def print_json(paths: list[str]) -> None:
+    print(json.dumps(paths, separators=(",", ":")))
+
+
+def assert_only(root: Path, target: str) -> None:
+    files = changed_files(root)
+    if files == [target]:
+        return
+    actual = ", ".join(files) if files else "none"
+    print(
+        f"scherzo-workspace-jj: expected only {target}; actual changed files: {actual}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+def main(argv: list[str]) -> None:
+    if not argv:
+        usage_error()
+    command, rest = argv[0], argv[1:]
+    if command == "lifecycle":
+        lifecycle(rest)
+        return
+
+    if command == "status":
+        if rest != ["--human"]:
+            usage_error("status requires --human")
+        run_jj_stream(capability_root(), ["status", "--color=never"])
+        return
+
+    if command == "diff":
+        if rest != ["--human"]:
+            usage_error("diff requires --human")
+        run_jj_stream(
+            capability_root(),
+            ["diff", "--from", "@-", "--to", "@", "--color=never"],
+        )
+        return
+
+    if command == "changed-files":
+        if rest != ["--json"]:
+            usage_error("changed-files requires --json")
+        print_json(changed_files(capability_root()))
+        return
+
+    if command == "assert-only":
+        target = parse_path_argument(rest)
+        assert_only(capability_root(), target)
+        return
+
+    usage_error(f"unsupported command: {command}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+PY
