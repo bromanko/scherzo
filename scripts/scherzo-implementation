@@ -53,6 +53,9 @@ PLAN_FIELD_RE = re.compile(
 EXPLICIT_PLAN_FIELD_LABELS = {"plan", "plan path"}
 CONTEXTUAL_PLAN_FIELD_LABELS = {"umbrella", "supersedes"}
 COMMAND_DIAGNOSTIC_MAX_CHARS = 3500
+VALIDATION_RESULT_EXCERPT_MAX_CHARS = 4000
+VALIDATION_FAILURE_SUMMARY_MAX_CHARS = 2500
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 def usage() -> None:
@@ -161,6 +164,13 @@ def run(
     return proc.stdout
 
 
+def print_process_output(proc: subprocess.CompletedProcess[str]) -> None:
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+
+
 def run_and_print(
     args: list[str],
     *,
@@ -175,15 +185,68 @@ def run_and_print(
         stderr=subprocess.PIPE,
         env=env,
     )
-    if proc.stdout:
-        print(proc.stdout, end="")
-    if proc.stderr:
-        print(proc.stderr, end="", file=sys.stderr)
+    print_process_output(proc)
     if proc.returncode != 0:
         fail(
             f"command failed with exit code {proc.returncode}: {' '.join(args)}",
             failure_code=failure_code,
         )
+
+
+def strip_ansi(value: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", value)
+
+
+def is_progress_noise_line(line: str) -> bool:
+    stripped = line.strip()
+    if len(stripped) < 120:
+        return False
+    dot_count = stripped.count(".")
+    return dot_count * 2 > len(stripped)
+
+
+def validation_failure_summary(stdout: str, stderr: str) -> str:
+    combined = "\n".join(part for part in [stdout, stderr] if part)
+    lines = [strip_ansi(line).rstrip() for line in combined.splitlines()]
+    interesting: set[int] = set()
+    for index, line in enumerate(lines):
+        lower = line.lower()
+        stripped_lower = lower.lstrip()
+        stripped = line.lstrip()
+        is_interesting = (
+            "❌ failed" in line
+            or "hash mismatch" in lower
+            or "fixed-output derivation" in lower
+            or stripped_lower.startswith("error:")
+            or stripped_lower.startswith("error ")
+            or stripped.startswith("Error:")
+            or "check command failed" in lower
+            or "failed with error" in lower
+            or stripped_lower.startswith("specified:")
+            or stripped_lower.startswith("got:")
+        )
+        if is_interesting:
+            for nearby in range(max(0, index - 1), min(len(lines), index + 4)):
+                interesting.add(nearby)
+
+    summary_lines: list[str] = []
+    for index in sorted(interesting):
+        line = lines[index].strip()
+        if (
+            line
+            and not is_progress_noise_line(line)
+            and (not summary_lines or summary_lines[-1] != line)
+        ):
+            summary_lines.append(line)
+        if len(summary_lines) >= 24:
+            break
+
+    if not summary_lines:
+        summary_lines = [line.strip() for line in lines if line.strip()][-24:]
+
+    return diagnostic_excerpt(
+        "\n".join(summary_lines), VALIDATION_FAILURE_SUMMARY_MAX_CHARS
+    )
 
 
 def shell_display(value: str) -> str:
@@ -1552,12 +1615,86 @@ def selfci_validation_command(base_revision: str) -> list[str]:
     ]
 
 
+def validation_command_display(command: list[str]) -> str:
+    return " ".join(command)
+
+
+def write_validation_result(
+    *,
+    base_revision: str,
+    setup_commands: list[list[str]],
+    validation_command: list[str],
+    status: str,
+    exit_code: int | None = None,
+    stdout: str = "",
+    stderr: str = "",
+) -> None:
+    result: dict[str, Any] = {
+        "base_revision": base_revision,
+        "commands": [validation_command_display(validation_command)],
+        "setup_commands": [validation_command_display(c) for c in setup_commands],
+        "status": status,
+        "validator": "selfci",
+    }
+    if exit_code is not None:
+        result["exit_code"] = exit_code
+    if status != "passed":
+        result["failure_summary"] = validation_failure_summary(stdout, stderr)
+        result["stdout_excerpt"] = diagnostic_excerpt(
+            stdout, VALIDATION_RESULT_EXCERPT_MAX_CHARS
+        )
+        result["stderr_excerpt"] = diagnostic_excerpt(
+            stderr, VALIDATION_RESULT_EXCERPT_MAX_CHARS
+        )
+        result["diagnostic_note"] = (
+            "Full command output is retained in the workflow command-step diagnostics "
+            "for the failing validation step when Scherzo artifact retention is enabled."
+        )
+    write_json(VALIDATION_PATH, result)
+
+
+def previous_validation_failure_details() -> str:
+    if not VALIDATION_PATH.exists():
+        return (
+            f"No structured validation artifact was found at {VALIDATION_PATH}. "
+            "Inspect the earlier validate_after_refresh command-step diagnostics."
+        )
+    try:
+        validation = json.loads(VALIDATION_PATH.read_text())
+    except json.JSONDecodeError as exc:
+        return f"Structured validation artifact {VALIDATION_PATH} is invalid JSON: {exc}"
+
+    lines = ["Previous validation result:"]
+    status = str(validation.get("status") or "unknown")
+    lines.append(f"- status: {status}")
+    exit_code = validation.get("exit_code")
+    if exit_code is not None:
+        lines.append(f"- exit_code: {exit_code}")
+    base_revision = str(validation.get("base_revision") or "").strip()
+    if base_revision:
+        lines.append(f"- base_revision: {base_revision}")
+    commands = validation.get("commands")
+    if isinstance(commands, list) and commands:
+        lines.append("- command: " + str(commands[0]))
+    lines.append(f"- structured_validation_artifact: {VALIDATION_PATH}")
+    lines.append(
+        "- full_output_hint: inspect .scherzo/command-step-diagnostics/validate_after_refresh.txt in the retained workspace"
+    )
+    summary = str(validation.get("failure_summary") or "").strip()
+    if summary:
+        lines.append("\nFailure summary:\n" + summary)
+    return "\n".join(lines)
+
+
 def validate_command(*, failure_code: str | None = None) -> None:
     if BASE_DRIFT_REPAIR_FAILURE_PATH.exists():
         failure = BASE_DRIFT_REPAIR_FAILURE_PATH.read_text().strip()
+        previous_validation = previous_validation_failure_details()
         fail(
             f"base drift repair requested workflow failure via {BASE_DRIFT_REPAIR_FAILURE_PATH}:"
-            + ("\n" + failure if failure else ""),
+            + ("\n" + failure if failure else "")
+            + "\n\n"
+            + previous_validation,
             failure_code=failure_code,
         )
     if command_exists("jj") and has_unresolved_conflicts_at_current_change():
@@ -1579,16 +1716,33 @@ def validate_command(*, failure_code: str | None = None) -> None:
     env = validation_env()
     for command in setup_commands:
         run_and_print(command, failure_code=failure_code, env=env)
-    run_and_print(validation_command, failure_code=failure_code, env=env)
-    write_json(
-        VALIDATION_PATH,
-        {
-            "base_revision": base_revision,
-            "commands": [" ".join(validation_command)],
-            "setup_commands": [" ".join(c) for c in setup_commands],
-            "status": "passed",
-            "validator": "selfci",
-        },
+    print("$ " + " ".join(shell_display(arg) for arg in validation_command), flush=True)
+    proc = run_proc(validation_command, env=env)
+    print_process_output(proc)
+    if proc.returncode != 0:
+        write_validation_result(
+            base_revision=base_revision,
+            setup_commands=setup_commands,
+            validation_command=validation_command,
+            status="failed",
+            exit_code=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+        print("FINAL_VALIDATION=failed")
+        print(f"VALIDATION_RESULT_PATH={VALIDATION_PATH}")
+        summary = validation_failure_summary(proc.stdout, proc.stderr)
+        fail(
+            f"command failed with exit code {proc.returncode}: {' '.join(validation_command)}"
+            f"\nStructured validation artifact: {VALIDATION_PATH}"
+            + ("\nFailure summary:\n" + summary if summary else ""),
+            failure_code=failure_code,
+        )
+    write_validation_result(
+        base_revision=base_revision,
+        setup_commands=setup_commands,
+        validation_command=validation_command,
+        status="passed",
     )
     print("FINAL_VALIDATION=passed")
 

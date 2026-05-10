@@ -35,6 +35,7 @@ Workflow contract:
 - Do not use `gh` to create, edit, close, or comment on pull requests. Later deterministic command steps validate and publish.
 - This step repairs only base drift, meaning problems caused by rebasing the implementation change onto the latest configured pull request base.
 - Read `tmp/scherzo-implementation-refresh-base-before-validation.json` when it exists. If it does not exist, read `tmp/scherzo-implementation-refresh-base-latest.json`.
+- Read `tmp/scherzo-implementation-validation.json` when it exists; it contains a deterministic SelfCI failure summary, exit code, base revision, command, and bounded stdout/stderr excerpts.
 - In this prompt, validation succeeded means the `validate_after_refresh` command exited `0`; validation failed means it exited nonzero.
 - When validation reaches the final check, stdout/stderr is SelfCI `check --print-output` output; inspect the failing SelfCI step when deciding whether a `rebased_clean` validation failure is mechanically repairable.
 - Never treat a validation failure as repairable base drift unless the refresh status is `rebased_clean` or `conflicts`.
@@ -104,8 +105,25 @@ Expected failure marker format:
 ## Reason
 Validation failed, but the latest refresh status was `fresh`, so this is not classified as repairable base drift.
 
+## Refresh status
+`fresh`
+
+## Validation status
+`validate_after_refresh` exited <code>.
+
+## Validation command
+`direnv exec . selfci check --base <base> --candidate @ --print-output`
+
+## Failure summary
+Copy the concise root-cause summary from `tmp/scherzo-implementation-validation.json` when present, for example the failing SelfCI step, Nix hash mismatch, compile error, test failure, or other first actionable error. Do not paste full transcripts.
+
+## Diagnostic artifacts
+- `tmp/scherzo-implementation-refresh-base-before-validation.json`
+- `tmp/scherzo-implementation-validation.json`
+- `.scherzo/command-step-diagnostics/validate_after_refresh.txt` in the retained workspace, when available
+
 ## Required human decision
-Inspect the validation failure and decide whether it is an implementation bug or an unrecorded base-drift case.
+Inspect the validation failure and decide whether it is an implementation bug, environment/dependency drift, or an unrecorded base-drift case.
 ```
 
 Process:

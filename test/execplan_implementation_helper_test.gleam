@@ -502,6 +502,77 @@ pub fn validate_uses_latest_refresh_base_revision_for_selfci_test() {
   )
 }
 
+pub fn validate_failure_writes_structured_failure_artifact_test() {
+  let dir = "test/tmp/implementation-helper-validate-failure-artifact"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_fake_direnv(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_DIRENV_SELFCI_FAIL=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stdout, "FINAL_VALIDATION=failed")
+  assert string.contains(
+    artifact.stdout,
+    "VALIDATION_RESULT_PATH=tmp/scherzo-implementation-validation.json",
+  )
+  assert string.contains(artifact.stderr, "Structured validation artifact")
+  assert string.contains(artifact.stderr, "simulated SelfCI validation failure")
+  let assert Ok(validation_json) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-validation.json")
+  assert string.contains(validation_json, "\"status\": \"failed\"")
+  assert string.contains(validation_json, "\"exit_code\": 1")
+  assert string.contains(validation_json, "simulated SelfCI validation failure")
+}
+
+pub fn validate_base_drift_marker_reports_previous_validation_summary_test() {
+  let dir = "test/tmp/implementation-helper-base-drift-validation-summary"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-base-drift-failure.md",
+      "# Base drift repair failure\n\n## Reason\nValidation failed without base drift.\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-validation.json",
+      "{\n"
+        <> "  \"status\": \"failed\",\n"
+        <> "  \"exit_code\": 1,\n"
+        <> "  \"base_revision\": \"main@origin\",\n"
+        <> "  \"commands\": [\"direnv exec . selfci check --base main@origin --candidate @ --print-output\"],\n"
+        <> "  \"failure_summary\": \"error: hash mismatch in fixed-output derivation\\n         specified: sha256-old\\n            got:    sha256-new\"\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_helper_in(dir, "../../../scripts/scherzo-implementation validate")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(
+    artifact.stderr,
+    "base drift repair requested workflow failure",
+  )
+  assert string.contains(artifact.stderr, "Previous validation result:")
+  assert string.contains(artifact.stderr, "hash mismatch")
+  assert string.contains(
+    artifact.stderr,
+    "structured_validation_artifact: tmp/scherzo-implementation-validation.json",
+  )
+  assert string.contains(
+    artifact.stderr,
+    ".scherzo/command-step-diagnostics/validate_after_refresh.txt",
+  )
+}
+
 pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   let dir = "test/tmp/implementation-helper-publish-normalize"
   reset_dir(dir)
