@@ -1,0 +1,749 @@
+#!/usr/bin/env python3
+"""Render Scherzo ExecPlan Markdown as a single-file Carbon-style HTML artifact."""
+
+from __future__ import annotations
+
+import hashlib
+import html
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
+
+OPEN_QUESTIONS_HEADING = "Open Questions and Clarifications Needed"
+LABEL_CLASSES = {
+    "observation": "observation",
+    "evidence": "evidence",
+    "decision": "decision",
+    "rationale": "rationale",
+    "date": "date",
+    "in scope": "in-scope",
+    "out of scope": "out-of-scope",
+}
+LABEL_RE = re.compile(
+    r"^\s*(?:\*\*)?"
+    r"(Observation|Evidence|Decision|Rationale|Date|In scope|Out of scope)"
+    r"\s*:\s*(?:\*\*)?\s*(.*)$",
+    re.IGNORECASE,
+)
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+FENCE_RE = re.compile(r"^\s*(```+|~~~+)(.*)$")
+UL_RE = re.compile(r"^(\s*)([-*+])\s+(?:\[([ xX])\]\s+)?(.*)$")
+OL_RE = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
+
+
+@dataclass(frozen=True)
+class SourceLine:
+    number: int
+    text: str
+
+
+@dataclass(frozen=True)
+class TocEntry:
+    level: int
+    title: str
+    target_id: str
+    open_questions: bool = False
+
+
+@dataclass
+class RenderContext:
+    section_slug: str
+    toc: list[TocEntry]
+
+
+class IdRegistry:
+    def __init__(self) -> None:
+        self._counts: dict[str, int] = {}
+
+    def unique(self, base: str) -> str:
+        clean = base.strip("-") or "target"
+        count = self._counts.get(clean, 0) + 1
+        self._counts[clean] = count
+        if count == 1:
+            return clean
+        return f"{clean}-{count}"
+
+
+def usage() -> None:
+    print(
+        "Usage: scherzo-execplan-html render PLAN OUTPUT [DISPLAY_PATH]\n"
+        "Render PLAN Markdown into a self-contained Carbon-style HTML artifact. "
+        "DISPLAY_PATH, when provided, is shown in the artifact metadata instead "
+        "of the temporary Markdown source path.",
+        file=sys.stderr,
+    )
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-execplan-html: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def slugify(text: str) -> str:
+    lowered = text.lower()
+    lowered = lowered.replace("&", " and ")
+    lowered = re.sub(r"[^a-z0-9]+", "-", lowered)
+    lowered = re.sub(r"-+", "-", lowered).strip("-")
+    return lowered or "section"
+
+
+def content_hash(text: str) -> str:
+    normalized = " ".join(text.split())
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:7]
+
+
+def element_id(prefix: str, section_slug: str, line_number: int, text: str) -> str:
+    return f"{prefix}-{section_slug}-l{line_number:04d}-{content_hash(text)}"
+
+
+def commentable_attrs(target_id: str, classes: str, line_number: int | None = None) -> str:
+    attrs = [
+        f'id="{html.escape(target_id, quote=True)}"',
+        f'class="commentable {classes}"',
+        f'data-comment-id="{html.escape(target_id, quote=True)}"',
+    ]
+    if line_number is not None:
+        attrs.append(f'data-source-line="{line_number}"')
+    return " ".join(attrs)
+
+
+def strip_marker(line: str) -> str:
+    text = line.strip()
+    match = UL_RE.match(line)
+    if match:
+        return match.group(4).strip()
+    match = OL_RE.match(line)
+    if match:
+        return match.group(3).strip()
+    return text
+
+
+def plain_label_text(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^\*\*", "", text)
+    text = re.sub(r"\*\*$", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def has_real_open_questions(lines: Sequence[SourceLine]) -> bool:
+    in_section = False
+    collected: list[str] = []
+    for line in lines:
+        heading = HEADING_RE.match(line.text)
+        if heading:
+            level = len(heading.group(1))
+            title = heading.group(2).strip()
+            if level == 2 and title == OPEN_QUESTIONS_HEADING:
+                in_section = True
+                continue
+            if in_section and level <= 2:
+                break
+        elif in_section:
+            cleaned = strip_marker(line.text)
+            if cleaned:
+                collected.append(plain_label_text(cleaned))
+    if not collected:
+        return False
+    return any(is_real_open_question(value) for value in collected)
+
+
+def is_real_open_question(value: str) -> bool:
+    normalized = value.strip().lower()
+    if not normalized:
+        return False
+    none_values = {
+        "none",
+        "none.",
+        "none at this time",
+        "none at this time.",
+        "n/a",
+        "n/a.",
+        "no open questions",
+        "no open questions.",
+        "no open questions at this time",
+        "no open questions at this time.",
+    }
+    if normalized in none_values:
+        return False
+    if normalized.startswith("no open questions"):
+        return False
+    if normalized.startswith("resolved ") or normalized.startswith("resolved:"):
+        return False
+    return True
+
+
+def first_heading(lines: Sequence[SourceLine]) -> tuple[str, int]:
+    for line in lines:
+        match = HEADING_RE.match(line.text)
+        if match and len(match.group(1)) == 1:
+            return match.group(2).strip(), line.number
+    return "ExecPlan", 1
+
+
+def render_non_code(text: str) -> str:
+    output: list[str] = []
+    position = 0
+    link_re = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+    for match in link_re.finditer(text):
+        output.append(html.escape(text[position : match.start()]))
+        label = render_inline(match.group(1))
+        href = html.escape(match.group(2), quote=True)
+        output.append(f'<a href="{href}">{label}</a>')
+        position = match.end()
+    output.append(html.escape(text[position:]))
+    escaped = "".join(output)
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", escaped)
+    return escaped
+
+
+def render_inline(text: str) -> str:
+    parts = re.split(r"(`[^`]*`)", text)
+    rendered: list[str] = []
+    for part in parts:
+        if len(part) >= 2 and part.startswith("`") and part.endswith("`"):
+            rendered.append(f"<code>{html.escape(part[1:-1])}</code>")
+        else:
+            rendered.append(render_non_code(part))
+    return "".join(rendered)
+
+
+def label_statement_html(text: str) -> str | None:
+    match = LABEL_RE.match(text)
+    if not match:
+        return None
+    label = " ".join(match.group(1).split())
+    body = match.group(2).strip()
+    label_key = label.lower()
+    label_class = LABEL_CLASSES[label_key]
+    return (
+        f'<span class="labeled-statement labeled-statement-{label_class}">'
+        f'<span class="statement-label">{html.escape(label)}</span>'
+        f'<span class="statement-body">{render_inline(body)}</span>'
+        f"</span>"
+    )
+
+
+def render_text_body(text: str) -> str:
+    labeled = label_statement_html(text)
+    if labeled is not None:
+        return labeled
+    return render_inline(text)
+
+
+def is_block_start(line: SourceLine) -> bool:
+    stripped = line.text.strip()
+    if not stripped:
+        return True
+    return bool(
+        HEADING_RE.match(line.text)
+        or FENCE_RE.match(line.text)
+        or UL_RE.match(line.text)
+        or OL_RE.match(line.text)
+        or is_table_start(line.text)
+    )
+
+
+def is_table_start(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.startswith("|") and stripped.endswith("|")
+
+
+def list_match(text: str) -> tuple[str, int, str, str | None] | None:
+    unordered = UL_RE.match(text)
+    if unordered:
+        checkbox = unordered.group(3)
+        return "ul", len(unordered.group(1)), unordered.group(4), checkbox
+    ordered = OL_RE.match(text)
+    if ordered:
+        return "ol", len(ordered.group(1)), ordered.group(3), None
+    return None
+
+
+def trim_child_indent(lines: Sequence[SourceLine], spaces: int) -> list[SourceLine]:
+    trimmed: list[SourceLine] = []
+    for line in lines:
+        text = line.text
+        if text.startswith(" " * spaces):
+            text = text[spaces:]
+        elif text.strip() == "":
+            text = ""
+        else:
+            text = text.lstrip()
+        trimmed.append(SourceLine(line.number, text))
+    return trimmed
+
+
+def render_blocks(lines: Sequence[SourceLine], ids: IdRegistry, context: RenderContext) -> str:
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.text.strip():
+            index += 1
+            continue
+
+        fence = FENCE_RE.match(line.text)
+        if fence:
+            html_block, index = render_code_block(lines, index, ids, context)
+            output.append(html_block)
+            continue
+
+        heading = HEADING_RE.match(line.text)
+        if heading:
+            output.append(render_heading(line, heading, ids, context))
+            index += 1
+            continue
+
+        if list_match(line.text):
+            html_block, index = render_list(lines, index, ids, context)
+            output.append(html_block)
+            continue
+
+        if is_table_start(line.text):
+            html_block, index = render_table(lines, index, ids, context)
+            output.append(html_block)
+            continue
+
+        paragraph_lines = [line]
+        index += 1
+        paragraph_starts_with_label = label_statement_html(line.text) is not None
+        while index < len(lines):
+            candidate = lines[index]
+            if not candidate.text.strip():
+                break
+            if is_block_start(candidate):
+                break
+            if paragraph_starts_with_label and label_statement_html(candidate.text) is not None:
+                break
+            paragraph_lines.append(candidate)
+            index += 1
+        text = " ".join(candidate.text.strip() for candidate in paragraph_lines)
+        target_id = element_id("p", context.section_slug, line.number, text)
+        output.append(
+            f'<p {commentable_attrs(target_id, "plan-paragraph", line.number)}>'
+            f"{render_text_body(text)}</p>"
+        )
+    return "\n".join(output)
+
+
+def render_heading(
+    line: SourceLine,
+    match: re.Match[str],
+    ids: IdRegistry,
+    context: RenderContext,
+) -> str:
+    level = len(match.group(1))
+    title = match.group(2).strip()
+    base = f"h{level}-{slugify(title)}"
+    target_id = ids.unique(base)
+    if 2 <= level <= 4:
+        context.toc.append(TocEntry(level, title, target_id))
+    tag = f"h{level}"
+    return (
+        f'<{tag} {commentable_attrs(target_id, "plan-heading", line.number)}>'
+        f"{render_inline(title)}</{tag}>"
+    )
+
+
+def render_code_block(
+    lines: Sequence[SourceLine],
+    start: int,
+    ids: IdRegistry,
+    context: RenderContext,
+) -> tuple[str, int]:
+    opener = FENCE_RE.match(lines[start].text)
+    if opener is None:
+        return "", start + 1
+    fence = opener.group(1)
+    language = opener.group(2).strip().split()[0] if opener.group(2).strip() else ""
+    end = start + 1
+    body: list[str] = []
+    close_re = re.compile(r"^\s*" + re.escape(fence[:3]))
+    while end < len(lines):
+        if close_re.match(lines[end].text):
+            end += 1
+            break
+        body.append(lines[end].text)
+        end += 1
+    text = "\n".join(body)
+    target_id = element_id("code", context.section_slug, lines[start].number, text or language)
+    lang_class = f" language-{html.escape(language, quote=True)}" if language else ""
+    return (
+        f'<pre {commentable_attrs(target_id, "code-block" + lang_class, lines[start].number)}>'
+        f"<code>{html.escape(text)}</code></pre>",
+        end,
+    )
+
+
+def render_table(
+    lines: Sequence[SourceLine],
+    start: int,
+    ids: IdRegistry,
+    context: RenderContext,
+) -> tuple[str, int]:
+    table_lines: list[SourceLine] = []
+    index = start
+    while index < len(lines) and is_table_start(lines[index].text):
+        table_lines.append(lines[index])
+        index += 1
+    rows = [split_table_row(line.text) for line in table_lines]
+    target_id = element_id(
+        "table",
+        context.section_slug,
+        lines[start].number,
+        "\n".join(line.text for line in table_lines),
+    )
+    rendered_rows: list[str] = []
+    for row_index, cells in enumerate(rows):
+        if row_index == 1 and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells):
+            continue
+        tag = "th" if row_index == 0 else "td"
+        rendered_cells = "".join(f"<{tag}>{render_inline(cell.strip())}</{tag}>" for cell in cells)
+        rendered_rows.append(f"<tr>{rendered_cells}</tr>")
+    return (
+        f'<div class="table-wrap"><table {commentable_attrs(target_id, "plan-table", lines[start].number)}>'
+        f"{''.join(rendered_rows)}</table></div>",
+        index,
+    )
+
+
+def split_table_row(text: str) -> list[str]:
+    stripped = text.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return stripped.split("|")
+
+
+def render_list(
+    lines: Sequence[SourceLine],
+    start: int,
+    ids: IdRegistry,
+    context: RenderContext,
+) -> tuple[str, int]:
+    first = list_match(lines[start].text)
+    if first is None:
+        return "", start + 1
+    list_type, indent, _, _ = first
+    tag = "ul" if list_type == "ul" else "ol"
+    class_names = ["plan-list", "unordered" if tag == "ul" else "ordered"]
+    items: list[str] = []
+    any_checklist = False
+    any_labeled = False
+    index = start
+
+    while index < len(lines):
+        current = list_match(lines[index].text)
+        if current is None or current[0] != list_type or current[1] != indent:
+            break
+        _, _, item_text, checkbox = current
+        item_line = lines[index]
+        index += 1
+        child_lines: list[SourceLine] = []
+        while index < len(lines):
+            nested = list_match(lines[index].text)
+            heading = HEADING_RE.match(lines[index].text)
+            if nested is not None and nested[1] <= indent:
+                break
+            if heading is not None and len(heading.group(1)) <= 2:
+                break
+            if lines[index].text.strip() == "":
+                child_lines.append(lines[index])
+                index += 1
+                continue
+            leading_spaces = len(lines[index].text) - len(lines[index].text.lstrip(" "))
+            if leading_spaces > indent:
+                child_lines.append(lines[index])
+                index += 1
+                continue
+            break
+
+        target_text = item_text + "\n" + "\n".join(line.text for line in child_lines)
+        target_id = element_id("li", context.section_slug, item_line.number, target_text)
+        item_classes = ["plan-list-item"]
+        checkbox_html = ""
+        if checkbox is not None:
+            any_checklist = True
+            checked = checkbox.lower() == "x"
+            state_class = "is-complete" if checked else "is-open"
+            item_classes.extend(["checklist-item", state_class])
+            checked_attr = " checked" if checked else ""
+            aria = "completed" if checked else "open"
+            checkbox_html = (
+                f'<input class="task-check" type="checkbox" disabled{checked_attr} '
+                f'aria-label="Checklist item {aria}">'
+            )
+        if label_statement_html(item_text) is not None:
+            any_labeled = True
+        child_html = ""
+        if child_lines:
+            child_html = render_blocks(trim_child_indent(child_lines, indent + 2), ids, context)
+        items.append(
+            f'<li {commentable_attrs(target_id, " ".join(item_classes), item_line.number)}>'
+            f'<div class="list-item-main">{checkbox_html}{render_text_body(item_text.strip())}</div>'
+            f"{child_html}</li>"
+        )
+
+    if any_checklist:
+        class_names.append("checklist")
+    if any_labeled:
+        class_names.append("labeled-list")
+    return f'<{tag} class="{" ".join(class_names)}">{"".join(items)}</{tag}>', index
+
+
+def section_blocks(lines: Sequence[SourceLine]) -> list[tuple[SourceLine, list[SourceLine]]]:
+    sections: list[tuple[SourceLine, list[SourceLine]]] = []
+    current_heading: SourceLine | None = None
+    current_body: list[SourceLine] = []
+    for line in lines:
+        match = HEADING_RE.match(line.text)
+        if match and len(match.group(1)) == 2:
+            if current_heading is not None:
+                sections.append((current_heading, current_body))
+            current_heading = line
+            current_body = []
+        elif current_heading is not None:
+            current_body.append(line)
+    if current_heading is not None:
+        sections.append((current_heading, current_body))
+    return sections
+
+
+def intro_lines(lines: Sequence[SourceLine]) -> list[SourceLine]:
+    intro: list[SourceLine] = []
+    seen_title = False
+    for line in lines:
+        match = HEADING_RE.match(line.text)
+        if match and len(match.group(1)) == 1:
+            seen_title = True
+            continue
+        if match and len(match.group(1)) == 2:
+            break
+        if seen_title:
+            intro.append(line)
+    return intro
+
+
+def render_toc(toc: Sequence[TocEntry]) -> str:
+    items: list[str] = []
+    for entry in toc:
+        badge = (
+            '<span class="toc-badge toc-badge-warning">Open</span>'
+            if entry.open_questions
+            else ""
+        )
+        items.append(
+            f'<li class="toc-entry toc-depth-{entry.level}">'
+            f'<a href="#{html.escape(entry.target_id, quote=True)}">'
+            f"{render_inline(entry.title)}{badge}</a></li>"
+        )
+    return '<ol class="toc-list">' + "\n".join(items) + "</ol>"
+
+
+def render_plan(plan_path: Path, display_path: str | None = None) -> str:
+    try:
+        raw_lines = plan_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        fail(f"could not read plan: {exc}")
+    lines = [SourceLine(index + 1, text) for index, text in enumerate(raw_lines)]
+    title, title_line = first_heading(lines)
+    open_questions = has_real_open_questions(lines)
+    ids = IdRegistry()
+    title_id = ids.unique("title-" + slugify(title))
+    toc: list[TocEntry] = []
+
+    intro = intro_lines(lines)
+    intro_context = RenderContext(section_slug="intro", toc=toc)
+    intro_html = render_blocks(intro, ids, intro_context) if intro else ""
+
+    section_html: list[str] = []
+    for heading_line, body in section_blocks(lines):
+        heading_match = HEADING_RE.match(heading_line.text)
+        if heading_match is None:
+            continue
+        heading_title = heading_match.group(2).strip()
+        section_id = ids.unique("sec-" + slugify(heading_title))
+        is_open_questions = heading_title == OPEN_QUESTIONS_HEADING and open_questions
+        toc.append(TocEntry(2, heading_title, section_id, is_open_questions))
+        context = RenderContext(section_slug=slugify(heading_title), toc=toc)
+        heading_id = ids.unique("h2-" + slugify(heading_title))
+        body_html = render_blocks(body, ids, context)
+        section_html.append(
+            f'<section {commentable_attrs(section_id, "plan-section", heading_line.number)} '
+            f'aria-labelledby="{html.escape(heading_id, quote=True)}">'
+            f'<h2 {commentable_attrs(heading_id, "plan-heading", heading_line.number)}>'
+            f"{render_inline(heading_title)}</h2>{body_html}</section>"
+        )
+
+    source_value = display_path or str(plan_path)
+    source_display = html.escape(source_value, quote=False)
+    section_count = len(section_blocks(lines))
+    return HTML_TEMPLATE.format(
+        title=html.escape(title, quote=False),
+        title_attr=html.escape(title, quote=True),
+        source_path=source_display,
+        source_path_attr=html.escape(source_value, quote=True),
+        title_id=html.escape(title_id, quote=True),
+        title_line=title_line,
+        toc=render_toc(toc),
+        intro_html=f'<div class="doc-intro">{intro_html}</div>' if intro_html else "",
+        sections="\n".join(section_html),
+        section_count=section_count,
+    )
+
+
+HTML_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{title} — Scherzo ExecPlan</title>
+  <style>
+:root {{
+  color-scheme: light;
+  --gray-100: #161616;
+  --gray-80: #393939;
+  --gray-70: #525252;
+  --gray-30: #c6c6c6;
+  --gray-20: #e0e0e0;
+  --gray-10: #f4f4f4;
+  --white: #ffffff;
+  --blue: #0f62fe;
+  --cyan: #1192e8;
+  --green: #24a148;
+  --red: #da1e28;
+  --focus: #0f62fe;
+}}
+* {{ box-sizing: border-box; }}
+html {{ scroll-behavior: smooth; }}
+body {{ margin: 0; min-height: 100vh; background: var(--gray-10); color: var(--gray-100); font-family: "IBM Plex Sans", "Helvetica Neue", Arial, system-ui, sans-serif; font-size: 16px; line-height: 1.62; text-rendering: optimizeLegibility; }}
+a {{ color: inherit; }}
+code, pre {{ font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace; }}
+.skip-link {{ position: fixed; top: .75rem; left: .75rem; z-index: 1000; transform: translateY(-150%); padding: .65rem .85rem; border-radius: .5rem; background: #111827; color: #fff; font-weight: 700; text-decoration: none; }}
+.skip-link:focus {{ transform: translateY(0); outline: 3px solid var(--focus); outline-offset: 3px; }}
+:focus-visible {{ outline: 3px solid var(--focus); outline-offset: 3px; }}
+.commentable {{ scroll-margin-top: 5rem; }}
+.site-topbar {{ position: sticky; top: 0; z-index: 10; height: 3rem; display: flex; align-items: center; padding: 0 1rem; background: var(--gray-100); color: var(--white); border-bottom: 1px solid #262626; }}
+.site-topbar strong {{ font-size: .9rem; letter-spacing: .02em; }}
+.carbon-shell {{ display: grid; grid-template-columns: 19rem minmax(0, 1fr); min-height: calc(100vh - 3rem); }}
+.toc-panel {{ position: sticky; top: 3rem; align-self: start; height: calc(100vh - 3rem); overflow: auto; padding: 1.25rem 1rem 2rem; background: #fff; border-right: 1px solid var(--gray-20); }}
+.toc-title {{ margin: 0 0 .9rem; font-size: .75rem; text-transform: uppercase; letter-spacing: .16em; color: var(--gray-70); }}
+.toc-list {{ list-style: none; padding: 0; margin: 0; }}
+.toc-entry a {{ display: block; text-decoration: none; padding: .42rem .35rem; border-left: 3px solid transparent; color: var(--gray-80); font-size: .88rem; line-height: 1.28; }}
+.toc-entry a:hover, .toc-entry a:focus-visible {{ background: var(--gray-10); border-left-color: var(--blue); color: var(--gray-100); }}
+.toc-depth-3 {{ padding-left: 1rem; }}
+.toc-depth-4 {{ padding-left: 2rem; }}
+.toc-badge {{ display: inline-block; margin-left: .45rem; padding: .08rem .38rem; border-radius: 999px; font-size: .68rem; line-height: 1.15; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; vertical-align: .08rem; }}
+.toc-badge-warning {{ background: #fff1f1; color: var(--red); border: 1px solid #ffd7d9; }}
+.content-panel {{ padding: 2rem clamp(1.25rem, 4vw, 4.5rem) 5rem; }}
+.plan-document {{ max-width: 64rem; }}
+.doc-header {{ background: var(--white); padding: 2.5rem clamp(1.25rem, 4vw, 3rem); border: 1px solid var(--gray-20); border-top: 4px solid var(--blue); }}
+.eyebrow {{ margin: 0 0 1rem; font-size: .75rem; text-transform: uppercase; letter-spacing: .16em; color: var(--blue); font-weight: 600; }}
+h1 {{ margin: 0; max-width: 14ch; font-size: clamp(2.3rem, 5vw, 4.25rem); line-height: 1.02; letter-spacing: -.04em; font-weight: 400; }}
+.doc-meta {{ display: flex; flex-wrap: wrap; gap: .75rem 1rem; margin-top: 1.35rem; color: var(--gray-70); font-size: .875rem; }}
+.doc-meta span + span::before {{ content: "•"; margin-right: 1rem; opacity: .45; }}
+.doc-intro, .plan-section {{ background: var(--white); border: 1px solid var(--gray-20); margin-top: 1rem; padding: 1.5rem clamp(1.25rem, 4vw, 3rem); }}
+.plan-section {{ border-top: 3px solid var(--gray-100); }}
+h2 {{ margin: 0 0 1.1rem; padding-bottom: .8rem; border-bottom: 1px solid var(--gray-20); font-size: clamp(1.55rem, 2.4vw, 2.15rem); line-height: 1.16; letter-spacing: -.02em; font-weight: 400; }}
+h3 {{ margin: 2rem 0 .75rem; font-size: 1.25rem; line-height: 1.25; font-weight: 600; }}
+h4 {{ margin: 1.5rem 0 .5rem; font-size: 1.05rem; line-height: 1.3; font-weight: 650; }}
+p {{ margin: .95rem 0; max-width: 70ch; }}
+.plan-paragraph code, .plan-list code, .doc-meta code {{ background: var(--gray-10); border: 1px solid var(--gray-20); padding: .08em .32em; font-size: .88em; }}
+.code-block {{ margin: 1rem 0; padding: 1rem; overflow-x: auto; white-space: pre; tab-size: 2; background: #262626; color: #f4f4f4; border-left: 4px solid var(--cyan); font-size: .86rem; line-height: 1.5; }}
+.code-block code {{ background: transparent; border: 0; padding: 0; color: inherit; font-size: inherit; }}
+.plan-list {{ max-width: 72ch; margin: 1rem 0 1.25rem; padding-left: 1.45rem; }}
+.plan-list .plan-list {{ margin-top: .5rem; margin-bottom: .5rem; }}
+.plan-list .code-block {{ max-width: none; margin: .75rem 0 .35rem; }}
+.plan-list-item {{ margin: .55rem 0; padding: .25rem .25rem .25rem .45rem; }}
+.list-item-main {{ display: block; min-width: 0; }}
+.unordered > .plan-list-item::marker {{ color: var(--blue); font-weight: 600; }}
+.ordered > .plan-list-item::marker {{ color: var(--gray-70); font-weight: 400; }}
+.labeled-list {{ list-style: none; padding-left: 0; }}
+.labeled-list > .plan-list-item {{ padding-left: 0; margin: 1rem 0 1.2rem; }}
+.labeled-list > .plan-list-item::marker {{ content: ""; }}
+.labeled-statement {{ display: grid; grid-template-columns: 8.75rem minmax(0, 1fr); gap: .55rem; align-items: baseline; width: 100%; border-left: 3px solid var(--gray-20); padding-left: .65rem; }}
+.labeled-statement + .labeled-statement {{ margin-top: .35rem; }}
+.statement-label {{ white-space: nowrap; text-transform: uppercase; letter-spacing: .08em; font-size: .72em; line-height: 1.55; font-weight: 760; color: var(--gray-70); }}
+.statement-body {{ min-width: 0; }}
+.labeled-statement-observation, .labeled-statement-decision, .labeled-statement-in-scope {{ border-left-color: var(--blue); }}
+.labeled-statement-evidence, .labeled-statement-rationale, .labeled-statement-out-of-scope {{ border-left-color: var(--cyan); }}
+.labeled-statement-observation .statement-label, .labeled-statement-decision .statement-label, .labeled-statement-in-scope .statement-label {{ color: var(--blue); }}
+.labeled-statement-evidence .statement-label, .labeled-statement-rationale .statement-label, .labeled-statement-out-of-scope .statement-label {{ color: var(--cyan); }}
+.checklist {{ list-style: none; padding-left: 0; }}
+.checklist .plan-list-item {{ display: block; border: 1px solid var(--gray-20); border-left: 4px solid var(--green); margin: .45rem 0; background: #fcfcfc; }}
+.task-check {{ inline-size: 1rem; block-size: 1rem; margin: 0 .5rem 0 0; vertical-align: -.12rem; accent-color: currentColor; }}
+.table-wrap {{ overflow-x: auto; margin: 1rem 0; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ text-align: left; vertical-align: top; padding: .55rem .65rem; border: 1px solid var(--gray-20); }}
+th {{ background: var(--gray-10); }}
+@media (max-width: 900px) {{
+  .carbon-shell {{ display: block; }}
+  .toc-panel {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--gray-20); }}
+  .content-panel {{ padding: 1rem; }}
+}}
+@media print {{
+  html {{ scroll-behavior: auto; }}
+  body {{ background: #fff !important; color: #000 !important; }}
+  .skip-link, .site-topbar, .toc-panel {{ display: none !important; }}
+  .carbon-shell {{ display: block !important; }}
+  .content-panel {{ padding: 0 !important; }}
+  .plan-document {{ max-width: none !important; margin: 0 !important; }}
+  .plan-section, .doc-header, .doc-intro {{ break-inside: avoid; box-shadow: none !important; border-color: #bbb !important; }}
+  .code-block {{ white-space: pre-wrap; border: 1px solid #bbb !important; background: #f7f7f7 !important; color: #000 !important; }}
+}}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to plan content</a>
+  <header class="site-topbar"><strong>Scherzo ExecPlan artifact / Carbon structured</strong></header>
+  <div class="carbon-shell">
+    <nav class="toc-panel" aria-label="Plan contents">
+      <p class="toc-title">Plan contents</p>
+      {toc}
+    </nav>
+    <main id="main-content" class="content-panel" tabindex="-1">
+      <article class="plan-document" data-source-path="{source_path_attr}">
+        <header class="doc-header">
+          <p class="eyebrow">Scherzo ExecPlan HTML artifact</p>
+          <h1 id="{title_id}" class="commentable plan-heading" data-comment-id="{title_id}" data-source-line="{title_line}">{title}</h1>
+          <div class="doc-meta" aria-label="Document metadata">
+            <span>Plan artifact: <code>{source_path}</code></span>
+            <span>{section_count} sections</span>
+          </div>
+        </header>
+        {intro_html}
+        {sections}
+      </article>
+    </main>
+  </div>
+</body>
+</html>
+"""
+
+
+def main(argv: Sequence[str]) -> None:
+    if len(argv) not in {4, 5} or argv[1] != "render":
+        usage()
+        sys.exit(2)
+    plan_path = Path(argv[2])
+    output_path = Path(argv[3])
+    display_path = argv[4] if len(argv) == 5 else None
+    if not plan_path.exists():
+        fail(f"plan file does not exist: {plan_path}")
+    html_text = render_plan(plan_path, display_path)
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(html_text, encoding="utf-8")
+    except OSError as exc:
+        fail(f"could not write HTML artifact: {exc}")
+    print(f"PLAN_HTML_PATH={output_path}")
+
+
+if __name__ == "__main__":
+    main(sys.argv)
