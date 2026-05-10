@@ -235,16 +235,31 @@ fn validate_workspace_profiles(
 ) -> Result(Nil, BundleError) {
   case workflows {
     [] -> Ok(Nil)
-    [#(_, dag), ..rest] ->
-      case workspace_profile.resolve(dag, orchestrator) {
-        Ok(_) -> validate_workspace_profiles(orchestrator, rest)
-        Error(err) ->
-          Error(BundleError(
-            "unknown_workspace_profile",
-            workspace_profile.error_message(err),
-          ))
-      }
+    [#(_, dag), ..rest] -> {
+      use profile <- result.try(
+        workspace_profile.resolve(dag, orchestrator)
+        |> result.map_error(workspace_profile_error_to_bundle_error),
+      )
+      use _ <- result.try(
+        workspace_profile.validate_capabilities(dag, profile)
+        |> result.map_error(workspace_profile_error_to_bundle_error),
+      )
+      use _ <- result.try(
+        workspace_profile.validate_dispatchable_profile(dag, profile)
+        |> result.map_error(workspace_profile_error_to_bundle_error),
+      )
+      validate_workspace_profiles(orchestrator, rest)
+    }
   }
+}
+
+fn workspace_profile_error_to_bundle_error(
+  err: workspace_profile.ProfileResolutionError,
+) -> BundleError {
+  BundleError(
+    workspace_profile.error_code(err),
+    workspace_profile.error_message(err),
+  )
 }
 
 fn validate_scheduled_workflows(

@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
+import scherzo/config/types as config_types
 import scherzo/model_config
 import yay
 
@@ -12,6 +13,7 @@ pub type WorkflowDag {
     id: String,
     description: Option(String),
     workspace_profile: Option(String),
+    workspace_capabilities: List(config_types.WorkspaceCapability),
     max_parallel_steps: Int,
     steps: List(WorkflowStep),
   )
@@ -83,6 +85,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
       use id <- result.try(required_string(root, "id", "missing_workflow_id"))
       use _ <- result.try(validate_workflow_id(id))
       use workspace_profile <- result.try(read_workspace_profile(root))
+      use workspace_capabilities <- result.try(read_workspace_capabilities(root))
       use max_parallel_steps <- result.try(read_max_parallel_steps(root))
       use steps <- result.try(read_steps(root))
       let dag =
@@ -90,6 +93,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
           id: id,
           description: optional_string(root, "description"),
           workspace_profile: workspace_profile,
+          workspace_capabilities: workspace_capabilities,
           max_parallel_steps: max_parallel_steps,
           steps: steps,
         )
@@ -183,6 +187,58 @@ fn read_workspace_profile(root: yay.Node) -> Result(Option(String), DagError) {
   }
 }
 
+fn read_workspace_capabilities(
+  root: yay.Node,
+) -> Result(List(config_types.WorkspaceCapability), DagError) {
+  case get_node(root, "workspace_capabilities") {
+    None -> Ok([])
+    Some(yay.NodeSeq(values)) ->
+      read_workspace_capability_values(values, [], [])
+    Some(_) ->
+      Error(DagError(
+        "workspace_capabilities_not_list",
+        "workspace_capabilities must be a list",
+      ))
+  }
+}
+
+fn read_workspace_capability_values(
+  values: List(yay.Node),
+  seen: List(config_types.WorkspaceCapability),
+  acc: List(config_types.WorkspaceCapability),
+) -> Result(List(config_types.WorkspaceCapability), DagError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeStr(value), ..rest] -> {
+      use capability <- result.try(
+        config_types.workspace_capability_from_string(value)
+        |> result.replace_error(DagError(
+          "unknown_workspace_capability",
+          "unknown workspace capability: " <> value,
+        )),
+      )
+      case list.contains(seen, capability) {
+        True ->
+          Error(DagError(
+            "duplicate_workspace_capability",
+            "duplicate workspace capability: "
+              <> config_types.workspace_capability_to_string(capability),
+          ))
+        False ->
+          read_workspace_capability_values(rest, [capability, ..seen], [
+            capability,
+            ..acc
+          ])
+      }
+    }
+    [_, ..] ->
+      Error(DagError(
+        "workspace_capabilities_entry_not_string",
+        "workspace_capabilities entries must be strings",
+      ))
+  }
+}
+
 fn read_max_parallel_steps(root: yay.Node) -> Result(Int, DagError) {
   let value = optional_int(root, "max_parallel_steps") |> option.unwrap(1)
   case value >= 1 {
@@ -220,6 +276,7 @@ fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
   case node {
     yay.NodeMap(_) -> {
       use _ <- result.try(reject_step_workspace_profile(node))
+      use _ <- result.try(reject_step_workspace_capabilities(node))
       use id <- result.try(required_string(node, "id", "missing_step_id"))
       use _ <- result.try(validate_step_id(id))
       use kind <- result.try(read_step_kind(node, id))
@@ -247,6 +304,17 @@ fn reject_step_workspace_profile(node: yay.Node) -> Result(Nil, DagError) {
       Error(DagError(
         "step_workspace_profile_not_supported",
         "workspace_profile is only valid at workflow top level",
+      ))
+  }
+}
+
+fn reject_step_workspace_capabilities(node: yay.Node) -> Result(Nil, DagError) {
+  case get_node(node, "workspace_capabilities") {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(DagError(
+        "step_workspace_capabilities_not_supported",
+        "workspace_capabilities is only valid at workflow top level",
       ))
   }
 }

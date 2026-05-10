@@ -942,27 +942,94 @@ fn prepare_error_details(err: workspace_run.PrepareError) -> #(String, String) {
 fn maybe_workspace_hooks_pass(
   results: List(doctor.CheckResult),
   selected: List(doctor.CheckName),
-  _bundle: runtime_bundle.RuntimeBundle,
+  bundle: runtime_bundle.RuntimeBundle,
   prepared: workspace_run.PreparedStepWorkspace,
   profile: config_types.WorkspaceHookProfile,
 ) -> List(doctor.CheckResult) {
   case doctor.contains_check(selected, doctor.WorkspaceHooks) {
     False -> results
-    True ->
+    True -> {
+      let legacy_migrations =
+        legacy_workspace_hook_migrations(bundle.orchestrator)
+      let #(status, code, message, legacy_fields) = case legacy_migrations {
+        [] -> #(
+          doctor.Pass,
+          "ok",
+          "workspace hooks prepared a scratch step workspace",
+          [],
+        )
+        [#(legacy_key, driver_key), ..] -> #(
+          doctor.Warn,
+          "legacy_workspace_hooks",
+          legacy_key
+            <> " is legacy workspace configuration; migrate to "
+            <> driver_key
+            <> " and read docs/runbooks/workspace-driver-migration.md",
+          [
+            #("legacy_key", legacy_key),
+            #("legacy_keys", legacy_migration_keys_to_string(legacy_migrations)),
+            #("driver_key", driver_key),
+          ],
+        )
+      }
       list.append(results, [
         doctor.CheckResult(
           check: doctor.WorkspaceHooks,
-          status: doctor.Pass,
-          code: "ok",
-          message: "workspace hooks prepared a scratch step workspace",
-          fields: [
-            #("workspace_path", prepared.path),
-            #("run_root", prepared.run_root),
-            #("hooks", configured_workspace_hooks(profile.hooks)),
-          ],
+          status: status,
+          code: code,
+          message: message,
+          fields: list.append(
+            [
+              #("workspace_path", prepared.path),
+              #("run_root", prepared.run_root),
+              #(
+                "hooks",
+                configured_workspace_hooks(config_types.profile_hooks(profile)),
+              ),
+            ],
+            legacy_fields,
+          ),
         ),
       ])
+    }
   }
+}
+
+fn legacy_workspace_hook_migrations(
+  orchestrator: config_types.OrchestratorConfig,
+) -> List(#(String, String)) {
+  orchestrator.workspace_profiles.profiles
+  |> dict.to_list
+  |> list.filter_map(fn(entry) {
+    let #(name, profile) = entry
+    case profile.source {
+      config_types.LegacyWorkspaceHooks ->
+        Ok(#("workspace.hooks", "workspace.profiles.<name>.driver"))
+      config_types.ConfiguredWorkspaceHooks ->
+        Ok(#(
+          "workspace.profiles." <> name <> ".hooks",
+          "workspace.profiles." <> name <> ".driver",
+        ))
+      config_types.ConfiguredWorkspaceDriver
+      | config_types.SyntheticDefaultWorkspace -> Error(Nil)
+    }
+  })
+  |> list.sort(by: fn(left, right) {
+    let #(left_key, _) = left
+    let #(right_key, _) = right
+    string.compare(left_key, right_key)
+  })
+}
+
+fn legacy_migration_keys_to_string(
+  migrations: List(#(String, String)),
+) -> String {
+  migrations
+  |> list.map(fn(migration) {
+    let #(legacy_key, _) = migration
+    legacy_key
+  })
+  |> string.join(with: ",")
 }
 
 fn configured_workspace_hooks(hooks: config_types.DagHooksConfig) -> String {

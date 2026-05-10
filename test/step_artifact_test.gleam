@@ -321,6 +321,7 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
       id: "implementation",
       description: None,
       workspace_profile: None,
+      workspace_capabilities: [],
       max_parallel_steps: 2,
       steps: [
         workflow_dag.WorkflowStep(
