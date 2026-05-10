@@ -18,9 +18,14 @@ steps:
         required:
           - schema_version
           - artifact_type
+          - generated_at_utc
+          - producer
           - lane
+          - input_refs
           - draft_findings
+          - review_notes
           - evidence_requests
+          - self_check
           - remote_mutations
 
   - id: malformed_lane
@@ -37,9 +42,14 @@ steps:
         required:
           - schema_version
           - artifact_type
+          - generated_at_utc
+          - producer
           - lane
+          - input_refs
           - draft_findings
+          - review_notes
           - evidence_requests
+          - self_check
           - remote_mutations
 
   - id: failed_lane
@@ -56,9 +66,14 @@ steps:
         required:
           - schema_version
           - artifact_type
+          - generated_at_utc
+          - producer
           - lane
+          - input_refs
           - draft_findings
+          - review_notes
           - evidence_requests
+          - self_check
           - remote_mutations
 
   - id: inspect_contract
