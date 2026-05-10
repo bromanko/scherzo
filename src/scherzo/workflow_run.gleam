@@ -27,6 +27,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workflow_scheduler
+import scherzo/workflow_structured_retry
 import scherzo/workspace_profile
 import scherzo/workspace_run
 
@@ -2285,17 +2286,20 @@ fn run_agent_step(
             dependencies,
             effective,
           )
-        Error(failure) -> #(
-          agent_failure_artifact(
-            step.id,
+        Error(failure) ->
+          agent_failure_result(
+            step,
+            context,
             failure,
+            structured_output_spec,
+            issue,
+            dag,
+            orchestrator,
+            tracker_client,
             secrets,
-            orchestrator.artifact_limits,
-          ),
-          failure.tokens,
-          failure.final_issue,
-          0,
-        )
+            dependencies,
+            effective,
+          )
       }
     }
   }
@@ -2335,6 +2339,64 @@ fn run_agent_invocation(
       )
     },
   )
+}
+
+fn agent_failure_result(
+  step: workflow_dag.WorkflowStep,
+  context: StepContext,
+  failure: agent_types.WorkerFailure,
+  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  dependencies: Dependencies,
+  effective: config_types.EffectiveConfig,
+) -> #(
+  step_artifact.StepArtifact,
+  session_tokens.TokenTotals,
+  Option(tracker_issue.Issue),
+  Int,
+) {
+  let artifact =
+    agent_failure_artifact(
+      step.id,
+      failure,
+      secrets,
+      orchestrator.artifact_limits,
+    )
+  case
+    workflow_structured_retry.transient_native_lane_agent_failure_diagnostic(
+      step.id,
+      structured_output_spec,
+      failure,
+      secrets,
+    )
+  {
+    Some(#(spec, initial_diagnostic)) ->
+      retry_structured_output(
+        step,
+        context,
+        workflow_structured_retry.agent_failure_as_success(failure),
+        workflow_structured_retry.agent_failure_artifact_with_structured_output(
+          artifact,
+          failure,
+          spec,
+          secrets,
+        ),
+        Some(spec),
+        initial_diagnostic,
+        issue,
+        dag,
+        orchestrator,
+        tracker_client,
+        secrets,
+        dependencies,
+        effective,
+      )
+    None -> #(artifact, failure.tokens, failure.final_issue, 0)
+  }
 }
 
 fn agent_success_result(
@@ -2466,7 +2528,13 @@ fn retry_structured_output(
     )
     Some(spec) -> {
       let retry_prompt =
-        structured_output_retry_prompt(step, context, spec, initial_diagnostic)
+        workflow_structured_retry.retry_prompt(
+          step.id,
+          context.run_root,
+          context.workspace_path,
+          spec,
+          initial_diagnostic,
+        )
       let retry_result =
         run_agent_invocation(
           issue,
@@ -2547,7 +2615,7 @@ fn finish_structured_output_retry_success(
     False -> "failed"
   }
   let retry_info =
-    structured_output_retry_info(spec, outcome, [
+    workflow_structured_retry.retry_info(spec, outcome, [
       initial_diagnostic,
       retry_diagnostic,
     ])
@@ -2578,11 +2646,11 @@ fn finish_structured_output_retry_failure(
     step_artifact.StructuredOutputRetryDiagnostic(
       attempt: 2,
       status: "agent_failure",
-      failure_code: Some("agent_failure"),
-      message: retry_failure_message(retry_failure, secrets),
+      failure_code: Some(error.agent_code(retry_failure.reason)),
+      message: workflow_structured_retry.failure_message(retry_failure, secrets),
     )
   let retry_info =
-    structured_output_retry_info(spec, "failed", [
+    workflow_structured_retry.retry_info(spec, "failed", [
       initial_diagnostic,
       retry_diagnostic,
     ])
@@ -2594,104 +2662,6 @@ fn finish_structured_output_retry_failure(
     option.or(retry_failure.final_issue, first_success.final_issue),
     first_success.turns,
   )
-}
-
-fn structured_output_retry_info(
-  spec: workflow_dag.StructuredOutputSpec,
-  outcome: String,
-  diagnostics: List(step_artifact.StructuredOutputRetryDiagnostic),
-) -> step_artifact.StructuredOutputRetryInfo {
-  step_artifact.StructuredOutputRetryInfo(
-    max_retries: spec.validation_retries,
-    attempts: list.length(diagnostics),
-    outcome: outcome,
-    diagnostics: diagnostics,
-  )
-}
-
-fn retry_failure_message(
-  failure: agent_types.WorkerFailure,
-  secrets: List(String),
-) -> String {
-  error.agent_artifact_detail(failure.reason)
-  |> log.redact("structured_output_retry", _, secrets)
-  |> log.truncate(1000)
-}
-
-fn structured_output_retry_prompt(
-  step: workflow_dag.WorkflowStep,
-  context: StepContext,
-  spec: workflow_dag.StructuredOutputSpec,
-  diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
-) -> String {
-  let format = workflow_dag.structured_output_format_to_string(spec.format)
-  let required_keys =
-    workflow_dag.structured_output_schema_required_keys(spec.schema)
-  let required_keys_text = case required_keys {
-    [] -> "(no additional required keys)"
-    _ -> string.join(required_keys, with: ", ")
-  }
-  let failure_code = case diagnostic.failure_code {
-    Some(code) -> code
-    None -> "structured_output_validation_failed"
-  }
-  "Scherzo structured-output retry for workflow step `"
-  <> step.id
-  <> "`.\n\n"
-  <> "The previous attempt completed but failed required "
-  <> format
-  <> " validation. This is the only automatic retry for this validation failure.\n"
-  <> "Failure code: "
-  <> failure_code
-  <> "\nFailure summary: "
-  <> log.truncate(diagnostic.message, 500)
-  <> "\n\n"
-  <> "Return JSON only: no Markdown, code fences, commentary, transcripts, or prior full responses.\n"
-  <> "Use retained local context instead of large inline context:\n"
-  <> "- run root: "
-  <> context.run_root
-  <> "\n- workspace: "
-  <> context.workspace_path
-  <> "\n- native review inputs, when present: "
-  <> context.run_root
-  <> "/artifacts/review/prepare_review\n"
-  <> native_review_lane_retry_hint(step.id, spec.artifact_name)
-  <> "Structured-output artifact name: "
-  <> spec.artifact_name
-  <> "\nRequired top-level keys: "
-  <> required_keys_text
-  <> "\nRemote mutations are forbidden; set remote_mutations to \"none\" when the artifact schema includes it."
-}
-
-fn native_review_lane_retry_hint(
-  step_id: String,
-  artifact_name: String,
-) -> String {
-  case native_review_lane_id(step_id, artifact_name) {
-    Some(lane_id) ->
-      "Native review lane id: "
-      <> lane_id
-      <> ". Produce a review_lane_draft artifact for that lane.\n"
-    None ->
-      "If this is a native review lane, re-read the retained review artifacts and produce the lane draft JSON required by the original lane contract.\n"
-  }
-}
-
-fn native_review_lane_id(
-  step_id: String,
-  artifact_name: String,
-) -> Option(String) {
-  case step_id, artifact_name {
-    "lane_correctness", _ -> Some("correctness")
-    "lane_test_quality", _ -> Some("test-quality")
-    "lane_idioms_maintainability", _ -> Some("idioms-maintainability")
-    "lane_security_performance", _ -> Some("security-performance")
-    _, "correctness_draft" -> Some("correctness")
-    _, "test_quality_draft" -> Some("test-quality")
-    _, "idioms_maintainability_draft" -> Some("idioms-maintainability")
-    _, "security_performance_draft" -> Some("security-performance")
-    _, _ -> None
-  }
 }
 
 fn agent_success_artifact(

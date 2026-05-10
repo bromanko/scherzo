@@ -31,9 +31,14 @@ steps:
         required:
           - schema_version
           - artifact_type
+          - generated_at_utc
+          - producer
           - lane
+          - input_refs
           - draft_findings
+          - review_notes
           - evidence_requests
+          - self_check
           - remote_mutations
 
   - id: lane_test_quality
@@ -51,9 +56,14 @@ steps:
         required:
           - schema_version
           - artifact_type
+          - generated_at_utc
+          - producer
           - lane
+          - input_refs
           - draft_findings
+          - review_notes
           - evidence_requests
+          - self_check
           - remote_mutations
 
   - id: lane_idioms_maintainability
@@ -71,9 +81,14 @@ steps:
         required:
           - schema_version
           - artifact_type
+          - generated_at_utc
+          - producer
           - lane
+          - input_refs
           - draft_findings
+          - review_notes
           - evidence_requests
+          - self_check
           - remote_mutations
 
   - id: lane_security_performance
@@ -91,9 +106,14 @@ steps:
         required:
           - schema_version
           - artifact_type
+          - generated_at_utc
+          - producer
           - lane
+          - input_refs
           - draft_findings
+          - review_notes
           - evidence_requests
+          - self_check
           - remote_mutations
 
   - id: assert_clean_after_lanes
