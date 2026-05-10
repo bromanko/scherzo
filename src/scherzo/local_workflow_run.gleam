@@ -175,6 +175,7 @@ fn local_dependencies(
   options: Options,
   issue: tracker_issue.Issue,
 ) -> workflow_run.Dependencies {
+  let default_dependencies = workflow_run.default_dependencies()
   workflow_run.Dependencies(
     prepare_step: fn(
       _issue,
@@ -233,17 +234,36 @@ fn local_dependencies(
       )
     },
     agent_step: fn(
-      _issue,
+      step_issue,
       context,
-      _prompt_mode,
-      _attempt_context,
-      _effective,
-      _tracker,
-      _emit_update,
-      _command_ready,
-      _record_pi_session,
+      prompt_mode,
+      attempt_context,
+      effective,
+      tracker_client,
+      emit_update,
+      command_ready,
+      record_pi_session,
     ) {
-      native_fixture_agent_step(options.native_review_scenario, issue, context)
+      case options.native_review_scenario {
+        Some(_) ->
+          native_fixture_agent_step(
+            options.native_review_scenario,
+            issue,
+            context,
+          )
+        None ->
+          default_dependencies.agent_step(
+            step_issue,
+            context,
+            prompt_mode,
+            attempt_context,
+            effective,
+            tracker_client,
+            emit_update,
+            command_ready,
+            record_pi_session,
+          )
+      }
     },
     checkpoint: workflow_checkpoint.ledger_writer(options.run_root, fn() { 123 }),
   )
@@ -688,6 +708,10 @@ fn write_summary(
         "native_review_scenario",
         option_string_json(options.native_review_scenario),
       ),
+      #(
+        "agent_lane_mode",
+        json.string(agent_lane_mode(options.native_review_scenario)),
+      ),
       #("status", json.string(status)),
       #("failure_reason", option_string_json(reason)),
       #("remote_mutations", json.string("none")),
@@ -773,6 +797,13 @@ fn structured_output_json(
         #("error", json.string(message)),
       ])
     None -> json.null()
+  }
+}
+
+fn agent_lane_mode(scenario: Option(String)) -> String {
+  case scenario {
+    Some(_) -> "native_fixture"
+    None -> "real_agent"
   }
 }
 
