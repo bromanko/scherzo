@@ -49,6 +49,7 @@ pub type StructuredOutputSpec {
     required: Bool,
     format: StructuredOutputFormat,
     schema: StructuredOutputSchema,
+    validation_retries: Int,
   )
 }
 
@@ -392,12 +393,16 @@ fn read_structured_output(
           ))
           use required <- result.try(read_structured_required(structured_node))
           use schema <- result.try(read_structured_schema(structured_node))
+          use validation_retries <- result.try(
+            read_structured_validation_retries(structured_node),
+          )
           Ok(
             Some(StructuredOutputSpec(
               artifact_name: artifact_name,
               required: required,
               format: format,
               schema: schema,
+              validation_retries: validation_retries,
             )),
           )
         }
@@ -475,6 +480,26 @@ fn read_structured_required(node: yay.Node) -> Result(Bool, DagError) {
       Error(DagError(
         "structured_output_required_not_bool",
         "structured_output.required must be a boolean",
+      ))
+  }
+}
+
+fn read_structured_validation_retries(node: yay.Node) -> Result(Int, DagError) {
+  case get_node(node, "validation_retries") {
+    None -> Ok(1)
+    Some(yay.NodeInt(retries)) ->
+      case retries == 0 || retries == 1 {
+        True -> Ok(retries)
+        False ->
+          Error(DagError(
+            "invalid_structured_output_validation_retries",
+            "structured_output.validation_retries must be 0 or 1",
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "structured_output_validation_retries_not_int",
+        "structured_output.validation_retries must be an integer",
       ))
   }
 }

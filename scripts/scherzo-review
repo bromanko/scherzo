@@ -2691,6 +2691,53 @@ def metadata_artifact_refs(metadata_path: Path, output_dir: Path) -> list[dict[s
     return artifacts
 
 
+def native_structured_output_retry_info(metadata_path: Path) -> dict[str, Any] | None:
+    if not metadata_path.exists() or not metadata_path.is_file():
+        return None
+    try:
+        metadata = load_json(metadata_path)
+    except Exception:
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    structured = metadata.get("structured_output")
+    if not isinstance(structured, dict):
+        return None
+    retry = structured.get("retry")
+    return retry if isinstance(retry, dict) else None
+
+
+def add_native_retry_diagnostics(lane_result: dict[str, Any], metadata_path: Path) -> dict[str, Any]:
+    retry = native_structured_output_retry_info(metadata_path)
+    if not retry:
+        return lane_result
+    outcome = str(retry.get("outcome") or "unknown")
+    attempts = retry.get("attempts")
+    attempts_text = str(attempts) if isinstance(attempts, int) else "unknown"
+    status = lane_result.get("execution_status")
+    if isinstance(status, dict):
+        summary = str(status.get("summary") or "")
+        if outcome == "succeeded":
+            suffix = f" Structured output succeeded on retry after {attempts_text} attempts."
+        elif outcome == "failed":
+            suffix = f" Structured output retry remained failed after {attempts_text} attempts."
+        else:
+            suffix = f" Structured output retry outcome: {outcome}."
+        status["summary"] = (summary + suffix).strip()
+    actions = lane_result.get("normalization_actions")
+    if not isinstance(actions, list):
+        actions = []
+        lane_result["normalization_actions"] = actions
+    actions.append({
+        "action": "recorded_structured_output_retry",
+        "outcome": outcome,
+        "attempts": attempts,
+        "reason": "native Scherzo structured-output validation retry diagnostics were present in the step artifact",
+    })
+    lane_result["native_structured_output_retry"] = retry
+    return lane_result
+
+
 def failed_native_lane_result(
     *,
     lane_id: str,
@@ -2702,7 +2749,7 @@ def failed_native_lane_result(
     timestamp = now_utc()
     artifacts = metadata_artifact_refs(metadata_path, output_dir)
     lane = SPECIALIST_LANES[lane_id]
-    return {
+    lane_result = {
         "$schema": CONTRACT_SCHEMA_REF,
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "review_lane_result",
@@ -2723,6 +2770,7 @@ def failed_native_lane_result(
         "artifacts": artifacts,
         "normalization_actions": [{"action": "synthesized_failed_lane_result", "reason": message}],
     }
+    return add_native_retry_diagnostics(lane_result, metadata_path)
 
 
 def ensure_agent_step_metadata_from_args(
@@ -2850,6 +2898,7 @@ def normalize_lane_result_command(args: argparse.Namespace) -> None:
         "normalization_actions": actions,
         "synthesis_actions": actions,
     }
+    lane_result = add_native_retry_diagnostics(lane_result, metadata_path)
     validate_review_lane_result(lane_result)
     result_path = output_dir / f"review-lane-{lane_id}.v1.json"
     write_json(result_path, lane_result)
@@ -3169,6 +3218,12 @@ def step_structured_path(step: dict[str, Any]) -> str:
     return str(path) if isinstance(path, str) else ""
 
 
+def step_structured_retry(step: dict[str, Any]) -> dict[str, Any] | None:
+    structured = step_structured_output(step)
+    retry = structured.get("retry")
+    return retry if isinstance(retry, dict) else None
+
+
 def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
     contract_dir = output_dir / "contract-spike"
     run_root = contract_dir / "native-run"
@@ -3207,6 +3262,7 @@ def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
         "failure_metadata": {
             "malformed_lane_status": step_structured_status(malformed_step),
             "malformed_lane_failure_code": malformed_step.get("failure_code"),
+            "malformed_lane_structured_output_retry": step_structured_retry(malformed_step),
             "failed_lane_status": failed_step.get("status"),
             "failed_lane_failure_code": failed_step.get("failure_code"),
         },
@@ -3289,6 +3345,7 @@ def run_native_preflight_scenario(scenario: dict[str, Any], output_dir: Path) ->
             "workflow_path": ".scherzo/workflows/review-native.yml",
             "structured_output_status": step_structured_status(step),
             "structured_output_path": step_structured_path(step),
+            "structured_output_retry": step_structured_retry(step),
             "metadata_path": str(lane_dir / "agent-step-metadata.v1.json"),
             "run_summary_path": str(run_root / "native-runner-summary.v1.json"),
             "runner_invocation": command_text,
@@ -3829,6 +3886,7 @@ def legacy_lane_execution_states(run_root: Path, runner_summary: dict[str, Any])
             "step_status": step.get("status", "missing"),
             "structured_output_status": step_structured_status(step),
             "structured_output_path": step_structured_path(step),
+            "structured_output_retry": step_structured_retry(step),
             "lane_result_state": execution_status.get("state", "missing"),
             "lane_result_path": str(lane_result_path),
             "agent_backend": agent_backend or "unknown",
@@ -4484,12 +4542,26 @@ def group_findings(findings: list[dict[str, Any]]) -> dict[str, Any]:
     return grouped
 
 
+def compact_native_retry_status(result: dict[str, Any]) -> dict[str, Any] | None:
+    retry = result.get("native_structured_output_retry")
+    if not isinstance(retry, dict):
+        return None
+    compact: dict[str, Any] = {"outcome": str(retry.get("outcome") or "unknown")}
+    attempts = retry.get("attempts")
+    if isinstance(attempts, int):
+        compact["attempts"] = attempts
+    max_retries = retry.get("max_retries")
+    if isinstance(max_retries, int):
+        compact["max_retries"] = max_retries
+    return compact
+
+
 def lane_status_from_result(path: Path, result: dict[str, Any]) -> dict[str, Any]:
     lane = result.get("lane", {}) if isinstance(result.get("lane"), dict) else {}
     status = result.get("execution_status", {}) if isinstance(result.get("execution_status"), dict) else {}
     findings = result.get("findings", []) if isinstance(result.get("findings"), list) else []
     notes = result.get("review_notes", []) if isinstance(result.get("review_notes"), list) else []
-    return {
+    lane_status = {
         "lane_id": lane.get("id", "unknown"),
         "lane_name": lane.get("name", "unknown"),
         "state": status.get("state", "unknown"),
@@ -4501,6 +4573,10 @@ def lane_status_from_result(path: Path, result: dict[str, Any]) -> dict[str, Any
         "path": str(path),
         "sha256": sha256_file(path),
     }
+    retry_status = compact_native_retry_status(result)
+    if retry_status is not None:
+        lane_status["structured_output_retry"] = retry_status
+    return lane_status
 
 
 def build_review_synthesis(
@@ -4619,6 +4695,20 @@ def first_location_label(item: dict[str, Any]) -> str:
     return "."
 
 
+def lane_retry_markdown_suffix(lane_status: dict[str, Any]) -> str:
+    retry = lane_status.get("structured_output_retry")
+    if not isinstance(retry, dict):
+        return ""
+    outcome = str(retry.get("outcome") or "unknown")
+    attempts = retry.get("attempts")
+    attempts_text = str(attempts) if isinstance(attempts, int) else "unknown"
+    if outcome == "succeeded":
+        return f"Structured output succeeded on retry after {attempts_text} attempts."
+    if outcome == "failed":
+        return f"Structured output retry remained failed after {attempts_text} attempts."
+    return f"Structured output retry outcome: {outcome}."
+
+
 def render_final_review_markdown(brief: dict[str, Any], synthesis: dict[str, Any]) -> str:
     source = brief.get("source", {}) if isinstance(brief.get("source"), dict) else {}
     counts = synthesis.get("finding_counts", {}) if isinstance(synthesis.get("finding_counts"), dict) else {}
@@ -4714,10 +4804,14 @@ def render_final_review_markdown(brief: dict[str, Any], synthesis: dict[str, Any
     if isinstance(lane_results, list) and lane_results:
         for lane in lane_results:
             if isinstance(lane, dict):
-                lines.append(
+                line = (
                     f"- {lane.get('lane_id')}: {lane.get('state')} with {lane.get('finding_count')} finding(s) "
                     f"and {lane.get('review_note_count', 0)} note(s)."
                 )
+                retry_suffix = lane_retry_markdown_suffix(lane)
+                if retry_suffix:
+                    line += " " + retry_suffix
+                lines.append(line)
     else:
         lines.append("- No lane result artifacts were supplied.")
 

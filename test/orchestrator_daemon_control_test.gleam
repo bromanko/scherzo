@@ -30,6 +30,7 @@ import test_async
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
     workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.StructuredOutputRetryPrompt(prompt) -> prompt
     workflow_attempt.RecoveryPrompt(prompt) -> prompt
   }
 }

@@ -259,6 +259,7 @@ fn structured_output_to_json(
         #("artifact_name", json.string(spec.artifact_name)),
         #("required", json.bool(spec.required)),
         #("schema", structured_output_schema_to_json(spec.schema)),
+        #("validation_retries", json.int(spec.validation_retries)),
       ])
   }
 }

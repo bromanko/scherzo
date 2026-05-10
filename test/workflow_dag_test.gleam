@@ -49,12 +49,13 @@ pub fn parses_agent_structured_output_defaults_test() {
   assert spec.artifact_name == "review_json"
   assert spec.required == True
   assert spec.schema == workflow_dag.StructuredObjectSchema([])
+  assert spec.validation_retries == 1
 }
 
 pub fn parses_agent_structured_output_json_contract_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: json\n      artifact_name: review_result\n      required: true\n      schema:\n        type: object\n        required:\n          - summary\n          - findings\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: json\n      artifact_name: review_result\n      required: true\n      validation_retries: 0\n      schema:\n        type: object\n        required:\n          - summary\n          - findings\n",
     )
   let assert [step] = dag.steps
   let assert workflow_dag.AgentStep(
@@ -66,6 +67,7 @@ pub fn parses_agent_structured_output_json_contract_test() {
   assert spec.required == True
   assert spec.schema
     == workflow_dag.StructuredObjectSchema(["summary", "findings"])
+  assert spec.validation_retries == 0
 }
 
 pub fn rejects_invalid_structured_output_contracts_test() {
@@ -93,6 +95,14 @@ pub fn rejects_invalid_structured_output_contracts_test() {
       "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        required:\n          - 123\n",
     )
     == "structured_output_schema_required_entry_not_string"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validation_retries: 2\n",
+    )
+    == "invalid_structured_output_validation_retries"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validation_retries: once\n",
+    )
+    == "structured_output_validation_retries_not_int"
 }
 
 pub fn parses_workspace_capabilities_test() {

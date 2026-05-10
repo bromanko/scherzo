@@ -757,6 +757,7 @@ fn step_summary(
     #("status", json.string(step_artifact.status_to_string(artifact.status))),
     #("failure_code", option_string_json(artifact.failure_code)),
     #("exit_code", option_int_json(artifact.exit_code)),
+    #("summary", json.string(artifact.summary_text)),
     #("stdout", json.string(artifact.stdout)),
     #("stderr", json.string(artifact.stderr)),
     #("structured_output", structured_output_json(artifact.structured_output)),
@@ -777,6 +778,7 @@ fn structured_output_json(
         #("sha256", json.string(metadata.sha256)),
         #("bytes", json.int(metadata.bytes)),
         #("schema_status", json.string(metadata.schema_status)),
+        #("retry", structured_output_retry_json(metadata.retry)),
       ])
     Some(step_artifact.StructuredOutputAbsent(
       artifact_name,
@@ -789,15 +791,53 @@ fn structured_output_json(
         #("format", json.string(format)),
         #("schema_status", json.string(schema_status)),
       ])
-    Some(step_artifact.StructuredOutputError(artifact_name, format, message)) ->
+    Some(step_artifact.StructuredOutputError(
+      artifact_name,
+      format,
+      message,
+      retry,
+    )) ->
       json.object([
         #("status", json.string("error")),
         #("artifact_name", json.string(artifact_name)),
         #("format", json.string(format)),
         #("error", json.string(message)),
+        #("retry", structured_output_retry_json(retry)),
       ])
     None -> json.null()
   }
+}
+
+fn structured_output_retry_json(
+  retry: Option(step_artifact.StructuredOutputRetryInfo),
+) -> json.Json {
+  case retry {
+    None -> json.null()
+    Some(info) ->
+      json.object([
+        #("max_retries", json.int(info.max_retries)),
+        #("attempts", json.int(info.attempts)),
+        #("outcome", json.string(info.outcome)),
+        #(
+          "diagnostics",
+          json.array(
+            info.diagnostics,
+            of: structured_output_retry_diagnostic_json,
+          ),
+        ),
+      ])
+  }
+}
+
+fn structured_output_retry_diagnostic_json(
+  diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
+) -> json.Json {
+  json.object([
+    #("attempt", json.int(diagnostic.attempt)),
+    #("status", json.string(diagnostic.status)),
+    #("failure_code", option_string_json(diagnostic.failure_code)),
+    #("message", json.string(diagnostic.message)),
+  ])
 }
 
 fn agent_lane_mode(scenario: Option(String)) -> String {

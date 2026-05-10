@@ -334,7 +334,8 @@ fn launch_for_prompt_mode(
   issue: tracker_issue.Issue,
 ) -> Result(client.Session, error.PiRpcError) {
   case mode {
-    workflow_attempt.OriginalPrompt(_) -> {
+    workflow_attempt.OriginalPrompt(_)
+    | workflow_attempt.StructuredOutputRetryPrompt(_) -> {
       let launch_mode = case config.pi.session_persistence.enabled {
         True -> pi_command.FreshPersistent
         False -> pi_command.FreshNoSession
@@ -382,6 +383,7 @@ fn launch_continuation(
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
     workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.StructuredOutputRetryPrompt(prompt) -> prompt
     workflow_attempt.RecoveryPrompt(prompt) -> prompt
   }
 }
@@ -392,17 +394,18 @@ fn record_session_observation(
   session: client.Session,
   record_pi_session: fn(workflow_attempt.PiSessionObservation) -> Nil,
 ) -> Nil {
+  let recordable_prompt = case mode {
+    workflow_attempt.OriginalPrompt(_)
+    | workflow_attempt.StructuredOutputRetryPrompt(_) -> True
+    workflow_attempt.RecoveryPrompt(_) -> False
+  }
   case
-    mode,
+    recordable_prompt,
     context.continuation_capable,
     session.session_id,
     session.session_file
   {
-    workflow_attempt.OriginalPrompt(_),
-      True,
-      Some(session_id),
-      Some(session_file)
-    ->
+    True, True, Some(session_id), Some(session_file) ->
       case string.trim(session_id) == "" || string.trim(session_file) == "" {
         True -> Nil
         False ->
@@ -490,7 +493,8 @@ fn launch_worker_failure(
         )),
         Some(workspace_path),
       )
-    workflow_attempt.OriginalPrompt(_) ->
+    workflow_attempt.OriginalPrompt(_)
+    | workflow_attempt.StructuredOutputRetryPrompt(_) ->
       worker_failure(error.PiFailed(err), Some(workspace_path))
   }
 }

@@ -10,6 +10,7 @@ fn spec(required: Bool) -> workflow_dag.StructuredOutputSpec {
     required: required,
     format: workflow_dag.StructuredJson,
     schema: workflow_dag.StructuredObjectSchema(["summary", "findings"]),
+    validation_retries: 1,
   )
 }
 

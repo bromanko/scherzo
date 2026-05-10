@@ -4882,8 +4882,13 @@ fn run_yaml_agent_step(
   now_ms: fn() -> Int,
   record_pi_session: fn(workflow_attempt.PiSessionObservation) -> Nil,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
+  let session_step_id = case prompt_mode {
+    workflow_attempt.StructuredOutputRetryPrompt(_) ->
+      context.step_id <> "_structured_output_retry"
+    _ -> context.step_id
+  }
   let session_id =
-    yaml_step_session.id(run_id, context.step_id, context.attempt_index)
+    yaml_step_session.id(run_id, session_step_id, context.attempt_index)
   let started_at_ms = now_ms()
   hub.register_session(
     event_hub,

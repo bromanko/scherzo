@@ -153,6 +153,7 @@ fn empty_tracker() -> tracker.Client {
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
     workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.StructuredOutputRetryPrompt(prompt) -> prompt
     workflow_attempt.RecoveryPrompt(prompt) -> prompt
   }
 }
@@ -381,6 +382,14 @@ fn structured_output_dag(required: Bool) -> workflow_dag.WorkflowDag {
   dag
 }
 
+fn native_review_lane_structured_output_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: review-native\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    on_failure: continue\n    structured_output:\n      artifact_name: correctness_draft\n      schema:\n        required: [schema_version, artifact_type, lane, draft_findings, evidence_requests, remote_mutations]\n",
+    )
+  dag
+}
+
 fn structured_output_downstream_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
@@ -565,6 +574,79 @@ pub fn valid_json_final_response_becomes_retained_structured_artifact_test() {
   assert !string.contains(contents, "token-123")
 }
 
+pub fn structured_output_validation_retry_recovers_and_records_diagnostics_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/structured-retry"
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        let prompt = prompt_text(prompt_mode)
+        process.send(subject, "agent:" <> context.step_id <> ":" <> prompt)
+        case prompt_mode {
+          workflow_attempt.StructuredOutputRetryPrompt(_) ->
+            Ok(success_agent_with_response(
+              Some(
+                "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"lane\":{},\"draft_findings\":[],\"evidence_requests\":[],\"remote_mutations\":\"none\"}",
+              ),
+              False,
+            ))
+          _ -> Ok(success_agent_with_response(Some("{ truncated"), False))
+        }
+      },
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      native_review_lane_structured_output_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let _initial_agent =
+    receive_event_with_prefix(subject, "agent:lane_correctness:", 10)
+  let retry_agent =
+    receive_event_with_prefix(subject, "agent:lane_correctness:", 10)
+  assert string.contains(retry_agent, "Scherzo structured-output retry")
+  assert string.contains(retry_agent, "Native review lane id: correctness")
+  assert !string.contains(retry_agent, "{ truncated")
+  let assert Ok(artifact) = dict.get(success.artifacts, "lane_correctness")
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.failure_code == None
+  assert string.contains(
+    artifact.summary_text,
+    "structured_output_retry=succeeded",
+  )
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    artifact.structured_output
+  let assert Some(retry) = metadata.retry
+  assert retry.max_retries == 1
+  assert retry.attempts == 2
+  assert retry.outcome == "succeeded"
+  let assert [initial, retried] = retry.diagnostics
+  assert initial.status == "error"
+  assert initial.failure_code == Some("structured_output_invalid_json")
+  assert retried.status == "valid"
+  let assert Ok(_) = simplifile.read(metadata.path)
+}
+
 pub fn invalid_json_structured_output_fails_agent_step_clearly_test() {
   let subject = process.new_subject()
   let assert Error(failure) =
@@ -588,9 +670,18 @@ pub fn invalid_json_structured_output_fails_agent_step_clearly_test() {
   let assert Ok(artifact) = dict.get(failure.artifacts, "review_json")
   assert artifact.status == step_artifact.StepFailed
   assert artifact.failure_code == Some("structured_output_invalid_json")
-  let assert Some(step_artifact.StructuredOutputError(_, _, message)) =
-    artifact.structured_output
+  let assert Some(step_artifact.StructuredOutputError(
+    _,
+    _,
+    message,
+    Some(retry),
+  )) = artifact.structured_output
   assert string.contains(message, "review_json")
+  assert retry.outcome == "failed"
+  assert retry.attempts == 2
+  let assert [initial, retried] = retry.diagnostics
+  assert initial.failure_code == Some("structured_output_invalid_json")
+  assert retried.failure_code == Some("structured_output_invalid_json")
 }
 
 pub fn missing_required_structured_output_fails_agent_step_clearly_test() {
@@ -684,7 +775,7 @@ pub fn structured_artifact_write_failure_fails_step_without_metadata_test() {
   let assert Ok(artifact) = dict.get(failure.artifacts, "review_json")
   assert artifact.failure_code
     == Some("structured_output_artifact_write_failed")
-  let assert Some(step_artifact.StructuredOutputError(_, _, message)) =
+  let assert Some(step_artifact.StructuredOutputError(_, _, message, _)) =
     artifact.structured_output
   assert string.contains(message, "structured write failed")
 }

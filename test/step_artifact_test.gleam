@@ -92,6 +92,7 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
       sha256: "abc123",
       bytes: 42,
       schema_status: "valid",
+      retry: None,
     )
   let artifact =
     step_artifact.from_agent_success_with_valid_structured_output(
@@ -128,6 +129,8 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
   assert lookup(locals, "steps.review_json.structured_output.schema_status")
     == template.VString("valid")
   assert lookup(locals, "steps.review_json.structured_output.error")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.retry_outcome")
     == template.VNil
 }
 
@@ -192,6 +195,56 @@ pub fn structured_output_error_exposes_error_status_test() {
     == template.VString("step review_json required a JSON-only final response")
   assert lookup(locals, "steps.review_json.structured_output.path")
     == template.VNil
+}
+
+pub fn structured_output_retry_info_encodes_decodes_and_exposes_locals_test() {
+  let artifact =
+    step_artifact.from_agent_structured_output_error(
+      "review_json",
+      agent_success("not json"),
+      [],
+      limits(),
+      "structured_output_invalid_json",
+      "step review_json required a JSON-only final response",
+      "review_result",
+      "json",
+    )
+  let retry =
+    step_artifact.StructuredOutputRetryInfo(
+      max_retries: 1,
+      attempts: 2,
+      outcome: "failed",
+      diagnostics: [
+        step_artifact.StructuredOutputRetryDiagnostic(
+          attempt: 1,
+          status: "error",
+          failure_code: Some("structured_output_invalid_json"),
+          message: "initial malformed JSON",
+        ),
+        step_artifact.StructuredOutputRetryDiagnostic(
+          attempt: 2,
+          status: "error",
+          failure_code: Some("structured_output_invalid_json"),
+          message: "retry malformed JSON",
+        ),
+      ],
+    )
+  let artifact =
+    step_artifact.with_structured_output_retry_info(artifact, retry)
+  let assert Ok(decoded) =
+    step_artifact.decode_string(step_artifact.to_string(artifact))
+  let assert Some(step_artifact.StructuredOutputError(_, _, _, Some(retry))) =
+    decoded.structured_output
+  assert retry.outcome == "failed"
+  assert retry.attempts == 2
+  let locals =
+    step_artifact.to_template_locals(
+      dict.from_list([#("review_json", decoded)]),
+    )
+  assert lookup(locals, "steps.review_json.structured_output.retry_outcome")
+    == template.VString("failed")
+  assert lookup(locals, "steps.review_json.structured_output.retry_attempts")
+    == template.VInt(2)
 }
 
 pub fn step_without_structured_output_exposes_not_configured_status_test() {

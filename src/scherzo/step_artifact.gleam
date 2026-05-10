@@ -19,6 +19,24 @@ pub type StepStatus {
   StepFailed
 }
 
+pub type StructuredOutputRetryDiagnostic {
+  StructuredOutputRetryDiagnostic(
+    attempt: Int,
+    status: String,
+    failure_code: Option(String),
+    message: String,
+  )
+}
+
+pub type StructuredOutputRetryInfo {
+  StructuredOutputRetryInfo(
+    max_retries: Int,
+    attempts: Int,
+    outcome: String,
+    diagnostics: List(StructuredOutputRetryDiagnostic),
+  )
+}
+
 pub type StructuredOutputMetadata {
   StructuredOutputMetadata(
     artifact_name: String,
@@ -28,6 +46,7 @@ pub type StructuredOutputMetadata {
     sha256: String,
     bytes: Int,
     schema_status: String,
+    retry: Option(StructuredOutputRetryInfo),
   )
 }
 
@@ -38,7 +57,12 @@ pub type StructuredOutputOutcome {
     format: String,
     schema_status: String,
   )
-  StructuredOutputError(artifact_name: String, format: String, message: String)
+  StructuredOutputError(
+    artifact_name: String,
+    format: String,
+    message: String,
+    retry: Option(StructuredOutputRetryInfo),
+  )
 }
 
 pub type StepArtifact {
@@ -240,6 +264,7 @@ fn structured_output_to_json(outcome: StructuredOutputOutcome) -> json.Json {
         #("sha256", json.string(metadata.sha256)),
         #("bytes", json.int(metadata.bytes)),
         #("schema_status", json.string(metadata.schema_status)),
+        #("retry", option_retry_info_to_json(metadata.retry)),
       ])
     StructuredOutputAbsent(artifact_name, format, schema_status) ->
       json.object([
@@ -248,14 +273,44 @@ fn structured_output_to_json(outcome: StructuredOutputOutcome) -> json.Json {
         #("format", json.string(format)),
         #("schema_status", json.string(schema_status)),
       ])
-    StructuredOutputError(artifact_name, format, message) ->
+    StructuredOutputError(artifact_name, format, message, retry) ->
       json.object([
         #("status", json.string("error")),
         #("artifact_name", json.string(artifact_name)),
         #("format", json.string(format)),
         #("error", json.string(message)),
+        #("retry", option_retry_info_to_json(retry)),
       ])
   }
+}
+
+fn option_retry_info_to_json(
+  retry: Option(StructuredOutputRetryInfo),
+) -> json.Json {
+  case retry {
+    Some(info) -> retry_info_to_json(info)
+    None -> json.null()
+  }
+}
+
+fn retry_info_to_json(info: StructuredOutputRetryInfo) -> json.Json {
+  json.object([
+    #("max_retries", json.int(info.max_retries)),
+    #("attempts", json.int(info.attempts)),
+    #("outcome", json.string(info.outcome)),
+    #("diagnostics", json.array(info.diagnostics, of: retry_diagnostic_to_json)),
+  ])
+}
+
+fn retry_diagnostic_to_json(
+  diagnostic: StructuredOutputRetryDiagnostic,
+) -> json.Json {
+  json.object([
+    #("attempt", json.int(diagnostic.attempt)),
+    #("status", json.string(diagnostic.status)),
+    #("failure_code", option_string_to_json(diagnostic.failure_code)),
+    #("message", json.string(diagnostic.message)),
+  ])
 }
 
 fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
@@ -269,6 +324,11 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
       use sha256 <- decode.field("sha256", decode.string)
       use bytes <- decode.field("bytes", decode.int)
       use schema_status <- decode.field("schema_status", decode.string)
+      use retry <- decode.optional_field(
+        "retry",
+        None,
+        decode.optional(retry_info_decoder()),
+      )
       decode.success(
         StructuredOutputValid(StructuredOutputMetadata(
           artifact_name: artifact_name,
@@ -278,6 +338,7 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
           sha256: sha256,
           bytes: bytes,
           schema_status: schema_status,
+          retry: retry,
         )),
       )
     }
@@ -295,14 +356,57 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
       use artifact_name <- decode.field("artifact_name", decode.string)
       use format <- decode.field("format", decode.string)
       use message <- decode.field("error", decode.string)
-      decode.success(StructuredOutputError(artifact_name, format, message))
+      use retry <- decode.optional_field(
+        "retry",
+        None,
+        decode.optional(retry_info_decoder()),
+      )
+      decode.success(StructuredOutputError(
+        artifact_name,
+        format,
+        message,
+        retry,
+      ))
     }
     _ ->
       decode.failure(
-        StructuredOutputError("", "", ""),
+        StructuredOutputError("", "", "", None),
         expected: "StructuredOutputOutcome",
       )
   }
+}
+
+fn retry_info_decoder() -> decode.Decoder(StructuredOutputRetryInfo) {
+  use max_retries <- decode.field("max_retries", decode.int)
+  use attempts <- decode.field("attempts", decode.int)
+  use outcome <- decode.field("outcome", decode.string)
+  use diagnostics <- decode.field(
+    "diagnostics",
+    decode.list(of: retry_diagnostic_decoder()),
+  )
+  decode.success(StructuredOutputRetryInfo(
+    max_retries: max_retries,
+    attempts: attempts,
+    outcome: outcome,
+    diagnostics: diagnostics,
+  ))
+}
+
+fn retry_diagnostic_decoder() -> decode.Decoder(StructuredOutputRetryDiagnostic) {
+  use attempt <- decode.field("attempt", decode.int)
+  use status <- decode.field("status", decode.string)
+  use failure_code <- decode.optional_field(
+    "failure_code",
+    None,
+    decode.optional(decode.string),
+  )
+  use message <- decode.field("message", decode.string)
+  decode.success(StructuredOutputRetryDiagnostic(
+    attempt: attempt,
+    status: status,
+    failure_code: failure_code,
+    message: message,
+  ))
 }
 
 pub fn from_agent_success(
@@ -410,8 +514,40 @@ pub fn from_agent_structured_output_error(
       artifact_name,
       format,
       message,
+      None,
     )),
   )
+}
+
+pub fn with_structured_output_retry_info(
+  artifact: StepArtifact,
+  retry: StructuredOutputRetryInfo,
+) -> StepArtifact {
+  let structured_output = case artifact.structured_output {
+    Some(StructuredOutputValid(metadata)) ->
+      Some(StructuredOutputValid(
+        StructuredOutputMetadata(..metadata, retry: Some(retry)),
+      ))
+    Some(StructuredOutputError(artifact_name, format, message, _)) ->
+      Some(StructuredOutputError(artifact_name, format, message, Some(retry)))
+    other -> other
+  }
+  StepArtifact(
+    ..artifact,
+    summary_text: summary_with_retry(artifact.summary_text, retry),
+    structured_output: structured_output,
+  )
+}
+
+fn summary_with_retry(
+  summary: String,
+  retry: StructuredOutputRetryInfo,
+) -> String {
+  summary
+  <> " structured_output_retry="
+  <> retry.outcome
+  <> " attempts="
+  <> int.to_string(retry.attempts)
 }
 
 pub fn from_command_result(
@@ -931,50 +1067,95 @@ fn structured_output_locals(
 ) -> List(#(String, template.Value)) {
   let prefix = prefix <> "structured_output."
   case outcome {
-    Some(StructuredOutputValid(metadata)) -> [
-      #(prefix <> "status", template.VString("valid")),
-      #(prefix <> "artifact_name", template.VString(metadata.artifact_name)),
-      #(prefix <> "format", template.VString(metadata.format)),
-      #(prefix <> "ref", template.VString(metadata.ref)),
-      #(prefix <> "path", template.VString(metadata.path)),
-      #(prefix <> "sha256", template.VString(metadata.sha256)),
-      #(prefix <> "bytes", template.VInt(metadata.bytes)),
-      #(prefix <> "schema_status", template.VString(metadata.schema_status)),
-      #(prefix <> "error", template.VNil),
-    ]
-    Some(StructuredOutputAbsent(artifact_name, format, schema_status)) -> [
-      #(prefix <> "status", template.VString("absent")),
-      #(prefix <> "artifact_name", template.VString(artifact_name)),
-      #(prefix <> "format", template.VString(format)),
-      #(prefix <> "ref", template.VNil),
-      #(prefix <> "path", template.VNil),
-      #(prefix <> "sha256", template.VNil),
-      #(prefix <> "bytes", template.VNil),
-      #(prefix <> "schema_status", template.VString(schema_status)),
-      #(prefix <> "error", template.VNil),
-    ]
-    Some(StructuredOutputError(artifact_name, format, message)) -> [
-      #(prefix <> "status", template.VString("error")),
-      #(prefix <> "artifact_name", template.VString(artifact_name)),
-      #(prefix <> "format", template.VString(format)),
-      #(prefix <> "ref", template.VNil),
-      #(prefix <> "path", template.VNil),
-      #(prefix <> "sha256", template.VNil),
-      #(prefix <> "bytes", template.VNil),
-      #(prefix <> "schema_status", template.VNil),
-      #(prefix <> "error", template.VString(message)),
+    Some(StructuredOutputValid(metadata)) ->
+      list.append(
+        [
+          #(prefix <> "status", template.VString("valid")),
+          #(prefix <> "artifact_name", template.VString(metadata.artifact_name)),
+          #(prefix <> "format", template.VString(metadata.format)),
+          #(prefix <> "ref", template.VString(metadata.ref)),
+          #(prefix <> "path", template.VString(metadata.path)),
+          #(prefix <> "sha256", template.VString(metadata.sha256)),
+          #(prefix <> "bytes", template.VInt(metadata.bytes)),
+          #(prefix <> "schema_status", template.VString(metadata.schema_status)),
+          #(prefix <> "error", template.VNil),
+        ],
+        retry_info_locals(prefix, metadata.retry),
+      )
+    Some(StructuredOutputAbsent(artifact_name, format, schema_status)) ->
+      list.append(
+        [
+          #(prefix <> "status", template.VString("absent")),
+          #(prefix <> "artifact_name", template.VString(artifact_name)),
+          #(prefix <> "format", template.VString(format)),
+          #(prefix <> "ref", template.VNil),
+          #(prefix <> "path", template.VNil),
+          #(prefix <> "sha256", template.VNil),
+          #(prefix <> "bytes", template.VNil),
+          #(prefix <> "schema_status", template.VString(schema_status)),
+          #(prefix <> "error", template.VNil),
+        ],
+        retry_info_locals(prefix, None),
+      )
+    Some(StructuredOutputError(artifact_name, format, message, retry)) ->
+      list.append(
+        [
+          #(prefix <> "status", template.VString("error")),
+          #(prefix <> "artifact_name", template.VString(artifact_name)),
+          #(prefix <> "format", template.VString(format)),
+          #(prefix <> "ref", template.VNil),
+          #(prefix <> "path", template.VNil),
+          #(prefix <> "sha256", template.VNil),
+          #(prefix <> "bytes", template.VNil),
+          #(prefix <> "schema_status", template.VNil),
+          #(prefix <> "error", template.VString(message)),
+        ],
+        retry_info_locals(prefix, retry),
+      )
+    None ->
+      list.append(
+        [
+          #(prefix <> "status", template.VString("not_configured")),
+          #(prefix <> "artifact_name", template.VNil),
+          #(prefix <> "format", template.VNil),
+          #(prefix <> "ref", template.VNil),
+          #(prefix <> "path", template.VNil),
+          #(prefix <> "sha256", template.VNil),
+          #(prefix <> "bytes", template.VNil),
+          #(prefix <> "schema_status", template.VNil),
+          #(prefix <> "error", template.VNil),
+        ],
+        retry_info_locals(prefix, None),
+      )
+  }
+}
+
+fn retry_info_locals(
+  prefix: String,
+  retry: Option(StructuredOutputRetryInfo),
+) -> List(#(String, template.Value)) {
+  case retry {
+    Some(info) -> [
+      #(prefix <> "retry_outcome", template.VString(info.outcome)),
+      #(prefix <> "retry_attempts", template.VInt(info.attempts)),
+      #(prefix <> "retry_max_retries", template.VInt(info.max_retries)),
+      #(prefix <> "retry_error", retry_error_value(info.diagnostics)),
     ]
     None -> [
-      #(prefix <> "status", template.VString("not_configured")),
-      #(prefix <> "artifact_name", template.VNil),
-      #(prefix <> "format", template.VNil),
-      #(prefix <> "ref", template.VNil),
-      #(prefix <> "path", template.VNil),
-      #(prefix <> "sha256", template.VNil),
-      #(prefix <> "bytes", template.VNil),
-      #(prefix <> "schema_status", template.VNil),
-      #(prefix <> "error", template.VNil),
+      #(prefix <> "retry_outcome", template.VNil),
+      #(prefix <> "retry_attempts", template.VNil),
+      #(prefix <> "retry_max_retries", template.VNil),
+      #(prefix <> "retry_error", template.VNil),
     ]
+  }
+}
+
+fn retry_error_value(
+  diagnostics: List(StructuredOutputRetryDiagnostic),
+) -> template.Value {
+  case diagnostics {
+    [] -> template.VNil
+    [diagnostic, ..] -> template.VString(diagnostic.message)
   }
 }
 
