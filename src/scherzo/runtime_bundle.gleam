@@ -15,10 +15,15 @@ import scherzo/workspace_profile
 import simplifile
 import yay
 
+pub type BundleDependency {
+  BundleDependency(path: String, contents: String)
+}
+
 pub type RuntimeBundle {
   RuntimeBundle(
     config_path: String,
     config_contents: String,
+    dependencies: List(BundleDependency),
     effective: config_types.EffectiveConfig,
     orchestrator: config_types.OrchestratorConfig,
     workflows: Dict(String, workflow_dag.WorkflowDag),
@@ -129,15 +134,19 @@ fn load_orchestrator(
   env: config.Env,
 ) -> Result(RuntimeBundle, BundleError) {
   use content <- result.try(read_file(selected, "missing_config_file"))
-  use root <- result.try(parse_yaml_root(content))
+  let config_dependency = BundleDependency(selected, content)
+  use root <- result.try(parse_yaml_root(content, selected))
   use orchestrator <- result.try(
     config.resolve_orchestrator_root(root, selected, env)
     |> map_config_error,
   )
-  use workflows <- result.try(load_workflow_map(
-    dict.to_list(orchestrator.routing.workflows),
-    dict.new(),
-  ))
+  use #(workflows, workflow_dependencies) <- result.try(
+    load_workflow_map(
+      dict.to_list(orchestrator.routing.workflows),
+      dict.new(),
+      [],
+    ),
+  )
   use _ <- result.try(validate_workspace_profiles(
     orchestrator,
     dict.to_list(workflows),
@@ -153,6 +162,10 @@ fn load_orchestrator(
   Ok(RuntimeBundle(
     config_path: selected,
     config_contents: content,
+    dependencies: normalize_dependencies([
+      config_dependency,
+      ..workflow_dependencies
+    ]),
     effective: orchestrator.effective,
     orchestrator: orchestrator,
     workflows: workflows,
@@ -163,13 +176,22 @@ fn load_orchestrator(
 fn load_workflow_map(
   entries: List(#(String, String)),
   acc: Dict(String, workflow_dag.WorkflowDag),
-) -> Result(Dict(String, workflow_dag.WorkflowDag), BundleError) {
+  acc_dependencies: List(BundleDependency),
+) -> Result(
+  #(Dict(String, workflow_dag.WorkflowDag), List(BundleDependency)),
+  BundleError,
+) {
   case entries {
-    [] -> Ok(acc)
+    [] -> Ok(#(acc, acc_dependencies))
     [#(id, workflow_path), ..rest] -> {
-      use dag <- result.try(load_workflow_dag(workflow_path))
+      use #(dag, dependencies) <- result.try(load_workflow_dag(workflow_path))
       case dag.id == id {
-        True -> load_workflow_map(rest, dict.insert(acc, id, dag))
+        True ->
+          load_workflow_map(
+            rest,
+            dict.insert(acc, id, dag),
+            list.append(acc_dependencies, dependencies),
+          )
         False ->
           Error(BundleError(
             "workflow_id_mismatch",
@@ -183,39 +205,53 @@ fn load_workflow_map(
 pub fn load_workflow_file(
   workflow_path: String,
 ) -> Result(workflow_dag.WorkflowDag, BundleError) {
-  load_workflow_dag(workflow_path)
+  use #(dag, _) <- result.try(load_workflow_dag(workflow_path))
+  Ok(dag)
 }
 
 fn load_workflow_dag(
   workflow_path: String,
-) -> Result(workflow_dag.WorkflowDag, BundleError) {
+) -> Result(#(workflow_dag.WorkflowDag, List(BundleDependency)), BundleError) {
   use content <- result.try(read_file(workflow_path, "missing_workflow_file"))
-  use dag <- result.try(workflow_dag.parse(content) |> map_dag_error)
-  resolve_prompt_files(dag, workflow_path)
+  let workflow_dependency = BundleDependency(workflow_path, content)
+  use dag <- result.try(
+    workflow_dag.parse(content) |> map_dag_error(workflow_path),
+  )
+  use #(dag, prompt_dependencies) <- result.try(resolve_prompt_files(
+    dag,
+    workflow_path,
+  ))
+  Ok(#(dag, [workflow_dependency, ..prompt_dependencies]))
 }
 
 fn resolve_prompt_files(
   dag: workflow_dag.WorkflowDag,
   workflow_path: String,
-) -> Result(workflow_dag.WorkflowDag, BundleError) {
-  use steps <- result.try(resolve_step_prompts(dag.steps, workflow_path, []))
-  Ok(workflow_dag.WorkflowDag(..dag, steps: steps))
+) -> Result(#(workflow_dag.WorkflowDag, List(BundleDependency)), BundleError) {
+  use #(steps, dependencies) <- result.try(
+    resolve_step_prompts(dag.steps, workflow_path, [], []),
+  )
+  Ok(#(workflow_dag.WorkflowDag(..dag, steps: steps), dependencies))
 }
 
 fn resolve_step_prompts(
   steps: List(workflow_dag.WorkflowStep),
   workflow_path: String,
   acc: List(workflow_dag.WorkflowStep),
-) -> Result(List(workflow_dag.WorkflowStep), BundleError) {
+  acc_dependencies: List(BundleDependency),
+) -> Result(
+  #(List(workflow_dag.WorkflowStep), List(BundleDependency)),
+  BundleError,
+) {
   case steps {
-    [] -> Ok(list.reverse(acc))
+    [] -> Ok(#(list.reverse(acc), acc_dependencies))
     [step, ..rest] -> {
       case step.kind {
         workflow_dag.AgentStep(
           workflow_dag.PromptFile(prompt_path),
           structured_output,
         ) -> {
-          use prompt <- result.try(read_relative_prompt(
+          use #(prompt, dependency) <- result.try(read_relative_prompt(
             prompt_path,
             workflow_path,
           ))
@@ -227,9 +263,20 @@ fn resolve_step_prompts(
                 structured_output,
               ),
             )
-          resolve_step_prompts(rest, workflow_path, [step, ..acc])
+          resolve_step_prompts(
+            rest,
+            workflow_path,
+            [step, ..acc],
+            list.append(acc_dependencies, [dependency]),
+          )
         }
-        _ -> resolve_step_prompts(rest, workflow_path, [step, ..acc])
+        _ ->
+          resolve_step_prompts(
+            rest,
+            workflow_path,
+            [step, ..acc],
+            acc_dependencies,
+          )
       }
     }
   }
@@ -409,9 +456,10 @@ fn validate_step_model_settings(
 fn read_relative_prompt(
   prompt_path: String,
   workflow_path: String,
-) -> Result(String, BundleError) {
+) -> Result(#(String, BundleDependency), BundleError) {
   case validate_relative_path(prompt_path, "invalid_prompt_path") {
-    Error(err) -> Error(err)
+    Error(BundleError(code, message)) ->
+      Error(BundleError(code, message <> " in workflow " <> workflow_path))
     Ok(Nil) -> {
       let prompt_path = string.trim(prompt_path)
       use workflow_dir <- result.try(
@@ -426,7 +474,10 @@ fn read_relative_prompt(
         path.absolute(joined_path)
         |> result.replace_error(BundleError(
           "invalid_prompt_path",
-          "could not resolve prompt path: " <> prompt_path,
+          "could not resolve prompt path "
+            <> prompt_path
+            <> " in workflow "
+            <> workflow_path,
         )),
       )
       use workflow_dir_abs <- result.try(
@@ -440,9 +491,15 @@ fn read_relative_prompt(
         False ->
           Error(BundleError(
             "invalid_prompt_path",
-            "prompt path escapes workflow directory: " <> prompt_path,
+            "prompt path escapes workflow directory: "
+              <> prompt_path
+              <> " in workflow "
+              <> workflow_path,
           ))
-        True -> read_file(full_path, "missing_prompt_file")
+        True -> {
+          use contents <- result.try(read_file(full_path, "missing_prompt_file"))
+          Ok(#(contents, BundleDependency(full_path, contents)))
+        }
       }
     }
   }
@@ -474,12 +531,37 @@ fn has_parent_segment(value: String) -> Bool {
   || string.contains(value, "/../")
 }
 
-fn parse_yaml_root(content: String) -> Result(yay.Node, BundleError) {
+fn normalize_dependencies(
+  dependencies: List(BundleDependency),
+) -> List(BundleDependency) {
+  dependencies
+  |> list.fold(dict.new(), fn(acc, dependency) {
+    dict.insert(acc, dependency.path, dependency.contents)
+  })
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(path, contents) = entry
+    BundleDependency(path, contents)
+  })
+  |> list.sort(by: fn(left, right) { string.compare(left.path, right.path) })
+}
+
+fn parse_yaml_root(
+  content: String,
+  config_path: String,
+) -> Result(yay.Node, BundleError) {
   case yay.parse_string(content) {
-    Error(_) -> Error(BundleError("yaml_parse_error", "YAML parse error"))
+    Error(_) ->
+      Error(BundleError(
+        "yaml_parse_error",
+        "config " <> config_path <> ": YAML parse error",
+      ))
     Ok([document]) -> Ok(yay.document_root(document))
     Ok(_) ->
-      Error(BundleError("multiple_documents", "expected one YAML document"))
+      Error(BundleError(
+        "multiple_documents",
+        "config " <> config_path <> ": expected one YAML document",
+      ))
   }
 }
 
@@ -540,11 +622,12 @@ fn map_config_error(
 
 fn map_dag_error(
   result: Result(a, workflow_dag.DagError),
+  workflow_path: String,
 ) -> Result(a, BundleError) {
   case result {
     Ok(value) -> Ok(value)
     Error(workflow_dag.DagError(code, message)) ->
-      Error(BundleError(code, message))
+      Error(BundleError(code, "workflow " <> workflow_path <> ": " <> message))
   }
 }
 

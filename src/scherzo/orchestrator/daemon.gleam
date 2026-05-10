@@ -2190,14 +2190,13 @@ fn reload_workflow_for_operator(
 ) -> #(State, command.CommandResult) {
   let outcome = workflow_reloader.reload_now(state.workflow)
   let state = apply_workflow_reload_outcome(state, outcome)
+  let reloaded = command.applied(operator_command, Some("workflow reloaded"))
+  let failure_message = workflow_reloader.invalid_operator_message(outcome)
   case state.workflow.reload_state.current_status {
-    config.CurrentValid -> #(
-      state,
-      command.applied(operator_command, Some("workflow reloaded")),
-    )
+    config.CurrentValid -> #(state, reloaded)
     config.CurrentInvalid(reason) -> #(
       state,
-      command.rejected(operator_command, reason, Some("workflow reload failed")),
+      command.rejected(operator_command, reason, failure_message),
     )
   }
 }
@@ -2738,9 +2737,10 @@ fn apply_workflow_reload_outcome(
     workflow_reloader.Unchanged(workflow) -> State(..state, workflow: workflow)
     workflow_reloader.Reloaded(workflow) ->
       apply_reloaded_workflow(state, workflow)
-    workflow_reloader.Invalid(workflow, reason) -> {
+    workflow_reloader.Invalid(workflow, reason, message) -> {
       let state = State(..state, workflow: workflow)
-      log_state(state, "warn", "workflow_reload_failed", [#("error", reason)])
+      let fields = workflow_reloader.invalid_log_fields(reason, message)
+      log_state(state, "warn", "workflow_reload_failed", fields)
       state
     }
   }
