@@ -106,6 +106,39 @@ pub fn renderer_emits_carbon_shell_commentable_metadata_and_open_question_badge_
   assert !string.contains(html, "comment-hint")
 }
 
+pub fn renderer_emits_active_toc_scroll_spy_css_and_script_hooks_test() {
+  let html =
+    render_plan(
+      "test/tmp/execplan-html-renderer-scroll-spy",
+      "# Scroll Spy Plan\n\n"
+        <> "Intro.\n\n"
+        <> "## Section\n\n"
+        <> "Body.\n\n"
+        <> "### Nested Detail\n\n"
+        <> "More.\n\n"
+        <> "#### Deep Detail\n\n"
+        <> "More.\n\n"
+        <> "## Open Questions and Clarifications Needed\n\n"
+        <> "None.\n",
+    )
+
+  assert string.contains(html, ".toc-entry.is-current > a")
+  assert string.contains(html, ".toc-entry a[aria-current=\"location\"]")
+  assert string.contains(
+    html,
+    "tocPanel.querySelectorAll('.toc-entry a[href^=\"#\"]')",
+  )
+  assert string.contains(html, "setAttribute('aria-current', 'location')")
+  assert string.contains(html, "removeAttribute('aria-current')")
+  assert string.contains(html, "classList.add('is-current')")
+  assert string.contains(html, "function keepActiveVisible")
+  assert string.contains(html, "IntersectionObserver")
+  assert string.contains(html, "hashchange")
+  assert string.contains(html, "href=\"#sec-section\"")
+  assert string.contains(html, "href=\"#h3-nested-detail\"")
+  assert string.contains(html, "href=\"#h4-deep-detail\"")
+}
+
 pub fn renderer_keeps_open_question_badge_off_when_section_is_none_test() {
   let html =
     render_plan(
