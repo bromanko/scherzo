@@ -211,13 +211,11 @@ workspace:
       driver:
         command: scripts/scherzo-workspace-jj
         lifecycle: [create, before-step, after-step, remove]
-        capabilities: [status, diff, changed-files, assert-only]
         timeout_ms: 60000
     noop:
       driver:
         command: scripts/scherzo-workspace-noop
         lifecycle: [create, before-step, after-step, remove]
-        capabilities: [assert-only]
         timeout_ms: 60000
 
 agent:
@@ -250,7 +248,7 @@ routing:
     implementation: workflows/implementation.yaml
 ```
 
-Relative config paths are resolved from the orchestrator config file directory. Driver commands are trusted operator config: workflows can select a named profile and require capabilities, but workflow YAML cannot define the shell command that creates, copies, validates, or removes workspaces. The fully qualified driver schema is `workspace.profiles.<name>.driver.command`, with sibling `lifecycle`, `capabilities`, and `timeout_ms` fields. The checked `examples/scherzo.yaml` file lives under `examples/`, so it uses `../scripts/...` for the checked driver scripts; a config copied to a repository root would normally use `scripts/...`, and a packaged install can use a PATH command or absolute trusted wrapper.
+Relative config paths are resolved from the orchestrator config file directory. Driver commands are trusted operator config: workflows can select a named profile and require capabilities, but workflow YAML cannot define the shell command that creates, copies, validates, or removes workspaces. The fully qualified driver schema is `workspace.profiles.<name>.driver.command`, with sibling `lifecycle` and `timeout_ms` fields. Driver capabilities are discovered from `<driver> describe --json`; profile-local `driver.capabilities` was removed and now fails config loading with migration guidance. The checked `examples/scherzo.yaml` file lives under `examples/`, so it uses `../scripts/...` for the checked driver scripts; a config copied to a repository root would normally use `scripts/...`, and a packaged install can use a PATH command or absolute trusted wrapper.
 
 For migration, legacy workspace.hooks and profile-local hook blocks are documented in [`docs/runbooks/workspace-driver-migration.md`](docs/runbooks/workspace-driver-migration.md). Current Scherzo still warns about legacy hook shapes during doctor checks so operators can migrate safely, but new checked configs and examples should prefer driver-backed profiles.
 

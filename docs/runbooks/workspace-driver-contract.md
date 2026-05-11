@@ -43,6 +43,20 @@ The no-op artifact driver requires an explicit `SCHERZO_WORKSPACE_PATH` for ever
 
 The jj driver maps lifecycle operations to the existing legacy helper: `create` delegates to `scripts/scherzo-jj-workspace after-create`, `before-step` delegates to `scripts/scherzo-jj-workspace before-run`, `remove` delegates to `scripts/scherzo-jj-workspace before-remove`, and `after-step` is a successful no-op in the initial contract.
 
+## Metadata command form
+
+Every workspace driver must implement one side-effect-free metadata command:
+
+    <driver> describe --json
+
+The command prints one JSON object followed by a newline, exits 0, and does not require `SCHERZO_WORKSPACE_PATH` or a prepared workspace. Version 1 of the response has this shape:
+
+    {"version":1,"capabilities":["status","changed-files","assert-only"]}
+
+`version` must be integer `1`. `capabilities` must be a list of strings from Scherzo's fixed capability vocabulary: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. The list may be in any order. Scherzo canonicalizes it before validation, prompt rendering, environment exposure, and fingerprinting. Malformed JSON, missing fields, unsupported versions, unknown capability names, duplicate capability names, nonzero exit, and timeout are workflow-config load failures.
+
+`describe --json` must be static metadata. It must not invoke a VCS, inspect or mutate a workflow workspace, require credentials, contact a network service, or depend on `SCHERZO_WORKSPACE_CAPABILITIES`. Lifecycle support is still explicit profile config; do not infer lifecycle operations from the metadata response.
+
 ## Capability command forms
 
 The portable capability command forms used by workflows are:
@@ -76,15 +90,15 @@ Exit code 2 means the caller used the contract incorrectly, requested an unsuppo
 
 ## Adapter support matrix
 
-`scripts/scherzo-workspace-noop` supports these lifecycle operations and capabilities:
+`scripts/scherzo-workspace-noop` supports these lifecycle operations and self-described capabilities:
 
 - lifecycle: `create`, `before-step`, `after-step`, `remove`
-- capabilities: `status`, `changed-files`, `assert-only`
+- `describe --json` capabilities: `status`, `changed-files`, `assert-only`
 
-`scripts/scherzo-workspace-jj` supports these lifecycle operations and capabilities:
+`scripts/scherzo-workspace-jj` supports these lifecycle operations and self-described capabilities:
 
 - lifecycle: `create`, `before-step`, `after-step`, `remove`
-- capabilities: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, `publish-change`
+- `describe --json` capabilities: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, `publish-change`
 
 The no-op artifact driver intentionally rejects `diff`, `baseline`, `refresh-base`, and `publish-change` with usage errors because an empty artifact workspace has no VCS baseline or publication target.
 

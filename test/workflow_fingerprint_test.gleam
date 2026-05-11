@@ -1,13 +1,17 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/model_config
+import scherzo/step_artifact
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
+import scherzo/workspace_driver_discovery
+import simplifile
 
 fn parse(content: String) -> workflow_dag.WorkflowDag {
   let assert Ok(dag) = workflow_dag.parse(content)
@@ -88,6 +92,46 @@ fn limits(command_stream_max_chars: Int) -> config_types.ArtifactLimits {
     template_field_max_chars: 1000,
     workflow_summary_max_chars: 4000,
   )
+}
+
+fn reset_dir(path: String) -> Nil {
+  let _ = simplifile.delete(path)
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+  Nil
+}
+
+fn shell_quote(value: String) -> String {
+  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
+}
+
+fn chmod_executable(path: String) -> Nil {
+  let artifact =
+    command_step.run(
+      "chmod_fingerprint_driver",
+      "chmod +x " <> shell_quote(path),
+      ".",
+      5000,
+      [],
+      limits(4000),
+    )
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+}
+
+fn write_describe_driver(path: String, capabilities_json: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "if [ \"$1\" = describe ] && [ \"$2\" = --json ]; then\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"capabilities\":"
+        <> capabilities_json
+        <> "}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "exit 2\n",
+    )
+  chmod_executable(path)
 }
 
 fn orchestrator_with_profiles(
@@ -471,6 +515,40 @@ pub fn execution_fingerprint_canonicalizes_driver_list_order_test() {
       limits(1000),
       settings,
     )
+}
+
+pub fn execution_fingerprint_uses_discovered_driver_capabilities_test() {
+  let dir = "test/tmp/workflow-fingerprint-discovered-driver"
+  reset_dir(dir)
+  let driver = dir <> "/driver.sh"
+  let dag =
+    parse(
+      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let base_orchestrator =
+    orchestrator_with_profiles([
+      #("noop", driver_profile(driver, [], [])),
+    ])
+
+  write_describe_driver(driver, "[\"changed-files\",\"assert-only\"]")
+  let assert Ok(first_orchestrator) =
+    workspace_driver_discovery.enrich_orchestrator(base_orchestrator)
+  write_describe_driver(driver, "[\"assert-only\",\"changed-files\"]")
+  let assert Ok(reordered_orchestrator) =
+    workspace_driver_discovery.enrich_orchestrator(base_orchestrator)
+  write_describe_driver(driver, "[\"assert-only\"]")
+  let assert Ok(changed_orchestrator) =
+    workspace_driver_discovery.enrich_orchestrator(base_orchestrator)
+
+  let assert Ok(first) =
+    workflow_fingerprint.fingerprint_for_execution(dag, first_orchestrator)
+  let assert Ok(reordered) =
+    workflow_fingerprint.fingerprint_for_execution(dag, reordered_orchestrator)
+  let assert Ok(changed) =
+    workflow_fingerprint.fingerprint_for_execution(dag, changed_orchestrator)
+
+  assert first == reordered
+  assert first != changed
 }
 
 pub fn execution_fingerprint_ignores_unselected_driver_profiles_test() {

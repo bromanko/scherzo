@@ -56,7 +56,7 @@ pub fn migration_guide_is_actionable_test() {
   assert_contains(path, guide, "After")
   assert_contains(path, guide, "workspace.hooks")
   assert_contains(path, guide, "driver:")
-  assert_contains(path, guide, "capabilities:")
+  assert_contains(path, guide, "describe --json")
   assert_contains(
     path,
     guide,
@@ -75,7 +75,7 @@ pub fn examples_use_driver_profiles_test() {
   assert_contains(path, example, "command: ../scripts/scherzo-workspace-jj")
   assert_contains(path, example, "command: ../scripts/scherzo-workspace-noop")
   assert_contains(path, example, "lifecycle:")
-  assert_contains(path, example, "capabilities:")
+  assert_not_contains(path, example, "capabilities:")
   assert_not_contains(path, example, "    isolated:\n      hooks:")
   assert_not_contains(path, example, "    noop:\n      hooks:")
 }

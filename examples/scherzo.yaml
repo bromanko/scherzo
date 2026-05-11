@@ -17,13 +17,11 @@ workspace:
       driver:
         command: ../scripts/scherzo-workspace-jj
         lifecycle: [create, before-step, after-step, remove]
-        capabilities: [status, diff, changed-files, assert-only]
         timeout_ms: 60000
     noop:
       driver:
         command: ../scripts/scherzo-workspace-noop
         lifecycle: [create, before-step, after-step, remove]
-        capabilities: [assert-only]
         timeout_ms: 60000
 agent:
   max_concurrent_agents: 1

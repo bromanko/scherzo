@@ -26,6 +26,7 @@ import scherzo/workflow_dag
 import scherzo/workflow_run
 import scherzo/workflow_scheduler
 import scherzo/workspace_driver_context
+import scherzo/workspace_driver_discovery
 import scherzo/workspace_run
 import simplifile
 import support/expected_crash
@@ -751,6 +752,79 @@ pub fn command_step_receives_workspace_driver_context_from_resolved_profile_test
   assert receive_event(subject) == "prepare:run:main:"
   assert receive_event(subject)
     == "driver_env:dogfood-jj|scripts/scherzo-workspace-jj|assert-only changed-files"
+}
+
+pub fn command_step_receives_discovered_workspace_driver_context_test() {
+  let subject = process.new_subject()
+  reset_dir("test/tmp/workflow-run")
+  let hooks = dag_hooks_with_timeout(1000)
+  let assert Ok(driver_path) = path.absolute("scripts/scherzo-workspace-noop")
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator(),
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "noop",
+        profiles: dict.from_list([
+          #(
+            "noop",
+            workspace_profile_with_driver(
+              "noop",
+              hooks,
+              config_types.ConfiguredWorkspaceHooks,
+              driver_path,
+              [],
+            ),
+          ),
+        ]),
+      ),
+    )
+  let assert Ok(orchestrator) =
+    workspace_driver_discovery.enrich_orchestrator(orchestrator)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "driver_env:"
+            <> context.workspace_context.profile
+            <> "|"
+            <> workspace_driver_context.serialize_capabilities(
+            context.workspace_context.capabilities,
+          ),
+        )
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "stdout",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      command_dag_with_profile("noop"),
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert receive_event(subject) == "prepare:run:main:"
+  assert receive_event(subject)
+    == "driver_env:noop|status changed-files assert-only"
 }
 
 pub fn default_agent_step_receives_workspace_driver_environment_test() {

@@ -1029,27 +1029,32 @@ fn read_workspace_driver(
   driver: yay.Node,
   path: String,
 ) -> Result(config_types.WorkspaceDriverConfig, error.ConfigError) {
-  use command <- result.try(read_driver_command(driver, path <> ".command"))
-  use lifecycle <- result.try(read_lifecycle_operations(
-    driver,
-    "lifecycle",
-    path <> ".lifecycle",
-  ))
-  use capabilities <- result.try(read_workspace_capabilities(
-    driver,
-    "capabilities",
-    path <> ".capabilities",
-  ))
-  let timeout = get_int(driver, "timeout_ms") |> int_default(60_000)
-  case timeout > 0 {
-    False -> Error(error.InvalidConfig(path <> ".timeout_ms must be positive"))
-    True ->
-      Ok(config_types.WorkspaceDriverConfig(
-        command: command,
-        lifecycle: lifecycle,
-        capabilities: capabilities,
-        timeout_ms: timeout,
+  case get_node(driver, "capabilities") {
+    Some(_) ->
+      Error(error.InvalidConfig(
+        path
+        <> ".capabilities was removed; remove this key and ensure the configured driver implements describe --json. See docs/runbooks/workspace-driver-capabilities.md",
       ))
+    None -> {
+      use command <- result.try(read_driver_command(driver, path <> ".command"))
+      use lifecycle <- result.try(read_lifecycle_operations(
+        driver,
+        "lifecycle",
+        path <> ".lifecycle",
+      ))
+      let timeout = get_int(driver, "timeout_ms") |> int_default(60_000)
+      case timeout > 0 {
+        False ->
+          Error(error.InvalidConfig(path <> ".timeout_ms must be positive"))
+        True ->
+          Ok(config_types.WorkspaceDriverConfig(
+            command: command,
+            lifecycle: lifecycle,
+            capabilities: [],
+            timeout_ms: timeout,
+          ))
+      }
+    }
   }
 }
 
@@ -1106,52 +1111,6 @@ fn read_lifecycle_operation_values(
         False ->
           read_lifecycle_operation_values(rest, path, [operation, ..seen], [
             operation,
-            ..acc
-          ])
-      }
-    }
-    [_, ..] -> Error(error.InvalidConfig(path <> " entries must be strings"))
-  }
-}
-
-fn read_workspace_capabilities(
-  node: yay.Node,
-  key: String,
-  path: String,
-) -> Result(List(config_types.WorkspaceCapability), error.ConfigError) {
-  case get_node(node, key) {
-    None -> Ok([])
-    Some(yay.NodeSeq(values)) ->
-      read_workspace_capability_values(values, path, [], [])
-    Some(_) -> Error(error.InvalidConfig(path <> " must be a list"))
-  }
-}
-
-fn read_workspace_capability_values(
-  values: List(yay.Node),
-  path: String,
-  seen: List(config_types.WorkspaceCapability),
-  acc: List(config_types.WorkspaceCapability),
-) -> Result(List(config_types.WorkspaceCapability), error.ConfigError) {
-  case values {
-    [] -> Ok(list.reverse(acc))
-    [yay.NodeStr(value), ..rest] -> {
-      use capability <- result.try(
-        config_types.workspace_capability_from_string(value)
-        |> result.replace_error(error.InvalidConfig(
-          path <> " has unknown workspace capability: " <> value,
-        )),
-      )
-      case list.contains(seen, capability) {
-        True ->
-          Error(error.InvalidConfig(
-            path
-            <> " has duplicate workspace capability: "
-            <> config_types.workspace_capability_to_string(capability),
-          ))
-        False ->
-          read_workspace_capability_values(rest, path, [capability, ..seen], [
-            capability,
             ..acc
           ])
       }

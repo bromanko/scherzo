@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 USAGE = """Usage:
+  scherzo-workspace-jj describe --json
   scherzo-workspace-jj lifecycle <create|before-step|after-step|remove>
   scherzo-workspace-jj status --human
   scherzo-workspace-jj diff --human
@@ -51,6 +52,21 @@ def fail(message: str) -> None:
 
 def json_dump(value: dict[str, object]) -> None:
     print(json.dumps(value, separators=(",", ":")))
+
+
+def describe_json() -> None:
+    json_dump({
+        "version": 1,
+        "capabilities": [
+            "status",
+            "diff",
+            "changed-files",
+            "assert-only",
+            "baseline",
+            "refresh-base",
+            "publish-change",
+        ],
+    })
 
 
 def json_failure(
@@ -745,6 +761,12 @@ def main(argv: list[str]) -> None:
     if not argv:
         usage_error()
     command, rest = argv[0], argv[1:]
+    if command == "describe":
+        if rest != ["--json"]:
+            usage_error("describe requires --json")
+        describe_json()
+        return
+
     if command == "lifecycle":
         lifecycle(rest)
         return

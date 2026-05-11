@@ -12,6 +12,7 @@ import sys
 
 MARKER = ".scherzo-workspace-driver-noop"
 USAGE = """Usage:
+  scherzo-workspace-noop describe --json
   scherzo-workspace-noop lifecycle <create|before-step|after-step|remove>
   scherzo-workspace-noop status --human
   scherzo-workspace-noop changed-files --json
@@ -121,6 +122,11 @@ def print_changed_files_json(paths: list[str]) -> None:
     print(json.dumps(payload, separators=(",", ":")))
 
 
+def describe_json() -> None:
+    payload = {"version": 1, "capabilities": ["status", "changed-files", "assert-only"]}
+    print(json.dumps(payload, separators=(",", ":")))
+
+
 def lifecycle(args: list[str]) -> None:
     if len(args) != 1:
         usage_error("lifecycle requires one operation")
@@ -177,6 +183,12 @@ def main(argv: list[str]) -> None:
     if not argv:
         usage_error()
     command, rest = argv[0], argv[1:]
+    if command == "describe":
+        if rest != ["--json"]:
+            usage_error("describe requires --json")
+        describe_json()
+        return
+
     if command == "lifecycle":
         lifecycle(rest)
         return

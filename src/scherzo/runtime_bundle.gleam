@@ -11,6 +11,7 @@ import scherzo/path
 import scherzo/template
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
+import scherzo/workspace_driver_discovery
 import scherzo/workspace_profile
 import simplifile
 import yay
@@ -146,6 +147,10 @@ fn load_orchestrator(
       dict.new(),
       [],
     ),
+  )
+  use orchestrator <- result.try(
+    workspace_driver_discovery.enrich_orchestrator(orchestrator)
+    |> result.map_error(workspace_driver_discovery_error_to_bundle_error),
   )
   use _ <- result.try(validate_workspace_profiles(
     orchestrator,
@@ -296,6 +301,15 @@ fn validate_workspace_profiles(
       validate_workspace_profiles(orchestrator, rest)
     }
   }
+}
+
+fn workspace_driver_discovery_error_to_bundle_error(
+  err: workspace_driver_discovery.DiscoveryError,
+) -> BundleError {
+  BundleError(
+    workspace_driver_discovery.error_code(err),
+    workspace_driver_discovery.error_message(err),
+  )
 }
 
 fn workspace_profile_error_to_bundle_error(
