@@ -77,6 +77,8 @@ pub fn default_agent_config() -> config_types.AgentConfig {
     max_retry_backoff_ms: 300_000,
     max_retry_attempts: 5,
     max_sessions_per_issue: 3,
+    context_recovery_max_attempts: 1,
+    context_recovery_prompt_char_limit: 40_000,
     max_concurrent_agents_by_state: dict.new(),
   )
 }
@@ -461,11 +463,15 @@ fn resolve_agent(
     get_int(agent, "max_retry_attempts") |> int_default(5)
   let max_sessions_per_issue =
     get_int(agent, "max_sessions_per_issue") |> int_default(3)
+  let context_recovery_max_attempts =
+    get_int(agent, "context_recovery_max_attempts") |> int_default(1)
+  let context_recovery_prompt_char_limit =
+    get_int(agent, "context_recovery_prompt_char_limit") |> int_default(40_000)
 
-  case max_concurrent_agents < 0 {
+  case max_concurrent_agents < 0 || context_recovery_max_attempts < 0 {
     True ->
       Error(error.InvalidConfig(
-        "agent.max_concurrent_agents must be zero or positive",
+        "agent.max_concurrent_agents and agent.context_recovery_max_attempts must be zero or positive",
       ))
     False ->
       case
@@ -473,6 +479,7 @@ fn resolve_agent(
         || max_retry_backoff_ms <= 0
         || max_retry_attempts <= 0
         || max_sessions_per_issue <= 0
+        || context_recovery_prompt_char_limit <= 0
       {
         True -> Error(error.InvalidConfig("agent limits must be positive"))
         False ->
@@ -482,6 +489,8 @@ fn resolve_agent(
             max_retry_backoff_ms: max_retry_backoff_ms,
             max_retry_attempts: max_retry_attempts,
             max_sessions_per_issue: max_sessions_per_issue,
+            context_recovery_max_attempts: context_recovery_max_attempts,
+            context_recovery_prompt_char_limit: context_recovery_prompt_char_limit,
             max_concurrent_agents_by_state: get_positive_int_map(
               agent,
               "max_concurrent_agents_by_state",

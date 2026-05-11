@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/context_exhaustion
 import scherzo/error
 import scherzo/pi/command as pi_command
 import scherzo/pi/protocol
@@ -213,7 +214,56 @@ pub fn send_prompt(
   case record.success {
     Some(True) ->
       Ok(#(Session(..session, next_id: session.next_id + 1), skipped))
-    _ -> Error(error.PiProtocolError("prompt rejected"))
+    _ -> Error(classified_rejected_command("prompt rejected", record))
+  }
+}
+
+pub fn compact(
+  session: Session,
+  custom_instructions: Option(String),
+  read_timeout_ms: Int,
+) -> Result(#(Session, List(protocol.RpcRecord)), error.PiRpcError) {
+  let id = int_to_string(session.next_id)
+  use _ <- try_pi(
+    port.send_line(
+      session.process,
+      protocol.encode_compact(id, custom_instructions),
+    )
+    |> map_port_error,
+  )
+  use pair <- try_pi(
+    read_until_response_collect(session.process, id, read_timeout_ms, []),
+  )
+  let #(record, skipped) = pair
+  case record.success {
+    Some(True) ->
+      Ok(#(Session(..session, next_id: session.next_id + 1), skipped))
+    _ -> Error(classified_rejected_command("compact failed", record))
+  }
+}
+
+pub fn set_auto_compaction(
+  session: Session,
+  read_timeout_ms: Int,
+  enabled enabled: Bool,
+) -> Result(#(Session, List(protocol.RpcRecord)), error.PiRpcError) {
+  let id = int_to_string(session.next_id)
+  use _ <- try_pi(
+    port.send_line(
+      session.process,
+      protocol.encode_set_auto_compaction(id, enabled: enabled),
+    )
+    |> map_port_error,
+  )
+  use pair <- try_pi(
+    read_until_response_collect(session.process, id, read_timeout_ms, []),
+  )
+  let #(record, skipped) = pair
+  case record.success {
+    Some(True) ->
+      Ok(#(Session(..session, next_id: session.next_id + 1), skipped))
+    _ ->
+      Error(classified_rejected_command("set_auto_compaction failed", record))
   }
 }
 
@@ -348,6 +398,20 @@ fn send_expect_success(
   case record.success {
     Some(True) -> Ok(Session(..session, next_id: session.next_id + 1))
     _ -> Error(error.PiProtocolError(command <> " failed"))
+  }
+}
+
+fn classified_rejected_command(
+  fallback: String,
+  record: protocol.RpcRecord,
+) -> error.PiRpcError {
+  case context_exhaustion.from_rpc_record(record) {
+    Some(context) -> context_exhaustion.to_pi_rpc_error(context)
+    None ->
+      case record.error_message {
+        Some(message) -> error.PiProtocolError(fallback <> ": " <> message)
+        None -> error.PiProtocolError(fallback)
+      }
   }
 }
 

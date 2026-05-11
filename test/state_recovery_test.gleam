@@ -487,6 +487,8 @@ fn config() -> config_types.EffectiveConfig {
       max_retry_backoff_ms: 40_000,
       max_retry_attempts: 3,
       max_sessions_per_issue: 2,
+      context_recovery_max_attempts: 1,
+      context_recovery_prompt_char_limit: 40_000,
       max_concurrent_agents_by_state: dict.new(),
     ),
     pi: config_types.PiConfig(
