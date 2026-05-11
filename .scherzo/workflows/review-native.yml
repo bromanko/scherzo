@@ -26,6 +26,7 @@ steps:
       format: json
       artifact_name: correctness_draft
       required: true
+      validator: review_lane_draft
       schema:
         type: object
         required:
@@ -51,6 +52,7 @@ steps:
       format: json
       artifact_name: test_quality_draft
       required: true
+      validator: review_lane_draft
       schema:
         type: object
         required:
@@ -76,6 +78,7 @@ steps:
       format: json
       artifact_name: idioms_maintainability_draft
       required: true
+      validator: review_lane_draft
       schema:
         type: object
         required:
@@ -101,6 +104,7 @@ steps:
       format: json
       artifact_name: security_performance_draft
       required: true
+      validator: review_lane_draft
       schema:
         type: object
         required:

@@ -43,12 +43,17 @@ pub type StructuredOutputSchema {
   StructuredObjectSchema(required_keys: List(String))
 }
 
+pub type StructuredOutputValidator {
+  ReviewLaneDraftValidator
+}
+
 pub type StructuredOutputSpec {
   StructuredOutputSpec(
     artifact_name: String,
     required: Bool,
     format: StructuredOutputFormat,
     schema: StructuredOutputSchema,
+    validator: Option(StructuredOutputValidator),
     validation_retries: Int,
   )
 }
@@ -148,6 +153,23 @@ pub fn structured_output_schema_required_keys(
 ) -> List(String) {
   case schema {
     StructuredObjectSchema(required_keys) -> required_keys
+  }
+}
+
+pub fn structured_output_validator_to_string(
+  validator: StructuredOutputValidator,
+) -> String {
+  case validator {
+    ReviewLaneDraftValidator -> "review_lane_draft"
+  }
+}
+
+pub fn structured_output_validator_from_string(
+  value: String,
+) -> Result(StructuredOutputValidator, Nil) {
+  case string.trim(value) |> string.lowercase {
+    "review_lane_draft" -> Ok(ReviewLaneDraftValidator)
+    _ -> Error(Nil)
   }
 }
 
@@ -393,6 +415,7 @@ fn read_structured_output(
           ))
           use required <- result.try(read_structured_required(structured_node))
           use schema <- result.try(read_structured_schema(structured_node))
+          use validator <- result.try(read_structured_validator(structured_node))
           use validation_retries <- result.try(
             read_structured_validation_retries(structured_node),
           )
@@ -402,6 +425,7 @@ fn read_structured_output(
               required: required,
               format: format,
               schema: schema,
+              validator: validator,
               validation_retries: validation_retries,
             )),
           )
@@ -480,6 +504,28 @@ fn read_structured_required(node: yay.Node) -> Result(Bool, DagError) {
       Error(DagError(
         "structured_output_required_not_bool",
         "structured_output.required must be a boolean",
+      ))
+  }
+}
+
+fn read_structured_validator(
+  node: yay.Node,
+) -> Result(Option(StructuredOutputValidator), DagError) {
+  case get_node(node, "validator") {
+    None -> Ok(None)
+    Some(yay.NodeStr(value)) ->
+      case structured_output_validator_from_string(value) {
+        Ok(validator) -> Ok(Some(validator))
+        Error(Nil) ->
+          Error(DagError(
+            "unknown_structured_output_validator",
+            "unknown structured_output.validator: " <> value,
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "structured_output_validator_not_string",
+        "structured_output.validator must be a string",
       ))
   }
 }

@@ -113,6 +113,11 @@ pub fn retry_prompt(
     [] -> "(no additional required keys)"
     _ -> string.join(required_keys, with: ", ")
   }
+  let validator_text = case spec.validator {
+    None -> "(none)"
+    Some(validator) ->
+      workflow_dag.structured_output_validator_to_string(validator)
+  }
   let failure_code = case diagnostic.failure_code {
     Some(code) -> code
     None -> "structured_output_validation_failed"
@@ -142,6 +147,8 @@ pub fn retry_prompt(
   <> spec.artifact_name
   <> "\nRequired top-level keys: "
   <> required_keys_text
+  <> "\nNamed validator: "
+  <> validator_text
   <> "\nRemote mutations are forbidden; set remote_mutations to \"none\" when the artifact schema includes it."
 }
 

@@ -259,8 +259,19 @@ fn structured_output_to_json(
         #("artifact_name", json.string(spec.artifact_name)),
         #("required", json.bool(spec.required)),
         #("schema", structured_output_schema_to_json(spec.schema)),
+        #("validator", structured_output_validator_to_json(spec.validator)),
         #("validation_retries", json.int(spec.validation_retries)),
       ])
+  }
+}
+
+fn structured_output_validator_to_json(
+  validator: Option(workflow_dag.StructuredOutputValidator),
+) -> json.Json {
+  case validator {
+    None -> json.null()
+    Some(validator) ->
+      json.string(workflow_dag.structured_output_validator_to_string(validator))
   }
 }
 
