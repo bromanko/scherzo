@@ -55,6 +55,11 @@ fn reset_dir(dir: String) -> Nil {
   Nil
 }
 
+fn ms(iso: String) -> Int {
+  let assert Ok(time) = birl.parse(iso)
+  birl.to_unix_milli(time)
+}
+
 fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
     id: id,
@@ -1005,6 +1010,50 @@ fn test_records_for_bodies(
       ..test_records_for_bodies(rest, at_ms + 100, sequence + 1)
     ]
   }
+}
+
+fn append_succeeded_scheduled_run(
+  root: String,
+  due_at_ms: Int,
+  run_id: String,
+) -> Nil {
+  append_test_ledger_bodies(root, [
+    record.ScheduledJobDue(
+      "scheduled-job",
+      "implementation",
+      due_at_ms,
+      run_id,
+      "automatic",
+    ),
+    record.ScheduledRunPending(
+      "scheduled-job",
+      "implementation",
+      due_at_ms,
+      run_id,
+      "automatic",
+      due_at_ms,
+    ),
+    record.ScheduledRunStarted(
+      "scheduled-job",
+      "implementation",
+      due_at_ms,
+      due_at_ms + 100,
+      run_id,
+      1,
+      run_id <> "-a1",
+      root <> "/implementation/scheduled/scheduled-job/" <> run_id,
+    ),
+    record.ScheduledRunSucceeded(
+      "scheduled-job",
+      "implementation",
+      due_at_ms,
+      run_id,
+      1,
+      due_at_ms + 200,
+      0,
+      0,
+    ),
+  ])
 }
 
 fn append_started_scheduled_run(root: String, run_id: String) -> Nil {
@@ -1972,6 +2021,54 @@ pub fn daemon_scheduled_due_tick_runs_command_workflow_test() {
     projection.scheduled_status_for(projected, "scheduled-job")
   assert status.state == projection.ScheduledTerminalSuccess
   assert status.last_success_run_id == Some(run_id)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_scheduled_startup_clamps_legacy_persisted_due_after_clock_baseline_change_test() {
+  let dir = "test/tmp/daemon-scheduled-restart-clock-baseline"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  append_succeeded_scheduled_run(
+    root,
+    ms("1951-09-27T03:15:00Z"),
+    "schedule-scheduled-job-19510927T031500Z",
+  )
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let clock = start_test_clock(ms("2026-05-05T12:00:10Z"))
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: fake_workflow_run_dependencies(command_subject),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  set_clock(clock, ms("2026-05-05T12:00:11Z"))
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
+  assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  let run_id = "schedule-scheduled-job-20260505T120011Z"
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_succeeded(records, run_id) },
+    20,
+  )
+  let records = load_test_records(root)
+  assert has_scheduled_due(records, run_id)
+  assert has_scheduled_pending(records, run_id)
+  assert has_scheduled_started(records, run_id)
+  assert has_scheduled_succeeded(records, run_id)
+  assert !has_scheduled_skip(records, "catch_up_disabled")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)

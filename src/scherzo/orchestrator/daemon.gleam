@@ -31,7 +31,7 @@ import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/reason as orchestrator_reason
 import scherzo/orchestrator/retry_scheduler
-import scherzo/orchestrator/schedule_core
+import scherzo/orchestrator/schedule_core.{next_due_after_persisted_due}
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
@@ -256,7 +256,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     workflow_run_dependencies: workflow_run.default_dependencies(),
     cleanup: workspace.cleanup_stored_path,
     logger: fn(_level, _event, _fields, _secrets) { Ok(Nil) },
-    now_ms: monotonic_ms,
+    now_ms: wall_clock_ms,
     send_after: fn(subject, delay_ms, message) {
       RealTimer(process.send_after(subject, delay_ms, message))
     },
@@ -270,7 +270,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
       }
     },
     start_event_hub: fn() {
-      hub.start(hub.default_max_events_per_session, monotonic_ms)
+      hub.start(hub.default_max_events_per_session, wall_clock_ms)
     },
     make_control_token: fn() {
       control_file.generate_token() |> map_control_file_error
@@ -684,7 +684,7 @@ fn initial_scheduled_next_due(
           Ok(status) ->
             case status.last_due_at_ms {
               Some(due_at_ms) ->
-                schedule_core.next_due_after(due_at_ms, job.every_ms)
+                next_due_after_persisted_due(due_at_ms, now_ms, job.every_ms)
               None -> schedule_core.initial_next_due(now_ms, job.every_ms)
             }
           Error(Nil) -> schedule_core.initial_next_due(now_ms, job.every_ms)
@@ -6685,5 +6685,5 @@ fn try_startup(
   }
 }
 
-@external(erlang, "scherzo_time_ffi", "monotonic_ms")
-fn monotonic_ms() -> Int
+@external(erlang, "scherzo_time_ffi", "wall_clock_ms")
+fn wall_clock_ms() -> Int

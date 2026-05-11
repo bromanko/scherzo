@@ -4,6 +4,10 @@ import gleam/result
 import gleam/string
 import scherzo/workflow_identity
 
+// Persisted due times older than this are treated as legacy monotonic-clock
+// values rather than real wall-clock schedule boundaries.
+const max_persisted_due_lag_ms = 2_592_000_000
+
 pub type ScheduledRunContext {
   ScheduledRunContext(
     job_id: String,
@@ -104,6 +108,24 @@ pub fn due_at_or_before(now_ms: Int, every_ms: Int) -> Int {
 
 pub fn initial_next_due(startup_ms: Int, every_ms: Int) -> Int {
   next_due_after(startup_ms, every_ms)
+}
+
+pub fn next_due_after_persisted_due(
+  persisted_due_at_ms: Int,
+  now_ms: Int,
+  every_ms: Int,
+) -> Int {
+  let projected_next_due = next_due_after(persisted_due_at_ms, every_ms)
+  let startup_next_due = initial_next_due(now_ms, every_ms)
+  case projected_next_due > startup_next_due {
+    True -> startup_next_due
+    False -> {
+      case now_ms - projected_next_due > max_persisted_due_lag_ms {
+        True -> startup_next_due
+        False -> projected_next_due
+      }
+    }
+  }
 }
 
 pub fn run_id(job_id: String, due_at_ms: Int) -> String {

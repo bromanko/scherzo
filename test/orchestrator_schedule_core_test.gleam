@@ -21,6 +21,36 @@ pub fn interval_boundaries_and_run_ids_test() {
     == "schedule-pr-conflict-repair-manual-20260505T120003Z"
 }
 
+pub fn persisted_due_ahead_of_startup_clock_is_clamped_to_current_cadence_test() {
+  let interval = 15 * 60 * 1000
+  assert schedule_core.next_due_after_persisted_due(
+      ms("2026-05-06T13:00:00Z"),
+      ms("2026-05-05T12:00:10Z"),
+      interval,
+    )
+    == ms("2026-05-05T12:15:00Z")
+}
+
+pub fn persisted_due_in_same_timebase_preserves_missed_boundary_test() {
+  let interval = 15 * 60 * 1000
+  assert schedule_core.next_due_after_persisted_due(
+      ms("2026-05-05T11:45:00Z"),
+      ms("2026-05-05T12:00:10Z"),
+      interval,
+    )
+    == ms("2026-05-05T12:00:00Z")
+}
+
+pub fn legacy_monotonic_due_far_behind_wall_clock_is_clamped_test() {
+  let interval = 15 * 60 * 1000
+  assert schedule_core.next_due_after_persisted_due(
+      ms("1951-09-27T03:15:00Z"),
+      ms("2026-05-05T12:00:10Z"),
+      interval,
+    )
+    == ms("2026-05-05T12:15:00Z")
+}
+
 pub fn parse_every_accepts_mvp_units_and_rejects_invalid_values_test() {
   assert schedule_core.parse_every("500ms") == Ok(500)
   assert schedule_core.parse_every("30s") == Ok(30_000)
