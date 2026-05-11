@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Replace native review lane JSON finals with terminating Pi tool submissions — Scherzo ExecPlan</title>
+  <style>
+:root {
+  color-scheme: light;
+  --gray-100: #161616;
+  --gray-80: #393939;
+  --gray-70: #525252;
+  --gray-30: #c6c6c6;
+  --gray-20: #e0e0e0;
+  --gray-10: #f4f4f4;
+  --white: #ffffff;
+  --blue: #0f62fe;
+  --cyan: #1192e8;
+  --green: #24a148;
+  --red: #da1e28;
+  --focus: #0f62fe;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; min-height: 100vh; background: var(--gray-10); color: var(--gray-100); font-family: "IBM Plex Sans", "Helvetica Neue", Arial, system-ui, sans-serif; font-size: 16px; line-height: 1.62; text-rendering: optimizeLegibility; }
+a { color: inherit; }
+code, pre { font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace; }
+.skip-link { position: fixed; top: .75rem; left: .75rem; z-index: 1000; transform: translateY(-150%); padding: .65rem .85rem; border-radius: .5rem; background: #111827; color: #fff; font-weight: 700; text-decoration: none; }
+.skip-link:focus { transform: translateY(0); outline: 3px solid var(--focus); outline-offset: 3px; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.commentable { scroll-margin-top: 5rem; }
+.site-topbar { position: sticky; top: 0; z-index: 10; height: 3rem; display: flex; align-items: center; padding: 0 1rem; background: var(--gray-100); color: var(--white); border-bottom: 1px solid #262626; }
+.site-topbar strong { font-size: .9rem; letter-spacing: .02em; }
+.carbon-shell { display: grid; grid-template-columns: 19rem minmax(0, 1fr); min-height: calc(100vh - 3rem); }
+.toc-panel { position: sticky; top: 3rem; align-self: start; height: calc(100vh - 3rem); overflow: auto; padding: 1.25rem 1rem 2rem; background: #fff; border-right: 1px solid var(--gray-20); }
+.toc-title { margin: 0 0 .9rem; font-size: .75rem; text-transform: uppercase; letter-spacing: .16em; color: var(--gray-70); }
+.toc-list { list-style: none; padding: 0; margin: 0; }
+.toc-entry a { display: block; text-decoration: none; padding: .42rem .35rem; border-left: 3px solid transparent; color: var(--gray-80); font-size: .88rem; line-height: 1.28; }
+.toc-entry a:hover, .toc-entry a:focus-visible { background: var(--gray-10); border-left-color: var(--blue); color: var(--gray-100); }
+.toc-entry.is-current > a, .toc-entry a[aria-current="location"] { background: #edf5ff; border-left-color: var(--blue); box-shadow: inset 0 0 0 1px #d0e2ff; color: var(--gray-100); font-weight: 700; }
+.toc-depth-3 { padding-left: 1rem; }
+.toc-depth-4 { padding-left: 2rem; }
+.toc-badge { display: inline-block; margin-left: .45rem; padding: .08rem .38rem; border-radius: 999px; font-size: .68rem; line-height: 1.15; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; vertical-align: .08rem; }
+.toc-badge-warning { background: #fff1f1; color: var(--red); border: 1px solid #ffd7d9; }
+.content-panel { padding: 2rem clamp(1.25rem, 4vw, 4.5rem) 5rem; }
+.plan-document { max-width: 64rem; }
+.doc-header { background: var(--white); padding: 2.5rem clamp(1.25rem, 4vw, 3rem); border: 1px solid var(--gray-20); border-top: 4px solid var(--blue); }
+.eyebrow { margin: 0 0 1rem; font-size: .75rem; text-transform: uppercase; letter-spacing: .16em; color: var(--blue); font-weight: 600; }
+h1 { margin: 0; max-width: 14ch; font-size: clamp(2.3rem, 5vw, 4.25rem); line-height: 1.02; letter-spacing: -.04em; font-weight: 400; }
+.doc-meta { display: flex; flex-wrap: wrap; gap: .75rem 1rem; margin-top: 1.35rem; color: var(--gray-70); font-size: .875rem; }
+.doc-meta span + span::before { content: "•"; margin-right: 1rem; opacity: .45; }
+.doc-intro, .plan-section { background: var(--white); border: 1px solid var(--gray-20); margin-top: 1rem; padding: 1.5rem clamp(1.25rem, 4vw, 3rem); }
+.plan-section { border-top: 3px solid var(--gray-100); }
+h2 { margin: 0 0 1.1rem; padding-bottom: .8rem; border-bottom: 1px solid var(--gray-20); font-size: clamp(1.55rem, 2.4vw, 2.15rem); line-height: 1.16; letter-spacing: -.02em; font-weight: 400; }
+h3 { margin: 2rem 0 .75rem; font-size: 1.25rem; line-height: 1.25; font-weight: 600; }
+h4 { margin: 1.5rem 0 .5rem; font-size: 1.05rem; line-height: 1.3; font-weight: 650; }
+p { margin: .95rem 0; max-width: 70ch; }
+.plan-paragraph code, .plan-list code, .doc-meta code { background: var(--gray-10); border: 1px solid var(--gray-20); padding: .08em .32em; font-size: .88em; }
+.code-block { margin: 1rem 0; padding: 1rem; overflow-x: auto; white-space: pre; tab-size: 2; background: #262626; color: #f4f4f4; border-left: 4px solid var(--cyan); font-size: .86rem; line-height: 1.5; }
+.code-block code { background: transparent; border: 0; padding: 0; color: inherit; font-size: inherit; }
+.plan-list { max-width: 72ch; margin: 1rem 0 1.25rem; padding-left: 1.45rem; }
+.plan-list .plan-list { margin-top: .5rem; margin-bottom: .5rem; }
+.plan-list .code-block { max-width: none; margin: .75rem 0 .35rem; }
+.plan-list-item { margin: .55rem 0; padding: .25rem .25rem .25rem .45rem; }
+.list-item-main { display: block; min-width: 0; }
+.unordered > .plan-list-item::marker { color: var(--blue); font-weight: 600; }
+.ordered > .plan-list-item::marker { color: var(--gray-70); font-weight: 400; }
+.labeled-list { list-style: none; padding-left: 0; }
+.labeled-list > .plan-list-item { padding-left: 0; margin: 1rem 0 1.2rem; }
+.labeled-list > .plan-list-item::marker { content: ""; }
+.labeled-statement { display: grid; grid-template-columns: 8.75rem minmax(0, 1fr); gap: .55rem; align-items: baseline; width: 100%; border-left: 3px solid var(--gray-20); padding-left: .65rem; }
+.labeled-statement + .labeled-statement { margin-top: .35rem; }
+.statement-label { white-space: nowrap; text-transform: uppercase; letter-spacing: .08em; font-size: .72em; line-height: 1.55; font-weight: 760; color: var(--gray-70); }
+.statement-body { min-width: 0; }
+.labeled-statement-observation, .labeled-statement-decision, .labeled-statement-in-scope { border-left-color: var(--blue); }
+.labeled-statement-evidence, .labeled-statement-rationale, .labeled-statement-out-of-scope { border-left-color: var(--cyan); }
+.labeled-statement-observation .statement-label, .labeled-statement-decision .statement-label, .labeled-statement-in-scope .statement-label { color: var(--blue); }
+.labeled-statement-evidence .statement-label, .labeled-statement-rationale .statement-label, .labeled-statement-out-of-scope .statement-label { color: var(--cyan); }
+.checklist { list-style: none; padding-left: 0; }
+.checklist .plan-list-item { display: block; border: 1px solid var(--gray-20); border-left: 4px solid var(--green); margin: .45rem 0; background: #fcfcfc; }
+.task-check { inline-size: 1rem; block-size: 1rem; margin: 0 .5rem 0 0; vertical-align: -.12rem; accent-color: currentColor; }
+.table-wrap { overflow-x: auto; margin: 1rem 0; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; vertical-align: top; padding: .55rem .65rem; border: 1px solid var(--gray-20); }
+th { background: var(--gray-10); }
+@media (max-width: 900px) {
+  .carbon-shell { display: block; }
+  .toc-panel { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--gray-20); }
+  .content-panel { padding: 1rem; }
+}
+@media print {
+  html { scroll-behavior: auto; }
+  body { background: #fff !important; color: #000 !important; }
+  .skip-link, .site-topbar, .toc-panel { display: none !important; }
+  .carbon-shell { display: block !important; }
+  .content-panel { padding: 0 !important; }
+  .plan-document { max-width: none !important; margin: 0 !important; }
+  .plan-section, .doc-header, .doc-intro { break-inside: avoid; box-shadow: none !important; border-color: #bbb !important; }
+  .code-block { white-space: pre-wrap; border: 1px solid #bbb !important; background: #f7f7f7 !important; color: #000 !important; }
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to plan content</a>
+  <header class="site-topbar"><strong>Scherzo ExecPlan artifact / Carbon structured</strong></header>
+  <div class="carbon-shell">
+    <nav class="toc-panel" aria-label="Plan contents">
+      <p class="toc-title">Plan contents</p>
+      <ol class="toc-list"><li class="toc-entry toc-depth-2"><a href="#sec-purpose-big-picture">Purpose / Big Picture</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-problem-framing-and-constraints">Problem Framing and Constraints</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-strategy-overview">Strategy Overview</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-alternatives-considered">Alternatives Considered</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-risks-and-countermeasures">Risks and Countermeasures</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-progress">Progress</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-surprises-and-discoveries">Surprises &amp; Discoveries</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-decision-log">Decision Log</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-outcomes-and-retrospective">Outcomes &amp; Retrospective</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-context-and-orientation">Context and Orientation</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-preconditions-and-verified-facts">Preconditions and Verified Facts</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-scope-boundaries">Scope Boundaries</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-milestones">Milestones</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-plan-of-work">Plan of Work</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-concrete-steps">Concrete Steps</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-testing-and-falsifiability">Testing and Falsifiability</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-validation-and-acceptance">Validation and Acceptance</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-rollout-recovery-and-idempotence">Rollout, Recovery, and Idempotence</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-artifacts-and-notes">Artifacts and Notes</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-interfaces-and-dependencies">Interfaces and Dependencies</a></li>
+<li class="toc-entry toc-depth-2"><a href="#sec-open-questions-and-clarifications-needed">Open Questions and Clarifications Needed</a></li></ol>
+    </nav>
+    <main id="main-content" class="content-panel" tabindex="-1">
+      <article class="plan-document" data-source-path="docs/plans/LIV-204-pi-tool-enforced-review-lane-drafts.html">
+        <header class="doc-header">
+          <p class="eyebrow">Scherzo ExecPlan HTML artifact</p>
+          <h1 id="title-replace-native-review-lane-json-finals-with-terminating-pi-tool-submissions" class="commentable plan-heading" data-comment-id="title-replace-native-review-lane-json-finals-with-terminating-pi-tool-submissions" data-source-line="1">Replace native review lane JSON finals with terminating Pi tool submissions</h1>
+          <div class="doc-meta" aria-label="Document metadata">
+            <span>Plan artifact: <code>docs/plans/LIV-204-pi-tool-enforced-review-lane-drafts.html</code></span>
+            <span>21 sections</span>
+          </div>
+        </header>
+        <div class="doc-intro"><p id="p-intro-l0003-f19d191" class="commentable plan-paragraph" data-comment-id="p-intro-l0003-f19d191" data-source-line="3">This ExecPlan is a living document. The sections Progress, Surprises &amp; Discoveries, Decision Log, and Outcomes &amp; Retrospective must be kept up to date as work proceeds.</p></div>
+        <section id="sec-purpose-big-picture" class="commentable plan-section" data-comment-id="sec-purpose-big-picture" data-source-line="6" aria-labelledby="h2-purpose-big-picture"><h2 id="h2-purpose-big-picture" class="commentable plan-heading" data-comment-id="h2-purpose-big-picture" data-source-line="6">Purpose / Big Picture</h2><p id="p-purpose-big-picture-l0008-26dd0bf" class="commentable plan-paragraph" data-comment-id="p-purpose-big-picture-l0008-26dd0bf" data-source-line="8">After this change, Scherzo&#x27;s native review lanes will submit their draft review artifacts by calling a Pi-enforced structured-output tool instead of printing free-form final assistant JSON. The operator-visible gain is earlier, clearer failure detection: a lane that omits required review-draft structure, mutates a forbidden field, or prints prose instead of submitting the draft will fail at the lane boundary with retained diagnostics and one bounded retry, not later after downstream evidence verification and normalization have already spent time on the run.</p>
+<p id="p-purpose-big-picture-l0010-e89ba2b" class="commentable plan-paragraph" data-comment-id="p-purpose-big-picture-l0010-e89ba2b" data-source-line="10">The desired working behavior is easy to observe. In a native review run, each specialist lane calls a single Pi tool named <code>submit_review_lane_draft</code>; Scherzo captures the tool arguments, validates them with the same deterministic review-lane rules used by <code>scripts/scherzo-review</code>, persists the accepted payload under the existing retained structured-artifact location, and then lets <code>scripts/scherzo-review verify-evidence</code> and <code>scripts/scherzo-review normalize-lane-result</code> consume that artifact unchanged. A lane that merely prints JSON in its final assistant response is treated as missing the required tool submission.</p></section>
+<section id="sec-problem-framing-and-constraints" class="commentable plan-section" data-comment-id="sec-problem-framing-and-constraints" data-source-line="12" aria-labelledby="h2-problem-framing-and-constraints"><h2 id="h2-problem-framing-and-constraints" class="commentable plan-heading" data-comment-id="h2-problem-framing-and-constraints" data-source-line="12">Problem Framing and Constraints</h2><p id="p-problem-framing-and-constraints-l0014-afb9a8c" class="commentable plan-paragraph" data-comment-id="p-problem-framing-and-constraints-l0014-afb9a8c" data-source-line="14">The current native review lane contract asks the model to return JSON only in the final assistant response. Scherzo currently validates that final response with a shallow top-level JSON schema gate. That catches malformed JSON and missing top-level keys, but it can accept a payload that later fails the richer review-lane domain validation in <code>scripts/scherzo-review</code>. For example, a payload can contain the top-level <code>draft_findings</code> key while using malformed finding objects, duplicate finding ids, evidence requests that do not link to findings, unsafe paths, or <code>remote_mutations</code> values other than <code>none</code>. The operator problem is that these failures can surface only after the expensive native lane attempt has completed and downstream commands start processing retained artifacts.</p>
+<p id="p-problem-framing-and-constraints-l0016-a80d95f" class="commentable plan-paragraph" data-comment-id="p-problem-framing-and-constraints-l0016-a80d95f" data-source-line="16">This plan is constrained by the pre-cutover status of native review. No external production users depend on the current native review structured-output contract. The right rollout is therefore a direct replacement in the pre-cutover native review path, validated in branch and PR before merge. The plan intentionally avoids a long-lived compatibility path, canary mode, or productized dual runtime where both final-response JSON and Pi tool-call submission remain supported indefinitely. Rollback is reverting the implementation branch or PR before the broader LIV-115 native-review cutover.</p>
+<p id="p-problem-framing-and-constraints-l0018-b2dc868" class="commentable plan-paragraph" data-comment-id="p-problem-framing-and-constraints-l0018-b2dc868" data-source-line="18">The plan also keeps Scherzo&#x27;s deterministic validators as the durable source of truth. Pi TypeBox validation is used to make the model&#x27;s tool-call interface explicit and provider-independent, but it is not the final authority for domain invariants. Scherzo must still validate accepted tool arguments with the repository&#x27;s review-lane rules before marking a native lane submission valid.</p></section>
+<section id="sec-strategy-overview" class="commentable plan-section" data-comment-id="sec-strategy-overview" aria-labelledby="h2-strategy-overview"><h2 id="h2-strategy-overview" class="commentable plan-heading" data-comment-id="h2-strategy-overview">Strategy Overview</h2><p class="commentable plan-paragraph">Use a repo-local Pi project extension named <code>submit_review_lane_draft</code> for native review lane agent steps. The permanent extension entrypoint is <code>.pi/extensions/scherzo-review-lane-draft/index.ts</code>, because Pi auto-discovers project-local extensions at <code>.pi/extensions/*.ts</code> and <code>.pi/extensions/*/index.ts</code>. Do not use <code>.pi/extensions/scherzo-review-lane-draft/extension.ts</code> as the permanent entrypoint unless <code>src/scherzo/pi/command.gleam</code> explicitly passes that path with Pi's <code>--extension</code> flag and the Decision Log records why auto-discovery was not used.</p>
+<p class="commentable plan-paragraph">The tool definition exposes a TypeBox argument schema for the <code>review_lane_draft</code> object. For string constants such as <code>artifact_type</code> and <code>remote_mutations</code>, use <code>StringEnum</code> from <code>@mariozechner/pi-ai</code>, not <code>Type.Union</code> or <code>Type.Literal</code>, so provider conversion stays compatible with Google-style enum requirements. The tool's <code>execute</code> function returns <code>terminate: true</code>; termination is a result property, and Pi only skips the automatic follow-up model turn when every finalized tool result in that same batch is terminating. Scherzo therefore accepts a native lane submission only when the final relevant tool-call batch contains exactly one successful <code>submit_review_lane_draft</code> call and no sibling tool calls.</p>
+<p class="commentable plan-paragraph">Scherzo then reads the tool-call arguments from Pi session records, extracts the real object-valued arguments from raw JSON rather than display strings, and validates the exact canonical JSON before persistence. The deterministic validation interface is <code>scripts/scherzo-review validate-lane-draft --lane &lt;lane-id&gt; --draft-json -</code>, which reads the captured draft from stdin. <code>src/scherzo/workflow_run.gleam</code> must not write a retained structured artifact, even to an attempt-scoped temporary path, until that stdin validator exits successfully. Only after deterministic validation succeeds may Scherzo call <code>workflow_checkpoint.write_structured_output_artifact</code> with the existing artifact name and <code>json</code> format.</p>
+<p class="commentable plan-paragraph">The first implementation milestone is still a spike, but the spike is now concrete. Add a temporary tool-contract workflow at <code>.scherzo/workflows/review-native-tool-contract-spike.yml</code> and run it through the same local Scherzo workflow runner command used by native lanes: <code>direnv exec . gleam run -- workflow run .scherzo/workflows/review-native-tool-contract-spike.yml --run-root tmp/liv-204-review-tool-spike --run-id liv-204-review-tool-spike --native-review-scenario contract-spike</code>. That command must prove extension loading, TypeBox rejection, object-argument capture, termination behavior, and final-text-only rejection before the native review prompts or workflow are replaced.</p>
+<p class="commentable plan-paragraph">Provider differences stay contained at the Pi boundary. Workflow prompts tell lanes to call the tool; Scherzo parses Pi session records for tool calls; downstream review scripts consume the same retained draft JSON path they consume today. No downstream script should need to know which language model provider produced the tool call.</p></section>
+<section id="sec-alternatives-considered" class="commentable plan-section" data-comment-id="sec-alternatives-considered" data-source-line="30" aria-labelledby="h2-alternatives-considered"><h2 id="h2-alternatives-considered" class="commentable plan-heading" data-comment-id="h2-alternatives-considered" data-source-line="30">Alternatives Considered</h2><p id="p-alternatives-considered-l0032-f856af2" class="commentable plan-paragraph" data-comment-id="p-alternatives-considered-l0032-f856af2" data-source-line="32">The simplest plausible alternative is to make <code>src/scherzo/structured_output.gleam</code> validate the final assistant JSON more deeply while keeping the current prompt instruction to print JSON only. That would catch more bad drafts, but it would not solve the brittle contract where a model can mix prose, Markdown, or multiple JSON blobs into a final response. It would also keep Scherzo dependent on provider-specific final-message formatting rather than a Pi-enforced structured interaction.</p>
+<p id="p-alternatives-considered-l0034-164188b" class="commentable plan-paragraph" data-comment-id="p-alternatives-considered-l0034-164188b" data-source-line="34">A second alternative is a dual path where native review accepts either the new Pi tool call or the old final-response JSON for an extended period. That is not proportionate here because native review is still pre-cutover and has no external production users. A dual path would increase test matrix size and preserve the exact stale behavior this issue is meant to remove.</p>
+<p id="p-alternatives-considered-l0036-b0aef32" class="commentable plan-paragraph" data-comment-id="p-alternatives-considered-l0036-b0aef32" data-source-line="36">A third alternative is to trust TypeBox validation entirely and remove downstream domain validation. That is rejected because Pi tool schemas are an interface convenience, not Scherzo&#x27;s durable business rule authority. Review-lane invariants such as linked evidence request ids, safe repository-relative paths, no remote mutations, and lane-specific semantics must remain enforced by deterministic repository code.</p></section>
+<section id="sec-risks-and-countermeasures" class="commentable plan-section" data-comment-id="sec-risks-and-countermeasures" aria-labelledby="h2-risks-and-countermeasures"><h2 id="h2-risks-and-countermeasures" class="commentable plan-heading" data-comment-id="h2-risks-and-countermeasures">Risks and Countermeasures</h2><p class="commentable plan-paragraph">The main feasibility risk is that Scherzo-managed Pi sessions may not load the project-local extension in the same way an interactive <code>pi -e</code> experiment does. The countermeasure is the first milestone: create the temporary project extension and run <code>.scherzo/workflows/review-native-tool-contract-spike.yml</code> through <code>direnv exec . gleam run -- workflow run ...</code>, not only through direct Pi. If that runner does not auto-discover <code>.pi/extensions/scherzo-review-lane-draft/index.ts</code> from the repository root, update <code>src/scherzo/pi/command.gleam</code> to pass <code>--extension .pi/extensions/scherzo-review-lane-draft/index.ts</code>, add a launcher test, and record that explicit mechanism in the Decision Log before changing native review.</p>
+<p class="commentable plan-paragraph">A second risk is schema drift between the TypeBox tool arguments, <code>docs/schemas/review-artifacts.v1.schema.json</code>, and <code>scripts/scherzo-review</code> domain validation. The countermeasure is to make the schema module and validator fixtures part of the implementation. Tests must compare the TypeBox-derived JSON schema against the documented <code>ReviewLaneDraft</code> required keys and constants, must prove string constants are represented with provider-compatible <code>StringEnum</code>, and must run the same valid and invalid fixtures through the Python validator and the Scherzo lane-acceptance path.</p>
+<p class="commentable plan-paragraph">A third risk is accidentally validating the wrong data before persistence. The captured Pi tool arguments are in memory, while retained structured artifacts are files. The countermeasure is the required stdin validation interface: <code>src/scherzo/review_lane_draft_validator.gleam</code> passes the exact canonical captured JSON to <code>scripts/scherzo-review validate-lane-draft --lane &lt;lane-id&gt; --draft-json -</code>, captures stdout and stderr, redacts secrets only for retained diagnostics, and returns <code>review_lane_draft_domain_invalid</code> if the subprocess exits non-zero. No retained draft file is written until that helper returns success.</p>
+<p class="commentable plan-paragraph">A fourth risk is that Scherzo may capture the wrong Pi record. <code>src/scherzo/pi/protocol.gleam</code> already decodes tool names, tool input, tool output, tool status, and preserves each record's raw JSON, but current structured input decoding can replace non-string inputs with a display placeholder. The implementation must parse raw record JSON for the actual tool arguments or otherwise configure Pi to emit raw JSON records. Tests must include object-valued arguments to prove Scherzo persists the real submitted draft, not a placeholder.</p>
+<p class="commentable plan-paragraph">A fifth risk is accidentally treating a final assistant JSON message as valid during the replacement. The countermeasure is a negative integration test: when a native review lane emits a perfect <code>review_lane_draft</code> JSON object as final assistant text but does not call <code>submit_review_lane_draft</code>, Scherzo must classify the attempt as <code>review_lane_draft_tool_missing</code>, retain diagnostics, and trigger only the bounded retry path.</p>
+<p class="commentable plan-paragraph">A sixth risk is remote mutation during smoke validation. The concrete local no-remote gate is <code>direnv exec . ./scripts/scherzo-review native-preflight --output-dir tmp/liv-204-native-preflight</code>, followed by validation of <code>tmp/liv-204-native-preflight/preflight-manifest.v1.json</code>. The concrete curated legacy PR gate is <code>direnv exec . ./scripts/scherzo-review legacy-pr-smoke --output-dir tmp/liv-204-legacy-pr-smoke --overwrite</code>, whose curated default PR set is reported by <code>legacy-pr-smoke --list-curated</code>. Both manifests must report <code>remote_mutations: "none"</code>, and the implementation must not post comments, push commits, update Linear, or use fixture or heuristic lane backends in those smoke gates.</p></section>
+<section id="sec-progress" class="commentable plan-section" data-comment-id="sec-progress" aria-labelledby="h2-progress"><h2 id="h2-progress" class="commentable plan-heading" data-comment-id="h2-progress">Progress</h2><ul class="plan-list unordered checklist"><li class="commentable plan-list-item checklist-item is-complete"><div class="list-item-main"><input class="task-check" type="checkbox" disabled checked aria-label="Checklist item completed">(2026-05-10 00:00Z) Created this ExecPlan proposal for LIV-204 from the Linear issue and targeted repository inspection.</div></li><li class="commentable plan-list-item checklist-item is-complete"><div class="list-item-main"><input class="task-check" type="checkbox" disabled checked aria-label="Checklist item completed">(2026-05-10 00:00Z) Incorporated adversarial review findings: stdin deterministic validation before persistence, documented Pi extension entrypoint and termination semantics, copy-pastable commands, named no-remote smoke gates, provider compatibility checks, and smaller red/green workflow-run tasks.</div></li><li class="commentable plan-list-item checklist-item is-open"><div class="list-item-main"><input class="task-check" type="checkbox" disabled aria-label="Checklist item open">Prove Pi project-extension loading, terminating tool behavior, provider conversion, mixed-batch handling, and argument capture with the concrete tool-contract spike.</div></li><li class="commentable plan-list-item checklist-item is-open"><div class="list-item-main"><input class="task-check" type="checkbox" disabled aria-label="Checklist item open">Add the canonical review-lane draft TypeBox schema, stdin-capable deterministic validation command, and shared valid and invalid fixtures.</div></li><li class="commentable plan-list-item checklist-item is-open"><div class="list-item-main"><input class="task-check" type="checkbox" disabled aria-label="Checklist item open">Implement the native review lane Pi tool-submission path and persist accepted tool arguments only after deterministic validation succeeds.</div></li><li class="commentable plan-list-item checklist-item is-open"><div class="list-item-main"><input class="task-check" type="checkbox" disabled aria-label="Checklist item open">Update native review prompts, retry diagnostics, workflow YAML, and downstream smoke manifests to remove the final-response JSON contract from review-native.</div></li><li class="commentable plan-list-item checklist-item is-open"><div class="list-item-main"><input class="task-check" type="checkbox" disabled aria-label="Checklist item open">Run unit, integration, local no-remote native-preflight, and curated legacy PR smoke validation.</div></li><li class="commentable plan-list-item checklist-item is-open"><div class="list-item-main"><input class="task-check" type="checkbox" disabled aria-label="Checklist item open">Remove spike-only code and update this living document with discoveries before final review.</div></li></ul></section>
+<section id="sec-surprises-and-discoveries" class="commentable plan-section" data-comment-id="sec-surprises-and-discoveries" data-source-line="60" aria-labelledby="h2-surprises-and-discoveries"><h2 id="h2-surprises-and-discoveries" class="commentable plan-heading" data-comment-id="h2-surprises-and-discoveries" data-source-line="60">Surprises &amp; Discoveries</h2><ul class="plan-list unordered labeled-list"><li id="li-surprises-and-discoveries-l0062-838ee94" class="commentable plan-list-item" data-comment-id="li-surprises-and-discoveries-l0062-838ee94" data-source-line="62"><div class="list-item-main"><span class="labeled-statement labeled-statement-observation"><span class="statement-label">Observation</span><span class="statement-body">The current native review workflow persists lane drafts under <code>.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/&lt;lane-step&gt;/attempt-1/structured/&lt;artifact-name&gt;.json</code>, and downstream verification commands already read that path explicitly.</span></span></div><p id="p-surprises-and-discoveries-l0063-74f3783" class="commentable plan-paragraph" data-comment-id="p-surprises-and-discoveries-l0063-74f3783" data-source-line="63"><span class="labeled-statement labeled-statement-evidence"><span class="statement-label">Evidence</span><span class="statement-body"><code>.scherzo/workflows/review-native.yml</code> passes those paths to <code>scripts/scherzo-review verify-evidence</code> and <code>scripts/scherzo-review normalize-lane-result</code>.</span></span></p></li><li id="li-surprises-and-discoveries-l0064-a3f5306" class="commentable plan-list-item" data-comment-id="li-surprises-and-discoveries-l0064-a3f5306" data-source-line="64"><div class="list-item-main"><span class="labeled-statement labeled-statement-observation"><span class="statement-label">Observation</span><span class="statement-body">The current validator in <code>src/scherzo/structured_output.gleam</code> only proves JSON syntax, top-level object type, and presence of configured required top-level keys.</span></span></div><p id="p-surprises-and-discoveries-l0065-c83df75" class="commentable plan-paragraph" data-comment-id="p-surprises-and-discoveries-l0065-c83df75" data-source-line="65"><span class="labeled-statement labeled-statement-evidence"><span class="statement-label">Evidence</span><span class="statement-body"><code>validate_schema</code> only checks <code>workflow_dag.StructuredObjectSchema(required_keys)</code> against top-level object entries.</span></span></p></li><li id="li-surprises-and-discoveries-l0066-d609610" class="commentable plan-list-item" data-comment-id="li-surprises-and-discoveries-l0066-d609610" data-source-line="66"><div class="list-item-main"><span class="labeled-statement labeled-statement-observation"><span class="statement-label">Observation</span><span class="statement-body">The Pi protocol decoder already recognizes tool-related record fields, but non-string structured inputs need special handling for durable capture.</span></span></div><p id="p-surprises-and-discoveries-l0067-32c71aa" class="commentable plan-paragraph" data-comment-id="p-surprises-and-discoveries-l0067-32c71aa" data-source-line="67"><span class="labeled-statement labeled-statement-evidence"><span class="statement-label">Evidence</span><span class="statement-body"><code>src/scherzo/pi/protocol.gleam</code> exposes <code>tool_name</code>, <code>tool_input</code>, <code>tool_output</code>, <code>tool_status</code>, and <code>raw_json</code>; its structured optional string decoder can replace object inputs with a placeholder.</span></span></p></li></ul></section>
+<section id="sec-decision-log" class="commentable plan-section" data-comment-id="sec-decision-log" aria-labelledby="h2-decision-log"><h2 id="h2-decision-log" class="commentable plan-heading" data-comment-id="h2-decision-log">Decision Log</h2><ul class="plan-list unordered labeled-list"><li class="commentable plan-list-item"><div class="list-item-main"><span class="labeled-statement labeled-statement-decision"><span class="statement-label">Decision</span><span class="statement-body">Replace final assistant JSON submission directly for native review lanes instead of supporting final JSON and tool calls side by side.</span></span></div><p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-rationale"><span class="statement-label">Rationale</span><span class="statement-body">Native review is pre-cutover with no external production users, and dual support would preserve the stale failure mode this issue is meant to remove.</span></span></p>
+<p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-date"><span class="statement-label">Date</span><span class="statement-body">2026-05-10</span></span></p></li><li class="commentable plan-list-item"><div class="list-item-main"><span class="labeled-statement labeled-statement-decision"><span class="statement-label">Decision</span><span class="statement-body">Persist accepted tool arguments through the existing structured-artifact checkpoint path rather than inventing a new downstream artifact layout.</span></span></div><p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-rationale"><span class="statement-label">Rationale</span><span class="statement-body"><code>verify-evidence</code> and <code>normalize-lane-result</code> already consume retained draft paths. Keeping the path stable isolates the change to lane submission and validation.</span></span></p>
+<p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-date"><span class="statement-label">Date</span><span class="statement-body">2026-05-10</span></span></p></li><li class="commentable plan-list-item"><div class="list-item-main"><span class="labeled-statement labeled-statement-decision"><span class="statement-label">Decision</span><span class="statement-body">Treat Pi TypeBox validation as an interface guard and deterministic Scherzo review validation as the durable source of truth.</span></span></div><p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-rationale"><span class="statement-label">Rationale</span><span class="statement-body">TypeBox catches bad tool arguments early, but repository-owned validators enforce review-domain invariants and are easier to test and audit.</span></span></p>
+<p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-date"><span class="statement-label">Date</span><span class="statement-body">2026-05-10</span></span></p></li><li class="commentable plan-list-item"><div class="list-item-main"><span class="labeled-statement labeled-statement-decision"><span class="statement-label">Decision</span><span class="statement-body">Validate captured in-memory tool arguments through <code>validate-lane-draft --draft-json -</code> on stdin before any retained artifact write.</span></span></div><p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-rationale"><span class="statement-label">Rationale</span><span class="statement-body">The review finding correctly identified that a path-only validator would force unvalidated persistence or ad hoc temp files. Stdin validation keeps the accepted artifact write as the first durable draft write and gives workflow code deterministic diagnostics.</span></span></p>
+<p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-date"><span class="statement-label">Date</span><span class="statement-body">2026-05-10</span></span></p></li><li class="commentable plan-list-item"><div class="list-item-main"><span class="labeled-statement labeled-statement-decision"><span class="statement-label">Decision</span><span class="statement-body">Use <code>.pi/extensions/scherzo-review-lane-draft/index.ts</code> as the permanent Pi extension entrypoint and prove that same entrypoint through the Scherzo local workflow runner.</span></span></div><p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-rationale"><span class="statement-label">Rationale</span><span class="statement-body">Pi documents project auto-discovery for <code>.pi/extensions/*/index.ts</code>. If non-interactive Scherzo sessions need explicit loading, the only allowed fallback is to pass that same repository-relative entrypoint from <code>src/scherzo/pi/command.gleam</code> and test it.</span></span></p>
+<p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-date"><span class="statement-label">Date</span><span class="statement-body">2026-05-10</span></span></p></li><li class="commentable plan-list-item"><div class="list-item-main"><span class="labeled-statement labeled-statement-decision"><span class="statement-label">Decision</span><span class="statement-body">Use existing <code>native-preflight</code> and <code>legacy-pr-smoke</code> commands as the named no-remote smoke gates, expanding their manifest assertions for tool-submitted drafts as needed.</span></span></div><p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-rationale"><span class="statement-label">Rationale</span><span class="statement-body">Those commands already exercise the native workflow runner and curated historical PRs with <code>remote_mutations: "none"</code>. Naming them early avoids leaving smoke validation as a new design task at the end.</span></span></p>
+<p class="commentable plan-paragraph"><span class="labeled-statement labeled-statement-date"><span class="statement-label">Date</span><span class="statement-body">2026-05-10</span></span></p></li></ul></section>
+<section id="sec-outcomes-and-retrospective" class="commentable plan-section" data-comment-id="sec-outcomes-and-retrospective" data-source-line="81" aria-labelledby="h2-outcomes-and-retrospective"><h2 id="h2-outcomes-and-retrospective" class="commentable plan-heading" data-comment-id="h2-outcomes-and-retrospective" data-source-line="81">Outcomes &amp; Retrospective</h2><p id="p-outcomes-and-retrospective-l0083-37af95a" class="commentable plan-paragraph" data-comment-id="p-outcomes-and-retrospective-l0083-37af95a" data-source-line="83">(To be filled at major milestones and at completion.)</p></section>
+<section id="sec-context-and-orientation" class="commentable plan-section" data-comment-id="sec-context-and-orientation" data-source-line="85" aria-labelledby="h2-context-and-orientation"><h2 id="h2-context-and-orientation" class="commentable plan-heading" data-comment-id="h2-context-and-orientation" data-source-line="85">Context and Orientation</h2><p id="p-context-and-orientation-l0087-2b49d0e" class="commentable plan-paragraph" data-comment-id="p-context-and-orientation-l0087-2b49d0e" data-source-line="87">Scherzo is a workflow runner that can execute command steps and agent steps. A native review workflow is a staged code-review workflow where multiple specialist agent lanes inspect a prepared diff, produce lane-specific draft findings, verify evidence, normalize lane results, synthesize the final review, and retain artifacts for operator inspection.</p>
+<p id="p-context-and-orientation-l0089-1dd13a5" class="commentable plan-paragraph" data-comment-id="p-context-and-orientation-l0089-1dd13a5" data-source-line="89">The current native review workflow is <code>.scherzo/workflows/review-native.yml</code>. It has a <code>prepare_review</code> command step, a clean-tree check, four parallel agent lane steps, another clean-tree check, evidence verification commands, normalization commands, and later synthesis and publishing steps. The four lane steps are <code>lane_correctness</code>, <code>lane_test_quality</code>, <code>lane_idioms_maintainability</code>, and <code>lane_security_performance</code>. Each lane currently has a <code>structured_output</code> block with <code>format: json</code>, an artifact name such as <code>correctness_draft</code>, and a list of required top-level keys.</p>
+<p id="p-context-and-orientation-l0091-987b73e" class="commentable plan-paragraph" data-comment-id="p-context-and-orientation-l0091-987b73e" data-source-line="91">The lane prompts live in <code>.scherzo/workflows/prompts/review-native-correctness.md</code>, <code>.scherzo/workflows/prompts/review-native-test-quality.md</code>, <code>.scherzo/workflows/prompts/review-native-idioms-maintainability.md</code>, and <code>.scherzo/workflows/prompts/review-native-security-performance.md</code>. They currently tell the model to return JSON only and to emit a <code>review_lane_draft</code> artifact. Those instructions must change to tell the model to call <code>submit_review_lane_draft</code> exactly once with the draft object as tool arguments and not to print final JSON.</p>
+<p id="p-context-and-orientation-l0093-8773b63" class="commentable plan-paragraph" data-comment-id="p-context-and-orientation-l0093-8773b63" data-source-line="93">The current final-response capture path starts in <code>src/scherzo/result_artifact.gleam</code>. It builds a <code>ResultArtifact</code> from completed assistant messages, using the last non-empty assistant message as both display text and untruncated structured response. <code>src/scherzo/workflow_run.gleam</code> receives an agent success, calls <code>structured_output.validate_final_response</code>, and writes a structured artifact if validation succeeds. The validator lives in <code>src/scherzo/structured_output.gleam</code>; it parses JSON, checks top-level object shape, verifies configured required keys, redacts secrets, and returns the payload string. It does not understand review-lane domain invariants.</p>
+<p id="p-context-and-orientation-l0095-02d5e87" class="commentable plan-paragraph" data-comment-id="p-context-and-orientation-l0095-02d5e87" data-source-line="95">The retained artifact writer is split across <code>src/scherzo/workflow_checkpoint.gleam</code> and <code>src/scherzo/state/artifact_store.gleam</code>. The checkpoint writer exposes <code>write_structured_output_artifact</code>, and the artifact store writes a wrapper containing run id, workflow id, step id, attempt index, artifact name, format, schema required keys, and parsed payload. The implementation should reuse this writer for accepted tool arguments so downstream artifact paths stay stable.</p>
+<p id="p-context-and-orientation-l0097-73d27df" class="commentable plan-paragraph" data-comment-id="p-context-and-orientation-l0097-73d27df" data-source-line="97">The bounded retry path is in <code>src/scherzo/workflow_structured_retry.gleam</code> and <code>src/scherzo/workflow_run.gleam</code>. <code>src/scherzo/workflow_dag.gleam</code> defaults <code>structured_output.validation_retries</code> to one and only permits zero or one. The retry prompt currently tells the model to return JSON only. For native review tool submission, the retry prompt must instead tell the model that the previous attempt failed the tool-submission contract and that the only valid completion is a <code>submit_review_lane_draft</code> tool call.</p>
+<p id="p-context-and-orientation-l0099-0442745" class="commentable plan-paragraph" data-comment-id="p-context-and-orientation-l0099-0442745" data-source-line="99">The deterministic review contract is in <code>scripts/scherzo-review</code> and <code>docs/schemas/review-artifacts.v1.schema.json</code>. The Python function <code>validate_review_lane_draft</code> checks <code>schema_version</code>, <code>artifact_type</code>, <code>remote_mutations</code>, producer and lane objects, repository-relative artifact references, unique draft finding ids, linked evidence request ids, safe locations, review notes, evidence request target paths, and the presence of <code>self_check</code>. <code>verify_evidence_command</code> loads and validates a lane draft before producing an evidence ledger. <code>normalize_lane_result_command</code> safely loads and validates the draft and emits a failed lane result if the draft is missing or invalid.</p>
+<p id="p-context-and-orientation-l0101-2cb6a06" class="commentable plan-paragraph" data-comment-id="p-context-and-orientation-l0101-2cb6a06" data-source-line="101">The Pi integration code currently inspected for this plan is under <code>src/scherzo/pi/</code>. <code>src/scherzo/pi/command.gleam</code> builds the Pi launch command, and <code>src/scherzo/pi/protocol.gleam</code> decodes JSON-RPC records from Pi. The protocol decoder already has fields for tool name, tool input, tool output, and tool status, which makes it the natural boundary for capturing <code>submit_review_lane_draft</code> calls once the spike confirms the exact record shape.</p></section>
+<section id="sec-preconditions-and-verified-facts" class="commentable plan-section" data-comment-id="sec-preconditions-and-verified-facts" aria-labelledby="h2-preconditions-and-verified-facts"><h2 id="h2-preconditions-and-verified-facts" class="commentable plan-heading" data-comment-id="h2-preconditions-and-verified-facts">Preconditions and Verified Facts</h2><p class="commentable plan-paragraph">The working copy was clean when this plan was drafted, as shown by <code>jj status --color=never</code> reporting no changes. No existing <code>docs/plans/LIV-204-*.html</code> artifact was found.</p>
+<p class="commentable plan-paragraph"><code>.scherzo/workflows/review-native.yml</code> currently uses <code>structured_output</code> specs for all four native lane agent steps. Each spec requires these top-level keys: <code>schema_version</code>, <code>artifact_type</code>, <code>generated_at_utc</code>, <code>producer</code>, <code>lane</code>, <code>input_refs</code>, <code>draft_findings</code>, <code>review_notes</code>, <code>evidence_requests</code>, <code>self_check</code>, and <code>remote_mutations</code>.</p>
+<p class="commentable plan-paragraph"><code>.scherzo/workflows/review-native.yml</code> currently passes draft paths such as <code>$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/lane_correctness/attempt-1/structured/correctness_draft.json</code> to <code>scripts/scherzo-review verify-evidence</code> and <code>scripts/scherzo-review normalize-lane-result</code>.</p>
+<p class="commentable plan-paragraph"><code>.scherzo/workflows/prompts/review-native-correctness.md</code> currently says <code>Return JSON only</code>; the other native review lane prompt files follow the same final-response JSON pattern and must be updated together.</p>
+<p class="commentable plan-paragraph"><code>src/scherzo/structured_output.gleam</code> validates final assistant responses, not tool calls. It rejects missing output, truncation, invalid JSON, a non-object top-level value, and missing required top-level keys. It does not validate nested <code>review_lane_draft</code> semantics.</p>
+<p class="commentable plan-paragraph"><code>src/scherzo/workflow_structured_retry.gleam</code> currently constructs retry prompts that ask for JSON-only final output. It also detects native review lane steps by step id and artifact name for retry hints, which can be reused or replaced for tool-submission retry diagnostics.</p>
+<p class="commentable plan-paragraph"><code>src/scherzo/pi/protocol.gleam</code> decodes tool-related fields from Pi records and preserves raw record JSON. The implementation must still prove exact terminating-tool record shape because object-valued tool inputs may not be available through the current display-oriented <code>tool_input</code> string field.</p>
+<p class="commentable plan-paragraph"><code>scripts/scherzo-review</code> already contains <code>validate_review_lane_draft</code>, <code>verify_evidence_command</code>, and <code>normalize_lane_result_command</code>. This plan requires adding a direct <code>validate-lane-draft</code> CLI command with both <code>--draft &lt;path&gt;</code> for operator checks and <code>--draft-json -</code> for Scherzo's in-memory validation path.</p>
+<p class="commentable plan-paragraph"><code>docs/schemas/review-artifacts.v1.schema.json</code> contains a <code>ReviewLaneDraft</code> definition with the same required top-level keys and <code>remote_mutations</code> constrained to <code>none</code>.</p>
+<p class="commentable plan-paragraph"><code>scripts/scherzo-review native-preflight</code> is the local no-remote native workflow smoke command. Its manifest is <code>tmp/scherzo-review-native-preflight/preflight-manifest.v1.json</code> by default, validates with <code>scripts/scherzo-review validate --require-cutover-ready</code>, and reports <code>REVIEW_REMOTE_MUTATIONS=none</code> on success.</p>
+<p class="commentable plan-paragraph"><code>scripts/scherzo-review legacy-pr-smoke</code> is the curated historical PR smoke command. Its checked-in default PR set is PRs 116, 114, 108, 91, and 117, visible with <code>legacy-pr-smoke --list-curated</code>. It reads historical PR data but is required to keep <code>remote_mutations: "none"</code> and writes <code>legacy-pr-smoke-manifest.v1.json</code> under its output directory.</p></section>
+<section id="sec-scope-boundaries" class="commentable plan-section" data-comment-id="sec-scope-boundaries" data-source-line="123" aria-labelledby="h2-scope-boundaries"><h2 id="h2-scope-boundaries" class="commentable plan-heading" data-comment-id="h2-scope-boundaries" data-source-line="123">Scope Boundaries</h2><p id="p-scope-boundaries-l0125-570e356" class="commentable plan-paragraph" data-comment-id="p-scope-boundaries-l0125-570e356" data-source-line="125"><span class="labeled-statement labeled-statement-in-scope"><span class="statement-label">In scope</span><span class="statement-body">replacing native review lane draft submission with a terminating Pi tool call; loading that tool for Scherzo-managed native review agent sessions; capturing the tool arguments from Pi records; validating captured arguments with TypeBox first and deterministic review-lane validation before persistence; persisting accepted payloads under the existing structured artifact layout; updating native review prompts and retry prompts; updating tests and native review smoke validation; and removing the stale final-response JSON contract from <code>.scherzo/workflows/review-native.yml</code>.</span></span></p>
+<p id="p-scope-boundaries-l0127-f24a7d1" class="commentable plan-paragraph" data-comment-id="p-scope-boundaries-l0127-f24a7d1" data-source-line="127">Also in scope: keeping <code>scripts/scherzo-review verify-evidence</code> and <code>scripts/scherzo-review normalize-lane-result</code> as downstream consumers of retained draft artifacts, while making them no longer be the first place a malformed review-lane draft is discovered.</p>
+<p id="p-scope-boundaries-l0129-b80b7bc" class="commentable plan-paragraph" data-comment-id="p-scope-boundaries-l0129-b80b7bc" data-source-line="129"><span class="labeled-statement labeled-statement-out-of-scope"><span class="statement-label">Out of scope</span><span class="statement-body">implementing the broader LIV-115 native review cutover; publishing remote review comments during smoke validation; designing long-lived compatibility with final-response JSON for native review; supporting both old and new native review submission paths indefinitely; or changing non-review workflows that still intentionally use generic final-response structured output.</span></span></p>
+<p id="p-scope-boundaries-l0131-1166e4b" class="commentable plan-paragraph" data-comment-id="p-scope-boundaries-l0131-1166e4b" data-source-line="131">The generic <code>src/scherzo/structured_output.gleam</code> module may remain if other workflows or tests still use it. The required removal is from the native review path: native review lane prompts and <code>.scherzo/workflows/review-native.yml</code> must no longer instruct or configure final assistant JSON as the accepted submission mechanism.</p></section>
+<section id="sec-milestones" class="commentable plan-section" data-comment-id="sec-milestones" aria-labelledby="h2-milestones"><h2 id="h2-milestones" class="commentable plan-heading" data-comment-id="h2-milestones">Milestones</h2><p class="commentable plan-paragraph">Milestone 1 proves Pi tool feasibility before any broad replacement. At the end of this milestone, <code>.scherzo/workflows/review-native-tool-contract-spike.yml</code> and a temporary project-local extension demonstrate that a Scherzo-managed Pi session loads <code>.pi/extensions/*/index.ts</code> or the explicitly configured equivalent, that provider conversion accepts <code>StringEnum</code> constants, that a successful terminating call emits capturable object arguments, that invalid arguments produce deterministic diagnostics, that a final JSON message without the tool is detected as absence, and that a same-batch extra tool call is classified as invalid for native review submission.</p>
+<p class="commentable plan-paragraph">Milestone 2 establishes the canonical review-lane draft contract. At the end of this milestone, the repository has a TypeBox schema module for <code>submit_review_lane_draft</code>, a deterministic validation entry point <code>scripts/scherzo-review validate-lane-draft --lane &lt;lane-id&gt; --draft-json -</code> for Scherzo to call before persistence, and fixtures that prove valid and invalid lane drafts receive the same accept or reject result across the TypeBox shape checks and the repository's Python domain validation.</p>
+<p class="commentable plan-paragraph">Milestone 3 adds Scherzo's tool-submission capture path while preserving retained artifact layout. At the end of this milestone, <code>workflow_dag</code> can represent a native review tool submission requirement, the Pi launcher loads the review tool for those agent steps, <code>tool_submission.gleam</code> extracts exactly one accepted tool call from raw Pi records, <code>review_lane_draft_validator.gleam</code> validates captured JSON on stdin, and the accepted payload is written through the existing structured-artifact writer with metadata identifying the Pi tool source.</p>
+<p class="commentable plan-paragraph">Milestone 4 updates prompts, retry semantics, and failure classification. At the end of this milestone, native lane prompts and retry prompts instruct the model to call the tool, invalid tool arguments and domain invariant failures have clear failure codes, missing tool calls trigger the same bounded retry budget as current structured-output failures, mixed tool-call batches are rejected, and cancellation or transient Pi failures retain actionable diagnostics.</p>
+<p class="commentable plan-paragraph">Milestone 5 removes the stale review-native final-response JSON contract and validates downstream parity. At the end of this milestone, <code>.scherzo/workflows/review-native.yml</code> no longer uses final-response <code>structured_output</code> for native lanes, downstream <code>verify-evidence</code> and <code>normalize-lane-result</code> still consume the retained draft paths, and tests prove that final assistant JSON is rejected for native lanes even if the JSON object itself is otherwise valid.</p>
+<p class="commentable plan-paragraph">Milestone 6 performs named smoke validation and prepares rollback evidence. At the end of this milestone, unit tests, integration tests, <code>scripts/scherzo-review native-preflight --output-dir tmp/liv-204-native-preflight</code>, and <code>scripts/scherzo-review legacy-pr-smoke --output-dir tmp/liv-204-legacy-pr-smoke --overwrite</code> all pass with <code>remote_mutations: "none"</code> and tool-submitted native lane drafts. The implementation branch can then be reviewed for merge before LIV-115. If the smoke fails, rollback is to revert the implementation branch or PR rather than enabling a dual runtime.</p></section>
+<section id="sec-plan-of-work" class="commentable plan-section" data-comment-id="sec-plan-of-work" aria-labelledby="h2-plan-of-work"><h2 id="h2-plan-of-work" class="commentable plan-heading" data-comment-id="h2-plan-of-work">Plan of Work</h2><p class="commentable plan-paragraph">Start with a concrete tool-contract spike. Add a temporary project-local Pi extension at <code>.pi/extensions/scherzo-review-lane-draft-spike/index.ts</code> and a temporary workflow at <code>.scherzo/workflows/review-native-tool-contract-spike.yml</code>. The spike extension registers <code>submit_review_lane_draft_spike</code> with a tiny TypeBox object schema that includes at least one required string field and one <code>StringEnum(["none"] as const)</code> field. Its <code>execute</code> function returns a text result, details containing the received arguments, and <code>terminate: true</code>. The spike workflow must run through <code>direnv exec . gleam run -- workflow run .scherzo/workflows/review-native-tool-contract-spike.yml --run-root tmp/liv-204-review-tool-spike --run-id liv-204-review-tool-spike --native-review-scenario contract-spike</code> and must retain raw Pi records for a valid tool call, invalid arguments, final-text-only output, and a same-message batch containing the submission tool plus a non-terminating toy tool. After the spike, either delete these temporary files or promote the extension path to the permanent package and record the observed Pi record shape in this plan.</p>
+<p class="commentable plan-paragraph">Add the permanent Pi tool definition under <code>.pi/extensions/scherzo-review-lane-draft/index.ts</code>, with helper schema code in the same directory such as <code>.pi/extensions/scherzo-review-lane-draft/review_lane_draft_schema.ts</code>. This path is the documented project-local auto-discovery shape. If and only if the Scherzo local workflow runner does not load project-local extensions in its non-interactive mode, add an explicit extension argument in <code>src/scherzo/pi/command.gleam</code> pointing to <code>.pi/extensions/scherzo-review-lane-draft/index.ts</code> and add a launcher test proving the generated Pi argv contains that repository-relative path. The tool must expose <code>submit_review_lane_draft</code>, describe that remote mutations are forbidden, accept the review lane draft object as its arguments, use <code>StringEnum</code> for string constants, and return <code>terminate: true</code> only from <code>execute</code>.</p>
+<p class="commentable plan-paragraph">Use <code>docs/schemas/review-artifacts.v1.schema.json</code> as the documented schema source and <code>scripts/scherzo-review</code> as the domain validation source. Add a Python CLI command named <code>validate-lane-draft</code>. It accepts <code>--lane</code> plus exactly one of <code>--draft &lt;path&gt;</code> or <code>--draft-json -</code>. The path form loads a local file for operator and fixture tests. The stdin form reads the exact captured JSON sent by Scherzo before any retained artifact write. Both forms call <code>load_review_lane_draft</code> or the same unwrapping logic, call <code>validate_review_lane_draft</code>, verify the draft lane id matches <code>--lane</code>, print <code>REVIEW_LANE_DRAFT_VALIDATION=ok</code> on success, and fail with a non-zero exit and the existing <code>ReviewError</code> message on rejection.</p>
+<p class="commentable plan-paragraph">Add shared fixtures under <code>test/fixtures/review_lane_draft/</code>. Include a valid minimal draft with no findings, an invalid draft with <code>remote_mutations</code> not equal to <code>none</code>, an invalid draft with duplicate <code>draft_finding_id</code>, an invalid draft with an evidence request that references a missing finding, and an invalid draft with an unsafe path. For the unsafe-path case, construct the absolute path string at test runtime or use a neutral placeholder in generated fixture setup; do not hard-code a developer machine path.</p>
+<p class="commentable plan-paragraph">Extend <code>src/scherzo/workflow_dag.gleam</code> with a small tool-submission spec, not a broad generic tool framework. The YAML shape replaces each lane's <code>structured_output</code> block with <code>tool_submission: { tool_name: submit_review_lane_draft, artifact_name: correctness_draft, lane: correctness, required: true, validation_retries: 1 }</code>. Reject a workflow step that configures both <code>structured_output</code> and <code>tool_submission</code>, and keep retry counts bounded to zero or one.</p>
+<p class="commentable plan-paragraph">Update <code>.scherzo/workflows/review-native.yml</code> to use the new <code>tool_submission</code> block for <code>lane_correctness</code>, <code>lane_test_quality</code>, <code>lane_idioms_maintainability</code>, and <code>lane_security_performance</code>. Keep the artifact names <code>correctness_draft</code>, <code>test_quality_draft</code>, <code>idioms_maintainability_draft</code>, and <code>security_performance_draft</code> so downstream retained paths remain stable. Do not add a final-response fallback block.</p>
+<p class="commentable plan-paragraph">Update the prompt files <code>.scherzo/workflows/prompts/review-native-correctness.md</code>, <code>.scherzo/workflows/prompts/review-native-test-quality.md</code>, <code>.scherzo/workflows/prompts/review-native-idioms-maintainability.md</code>, and <code>.scherzo/workflows/prompts/review-native-security-performance.md</code>. Replace <code>Return JSON only</code> instructions with instructions to call <code>submit_review_lane_draft</code> exactly once. Each prompt should still state the lane id, required top-level fields, no remote mutations, repository-relative paths only, and the lane-specific evidence rules. Each prompt should explicitly say not to print the JSON as a final assistant response and not to batch the submission tool with any other tool call.</p>
+<p class="commentable plan-paragraph">Add <code>src/scherzo/tool_submission.gleam</code> to select the relevant tool call from a list of <code>src/scherzo/pi/protocol.gleam</code> records. It should require exactly one successful call to the configured tool in the final submission batch, extract object arguments from raw Pi record JSON, reject placeholder-only inputs, reject a same-batch sibling tool call, and return clear errors for missing tool calls, wrong tool names, invalid argument JSON, multiple submissions, extra sibling tools, and tool status failures mapped to <code>review_lane_draft_tool_failed</code>. If the Pi record shape is nested, keep that parsing isolated in this module so provider differences do not leak into workflow code.</p>
+<p class="commentable plan-paragraph">Add <code>src/scherzo/review_lane_draft_validator.gleam</code> to call the deterministic Python validator. The helper accepts canonical payload JSON, lane id, run context, and secrets. It invokes <code>python3 scripts/scherzo-review validate-lane-draft --lane &lt;lane-id&gt; --draft-json -</code>, writes the payload to stdin, captures stdout and stderr, redacts configured secrets from retained diagnostics, and maps non-zero exit to <code>review_lane_draft_domain_invalid</code>. It must not create an intermediate draft file. The only durable draft write after success is <code>workflow_checkpoint.write_structured_output_artifact</code>.</p>
+<p class="commentable plan-paragraph">Update <code>src/scherzo/workflow_run.gleam</code> in small red/green slices. First add a failing test for a native tool-submission step with no tool call. Then add the branch that recognizes <code>tool_submission</code> and returns <code>review_lane_draft_tool_missing</code>. Next add a success-path test with a captured valid tool call and implement artifact writing after validation. Then add domain-invalid, malformed-arguments, multiple-submission, extra-sibling-tool, and artifact-write-failure tests one at a time, mapping each to the stable failure codes in this plan. Do not combine parser selection, subprocess validation, artifact writing, and retry metadata in one large edit.</p>
+<p class="commentable plan-paragraph">Update <code>src/scherzo/workflow_structured_retry.gleam</code> or add <code>src/scherzo/workflow_tool_submission_retry.gleam</code>. The retry prompt for native review tool submissions must say that this is the only automatic retry for the lane-output failure, summarize the failure code and redacted diagnostic, point to retained review inputs under <code>$SCHERZO_RUN_ROOT/artifacts/review/prepare_review</code>, and instruct the model to call <code>submit_review_lane_draft</code> rather than returning JSON text. Cancellation must remain cancellation and must not be converted into a tool-submission retry.</p>
+<p class="commentable plan-paragraph">Update downstream normalization only where needed. <code>scripts/scherzo-review verify-evidence</code> and <code>scripts/scherzo-review normalize-lane-result</code> should still receive <code>--draft</code> paths pointing to the accepted retained draft artifact. If the structured artifact wrapper stores the review draft under a <code>payload</code> field, keep the existing loader behavior that understands that retained artifact shape. Prefer the existing wrapper path to minimize blast radius.</p>
+<p class="commentable plan-paragraph">Expand smoke manifest assertions before final acceptance. <code>scripts/scherzo-review native-preflight</code> must assert that every native lane draft came from <code>submit_review_lane_draft</code>, not final assistant JSON, and must retain tool-source metadata in <code>preflight-manifest.v1.json</code>. <code>scripts/scherzo-review legacy-pr-smoke</code> must perform the same assertion in each run entry of <code>legacy-pr-smoke-manifest.v1.json</code>. These commands already name the local and curated legacy smoke gates, so do not defer fixture or wrapper design until the end.</p>
+<p class="commentable plan-paragraph">Remove review-native tests and fixtures that assert final assistant JSON is the success contract for native lanes. Keep <code>test/structured_output_test.gleam</code> only for generic final-response structured-output behavior if any non-native-review workflow still uses it. Add explicit native review tests proving that final assistant JSON alone no longer succeeds.</p></section>
+<section id="sec-concrete-steps" class="commentable plan-section" data-comment-id="sec-concrete-steps" aria-labelledby="h2-concrete-steps"><h2 id="h2-concrete-steps" class="commentable plan-heading" data-comment-id="h2-concrete-steps">Concrete Steps</h2><ol class="plan-list ordered"><li class="commentable plan-list-item"><div class="list-item-main">From the repository root, verify the starting state.</div><pre class="code-block"><code>jj status --color=never</code></pre><p class="commentable plan-paragraph">Expect no tracked changes other than this plan artifact before implementation begins.</p></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Create the temporary spike extension <code>.pi/extensions/scherzo-review-lane-draft-spike/index.ts</code>. Register <code>submit_review_lane_draft_spike</code> with <code>defineTool</code>, <code>Type.Object</code>, <code>StringEnum(["none"] as const)</code>, and an <code>execute</code> function that returns <code>terminate: true</code>. Add a second toy tool in the same extension that does not return <code>terminate: true</code> so the spike can prove mixed-batch behavior.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Create <code>.scherzo/workflows/review-native-tool-contract-spike.yml</code> with four agent steps: one valid tool submission, one invalid TypeBox argument submission, one final-text-only JSON response, and one same-message batch containing the submission tool plus the non-terminating toy tool. Add prompt files under <code>.scherzo/workflows/prompts/</code> for those four spike cases.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Run the spike through the Scherzo-managed Pi launch path from the repository root.</div><pre class="code-block"><code>direnv exec . gleam run -- workflow run .scherzo/workflows/review-native-tool-contract-spike.yml --run-root tmp/liv-204-review-tool-spike --run-id liv-204-review-tool-spike --native-review-scenario contract-spike</code></pre><p class="commentable plan-paragraph">A successful runner prints a transcript shaped like this:</p><pre class="code-block"><code>SCHERZO_WORKFLOW_RUN=ok
+SCHERZO_WORKFLOW_ID=review-native-tool-contract-spike
+SCHERZO_RUN_ID=liv-204-review-tool-spike
+SCHERZO_RUN_ROOT=tmp/liv-204-review-tool-spike
+SCHERZO_WORKFLOW_RUN_SUMMARY=tmp/liv-204-review-tool-spike/native-runner-summary.v1.json</code></pre></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Inspect <code>tmp/liv-204-review-tool-spike/native-runner-summary.v1.json</code> and the retained Pi records. Confirm that the valid case contains the tool name, raw object arguments, success status, and no required final assistant JSON; the invalid case records TypeBox diagnostics; the final-text-only case is classified as missing the tool; and the mixed batch is classified as an invalid extra tool call.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Update this ExecPlan's Surprises &amp; Discoveries and Decision Log with the exact Pi loading mechanism and record shape. Remove spike files that are not promoted to the permanent extension package before the implementation commits.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add <code>test/fixtures/review_lane_draft/valid-minimal.json</code> and the invalid fixtures described in the Plan of Work. Keep all fixture paths repository-relative or generated at runtime.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">In <code>scripts/scherzo-review</code>, add <code>validate-lane-draft --lane &lt;lane-id&gt;</code> with mutually exclusive <code>--draft &lt;path&gt;</code> and <code>--draft-json -</code> inputs. Confirm both success paths from the repository root.</div><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review validate-lane-draft --lane correctness --draft test/fixtures/review_lane_draft/valid-minimal.json
+direnv exec . sh -c 'cat test/fixtures/review_lane_draft/valid-minimal.json | ./scripts/scherzo-review validate-lane-draft --lane correctness --draft-json -'</code></pre><p class="commentable plan-paragraph">Both commands should print:</p><pre class="code-block"><code>REVIEW_LANE_DRAFT_VALIDATION=ok
+REVIEW_LANE=correctness
+REVIEW_SCHEMA_VERSION=1
+REVIEW_REMOTE_MUTATIONS=none</code></pre></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add <code>test/scherzo_review_lane_draft_test.py</code>. Test that the valid fixture passes both <code>--draft</code> and <code>--draft-json -</code>, and that each invalid fixture fails with the specific expected message from <code>validate_review_lane_draft</code>.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add the permanent Pi tool package under <code>.pi/extensions/scherzo-review-lane-draft/index.ts</code>. Define the <code>submit_review_lane_draft</code> TypeBox schema and terminating tool handler. The handler returns a small success message only; the durable data is the tool arguments captured by Scherzo.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add a package-local schema test runner if the extension directory does not already have one. The expected command is:</div><pre class="code-block"><code>direnv exec . npm --prefix .pi/extensions/scherzo-review-lane-draft test</code></pre><p class="commentable plan-paragraph">The test must fail before the schema exists and pass after it proves required keys, <code>StringEnum</code> constants, invalid argument rejection, and the terminating result shape.</p></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add provider conversion coverage for the configured Pi providers. At minimum, feed the registered tool definition through the same conversion path used by the spike and assert that <code>artifact_type</code> and <code>remote_mutations</code> are provider-compatible string enums, a valid submission returns <code>terminate: true</code>, invalid arguments are rejected before <code>execute</code>, and a same-batch non-terminating sibling prevents automatic turn termination and is rejected by Scherzo's native submission parser.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">In <code>src/scherzo/workflow_dag.gleam</code>, first add failing tests in <code>test/workflow_dag_test.gleam</code> or the existing workflow DAG test file for a valid <code>tool_submission</code> block, missing required fields, invalid retry counts, and conflicting <code>structured_output</code> plus <code>tool_submission</code>.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Implement <code>ToolSubmissionSpec</code> parsing in <code>src/scherzo/workflow_dag.gleam</code> and rerun the focused DAG tests until they pass.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Update <code>.scherzo/workflows/review-native.yml</code> to replace the four lane <code>structured_output</code> blocks with <code>tool_submission</code> blocks. Preserve lane ids, artifact names, dependencies, failure policy, and downstream draft paths.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Update the four native review prompt files to instruct lanes to call <code>submit_review_lane_draft</code> exactly once, not to batch it with other tool calls, and not to print final JSON. Preserve each lane's domain-specific review guidance.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add failing parser tests in <code>test/tool_submission_test.gleam</code> for valid object arguments, missing tool call, wrong tool name without a valid submission, multiple submissions, failed tool status, placeholder input, malformed raw arguments, final assistant JSON only, and a valid submission batched with an extra sibling tool.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add <code>src/scherzo/tool_submission.gleam</code> with pure functions that accept decoded Pi records and return either the submitted payload JSON plus provenance or a typed error. Rerun <code>direnv exec . gleam test test/tool_submission_test.gleam</code> after each error case is implemented.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Update <code>src/scherzo/pi/protocol.gleam</code> only if needed so <code>tool_submission.gleam</code> can extract real object-valued arguments from <code>raw_json</code>. Add protocol tests using exact record examples captured in the spike.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add <code>src/scherzo/review_lane_draft_validator.gleam</code> and tests that stub the subprocess result. Cover stdin success, non-zero validator failure, redacted diagnostics, subprocess crash, and the rule that the helper does not create a draft file.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">In <code>test/workflow_run_test.gleam</code>, add the first red test: a native review step with <code>tool_submission</code> and no matching tool call must fail with <code>review_lane_draft_tool_missing</code> and must schedule only one retry when <code>validation_retries</code> is one.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Implement the minimal <code>src/scherzo/workflow_run.gleam</code> branch that recognizes <code>tool_submission</code>, calls <code>tool_submission.extract_required_tool_payload</code>, maps missing submission to <code>review_lane_draft_tool_missing</code>, and leaves existing <code>structured_output</code> behavior unchanged for non-native workflows.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add a success-path workflow-run test with a captured valid <code>submit_review_lane_draft</code> record. Assert that <code>review_lane_draft_validator.gleam</code> is called with stdin JSON before <code>workflow_checkpoint.write_structured_output_artifact</code>, and that the retained artifact path and artifact name match the old structured-output path.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Implement the workflow-run success path. Call the deterministic validator first, then write the accepted payload through <code>workflow_checkpoint.write_structured_output_artifact</code> with metadata <code>submission_source: "pi_tool"</code> and <code>tool_name: "submit_review_lane_draft"</code>.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add and satisfy one workflow-run test each for malformed arguments (<code>review_lane_draft_tool_arguments_invalid</code>), deterministic domain rejection (<code>review_lane_draft_domain_invalid</code>), failed tool status (<code>review_lane_draft_tool_failed</code>), multiple submissions (<code>review_lane_draft_multiple_submissions</code>), extra sibling tool calls (<code>review_lane_draft_extra_tool_call</code>), and artifact write failure (<code>review_lane_draft_artifact_write_failed</code>).</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Update retry prompt generation in <code>src/scherzo/workflow_structured_retry.gleam</code> or a new sibling module. Add tests that a native review tool-submission retry prompt contains <code>submit_review_lane_draft</code>, the lane id, the redacted failure diagnostic, the run-root review input hint, and a statement that final JSON text is not accepted.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Add cancellation and transient Pi failure tests. Operator cancellation must stay cancellation and not spend validation retry budget. A transient Pi termination may use the existing bounded retry policy only if that matches current native-lane transient handling.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Update <code>scripts/scherzo-review native-preflight</code> manifest assertions so every native lane provenance entry records <code>submission_source: "pi_tool"</code> and <code>tool_name: "submit_review_lane_draft"</code>. Update or add tests around manifest validation.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Update <code>scripts/scherzo-review legacy-pr-smoke</code> manifest assertions with the same tool-submission provenance fields for every lane in every run entry.</div></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Run focused tests from the repository root.</div><pre class="code-block"><code>direnv exec . gleam test test/tool_submission_test.gleam
+direnv exec . gleam test test/workflow_run_test.gleam
+direnv exec . gleam test test/workflow_dag_test.gleam
+direnv exec . python3 -m unittest test/scherzo_review_lane_draft_test.py
+direnv exec . npm --prefix .pi/extensions/scherzo-review-lane-draft test</code></pre><p class="commentable plan-paragraph">Expect all new tests to pass after implementation. Before the implementation, the new tests should fail because the tool-submission parser, workflow DAG shape, extension schema, and validation command do not exist.</p></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Run the project checks required by the repository policy.</div><pre class="code-block"><code>direnv exec . gleam format --check src test
+direnv exec . gleam test
+direnv exec . gleam run -m glinter
+direnv exec . gleam run -m scherzo_lint</code></pre><p class="commentable plan-paragraph">Expect all checks to pass. If <code>direnv exec .</code> reports that <code>.envrc</code> is blocked, inspect <code>.envrc</code>, run <code>direnv allow .</code>, and retry the command through direnv.</p></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Run the local no-remote native preflight smoke.</div><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review native-preflight --output-dir tmp/liv-204-native-preflight</code></pre><p class="commentable plan-paragraph">Expect a transcript shaped like:</p><pre class="code-block"><code>REVIEW_NATIVE_PREFLIGHT=ok
+REVIEW_SCHEMA_VERSION=1
+REVIEW_PREFLIGHT_ARTIFACT_DIR=tmp/liv-204-native-preflight
+REVIEW_PREFLIGHT_MANIFEST_PATH=tmp/liv-204-native-preflight/preflight-manifest.v1.json
+REVIEW_REMOTE_MUTATIONS=none</code></pre></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Validate the local native preflight manifest.</div><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review validate --artifact tmp/liv-204-native-preflight/preflight-manifest.v1.json --require-cutover-ready</code></pre><p class="commentable plan-paragraph">Expect:</p><pre class="code-block"><code>REVIEW_ARTIFACT_VALID=ok
+REVIEW_SCHEMA_VERSION=1
+REVIEW_ARTIFACT_TYPE=preflight_manifest
+REVIEW_CUTOVER_READY=ok</code></pre></li>
+<li class="commentable plan-list-item"><div class="list-item-main">List the curated legacy PR set before running the final smoke, so the operator can see the exact fixture set without contacting GitHub.</div><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review legacy-pr-smoke --list-curated</code></pre><p class="commentable plan-paragraph">Expect JSON containing PRs 116, 114, 108, 91, and 117 with their rationale fields.</p></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Run the curated legacy PR smoke gate. This command may read historical PR diffs through the GitHub CLI, but it must not post comments, push, update Linear, or use fixture or heuristic native lane backends.</div><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review legacy-pr-smoke --output-dir tmp/liv-204-legacy-pr-smoke --overwrite</code></pre><p class="commentable plan-paragraph">Expect <code>REVIEW_LEGACY_PR_SMOKE=ok</code>, <code>REVIEW_LEGACY_PR_SMOKE_MANIFEST_PATH=tmp/liv-204-legacy-pr-smoke/legacy-pr-smoke-manifest.v1.json</code>, and compact per-PR summaries. Treat <code>REVIEW_LEGACY_PR_SMOKE=failed</code> or <code>ok_with_lane_failures</code> as not accepted for this plan.</p></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Validate the curated legacy PR smoke manifest and assert tool-submission provenance.</div><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review validate --artifact tmp/liv-204-legacy-pr-smoke/legacy-pr-smoke-manifest.v1.json
+direnv exec . python3 - &lt;&lt;'PY'
+import json
+from pathlib import Path
+manifest = json.loads(Path('tmp/liv-204-legacy-pr-smoke/legacy-pr-smoke-manifest.v1.json').read_text())
+assert manifest['remote_mutations'] == 'none'
+for run in manifest['runs']:
+    assert run['remote_mutations'] == 'none'
+    for lane in run.get('lane_execution_states', []):
+        assert lane.get('submission_source') == 'pi_tool'
+        assert lane.get('tool_name') == 'submit_review_lane_draft'
+print('LEGACY_PR_SMOKE_TOOL_SUBMISSIONS=ok')
+PY</code></pre><p class="commentable plan-paragraph">Expect <code>REVIEW_ARTIFACT_VALID=ok</code>, <code>REVIEW_ARTIFACT_TYPE=legacy_pr_smoke_manifest</code>, and <code>LEGACY_PR_SMOKE_TOOL_SUBMISSIONS=ok</code>.</p></li>
+<li class="commentable plan-list-item"><div class="list-item-main">Commit only after the focused tests, repository gates, local no-remote smoke, and curated legacy PR smoke pass. Suggested commit grouping is one commit for the Pi behavior spike notes and schema validator, one commit for Scherzo tool-submission capture and retry behavior, one commit for prompt/workflow replacement, and one commit for smoke/test fixture updates. Do not commit broken intermediate states.</div></li></ol></section>
+<section id="sec-testing-and-falsifiability" class="commentable plan-section" data-comment-id="sec-testing-and-falsifiability" aria-labelledby="h2-testing-and-falsifiability"><h2 id="h2-testing-and-falsifiability" class="commentable plan-heading" data-comment-id="h2-testing-and-falsifiability">Testing and Falsifiability</h2><p class="commentable plan-paragraph">The plan is falsified early if <code>.scherzo/workflows/review-native-tool-contract-spike.yml</code> cannot load a terminating custom tool in a Scherzo-managed Pi session, cannot expose object-valued tool arguments to Scherzo, cannot distinguish a tool call from final assistant text, or cannot represent string constants with provider-compatible <code>StringEnum</code>. If that happens, stop and revise the Decision Log before implementing a broader replacement. The fallback is not to preserve final-response JSON indefinitely; it is to choose the Pi-supported tool registration mechanism or revert the branch before LIV-115.</p>
+<p class="commentable plan-paragraph">Python validation tests live in <code>test/scherzo_review_lane_draft_test.py</code>. They must call <code>scripts/scherzo-review validate-lane-draft --lane correctness --draft test/fixtures/review_lane_draft/valid-minimal.json</code> and assert success. They must pipe the same fixture to <code>--draft-json -</code> and assert success. They must call each invalid fixture and assert non-zero exit plus the expected diagnostic: <code>review lane draft remote_mutations must be none</code>, <code>draft finding ids must be unique</code>, <code>evidence requests must link to an existing draft finding</code>, or the existing safe-path rejection message.</p>
+<p class="commentable plan-paragraph">TypeBox schema tests live next to the Pi tool package. Add <code>.pi/extensions/scherzo-review-lane-draft/package.json</code> with a <code>test</code> script if the extension does not already have a package runner. The command <code>direnv exec . npm --prefix .pi/extensions/scherzo-review-lane-draft test</code> must derive JSON schema from the TypeBox definition and compare required top-level keys, <code>artifact_type</code> string enum, and <code>remote_mutations</code> string enum against <code>docs/schemas/review-artifacts.v1.schema.json</code>. It must also validate the same valid and invalid fixtures at the TypeBox syntactic layer where those fixtures are expected to be syntactically catchable.</p>
+<p class="commentable plan-paragraph">Provider compatibility tests are part of the spike and the package tests. They must exercise the actual Pi provider/tool conversion path for the configured providers, including constant string fields, invalid arguments, a successful terminating submission, and a batch containing <code>submit_review_lane_draft</code> plus a non-terminating tool. The expected Scherzo classification is: valid single submission succeeds; invalid arguments become <code>review_lane_draft_tool_arguments_invalid</code>; final JSON without the tool becomes <code>review_lane_draft_tool_missing</code>; and a same-batch extra tool call becomes <code>review_lane_draft_extra_tool_call</code>.</p>
+<p class="commentable plan-paragraph">Gleam parser tests live in <code>test/tool_submission_test.gleam</code>. They construct representative <code>src/scherzo/pi/protocol.gleam</code> records, including raw JSON examples from the spike. A valid record with <code>submit_review_lane_draft</code> and object arguments returns the serialized draft payload plus provenance. A record with assistant text only returns <code>review_lane_draft_tool_missing</code>. A wrong tool name without a valid submission returns missing submission. Multiple accepted submissions return <code>review_lane_draft_multiple_submissions</code>. A non-string placeholder input without raw arguments returns <code>review_lane_draft_tool_arguments_invalid</code>. A failed tool status returns <code>review_lane_draft_tool_failed</code>. A valid submission batched with a sibling tool returns <code>review_lane_draft_extra_tool_call</code>.</p>
+<p class="commentable plan-paragraph">Workflow DAG tests prove the new YAML shape. A valid agent step with <code>tool_submission</code> parses to the expected tool name, lane id, artifact name, required flag, and one validation retry. A step with both <code>structured_output</code> and <code>tool_submission</code> fails parsing. A step with <code>validation_retries: 2</code> fails, matching the current bounded retry policy of zero or one retry.</p>
+<p class="commentable plan-paragraph">Workflow run tests live in <code>test/workflow_run_test.gleam</code>, which already contains native review structured-output test coverage. Update the native review success case to feed a Pi tool-call record rather than a final assistant JSON response and assert that the retained structured artifact path is written only after deterministic validation succeeds. Add a negative test where the agent returns a valid <code>review_lane_draft</code> JSON final response but no tool call; assert the step does not succeed and the retry diagnostics identify missing tool submission. Add negative tests where the tool call has syntactically valid JSON but violates a domain invariant, where the tool call has malformed raw arguments, and where the final submission is batched with another tool call.</p>
+<p class="commentable plan-paragraph">Retry tests assert that one retry occurs for missing tool submission, invalid captured tool arguments, extra sibling tool calls, and deterministic domain rejection when <code>validation_retries</code> is one. They assert no second retry occurs after the retry also fails. Cancellation tests assert that explicit operator cancellation is retained as cancellation and not converted into a structured-output retry. Transient Pi failure tests preserve the current transient termination behavior where applicable.</p>
+<p class="commentable plan-paragraph">Smoke validation proves the operator claim. The local no-remote smoke command is:</p><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review native-preflight --output-dir tmp/liv-204-native-preflight
+direnv exec . ./scripts/scherzo-review validate --artifact tmp/liv-204-native-preflight/preflight-manifest.v1.json --require-cutover-ready</code></pre><p class="commentable plan-paragraph">It must show lane attempts ending through <code>submit_review_lane_draft</code>, retained draft artifacts at the existing structured paths, successful <code>verify-evidence</code> and <code>normalize-lane-result</code> commands, <code>REVIEW_REMOTE_MUTATIONS=none</code>, and <code>REVIEW_CUTOVER_READY=ok</code>. A smoke where a lane is forced to print JSON instead of calling the tool should fail fast at the lane boundary and should not let downstream evidence verification be the first failure point.</p>
+<p class="commentable plan-paragraph">The curated legacy PR smoke command is:</p><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review legacy-pr-smoke --list-curated
+direnv exec . ./scripts/scherzo-review legacy-pr-smoke --output-dir tmp/liv-204-legacy-pr-smoke --overwrite
+direnv exec . ./scripts/scherzo-review validate --artifact tmp/liv-204-legacy-pr-smoke/legacy-pr-smoke-manifest.v1.json</code></pre><p class="commentable plan-paragraph">It is falsified if the manifest reports any remote mutation, fixture or heuristic lane backend, missing tool-submission provenance, failed run, or lane failure. For this plan, <code>REVIEW_LEGACY_PR_SMOKE=ok_with_lane_failures</code> is not accepted.</p></section>
+<section id="sec-validation-and-acceptance" class="commentable plan-section" data-comment-id="sec-validation-and-acceptance" aria-labelledby="h2-validation-and-acceptance"><h2 id="h2-validation-and-acceptance" class="commentable plan-heading" data-comment-id="h2-validation-and-acceptance">Validation and Acceptance</h2><p class="commentable plan-paragraph">The implementation is accepted when <code>.scherzo/workflows/review-native.yml</code> no longer configures final-response <code>structured_output</code> for native review lanes and the four native review prompt files no longer tell lanes to return JSON only. They must instruct lanes to call <code>submit_review_lane_draft</code> exactly once, not to batch it with other tools, and not to print final JSON.</p>
+<p class="commentable plan-paragraph">The implementation is accepted when a valid tool-submitted lane draft is validated through <code>scripts/scherzo-review validate-lane-draft --lane &lt;lane-id&gt; --draft-json -</code> before persistence, persisted under the existing retained artifact layout with the same artifact names used today, and consumed successfully by <code>scripts/scherzo-review verify-evidence</code> and <code>scripts/scherzo-review normalize-lane-result</code>.</p>
+<p class="commentable plan-paragraph">The implementation is accepted when invalid tool arguments, rejected domain invariants, tool-call absence, final assistant text instead of a tool call, multiple submissions, and same-batch extra tool calls all produce retained diagnostics with stable failure codes and at most one structured retry. The retry prompt must mention the original redacted failure and must instruct the model to call <code>submit_review_lane_draft</code>.</p>
+<p class="commentable plan-paragraph">The implementation is accepted when transient Pi failures and cancellation remain distinguishable. A transient Pi termination may use the existing bounded retry policy if it matches current native-lane transient handling. Operator cancellation must not be hidden as a validation retry.</p>
+<p class="commentable plan-paragraph">The implementation is accepted when these focused commands pass from the repository root:</p><pre class="code-block"><code>direnv exec . gleam test test/tool_submission_test.gleam
+direnv exec . gleam test test/workflow_run_test.gleam
+direnv exec . gleam test test/workflow_dag_test.gleam
+direnv exec . python3 -m unittest test/scherzo_review_lane_draft_test.py
+direnv exec . npm --prefix .pi/extensions/scherzo-review-lane-draft test</code></pre>
+<p class="commentable plan-paragraph">The implementation is accepted when these repository gates pass from the repository root:</p><pre class="code-block"><code>direnv exec . gleam format --check src test
+direnv exec . gleam test
+direnv exec . gleam run -m glinter
+direnv exec . gleam run -m scherzo_lint</code></pre>
+<p class="commentable plan-paragraph">The implementation is accepted when the local no-remote native smoke passes and validates cutover readiness:</p><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review native-preflight --output-dir tmp/liv-204-native-preflight
+direnv exec . ./scripts/scherzo-review validate --artifact tmp/liv-204-native-preflight/preflight-manifest.v1.json --require-cutover-ready</code></pre><p class="commentable plan-paragraph">Expected success markers are <code>REVIEW_NATIVE_PREFLIGHT=ok</code>, <code>REVIEW_REMOTE_MUTATIONS=none</code>, <code>REVIEW_ARTIFACT_TYPE=preflight_manifest</code>, and <code>REVIEW_CUTOVER_READY=ok</code>.</p>
+<p class="commentable plan-paragraph">The final readiness gate for this plan is the curated legacy PR smoke:</p><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review legacy-pr-smoke --list-curated
+direnv exec . ./scripts/scherzo-review legacy-pr-smoke --output-dir tmp/liv-204-legacy-pr-smoke --overwrite
+direnv exec . ./scripts/scherzo-review validate --artifact tmp/liv-204-legacy-pr-smoke/legacy-pr-smoke-manifest.v1.json</code></pre><p class="commentable plan-paragraph">Expected success markers are <code>REVIEW_LEGACY_PR_SMOKE=ok</code>, <code>REVIEW_ARTIFACT_TYPE=legacy_pr_smoke_manifest</code>, <code>remote_mutations: "none"</code> in the manifest, no failed runs, no lane failures, and tool-submission provenance for every native lane. Passing this plan alone does not claim LIV-115 readiness; it supplies one required pre-cutover condition. LIV-115 can rely on this work only after its own cutover approval and validation.</p></section>
+<section id="sec-rollout-recovery-and-idempotence" class="commentable plan-section" data-comment-id="sec-rollout-recovery-and-idempotence" data-source-line="276" aria-labelledby="h2-rollout-recovery-and-idempotence"><h2 id="h2-rollout-recovery-and-idempotence" class="commentable plan-heading" data-comment-id="h2-rollout-recovery-and-idempotence" data-source-line="276">Rollout, Recovery, and Idempotence</h2><p id="p-rollout-recovery-and-idempotence-l0278-3273c7a" class="commentable plan-paragraph" data-comment-id="p-rollout-recovery-and-idempotence-l0278-3273c7a" data-source-line="278">Rollout is a direct replacement in the pre-cutover native review path. The implementation should be developed and validated in a branch or PR before merge. There is no canary mode and no long-lived dual runtime. Once the tool path is proven by tests and smoke validation, native review should require the tool call.</p>
+<p id="p-rollout-recovery-and-idempotence-l0280-69383fc" class="commentable plan-paragraph" data-comment-id="p-rollout-recovery-and-idempotence-l0280-69383fc" data-source-line="280">Rollback before LIV-115 is to revert the implementation branch or PR. Because native review has no external production users yet, rollback does not require data migration or compatibility shims. If validation fails before merge, do not merge the branch. If validation fails after merge but before LIV-115, revert the merge commit and restore the previous review-native workflow files.</p>
+<p id="p-rollout-recovery-and-idempotence-l0282-8d6161f" class="commentable plan-paragraph" data-comment-id="p-rollout-recovery-and-idempotence-l0282-8d6161f" data-source-line="282">The retained artifact layout should remain idempotent for retries. Each attempt writes under its own attempt directory. Re-running a failed native review smoke in a fresh run root should not depend on old artifacts. The tool handler itself should not perform remote mutations or write durable review artifacts; Scherzo&#x27;s checkpoint writer owns persistence after deterministic validation.</p>
+<p id="p-rollout-recovery-and-idempotence-l0284-9d5135d" class="commentable plan-paragraph" data-comment-id="p-rollout-recovery-and-idempotence-l0284-9d5135d" data-source-line="284">No smoke validation should post comments, push commits, update Linear, or otherwise mutate remote services. The local <code>native-preflight</code> smoke uses local fixtures only. The curated <code>legacy-pr-smoke</code> gate may read historical GitHub PR metadata and diffs, but it must remain read-only and must retain <code>remote_mutations: &quot;none&quot;</code> in every manifest and final review artifact. The lane prompts, TypeBox schema, deterministic validators, and smoke acceptance all require <code>remote_mutations: &quot;none&quot;</code>.</p></section>
+<section id="sec-artifacts-and-notes" class="commentable plan-section" data-comment-id="sec-artifacts-and-notes" aria-labelledby="h2-artifacts-and-notes"><h2 id="h2-artifacts-and-notes" class="commentable plan-heading" data-comment-id="h2-artifacts-and-notes">Artifacts and Notes</h2><p class="commentable plan-paragraph">Current native review draft path pattern used by downstream workflow commands:</p><pre class="code-block"><code>$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/lane_correctness/attempt-1/structured/correctness_draft.json
+$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/lane_test_quality/attempt-1/structured/test_quality_draft.json
+$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/lane_idioms_maintainability/attempt-1/structured/idioms_maintainability_draft.json
+$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID/lane_security_performance/attempt-1/structured/security_performance_draft.json</code></pre>
+<p class="commentable plan-paragraph">Expected successful deterministic validation transcript for the stdin validator:</p><pre class="code-block"><code>REVIEW_LANE_DRAFT_VALIDATION=ok
+REVIEW_LANE=correctness
+REVIEW_SCHEMA_VERSION=1
+REVIEW_REMOTE_MUTATIONS=none</code></pre>
+<p class="commentable plan-paragraph">Expected successful local native preflight transcript excerpt:</p><pre class="code-block"><code>REVIEW_NATIVE_PREFLIGHT=ok
+REVIEW_SCHEMA_VERSION=1
+REVIEW_PREFLIGHT_ARTIFACT_DIR=tmp/liv-204-native-preflight
+REVIEW_PREFLIGHT_MANIFEST_PATH=tmp/liv-204-native-preflight/preflight-manifest.v1.json
+REVIEW_REMOTE_MUTATIONS=none</code></pre>
+<p class="commentable plan-paragraph">Expected successful curated legacy PR smoke transcript excerpt:</p><pre class="code-block"><code>REVIEW_LEGACY_PR_SMOKE=ok
+REVIEW_LEGACY_PR_SMOKE_MANIFEST_PATH=tmp/liv-204-legacy-pr-smoke/legacy-pr-smoke-manifest.v1.json
+REVIEW_LEGACY_PR_SMOKE_SUMMARY={..."remote_mutations":"none"...}</code></pre>
+<p class="commentable plan-paragraph">Expected failure categories to retain in step artifacts:</p>
+<ul class="plan-list unordered"><li class="commentable plan-list-item"><div class="list-item-main"><code>review_lane_draft_tool_missing</code> when no accepted <code>submit_review_lane_draft</code> call is found.</div></li><li class="commentable plan-list-item"><div class="list-item-main"><code>review_lane_draft_tool_arguments_invalid</code> when Pi records do not contain parseable object arguments for the tool.</div></li><li class="commentable plan-list-item"><div class="list-item-main"><code>review_lane_draft_domain_invalid</code> when deterministic review-lane validation rejects a syntactically valid tool payload.</div></li><li class="commentable plan-list-item"><div class="list-item-main"><code>review_lane_draft_tool_failed</code> when Pi records show that <code>submit_review_lane_draft</code> was called but its tool execution failed.</div></li><li class="commentable plan-list-item"><div class="list-item-main"><code>review_lane_draft_multiple_submissions</code> when more than one successful <code>submit_review_lane_draft</code> call appears in the submission window.</div></li><li class="commentable plan-list-item"><div class="list-item-main"><code>review_lane_draft_extra_tool_call</code> when the submission tool appears in a same-message batch with another tool call, because Pi termination is batch-wide and native review requires a single final submission action.</div></li><li class="commentable plan-list-item"><div class="list-item-main"><code>review_lane_draft_artifact_write_failed</code> when checkpoint persistence fails after validation.</div></li></ul></section>
+<section id="sec-interfaces-and-dependencies" class="commentable plan-section" data-comment-id="sec-interfaces-and-dependencies" aria-labelledby="h2-interfaces-and-dependencies"><h2 id="h2-interfaces-and-dependencies" class="commentable plan-heading" data-comment-id="h2-interfaces-and-dependencies">Interfaces and Dependencies</h2><p class="commentable plan-paragraph">The Pi tool interface to expose is <code>submit_review_lane_draft</code>. It accepts the <code>review_lane_draft</code> object as its arguments, not a string containing JSON. Its TypeBox schema must require <code>schema_version</code>, <code>artifact_type</code>, <code>generated_at_utc</code>, <code>producer</code>, <code>lane</code>, <code>input_refs</code>, <code>draft_findings</code>, <code>review_notes</code>, <code>evidence_requests</code>, <code>self_check</code>, and <code>remote_mutations</code>. It must constrain <code>artifact_type</code> to <code>review_lane_draft</code> and <code>remote_mutations</code> to <code>none</code> with <code>StringEnum</code>. It must return <code>terminate: true</code> from <code>execute</code> on successful submissions.</p>
+<p class="commentable plan-paragraph">The permanent Pi extension entrypoint is <code>.pi/extensions/scherzo-review-lane-draft/index.ts</code>. The directory may contain helper files and a <code>package.json</code> for tests, but the entrypoint must export the default extension factory. A minimal shape is:</p><pre class="code-block"><code>import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { StringEnum } from "@mariozechner/pi-ai";
+import { Type } from "typebox";
+
+const reviewLaneDraftParameters = Type.Object({
+  schema_version: Type.Literal(1),
+  artifact_type: StringEnum(["review_lane_draft"] as const),
+  generated_at_utc: Type.String(),
+  producer: Type.Object({}, { additionalProperties: true }),
+  lane: Type.Object({}, { additionalProperties: true }),
+  input_refs: Type.Object({}, { additionalProperties: true }),
+  draft_findings: Type.Array(Type.Object({}, { additionalProperties: true })),
+  review_notes: Type.Array(Type.Object({}, { additionalProperties: true })),
+  evidence_requests: Type.Array(Type.Object({}, { additionalProperties: true })),
+  self_check: Type.Object({}, { additionalProperties: true }),
+  remote_mutations: StringEnum(["none"] as const),
+}, { additionalProperties: false });
+
+const submitReviewLaneDraft = defineTool({
+  name: "submit_review_lane_draft",
+  label: "Submit Review Lane Draft",
+  description: "Submit the final native review lane draft. Remote mutations are forbidden.",
+  promptSnippet: "Submit the final native review lane draft as a terminating tool call",
+  promptGuidelines: [
+    "Use submit_review_lane_draft exactly once as the final action for native review lane drafts.",
+    "Do not print the review lane draft as final assistant JSON after calling submit_review_lane_draft.",
+  ],
+  parameters: reviewLaneDraftParameters,
+  async execute(_toolCallId, params) {
+    return {
+      content: [{ type: "text", text: "Review lane draft submitted." }],
+      details: { artifact_type: params.artifact_type, remote_mutations: params.remote_mutations },
+      terminate: true,
+    };
+  },
+});
+
+export default function(pi: ExtensionAPI) {
+  pi.registerTool(submitReviewLaneDraft);
+}</code></pre>
+<p class="commentable plan-paragraph"><code>src/scherzo/workflow_dag.gleam</code> should expose a parsed tool-submission spec equivalent to:</p><pre class="code-block"><code>ToolSubmissionSpec(
+  tool_name: String,
+  artifact_name: String,
+  lane_id: String,
+  required: Bool,
+  validation_retries: Int,
+)</code></pre>
+<p class="commentable plan-paragraph"><code>src/scherzo/tool_submission.gleam</code> should expose pure helpers equivalent to:</p><pre class="code-block"><code>pub type CapturedToolPayload {
+  CapturedToolPayload(
+    payload_json: String,
+    tool_call_id: String,
+    tool_name: String,
+    source_record_json: String,
+  )
+}
+
+pub fn extract_required_tool_payload(
+  records: List(protocol.RpcRecord),
+  spec: workflow_dag.ToolSubmissionSpec,
+  secrets: List(String),
+) -&gt; Result(CapturedToolPayload, ToolSubmissionError)</code></pre>
+<p class="commentable plan-paragraph">The returned <code>payload_json</code> is canonical JSON for the submitted draft object. It must not be display-truncated. Diagnostics must redact secrets, but deterministic validation must receive the exact captured draft JSON.</p>
+<p class="commentable plan-paragraph"><code>scripts/scherzo-review</code> should expose a CLI validator equivalent to:</p><pre class="code-block"><code>direnv exec . ./scripts/scherzo-review validate-lane-draft --lane correctness --draft test/fixtures/review_lane_draft/valid-minimal.json
+direnv exec . sh -c 'cat test/fixtures/review_lane_draft/valid-minimal.json | ./scripts/scherzo-review validate-lane-draft --lane correctness --draft-json -'</code></pre>
+<p class="commentable plan-paragraph">The command must be safe for Scherzo to call during agent step completion. It reads only local files or stdin, performs no remote mutations, and returns deterministic exit status and diagnostics.</p>
+<p class="commentable plan-paragraph"><code>src/scherzo/review_lane_draft_validator.gleam</code> should expose a subprocess helper equivalent to:</p><pre class="code-block"><code>pub fn validate_captured_json(
+  payload_json: String,
+  lane_id: String,
+  secrets: List(String),
+) -&gt; Result(ValidatedReviewLaneDraft, ReviewLaneDraftValidationError)</code></pre>
+<p class="commentable plan-paragraph">The helper runs <code>python3 scripts/scherzo-review validate-lane-draft --lane &lt;lane-id&gt; --draft-json -</code>, writes <code>payload_json</code> to stdin, captures stdout and stderr, redacts secrets in diagnostics, and never writes a draft file. <code>src/scherzo/workflow_run.gleam</code> may call <code>workflow_checkpoint.write_structured_output_artifact</code> only after this helper returns success.</p>
+<p class="commentable plan-paragraph"><code>src/scherzo/workflow_run.gleam</code> should continue using <code>workflow_checkpoint.write_structured_output_artifact</code> for accepted drafts so <code>src/scherzo/state/artifact_store.gleam</code> remains the single persistence implementation for retained structured artifacts.</p>
+<p class="commentable plan-paragraph">The smoke dependencies are <code>scripts/scherzo-review native-preflight</code> for local no-remote workflow validation and <code>scripts/scherzo-review legacy-pr-smoke</code> for curated historical PR validation. The implementation must update their manifest assertions so every lane run records <code>submission_source: "pi_tool"</code> and <code>tool_name: "submit_review_lane_draft"</code>. Both commands must retain <code>remote_mutations: "none"</code>.</p></section>
+<section id="sec-open-questions-and-clarifications-needed" class="commentable plan-section" data-comment-id="sec-open-questions-and-clarifications-needed" aria-labelledby="h2-open-questions-and-clarifications-needed"><h2 id="h2-open-questions-and-clarifications-needed" class="commentable plan-heading" data-comment-id="h2-open-questions-and-clarifications-needed">Open Questions and Clarifications Needed</h2><p class="commentable plan-paragraph">None.</p></section>
+      </article>
+    </main>
+  </div>
+  <script>
+(function () {
+  var tocPanel = document.querySelector('.toc-panel');
+  if (!tocPanel) {
+    return;
+  }
+
+  var links = Array.prototype.slice.call(
+    tocPanel.querySelectorAll('.toc-entry a[href^="#"]')
+  );
+  var targets = links.map(function (link) {
+    var hash = link.getAttribute('href') || '';
+    if (hash.length <= 1) {
+      return null;
+    }
+
+    var id;
+    try {
+      id = decodeURIComponent(hash.slice(1));
+    } catch (_error) {
+      id = hash.slice(1);
+    }
+
+    var target = document.getElementById(id);
+    if (!target) {
+      return null;
+    }
+
+    return { link: link, item: link.parentElement, target: target };
+  }).filter(Boolean);
+
+  if (!targets.length) {
+    return;
+  }
+
+  var active = null;
+  var pending = false;
+
+  function targetTop(target) {
+    return target.getBoundingClientRect().top + window.pageYOffset;
+  }
+
+  function readingOffset() {
+    var style = window.getComputedStyle ? window.getComputedStyle(targets[0].target) : null;
+    var margin = style ? parseFloat(style.scrollMarginTop || style.scrollSnapMarginTop || '0') : 0;
+    if (!isFinite(margin) || margin <= 0) {
+      var topbar = document.querySelector('.site-topbar');
+      margin = topbar ? topbar.getBoundingClientRect().height + 32 : 80;
+    }
+    return margin + 1;
+  }
+
+  function keepActiveVisible(link) {
+    var panelRect = tocPanel.getBoundingClientRect();
+    var linkRect = link.getBoundingClientRect();
+    var padding = 12;
+
+    if (linkRect.top < panelRect.top + padding) {
+      tocPanel.scrollTop -= panelRect.top + padding - linkRect.top;
+    } else if (linkRect.bottom > panelRect.bottom - padding) {
+      tocPanel.scrollTop += linkRect.bottom - (panelRect.bottom - padding);
+    }
+  }
+
+  function setActive(next) {
+    if (!next || next === active) {
+      return;
+    }
+
+    targets.forEach(function (entry) {
+      entry.link.removeAttribute('aria-current');
+      if (entry.item) {
+        entry.item.classList.remove('is-current');
+      }
+    });
+
+    next.link.setAttribute('aria-current', 'location');
+    if (next.item) {
+      next.item.classList.add('is-current');
+    }
+    active = next;
+    keepActiveVisible(next.link);
+  }
+
+  function atPageEnd() {
+    var doc = document.documentElement;
+    var body = document.body;
+    var scrollHeight = Math.max(
+      body.scrollHeight,
+      doc.scrollHeight,
+      body.offsetHeight,
+      doc.offsetHeight,
+      body.clientHeight,
+      doc.clientHeight
+    );
+    return window.pageYOffset + window.innerHeight >= scrollHeight - 2;
+  }
+
+  function currentTarget() {
+    var readingY = window.pageYOffset + readingOffset();
+    var current = targets[0];
+
+    if (atPageEnd()) {
+      return targets[targets.length - 1];
+    }
+
+    targets.forEach(function (entry) {
+      if (targetTop(entry.target) <= readingY) {
+        current = entry;
+      }
+    });
+
+    return current;
+  }
+
+  function targetForHash() {
+    if (!window.location.hash) {
+      return null;
+    }
+
+    var id;
+    try {
+      id = decodeURIComponent(window.location.hash.slice(1));
+    } catch (_error) {
+      id = window.location.hash.slice(1);
+    }
+
+    for (var index = 0; index < targets.length; index += 1) {
+      if (targets[index].target.id === id) {
+        return targets[index];
+      }
+    }
+    return null;
+  }
+
+  function updateActive() {
+    pending = false;
+    setActive(currentTarget());
+  }
+
+  function scheduleUpdate() {
+    if (pending) {
+      return;
+    }
+    pending = true;
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(updateActive);
+    } else {
+      window.setTimeout(updateActive, 16);
+    }
+  }
+
+  function updateAfterHashNavigation() {
+    setActive(targetForHash());
+    scheduleUpdate();
+    window.setTimeout(scheduleUpdate, 80);
+  }
+
+  targets.forEach(function (entry) {
+    entry.link.addEventListener('click', function () {
+      setActive(entry);
+      window.setTimeout(scheduleUpdate, 0);
+      window.setTimeout(scheduleUpdate, 150);
+    });
+  });
+
+  window.addEventListener('scroll', scheduleUpdate, { passive: true });
+  window.addEventListener('resize', scheduleUpdate);
+  window.addEventListener('hashchange', updateAfterHashNavigation);
+  window.addEventListener('load', scheduleUpdate);
+
+  if ('IntersectionObserver' in window) {
+    var observer = new IntersectionObserver(scheduleUpdate, {
+      root: null,
+      rootMargin: '-' + readingOffset() + 'px 0px -70% 0px',
+      threshold: [0, 1]
+    });
+    targets.forEach(function (entry) {
+      observer.observe(entry.target);
+    });
+  }
+
+  setActive(targetForHash() || currentTarget());
+  scheduleUpdate();
+  window.setTimeout(scheduleUpdate, 120);
+}());
+</script>
+</body>
+</html>
