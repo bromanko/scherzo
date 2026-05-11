@@ -1,7 +1,10 @@
 You are reviewing the implementation produced by Scherzo's `workflow:execplan-implementation` workflow for Linear issue {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
-{{ issue.description }}
+Issue URL:
+{{ issue.url }}
+
+Plan preparation output (contains the authoritative `PLAN_PATH`):
+{{ steps.prepare_plan.stdout }}
 
 Implementation step response:
 {{ steps.implement_plan.final_response }}

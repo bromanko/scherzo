@@ -1,14 +1,14 @@
 You are running Scherzo's `workflow:execplan-implementation` workflow for Linear issue {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
-{{ issue.description }}
+Issue URL:
+{{ issue.url }}
 
-Plan preparation output:
+Plan preparation output (contains the authoritative `PLAN_PATH`):
 {{ steps.prepare_plan.stdout }}
 
 Workflow contract:
 
-- This workflow implements an existing ExecPlan referenced by the Linear issue.
+- This workflow implements an existing ExecPlan referenced by the Linear issue. The generated Linear issue is only a handoff; `PLAN_PATH` from the preparation output is authoritative.
 - You are already inside a dedicated jj workspace created by Scherzo; do not create, forget, finish, switch, push, or otherwise manage jj workspaces.
 - Use `jj status --color=never` for source-control inspection.
 - Read `.pi/skills/exec-plan/SKILL.md` before implementing and follow its implementation guidance where it does not conflict with this workflow contract.

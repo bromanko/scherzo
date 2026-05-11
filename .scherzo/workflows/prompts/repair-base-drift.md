@@ -1,7 +1,7 @@
 Repair base drift for Scherzo's implementation workflow on Linear issue {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
-{{ issue.description }}
+Issue URL:
+{{ issue.url }}
 
 Issue labels:
 {% for label in issue.labels %}
@@ -20,14 +20,11 @@ Refresh stderr:
 Refresh exit code:
 {{ steps.refresh_base_before_validation.exit_code }}
 
-Validation stdout:
-{{ steps.validate_after_refresh.stdout }}
-
-Validation stderr:
-{{ steps.validate_after_refresh.stderr }}
-
-Validation exit code:
-{{ steps.validate_after_refresh.exit_code }}
+Validation result:
+- `validate_after_refresh` exit code: {{ steps.validate_after_refresh.exit_code }}
+- Structured validation artifact: `tmp/scherzo-implementation-validation.json`
+- For failures, read `failure_summary`, `stdout_excerpt`, and `stderr_excerpt` from the structured validation artifact; those fields are bounded. Do not rely on this prompt for full stdout/stderr.
+- Full stdout/stderr remains available in `.scherzo/command-step-diagnostics/validate_after_refresh.txt` in the retained workspace when available.
 
 Workflow contract:
 
@@ -35,9 +32,9 @@ Workflow contract:
 - Do not use `gh` to create, edit, close, or comment on pull requests. Later deterministic command steps validate and publish.
 - This step repairs only base drift, meaning problems caused by rebasing the implementation change onto the latest configured pull request base.
 - Read `tmp/scherzo-implementation-refresh-base-before-validation.json` when it exists. If it does not exist, read `tmp/scherzo-implementation-refresh-base-latest.json`.
-- Read `tmp/scherzo-implementation-validation.json` when it exists; it contains a deterministic SelfCI failure summary, exit code, base revision, command, and bounded stdout/stderr excerpts.
+- Read `tmp/scherzo-implementation-validation.json` when it exists; it contains validation status, exit code, base revision, command, and, on failure, a deterministic SelfCI failure summary plus bounded stdout/stderr excerpts.
 - In this prompt, validation succeeded means the `validate_after_refresh` command exited `0`; validation failed means it exited nonzero.
-- When validation reaches the final check, stdout/stderr is SelfCI `check --print-output` output; inspect the failing SelfCI step when deciding whether a `rebased_clean` validation failure is mechanically repairable.
+- When validation reaches the final check, the retained stdout/stderr is SelfCI `check --print-output` output; inspect the bounded failure summary first, then the full retained diagnostics only when deciding whether a `rebased_clean` validation failure is mechanically repairable.
 - Never treat a validation failure as repairable base drift unless the refresh status is `rebased_clean` or `conflicts`.
 - If you cannot prove a fix is mechanical, write `tmp/scherzo-implementation-base-drift-failure.md` and stop.
 
