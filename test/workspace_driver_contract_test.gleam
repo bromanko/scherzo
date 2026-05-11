@@ -72,9 +72,24 @@ fn assert_exit(artifact: step_artifact.StepArtifact, code: Int) -> Nil {
   Nil
 }
 
-fn decode_paths(value: String) -> List(String) {
-  let assert Ok(paths) = json.parse(value, decode.list(of: decode.string))
-  paths
+fn changed_file_record_decoder() -> decode.Decoder(#(String, String)) {
+  use path <- decode.field("path", decode.string)
+  use status <- decode.field("status", decode.string)
+  decode.success(#(path, status))
+}
+
+fn changed_files_decoder() -> decode.Decoder(#(Int, List(#(String, String)))) {
+  use version <- decode.field("version", decode.int)
+  use files <- decode.field(
+    "files",
+    decode.list(of: changed_file_record_decoder()),
+  )
+  decode.success(#(version, files))
+}
+
+fn decode_changed_files(value: String) -> #(Int, List(#(String, String))) {
+  let assert Ok(records) = json.parse(value, changed_files_decoder())
+  records
 }
 
 fn write_file(path: String, contents: String) -> Nil {
@@ -121,7 +136,7 @@ pub fn noop_driver_lifecycle_create_before_after_and_remove_test() {
       workspace_env(workspace),
     )
   assert_exit(changed, 0)
-  assert changed.stdout == "[]\n"
+  assert changed.stdout == "{\"version\":1,\"files\":[]}\n"
 
   let remove =
     run_noop(
@@ -184,7 +199,7 @@ pub fn noop_driver_changed_files_json_is_sorted_relative_and_empty_safe_test() {
       workspace_env(workspace),
     )
   assert_exit(empty, 0)
-  assert empty.stdout == "[]\n"
+  assert empty.stdout == "{\"version\":1,\"files\":[]}\n"
 
   write_file(workspace <> "/zeta.md", "z\n")
   write_file(workspace <> "/nested/alpha.md", "a\n")
@@ -196,7 +211,11 @@ pub fn noop_driver_changed_files_json_is_sorted_relative_and_empty_safe_test() {
       workspace_env(workspace),
     )
   assert_exit(changed, 0)
-  assert changed.stdout == "[\"nested/alpha.md\",\"zeta.md\"]\n"
+  assert decode_changed_files(changed.stdout)
+    == #(1, [
+      #("nested/alpha.md", "modified"),
+      #("zeta.md", "modified"),
+    ])
 }
 
 pub fn noop_driver_status_human_is_deterministic_and_relative_test() {
@@ -240,12 +259,12 @@ pub fn noop_driver_changed_files_json_escapes_special_path_names_test() {
       workspace_env(workspace),
     )
   assert_exit(changed, 0)
-  assert decode_paths(changed.stdout)
-    == [
-      "backslash\\name.md",
-      "quote\"name.md",
-      "space name.md",
-    ]
+  assert decode_changed_files(changed.stdout)
+    == #(1, [
+      #("backslash\\name.md", "modified"),
+      #("quote\"name.md", "modified"),
+      #("space name.md", "modified"),
+    ])
 }
 
 pub fn noop_driver_assert_only_accepts_exact_single_file_test() {

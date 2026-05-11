@@ -265,16 +265,6 @@ def workspace_driver_changed_file_records() -> list[dict[str, str]]:
             if isinstance(old_path, str) and old_path.strip():
                 record["old_path"] = old_path.strip()
             records.append(record)
-    elif isinstance(payload, list):
-        # Legacy local fallback for older fake drivers. The configured dogfood driver
-        # returns the object shape above.
-        for item in payload:
-            if not isinstance(item, str) or not item.strip():
-                fail(
-                    "workspace driver changed-files legacy JSON must be a list of paths",
-                    failure_code="workspace_driver_changed_files_failed",
-                )
-            records.append({"path": item.strip(), "status": "modified"})
     else:
         fail(
             "workspace driver changed-files JSON must contain a files list",
