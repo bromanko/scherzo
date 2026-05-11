@@ -79,7 +79,7 @@ scripts/scherzoctl / scherzo ctl
   `runtime_bundle.load`; Markdown is prompt-template content only.
 - Default config discovery order is `.scherzo/scherzo.yaml`,
   `.scherzo/scherzo.yml`, `scherzo.yaml`, `scherzo.yml`.
-- Relative config, workflow, prompt, workspace, and hook paths are resolved from
+- Relative config, workflow, prompt, workspace, and driver-related paths are resolved from
   the config/workflow file directory as implemented by `config.gleam`,
   `runtime_bundle.gleam`, and `path.gleam`.
 - Workflow routing uses normalized labels with `routing.workflow_label_prefix`.
@@ -105,10 +105,14 @@ scripts/scherzoctl / scherzo ctl
   `failed_continued` artifact and can unblock downstream dependencies.
 - Workflow runner executes a ready batch concurrently, then applies artifacts in
   DAG order so downstream template rendering is deterministic.
-- Workspaces are hook-owned. Scherzo computes safe paths and hook environment;
-  orchestrator-defined workspace hook profiles create/copy/validate/remove
-  content. A workflow may select one trusted profile with top-level
-  `workspace_profile`; omitted selectors use the orchestrator default profile.
+- Workspaces are prepared by orchestrator-defined workspace profiles. A driver-backed
+  workspace profile names a trusted workspace driver command, the lifecycle operations
+  it supports, and the workspace capability names it provides. A workflow may select one
+  trusted profile with top-level `workspace_profile` and may require top-level
+  `workspace_capabilities`; omitted selectors use the orchestrator default profile.
+  Scherzo validates required capabilities against the selected profile before dispatch.
+  Direct `workspace.hooks` and profile-local hook blocks are legacy migration shapes
+  surfaced by doctor guidance, not the current architecture invariant.
 
 ### Orchestrator dispatch
 
@@ -245,9 +249,9 @@ Use direnv-backed commands from the repository root.
 | `direnv exec . gleam test` | Default fast deterministic unit suite; run for normal source changes and before handoff when cheap. |
 | `direnv exec . gleam format --check src test` | Source/test formatting check. Docs-only changes normally do not need it, but SelfCI runs it. |
 | `direnv exec . scherzo-test-unit` | Explicit alias for the default unit suite. |
-| `direnv exec . scherzo-test-local-integration` | Workspace hooks, jj workspace behavior, local integration paths. |
+| `direnv exec . scherzo-test-local-integration` | Workspace drivers, jj workspace behavior, local integration paths. |
 | `direnv exec . scherzo-test-real-pi-validation` | Real pi/session-persistence changes only; requires pi, credentials, network, and time. |
-| `LINEAR_API_KEY=... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` | Real-board readiness after config, workflow, Linear contract, hooks, or pi launch changes. |
+| `LINEAR_API_KEY=... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` | Real-board readiness after config, workflow, Linear contract, workspace lifecycle, or pi launch changes. |
 | `direnv exec . selfci check --base main@origin --candidate @ --print-output` | Canonical final gate for Scherzo dogfood implementation workflows and broad changes. |
 
 SelfCI vs direct checks:
@@ -279,7 +283,8 @@ Must preserve:
 - Unique step ids, existing dependencies, no dependency cycles, valid workspace
   source references, and single terminal sink for real workflows.
 - Command steps remain non-pi steps and reject model/thinking fields.
-- Workflow fingerprints include execution-affecting DAG, prompt, hook, artifact,
+- Workflow fingerprints include execution-affecting DAG, prompt, selected workspace
+  profile, workspace capability requirements, workspace driver metadata, artifact,
   and model settings.
 
 Run tests:
@@ -314,8 +319,8 @@ Must preserve:
   `on_failure: fail` stops scheduling new work and cancels active siblings.
 - Workspace paths and cleanup remain contained under `workspace.root`/run root.
 - Step artifacts are bounded/redacted before being persisted or templated.
-- `after_step` hooks are best-effort; checkpoint append/artifact failures are
-  fatal to recovery correctness.
+- Driver `after-step` lifecycle operations and legacy `after_step` hooks are
+  best-effort; checkpoint append/artifact failures are fatal to recovery correctness.
 
 Run tests:
 

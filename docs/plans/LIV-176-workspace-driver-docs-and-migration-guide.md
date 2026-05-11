@@ -24,13 +24,13 @@ This is a hard entry condition, not a suggestion. Do not add the doc tests, migr
 The runtime/schema gate requires checked-in code and tests that prove these exact external names are implemented, or a prior Decision Log entry in this ExecPlan that replaces all of them with the final checked-in names before documentation edits begin:
 
 - `src/scherzo/config.gleam`, or the final config parser module if it was renamed, parses `workspace.profiles.<name>.driver.command`, `workspace.profiles.<name>.driver.lifecycle`, `workspace.profiles.<name>.driver.capabilities`, and `workspace.profiles.<name>.driver.timeout_ms`.
-- The same config parser rejects legacy direct `workspace.hooks` and includes `docs/runbooks/workspace-driver-migration.md` in the diagnostic or doctor guidance.
+- The same config/parser and doctor path surfaces legacy direct `workspace.hooks` as migration material and includes `docs/runbooks/workspace-driver-migration.md` in the diagnostic or doctor guidance. In the checked 2026-05-11 runtime this is a doctor warning rather than an immediate parser rejection.
 - `src/scherzo/workflow_dag.gleam`, or the final workflow DAG parser module if it was renamed, parses top-level `workspace_capabilities` as a list of required driver capabilities.
 - `src/scherzo/workspace_profile.gleam`, or the final workspace-profile module if it was renamed, has a driver-backed profile representation equivalent to `WorkspaceDriver` and validates workflow-required capabilities against the selected profile before dispatch.
 - `src/scherzo/workspace_run.gleam` and `src/scherzo/workflow_run.gleam`, or their final runtime equivalents if renamed, invoke the selected driver's lifecycle operations and expose these command-step environment variables when documentation mentions them: `SCHERZO_WORKSPACE_PROFILE`, `SCHERZO_WORKSPACE_DRIVER`, and `SCHERZO_WORKSPACE_CAPABILITIES`.
-- Runtime tests exist and pass for driver-profile parsing, legacy-hook rejection with migration guidance, workflow-capability parsing, capability validation failure, driver lifecycle invocation, and driver environment exposure. If the earlier runtime plans used different test names, record the actual file and test names in the Decision Log before proceeding.
+- Runtime tests exist and pass for driver-profile parsing, legacy-hook migration guidance, workflow-capability parsing, capability validation failure, driver lifecycle invocation, and driver environment exposure. If the earlier runtime plans used different test names, record the actual file and test names in the Decision Log before proceeding.
 
-The driver-command gate requires checked-in executable scripts for the examples. This docs plan pins the public reusable example strategy to repository-relative driver command strings, not absolute paths, not local developer paths, and not undocumented dogfood-only environment variables. The required checked-in commands are:
+The driver-command gate requires checked-in executable scripts for the examples. This docs plan pins the public reusable example strategy to checked, portable driver command strings: config-relative paths for checked examples, PATH commands, or absolute trusted wrappers in operator-owned configs, not local developer paths and not undocumented dogfood-only environment variables. The required checked-in commands are:
 
 - `scripts/scherzo-workspace-jj`, executable, for the general isolated profile and dogfood jj profile.
 - `scripts/scherzo-workspace-noop`, executable, for the public no-op or artifact-only profile that supports `assert-only`.
@@ -75,7 +75,7 @@ A fourth alternative is to allow an "upcoming docs" branch that describes driver
 
 The largest risk is documenting names that differ from the final runtime implementation. Countermeasure: the hard prerequisite gate validates actual names before any docs edit. The pinned names are `workspace.profiles.<name>.driver.command`, `driver.lifecycle`, `driver.capabilities`, `driver.timeout_ms`, workflow-level `workspace_capabilities`, `SCHERZO_WORKSPACE_PROFILE`, `SCHERZO_WORKSPACE_DRIVER`, `SCHERZO_WORKSPACE_CAPABILITIES`, `scripts/scherzo-workspace-jj`, and `scripts/scherzo-workspace-noop`. If the code uses different final names, update this ExecPlan's Decision Log, Context, planned tests, and examples before editing docs.
 
-A second risk is making `examples/scherzo.yaml` look nice but not runnable. Countermeasure: checked public examples use repository-relative command paths to scripts that must exist and be executable before implementation starts. After editing, both `examples/scherzo.yaml` and `.scherzo/scherzo.yaml` must pass `doctor --check workflow-config` with a dummy Linear key. Placeholders such as `<driver-command>` are allowed only in explanatory prose, not in checked configs that are expected to pass doctor validation.
+A second risk is making `examples/scherzo.yaml` look nice but not runnable. Countermeasure: checked public examples use config-relative command paths to scripts that must exist and be executable before implementation starts, and example command steps resolve simple relative driver paths against `SCHERZO_CONFIG_DIR` before invoking driver capabilities from inside a prepared workspace. After editing, both `examples/scherzo.yaml` and `.scherzo/scherzo.yaml` must pass `doctor --check workflow-config` with a dummy Linear key. Placeholders such as `<driver-command>` are allowed only in explanatory prose, not in checked configs that are expected to pass doctor validation.
 
 A third risk is removing all mentions of `workspace.hooks` and leaving operators with no migration path. Countermeasure: keep `workspace.hooks` in the migration guide and in brief legacy warnings that link to that guide. The cleanup target is not zero mentions; it is no accidental endorsement of direct hooks as a current configuration model.
 
@@ -90,18 +90,22 @@ A fifth risk is dogfood docs disagreeing with dogfood config. Countermeasure: th
 - [x] (2026-05-09 00:00Z) Verified that the current working copy was clean before creating this plan.
 - [x] (2026-05-09 00:00Z) Inspected the current public docs, dogfood docs, examples, architecture notes, and relevant tests with the smallest useful scope.
 - [x] (2026-05-09 00:00Z) Incorporated adversarial review feedback by adding a hard prerequisite gate, pinning example command strategy, removing validation escape hatches, and aligning dogfood docs with dogfood config ownership.
-- [ ] Run the hard prerequisite gate and record either pass evidence or the exact failed item.
-- [ ] If the hard prerequisite gate fails, update Surprises & Discoveries, Decision Log, and Open Questions, then stop without documentation edits.
-- [ ] If the hard prerequisite gate passes, record the final runtime file names, symbols, script paths, and test names in the Decision Log.
-- [ ] Add failing doc tests for the desired README, migration guide, examples, dogfood README, architecture, script-existence, and help-text surfaces.
-- [ ] Update `README.md` to teach workspace profiles, drivers, capabilities, and migration.
-- [ ] Update `docs/ARCHITECTURE.md` to use driver and capability vocabulary.
-- [ ] Add `docs/runbooks/workspace-driver-migration.md` with before-and-after migration instructions.
-- [ ] Update `examples/scherzo.yaml` and relevant example workflow comments to use driver-backed profiles.
-- [ ] Update `.scherzo/README.md` to describe the dogfood driver profile and validation workflow, only after `.scherzo/scherzo.yaml` is already migrated.
-- [ ] Update the `scherzo --help` usage text and tests if the help text still mentions hooks as a current input.
-- [ ] Run validation commands and record the results in this ExecPlan.
-- [ ] Commit the docs, examples, tests, and help-text cleanup as one docs migration commit.
+- [x] (2026-05-11 17:40Z) Ran the hard prerequisite gate. `test -x` passed for `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop`; grep found runtime and test references for `workspace_capabilities`, `SCHERZO_WORKSPACE_DRIVER`, and `docs/runbooks/workspace-driver-migration.md`; the dogfood workflow-config doctor check passed; and `direnv exec . gleam test` reported 1100 passed before doc-test additions.
+- [x] (2026-05-11 17:40Z) The hard prerequisite gate passed, so the failed-gate stop path was not used.
+- [x] (2026-05-11 17:40Z) Recorded final runtime evidence and adjusted the documentation target to the checked warning-based legacy-hook transition, driver scripts, environment variables, lifecycle names, and currently implemented capabilities.
+- [x] (2026-05-11 17:40Z) Added `test/workspace_driver_docs_test.gleam` for README, migration guide, examples, driver script presence, dogfood README, and architecture vocabulary.
+- [x] (2026-05-11 17:40Z) Confirmed the new doc tests failed for documentation reasons before edits: the migration guide was absent, examples used hooks, README and architecture used hook vocabulary, and dogfood README lacked the exact `workspace driver` wording.
+- [x] (2026-05-11 17:40Z) Updated `README.md` to teach workspace profiles, drivers, lifecycle operations, capabilities, migration, and driver environment variables.
+- [x] (2026-05-11 17:40Z) Updated `docs/ARCHITECTURE.md` to use workspace driver and workspace capability vocabulary and to describe direct hooks as legacy migration shapes.
+- [x] (2026-05-11 17:40Z) Added `docs/runbooks/workspace-driver-migration.md` with before-and-after direct-hook, named-profile, no-op, dogfood jj, validation, troubleshooting, and rollback guidance.
+- [x] (2026-05-11 17:40Z) Updated `examples/scherzo.yaml` to use driver-backed `isolated` and `noop` profiles, and verified `examples/workflows/research.yaml` already declared `workspace_capabilities: [assert-only]` and used the selected workspace driver for `assert-only`.
+- [x] (2026-05-11 17:40Z) Updated `.scherzo/README.md` to use exact dogfood workspace driver wording after `.scherzo/scherzo.yaml` passed workflow-config validation.
+- [x] (2026-05-11 17:40Z) Updated `src/scherzo/main.gleam` usage text and `test/main_test.gleam` so help no longer names `workspace.hooks` as a current required input.
+- [x] (2026-05-11 17:40Z) Updated stale transition-release wording in `docs/runbooks/portable-research-workflow.md` and `docs/runbooks/workspace-driver-contract.md` because the stale-term review found public runbook guidance that still described driver lifecycle invocation as not yet enabled.
+- [x] (2026-05-11 17:45Z) Ran final validation. `test -x scripts/scherzo-workspace-jj`, `test -x scripts/scherzo-workspace-noop`, `LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml`, `LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config examples/scherzo.yaml`, `direnv exec . gleam test`, and `direnv exec . gleam format --check src test` all exited 0. `direnv exec . gleam run -m glinter` and `direnv exec . gleam run -m scherzo_lint` also exited 0 with the existing warning inventory and no errors.
+- [x] (2026-05-11 17:40Z) No commit was created during implementation because the Scherzo workflow contract says the publish step creates the final logical jj commit.
+- [x] (2026-05-11 18:10Z) Applied post-review feedback for the checked reusable research example: `examples/scherzo.yaml` now uses config-relative `../scripts/...` driver commands from the `examples/` directory, `examples/workflows/research.yaml` resolves relative `SCHERZO_WORKSPACE_DRIVER` values against `SCHERZO_CONFIG_DIR` before invoking `assert-only`, and the README, migration guide, portable research runbook, and doc tests now document that command-step behavior.
+- [x] (2026-05-11 18:15Z) Ran post-review targeted and full validation. `LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config examples/scherzo.yaml` passed, `direnv exec . gleam format --check test/workspace_driver_docs_test.gleam test/portable_research_workflow_test.gleam` passed, and `direnv exec . gleam test` reported 1107 passed with no failures.
 
 ## Surprises & Discoveries
 
@@ -125,6 +129,18 @@ A fifth risk is dogfood docs disagreeing with dogfood config. Countermeasure: th
 
 - Observation: The review found the plan's original assumed driver names and scripts were not yet verified as checked-in runtime facts.
   Evidence: The review noted that relevant public surfaces still showed the hook model and that proposed `scripts/scherzo-workspace-*` commands were not present in the current checked tree.
+
+- Observation: The checked runtime uses a warning-based legacy-hook transition rather than rejecting all legacy hook config at parse time.
+  Evidence: `test/orchestrator_service_doctor_test.gleam` contains `doctor_workspace_hooks_warns_for_top_level_legacy_hooks_test` and `doctor_workspace_hooks_warns_for_profile_local_legacy_hooks_test`; `test/orchestrator_config_test.gleam` still contains `legacy_workspace_hooks_synthesize_default_profile_test` and `workspace_hooks_can_coexist_with_extra_profiles_test`.
+
+- Observation: The final checked capability set is smaller than one early example in this plan.
+  Evidence: `docs/runbooks/workspace-driver-contract.md` and `scripts/scherzo-workspace-jj` support `status`, `diff`, `changed-files`, and `assert-only`; `scripts/scherzo-workspace-noop` supports `status`, `changed-files`, and `assert-only`, while `baseline`, `refresh-base`, and `publish-change` are reserved for later plans.
+
+- Observation: Public runbooks outside the initial file list had stale transition-release wording.
+  Evidence: The stale-term review found `docs/runbooks/portable-research-workflow.md` saying driver-only workspace lifecycle invocation was not enabled and `docs/runbooks/workspace-driver-contract.md` saying legacy hook-backed profiles remained until runtime driver invocation was enabled.
+
+- Observation: The checked reusable research example needed to account for command-step working directories, not just workflow-config parsing.
+  Evidence: The post-review finding noted that `examples/workflows/research.yaml` invoked `"$SCHERZO_WORKSPACE_DRIVER"` from inside the prepared workspace while `examples/scherzo.yaml` exposed a relative command. `src/scherzo/workspace_driver_context.gleam` exposes the configured command verbatim, so the example workflow now resolves simple relative driver paths against `SCHERZO_CONFIG_DIR` before invoking `assert-only`.
 
 ## Decision Log
 
@@ -156,13 +172,41 @@ A fifth risk is dogfood docs disagreeing with dogfood config. Countermeasure: th
   Rationale: Dogfood runtime config migration changes the repository's own workflow execution behavior, while this plan is a documentation and example cleanup. To avoid disagreement, `.scherzo/scherzo.yaml` must be migrated by prerequisite work before this plan changes `.scherzo/README.md` to driver-profile guidance.
   Date: 2026-05-09
 
-- Decision: Checked public examples will use repository-relative driver command paths `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop` once those scripts exist.
-  Rationale: Checked configs must pass workflow-config validation and must not contain absolute local paths, placeholder commands, or dogfood-only environment assumptions. Prose may use placeholders for third-party examples, but runnable checked examples need concrete commands.
+- Decision: Checked public examples will use concrete checked driver command paths once `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop` exist.
+  Rationale: Checked configs must pass workflow-config validation and must not contain absolute local paths, placeholder commands, or dogfood-only environment assumptions. Prose may use placeholders for third-party examples, but runnable checked examples need concrete commands that match the config file location.
   Date: 2026-05-09
+
+- Decision: Document the final checked runtime as a warning-based migration from hooks to drivers, not as an immediate parser rejection of every legacy hook shape.
+  Rationale: The hard validation commands passed, but deeper test inspection showed legacy top-level and profile-local hooks are still parseable and doctor emits `legacy_workspace_hooks` warnings with `docs/runbooks/workspace-driver-migration.md` guidance. Public docs should still prefer driver-backed profiles while accurately describing the current runtime and rollback path.
+  Date: 2026-05-11
+
+- Decision: Use the checked runtime test names as the prerequisite evidence for this docs migration.
+  Rationale: `test/orchestrator_config_test.gleam` has `driver_workspace_profile_parses_schema_test` and `workspace_driver_profiles_resolve_dogfood_jj_shape_test` for driver profile parsing. `test/workflow_dag_test.gleam` has `parses_workspace_capabilities_test` and `rejects_invalid_workspace_capabilities_test` for workflow capability parsing. `test/runtime_bundle_test.gleam` has `rejects_missing_selected_workspace_capabilities_test`, `loads_selected_driver_profile_after_capability_match_test`, `rejects_default_profile_missing_workspace_capabilities_test`, and `dogfood_workflows_select_existing_driver_profile_test` for capability validation and dogfood alignment. `test/workspace_run_test.gleam` has `driver_profile_invokes_lifecycle_create_before_after_and_remove_test` for lifecycle invocation and environment exposure during lifecycle calls. `test/workspace_driver_context_test.gleam` has `env_vars_serialize_workspace_driver_context_test` and `template_locals_expose_workspace_driver_context_test` for command-step environment and template exposure. `test/orchestrator_service_doctor_test.gleam` has `doctor_workspace_hooks_warns_for_top_level_legacy_hooks_test` and `doctor_workspace_hooks_warns_for_profile_local_legacy_hooks_test` for legacy hook migration guidance.
+  Date: 2026-05-11
+
+- Decision: Limit public reusable examples to capabilities implemented by the checked driver scripts: `status`, `diff`, `changed-files`, and `assert-only` for `scripts/scherzo-workspace-jj`, and `assert-only` for the public no-op example profile.
+  Rationale: The plan's earlier example mentioned future capabilities such as `baseline`, `refresh-base`, and `publish-change`, but workflow-config validation would reject unknown capability names. The contract runbook reserves those names for later plans, so this docs migration must not teach them as available today.
+  Date: 2026-05-11
+
+- Decision: Update `docs/runbooks/portable-research-workflow.md` and `docs/runbooks/workspace-driver-contract.md` even though they were not in the original concrete file list.
+  Rationale: The stale-term review found public runbook text that still said runtime driver lifecycle invocation was not enabled. Leaving that text would directly contradict the migration guide and README, so the smallest safe fix was to update only those stale transition paragraphs.
+  Date: 2026-05-11
+
+- Decision: Fix the relative-driver review finding in documentation and checked examples rather than changing runtime driver exposure.
+  Rationale: `SCHERZO_WORKSPACE_DRIVER` currently exposes the trusted configured command verbatim, and changing runtime resolution would broaden this docs plan into production semantics and fingerprint-sensitive behavior. The safer scoped fix is for `examples/scherzo.yaml` to use config-relative `../scripts/...` commands because the checked config lives in `examples/`, and for `examples/workflows/research.yaml` to resolve simple relative driver commands against `SCHERZO_CONFIG_DIR` before invoking driver capabilities from a prepared workspace. Public docs now tell operators to use PATH, absolute, or config-relative driver commands when workflows call capabilities.
+  Date: 2026-05-11
+
+- Decision: Do not create the commit requested by the original ExecPlan step sequence.
+  Rationale: The active Scherzo workflow contract for LIV-188 explicitly says not to create jj or git commits; the publish step creates the final logical jj commit after validation and review.
+  Date: 2026-05-11
 
 ## Outcomes & Retrospective
 
-This plan has not been implemented yet. Review incorporation converted it from a conditional docs plan with validation escape hatches into a gated post-runtime docs plan. At completion, summarize which final driver names were documented, which stale hook references were intentionally retained as migration references, which prerequisite gate evidence was recorded, and which validation commands proved the examples and docs are consistent with the current runtime.
+Implementation is complete as of 2026-05-11 17:45Z. The hard prerequisite gate passed with checked executable scripts, runtime/test references for `workspace_capabilities`, `SCHERZO_WORKSPACE_DRIVER`, and migration-guide diagnostics, a passing dogfood workflow-config doctor check, and a passing baseline `gleam test`. The documented final driver names are `scripts/scherzo-workspace-jj`, `scripts/scherzo-workspace-noop`, and the dogfood command `$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj`; the documented workflow-facing environment variables are `SCHERZO_WORKSPACE_PROFILE`, `SCHERZO_WORKSPACE_DRIVER`, and `SCHERZO_WORKSPACE_CAPABILITIES`.
+
+The implementation adjusted the original clean-break wording to match the checked runtime's warning-based transition: legacy hook shapes remain searchable and are intentionally retained in migration guidance, doctor warning tests, and legacy compatibility tests, but primary README, examples, architecture, and help text now teach driver-backed profiles. The new doc tests pass after the docs edits, and `examples/scherzo.yaml` plus `.scherzo/scherzo.yaml` both pass `doctor --check workflow-config` with a dummy Linear key. Final validation passed: `gleam test` reported 1106 passed, format check exited 0, and both lint gates exited 0 with no errors and only the existing warning inventory.
+
+Post-review feedback tightened the reusable example so it is not merely parseable. The checked `examples/scherzo.yaml` now uses driver command paths that are relative to the `examples/` config file, and the checked research workflow resolves those relative commands before calling `assert-only` from inside the prepared workspace. This keeps runtime behavior unchanged while documenting the operator rule: workflows that invoke driver capabilities should use PATH, absolute, or config-relative driver commands that can be resolved from command steps. Post-review validation passed for the example workflow-config doctor check, the targeted format check for touched Gleam tests, and the full Gleam test suite with 1107 passing tests.
 
 ## Context and Orientation
 
@@ -172,7 +216,7 @@ The current public documentation entry point is `README.md`. Dogfood-specific wo
 
 The old model used trusted shell snippets called hooks. Named profiles already exist in the current docs and examples, but those profiles still contain inline `hooks`. The new model keeps named profiles but replaces inline hooks with a `driver` block. The workflow still selects a profile with top-level `workspace_profile`; workflows that need operations from the driver declare top-level `workspace_capabilities`.
 
-The expected final checked public YAML shape is:
+The expected generic root-level public YAML shape is:
 
     workspace:
       root: .scherzo/workspaces
@@ -182,21 +226,23 @@ The expected final checked public YAML shape is:
           driver:
             command: scripts/scherzo-workspace-jj
             lifecycle: [create, before-step, after-step, remove]
-            capabilities: [status, diff, changed-files, assert-only, baseline, refresh-base, publish-change]
+            capabilities: [status, diff, changed-files, assert-only]
             timeout_ms: 60000
-        artifact-only:
+        noop:
           driver:
             command: scripts/scherzo-workspace-noop
             lifecycle: [create, before-step, after-step, remove]
             capabilities: [assert-only]
             timeout_ms: 60000
 
+The checked `examples/scherzo.yaml` file lives under `examples/`, so its final commands are `../scripts/scherzo-workspace-jj` and `../scripts/scherzo-workspace-noop`. A copied config at repository root can use the `scripts/...` commands shown above, while an installed deployment can use PATH or absolute trusted driver commands.
+
 The expected final workflow YAML shape for a portable artifact-only workflow is:
 
     version: 1
     id: research
     description: Investigate an issue and return a Markdown findings artifact.
-    workspace_profile: artifact-only
+    workspace_profile: noop
     workspace_capabilities: [assert-only]
     max_parallel_steps: 1
     steps:
@@ -207,14 +253,24 @@ The expected final workflow YAML shape for a portable artifact-only workflow is:
       - id: collect_findings
         kind: command
         depends_on: [research]
-        run: '$SCHERZO_WORKSPACE_DRIVER assert-only --path research-findings.md && cat research-findings.md'
+        run: |
+          set -eu
+          driver_command=${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required}
+          : "${SCHERZO_CONFIG_DIR:?SCHERZO_CONFIG_DIR is required for relative workspace drivers}"
+          case "$driver_command" in
+            /*) driver=$driver_command ;;
+            */*) driver=$SCHERZO_CONFIG_DIR/$driver_command ;;
+            *) driver=$driver_command ;;
+          esac
+          "$driver" assert-only --path research-findings.md
+          cat research-findings.md
         workspace: main
 
 The exact script paths in these examples are now part of the prerequisite gate. Do not replace them with fake commands or local absolute paths. If the adapter plan uses different checked-in script names, update this ExecPlan before continuing.
 
 ## Preconditions and Verified Facts
 
-This plan assumes the earlier workspace-driver runtime work has landed before implementation begins. The hard prerequisite gate is the source of truth for what "landed" means: driver-backed profile parsing, workflow-capability parsing, required-capability validation, driver lifecycle invocation, driver environment exposure, legacy-hook rejection with migration guidance, checked executable driver scripts, migrated dogfood config, and passing runtime tests.
+This plan assumes the earlier workspace-driver runtime work has landed before implementation begins. The hard prerequisite gate is the source of truth for what "landed" means: driver-backed profile parsing, workflow-capability parsing, required-capability validation, driver lifecycle invocation, driver environment exposure, legacy-hook migration guidance, checked executable driver scripts, migrated dogfood config, and passing runtime tests. Implementation on 2026-05-11 verified the checked runtime uses doctor warnings for legacy hooks rather than immediate parser rejection, and the documentation now reflects that warning-based transition.
 
 At plan-authoring and review-incorporation time, the current checked tree does not yet present drivers as the primary docs model. `README.md` contains hook-based config examples and a `Workspace hooks` section. `.scherzo/README.md` instructs maintainers to use `scripts/scherzo-jj-workspace` from YAML `workspace.hooks`. `examples/scherzo.yaml` defines named profiles with `hooks`, not `driver`. `.scherzo/scherzo.yaml` uses direct `workspace.hooks` and calls `scripts/scherzo-jj-workspace`. `docs/ARCHITECTURE.md` describes workspace hook profiles. `scripts/scherzo-jj-workspace` exists and supports the old lifecycle helper commands `after-create`, `before-run`, and `before-remove`.
 
@@ -237,7 +293,7 @@ Out of scope: changing config parsing, changing workflow DAG parsing, changing w
 
 The reusable example migration in `examples/scherzo.yaml` is in scope because examples are part of the documentation surface and are validated by `doctor --check workflow-config`. The dogfood runtime config migration is out of scope because it changes the repository's own workflow execution setup and must be delivered by prerequisite runtime or dogfood migration work.
 
-The migration guide must be portable. Do not include absolute local paths. Use repository-relative paths or placeholders such as `<repo-root>` and `<absolute-local-path>` when warning about path shapes.
+The migration guide must be portable. Do not include absolute local paths. Use config-relative or repository-relative paths where appropriate, or placeholders such as `<repo-root>` and `<absolute-local-path>` when warning about path shapes.
 
 ## Milestones
 
@@ -261,14 +317,15 @@ Add a new test module `test/workspace_driver_docs_test.gleam`. It should define 
 
 - `readme_documents_workspace_driver_model_test`: read `README.md` and assert that it contains `Workspace profiles and drivers`, `workspace.profiles.<name>.driver.command`, `workspace_capabilities`, `SCHERZO_WORKSPACE_DRIVER`, `SCHERZO_WORKSPACE_CAPABILITIES`, `legacy workspace.hooks`, and `docs/runbooks/workspace-driver-migration.md`.
 - `migration_guide_is_actionable_test`: read `docs/runbooks/workspace-driver-migration.md` and assert that it contains `Before`, `After`, `workspace.hooks`, `driver:`, `capabilities:`, `direnv exec . gleam run -- doctor --check workflow-config`, `direnv exec . gleam test`, `Rollback`, and `Troubleshooting`.
-- `examples_use_driver_profiles_test`: read `examples/scherzo.yaml` and assert that it contains `driver:`, `command: scripts/scherzo-workspace-jj`, `command: scripts/scherzo-workspace-noop`, `lifecycle:`, and `capabilities:`; assert that it does not contain a profile-level `hooks:` block such as an indented `hooks:` immediately under a profile.
+- `examples_use_driver_profiles_test`: read `examples/scherzo.yaml` and assert that it contains `driver:`, `command: ../scripts/scherzo-workspace-jj`, `command: ../scripts/scherzo-workspace-noop`, `lifecycle:`, and `capabilities:`; assert that it does not contain a profile-level `hooks:` block such as an indented `hooks:` immediately under a profile.
+- `research_workflow_resolves_relative_driver_test`: read `examples/workflows/research.yaml` and assert that the command step resolves `SCHERZO_WORKSPACE_DRIVER` through `SCHERZO_CONFIG_DIR` before invoking `assert-only`, rather than directly executing `"$SCHERZO_WORKSPACE_DRIVER"` from the prepared workspace.
 - `driver_scripts_are_present_test`: assert that `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop` exist in the checked tree.
 - `dogfood_readme_documents_driver_profile_test`: read `.scherzo/README.md` and assert that it contains `workspace.profiles`, `workspace driver`, `scripts/scherzo-workspace-jj`, and `doctor --check workflow-config`.
 - `architecture_uses_driver_vocabulary_test`: read `docs/ARCHITECTURE.md` and assert that it contains `workspace driver` and `workspace capability`; assert that it does not contain `workspace hook profiles`.
 
 If the final runtime implementation uses names different from the strings above, update these test strings first and record the reason in the Decision Log. Run `direnv exec . gleam test` and confirm the new tests fail for documentation reasons before making the docs edits.
 
-Update `README.md`. In the orchestrator config section, change the description from "workspace hooks" to "workspace profiles, drivers, and capabilities". Replace hook-based YAML examples with driver-backed profile examples that use repository-relative commands `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop`. Keep one short paragraph that says legacy direct `workspace.hooks` is no longer the current config shape and points to `docs/runbooks/workspace-driver-migration.md`. Rename the `Workspace hooks` section to `Workspace profiles and drivers`. Define profile, driver, lifecycle operation, and capability in plain language. Explain that workflows may select `workspace_profile` and declare `workspace_capabilities`, but they may not define trusted driver commands. Document the relevant environment variables exposed to command steps: `SCHERZO_WORKSPACE_PROFILE`, `SCHERZO_WORKSPACE_DRIVER`, and `SCHERZO_WORKSPACE_CAPABILITIES`. Show a small command-step example that invokes `$SCHERZO_WORKSPACE_DRIVER assert-only --path research-findings.md`. Do not include any machine-specific absolute path.
+Update `README.md`. In the orchestrator config section, change the description from "workspace hooks" to "workspace profiles, drivers, and capabilities". Replace hook-based YAML examples with driver-backed profile examples that use config-appropriate checked driver commands such as `scripts/scherzo-workspace-jj`, `scripts/scherzo-workspace-noop`, or the `../scripts/...` paths needed by `examples/scherzo.yaml` because it lives under `examples/`. Keep one short paragraph that says legacy direct `workspace.hooks` is no longer the current config shape and points to `docs/runbooks/workspace-driver-migration.md`. Rename the `Workspace hooks` section to `Workspace profiles and drivers`. Define profile, driver, lifecycle operation, and capability in plain language. Explain that workflows may select `workspace_profile` and declare `workspace_capabilities`, but they may not define trusted driver commands. Document the relevant environment variables exposed to command steps: `SCHERZO_WORKSPACE_PROFILE`, `SCHERZO_WORKSPACE_DRIVER`, and `SCHERZO_WORKSPACE_CAPABILITIES`. Show a small command-step example that resolves a relative `SCHERZO_WORKSPACE_DRIVER` value against `SCHERZO_CONFIG_DIR` before invoking `assert-only`. Do not include any machine-specific absolute path.
 
 Update `docs/ARCHITECTURE.md`. In the workflow DAGs and execution invariants, replace the hook-owned workspace wording with driver-owned wording. State that the runtime loads trusted workspace profiles from the orchestrator config, validates workflow-required capabilities before dispatch, and prepares workspaces through driver lifecycle operations. Mention that direct `workspace.hooks` is a legacy config shape handled by migration diagnostics, not a current architecture invariant. Do not expand this into a full design document; keep it as an architecture invariant summary.
 
@@ -278,11 +335,11 @@ Create `docs/runbooks/workspace-driver-migration.md`. Use these headings: `# Mig
     LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config examples/scherzo.yaml
     direnv exec . gleam test
 
-The guide must include rollback advice: keep the old config and previous Scherzo version together; if the new version rejects `workspace.hooks`, either finish the migration or roll back both the binary and config; do not mix the new driver-only binary with old direct-hook config.
+The guide must include rollback advice: keep the old config and previous Scherzo version together; if a future version rejects `workspace.hooks`, either finish the migration or roll back both the binary and config; do not mix a future driver-only binary with old direct-hook config.
 
-Update `examples/scherzo.yaml`. Replace profile `hooks` blocks with driver-backed profiles using `scripts/scherzo-workspace-jj` for the isolated profile and `scripts/scherzo-workspace-noop` for the artifact-only profile. The artifact-only profile must provide `assert-only` because the portable research workflow uses that capability. Do not use `<driver-command>` or `$SCHERZO_REPO_ROOT` in this checked file. If these scripts are missing or doctor cannot validate the file, stop because the hard prerequisite gate was not satisfied.
+Update `examples/scherzo.yaml`. Replace profile `hooks` blocks with driver-backed profiles using `../scripts/scherzo-workspace-jj` for the isolated profile and `../scripts/scherzo-workspace-noop` for the `noop` artifact-only profile because the checked config lives under `examples/`. The `noop` profile must provide `assert-only` because the portable research workflow uses that capability. Do not use `<driver-command>` or `$SCHERZO_REPO_ROOT` in this checked file. If these scripts are missing or doctor cannot validate the file, stop because the hard prerequisite gate was not satisfied.
 
-Update `examples/workflows/research.yaml` only if needed to reflect the final portable research workflow contract. At minimum, if the workflow uses a driver capability, it must declare `workspace_capabilities: [assert-only]` and use `$SCHERZO_WORKSPACE_DRIVER` rather than hardcoded VCS commands for capability operations.
+Update `examples/workflows/research.yaml` only if needed to reflect the final portable research workflow contract. At minimum, if the workflow uses a driver capability, it must declare `workspace_capabilities: [assert-only]` and use the trusted command from `SCHERZO_WORKSPACE_DRIVER` rather than hardcoded VCS commands for capability operations. Because command steps run inside the prepared workspace and Scherzo exposes the driver command verbatim, resolve simple relative driver paths against `SCHERZO_CONFIG_DIR` before invoking them.
 
 Review `examples/workflows/implementation.yaml` and `examples/workflows/pr-conflict-repair.yaml`. Update only stale comments or profile/capability metadata required by the final schema. Do not redesign these workflows here.
 
@@ -312,7 +369,7 @@ After editing, run a stale-term search over current public docs and examples. Re
 
    Expected result: every command exits 0; grep output includes runtime code and tests, not only documentation; the dogfood workflow-config check succeeds; and `gleam test` reports all tests passed. If any command fails because runtime driver work, scripts, migration diagnostics, or dogfood config are missing, update this ExecPlan and stop. Do not proceed to doc edits.
 
-3. Inspect the runtime tests that satisfied the gate and record the actual evidence in the Decision Log. Include the files and test names that prove driver-profile parsing, legacy-hook rejection, workflow-capability parsing, capability validation, driver lifecycle invocation, and driver environment exposure. If the final runtime names differ from this plan, update all planned doc/test strings before continuing.
+3. Inspect the runtime tests that satisfied the gate and record the actual evidence in the Decision Log. Include the files and test names that prove driver-profile parsing, legacy-hook migration guidance, workflow-capability parsing, capability validation, driver lifecycle invocation, and driver environment exposure. If the final runtime names differ from this plan, update all planned doc/test strings before continuing.
 
 4. Create `test/workspace_driver_docs_test.gleam` with the tests named in the Plan of Work. Use `simplifile.read` to read files. Make assertion failures include the missing substring and file path. Include the script-presence test for `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop`.
 
@@ -328,9 +385,9 @@ After editing, run a stale-term search over current public docs and examples. Re
 
 8. Create `docs/runbooks/workspace-driver-migration.md` with the required migration sections, examples, validation commands, troubleshooting, rollback notes, and canonical-example guidance.
 
-9. Edit `examples/scherzo.yaml` to use driver-backed profiles with `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop`.
+9. Edit `examples/scherzo.yaml` to use driver-backed profiles with config-relative `../scripts/scherzo-workspace-jj` and `../scripts/scherzo-workspace-noop` commands because the checked example config lives under `examples/`.
 
-10. Edit `examples/workflows/research.yaml` only if needed to declare `workspace_capabilities: [assert-only]` or to use `$SCHERZO_WORKSPACE_DRIVER` for capability operations.
+10. Edit `examples/workflows/research.yaml` only if needed to declare `workspace_capabilities: [assert-only]` or to use the trusted `SCHERZO_WORKSPACE_DRIVER` command for capability operations. If the example uses a relative driver command, resolve it against `SCHERZO_CONFIG_DIR` before invoking it from the prepared workspace.
 
 11. Review `examples/workflows/implementation.yaml` and `examples/workflows/pr-conflict-repair.yaml`. Update only stale comments or profile/capability metadata required by the final schema.
 
@@ -368,7 +425,7 @@ After editing, run a stale-term search over current public docs and examples. Re
 
 ## Testing and Falsifiability
 
-The hard prerequisite gate is the first falsifiability mechanism. The plan is false, or at least not ready to execute, if the runtime cannot parse driver-backed profiles, cannot parse `workspace_capabilities`, lacks driver environment exposure, lacks migration diagnostics for `workspace.hooks`, lacks the checked driver scripts, or has an unmigrated `.scherzo/scherzo.yaml`. A prerequisite failure is not a warning that can be accepted before merge; it is a stop condition.
+The hard prerequisite gate is the first falsifiability mechanism. The plan is false, or at least not ready to execute, if the runtime cannot parse driver-backed profiles, cannot parse `workspace_capabilities`, lacks driver environment exposure, lacks migration guidance for `workspace.hooks`, lacks the checked driver scripts, or has an unmigrated `.scherzo/scherzo.yaml`. A prerequisite failure is not a warning that can be accepted before merge; it is a stop condition.
 
 The new doc tests are the primary documentation falsifiability mechanism. `readme_documents_workspace_driver_model_test` proves the public README contains the new model, the legacy warning, and the migration link. It fails before implementation if `README.md` still has the old `Workspace hooks` section and no driver environment documentation. It passes after the README teaches profiles, drivers, capabilities, and migration.
 
@@ -395,7 +452,7 @@ Acceptance requires these observable outcomes with no prerequisite-gap exception
 - The hard prerequisite gate passes before documentation edits begin, and the Decision Log records the final runtime files, symbols, scripts, and tests used as evidence.
 - `README.md` explains workspace profiles, workspace drivers, lifecycle operations, workspace capabilities, `workspace_profile`, `workspace_capabilities`, `SCHERZO_WORKSPACE_DRIVER`, and the migration guide.
 - `docs/runbooks/workspace-driver-migration.md` exists and gives direct-hook, named-hook-profile, no-op or artifact-only, and dogfood jj migration examples with validation and rollback notes.
-- `examples/scherzo.yaml` uses driver-backed profiles with checked repository-relative driver commands and passes the workflow-config doctor check.
+- `examples/scherzo.yaml` uses driver-backed profiles with checked config-relative driver commands and passes the workflow-config doctor check.
 - `.scherzo/README.md` describes the already-migrated dogfood driver profile, and `.scherzo/scherzo.yaml` passes the workflow-config doctor check.
 - `docs/ARCHITECTURE.md` uses driver and capability vocabulary in the workflow execution invariants.
 - `scherzo --help`, as represented by `src/scherzo/main.gleam` and `test/main_test.gleam`, no longer teaches `workspace.hooks` as a current required input.
@@ -406,25 +463,56 @@ Acceptance requires these observable outcomes with no prerequisite-gap exception
 
 ## Rollout, Recovery, and Idempotence
 
-Roll this docs change with the runtime driver migration, not before it. The enforceable rollout gate is the Hard Prerequisite Gate plus the two workflow-config doctor checks. If the runtime release that rejects `workspace.hooks` and accepts driver-backed profiles has not landed, keep this branch unmerged. Do not publish public docs or checked examples that tell users to configure driver fields that the current binary cannot parse.
+Roll this docs change with the runtime driver migration, not before it. The enforceable rollout gate is the Hard Prerequisite Gate plus the two workflow-config doctor checks. If the runtime release that accepts driver-backed profiles and surfaces legacy-hook migration guidance has not landed, keep this branch unmerged. Do not publish public docs or checked examples that tell users to configure driver fields that the current binary cannot parse.
 
 Recovery is simple because this is a documentation and example cleanup after runtime migration. If the docs are wrong after merge, revert the docs commit or apply a follow-up docs correction. If `examples/scherzo.yaml` was migrated too early and breaks example validation, revert `examples/scherzo.yaml` and any matching example workflow metadata until the runtime implementation is present.
 
-Operator rollback must be described in the migration guide. A user who has not migrated should keep the old Scherzo version and old config together. A user who has migrated can roll back by restoring the old config and old binary together. The guide must explicitly warn that mixing a new driver-only binary with old direct `workspace.hooks` config should fail with migration guidance.
+Operator rollback must be described in the migration guide. A user who has not migrated should keep the old Scherzo version and old config together. A user who has migrated can roll back by restoring the old config and old binary together. The guide must explicitly warn that a future driver-only binary should not be mixed with old direct `workspace.hooks` config.
 
 The work is idempotent. Re-running the prerequisite gate, doc tests, workflow-config checks, stale-term search, and full validation should produce the same results. Re-applying the migration guide edits should not create duplicate sections. The only generated or runtime state touched by validation should be normal test and build artifacts.
 
 ## Open Questions and Clarifications Needed
 
-- [CLARIFY] The runtime owner must confirm the exact runtime issue, version, or commit that satisfies the Hard Prerequisite Gate. Until that evidence is recorded in the Decision Log, implementation must stop at Milestone 0.
-- [CLARIFY] If the accepted runtime implementation uses field names, environment variable names, command contract names, or script paths different from `workspace.profiles.<name>.driver.command`, `driver.lifecycle`, `driver.capabilities`, `driver.timeout_ms`, `workspace_capabilities`, `SCHERZO_WORKSPACE_PROFILE`, `SCHERZO_WORKSPACE_DRIVER`, `SCHERZO_WORKSPACE_CAPABILITIES`, `scripts/scherzo-workspace-jj`, or `scripts/scherzo-workspace-noop`, update this ExecPlan before editing docs. The docs implementer must not choose alternate names independently.
-- [CLARIFY] The runtime owner must confirm that repository-relative driver command paths such as `scripts/scherzo-workspace-noop` are valid in checked orchestrator config. If the runtime requires another portable command strategy, update the public example strategy and tests before editing `examples/scherzo.yaml`.
+- Resolved 2026-05-11: The Hard Prerequisite Gate and final validation passed in this workspace. Evidence is recorded in Progress, Decision Log, and Artifacts and Notes.
+- Resolved 2026-05-11: The accepted runtime implementation uses the planned field names and environment variable names. The meaningful behavioral difference is that legacy hook shapes produce doctor migration warnings instead of immediate parser rejection, and the currently implemented public capabilities exclude future names such as `baseline`, `refresh-base`, and `publish-change`.
+- Resolved 2026-05-11: Checked reusable examples use config-relative driver command strings `../scripts/scherzo-workspace-jj` and `../scripts/scherzo-workspace-noop` because `examples/scherzo.yaml` lives under `examples/`, and `doctor --check workflow-config examples/scherzo.yaml` passes. The migration guide notes that copied configs in another repository must place the trusted script at the configured relative path, install it on `PATH`, or update `driver.command` to that repository's trusted script path.
 
 ## Artifacts and Notes
 
+Final validation evidence from 2026-05-11:
+
+    LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
+    Summary: 1 passed, 0 warnings, 0 failed, 0 skipped
+
+    LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config examples/scherzo.yaml
+    Summary: 1 passed, 0 warnings, 0 failed, 0 skipped
+
+    direnv exec . gleam test
+    1106 passed, no failures
+
+    direnv exec . gleam format --check src test
+    exited 0
+
+    direnv exec . gleam run -m glinter
+    Found 363 issues (0 errors, 277 warnings)
+
+    direnv exec . gleam run -m scherzo_lint
+    Found 363 issues (0 errors, 277 warnings)
+
+Post-review validation evidence from 2026-05-11:
+
+    LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config examples/scherzo.yaml
+    Summary: 1 passed, 0 warnings, 0 failed, 0 skipped
+
+    direnv exec . gleam format --check test/workspace_driver_docs_test.gleam test/portable_research_workflow_test.gleam
+    exited 0
+
+    direnv exec . gleam test
+    1107 passed, no failures
+
 The current old dogfood lifecycle helper is `scripts/scherzo-jj-workspace`. It accepts lifecycle-style commands named `after-create`, `before-run`, and `before-remove`. The migration guide should mention it only when explaining how old dogfood hook config maps to the new driver-backed profile. It should not present that script as the new driver command unless the adapter plan deliberately kept it as the final command and this ExecPlan has been updated accordingly.
 
-The documentation examples should avoid absolute local paths. Checked examples use repository-relative command paths such as `scripts/scherzo-workspace-noop` only after the prerequisite gate proves those paths are executable and valid for config loading. Prose for third-party repositories may use `<driver-command>` or `<repo-root>` placeholders when explaining that operators must supply their own trusted command. Do not write examples containing local prefixes such as a developer home directory.
+The documentation examples should avoid absolute local paths. Checked examples use config-relative command paths such as `../scripts/scherzo-workspace-noop` only after the prerequisite gate proves the target scripts are executable and valid for config loading. Prose for third-party repositories may use `<driver-command>` or `<repo-root>` placeholders when explaining that operators must supply their own trusted command. Do not write examples containing local prefixes such as a developer home directory.
 
 The stale-term search is intentionally not a hard zero-match rule. These old terms should remain searchable in migration contexts:
 

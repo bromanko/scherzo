@@ -105,6 +105,13 @@ fn setup_driver_workspace(dir: String) -> String {
   absolute(driver)
 }
 
+fn driver_env(driver: String) -> List(#(String, String)) {
+  [
+    #("SCHERZO_WORKSPACE_DRIVER", driver),
+    #("SCHERZO_CONFIG_DIR", absolute(".")),
+  ]
+}
+
 pub fn example_research_workflow_is_driver_portable_test() {
   let dag = example_research_dag()
   assert dag.id == "research"
@@ -130,7 +137,10 @@ pub fn example_research_workflow_is_driver_portable_test() {
   assert_contains(run, "assert-only --path")
   assert_contains(run, "research-findings.md")
   assert_contains(run, "cat")
-  assert_contains(run, "\"$SCHERZO_WORKSPACE_DRIVER\"")
+  assert_contains(run, "driver_command=${SCHERZO_WORKSPACE_DRIVER")
+  assert_contains(run, "SCHERZO_CONFIG_DIR")
+  assert_contains(run, "\"$driver\" assert-only")
+  assert_not_contains(run, "\"$SCHERZO_WORKSPACE_DRIVER\" assert-only")
   assert_not_contains(run, "jj")
   assert_not_contains(run, "git diff")
   assert_not_contains(run, "Linear")
@@ -166,7 +176,7 @@ pub fn example_research_package_profile_supports_assert_only_test() {
   let assert Ok(profile) =
     dict.get(bundle.orchestrator.workspace_profiles.profiles, profile_name)
   let assert Some(driver) = profile.driver
-  assert driver.command == "scripts/scherzo-workspace-noop"
+  assert driver.command == "../scripts/scherzo-workspace-noop"
   assert list.contains(driver.capabilities, config_types.WorkspaceAssertOnly)
 }
 
@@ -204,7 +214,7 @@ pub fn collect_findings_command_executes_driver_and_streams_findings_test() {
       collect_findings_run(),
       dir,
       5000,
-      [#("SCHERZO_WORKSPACE_DRIVER", driver)],
+      driver_env(driver),
       [],
       limits(),
     )
@@ -230,7 +240,7 @@ pub fn collect_findings_command_fails_when_driver_rejects_extra_artifact_test() 
       collect_findings_run(),
       dir,
       5000,
-      [#("SCHERZO_WORKSPACE_DRIVER", driver)],
+      driver_env(driver),
       [],
       limits(),
     )
@@ -271,7 +281,7 @@ pub fn collect_findings_command_requires_driver_and_findings_file_test() {
       collect_findings_run(),
       missing_findings_dir,
       5000,
-      [#("SCHERZO_WORKSPACE_DRIVER", driver)],
+      driver_env(driver),
       [],
       limits(),
     )

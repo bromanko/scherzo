@@ -127,7 +127,7 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "scherzo [mode] [path-to-scherzo.yaml]")
   assert string.contains(usage, "LINEAR_API_KEY")
   assert string.contains(usage, "YAML orchestrator config")
-  assert string.contains(usage, "workspace.hooks")
+  assert string.contains(usage, "workspace profiles with drivers")
   assert string.contains(usage, "pi --mode rpc")
   assert string.contains(usage, "agent.max_concurrent_agents: 0")
   assert string.contains(usage, "scherzo --version")

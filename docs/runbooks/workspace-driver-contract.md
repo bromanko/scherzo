@@ -2,7 +2,7 @@
 
 Scherzo workspace drivers are trusted operator-configured commands. They prepare a workspace for a workflow run, check it around step execution, and provide a small set of workflow-facing capabilities that command steps can call without knowing whether the workspace is backed by jj, git, a copy, or an empty artifact directory.
 
-This document defines the initial command contract implemented by `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop`. It is a contract reference, not a migration guide. Legacy hook-backed profiles are still documented in `docs/runbooks/workspace-driver-migration.md` until runtime driver invocation is enabled.
+This document defines the initial command contract implemented by `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop`. It is a contract reference, not a migration guide. Legacy hook-backed profiles are migration material documented in `docs/runbooks/workspace-driver-migration.md`; new configs should use driver-backed profiles so Scherzo can invoke driver lifecycle operations directly.
 
 ## Glossary
 
