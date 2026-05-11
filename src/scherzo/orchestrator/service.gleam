@@ -116,7 +116,7 @@ pub fn default_dependencies() -> Dependencies {
       io.println_error(line)
       Ok(Nil)
     },
-    now_ms: monotonic_ms,
+    now_ms: wall_clock_ms,
   )
 }
 
@@ -2111,5 +2111,5 @@ fn try_startup(
 @external(erlang, "erlang", "integer_to_binary")
 fn int_to_string(value: Int) -> String
 
-@external(erlang, "scherzo_time_ffi", "monotonic_ms")
-fn monotonic_ms() -> Int
+@external(erlang, "scherzo_time_ffi", "wall_clock_ms")
+fn wall_clock_ms() -> Int

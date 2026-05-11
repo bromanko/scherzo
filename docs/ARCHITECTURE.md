@@ -195,7 +195,7 @@ FFI modules are small and purpose-specific:
 | `scherzo_lock_ffi.erl` | `instance_lock.gleam` | Single-instance lock acquire/release. |
 | `scherzo_signal_ffi.erl`, `scherzo_lifecycle_ffi.erl` | `signal.gleam`, `lifecycle.gleam` | SIGTERM integration and safe VM shutdown. |
 | `scherzo_config_ffi.erl` | `config.gleam`, `path.gleam` | Env, home/tmp, dirname, abs path helpers. |
-| `scherzo_time_ffi.erl` | command/pi/daemon timing | Monotonic milliseconds. |
+| `scherzo_time_ffi.erl` | command/pi/daemon timing | Monotonic milliseconds for durations; Unix epoch milliseconds for persisted/display timestamps. |
 | `scherzo_hash_ffi.erl` | `hash.gleam` | SHA-256 hex. |
 | `scherzo_terminal_ffi.erl` | `terminal/style.gleam` | Color support and terminal width. |
 | `scherzo_redaction_ffi.erl` | `session/redaction.gleam` | Fail-closed raw JSON redaction. |

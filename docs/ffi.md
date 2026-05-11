@@ -126,6 +126,8 @@ The config/path FFI is low risk and owns no resources.
 
 `monotonic_ms/0` returns Erlang monotonic time in milliseconds for durations and timeout calculations. It is not a wall-clock timestamp and must not be persisted as real time.
 
+`wall_clock_ms/0` returns Unix epoch milliseconds from Erlang system time for persisted timestamps and human-facing schedule identities.
+
 ## `src/scherzo_process_ext_ffi.erl`
 
 `trap_exits/1` toggles process exit trapping for the calling Erlang process and returns the previous setting according to `erlang:process_flag/2`. It affects only the caller process.
