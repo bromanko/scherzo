@@ -34,6 +34,8 @@ PLAN_COMPLETION_VERDICT_PATH = TMP_DIR / "scherzo-plan-completion-verdict.json"
 VALIDATION_PATH = TMP_DIR / "scherzo-implementation-validation.json"
 PUBLISH_PATH = TMP_DIR / "scherzo-implementation-publish.json"
 TICKET_BRIEF_PATH = TMP_DIR / "scherzo-implementation-brief.md"
+PLAN_BRIEF_PATH = TMP_DIR / "scherzo-execplan-brief.md"
+PLAN_INDEX_PATH = TMP_DIR / "scherzo-execplan-index.json"
 PR_BODY_PATH = TMP_DIR / "scherzo-implementation-pr-body.md"
 BASE_REFRESH_LATEST_PATH = TMP_DIR / "scherzo-implementation-refresh-base-latest.json"
 BASE_DRIFT_REPAIR_SUMMARY_PATH = TMP_DIR / "scherzo-implementation-base-drift-repair.md"
@@ -60,7 +62,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 def usage() -> None:
     print(
-        """Usage: scherzo-implementation <prepare|refresh-base|analyze|plan-completion-context|gate-plan-completion|validate|publish|extract-plan|languages|ticket-brief>
+        """Usage: scherzo-implementation <prepare|refresh-base|analyze|plan-completion-context|gate-plan-completion|validate|publish|plan-brief|extract-plan|languages|ticket-brief>
 
 Run from a Scherzo jj workflow workspace root.
 
@@ -79,6 +81,9 @@ plan-completion-context
               Write and print the current ExecPlan implementation patch
               fingerprint that a plan-completion verifier must copy into its
               verdict artifact.
+plan-brief [--check|--refresh-if-stale]
+              Regenerate, check, or refresh the derived ExecPlan brief and JSON
+              index recorded in tmp/scherzo-implementation.json.
 gate-plan-completion [--final]
               Fail closed unless tmp/scherzo-plan-completion-verdict.json is
               a fresh, well-formed passing verdict for the current ExecPlan
@@ -634,6 +639,102 @@ def validate_plan_path(plan_path: str, repo_root: Path) -> None:
             f"ExecPlan file does not exist: {plan_path}",
             failure_code="prepare_plan_ambiguous",
         )
+
+
+def plan_source_sha256(plan_path: str) -> str:
+    try:
+        return hashlib.sha256(Path(plan_path).read_bytes()).hexdigest()
+    except OSError as exc:
+        fail(f"could not read ExecPlan file {plan_path}: {exc}")
+
+
+def execplan_html_helper_path() -> Path:
+    override = os.environ.get("SCHERZO_EXECPLAN_HTML_HELPER", "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent / "scherzo-execplan-html"
+
+
+def remove_plan_brief_artifacts() -> None:
+    for path in [PLAN_BRIEF_PATH, PLAN_INDEX_PATH]:
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def plan_brief_warning(value: str) -> str:
+    return re.sub(r"\s+", " ", diagnostic_excerpt(value, 900)).strip()
+
+
+def generate_plan_brief(plan_path: str) -> dict[str, str]:
+    helper = execplan_html_helper_path()
+    proc = run_proc([
+        sys.executable or "python3",
+        str(helper),
+        "brief",
+        plan_path,
+        str(PLAN_BRIEF_PATH),
+        str(PLAN_INDEX_PATH),
+    ])
+    if proc.returncode != 0:
+        remove_plan_brief_artifacts()
+        return {
+            "status": "unavailable",
+            "warning": "brief generation failed: "
+            + plan_brief_warning(subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)),
+        }
+    try:
+        index = json.loads(PLAN_INDEX_PATH.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        remove_plan_brief_artifacts()
+        return {
+            "status": "unavailable",
+            "warning": "brief generation failed: " + plan_brief_warning(str(exc)),
+        }
+    source_hash = str(index.get("source_sha256") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", source_hash):
+        remove_plan_brief_artifacts()
+        return {
+            "status": "unavailable",
+            "warning": "brief generation failed: JSON index missing lowercase source_sha256",
+        }
+    return {
+        "status": "ok",
+        "brief_path": str(PLAN_BRIEF_PATH),
+        "index_path": str(PLAN_INDEX_PATH),
+        "source_sha256": source_hash,
+    }
+
+
+def apply_plan_brief_result(metadata: dict[str, Any], result: dict[str, str]) -> None:
+    for key in [
+        "plan_brief_path",
+        "plan_index_path",
+        "plan_source_sha256",
+        "plan_brief_warning",
+    ]:
+        metadata.pop(key, None)
+    if result["status"] == "ok":
+        metadata["plan_brief_status"] = "ok"
+        metadata["plan_brief_path"] = result["brief_path"]
+        metadata["plan_index_path"] = result["index_path"]
+        metadata["plan_source_sha256"] = result["source_sha256"]
+    else:
+        metadata["plan_brief_status"] = "unavailable"
+        metadata["plan_brief_warning"] = result.get("warning", "brief generation failed")
+
+
+def print_plan_brief_result(result: dict[str, str]) -> None:
+    if result["status"] == "ok":
+        print("PLAN_BRIEF_STATUS=ok")
+        print(f"PLAN_BRIEF_PATH={result['brief_path']}")
+        print(f"PLAN_INDEX_PATH={result['index_path']}")
+        print(f"PLAN_SOURCE_SHA256={result['source_sha256']}")
+    else:
+        print("PLAN_BRIEF_STATUS=unavailable")
+        print(f"PLAN_BRIEF_WARNING={result.get('warning', 'brief generation failed')}")
 
 
 def current_base_change_id() -> str:
@@ -1444,9 +1545,12 @@ def prepare_command(args: list[str]) -> None:
             "plan_path": plan_path,
             "base_change_id": base_change_id,
         }
+        brief_result = generate_plan_brief(plan_path)
+        apply_plan_brief_result(metadata, brief_result)
         write_json(METADATA_PATH, metadata)
         print(f"SOURCE_KIND={source_kind}")
         print(f"PLAN_PATH={plan_path}")
+        print_plan_brief_result(brief_result)
     else:
         issue = fetch_linear_issue_context(issue_identifier)
         brief_path = write_ticket_brief(issue)
@@ -1467,6 +1571,80 @@ def prepare_command(args: list[str]) -> None:
     print(f"BASE_CHANGE_ID={base_change_id}")
     print(f"RETENTION_MARKER={retention_marker_path()}")
     print("VALIDATION=ok")
+
+
+def require_plan_brief_metadata() -> tuple[dict[str, Any], str]:
+    metadata = load_json(METADATA_PATH)
+    if metadata.get("source_kind") != "execplan":
+        fail(
+            "plan-brief only applies to execplan implementation workflows; "
+            f"found source_kind={metadata.get('source_kind')!r}"
+        )
+    plan_path = str(metadata.get("plan_path") or "").strip()
+    if not plan_path:
+        fail(f"missing plan_path in {METADATA_PATH}; run prepare --source execplan first")
+    validate_plan_path(plan_path, Path.cwd())
+    return metadata, plan_path
+
+
+def load_plan_index_hash(index_path: str) -> str | None:
+    try:
+        index = json.loads(Path(index_path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = str(index.get("source_sha256") or "").strip()
+    if re.fullmatch(r"[0-9a-f]{64}", value):
+        return value
+    return None
+
+
+def plan_brief_freshness(metadata: dict[str, Any], plan_path: str) -> str:
+    if metadata.get("plan_brief_status") != "ok":
+        return "unavailable"
+    brief_path = str(metadata.get("plan_brief_path") or "").strip()
+    index_path = str(metadata.get("plan_index_path") or "").strip()
+    metadata_hash = str(metadata.get("plan_source_sha256") or "").strip()
+    if not brief_path or not index_path or not Path(brief_path).is_file() or not Path(index_path).is_file():
+        return "unavailable"
+    index_hash = load_plan_index_hash(index_path)
+    if not index_hash or not re.fullmatch(r"[0-9a-f]{64}", metadata_hash):
+        return "unavailable"
+    current_hash = plan_source_sha256(plan_path)
+    if current_hash == metadata_hash == index_hash:
+        return "fresh"
+    return "stale"
+
+
+def plan_brief_command(args: list[str]) -> None:
+    if args != [] and args != ["--check"] and args != ["--refresh-if-stale"]:
+        usage()
+        sys.exit(2)
+    metadata, plan_path = require_plan_brief_metadata()
+    if args == ["--check"]:
+        status = plan_brief_freshness(metadata, plan_path)
+        print(f"PLAN_BRIEF_STATUS={status}")
+        if status == "fresh":
+            print(f"PLAN_BRIEF_PATH={metadata.get('plan_brief_path')}")
+            print(f"PLAN_INDEX_PATH={metadata.get('plan_index_path')}")
+            print(f"PLAN_SOURCE_SHA256={metadata.get('plan_source_sha256')}")
+            return
+        if status == "stale":
+            sys.exit(2)
+        sys.exit(1)
+    if args == ["--refresh-if-stale"]:
+        status = plan_brief_freshness(metadata, plan_path)
+        if status == "fresh":
+            print("PLAN_BRIEF_STATUS=fresh")
+            print(f"PLAN_BRIEF_PATH={metadata.get('plan_brief_path')}")
+            print(f"PLAN_INDEX_PATH={metadata.get('plan_index_path')}")
+            print(f"PLAN_SOURCE_SHA256={metadata.get('plan_source_sha256')}")
+            return
+    result = generate_plan_brief(plan_path)
+    apply_plan_brief_result(metadata, result)
+    write_json(METADATA_PATH, metadata)
+    print_plan_brief_result(result)
+    if result["status"] != "ok":
+        sys.exit(1)
 
 
 def analyze_command() -> None:
@@ -1561,7 +1739,7 @@ def plan_completion_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:
             "diff": diff,
         }
     )
-    return {
+    snapshot = {
         "schema_version": 1,
         "source_kind": "execplan",
         "plan_path": plan_path,
@@ -1572,6 +1750,16 @@ def plan_completion_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:
         "changed_files": changed_files,
         "verdict_path": str(PLAN_COMPLETION_VERDICT_PATH),
     }
+    for metadata_key, context_key in [
+        ("plan_brief_status", "plan_brief_status"),
+        ("plan_brief_path", "plan_brief_path"),
+        ("plan_index_path", "plan_index_path"),
+        ("plan_source_sha256", "plan_source_sha256"),
+    ]:
+        value = metadata.get(metadata_key)
+        if isinstance(value, str) and value.strip():
+            snapshot[context_key] = value.strip()
+    return snapshot
 
 
 def plan_completion_context_command(args: list[str]) -> None:
@@ -1592,6 +1780,14 @@ def plan_completion_context_command(args: list[str]) -> None:
         "PLAN_COMPLETION_DIFF_FINGERPRINT="
         + str(context["verified_diff_fingerprint"])
     )
+    if "plan_brief_status" in context:
+        print(f"PLAN_BRIEF_STATUS={context['plan_brief_status']}")
+    if "plan_brief_path" in context:
+        print(f"PLAN_BRIEF_PATH={context['plan_brief_path']}")
+    if "plan_index_path" in context:
+        print(f"PLAN_INDEX_PATH={context['plan_index_path']}")
+    if "plan_source_sha256" in context:
+        print(f"PLAN_SOURCE_SHA256={context['plan_source_sha256']}")
     print_list("PLAN_COMPLETION_CHANGED_FILES", context["changed_files"])
 
 
@@ -2406,6 +2602,8 @@ def main(argv: list[str]) -> None:
         validate_command()
     elif command == "publish" and not args:
         publish_command()
+    elif command == "plan-brief":
+        plan_brief_command(args)
     elif command == "extract-plan":
         extract_plan_command(args)
     elif command == "languages":

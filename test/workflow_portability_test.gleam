@@ -171,6 +171,59 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
   })
 }
 
+pub fn execplan_prompts_use_bounded_plan_context_and_safe_html_edits_test() {
+  let implementation_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-implementation-implement.md")
+  let verifier_prompt =
+    read_file(
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    )
+  let revision_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-revision.md")
+
+  assert_contains(implementation_prompt, "PLAN_BRIEF_STATUS")
+  assert_contains(implementation_prompt, "PLAN_BRIEF_PATH")
+  assert_contains(implementation_prompt, "PLAN_INDEX_PATH")
+  assert_contains(
+    implementation_prompt,
+    "the generated brief plus named `section` reads are the required first pass",
+  )
+  assert_contains(
+    implementation_prompt,
+    "scripts/scherzo-execplan-html section",
+  )
+  assert_contains(
+    implementation_prompt,
+    "scripts/scherzo-implementation plan-brief --check",
+  )
+  assert_contains(
+    implementation_prompt,
+    "scripts/scherzo-implementation plan-brief --refresh-if-stale",
+  )
+  assert_contains(implementation_prompt, "full plan remains authoritative")
+  assert_contains(implementation_prompt, "extract-md")
+  assert_contains(implementation_prompt, "render tmp/current-execplan.md")
+
+  assert_contains(verifier_prompt, "PLAN_BRIEF_STATUS")
+  assert_contains(verifier_prompt, "PLAN_BRIEF_PATH")
+  assert_contains(verifier_prompt, "PLAN_INDEX_PATH")
+  assert_contains(
+    verifier_prompt,
+    "scripts/scherzo-implementation plan-brief --check",
+  )
+  assert_contains(
+    verifier_prompt,
+    "scripts/scherzo-implementation plan-brief --refresh-if-stale",
+  )
+  assert_contains(verifier_prompt, "scripts/scherzo-execplan-html section")
+  assert_contains(verifier_prompt, "full plan remains authoritative fallback")
+
+  assert_contains(revision_prompt, "extract-md")
+  assert_contains(revision_prompt, "tmp/execplan-revision-source.md")
+  assert_contains(revision_prompt, "render tmp/execplan-revision-source.md")
+  assert_contains(revision_prompt, "Direct HTML edits are only a fallback")
+}
+
 pub fn workflow_docs_explain_vendored_skill_update_and_validation_test() {
   let docs = read_file(".scherzo/README.md")
 

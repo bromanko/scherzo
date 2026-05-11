@@ -55,7 +55,7 @@ Revision process:
 1. Read `tmp/execplan-revision-pr.json`.
 2. Read `tmp/execplan-revision-feedback.md`.
 3. Read `.pi/skills/exec-plan/SKILL.md`.
-4. Read the ExecPlan at the printed `PLAN_PATH`. If it is HTML, review and edit the visible plan content inside the Carbon structured markup.
+4. Read the ExecPlan at the printed `PLAN_PATH`. If it is HTML, prefer `scripts/scherzo-execplan-html extract-md "$PLAN_PATH" > tmp/execplan-revision-source.md`, review and edit that temporary Markdown, then render it back to the same plan path with `python3 scripts/scherzo-execplan-html render tmp/execplan-revision-source.md "$PLAN_PATH" "$PLAN_PATH"`. Validate with `scripts/scherzo-execplan-revision validate` when practical. Direct HTML edits are only a fallback when extraction fails and the edit is small and safe.
 5. Apply focused plan edits for current, trusted, actionable feedback while preserving the artifact format.
 6. Preserve the ExecPlan as a self-contained living document. Update `## Decision Log`, `## Risks and Countermeasures`, `## Concrete Steps`, `## Testing and Falsifiability`, or `## Open Questions and Clarifications Needed` when those are the right places for review feedback.
 7. Ensure `## Open Questions and Clarifications Needed` remains present; write `None.` only if there are truly no open questions.

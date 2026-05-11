@@ -5,13 +5,47 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import re
 import sys
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 OPEN_QUESTIONS_HEADING = "Open Questions and Clarifications Needed"
+BRIEF_SCHEMA_VERSION = 1
+MAX_BRIEF_CHARS = 30000
+MAX_BRIEF_SECTION_CHARS = 6000
+BRIEF_REQUIRED_SECTION_TITLES = [
+    "Progress",
+    "Scope Boundaries",
+    "Testing and Falsifiability",
+    "Validation and Acceptance",
+    "Rollout, Recovery, and Idempotence",
+    OPEN_QUESTIONS_HEADING,
+    "Outcomes & Retrospective",
+    "Milestones",
+    "Concrete Steps",
+    "Plan of Work",
+]
+BRIEF_OPTIONAL_SECTION_TITLES = ["Acceptance Criteria"]
+VOID_HTML_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 LABEL_CLASSES = {
     "observation": "observation",
     "evidence": "evidence",
@@ -47,6 +81,33 @@ class TocEntry:
     open_questions: bool = False
 
 
+@dataclass(frozen=True)
+class PlanSection:
+    level: int
+    title: str
+    slug: str
+    source_line: int | None
+    markdown: str
+    char_count: int
+
+
+@dataclass(frozen=True)
+class PlanDocument:
+    source_path: str
+    source_kind: str
+    title: str
+    raw_sha256: str
+    markdown: str
+    sections: list[PlanSection]
+
+
+@dataclass
+class HtmlNode:
+    tag: str
+    attrs: dict[str, str]
+    children: list[Any]
+
+
 @dataclass
 class RenderContext:
     section_slug: str
@@ -68,10 +129,23 @@ class IdRegistry:
 
 def usage() -> None:
     print(
-        "Usage: scherzo-execplan-html render PLAN OUTPUT [DISPLAY_PATH]\n"
-        "Render PLAN Markdown into a self-contained Carbon-style HTML artifact. "
-        "DISPLAY_PATH, when provided, is shown in the artifact metadata instead "
-        "of the temporary Markdown source path.",
+        """Usage: scherzo-execplan-html <command> ...
+
+Commands:
+  render PLAN OUTPUT [DISPLAY_PATH]
+      Render PLAN Markdown into a self-contained Carbon-style HTML artifact.
+      DISPLAY_PATH, when provided, is shown in the artifact metadata instead
+      of the temporary Markdown source path.
+  extract-md PLAN
+      Print readable Markdown extracted from a Carbon HTML or legacy Markdown plan.
+  extract-text PLAN
+      Print readable plain text extracted from a Carbon HTML or legacy Markdown plan.
+  section PLAN HEADING_OR_SLUG
+      Print one named plan section as Markdown. Matching is exact title, exact slug,
+      then unique case-insensitive substring.
+  brief PLAN MARKDOWN_OUT JSON_OUT
+      Write a bounded ExecPlanBrief Markdown file and companion JSON index.
+""",
         file=sys.stderr,
     )
 
@@ -92,6 +166,13 @@ def slugify(text: str) -> str:
 def content_hash(text: str) -> str:
     normalized = " ".join(text.split())
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:7]
+
+
+def raw_sha256(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        fail(f"could not read plan bytes: {exc}")
 
 
 def element_id(prefix: str, section_slug: str, line_number: int, text: str) -> str:
@@ -598,6 +679,570 @@ def render_plan(plan_path: Path, display_path: str | None = None) -> str:
     )
 
 
+class PlanHtmlParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.root: HtmlNode | None = None
+        self.stack: list[HtmlNode] = []
+        self.ignored_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag_name = tag.lower()
+        if self.ignored_depth:
+            if tag_name in {"script", "style"}:
+                self.ignored_depth += 1
+            return
+        if tag_name in {"script", "style"}:
+            if self.stack:
+                self.ignored_depth = 1
+            return
+        attr_map = {key.lower(): value or "" for key, value in attrs}
+        if tag_name == "article" and not self.stack and self.root is None:
+            self.root = HtmlNode(tag_name, attr_map, [])
+            self.stack.append(self.root)
+            return
+        if not self.stack:
+            return
+        node = HtmlNode(tag_name, attr_map, [])
+        self.stack[-1].children.append(node)
+        if tag_name not in VOID_HTML_TAGS:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if self.stack and tag.lower() not in VOID_HTML_TAGS:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_name = tag.lower()
+        if self.ignored_depth:
+            if tag_name in {"script", "style"}:
+                self.ignored_depth -= 1
+            return
+        if not self.stack or tag_name in VOID_HTML_TAGS:
+            return
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index].tag == tag_name:
+                del self.stack[index:]
+                return
+
+    def handle_data(self, data: str) -> None:
+        if self.ignored_depth or not self.stack:
+            return
+        self.stack[-1].children.append(data)
+
+
+def classes(node: HtmlNode) -> set[str]:
+    return {part for part in node.attrs.get("class", "").split() if part}
+
+
+def element_children(node: HtmlNode) -> list[HtmlNode]:
+    return [child for child in node.children if isinstance(child, HtmlNode)]
+
+
+def raw_node_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, HtmlNode):
+        return ""
+    return "".join(raw_node_text(child) for child in value.children)
+
+
+def collapse_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def labeled_statement_markdown(node: HtmlNode) -> str | None:
+    if "labeled-statement" not in classes(node):
+        return None
+    label = ""
+    body = ""
+    for child in element_children(node):
+        child_classes = classes(child)
+        if "statement-label" in child_classes:
+            label = collapse_text(raw_node_text(child))
+        elif "statement-body" in child_classes:
+            body = collapse_text(inline_markdown(child))
+    if label:
+        return f"{label}: {body}".strip()
+    return collapse_text(inline_markdown_children(node))
+
+
+def inline_markdown_children(node: HtmlNode) -> str:
+    return "".join(inline_markdown(child) for child in node.children)
+
+
+def inline_markdown(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, HtmlNode):
+        return ""
+    if value.tag == "input":
+        return ""
+    labeled = labeled_statement_markdown(value)
+    if labeled is not None:
+        return labeled
+    if value.tag == "code":
+        return "`" + raw_node_text(value).strip() + "`"
+    if value.tag == "br":
+        return "\n"
+    return inline_markdown_children(value)
+
+
+def node_language(node: HtmlNode) -> str:
+    for class_name in classes(node):
+        if class_name.startswith("language-"):
+            return class_name.removeprefix("language-")
+    return ""
+
+
+def has_checked_input(node: HtmlNode) -> bool | None:
+    if node.tag == "input" and node.attrs.get("type", "").lower() == "checkbox":
+        return "checked" in node.attrs
+    for child in element_children(node):
+        value = has_checked_input(child)
+        if value is not None:
+            return value
+    return None
+
+
+def first_child_with_class(node: HtmlNode, class_name: str) -> HtmlNode | None:
+    for child in element_children(node):
+        if class_name in classes(child):
+            return child
+    return None
+
+
+def markdown_table_rows(node: HtmlNode) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for child in element_children(node):
+        if child.tag == "tr":
+            cells = [collapse_text(inline_markdown(cell)) for cell in element_children(child) if cell.tag in {"th", "td"}]
+            if cells:
+                rows.append(cells)
+        else:
+            rows.extend(markdown_table_rows(child))
+    return rows
+
+
+def block_markdown(node: HtmlNode, indent: int = 0) -> list[str]:
+    prefix = " " * indent
+    tag = node.tag
+    if tag in {"script", "style", "nav"}:
+        return []
+    if tag == "header":
+        lines: list[str] = []
+        for child in element_children(node):
+            if child.tag == "h1":
+                lines.extend(block_markdown(child, indent))
+        return lines
+    if tag == "p" and ("eyebrow" in classes(node) or "toc-title" in classes(node)):
+        return []
+    if tag == "div" and "doc-meta" in classes(node):
+        return []
+    if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        level = int(tag[1])
+        text = collapse_text(inline_markdown_children(node))
+        return [f"{prefix}{'#' * level} {text}", ""] if text else []
+    if tag == "p":
+        text = collapse_text(inline_markdown_children(node))
+        return [prefix + text, ""] if text else []
+    if tag == "pre":
+        language = node_language(node)
+        text = raw_node_text(node).strip("\n")
+        lines = [prefix + "```" + language]
+        lines.extend(prefix + line for line in text.splitlines())
+        lines.append(prefix + "```")
+        lines.append("")
+        return lines
+    if tag in {"ul", "ol"}:
+        lines: list[str] = []
+        number = 1
+        for child in element_children(node):
+            if child.tag != "li":
+                continue
+            main = first_child_with_class(child, "list-item-main") or child
+            checked = has_checked_input(main)
+            item_text = collapse_text(inline_markdown(main))
+            if tag == "ol":
+                marker = f"{number}. "
+                number += 1
+            elif checked is True:
+                marker = "- [x] "
+            elif checked is False:
+                marker = "- [ ] "
+            else:
+                marker = "- "
+            lines.append(prefix + marker + item_text)
+            for grandchild in element_children(child):
+                if grandchild is main:
+                    continue
+                lines.extend(block_markdown(grandchild, indent + 2))
+        lines.append("")
+        return lines
+    if tag == "table":
+        rows = markdown_table_rows(node)
+        if not rows:
+            return []
+        width = max(len(row) for row in rows)
+        normalized = [row + [""] * (width - len(row)) for row in rows]
+        lines = [prefix + "| " + " | ".join(normalized[0]) + " |"]
+        lines.append(prefix + "| " + " | ".join(["---"] * width) + " |")
+        for row in normalized[1:]:
+            lines.append(prefix + "| " + " | ".join(row) + " |")
+        lines.append("")
+        return lines
+    lines: list[str] = []
+    for child in node.children:
+        if isinstance(child, HtmlNode):
+            lines.extend(block_markdown(child, indent))
+        elif collapse_text(child):
+            lines.append(prefix + collapse_text(child))
+            lines.append("")
+    return lines
+
+
+def normalize_markdown_lines(lines: Sequence[str]) -> str:
+    normalized: list[str] = []
+    previous_blank = False
+    for line in lines:
+        stripped = line.rstrip()
+        if stripped == "":
+            if normalized and not previous_blank:
+                normalized.append("")
+            previous_blank = True
+        else:
+            normalized.append(stripped)
+            previous_blank = False
+    return "\n".join(normalized).rstrip() + "\n"
+
+
+def html_to_markdown(text: str) -> str:
+    parser = PlanHtmlParser()
+    parser.feed(text)
+    if parser.root is None:
+        fail("could not find <article> plan content in HTML")
+    return normalize_markdown_lines(block_markdown(parser.root))
+
+
+def normalize_markdown(text: str) -> str:
+    return text.rstrip() + "\n"
+
+
+def plain_text_from_markdown(markdown: str) -> str:
+    output: list[str] = []
+    in_fence = False
+    for line in markdown.splitlines():
+        fence = FENCE_RE.match(line)
+        if fence:
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            output.append(line)
+            continue
+        heading = HEADING_RE.match(line)
+        if heading:
+            output.append(heading.group(2).strip())
+            continue
+        text = re.sub(r"`([^`]*)`", r"\1", line)
+        text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+        text = re.sub(r"^\s*[-*+]\s+", "- ", text)
+        text = re.sub(r"^\s*(\d+)[.)]\s+", r"\1. ", text)
+        text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+        text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", text)
+        output.append(text.rstrip())
+    return normalize_markdown_lines(output)
+
+
+def parse_markdown_document(source_path: str, source_kind: str, raw_hash: str, markdown: str) -> PlanDocument:
+    lines = markdown.splitlines()
+    title = "ExecPlan"
+    for line in lines:
+        match = HEADING_RE.match(line)
+        if match and len(match.group(1)) == 1:
+            title = match.group(2).strip()
+            break
+    heading_positions: list[tuple[int, int, str]] = []
+    for index, line in enumerate(lines):
+        match = HEADING_RE.match(line)
+        if match:
+            heading_positions.append((index, len(match.group(1)), match.group(2).strip()))
+    sections: list[PlanSection] = []
+    for position, (start, level, heading_title) in enumerate(heading_positions):
+        end = len(lines)
+        for later_start, later_level, _later_title in heading_positions[position + 1 :]:
+            if later_level <= level:
+                end = later_start
+                break
+        section_markdown = normalize_markdown("\n".join(lines[start:end]))
+        sections.append(
+            PlanSection(
+                level=level,
+                title=heading_title,
+                slug=slugify(heading_title),
+                source_line=start + 1,
+                markdown=section_markdown,
+                char_count=len(section_markdown),
+            )
+        )
+    return PlanDocument(source_path, source_kind, title, raw_hash, normalize_markdown(markdown), sections)
+
+
+def load_plan_document(plan_path: Path) -> PlanDocument:
+    try:
+        text = plan_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"could not read plan: {exc}")
+    source_kind = "html" if plan_path.suffix.lower() == ".html" else "markdown"
+    markdown = html_to_markdown(text) if source_kind == "html" else normalize_markdown(text)
+    return parse_markdown_document(str(plan_path), source_kind, raw_sha256(plan_path), markdown)
+
+
+def find_sections(document: PlanDocument, query: str) -> list[PlanSection]:
+    normalized = query.strip().lower()
+    if not normalized:
+        return []
+    exact_title = [section for section in document.sections if section.title.lower() == normalized]
+    if exact_title:
+        return exact_title
+    exact_slug = [section for section in document.sections if section.slug.lower() == normalized]
+    if exact_slug:
+        return exact_slug
+    return [
+        section
+        for section in document.sections
+        if normalized in section.title.lower() or normalized in section.slug.lower()
+    ]
+
+
+def available_heading_lines(document: PlanDocument, sections: Sequence[PlanSection] | None = None) -> str:
+    values = sections if sections is not None else document.sections
+    return "\n".join(f"- {section.title} ({section.slug})" for section in values)
+
+
+def section_fallback_command(plan_path: str, section_title: str) -> str:
+    return f'scripts/scherzo-execplan-html section {plan_path} "{section_title}"'
+
+
+def extract_md_command(args: Sequence[str]) -> None:
+    if len(args) != 1:
+        usage()
+        sys.exit(2)
+    document = load_plan_document(Path(args[0]))
+    print(document.markdown, end="")
+
+
+def extract_text_command(args: Sequence[str]) -> None:
+    if len(args) != 1:
+        usage()
+        sys.exit(2)
+    document = load_plan_document(Path(args[0]))
+    print(plain_text_from_markdown(document.markdown), end="")
+
+
+def section_command(args: Sequence[str]) -> None:
+    if len(args) != 2:
+        usage()
+        sys.exit(2)
+    document = load_plan_document(Path(args[0]))
+    matches = find_sections(document, args[1])
+    if not matches:
+        print(f"scherzo-execplan-html: section not found: {args[1]}", file=sys.stderr)
+        print("Available headings:", file=sys.stderr)
+        print(available_heading_lines(document), file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"scherzo-execplan-html: ambiguous section: {args[1]}", file=sys.stderr)
+        print("Candidates:", file=sys.stderr)
+        print(available_heading_lines(document, matches), file=sys.stderr)
+        sys.exit(1)
+    print(matches[0].markdown, end="")
+
+
+def section_by_title(document: PlanDocument, title: str) -> PlanSection | None:
+    for section in document.sections:
+        if section.title.lower() == title.lower():
+            return section
+    return None
+
+
+def critical_section_titles(document: PlanDocument) -> list[str]:
+    titles: list[str] = []
+    for title in BRIEF_REQUIRED_SECTION_TITLES:
+        if title == "Testing and Falsifiability":
+            for optional in BRIEF_OPTIONAL_SECTION_TITLES:
+                if section_by_title(document, optional) is not None:
+                    titles.append(optional)
+        titles.append(title)
+    return titles
+
+
+def truncation_warning(title: str, original_count: int, included_count: int, fallback: str) -> str:
+    return (
+        f"TRUNCATED SECTION: {title}\n"
+        f"Original characters: {original_count}\n"
+        f"Included characters: {included_count}\n"
+        f"Read the full section with: {fallback}"
+    )
+
+
+def build_brief(document: PlanDocument, markdown_out: Path) -> tuple[str, dict[str, Any]]:
+    critical_titles = critical_section_titles(document)
+    included_slugs: set[str] = set()
+    truncated_by_slug: dict[str, dict[str, Any]] = {}
+    missing_sections: list[str] = []
+    fallback_commands = [
+        f"scripts/scherzo-execplan-html extract-md {document.source_path}",
+    ]
+    lines = [
+        f"# ExecPlanBrief for {document.title}",
+        "",
+        "## Metadata",
+        "",
+        f"PLAN_PATH={document.source_path}",
+        f"Source plan: {document.source_path}",
+        f"Source kind: {document.source_kind}",
+        f"Source SHA-256: {document.raw_sha256}",
+        f"Schema version: {BRIEF_SCHEMA_VERSION}",
+        f"MAX_BRIEF_CHARS={MAX_BRIEF_CHARS}",
+        f"MAX_BRIEF_SECTION_CHARS={MAX_BRIEF_SECTION_CHARS}",
+        "Authority: derived brief only; the full source plan remains authoritative.",
+        "",
+        "## How to use this brief",
+        "",
+        "Read this brief as bounded starting context. If it is stale, missing a section, truncated, inconsistent, or ambiguous, read a named section or the full plan.",
+        "",
+        "Fallback commands:",
+        f"- scripts/scherzo-execplan-html section {document.source_path} \"<section title>\"",
+        f"- scripts/scherzo-execplan-html extract-md {document.source_path}",
+    ]
+    for title in critical_titles:
+        section = section_by_title(document, title)
+        if section is not None:
+            lines.append(f"- {section_fallback_command(document.source_path, section.title)}")
+    lines.extend([
+        "",
+        "## Limits and warnings",
+        "",
+        f"The whole brief target is MAX_BRIEF_CHARS={MAX_BRIEF_CHARS}; each copied section target is MAX_BRIEF_SECTION_CHARS={MAX_BRIEF_SECTION_CHARS}.",
+        "Missing and truncated critical sections are listed here and in the JSON index.",
+        "",
+        "## Section index",
+        "",
+    ])
+    for section in document.sections:
+        lines.append(
+            f"- level {section.level}: {section.title} ({section.slug}), {section.char_count} chars"
+        )
+    lines.extend(["", "## Critical extracted sections", ""])
+
+    for title in critical_titles:
+        section = section_by_title(document, title)
+        if section is None:
+            missing_sections.append(title)
+            lines.extend([
+                f"MISSING SECTION: {title}",
+                f"If this section exists under a different heading, run: scripts/scherzo-execplan-html section {document.source_path} \"{title}\"",
+                "",
+            ])
+            continue
+        fallback = section_fallback_command(document.source_path, section.title)
+        fallback_commands.append(fallback)
+        original = section.markdown.strip()
+        original_count = len(original)
+        included_count = original_count
+        included_text = original
+        truncated = False
+        if original_count > MAX_BRIEF_SECTION_CHARS:
+            included_count = MAX_BRIEF_SECTION_CHARS
+            included_text = original[:MAX_BRIEF_SECTION_CHARS].rstrip()
+            truncated = True
+        current = "\n".join(lines) + "\n"
+        warning = truncation_warning(section.title, original_count, included_count, fallback)
+        candidate = included_text + ("\n\n" + warning if truncated else "") + "\n"
+        if len(current) + len(candidate) > MAX_BRIEF_CHARS:
+            # Reserve room for the final Missing/truncated summary so that the
+            # brief stays below the advertised whole-document budget in normal
+            # cases instead of spending every remaining byte on section body.
+            available = max(0, MAX_BRIEF_CHARS - len(current) - len(warning) - 1600)
+            included_count = min(original_count, available)
+            included_text = original[:included_count].rstrip()
+            truncated = True
+            candidate = (included_text or ("#" * section.level + " " + section.title)) + "\n\n" + truncation_warning(section.title, original_count, included_count, fallback) + "\n"
+        lines.extend(candidate.rstrip().splitlines())
+        lines.append("")
+        included_slugs.add(section.slug)
+        if truncated:
+            truncated_by_slug[section.slug] = {
+                "title": section.title,
+                "slug": section.slug,
+                "original_char_count": original_count,
+                "included_char_count": included_count,
+                "fallback_command": fallback,
+            }
+
+    if missing_sections or truncated_by_slug:
+        lines.extend(["", "## Missing or truncated sections", ""])
+        for title in missing_sections:
+            lines.append(f"- Missing: {title}")
+        for entry in truncated_by_slug.values():
+            lines.append(
+                f"- Truncated: {entry['title']} ({entry['included_char_count']} of {entry['original_char_count']} chars). Read with: {entry['fallback_command']}"
+            )
+        lines.append("")
+
+    brief_markdown = normalize_markdown("\n".join(lines))
+    index = {
+        "schema_version": BRIEF_SCHEMA_VERSION,
+        "source_path": document.source_path,
+        "source_kind": document.source_kind,
+        "source_sha256": document.raw_sha256,
+        "title": document.title,
+        "sections": [
+            {
+                "level": section.level,
+                "title": section.title,
+                "slug": section.slug,
+                "char_count": section.char_count,
+                "included_in_brief": section.slug in included_slugs,
+                "truncated_in_brief": section.slug in truncated_by_slug,
+            }
+            for section in document.sections
+        ],
+        "critical_sections": critical_titles,
+        "missing_sections": missing_sections,
+        "truncated_sections": list(truncated_by_slug.values()),
+        "limits": {
+            "max_brief_chars": MAX_BRIEF_CHARS,
+            "max_section_chars": MAX_BRIEF_SECTION_CHARS,
+        },
+        "brief_markdown_path": str(markdown_out),
+        "fallback_commands": fallback_commands,
+    }
+    return brief_markdown, index
+
+
+def brief_command(args: Sequence[str]) -> None:
+    if len(args) != 3:
+        usage()
+        sys.exit(2)
+    plan_path = Path(args[0])
+    markdown_out = Path(args[1])
+    json_out = Path(args[2])
+    document = load_plan_document(plan_path)
+    brief_markdown, index = build_brief(document, markdown_out)
+    try:
+        markdown_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        markdown_out.write_text(brief_markdown, encoding="utf-8")
+        json_out.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        fail(f"could not write brief artifacts: {exc}")
+    print(f"PLAN_BRIEF_PATH={markdown_out}")
+    print(f"PLAN_INDEX_PATH={json_out}")
+    print(f"PLAN_SOURCE_SHA256={document.raw_sha256}")
+
+
 SCROLL_SPY_SCRIPT = """<script>
 (function () {
   var tocPanel = document.querySelector('.toc-panel');
@@ -788,6 +1433,7 @@ SCROLL_SPY_SCRIPT = """<script>
 
 
 HTML_TEMPLATE = """<!doctype html>
+<!-- Scherzo ExecPlan HTML artifact: use scripts/scherzo-execplan-html extract-md or section for token-efficient agent reads. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -919,13 +1565,13 @@ th {{ background: var(--gray-10); }}
 """
 
 
-def main(argv: Sequence[str]) -> None:
-    if len(argv) not in {4, 5} or argv[1] != "render":
+def render_command(args: Sequence[str]) -> None:
+    if len(args) not in {2, 3}:
         usage()
         sys.exit(2)
-    plan_path = Path(argv[2])
-    output_path = Path(argv[3])
-    display_path = argv[4] if len(argv) == 5 else None
+    plan_path = Path(args[0])
+    output_path = Path(args[1])
+    display_path = args[2] if len(args) == 3 else None
     if not plan_path.exists():
         fail(f"plan file does not exist: {plan_path}")
     html_text = render_plan(plan_path, display_path)
@@ -935,6 +1581,26 @@ def main(argv: Sequence[str]) -> None:
     except OSError as exc:
         fail(f"could not write HTML artifact: {exc}")
     print(f"PLAN_HTML_PATH={output_path}")
+
+
+def main(argv: Sequence[str]) -> None:
+    command = argv[1] if len(argv) > 1 else ""
+    args = argv[2:]
+    if command == "render":
+        render_command(args)
+    elif command == "extract-md":
+        extract_md_command(args)
+    elif command == "extract-text":
+        extract_text_command(args)
+    elif command == "section":
+        section_command(args)
+    elif command == "brief":
+        brief_command(args)
+    elif command in {"-h", "--help", "help"}:
+        usage()
+    else:
+        usage()
+        sys.exit(2)
 
 
 if __name__ == "__main__":
