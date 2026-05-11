@@ -22,8 +22,9 @@ Verification contract:
 
 - This is a plan-completion verification, not a code review. Do not critique style, formatting, architecture, or optional polish unless it blocks promised behavior.
 - Do not edit tracked source, tests, workflows, docs, or the ExecPlan. Your only allowed write is replacing the verdict artifact at `tmp/scherzo-plan-completion-verdict.json`.
-- The helper output above contains `PLAN_PATH=<path>`. Read the full ExecPlan from that path before deciding.
-- Inspect the ExecPlan's Progress, Outcomes & Retrospective, Acceptance Criteria, required milestones, and any explicit non-goals/deferred/stretch sections.
+- The helper output above contains `PLAN_PATH=<path>` and may contain `PLAN_BRIEF_STATUS=ok`, `PLAN_BRIEF_PATH=<path>`, `PLAN_INDEX_PATH=<path>`, and `PLAN_SOURCE_SHA256=<hash>`. For this workflow, the generated brief plus named `section` reads are the required first pass before deciding; the full plan remains authoritative fallback.
+- Read `tmp/scherzo-implementation.json`. When brief metadata is present, run `scripts/scherzo-implementation plan-brief --check`; if it reports stale or unavailable, run `scripts/scherzo-implementation plan-brief --refresh-if-stale` or fall back to the full plan if refresh fails. Read `PLAN_BRIEF_PATH` when available, inspect `PLAN_INDEX_PATH` when useful, and use `scripts/scherzo-execplan-html section "$PLAN_PATH" "<section>"` for Progress, Outcomes & Retrospective, Acceptance Criteria if present, Milestones, Testing and Falsifiability, Validation and Acceptance, Scope Boundaries, Open Questions, and any truncated or missing section. Read the full ExecPlan at `PLAN_PATH` when bounded context is stale, missing, unavailable, truncated, inconsistent with `PLAN_SOURCE_SHA256`, or ambiguous.
+- Inspect the ExecPlan's Progress, Outcomes & Retrospective, Acceptance Criteria, required milestones, and any explicit non-goals/deferred/stretch sections from the brief, named sections, or full-plan fallback.
 - Compare the post-feedback implementation summary and changed files/tests against the ExecPlan. Inspect the smallest useful set of changed files and tests when the summaries are not enough.
 - Explicitly return `fail` for LIV-86-like false successes: required Progress checklist items are still unchecked, required milestones/acceptance criteria are undelivered, or Outcomes says the promised product behavior is not observable.
 - Do not fail for imperfect wording, formatting, or optional/stretch work that is clearly marked optional, stretch, deferred, or out of scope.
@@ -53,7 +54,7 @@ Use `"verdict": "fail"` when promised behavior is still incomplete after the sin
 
 Process:
 
-1. Read `tmp/scherzo-implementation.json` and the full ExecPlan at `PLAN_PATH`.
+1. Read `tmp/scherzo-implementation.json`, check or refresh brief freshness when brief metadata exists, read `PLAN_BRIEF_PATH` when available, and fetch named sections or the full ExecPlan at `PLAN_PATH` when bounded context is insufficient.
 2. Read the verifier/feedback responses and post-feedback change analysis above.
 3. Inspect changed files/tests only as needed to verify promised behavior and acceptance criteria.
 4. Run `scripts/scherzo-implementation plan-completion-context` and copy the context values exactly.

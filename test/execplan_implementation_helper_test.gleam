@@ -95,6 +95,134 @@ pub fn extract_plan_accepts_html_plan_paths_test() {
   )
 }
 
+pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
+  let dir = "test/tmp/implementation-helper-plan-brief"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/docs/plans/example.md", execplan_markdown())
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation.json",
+      "{\n"
+        <> "  \"source_kind\": \"execplan\",\n"
+        <> "  \"plan_path\": \"docs/plans/example.md\",\n"
+        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "}\n",
+    )
+
+  let generated =
+    run_helper_in(dir, "../../../scripts/scherzo-implementation plan-brief")
+
+  assert generated.status == step_artifact.StepSucceeded
+  assert generated.exit_code == Some(0)
+  assert string.contains(generated.stdout, "PLAN_BRIEF_STATUS=ok")
+  assert string.contains(
+    generated.stdout,
+    "PLAN_BRIEF_PATH=tmp/scherzo-execplan-brief.md",
+  )
+  assert string.contains(
+    generated.stdout,
+    "PLAN_INDEX_PATH=tmp/scherzo-execplan-index.json",
+  )
+  assert string.contains(generated.stdout, "PLAN_SOURCE_SHA256=")
+  let assert Ok(metadata) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation.json")
+  assert string.contains(metadata, "\"plan_brief_status\": \"ok\"")
+  assert string.contains(
+    metadata,
+    "\"plan_brief_path\": \"tmp/scherzo-execplan-brief.md\"",
+  )
+  let assert Ok(brief) =
+    simplifile.read(dir <> "/tmp/scherzo-execplan-brief.md")
+  assert string.contains(brief, "# ExecPlanBrief for Example ExecPlan")
+  assert string.contains(brief, "## Validation and Acceptance")
+
+  let fresh =
+    run_helper_in(
+      dir,
+      "../../../scripts/scherzo-implementation plan-brief --check",
+    )
+  assert fresh.status == step_artifact.StepSucceeded
+  assert string.contains(fresh.stdout, "PLAN_BRIEF_STATUS=fresh")
+
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/example.md",
+      execplan_markdown() <> "\n## Extra\n\nMutated.\n",
+    )
+  let stale =
+    run_helper_in(
+      dir,
+      "../../../scripts/scherzo-implementation plan-brief --check",
+    )
+  assert stale.status == step_artifact.StepFailed
+  assert stale.exit_code == Some(2)
+  assert string.contains(stale.stdout, "PLAN_BRIEF_STATUS=stale")
+
+  let refreshed =
+    run_helper_in(
+      dir,
+      "../../../scripts/scherzo-implementation plan-brief --refresh-if-stale",
+    )
+  assert refreshed.status == step_artifact.StepSucceeded
+  assert string.contains(refreshed.stdout, "PLAN_BRIEF_STATUS=ok")
+  let fresh_again =
+    run_helper_in(
+      dir,
+      "../../../scripts/scherzo-implementation plan-brief --check",
+    )
+  assert fresh_again.status == step_artifact.StepSucceeded
+  assert string.contains(fresh_again.stdout, "PLAN_BRIEF_STATUS=fresh")
+}
+
+pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
+  let dir = "test/tmp/implementation-helper-plan-brief-failure"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/docs/plans/example.md", execplan_markdown())
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/tmp/scherzo-execplan-brief.md", "stale\n")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/tmp/scherzo-execplan-index.json", "{}\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation.json",
+      "{\n"
+        <> "  \"source_kind\": \"execplan\",\n"
+        <> "  \"plan_path\": \"docs/plans/example.md\",\n"
+        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "}\n",
+    )
+  write_failing_brief_helper(dir <> "/bin/failing-brief-helper")
+  chmod_executable(dir <> "/bin/failing-brief-helper")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_EXECPLAN_HTML_HELPER=bin/failing-brief-helper ../../../scripts/scherzo-implementation plan-brief",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(artifact.stdout, "PLAN_BRIEF_STATUS=unavailable")
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_BRIEF_WARNING=brief generation failed",
+  )
+  let assert Ok(metadata) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation.json")
+  assert string.contains(metadata, "\"plan_brief_status\": \"unavailable\"")
+  assert string.contains(metadata, "\"plan_brief_warning\":")
+  assert !string.contains(metadata, "plan_source_sha256")
+  let assert Error(_) = simplifile.read(dir <> "/tmp/scherzo-execplan-brief.md")
+  let assert Error(_) =
+    simplifile.read(dir <> "/tmp/scherzo-execplan-index.json")
+}
+
 pub fn extract_plan_prefers_explicit_plan_field_over_liv59_context_references_test() {
   let dir = "test/tmp/execplan-helper-explicit-plan"
   reset_dir(dir)
@@ -1691,6 +1819,17 @@ fn write_publish_fixture_metadata(dir: String) -> Nil {
   Nil
 }
 
+fn execplan_markdown() -> String {
+  "# Example ExecPlan\n\n"
+  <> "## Progress\n\n- [x] Drafted.\n\n"
+  <> "## Scope Boundaries\n\nIn scope: Brief generation.\n\n"
+  <> "## Milestones\n\nGenerate a brief.\n\n"
+  <> "## Concrete Steps\n\n1. Run the helper.\n\n"
+  <> "## Testing and Falsifiability\n\nThe stale check must fail after mutation.\n\n"
+  <> "## Validation and Acceptance\n\nThe generated brief names this section.\n\n"
+  <> "## Open Questions and Clarifications Needed\n\nNone.\n"
+}
+
 fn html_execplan(title: String) -> String {
   "<!doctype html>\n"
   <> "<html lang=\"en\"><head><meta charset=\"utf-8\"><title>"
@@ -1804,6 +1943,18 @@ fn write_fake_execplan_handoff_linear(
         <> "if [ \"$1 $2\" = 'issue create' ]; then printf '%s\\n' 'Creating issue in LIV' '' 'https://linear.app/living-systems/issue/LIV-124/add-queued-plan'; exit 0; fi\n"
         <> "if [ \"$1 $2\" = 'issue link' ]; then echo '✓ Linked to LIV-124: ExecPlan PR'; exit 0; fi\n"
         <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_failing_brief_helper(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "echo failing brief helper >&2\n"
+        <> "touch tmp/scherzo-execplan-brief.md tmp/scherzo-execplan-index.json\n"
+        <> "exit 9\n",
     )
   Nil
 }
