@@ -56,29 +56,73 @@ sanitize_ref_part() {
     | sed 's/^-*//; s/-*$//; s/--*/-/g'
 }
 
+workspace_driver_available() {
+  [ -n "${SCHERZO_WORKSPACE_DRIVER:-}" ]
+}
+
 changed_files() {
   jj diff --from @- --to @ --name-only --color=never
 }
 
-find_plan_path() {
-  files=$(changed_files | sed '/^[[:space:]]*$/d')
-  [ -n "$files" ] || fail "no changed files found"
+changed_file_records_tsv() {
+  if workspace_driver_available; then
+    driver_json=$("$SCHERZO_WORKSPACE_DRIVER" changed-files --json) || fail "workspace driver changed-files failed"
+    printf '%s' "$driver_json" | python3 -c '
+import json, sys
+data_text = sys.stdin.read()
+try:
+    data = json.loads(data_text)
+except Exception as exc:
+    print(f"scherzo-execplan: workspace driver changed-files returned malformed JSON: {exc}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("files"), list):
+    print("scherzo-execplan: workspace driver changed-files JSON must contain version=1 and a files list", file=sys.stderr)
+    sys.exit(1)
+for item in data["files"]:
+    if not isinstance(item, dict):
+        print("scherzo-execplan: workspace driver changed-files entries must be objects", file=sys.stderr)
+        sys.exit(1)
+    path = item.get("path")
+    status = item.get("status")
+    if not isinstance(path, str) or not path or status not in {"added", "modified", "deleted", "renamed", "conflicted"}:
+        print("scherzo-execplan: workspace driver changed-files entry has invalid path or status", file=sys.stderr)
+        sys.exit(1)
+    print(f"{status}\t{path}")
+'
+    return
+  fi
 
-  plan_files=$(printf '%s\n' "$files" | grep -E '^docs/plans/[^/]+\.html$' || true)
+  files=$(changed_files | sed '/^[[:space:]]*$/d')
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    status=$(jj diff --summary --from @- --to @ --color=never -- "$file" | awk '{ print $1; exit }')
+    case "$status" in
+      A) status=added ;;
+      D) status=deleted ;;
+      R*) status=renamed ;;
+      *) status=modified ;;
+    esac
+    printf '%s\t%s\n' "$status" "$file"
+  done <<EOF_FILES
+$files
+EOF_FILES
+}
+
+find_plan_path() {
+  records=$(changed_file_records_tsv | sed '/^[[:space:]]*$/d')
+  [ -n "$records" ] || fail "no changed files found"
+
+  plan_files=$(printf '%s\n' "$records" | awk -F '\t' '$2 ~ "^docs/plans/[^/]+\\.html$" { print $2 }')
   plan_count=$(printf '%s\n' "$plan_files" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
   [ "$plan_count" = "1" ] || fail "expected exactly one changed docs/plans/*.html file, found $plan_count"
 
   plan=$(printf '%s\n' "$plan_files" | sed -n '1p')
   [ -f "$plan" ] || fail "plan file does not exist: $plan"
-  plan_status=$(jj diff --summary --from @- --to @ --color=never -- "$plan" | awk '{ print $1; exit }')
-  [ "$plan_status" = "A" ] || fail "plan file must be newly added, got status ${plan_status:-unknown}: $plan"
+  plan_status=$(printf '%s\n' "$records" | awk -F '\t' -v plan="$plan" '$2 == plan { print $1; exit }')
+  [ "$plan_status" = "added" ] || fail "plan file must be newly added, got status ${plan_status:-unknown}: $plan"
 
-  while IFS= read -r file; do
-    [ -n "$file" ] || continue
-    [ "$file" = "$plan" ] || fail "unexpected changed file: $file; workflow:execplan PRs may only change $plan"
-  done <<EOF_FILES
-$files
-EOF_FILES
+  unexpected=$(printf '%s\n' "$records" | awk -F '\t' -v plan="$plan" '$2 != "" && $2 != plan { print $2; exit }')
+  [ -z "$unexpected" ] || fail "unexpected changed file: $unexpected; workflow:execplan PRs may only change $plan"
 
   printf '%s\n' "$plan"
 }
@@ -161,7 +205,9 @@ PY
 }
 
 validate_command() {
-  require_command jj
+  if ! workspace_driver_available; then
+    require_command jj
+  fi
   require_command python3
   explicit_plan=${1:-}
   if [ -n "$explicit_plan" ]; then
@@ -429,9 +475,11 @@ ensure_no_empty_descriptions_to_push() {
 }
 
 create_pr_command() {
-  require_command jj
-  require_command gh
   require_command python3
+  if ! workspace_driver_available; then
+    require_command jj
+    require_command gh
+  fi
 
   context_path=$(default_publish_context_path)
   while [ "$#" -gt 0 ]; do
@@ -452,6 +500,66 @@ create_pr_command() {
 
   base=${SCHERZO_PR_BASE:-main}
   remote=${SCHERZO_PR_REMOTE:-origin}
+
+  title=$(plan_title "$plan")
+  [ -n "$title" ] || title="Add ExecPlan $(plan_stem "$plan")"
+  case "$title" in
+    ExecPlan:*|execplan:*) pr_title=$title ;;
+    *) pr_title="ExecPlan: $title" ;;
+  esac
+
+  mkdir -p tmp
+  body_file=tmp/execplan-pr-body.md
+  title_file=tmp/execplan-pr-title.txt
+  printf '%s\n' "$pr_title" >"$title_file"
+  cat >"$body_file" <<EOF_BODY
+Adds a Carbon HTML ExecPlan artifact generated from a Linear \`workflow:execplan\` ticket.
+
+Plan artifact: \`$plan\`
+
+This PR is ready for review. If the source ticket left unresolved design choices, they are recorded in the plan's \`Open Questions and Clarifications Needed\` section.
+EOF_BODY
+
+  if workspace_driver_available; then
+    driver_json=$("$SCHERZO_WORKSPACE_DRIVER" publish-change --kind execplan --title-file "$title_file" --body-file "$body_file" --branch-prefix scherzo/execplan --base "$base" --json) || fail "workspace driver publish-change failed"
+    driver_values=$(printf '%s' "$driver_json" | python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception as exc:
+    print(f"scherzo-execplan: workspace driver publish-change returned malformed JSON: {exc}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict) or data.get("version") != 1:
+    print("scherzo-execplan: workspace driver publish-change JSON must be an object with version=1", file=sys.stderr)
+    sys.exit(1)
+if data.get("status") not in {"published", "updated", "unchanged"}:
+    status = data.get("status")
+    print(f"scherzo-execplan: workspace driver publish-change returned status {status!r}", file=sys.stderr)
+    sys.exit(1)
+for key in ["url", "branch"]:
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        print(f"scherzo-execplan: workspace driver publish-change missing {key}", file=sys.stderr)
+        sys.exit(1)
+print("url=" + data["url"].strip())
+print("branch=" + data["branch"].strip())
+print("base_revision=" + str(data.get("base_revision") or data.get("base_ref") or ""))
+') || exit 1
+    pr_url=$(printf '%s\n' "$driver_values" | awk -F= '$1 == "url" { print substr($0, 5); exit }')
+    branch=$(printf '%s\n' "$driver_values" | awk -F= '$1 == "branch" { print substr($0, 8); exit }')
+    base_revision=$(printf '%s\n' "$driver_values" | awk -F= '$1 == "base_revision" { print substr($0, 15); exit }')
+    [ -n "$base_revision" ] || base_revision=$base
+    source_issue=$(maybe_source_issue_identifier "$plan")
+    write_publish_context "$context_path" "$plan" "$branch" "$pr_url" "$source_issue"
+    print_primary_plan_artifact "$plan"
+    echo "PLAN_PATH=$plan"
+    echo "BRANCH=$branch"
+    echo "PUBLISH_BASE=$base_revision"
+    echo "PR_URL=$pr_url"
+    echo "PUBLISH_CONTEXT=$context_path"
+    return
+  fi
+
   repo=${SCHERZO_PR_REPO:-}
   if [ -z "$repo" ]; then
     url=$(remote_url "$remote")
@@ -467,13 +575,6 @@ create_pr_command() {
     validate_plan "$plan"
   fi
 
-  title=$(plan_title "$plan")
-  [ -n "$title" ] || title="Add ExecPlan $(plan_stem "$plan")"
-  case "$title" in
-    ExecPlan:*|execplan:*) pr_title=$title ;;
-    *) pr_title="ExecPlan: $title" ;;
-  esac
-
   slug=$(sanitize_ref_part "$(plan_stem "$plan")" | cut -c 1-60)
   [ -n "$slug" ] || slug=plan
   branch=$(execplan_branch_name "$plan")
@@ -482,16 +583,6 @@ create_pr_command() {
   ensure_no_empty_descriptions_to_push "$remote"
   jj bookmark set "$branch" --revision @
   jj git push --remote "$remote" --bookmark "$branch" --allow-new
-
-  mkdir -p tmp
-  body_file=tmp/execplan-pr-body.md
-  cat >"$body_file" <<EOF_BODY
-Adds a Carbon HTML ExecPlan artifact generated from a Linear \`workflow:execplan\` ticket.
-
-Plan artifact: \`$plan\`
-
-This PR is ready for review. If the source ticket left unresolved design choices, they are recorded in the plan's \`Open Questions and Clarifications Needed\` section.
-EOF_BODY
 
   if pr_url=$(gh pr view "$branch" --repo "$repo" --json url --jq .url 2>/dev/null); then
     :

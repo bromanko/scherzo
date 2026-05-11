@@ -17,7 +17,7 @@ Workflow contract:
 - The only allowed goal is to resolve merge conflicts caused by merging the printed base branch into the printed target branch.
 - Do not intentionally change functionality, public behavior, requirements, tests, or documentation beyond what is strictly necessary to remove conflict markers and preserve the combined intent of the two parents.
 - If you cannot resolve a conflict without making a behavioral choice, write `tmp/scherzo-merge-conflict-failure.md` explaining the ambiguity and stop. The validation step will fail the workflow as requested.
-- You are already inside a dedicated jj workspace. Do not create, forget, finish, switch, push, bookmark, commit, squash, abandon, or otherwise manage jj workspaces or branches. Later deterministic command steps validate, describe, bookmark, and push.
+- You are already inside a dedicated workflow workspace prepared by Scherzo. Do not create, forget, finish, switch, push, bookmark, commit, squash, abandon, or otherwise manage workflow workspaces or branches. Later deterministic command steps validate and publish through the configured workspace driver.
 - Do not use `gh` to post comments. The publish step posts one PR comment when the target is a PR.
 - Read the `METADATA_PATH=...` file printed by the prepare step for target metadata and the exact conflicted file list.
 - Read the `BRIEF_PATH=...` file printed by the prepare step for the normalized target brief.
@@ -25,7 +25,7 @@ Workflow contract:
 - Exception: you may edit a non-conflicted tracked file only when a targeted check or compiler error shows a small, mechanical fallout from the conflict resolution and the edit is required to preserve the combined intent of both parents. Examples: callback arity updates, import/module rename fixes, constructor field shape updates with ignored/defaulted values, or test helper signature updates that do not change assertions or expected behavior.
 - Do not use the exception to change test expectations, update broad snapshots, add/remove tracked files, refactor, change public behavior, or choose between incompatible semantics. If the needed edit is not obviously mechanical, write `tmp/scherzo-merge-conflict-failure.md` and stop.
 - If you edit any non-conflicted tracked file under this exception, write `tmp/scherzo-merge-conflict-mechanical-edits.json` with a `non_conflicted_edits` list. Each entry must include `path` and a behavior-preserving `reason`. Validation hashes every other tracked file and fails if non-conflicted changes are not manifested.
-- Remove all jj conflict markers. Jujutsu conflict markers may include lines starting with `<<<<<<<`, `+++++++`, `%%%%%%%`, `\\\\\\\`, or `>>>>>>>`.
+- Remove all VCS conflict markers. Jujutsu-backed workspaces may show conflict marker lines starting with `<<<<<<<`, `+++++++`, `%%%%%%%`, `\\\\\\\`, or `>>>>>>>`.
 - If `CONFLICT_COUNT=0`, make no source changes. You may still read the metadata and finish with a no-op summary.
 
 Conflict-resolution policy:

@@ -53,12 +53,14 @@ The main merge-conflict risk is pretending conflict preparation is a generic wor
 - [x] (2026-05-09 00:00Z) Inspected the current workflow YAML files and helper-script surfaces relevant to implementation-like workflows.
 - [x] (2026-05-09 00:00Z) Wrote this draft ExecPlan under `docs/plans/`.
 - [x] (2026-05-09 00:30Z) Incorporated adversarial review findings by closing driver operation contracts, aligning capability declarations with helper behavior, strengthening prompt and fake-driver validation, and adding a workflow-level smoke test.
-- [ ] Verify prerequisites from the workspace-driver foundation in the implementation workspace before making code changes.
-- [ ] Add or adjust driver contract support needed by the dogfood helpers, especially changed-file status JSON, diff JSON, baseline JSON, refresh-base JSON, and publish-change JSON.
-- [ ] Convert helper scripts incrementally to call `$SCHERZO_WORKSPACE_DRIVER` for driver-owned operations.
-- [ ] Update dogfood workflow YAML capability declarations and command arguments.
-- [ ] Rewrite implementation-like prompts to use workspace-driver language instead of jj language.
-- [ ] Add tests and run the validation commands listed in this plan.
+- [x] (2026-05-11 00:00Z) Verified the workspace-driver foundation exists in the implementation workspace: workflow DAG parsing has `workspace_capabilities`, config profiles model `driver`, runtime bundle capability validation is present, command and agent-step environments expose `SCHERZO_WORKSPACE_DRIVER`, and `.scherzo/scherzo.yaml` uses a driver-backed `dogfood-jj` profile.
+- [x] (2026-05-11 00:00Z) Added driver contract support to `scripts/scherzo-workspace-jj` for changed-file status JSON, diff JSON, baseline JSON, refresh-base JSON, and publish-change JSON while preserving lifecycle, status, diff-human, and assert-only behavior.
+- [x] (2026-05-11 00:00Z) Converted the implementation, ExecPlan, ExecPlan revision, merge-conflict publication, and review helper paths to use `$SCHERZO_WORKSPACE_DRIVER` when it is present for driver-owned operations, with legacy local fallback retained for non-workflow test and manual invocations.
+- [x] (2026-05-11 00:00Z) Updated dogfood workflow YAML capability declarations and removed raw review revset arguments from implementation and ExecPlan implementation workflow review steps.
+- [x] (2026-05-11 00:00Z) Rewrote implementation-like prompts to use dedicated workflow workspace and workspace-driver language rather than direct jj status or diff instructions.
+- [x] (2026-05-11 00:00Z) Updated portability, runtime-bundle, and jj-driver tests and ran `direnv exec . gleam test`, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`.
+- [x] (2026-05-11 00:00Z) Fixed a validation-environment regression discovered after rebasing onto `main@origin`: `scripts/scherzo-implementation validate` now strips workspace driver context before invoking SelfCI so nested helper tests do not accidentally use the outer workflow driver.
+- [x] (2026-05-11 00:00Z) Re-ran final validation through `scripts/scherzo-implementation validate`; SelfCI passed on the rebased candidate.
 
 ## Surprises & Discoveries
 
@@ -73,6 +75,18 @@ The main merge-conflict risk is pretending conflict preparation is a generic wor
 
 - Observation: The implementation-like prompts contain direct jj workspace and status instructions.
   Evidence: Prompt search found wording such as "dedicated jj workspace", `jj status --color=never`, `jj diff --color=never`, and `jj diff --from @- --to @ --name-only --color=never` in files under `.scherzo/workflows/prompts/`.
+
+- Observation: By implementation time the prerequisite driver foundation had landed, but the dogfood profile still advertised only `status`, `diff`, `changed-files`, and `assert-only`.
+  Evidence: `.scherzo/scherzo.yaml` had `dogfood-jj` with a `driver` block, and `src/scherzo/workflow_dag.gleam` parsed `workspace_capabilities`; the profile capability list needed `baseline`, `refresh-base`, and `publish-change` added for the converted implementation-like workflows.
+
+- Observation: Existing helper tests invoked dogfood scripts without `SCHERZO_WORKSPACE_DRIVER`, so a hard cutover would have turned many local helper tests into environment tests rather than behavior tests.
+  Evidence: `direnv exec . gleam test` initially failed in `execplan_implementation_helper_test` until the shell parsing regression in `scripts/scherzo-execplan` was fixed; the converted helpers now use the driver when present and retain legacy local fallback otherwise.
+
+- Observation: `scripts/scherzo-execplan` needed careful POSIX shell handling for tab-separated driver changed-file records.
+  Evidence: A manual replay of `scripts/scherzo-execplan create-pr` in `test/tmp/execplan-publish-normalize` first failed with an awk regex issue and then with `IFS='\t'` splitting on the letter `t`; replacing the loop with an awk comparison fixed the failure and the full Gleam unit suite passed.
+
+- Observation: SelfCI validation runs nested helper tests in a temporary checkout, so outer workflow driver variables must be treated as run-scoped environment just like `SCHERZO_RUN_ROOT` and `SCHERZO_WORKSPACE_PATH`.
+  Evidence: After rebasing onto `main@origin`, `scripts/scherzo-implementation validate` initially failed `execplan_implementation_helper_test` because `SCHERZO_WORKSPACE_DRIVER` leaked into the temporary SelfCI environment and caused helper fixtures to call the outer workflow driver. Adding `SCHERZO_WORKSPACE_DRIVER`, `SCHERZO_WORKSPACE_PROFILE`, `SCHERZO_WORKSPACE_CAPABILITIES`, and `SCHERZO_WORKSPACE_ROOT` to the stripped validation environment fixed the failure, and SelfCI passed.
 
 ## Decision Log
 
@@ -108,9 +122,25 @@ The main merge-conflict risk is pretending conflict preparation is a generic wor
   Rationale: The workflow interface is not portable if agents still receive raw jj instructions, even when command helpers use a driver.
   Date: 2026-05-09
 
+- Decision: Retain legacy helper fallback when `SCHERZO_WORKSPACE_DRIVER` is absent, but make all dogfood workflow paths driver-backed by declaring capabilities and relying on the runtime-provided driver environment.
+  Rationale: The plan's workflow boundary goal is satisfied when checked-in workflows and prompts use the driver. Keeping fallback preserves existing local test fixtures and manual helper ergonomics without teaching agents or workflow YAML to use raw jj operations.
+  Date: 2026-05-11
+
+- Decision: Implement generic `publish-change` in the dogfood jj driver and pass workflow-specific title and body files from helper scripts.
+  Rationale: This keeps PR metadata policy in the helpers while moving bookmark, push, and hosted-review URL creation into the workspace driver boundary.
+  Date: 2026-05-11
+
+- Decision: Leave merge-conflict preparation and conflict-specific validation hash checks in `scripts/scherzo-merge-conflict`, while delegating the final branch publication to `publish-change` when a driver is available.
+  Rationale: Conflict materialization and non-conflicted-file fingerprint policy are not generic workspace operations; publication is generic enough to move behind the driver.
+  Date: 2026-05-11
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The implementation completed the workflow-boundary conversion. The five implementation-like dogfood workflows now select `dogfood-jj` and declare the capabilities their helpers and prompts require. Implementation and ExecPlan implementation review steps no longer pass `--from @- --to @` to `scripts/scherzo-review`; the review helper uses the workspace driver for default diff input when the driver environment is present. Implementation-like prompts no longer contain raw `jj` status or diff instructions.
+
+The dogfood jj driver now exposes the JSON operations required by this plan: changed-file records with statuses, diff text, baseline identities, base refresh, and publish-change. Helper scripts assemble workflow-specific metadata and call the driver for driver-owned operations when `SCHERZO_WORKSPACE_DRIVER` is set. Some legacy local fallback remains intentionally for tests and ad-hoc non-workflow usage; review should focus on the checked-in workflow paths and runtime environment, where the driver is declared and provided.
+
+Validation completed with `direnv exec . gleam test`, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`. After rebasing onto `main@origin`, final workflow validation also completed with `scripts/scherzo-implementation validate`, which ran SelfCI successfully. The lint commands reported the repository's existing warning inventory and no errors.
 
 ## Context and Orientation
 

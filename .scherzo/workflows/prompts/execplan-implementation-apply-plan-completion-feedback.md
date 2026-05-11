@@ -17,9 +17,9 @@ Plan-completion verifier summary:
 
 Feedback contract:
 
-- You are in the same dedicated jj workspace as the implementation and verification steps.
-- Do not create, forget, finish, switch, push, bookmark, or otherwise manage jj workspaces, branches, bookmarks, pushes, or pull requests.
-- Do not create jj/git commits. The publish step creates the final logical jj commit after validation passes.
+- You are in the same dedicated workflow workspace prepared by Scherzo as the implementation and verification steps.
+- Do not create, forget, finish, switch, push, bookmark, or otherwise manage workflow workspaces, branches, bookmarks, pushes, or pull requests.
+- Do not create VCS commits. The publish step uses the configured workspace driver to publish the final change after validation passes.
 - Read `tmp/scherzo-plan-completion-verdict.json` first.
 - If the verdict is `pass`, make no tracked-file edits. Report that no plan-completion feedback was required.
 - If the verdict is `fail`, this is the workflow's single automatic repair chance before code review. Complete only the missing required ExecPlan behavior described in `blocking_findings`.
@@ -28,7 +28,7 @@ Feedback contract:
 
 Process:
 
-1. Inspect `jj status --color=never` and read `tmp/scherzo-plan-completion-verdict.json`.
+1. Inspect `$SCHERZO_WORKSPACE_DRIVER status --human` and read `tmp/scherzo-plan-completion-verdict.json`.
 2. If the verdict is `pass`, stop without editing tracked files.
 3. If the verdict is `fail`, read the full ExecPlan and implement the blocking findings with the smallest maintainable change.
 4. Add or update focused tests when required by the missing work.

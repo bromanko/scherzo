@@ -299,6 +299,9 @@ pub fn dogfood_workflows_select_existing_driver_profile_test() {
       config_types.WorkspaceDiff,
       config_types.WorkspaceChangedFiles,
       config_types.WorkspaceAssertOnly,
+      config_types.WorkspaceBaseline,
+      config_types.WorkspaceRefreshBase,
+      config_types.WorkspacePublishChange,
     ]
 
   assert_dogfood_workflows_select_profile(
@@ -324,7 +327,37 @@ fn assert_dogfood_workflows_select_profile(
     [id, ..rest] -> {
       let assert Ok(dag) = dict.get(workflows, id)
       assert dag.workspace_profile == Some("dogfood-jj")
-      assert dag.workspace_capabilities == []
+      let expected_capabilities = case id {
+        "implementation" | "execplan-implementation" -> [
+          config_types.WorkspaceStatus,
+          config_types.WorkspaceDiff,
+          config_types.WorkspaceChangedFiles,
+          config_types.WorkspaceBaseline,
+          config_types.WorkspaceRefreshBase,
+          config_types.WorkspacePublishChange,
+        ]
+        "execplan" -> [
+          config_types.WorkspaceStatus,
+          config_types.WorkspaceDiff,
+          config_types.WorkspaceChangedFiles,
+          config_types.WorkspacePublishChange,
+        ]
+        "execplan-revision" -> [
+          config_types.WorkspaceStatus,
+          config_types.WorkspaceDiff,
+          config_types.WorkspaceChangedFiles,
+          config_types.WorkspaceRefreshBase,
+          config_types.WorkspacePublishChange,
+        ]
+        "merge-conflict-resolution" -> [
+          config_types.WorkspaceStatus,
+          config_types.WorkspaceDiff,
+          config_types.WorkspaceChangedFiles,
+          config_types.WorkspacePublishChange,
+        ]
+        _ -> []
+      }
+      assert dag.workspace_capabilities == expected_capabilities
       assert_dogfood_workflows_select_profile(rest, workflows)
     }
   }
@@ -526,6 +559,9 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
       config_types.WorkspaceDiff,
       config_types.WorkspaceChangedFiles,
       config_types.WorkspaceAssertOnly,
+      config_types.WorkspaceBaseline,
+      config_types.WorkspaceRefreshBase,
+      config_types.WorkspacePublishChange,
     ]
   assert driver.timeout_ms == 60_000
 
