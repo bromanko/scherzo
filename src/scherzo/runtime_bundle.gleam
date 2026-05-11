@@ -289,16 +289,8 @@ fn validate_workspace_profiles(
   case workflows {
     [] -> Ok(Nil)
     [#(_, dag), ..rest] -> {
-      use profile <- result.try(
+      use _ <- result.try(
         workspace_profile.resolve(dag, orchestrator)
-        |> result.map_error(workspace_profile_error_to_bundle_error),
-      )
-      use _ <- result.try(
-        workspace_profile.validate_capabilities(dag, profile)
-        |> result.map_error(workspace_profile_error_to_bundle_error),
-      )
-      use _ <- result.try(
-        workspace_profile.validate_dispatchable_profile(dag, profile)
         |> result.map_error(workspace_profile_error_to_bundle_error),
       )
       validate_workspace_profiles(orchestrator, rest)

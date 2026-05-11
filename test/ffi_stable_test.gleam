@@ -16,6 +16,10 @@ pub fn time_ffi_monotonic_ms_does_not_go_backwards_test() {
   assert after >= before
 }
 
+pub fn time_ffi_wall_clock_ms_is_unix_epoch_milliseconds_test() {
+  assert wall_clock_ms() > 1_000_000_000_000
+}
+
 pub fn config_ffi_path_helpers_are_stable_without_host_prefix_assumptions_test() {
   let assert Ok(dir) = path.dirname("test/tmp/ffi-stable/file.txt")
   assert dir == "test/tmp/ffi-stable"
@@ -36,6 +40,9 @@ pub fn terminal_ffi_returns_safe_types_test() {
 
 @external(erlang, "scherzo_time_ffi", "monotonic_ms")
 fn monotonic_ms() -> Int
+
+@external(erlang, "scherzo_time_ffi", "wall_clock_ms")
+fn wall_clock_ms() -> Int
 
 @external(erlang, "scherzo_terminal_ffi", "stdout_supports_color")
 fn stdout_supports_color() -> Bool

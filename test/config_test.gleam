@@ -56,6 +56,8 @@ pub fn default_values_test() {
   assert agent.max_retry_backoff_ms == 300_000
   assert agent.max_retry_attempts == 5
   assert agent.max_sessions_per_issue == 3
+  assert agent.context_recovery_max_attempts == 1
+  assert agent.context_recovery_prompt_char_limit == 40_000
 
   let pi = config.default_pi_config()
   assert pi.command == "pi --mode rpc --no-session"
@@ -273,6 +275,32 @@ pub fn hooks_and_agent_limit_validation_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
+}
+
+pub fn context_recovery_agent_config_validation_test() {
+  let disabled_front =
+    minimal_front()
+    <> "agent:\n  context_recovery_max_attempts: 0\n  context_recovery_prompt_char_limit: 1234\n"
+  let assert Ok(disabled) =
+    config.resolve_with_env(
+      definition(disabled_front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert disabled.agent.context_recovery_max_attempts == 0
+  assert disabled.agent.context_recovery_prompt_char_limit == 1234
+
+  let negative_attempts =
+    invalid_config_message(
+      minimal_front() <> "agent:\n  context_recovery_max_attempts: -1\n",
+    )
+  assert string.contains(negative_attempts, "context_recovery_max_attempts")
+
+  let nonpositive_limit =
+    invalid_config_message(
+      minimal_front() <> "agent:\n  context_recovery_prompt_char_limit: 0\n",
+    )
+  assert string.contains(nonpositive_limit, "agent limits must be positive")
 }
 
 pub fn pi_validation_and_unknown_keys_ignored_test() {

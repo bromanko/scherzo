@@ -2,6 +2,7 @@ version: 1
 id: execplan-revision
 description: Revise an existing ExecPlan PR from GitHub review feedback and update the PR branch.
 workspace_profile: dogfood-jj
+workspace_capabilities: [status, diff, changed-files, refresh-base, publish-change]
 max_parallel_steps: 1
 steps:
   - id: prepare_pr

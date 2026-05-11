@@ -16,8 +16,8 @@ Description:
 Workflow contract:
 
 - This workflow turns a sufficiently detailed Linear ticket into a checked-in Carbon HTML ExecPlan proposal.
-- You are already inside a dedicated jj workspace created by Scherzo; do not create, forget, finish, switch, push, or otherwise manage jj workspaces.
-- Use `jj status --color=never` for source-control inspection.
+- You are already inside a dedicated workflow workspace prepared by Scherzo; do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
+- Use `$SCHERZO_WORKSPACE_DRIVER status --human` for source-control inspection.
 - Use the repo-local exec-plan skill by reading `.pi/skills/exec-plan/SKILL.md` before drafting.
 - Inspect the current repository with the smallest useful scope required to make the plan accurate and self-contained.
 - The ticket should contain enough information to draft the plan. Prefer recording `[CLARIFY]` items over exhaustive discovery when details are ambiguous.

@@ -39,6 +39,16 @@ if [[ -n "${FAKE_PI_ARGV_LOG:-}" ]]; then
   } >> "$FAKE_PI_ARGV_LOG"
 fi
 
+if [[ -n "${FAKE_PI_ENV_LOG:-}" ]]; then
+  {
+    printf 'SCHERZO_WORKSPACE_PROFILE=%s\n' "${SCHERZO_WORKSPACE_PROFILE:-}"
+    printf 'SCHERZO_WORKSPACE_DRIVER=%s\n' "${SCHERZO_WORKSPACE_DRIVER:-}"
+    printf 'SCHERZO_WORKSPACE_CAPABILITIES=%s\n' "${SCHERZO_WORKSPACE_CAPABILITIES:-}"
+    printf 'SCHERZO_WORKSPACE_NAME=%s\n' "${SCHERZO_WORKSPACE_NAME:-}"
+    printf 'SCHERZO_WORKSPACE_PATH=%s\n' "${SCHERZO_WORKSPACE_PATH:-}"
+  } >> "$FAKE_PI_ENV_LOG"
+fi
+
 session_file_for_state() {
   if [[ -n "${FAKE_PI_SESSION_FILE_MISMATCH:-}" ]]; then
     printf '%s' "$FAKE_PI_SESSION_FILE_MISMATCH"
@@ -144,6 +154,18 @@ while IFS= read -r line; do
     set_auto_retry)
       jq -cn --arg id "$id" '{id:$id,type:"response",command:"set_auto_retry",success:true}'
       ;;
+    set_auto_compaction)
+      jq -cn --arg id "$id" '{id:$id,type:"response",command:"set_auto_compaction",success:true}'
+      ;;
+    compact)
+      if [[ -n "${FAKE_PI_COMPACT_FAIL:-}" ]]; then
+        jq -cn --arg id "$id" '{id:$id,type:"response",command:"compact",success:false,error:"compact failed"}'
+      else
+        jq -cn '{type:"compaction_start",reason:"manual"}'
+        jq -cn '{type:"compaction_end",reason:"manual"}'
+        jq -cn --arg id "$id" '{id:$id,type:"response",command:"compact",success:true}'
+      fi
+      ;;
     get_state)
       if [[ -n "${FAKE_PI_GET_STATE_FAIL:-}" ]]; then
         jq -cn --arg id "$id" '{id:$id,type:"response",command:"get_state",success:false,error:"get_state failed"}'
@@ -181,6 +203,12 @@ while IFS= read -r line; do
       jq -cn --arg id "$id" '{id:$id,type:"response",command:"prompt",success:true}'
       if [[ -n "${FAKE_PI_NO_OUTPUT_AFTER_PROMPT:-}" ]]; then
         while true; do sleep 60; done
+      fi
+      if [[ -n "${FAKE_PI_CONTEXT_ERROR_ALWAYS:-}" ]] || { [[ -n "${FAKE_PI_CONTEXT_ERROR_ONCE:-}" ]] && [[ "$prompt_seen" -eq 1 ]]; }; then
+        jq -cn '{type:"agent_start"}'
+        jq -cn '{type:"turn_start"}'
+        jq -cn '{type:"turn_end",stopReason:"error",message:{role:"assistant",provider:"openai-codex",stopReason:"error",errorMessage:"Codex error: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\",\"message\":\"Your input exceeds the context window of this model. Please adjust your input and try again.\",\"param\":\"input\"},\"sequence_number\":2}",content:[]}}'
+        continue
       fi
       if [[ -n "${FAKE_PI_DELAY_EVENT_MS:-}" ]]; then
         sleep "$(awk "BEGIN { print ${FAKE_PI_DELAY_EVENT_MS} / 1000 }")"

@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/context_exhaustion
 import scherzo/agent/operator_control
 import scherzo/agent/pi_event
 import scherzo/agent/types
@@ -61,6 +62,16 @@ pub type ActiveTurn {
   )
 }
 
+pub type ActiveTurnFailure {
+  FinalFailure(types.WorkerFailure)
+  RecoverableContextExhaustion(
+    session: client.Session,
+    prompt_queue: List(String),
+    reason: error.PiRpcError,
+    tokens: session_tokens.TokenTotals,
+  )
+}
+
 type ActiveCommandState {
   ActiveCommandState(
     session: client.Session,
@@ -80,7 +91,7 @@ pub fn run_active_turn(
   pending_ui: Option(operator_control.PendingUi),
   turn_records: List(protocol.RpcRecord),
   stall_deadline_ms: Int,
-) -> Result(ActiveTurn, types.WorkerFailure) {
+) -> Result(ActiveTurn, ActiveTurnFailure) {
   active_turn_loop(
     context,
     session,
@@ -100,7 +111,7 @@ fn active_turn_loop(
   pending_ui: Option(operator_control.PendingUi),
   turn_records: List(protocol.RpcRecord),
   stall_deadline_ms: Int,
-) -> Result(ActiveTurn, types.WorkerFailure) {
+) -> Result(ActiveTurn, ActiveTurnFailure) {
   case process.receive(context.command_subject, within: 0) {
     Ok(command) -> {
       use state <- try_active(handle_active_command(
@@ -153,24 +164,19 @@ fn active_turn_loop(
                 turn_records,
               )
             None ->
-              Error(context.cleanup_failure(
-                session,
-                context.issue_id,
-                prompt_queue,
-                error.PiFailed(error.PiStallTimeout),
-                context.totals,
-                None,
-              ))
+              Error(
+                FinalFailure(context.cleanup_failure(
+                  session,
+                  context.issue_id,
+                  prompt_queue,
+                  error.PiFailed(error.PiStallTimeout),
+                  context.totals,
+                  None,
+                )),
+              )
           }
         Error(err) ->
-          Error(context.cleanup_failure(
-            session,
-            context.issue_id,
-            prompt_queue,
-            error.PiFailed(err),
-            context.totals,
-            None,
-          ))
+          Error(recoverable_or_final(context, session, prompt_queue, err))
         Ok(#(session, None)) ->
           active_turn_loop(
             context,
@@ -206,7 +212,7 @@ fn handle_active_command(
   pending_ui: Option(operator_control.PendingUi),
   turn_records: List(protocol.RpcRecord),
   stall_deadline_ms: Int,
-) -> Result(ActiveCommandState, types.WorkerFailure) {
+) -> Result(ActiveCommandState, ActiveTurnFailure) {
   let previous_state =
     operator_control.from_parts(prompt_queue, stop_after_turn, pending_ui)
   let #(state, effects) =
@@ -235,7 +241,7 @@ fn interpret_active_effects(
   effects: List(operator_control.Effect),
   turn_records: List(protocol.RpcRecord),
   stall_deadline_ms: Int,
-) -> Result(ActiveCommandState, types.WorkerFailure) {
+) -> Result(ActiveCommandState, ActiveTurnFailure) {
   case effects {
     [] ->
       Ok(active_command_state(session, state, stall_deadline_ms, turn_records))
@@ -266,13 +272,15 @@ fn interpret_active_effects(
           )
         }
         operator_control.AbortRequested(reply) ->
-          Error(context.handle_abort(
-            session,
-            context.issue_id,
-            state.prompt_queue,
-            context.totals,
-            reply,
-          ))
+          Error(
+            FinalFailure(context.handle_abort(
+              session,
+              context.issue_id,
+              state.prompt_queue,
+              context.totals,
+              reply,
+            )),
+          )
         operator_control.StopBeforeNextTurn(_) ->
           interpret_active_effects(
             context,
@@ -343,7 +351,7 @@ fn send_active_ui_response(
   request_id: String,
   response: command.UiResponse,
   reply: process.Subject(worker_command.Reply),
-) -> Result(ActiveCommandState, types.WorkerFailure) {
+) -> Result(ActiveCommandState, ActiveTurnFailure) {
   let sent = case response {
     command.UiCancel ->
       client.send_extension_ui_cancel(
@@ -446,7 +454,7 @@ fn handle_turn_record(
   pending_ui: Option(operator_control.PendingUi),
   turn_records: List(protocol.RpcRecord),
   stall_deadline_ms: Int,
-) -> Result(ActiveTurn, types.WorkerFailure) {
+) -> Result(ActiveTurn, ActiveTurnFailure) {
   let secrets = config_module.resolved_secrets(context.config)
   let event = pi_event.from_string(record.type_)
   context.emit_update(
@@ -456,14 +464,7 @@ fn handle_turn_record(
   let turn_records = list.append(turn_records, [record])
   case stop_reason_failure(record) {
     Some(err) ->
-      Error(context.cleanup_failure(
-        session,
-        context.issue_id,
-        prompt_queue,
-        error.PiFailed(err),
-        context.totals,
-        None,
-      ))
+      Error(recoverable_or_final(context, session, prompt_queue, err))
     None ->
       case event {
         pi_event.AgentEnd ->
@@ -476,16 +477,18 @@ fn handle_turn_record(
                 turn_records,
               ))
             Some(_) ->
-              Error(context.cleanup_failure(
-                session,
-                context.issue_id,
-                prompt_queue,
-                error.PiFailed(error.PiProtocolError(
-                  "agent ended with pending UI request",
+              Error(
+                FinalFailure(context.cleanup_failure(
+                  session,
+                  context.issue_id,
+                  prompt_queue,
+                  error.PiFailed(error.PiProtocolError(
+                    "agent ended with pending UI request",
+                  )),
+                  context.totals,
+                  None,
                 )),
-                context.totals,
-                None,
-              ))
+              )
           }
         pi_event.ExtensionUiRequest ->
           handle_extension_ui_record(
@@ -513,15 +516,46 @@ fn handle_turn_record(
 }
 
 fn stop_reason_failure(record: protocol.RpcRecord) -> Option(error.PiRpcError) {
-  case record.stop_reason {
-    None -> None
-    Some(reason) -> {
-      let normalized = reason |> string.trim |> string.lowercase
-      case normalized == "error" {
-        True -> Some(error.PiProtocolError(stop_reason_failure_message(record)))
-        False -> None
+  case context_exhaustion.from_rpc_record(record) {
+    Some(context) -> Some(context_exhaustion.to_pi_rpc_error(context))
+    None ->
+      case record.stop_reason {
+        None -> None
+        Some(reason) -> {
+          let normalized = reason |> string.trim |> string.lowercase
+          case normalized == "error" {
+            True ->
+              Some(error.PiProtocolError(stop_reason_failure_message(record)))
+            False -> None
+          }
+        }
       }
-    }
+  }
+}
+
+fn recoverable_or_final(
+  context: Context,
+  session: client.Session,
+  prompt_queue: List(String),
+  err: error.PiRpcError,
+) -> ActiveTurnFailure {
+  case context_exhaustion.from_pi_rpc_error(err) {
+    Some(_) ->
+      RecoverableContextExhaustion(
+        session: session,
+        prompt_queue: prompt_queue,
+        reason: err,
+        tokens: context.totals,
+      )
+    None ->
+      FinalFailure(context.cleanup_failure(
+        session,
+        context.issue_id,
+        prompt_queue,
+        error.PiFailed(err),
+        context.totals,
+        None,
+      ))
   }
 }
 
@@ -548,7 +582,7 @@ fn handle_extension_ui_record(
   pending_ui: Option(operator_control.PendingUi),
   turn_records: List(protocol.RpcRecord),
   stall_deadline_ms: Int,
-) -> Result(ActiveTurn, types.WorkerFailure) {
+) -> Result(ActiveTurn, ActiveTurnFailure) {
   case is_blocking_ui_method(record.method) {
     False ->
       active_turn_loop(
@@ -563,14 +597,16 @@ fn handle_extension_ui_record(
     True ->
       case pending_ui {
         Some(_) ->
-          Error(context.cleanup_failure(
-            session,
-            context.issue_id,
-            prompt_queue,
-            error.PiFailed(error.PiProtocolError("nested operator UI request")),
-            context.totals,
-            None,
-          ))
+          Error(
+            FinalFailure(context.cleanup_failure(
+              session,
+              context.issue_id,
+              prompt_queue,
+              error.PiFailed(error.PiProtocolError("nested operator UI request")),
+              context.totals,
+              None,
+            )),
+          )
         None ->
           case record.id, record.method {
             Some(request_id), Some(method) ->
@@ -586,16 +622,18 @@ fn handle_extension_ui_record(
                 stall_deadline_ms,
               )
             _, _ ->
-              Error(context.cleanup_failure(
-                session,
-                context.issue_id,
-                prompt_queue,
-                error.PiFailed(error.PiProtocolError(
-                  "extension UI request missing id",
+              Error(
+                FinalFailure(context.cleanup_failure(
+                  session,
+                  context.issue_id,
+                  prompt_queue,
+                  error.PiFailed(error.PiProtocolError(
+                    "extension UI request missing id",
+                  )),
+                  context.totals,
+                  None,
                 )),
-                context.totals,
-                None,
-              ))
+              )
           }
       }
   }
@@ -611,19 +649,21 @@ fn handle_blocking_ui_policy(
   stop_after_turn: Bool,
   turn_records: List(protocol.RpcRecord),
   stall_deadline_ms: Int,
-) -> Result(ActiveTurn, types.WorkerFailure) {
+) -> Result(ActiveTurn, ActiveTurnFailure) {
   case context.config.pi.ui_request_policy {
     config_types.Fail ->
-      Error(context.cleanup_failure(
-        session,
-        context.issue_id,
-        prompt_queue,
-        error.PiFailed(error.PiProtocolError(
-          "extension UI request blocked by policy",
+      Error(
+        FinalFailure(context.cleanup_failure(
+          session,
+          context.issue_id,
+          prompt_queue,
+          error.PiFailed(error.PiProtocolError(
+            "extension UI request blocked by policy",
+          )),
+          context.totals,
+          None,
         )),
-        context.totals,
-        None,
-      ))
+      )
     config_types.Ignore ->
       active_turn_loop(
         context,
@@ -672,14 +712,16 @@ fn handle_blocking_ui_policy(
           )
         }
         Error(err) ->
-          Error(context.cleanup_failure(
-            session,
-            context.issue_id,
-            prompt_queue,
-            error.PiFailed(err),
-            context.totals,
-            None,
-          ))
+          Error(
+            FinalFailure(context.cleanup_failure(
+              session,
+              context.issue_id,
+              prompt_queue,
+              error.PiFailed(err),
+              context.totals,
+              None,
+            )),
+          )
       }
     }
     config_types.Operator -> {
@@ -714,7 +756,7 @@ fn handle_operator_ui_timeout(
   stop_after_turn: Bool,
   ui: operator_control.PendingUi,
   turn_records: List(protocol.RpcRecord),
-) -> Result(ActiveTurn, types.WorkerFailure) {
+) -> Result(ActiveTurn, ActiveTurnFailure) {
   case
     client.send_extension_ui_cancel(
       session,
@@ -723,14 +765,16 @@ fn handle_operator_ui_timeout(
     )
   {
     Error(err) ->
-      Error(context.cleanup_failure(
-        session,
-        context.issue_id,
-        prompt_queue,
-        error.PiFailed(err),
-        context.totals,
-        None,
-      ))
+      Error(
+        FinalFailure(context.cleanup_failure(
+          session,
+          context.issue_id,
+          prompt_queue,
+          error.PiFailed(err),
+          context.totals,
+          None,
+        )),
+      )
     Ok(#(session, skipped)) -> {
       emit_records(
         context.issue_id,
@@ -827,9 +871,9 @@ fn min_int(a: Int, b: Int) -> Int {
 }
 
 fn try_active(
-  result: Result(a, types.WorkerFailure),
-  next: fn(a) -> Result(b, types.WorkerFailure),
-) -> Result(b, types.WorkerFailure) {
+  result: Result(a, ActiveTurnFailure),
+  next: fn(a) -> Result(b, ActiveTurnFailure),
+) -> Result(b, ActiveTurnFailure) {
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)

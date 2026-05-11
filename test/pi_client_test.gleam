@@ -152,6 +152,28 @@ pub fn read_turn_record_uses_absolute_deadlines_test() {
   let assert Error(error.PiStallTimeout) = stall_result
 }
 
+pub fn compact_collects_compaction_events_test() {
+  let cwd = "test/tmp/pi-rpc-compact"
+  reset_dir(cwd)
+  let assert Ok(session) = client.launch(fake_pi(), cwd, "name", False, 1000)
+  let assert Ok(#(session, records)) =
+    client.compact(session, Some("Focus on workspace state"), 1000)
+  let _ = client.terminate(session)
+  assert list_types(records) == ["compaction_start", "compaction_end"]
+  assert list.map(records, protocol.compaction_reason)
+    == [Some("manual"), Some("manual")]
+}
+
+pub fn compact_failed_response_is_protocol_error_test() {
+  let cwd = "test/tmp/pi-rpc-compact-fail"
+  reset_dir(cwd)
+  let command = "FAKE_PI_COMPACT_FAIL=1 " <> fake_pi()
+  let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
+  let result = client.compact(session, None, 1000)
+  let _ = client.terminate(session)
+  let assert Error(error.PiProtocolError(_)) = result
+}
+
 pub fn send_abort_and_ui_response_helpers_test() {
   let cwd = "test/tmp/pi-rpc-command-helpers"
   reset_dir(cwd)

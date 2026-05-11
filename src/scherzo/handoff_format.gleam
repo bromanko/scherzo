@@ -473,6 +473,11 @@ fn pi_detail(pi_error: error.PiRpcError) -> Option(String) {
     error.PiExited(status) ->
       Some("pi process exited with status " <> int.to_string(status))
     error.PiProtocolError(message) -> Some("pi protocol error: " <> message)
+    error.PiContextWindowExhausted(
+      provider: _,
+      provider_code: _,
+      detail: detail,
+    ) -> Some("pi context window exhausted: " <> detail)
   }
 }
 

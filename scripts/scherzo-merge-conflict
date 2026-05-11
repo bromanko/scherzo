@@ -139,6 +139,36 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def workspace_driver_command() -> str | None:
+    value = os.environ.get("SCHERZO_WORKSPACE_DRIVER", "").strip()
+    return value or None
+
+
+def workspace_driver_available() -> bool:
+    return workspace_driver_command() is not None
+
+
+def run_workspace_driver_json(args: list[str]) -> dict[str, Any]:
+    driver = workspace_driver_command()
+    if driver is None:
+        fail("SCHERZO_WORKSPACE_DRIVER is required for this driver-backed workflow operation")
+    proc = subprocess.run(
+        [driver, *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        payload = json.loads(proc.stdout) if proc.stdout.strip() else None
+    except json.JSONDecodeError as exc:
+        fail(f"workspace driver returned malformed JSON for {' '.join(args)}: {exc}")
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        fail(f"workspace driver {' '.join(args)} must return a JSON object with version=1")
+    if proc.returncode != 0:
+        fail(str(payload.get("message") or "workspace driver command failed"))
+    return payload
+
+
 def infer_issue_identifier() -> str:
     explicit = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
     if explicit:
@@ -1042,7 +1072,8 @@ def write_publish_pr_comment(metadata: dict[str, Any], validation: dict[str, Any
 
 
 def publish_command() -> None:
-    require_command("jj")
+    if not workspace_driver_available():
+        require_command("jj")
     metadata = load_json(METADATA_PATH)
     validation = ensure_validation_passed()
 
@@ -1067,25 +1098,54 @@ def publish_command() -> None:
             print(f"PR_URL={metadata['pr_url']}")
         return
 
-    require_command("gh")
     remote = metadata["remote"]
     head_branch = metadata["head_branch"]
     base_branch = metadata["base_branch"]
-    run(["jj", "git", "fetch", "--remote", remote, "--branch", head_branch])
-    run(["jj", "git", "fetch", "--remote", remote, "--branch", base_branch])
-    remote_head = current_commit(f"{head_branch}@{remote}")
-    if remote_head != metadata["head_commit_at_prepare"]:
-        fail(
-            "target branch advanced after prepare; rerun the merge-conflict "
-            "workflow on the latest branch head before pushing"
-        )
-
     target_label = f"PR #{metadata['pr_number']}" if metadata.get("pr_number") else f"branch {head_branch}"
-    run(["jj", "describe", "-m", f"chore: resolve merge conflicts for {target_label}"])
-    track_remote_bookmark(remote, head_branch)
-    run(["jj", "bookmark", "set", head_branch, "--revision", "@"])
-    run(["jj", "git", "push", "--remote", remote, "--bookmark", head_branch])
-    commit = current_commit_short("@")
+    if workspace_driver_available():
+        title_path = TMP_DIR / "scherzo-merge-conflict-pr-title.txt"
+        body_path = TMP_DIR / "scherzo-merge-conflict-pr-body.md"
+        title_path.parent.mkdir(parents=True, exist_ok=True)
+        title_path.write_text(f"chore: resolve merge conflicts for {target_label}\n")
+        body_path.write_text(RESOLUTION_SUMMARY_PATH.read_text() if RESOLUTION_SUMMARY_PATH.exists() else "Merge conflict resolution.\n")
+        driver_args = [
+            "publish-change",
+            "--kind",
+            "merge-conflict",
+            "--title-file",
+            str(title_path),
+            "--body-file",
+            str(body_path),
+            "--branch-prefix",
+            "scherzo/merge-conflict",
+            "--base",
+            base_branch,
+            "--target-branch",
+            head_branch,
+            "--allow-no-changes",
+            "false",
+            "--json",
+        ]
+        if metadata.get("pr_number"):
+            driver_args.extend(["--target-pr", str(metadata["pr_number"])])
+        payload = run_workspace_driver_json(driver_args)
+        commit = str(payload.get("head_revision") or payload.get("change_id") or "")
+    else:
+        require_command("gh")
+        run(["jj", "git", "fetch", "--remote", remote, "--branch", head_branch])
+        run(["jj", "git", "fetch", "--remote", remote, "--branch", base_branch])
+        remote_head = current_commit(f"{head_branch}@{remote}")
+        if remote_head != metadata["head_commit_at_prepare"]:
+            fail(
+                "target branch advanced after prepare; rerun the merge-conflict "
+                "workflow on the latest branch head before pushing"
+            )
+
+        run(["jj", "describe", "-m", f"chore: resolve merge conflicts for {target_label}"])
+        track_remote_bookmark(remote, head_branch)
+        run(["jj", "bookmark", "set", head_branch, "--revision", "@"])
+        run(["jj", "git", "push", "--remote", remote, "--bookmark", head_branch])
+        commit = current_commit_short("@")
     commented = write_publish_pr_comment(metadata, validation, commit)
     clear_retention_marker()
 

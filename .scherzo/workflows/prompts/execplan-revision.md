@@ -20,8 +20,8 @@ Preparation output:
 Workflow contract:
 
 - This workflow revises an existing ExecPlan artifact on an existing GitHub PR branch. New plans are Carbon HTML files under `docs/plans/*.html`; older PRs may still contain Markdown plans.
-- You are already inside a dedicated jj workspace that has been rebased onto the latest published PR head by `scripts/scherzo-execplan-revision prepare`.
-- Do not create, forget, finish, switch, push, bookmark, commit, or otherwise manage jj workspaces or branches. Later deterministic command steps validate, describe, bookmark, push, and acknowledge.
+- You are already inside a dedicated workflow workspace prepared by Scherzo that has been rebased onto the latest published PR head by `scripts/scherzo-execplan-revision prepare`.
+- Do not create, forget, finish, switch, push, bookmark, commit, or otherwise manage workflow workspaces or branches. Later deterministic command steps validate and publish through the configured workspace driver, then acknowledge feedback.
 - Do not use `gh` to post comments. The final command step posts one top-level PR acknowledgement from your summary.
 - Read `tmp/execplan-revision-pr.json` for PR metadata.
 - Read `tmp/execplan-revision-feedback.md` for normalized GitHub PR feedback. It includes top-level PR comments, review summaries, and inline review comments.

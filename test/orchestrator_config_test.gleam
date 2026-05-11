@@ -250,6 +250,27 @@ pub fn workspace_profiles_reject_invalid_driver_shapes_test() {
     )
   assert string.contains(empty_command, "command must be non-empty")
 
+  let command_with_whitespace =
+    invalid_workspace_error(
+      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: sh driver.sh\n",
+    )
+  assert string.contains(command_with_whitespace, "without whitespace")
+
+  let command_with_shell_metacharacter =
+    invalid_workspace_error(
+      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/driver;rm\n",
+    )
+  assert string.contains(
+    command_with_shell_metacharacter,
+    "shell metacharacters",
+  )
+
+  let unsupported_command_env =
+    invalid_workspace_error(
+      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: $OTHER_ROOT/scripts/driver\n",
+    )
+  assert string.contains(unsupported_command_env, "$SCHERZO_REPO_ROOT")
+
   let lifecycle_not_list =
     invalid_workspace_error(
       "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        lifecycle: create\n",

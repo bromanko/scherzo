@@ -1,11 +1,10 @@
 import gleam/list
-import gleam/option.{None, Some}
-import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/hooks
 import scherzo/path
+import scherzo/workspace_driver_command
 import simplifile
 
 pub fn supports(
@@ -35,9 +34,10 @@ pub fn run(
   orchestrator: config_types.OrchestratorConfig,
   env: List(#(String, String)),
 ) -> Result(Nil, error.HookError) {
-  hooks.run_hook_with_env(
+  hooks.run_argv_with_env(
     name,
-    lifecycle_script(driver, operation),
+    workspace_driver_command.resolve(driver.command, orchestrator),
+    lifecycle_args(operation),
     cwd(orchestrator),
     driver.timeout_ms,
     lifecycle_env(env, driver, orchestrator),
@@ -55,9 +55,10 @@ pub fn run_best_effort(
     False -> Nil
     True -> {
       let _ =
-        hooks.run_best_effort_with_env(
+        hooks.run_best_effort_argv_with_env(
           name,
-          lifecycle_script(driver, operation),
+          workspace_driver_command.resolve(driver.command, orchestrator),
+          lifecycle_args(operation),
           cwd(orchestrator),
           driver.timeout_ms,
           lifecycle_env(env, driver, orchestrator),
@@ -160,14 +161,10 @@ fn remove_env(
   ]
 }
 
-fn lifecycle_script(
-  driver: config_types.WorkspaceDriverConfig,
+fn lifecycle_args(
   operation: config_types.WorkspaceLifecycleOperation,
-) -> String {
-  "set -eu\nexec "
-  <> driver.command
-  <> " lifecycle "
-  <> config_types.workspace_lifecycle_operation_to_string(operation)
+) -> List(String) {
+  ["lifecycle", config_types.workspace_lifecycle_operation_to_string(operation)]
 }
 
 fn lifecycle_env(
@@ -176,31 +173,23 @@ fn lifecycle_env(
   orchestrator: config_types.OrchestratorConfig,
 ) -> List(#(String, String)) {
   [
-    #("SCHERZO_WORKSPACE_DRIVER", driver.command),
+    #(
+      "SCHERZO_WORKSPACE_DRIVER",
+      workspace_driver_command.resolve(driver.command, orchestrator),
+    ),
     #(
       "SCHERZO_WORKSPACE_CAPABILITIES",
       config_types.workspace_capability_names(driver.capabilities)
         |> string.join(with: " "),
     ),
-    #("SCHERZO_REPO_ROOT", default_repo_root(orchestrator)),
+    #(
+      "SCHERZO_REPO_ROOT",
+      workspace_driver_command.default_repo_root(orchestrator),
+    ),
     ..env
   ]
 }
 
 fn cwd(orchestrator: config_types.OrchestratorConfig) -> String {
-  inferred_repo_root(orchestrator.config_dir)
-}
-
-fn default_repo_root(orchestrator: config_types.OrchestratorConfig) -> String {
-  case path.env("SCHERZO_REPO_ROOT") {
-    Some(root) -> root
-    None -> inferred_repo_root(orchestrator.config_dir)
-  }
-}
-
-fn inferred_repo_root(config_dir: String) -> String {
-  case string.ends_with(config_dir, "/.scherzo") {
-    True -> path.dirname(config_dir) |> result.unwrap(config_dir)
-    False -> config_dir
-  }
+  workspace_driver_command.inferred_repo_root(orchestrator.config_dir)
 }

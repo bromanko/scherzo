@@ -21,7 +21,7 @@ workspace:
       driver:
         command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
         lifecycle: [create, before-step, after-step, remove]
-        capabilities: [status, diff, changed-files, assert-only]
+        capabilities: [status, diff, changed-files, assert-only, baseline, refresh-base, publish-change]
         timeout_ms: 60000
 agent:
   # Allow up to four dogfood agents to run in parallel. Set to 0 to pause new

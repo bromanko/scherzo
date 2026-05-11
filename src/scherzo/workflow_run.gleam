@@ -274,7 +274,7 @@ pub fn default_dependencies() -> Dependencies {
         issue,
         prompt_mode,
         attempt_context,
-        effective,
+        config_types.with_pi_env(effective, step_command_env(context)),
         tracker_client,
         fn(_, update) { emit_update(update) },
         command_subject,
@@ -508,10 +508,9 @@ pub fn execute_with_context(
   dependencies: Dependencies,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case workspace_profile.resolve(dag, orchestrator) {
-    Error(_) ->
+    Error(err) ->
       Error(WorkflowRunFailure(
-        reason: "workspace_profile_resolution_failed:"
-          <> workspace_profile.selected_name(dag, orchestrator),
+        reason: workspace_profile.error_label(err),
         agent_reason: None,
         artifacts: run_context_artifacts(context),
         run_root: run_context_run_root(context),
@@ -2955,7 +2954,7 @@ fn step_context(
     attempt_index: workspace.attempt_index,
     workspace_name: workspace.workspace_name,
     workspace_path: workspace.path,
-    workspace_context: workspace_profile.driver_context_from_profile(profile),
+    workspace_context: workspace_profile.driver_context(profile, orchestrator),
     config_dir: orchestrator.config_dir,
     issue_id: issue.id,
     issue_identifier: issue.identifier,

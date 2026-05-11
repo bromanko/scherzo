@@ -17,9 +17,9 @@ Workflow contract:
 
 - This workflow is for `workflow:implementation` issues that should be implemented directly from ticket context, without requiring an ExecPlan.
 - The preparation output above contains `BRIEF_PATH=<path>`. Read that ticket-context brief before editing anything; it contains the Linear title, description, labels, and recent comments fetched at workflow start.
-- You are already inside a dedicated jj workspace created by Scherzo; do not create, forget, finish, switch, push, or otherwise manage jj workspaces.
-- Use `jj status --color=never` for source-control inspection.
-- Do not commit, squash, abandon, open a PR, or otherwise integrate changes. The publish step creates the final jj description/bookmark and opens or finds the PR after validation passes.
+- You are already inside a dedicated workflow workspace prepared by Scherzo; do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
+- Use `$SCHERZO_WORKSPACE_DRIVER status --human` for source-control inspection.
+- Do not commit, squash, abandon, open a PR, or otherwise integrate changes. The publish step uses the configured workspace driver to publish the change after validation passes.
 - Keep the change focused on the Linear issue. Avoid broad refactors, opportunistic cleanup, and unrelated documentation churn.
 - Prefer repository-local conventions over generic advice. Read the nearby source, tests, and docs before editing.
 - If the ticket asks for a plan, design, or research instead of implementation, stop and explain that the workflow label is wrong.

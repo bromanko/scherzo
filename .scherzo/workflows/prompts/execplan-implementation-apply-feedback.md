@@ -20,9 +20,9 @@ Review summary:
 
 Feedback contract:
 
-- You are in the same dedicated jj workspace as the implementation and review steps.
-- Do not create, forget, finish, switch, push, or otherwise manage jj workspaces.
-- Do not create jj/git commits. The publish step creates the final logical jj commit after final validation passes.
+- You are in the same dedicated workflow workspace prepared by Scherzo as the implementation and review steps.
+- Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
+- Do not create VCS commits. The publish step uses the configured workspace driver to publish the final change after final validation passes.
 - Fix blocking review findings, safe medium-or-smaller findings, and obvious validation risks.
 - If a finding is invalid, too risky, too broad, or intentionally deferred, explain why in the final response.
 - Keep the ExecPlan's living-document sections current if you make implementation changes after review.
@@ -31,7 +31,7 @@ Feedback contract:
 
 Process:
 
-1. Inspect `jj status --color=never` and, if needed, `jj diff --color=never`.
+1. Inspect `$SCHERZO_WORKSPACE_DRIVER status --human` and, if needed, `$SCHERZO_WORKSPACE_DRIVER diff --human`.
 2. Read the review summary above and fix safe relevant findings.
 3. Run targeted validation if useful and cheap.
 4. Update the ExecPlan living-document sections if your changes affect progress, decisions, discoveries, or outcomes.

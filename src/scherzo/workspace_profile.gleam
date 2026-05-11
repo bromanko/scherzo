@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/template
@@ -10,10 +11,11 @@ import scherzo/workspace_driver_context
 pub type WorkspaceDriverContext =
   workspace_driver_context.Context
 
-pub fn driver_context_from_profile(
+pub fn driver_context(
   profile: config_types.WorkspaceHookProfile,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> WorkspaceDriverContext {
-  workspace_driver_context.from_profile(profile)
+  workspace_driver_context.from_profile_for_orchestrator(profile, orchestrator)
 }
 
 pub fn driver_context_env_vars(
@@ -41,10 +43,6 @@ pub type ProfileResolutionError {
     provided: List(config_types.WorkspaceCapability),
     missing: List(config_types.WorkspaceCapability),
   )
-  WorkspaceDriverInvocationUnavailable(
-    workflow_id: String,
-    profile_name: String,
-  )
 }
 
 pub fn selected_name(
@@ -63,7 +61,10 @@ pub fn resolve(
 ) -> Result(config_types.WorkspaceHookProfile, ProfileResolutionError) {
   let profile_name = selected_name(dag, orchestrator)
   case dict.get(orchestrator.workspace_profiles.profiles, profile_name) {
-    Ok(profile) -> Ok(profile)
+    Ok(profile) -> {
+      use _ <- result.try(validate_capabilities(dag, profile))
+      Ok(profile)
+    }
     Error(_) ->
       Error(UnknownWorkspaceProfile(
         workflow_id: dag.id,
@@ -92,20 +93,15 @@ pub fn validate_capabilities(
   }
 }
 
-pub fn validate_dispatchable_profile(
-  _dag: workflow_dag.WorkflowDag,
-  _profile: config_types.WorkspaceHookProfile,
-) -> Result(Nil, ProfileResolutionError) {
-  Ok(Nil)
-}
-
 pub fn error_code(error: ProfileResolutionError) -> String {
   case error {
     UnknownWorkspaceProfile(..) -> "unknown_workspace_profile"
     WorkspaceCapabilitiesUnavailable(..) -> "workspace_capabilities_unavailable"
-    WorkspaceDriverInvocationUnavailable(..) ->
-      "workspace_driver_invocation_unavailable"
   }
+}
+
+pub fn error_label(error: ProfileResolutionError) -> String {
+  error_code(error) <> ":" <> error_message(error)
 }
 
 pub fn error_message(error: ProfileResolutionError) -> String {
@@ -134,12 +130,6 @@ pub fn error_message(error: ProfileResolutionError) -> String {
       <> config_types.workspace_capabilities_to_string(provided)
       <> "; missing: "
       <> config_types.workspace_capabilities_to_string(missing)
-    WorkspaceDriverInvocationUnavailable(workflow_id, profile_name) ->
-      "workflow "
-      <> workflow_id
-      <> " selects workspace_profile "
-      <> profile_name
-      <> ", but workspace driver invocation is not implemented in this Scherzo version; use a hook-backed profile or wait for the driver invocation migration. See docs/runbooks/workspace-driver-migration.md"
   }
 }
 

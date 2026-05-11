@@ -35,6 +35,20 @@ pub fn run_hook_with_env(
   }
 }
 
+pub fn run_argv_with_env(
+  name: String,
+  executable: String,
+  args: List(String),
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+) -> Result(Nil, error.HookError) {
+  case port.start_argv(executable, args, cwd, env) {
+    Error(err) -> Error(error.HookIo(port_error_to_string(err)))
+    Ok(process) -> wait_for_hook(name, process, timeout_ms)
+  }
+}
+
 pub fn run_best_effort(
   name: String,
   script: String,
@@ -52,6 +66,25 @@ pub fn run_best_effort_with_env(
   env: List(#(String, String)),
 ) -> String {
   case run_hook_with_env(name, script, cwd, timeout_ms, env) {
+    Ok(Nil) -> log.info("hook_succeeded", [#("hook", name), #("cwd", cwd)])
+    Error(err) ->
+      log.warn("hook_failed", [
+        #("hook", name),
+        #("cwd", cwd),
+        #("error", hook_error_to_string(err)),
+      ])
+  }
+}
+
+pub fn run_best_effort_argv_with_env(
+  name: String,
+  executable: String,
+  args: List(String),
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+) -> String {
+  case run_argv_with_env(name, executable, args, cwd, timeout_ms, env) {
     Ok(Nil) -> log.info("hook_succeeded", [#("hook", name), #("cwd", cwd)])
     Error(err) ->
       log.warn("hook_failed", [

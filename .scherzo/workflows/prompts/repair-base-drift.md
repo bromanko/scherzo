@@ -28,7 +28,7 @@ Validation result:
 
 Workflow contract:
 
-- You are already inside a dedicated jj workspace. Do not create, forget, finish, switch, push, bookmark, commit, squash, abandon, or otherwise manage jj workspaces, branches, bookmarks, pushes, or pull requests.
+- You are already inside a dedicated workflow workspace prepared by Scherzo. Do not create, forget, finish, switch, push, bookmark, commit, squash, abandon, or otherwise manage workflow workspaces, branches, bookmarks, pushes, or pull requests.
 - Do not use `gh` to create, edit, close, or comment on pull requests. Later deterministic command steps validate and publish.
 - This step repairs only base drift, meaning problems caused by rebasing the implementation change onto the latest configured pull request base.
 - Read `tmp/scherzo-implementation-refresh-base-before-validation.json` when it exists. If it does not exist, read `tmp/scherzo-implementation-refresh-base-latest.json`.

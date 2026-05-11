@@ -21,6 +21,17 @@ pub fn encode_set_auto_retry(id: String, enabled enabled: Bool) -> String {
   protocol.encode_set_auto_retry(id, enabled: enabled)
 }
 
+pub fn encode_set_auto_compaction(id: String, enabled enabled: Bool) -> String {
+  protocol.encode_set_auto_compaction(id, enabled: enabled)
+}
+
+pub fn encode_compact(
+  id: String,
+  custom_instructions: Option(String),
+) -> String {
+  protocol.encode_compact(id, custom_instructions)
+}
+
 pub fn encode_get_state(id: String) -> String {
   protocol.encode_get_state(id)
 }
@@ -67,6 +78,22 @@ pub fn send_prompt(
   read_timeout_ms: Int,
 ) -> Result(#(client.Session, List(protocol.RpcRecord)), error.PiRpcError) {
   client.send_prompt(session, message, read_timeout_ms)
+}
+
+pub fn compact(
+  session: client.Session,
+  custom_instructions: Option(String),
+  read_timeout_ms: Int,
+) -> Result(#(client.Session, List(protocol.RpcRecord)), error.PiRpcError) {
+  client.compact(session, custom_instructions, read_timeout_ms)
+}
+
+pub fn set_auto_compaction(
+  session: client.Session,
+  read_timeout_ms: Int,
+  enabled enabled: Bool,
+) -> Result(#(client.Session, List(protocol.RpcRecord)), error.PiRpcError) {
+  client.set_auto_compaction(session, read_timeout_ms, enabled: enabled)
 }
 
 pub fn read_turn_record(

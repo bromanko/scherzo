@@ -269,6 +269,72 @@ pub fn structured_output_artifact_ref(
   <> ".json"
 }
 
+pub fn context_recovery_artifact_ref(
+  run_id: String,
+  step_id: String,
+  step_attempt_index: Int,
+  artifact_name: String,
+) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/"
+  <> workflow_identity.step_component(step_id)
+  <> "/attempt-"
+  <> int.to_string(step_attempt_index)
+  <> "/context-recovery/"
+  <> workflow_identity.safe_component(artifact_name, "artifact")
+}
+
+pub fn context_recovery_display_path(ref: String) -> String {
+  ".scherzo-state/artifacts/" <> ref
+}
+
+pub fn write_context_recovery_artifact(
+  store: Store,
+  run_id: String,
+  _workflow_id: String,
+  step_id: String,
+  step_attempt_index: Int,
+  artifact_name: String,
+  contents: String,
+) -> Result(StructuredArtifactRef, ArtifactError) {
+  let ref =
+    context_recovery_artifact_ref(
+      run_id,
+      step_id,
+      step_attempt_index,
+      artifact_name,
+    )
+  use final_path <- result.try(resolve_ref_for_write(store, ref))
+  use Nil <- result.try(ensure_parent(final_path))
+  use Nil <- result.try(
+    write_atomic(final_path, contents)
+    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
+  )
+  use final <- result.try(
+    simplifile.read(final_path)
+    |> result.replace_error(MissingStepArtifact(ref)),
+  )
+  let sha = hash.sha256_hex(final)
+  case final == contents {
+    True ->
+      Ok(StructuredArtifactRef(
+        ref: ref,
+        path: final_path,
+        sha256: sha,
+        bytes: bit_array.byte_size(bit_array.from_string(final)),
+      ))
+    False -> Error(CorruptStepArtifact(ref))
+  }
+}
+
+pub fn read_artifact_unverified(
+  store: Store,
+  ref: String,
+) -> Result(String, ArtifactError) {
+  read_artifact_contents(store, ref)
+}
+
 fn stored_to_string(stored: StoredArtifact) -> String {
   stored_to_json(stored) |> json.to_string
 }

@@ -91,6 +91,70 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def workspace_driver_command() -> str | None:
+    value = os.environ.get("SCHERZO_WORKSPACE_DRIVER", "").strip()
+    return value or None
+
+
+def workspace_driver_available() -> bool:
+    return workspace_driver_command() is not None
+
+
+def run_workspace_driver_json(args: list[str], *, check: bool = True) -> tuple[dict[str, Any], subprocess.CompletedProcess[str]]:
+    driver = workspace_driver_command()
+    if driver is None:
+        fail("SCHERZO_WORKSPACE_DRIVER is required for this driver-backed workflow operation")
+    proc = subprocess.run(
+        [driver, *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        payload = json.loads(proc.stdout) if proc.stdout.strip() else None
+    except json.JSONDecodeError as exc:
+        fail(f"workspace driver returned malformed JSON for {' '.join(args)}: {exc}")
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        fail(f"workspace driver {' '.join(args)} must return a JSON object with version=1")
+    if check and proc.returncode != 0:
+        fail(str(payload.get("message") or "workspace driver command failed"))
+    return payload, proc
+
+
+def workspace_driver_changed_file_records() -> list[dict[str, str]]:
+    payload, _ = run_workspace_driver_json(["changed-files", "--json"])
+    raw = payload.get("files")
+    if not isinstance(raw, list):
+        fail("workspace driver changed-files JSON must contain a files list")
+    records: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            fail("workspace driver changed-files entries must be objects")
+        path = item.get("path")
+        status = item.get("status")
+        if not isinstance(path, str) or not path.strip():
+            fail("workspace driver changed-files entry missing path")
+        if status not in {"added", "modified", "deleted", "renamed", "conflicted"}:
+            fail(f"workspace driver changed-files entry has invalid status: {status!r}")
+        records.append({"path": path.strip(), "status": str(status)})
+    return sorted(records, key=lambda record: record["path"])
+
+
+def workspace_driver_refresh_target(stage: str, target: str) -> dict[str, Any]:
+    payload, proc = run_workspace_driver_json(
+        ["refresh-base", "--stage", stage, "--target", target, "--json"],
+        check=False,
+    )
+    if proc.returncode != 0:
+        fail(str(payload.get("message") or "workspace driver refresh-base failed"))
+    return payload
+
+
+def workspace_driver_baseline() -> dict[str, Any]:
+    payload, _ = run_workspace_driver_json(["baseline", "--json"])
+    return payload
+
+
 def owner_repo_from_url(url: str) -> str | None:
     if url.startswith("https://github.com/"):
         value = url.removeprefix("https://github.com/")
@@ -504,7 +568,8 @@ def current_commit_short(rev: str) -> str:
 
 
 def prepare_command() -> None:
-    require_command("jj")
+    if not workspace_driver_available():
+        require_command("jj")
     require_command("gh")
     require_command("python3")
 
@@ -521,9 +586,17 @@ def prepare_command() -> None:
 
     # Always refresh the branch before editing so the agent sees the latest
     # published PR head rather than an older local bookmark.
-    run(["jj", "git", "fetch", "--remote", remote, "--branch", head_branch])
-    run(["jj", "describe", "-m", f"Scherzo execplan revision workspace for PR #{pr['number']}"])
-    run(["jj", "rebase", "-r", "@", "-d", f"{head_branch}@{remote}"])
+    if workspace_driver_available():
+        refresh = workspace_driver_refresh_target(
+            "execplan-revision-prepare",
+            f"{head_branch}@{remote}",
+        )
+        parent_commit = str(refresh.get("after_revision") or refresh.get("base_revision") or "")
+    else:
+        run(["jj", "git", "fetch", "--remote", remote, "--branch", head_branch])
+        run(["jj", "describe", "-m", f"Scherzo execplan revision workspace for PR #{pr['number']}"])
+        run(["jj", "rebase", "-r", "@", "-d", f"{head_branch}@{remote}"])
+        parent_commit = current_commit("@-")
 
     plan_path = Path(pr["plan_path"])
     if not plan_path.exists():
@@ -531,7 +604,6 @@ def prepare_command() -> None:
 
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     feedback = normalize_feedback(pr)
-    parent_commit = current_commit("@-")
     metadata = {
         "linear_issue_identifier": issue.get("identifier"),
         "linear_issue_url": issue.get("url"),
@@ -563,9 +635,20 @@ def prepare_command() -> None:
     print(f"FEEDBACK_BUNDLE={FEEDBACK_MD_PATH}")
 
 
-def changed_files() -> list[str]:
+def changed_file_records() -> list[dict[str, str]]:
+    if workspace_driver_available():
+        return workspace_driver_changed_file_records()
     output = run(["jj", "diff", "--from", "@-", "--to", "@", "--name-only", "--color=never"])
-    return [line.strip() for line in output.splitlines() if line.strip()]
+    records: list[dict[str, str]] = []
+    for line in output.splitlines():
+        path = line.strip()
+        if path:
+            records.append({"path": path, "status": "modified"})
+    return records
+
+
+def changed_files() -> list[str]:
+    return [record["path"] for record in changed_file_records()]
 
 
 def validate_plan(plan_path: str) -> None:
@@ -620,7 +703,8 @@ def validate_revision(*, emit: bool = True) -> str:
     metadata = load_json(METADATA_PATH)
     require_summary()
     plan_path = metadata["plan_path"]
-    files = changed_files()
+    records = changed_file_records()
+    files = [record["path"] for record in records]
 
     if not files:
         validate_plan(plan_path)
@@ -637,10 +721,15 @@ def validate_revision(*, emit: bool = True) -> str:
             f"changed files: {', '.join(files)}; expected only {plan_path}"
         )
 
-    summary = run(["jj", "diff", "--summary", "--from", "@-", "--to", "@", "--color=never", "--", plan_path])
-    status = summary.split()[0] if summary.split() else ""
-    if status != "M":
-        fail(f"plan file must be modified in place, got status {status or 'unknown'}: {plan_path}")
+    if workspace_driver_available():
+        status = next((record["status"] for record in records if record["path"] == plan_path), "")
+        if status != "modified":
+            fail(f"plan file must be modified in place, got status {status or 'unknown'}: {plan_path}")
+    else:
+        summary = run(["jj", "diff", "--summary", "--from", "@-", "--to", "@", "--color=never", "--", plan_path])
+        status = summary.split()[0] if summary.split() else ""
+        if status != "M":
+            fail(f"plan file must be modified in place, got status {status or 'unknown'}: {plan_path}")
 
     validate_plan(plan_path)
     if emit:
@@ -652,8 +741,9 @@ def validate_revision(*, emit: bool = True) -> str:
 
 
 def publish_command() -> None:
-    require_command("jj")
-    require_command("gh")
+    if not workspace_driver_available():
+        require_command("jj")
+        require_command("gh")
     metadata = load_json(METADATA_PATH)
     revision = validate_revision(emit=False)
 
@@ -665,7 +755,38 @@ def publish_command() -> None:
         "head_branch": metadata["head_branch"],
     }
 
-    if revision == "updated":
+    if workspace_driver_available():
+        title_path = TMP_DIR / "execplan-revision-pr-title.txt"
+        body_path = TMP_DIR / "execplan-revision-pr-body.md"
+        title_path.parent.mkdir(parents=True, exist_ok=True)
+        title_path.write_text(f"docs(plan): revise execplan from PR #{metadata['pr_number']} feedback\n")
+        body_path.write_text(SUMMARY_PATH.read_text() if SUMMARY_PATH.exists() else "ExecPlan revision update.\n")
+        payload, _ = run_workspace_driver_json([
+            "publish-change",
+            "--kind",
+            "execplan-revision",
+            "--title-file",
+            str(title_path),
+            "--body-file",
+            str(body_path),
+            "--branch-prefix",
+            "scherzo/execplan-revision",
+            "--base",
+            str(metadata.get("base_branch") or os.environ.get("SCHERZO_PR_BASE", "main")),
+            "--target-branch",
+            str(metadata["head_branch"]),
+            "--target-pr",
+            str(metadata["pr_number"]),
+            "--allow-no-changes",
+            "true",
+            "--json",
+        ])
+        publish.update({
+            "pushed": revision == "updated" and payload.get("status") != "unchanged",
+            "driver_status": payload.get("status"),
+            "commit": payload.get("head_revision") or payload.get("change_id"),
+        })
+    elif revision == "updated":
         remote = metadata["remote"]
         branch = metadata["head_branch"]
         run(["jj", "git", "fetch", "--remote", remote, "--branch", branch])

@@ -424,10 +424,6 @@ fn workspace_profile_error_to_fingerprint_error(
       profile_name: profile_name,
       ..,
     ) -> WorkspaceProfileUnavailable(profile_name)
-    workspace_profile.WorkspaceDriverInvocationUnavailable(
-      profile_name: profile_name,
-      ..,
-    ) -> WorkspaceProfileUnavailable(profile_name)
   }
 }
 

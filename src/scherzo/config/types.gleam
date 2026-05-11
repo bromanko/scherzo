@@ -50,6 +50,8 @@ pub type AgentConfig {
     max_retry_backoff_ms: Int,
     max_retry_attempts: Int,
     max_sessions_per_issue: Int,
+    context_recovery_max_attempts: Int,
+    context_recovery_prompt_char_limit: Int,
     max_concurrent_agents_by_state: Dict(issue_state.IssueStateKey, Int),
   )
 }
@@ -309,6 +311,63 @@ pub type WorkspaceDriverConfig {
   )
 }
 
+pub fn validate_workspace_driver_command(
+  command: String,
+) -> Result(String, String) {
+  let command = string.trim(command)
+  case command == "" {
+    True -> Error("must be non-empty")
+    False -> validate_workspace_driver_command_token(command)
+  }
+}
+
+fn validate_workspace_driver_command_token(
+  command: String,
+) -> Result(String, String) {
+  case contains_workspace_driver_command_whitespace(command) {
+    True -> Error("must be one executable token without whitespace")
+    False ->
+      case contains_workspace_driver_shell_metacharacter(command) {
+        True -> Error("must not contain shell metacharacters")
+        False ->
+          case uses_supported_workspace_driver_env(command) {
+            True -> Ok(command)
+            False ->
+              Error(
+                "may only use $SCHERZO_REPO_ROOT as an environment placeholder",
+              )
+          }
+      }
+  }
+}
+
+fn contains_workspace_driver_command_whitespace(command: String) -> Bool {
+  string.contains(command, " ")
+  || string.contains(command, "\n")
+  || string.contains(command, "\r")
+  || string.contains(command, "\t")
+}
+
+fn contains_workspace_driver_shell_metacharacter(command: String) -> Bool {
+  string.contains(command, ";")
+  || string.contains(command, "&")
+  || string.contains(command, "|")
+  || string.contains(command, "<")
+  || string.contains(command, ">")
+  || string.contains(command, "`")
+  || string.contains(command, "'")
+  || string.contains(command, "\"")
+}
+
+fn uses_supported_workspace_driver_env(command: String) -> Bool {
+  case string.contains(command, "$") {
+    False -> True
+    True ->
+      command == "$SCHERZO_REPO_ROOT"
+      || string.starts_with(command, "$SCHERZO_REPO_ROOT/")
+  }
+}
+
 pub type WorkspaceProfileSource {
   LegacyWorkspaceHooks
   ConfiguredWorkspaceHooks
@@ -506,4 +565,88 @@ pub type EffectiveConfig {
     linear_contract: LinearContractConfig,
     linear_commands: LinearCommandConfig,
   )
+}
+
+pub fn with_pi_env(
+  config: EffectiveConfig,
+  env: List(#(String, String)),
+) -> EffectiveConfig {
+  case env {
+    [] -> config
+    _ ->
+      EffectiveConfig(
+        ..config,
+        pi: PiConfig(
+          ..config.pi,
+          command: shell_command_with_env(config.pi.command, env),
+          argv_command: argv_command_with_env(config.pi.argv_command, env),
+        ),
+      )
+  }
+}
+
+fn shell_command_with_env(
+  command: String,
+  env: List(#(String, String)),
+) -> String {
+  case env {
+    [] -> command
+    _ -> shell_export_lines(env) <> command
+  }
+}
+
+fn shell_export_lines(env: List(#(String, String))) -> String {
+  case env {
+    [] -> ""
+    [#(key, value), ..rest] ->
+      "export "
+      <> key
+      <> "="
+      <> shell_quote(value)
+      <> "\n"
+      <> shell_export_lines(rest)
+  }
+}
+
+fn shell_quote(value: String) -> String {
+  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
+}
+
+fn argv_command_with_env(
+  command: Option(PiArgvCommand),
+  env: List(#(String, String)),
+) -> Option(PiArgvCommand) {
+  case command {
+    None -> None
+    Some(command) ->
+      Some(PiArgvCommand(..command, env: merge_env(command.env, env)))
+  }
+}
+
+fn merge_env(
+  base: List(#(String, String)),
+  override: List(#(String, String)),
+) -> List(#(String, String)) {
+  list.append(remove_env_keys(base, env_keys(override)), override)
+}
+
+fn remove_env_keys(
+  env: List(#(String, String)),
+  keys: List(String),
+) -> List(#(String, String)) {
+  case env {
+    [] -> []
+    [#(key, _) as entry, ..rest] ->
+      case list.contains(keys, key) {
+        True -> remove_env_keys(rest, keys)
+        False -> [entry, ..remove_env_keys(rest, keys)]
+      }
+  }
+}
+
+fn env_keys(env: List(#(String, String))) -> List(String) {
+  case env {
+    [] -> []
+    [#(key, _), ..rest] -> [key, ..env_keys(rest)]
+  }
 }
