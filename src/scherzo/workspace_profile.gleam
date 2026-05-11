@@ -93,17 +93,10 @@ pub fn validate_capabilities(
 }
 
 pub fn validate_dispatchable_profile(
-  dag: workflow_dag.WorkflowDag,
-  profile: config_types.WorkspaceHookProfile,
+  _dag: workflow_dag.WorkflowDag,
+  _profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, ProfileResolutionError) {
-  case profile.driver, profile.hooks {
-    Some(_), None ->
-      Error(WorkspaceDriverInvocationUnavailable(
-        workflow_id: dag.id,
-        profile_name: profile.name,
-      ))
-    _, _ -> Ok(Nil)
-  }
+  Ok(Nil)
 }
 
 pub fn error_code(error: ProfileResolutionError) -> String {

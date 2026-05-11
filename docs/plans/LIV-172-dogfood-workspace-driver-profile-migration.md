@@ -3,7 +3,7 @@
 This ExecPlan is a living document. The sections Progress, Surprises & Discoveries,
 Decision Log, and Outcomes & Retrospective must be kept up to date as work proceeds.
 
-Implementation status: this plan may be merged as a **blocked planning artifact**, but it is not implementation-ready. The current target branch already has the core schema plan at `docs/plans/LIV-170-workspace-driver-schema-migration-diagnostics.md` and the adapter-contract plan at `docs/plans/LIV-171-workspace-driver-command-contract-and-adapters.md`; those are no longer open clarifications. Execution remains blocked until the jj workspace driver adapter is implemented, selected driver-backed profiles are dispatchable through real lifecycle invocation, and the final runtime symbols/tests are verified in the implementation tree. Do not dispatch implementation from this plan while selected driver-backed profiles still fail with `workspace_driver_invocation_unavailable`.
+Implementation status: this plan may be merged as a **blocked planning artifact**, but it is not implementation-ready. The current target branch already has the core schema plan at `docs/plans/LIV-170-workspace-driver-schema-migration-diagnostics.md` and the adapter-contract plan at `docs/plans/LIV-171-workspace-driver-command-contract-and-adapters.md`; those are no longer open clarifications. As of the 2026-05-11 LIV-184 implementation attempt, the jj workspace driver adapter exists, but execution remains blocked until selected driver-backed profiles are dispatchable through real lifecycle invocation and the final runtime symbols/tests are verified in the implementation tree. Do not dispatch implementation from this plan while selected driver-backed profiles still fail with `workspace_driver_invocation_unavailable`.
 
 ## Purpose / Big Picture
 
@@ -58,7 +58,8 @@ Rollback is straightforward only while the runtime still accepts hook-backed pro
 - [x] (2026-05-09 00:00Z) Drafted this child ExecPlan from the workspace-driver umbrella and the then-current dogfood repository state.
 - [x] (2026-05-09 00:00Z) Incorporated adversarial review feedback by marking the plan blocked until prerequisite driver contracts are frozen, adding concrete prerequisite and rollout checks, and preserving material clarification items.
 - [x] (2026-05-10 00:00Z) Revised after follow-up review: replaced open prerequisite-plan clarifications with the checked-in LIV-170 and LIV-171 paths, corrected the current dogfood state from top-level direct hooks to profile-local `dogfood-jj.hooks`, treated LIV-168 as completed interim history, aligned capabilities with the initial LIV-171 adapter scope, and included the scheduled `github-pr-conflict-scout` workflow in the dogfood selector inventory.
-- [ ] Verify that LIV-171 adapter implementation and runtime driver lifecycle invocation have landed before editing dogfood config.
+- [x] (2026-05-11 02:39Z) Ran the prerequisite gate in the LIV-184 implementation workspace. `scripts/scherzo-workspace-jj` exists and `scripts/scherzo-workspace-jj lifecycle after-step` exits 0, but selected driver-only profiles still fail with `workspace_driver_invocation_unavailable`, so implementation stopped before dogfood config edits.
+- [ ] Wait for runtime driver lifecycle invocation to land, then rerun the prerequisite gate before editing dogfood config.
 - [ ] Replace `workspace.profiles.dogfood-jj.hooks` with `workspace.profiles.dogfood-jj.driver` in `.scherzo/scherzo.yaml`.
 - [ ] Verify all seven checked-in dogfood workflow YAML files still select `workspace_profile: dogfood-jj`.
 - [ ] Update dogfood README guidance to describe driver-backed profiles instead of hook-backed profiles.
@@ -76,14 +77,17 @@ Rollback is straightforward only while the runtime still accepts hook-backed pro
 - Observation: The core driver schema plan is already checked in and implemented as an additive transition.
   Evidence: `docs/plans/LIV-170-workspace-driver-schema-migration-diagnostics.md` records `WorkspaceDriverConfig`, driver lifecycle names, `workspace_capabilities`, runtime capability validation, fingerprint coverage, and the `workspace_driver_invocation_unavailable` safety gate.
 
-- Observation: The initial driver command contract plan is already checked in but is not complete at this plan revision.
-  Evidence: `docs/plans/LIV-171-workspace-driver-command-contract-and-adapters.md` names `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop`, but its Progress section has adapter implementation tasks unchecked in the reviewed state.
+- Observation: The initial driver command contract plan was checked in before its adapter work was complete, but the LIV-184 implementation workspace now has the jj driver script.
+  Evidence: `docs/plans/LIV-171-workspace-driver-command-contract-and-adapters.md` names `scripts/scherzo-workspace-jj` and `scripts/scherzo-workspace-noop`. In the 2026-05-11 implementation workspace, `scripts/scherzo-workspace-jj` exists and the non-mutating `lifecycle after-step` preflight succeeds.
 
 - Observation: The existing jj workspace smoke test is the right place to catch lifecycle parity regressions.
   Evidence: `test/local_integration/workflow_jj_workspace_smoke_test.gleam` creates a temporary jj repository, runs a two-step workflow in one logical workspace, and asserts that the workspace is reused and forgotten after cleanup.
 
 - Observation: The umbrella's LIV-168 note is no longer ambiguous for this plan.
   Evidence: `docs/plans/workspace-profile-helper-capabilities-umbrella.md` records LIV-168 as the completed temporary migration from legacy direct hooks to an explicit named `dogfood-jj` hook profile. LIV-172 is therefore the later driver-backed migration.
+
+- Observation: The LIV-171 adapter script is present, but the runtime invocation prerequisite is still missing in the LIV-184 implementation workspace.
+  Evidence: `test -x scripts/scherzo-workspace-jj && scripts/scherzo-workspace-jj lifecycle after-step` exits 0. A temporary driver-only workflow-config doctor check exits 1 with `workspace_driver_invocation_unavailable` and the message "workspace driver invocation is not implemented in this Scherzo version".
 
 ## Decision Log
 
@@ -115,9 +119,13 @@ Rollback is straightforward only while the runtime still accepts hook-backed pro
   Rationale: LIV-170 intentionally blocks selected driver-backed profiles with `workspace_driver_invocation_unavailable`. Migrating dogfood config before that safety gate is retired would knowingly make the dogfood daemon unable to dispatch workflows.
   Date: 2026-05-10
 
+- Decision: Stop the LIV-184 implementation attempt before changing `.scherzo/scherzo.yaml`, `.scherzo/README.md`, workflows, or tests.
+  Rationale: The prerequisite gate proved selected driver-only profiles still fail with `workspace_driver_invocation_unavailable`; proceeding would replace the currently runnable hook-backed dogfood profile with a profile the runtime rejects before dispatch.
+  Date: 2026-05-11
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The 2026-05-11 LIV-184 implementation attempt retired only part of the prerequisite risk. The jj driver adapter exists and accepts the non-mutating lifecycle preflight, but runtime lifecycle invocation for selected driver-backed profiles has not landed. No dogfood config, workflow, README, or test migration was performed. The remaining next step is to complete or merge the runtime invocation prerequisite, then rerun this plan from Milestone 0 before changing `.scherzo/scherzo.yaml`.
 
 ## Context and Orientation
 

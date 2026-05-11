@@ -139,60 +139,45 @@ fn driver_orchestrator(
   script: String,
 ) -> config_types.OrchestratorConfig {
   let workspace_root = root <> "/workspaces"
-  let dag_hooks =
-    config_types.DagHooksConfig(
-      create: Some(
-        "SCHERZO_REPO_ROOT=\""
-        <> repo
-        <> "\" SCHERZO_JJ_WORKSPACE_BASE=@ sh \""
-        <> script
-        <> "\" lifecycle create",
-      ),
-      before_step: Some(
-        "SCHERZO_REPO_ROOT=\""
-        <> repo
-        <> "\" sh \""
-        <> script
-        <> "\" lifecycle before-step",
-      ),
-      after_step: Some(
-        "SCHERZO_REPO_ROOT=\""
-        <> repo
-        <> "\" sh \""
-        <> script
-        <> "\" lifecycle after-step",
-      ),
-      remove: Some(
-        "if [ -d \"$SCHERZO_RUN_ROOT/workspaces\" ]; then\n"
-        <> "  SCHERZO_REPO_ROOT=\""
-        <> repo
-        <> "\" sh \""
-        <> script
-        <> "\" lifecycle remove\n"
-        <> "fi",
-      ),
+  let config_dir = repo <> "/.scherzo"
+  let assert Ok(Nil) = simplifile.create_directory_all(config_dir)
+  let driver =
+    config_types.WorkspaceDriverConfig(
+      command: script,
+      lifecycle: [
+        config_types.LifecycleCreate,
+        config_types.LifecycleBeforeStep,
+        config_types.LifecycleAfterStep,
+        config_types.LifecycleRemove,
+      ],
+      capabilities: [
+        config_types.WorkspaceStatus,
+        config_types.WorkspaceDiff,
+        config_types.WorkspaceChangedFiles,
+        config_types.WorkspaceAssertOnly,
+      ],
       timeout_ms: 20_000,
     )
   config_types.OrchestratorConfig(
     effective: effective(workspace_root),
-    config_dir: root <> "/config",
+    config_dir: config_dir,
     routing: config_types.RoutingConfig(
       workflow_label_prefix: "workflow:",
       require_exactly_one_workflow_label: True,
       default_workflow: None,
       workflows: dict.from_list([#("smoke", "smoke.yaml")]),
     ),
-    dag_hooks: dag_hooks,
+    dag_hooks: config_types.empty_dag_hooks(),
     workspace_profiles: config_types.WorkspaceHookProfiles(
-      default_profile: "default",
+      default_profile: "dogfood-jj",
       profiles: dict.from_list([
         #(
-          "default",
+          "dogfood-jj",
           config_types.WorkspaceHookProfile(
-            name: "default",
-            hooks: Some(dag_hooks),
-            driver: None,
-            source: config_types.LegacyWorkspaceHooks,
+            name: "dogfood-jj",
+            hooks: None,
+            driver: Some(driver),
+            source: config_types.ConfiguredWorkspaceDriver,
           ),
         ),
       ]),
@@ -212,9 +197,19 @@ fn empty_tracker() -> tracker.Client {
 }
 
 fn dag() -> workflow_dag.WorkflowDag {
+  dag_source("")
+}
+
+fn driver_dag() -> workflow_dag.WorkflowDag {
+  dag_source("workspace_profile: dogfood-jj\n")
+}
+
+fn dag_source(profile_line: String) -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: smoke\nsteps:\n  - id: first\n    kind: command\n    run: printf '%s\\n' \"$PWD\" > smoke.log; printf '%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"\n    workspace: main\n  - id: second\n    kind: command\n    depends_on: [first]\n    run: read first_pwd < smoke.log; test \"$first_pwd\" = \"$PWD\"; printf '%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"\n    workspace: main\n",
+      "version: 1\nid: smoke\n"
+      <> profile_line
+      <> "steps:\n  - id: first\n    kind: command\n    run: printf '%s\\n' \"$PWD\" > smoke.log; printf '%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"\n    workspace: main\n  - id: second\n    kind: command\n    depends_on: [first]\n    run: read first_pwd < smoke.log; test \"$first_pwd\" = \"$PWD\"; printf '%s|%s|%s\\n' \"$PWD\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"\n    workspace: main\n",
     )
   dag
 }
@@ -294,7 +289,7 @@ pub fn workflow_jj_workspace_driver_lifecycle_reuses_main_and_cleans_up_smoke_te
   let assert Ok(success) =
     workflow_run.execute(
       issue(),
-      dag(),
+      driver_dag(),
       orch,
       empty_tracker(),
       [],

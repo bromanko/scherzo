@@ -175,6 +175,42 @@ pub fn driver_workspace_profile_parses_schema_test() {
   assert orchestrator.dag_hooks == config_types.empty_dag_hooks()
 }
 
+pub fn workspace_driver_profiles_resolve_dogfood_jj_shape_test() {
+  let source =
+    base_config_with_workspace(
+      "  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: \"$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj\"\n        lifecycle: [create, before-step, after-step, remove]\n        capabilities: [status, diff, changed-files, assert-only]\n        timeout_ms: 60000\n",
+    )
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      root(source),
+      "test/tmp/config/scherzo.yaml",
+      env,
+    )
+  assert orchestrator.workspace_profiles.default_profile == "dogfood-jj"
+  let assert Ok(profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "dogfood-jj")
+  assert profile.name == "dogfood-jj"
+  assert profile.source == config_types.ConfiguredWorkspaceDriver
+  assert profile.hooks == None
+  let assert Some(driver) = profile.driver
+  assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
+  assert driver.lifecycle
+    == [
+      config_types.LifecycleCreate,
+      config_types.LifecycleBeforeStep,
+      config_types.LifecycleAfterStep,
+      config_types.LifecycleRemove,
+    ]
+  assert driver.capabilities
+    == [
+      config_types.WorkspaceStatus,
+      config_types.WorkspaceDiff,
+      config_types.WorkspaceChangedFiles,
+      config_types.WorkspaceAssertOnly,
+    ]
+  assert driver.timeout_ms == 60_000
+}
+
 pub fn hook_workspace_profile_can_include_driver_context_test() {
   let source =
     base_config_with_workspace(
