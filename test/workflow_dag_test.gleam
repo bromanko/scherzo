@@ -1,6 +1,7 @@
 import gleam/option.{None, Some}
 import scherzo/config/types as config_types
 import scherzo/model_config
+import scherzo/structured_output_source
 import scherzo/workflow_dag
 
 fn parse_ok(source: String) -> workflow_dag.WorkflowDag {
@@ -48,6 +49,7 @@ pub fn parses_agent_structured_output_defaults_test() {
   assert spec.format == workflow_dag.StructuredJson
   assert spec.artifact_name == "review_json"
   assert spec.required == True
+  assert spec.source == structured_output_source.FinalResponseSource
   assert spec.schema == workflow_dag.StructuredObjectSchema([])
   assert spec.validator == None
   assert spec.validation_retries == 1
@@ -66,10 +68,57 @@ pub fn parses_agent_structured_output_json_contract_test() {
   assert spec.format == workflow_dag.StructuredJson
   assert spec.artifact_name == "review_result"
   assert spec.required == True
+  assert spec.source == structured_output_source.FinalResponseSource
   assert spec.schema
     == workflow_dag.StructuredObjectSchema(["summary", "findings"])
   assert spec.validator == Some(workflow_dag.ReviewLaneDraftValidator)
   assert spec.validation_retries == 0
+}
+
+pub fn parses_agent_structured_output_pi_tool_call_source_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: structured_review\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+    )
+  let assert [step] = dag.steps
+  let assert workflow_dag.AgentStep(_, Some(spec)) = step.kind
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: "submit_example_artifact",
+      require_single: True,
+      reject_sibling_tool_calls: True,
+    )
+}
+
+pub fn rejects_invalid_structured_output_source_contracts_test() {
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source: final_response\n",
+    )
+    == "structured_output_source_not_map"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: unknown\n",
+    )
+    == "unsupported_structured_output_source_type"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: final_response\n        tool_name: submit_example_artifact\n",
+    )
+    == "structured_output_source_conflicting_field"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n",
+    )
+    == "missing_structured_output_source_tool_name"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: bad tool\n",
+    )
+    == "invalid_structured_output_source_tool_name"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: false\n",
+    )
+    == "unsupported_structured_output_source_require_single"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        reject_sibling_tool_calls: false\n",
+    )
+    == "unsupported_structured_output_source_reject_sibling_tool_calls"
 }
 
 pub fn rejects_invalid_structured_output_contracts_test() {

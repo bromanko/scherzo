@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/config/types as config_types
 import scherzo/hash
 import scherzo/model_config
+import scherzo/structured_output_source
 import scherzo/workflow_dag
 import scherzo/workspace_profile
 
@@ -258,9 +259,30 @@ fn structured_output_to_json(
         ),
         #("artifact_name", json.string(spec.artifact_name)),
         #("required", json.bool(spec.required)),
+        #("source", structured_output_source_to_json(spec.source)),
         #("schema", structured_output_schema_to_json(spec.schema)),
         #("validator", structured_output_validator_to_json(spec.validator)),
         #("validation_retries", json.int(spec.validation_retries)),
+      ])
+  }
+}
+
+fn structured_output_source_to_json(
+  source: structured_output_source.StructuredOutputSource,
+) -> json.Json {
+  case source {
+    structured_output_source.FinalResponseSource ->
+      json.object([#("type", json.string("final_response"))])
+    structured_output_source.PiToolCallSource(
+      tool_name,
+      require_single,
+      reject_sibling_tool_calls,
+    ) ->
+      json.object([
+        #("type", json.string("pi_tool_call")),
+        #("tool_name", json.string(tool_name)),
+        #("require_single", json.bool(require_single)),
+        #("reject_sibling_tool_calls", json.bool(reject_sibling_tool_calls)),
       ])
   }
 }

@@ -46,6 +46,8 @@ pub type StructuredOutputMetadata {
     sha256: String,
     bytes: Int,
     schema_status: String,
+    source_type: String,
+    source_tool_name: Option(String),
     retry: Option(StructuredOutputRetryInfo),
   )
 }
@@ -264,6 +266,8 @@ fn structured_output_to_json(outcome: StructuredOutputOutcome) -> json.Json {
         #("sha256", json.string(metadata.sha256)),
         #("bytes", json.int(metadata.bytes)),
         #("schema_status", json.string(metadata.schema_status)),
+        #("source_type", json.string(metadata.source_type)),
+        #("source_tool_name", option_string_to_json(metadata.source_tool_name)),
         #("retry", option_retry_info_to_json(metadata.retry)),
       ])
     StructuredOutputAbsent(artifact_name, format, schema_status) ->
@@ -324,6 +328,16 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
       use sha256 <- decode.field("sha256", decode.string)
       use bytes <- decode.field("bytes", decode.int)
       use schema_status <- decode.field("schema_status", decode.string)
+      use source_type <- decode.optional_field(
+        "source_type",
+        "final_response",
+        decode.string,
+      )
+      use source_tool_name <- decode.optional_field(
+        "source_tool_name",
+        None,
+        decode.optional(decode.string),
+      )
       use retry <- decode.optional_field(
         "retry",
         None,
@@ -338,6 +352,8 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
           sha256: sha256,
           bytes: bytes,
           schema_status: schema_status,
+          source_type: source_type,
+          source_tool_name: source_tool_name,
           retry: retry,
         )),
       )

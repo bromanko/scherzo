@@ -423,6 +423,35 @@ fn structured_output_dag(required: Bool) -> workflow_dag.WorkflowDag {
   dag
 }
 
+fn tool_call_structured_output_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    workspace: main\n    structured_output:\n      artifact_name: example_artifact\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+    )
+  dag
+}
+
+fn tool_call_result(
+  final_response: Option(String),
+  arguments_json: Option(String),
+  status: Option(String),
+  sibling_count: Int,
+) -> result_artifact.ResultArtifact {
+  result_artifact.from_final_response_with_tool_calls(
+    final_response,
+    False,
+    "test",
+    [
+      result_artifact.ToolCallSubmission(
+        name: "submit_example_artifact",
+        arguments_json: arguments_json,
+        status: status,
+        sibling_count: sibling_count,
+      ),
+    ],
+  )
+}
+
 fn native_review_lane_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
@@ -484,6 +513,7 @@ fn over_display_limit_result(
     source: "completed_assistant_messages",
     structured_response: Some(structured_response),
     structured_response_truncated: False,
+    tool_calls: [],
   ) = result
   assert display_response == string.slice(response, 0, 40) <> "..."
   assert structured_response == response
@@ -990,6 +1020,71 @@ pub fn valid_json_final_response_becomes_retained_structured_artifact_test() {
   assert !string.contains(contents, "token-123")
 }
 
+pub fn pi_tool_call_source_persists_retained_structured_artifact_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/tool-source-valid"
+  reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let result =
+    tool_call_result(
+      Some(
+        "{\"schema_version\":999,\"artifact_type\":\"final_json_should_be_ignored\"}",
+      ),
+      Some(
+        "{\"schema_version\":1,\"artifact_type\":\"example\",\"secret\":\"token-123\"}",
+      ),
+      Some("success"),
+      1,
+    )
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      tool_call_structured_output_dag(),
+      orchestrator(),
+      empty_tracker(),
+      ["token-123"],
+      "run-1",
+      deps_with_structured_agent_result(subject, result, checkpoint),
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "example_json")
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    artifact.structured_output
+  assert metadata.ref
+    == "runs/run-1/example_json/attempt-1/structured/example_artifact.json"
+  assert metadata.source_type == "pi_tool_call"
+  assert metadata.source_tool_name == Some("submit_example_artifact")
+  let assert Ok(contents) = simplifile.read(metadata.path)
+  assert string.contains(contents, "\"artifact_type\":\"example\"")
+  assert string.contains(contents, "[REDACTED]")
+  assert !string.contains(contents, "final_json_should_be_ignored")
+}
+
+pub fn final_json_without_configured_tool_call_source_fails_test() {
+  let subject = process.new_subject()
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      tool_call_structured_output_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(
+        subject,
+        Some("{\"schema_version\":1,\"artifact_type\":\"example\"}"),
+        False,
+        workflow_checkpoint.noop_writer(),
+      ),
+    )
+
+  assert failure.failed_step_id == Some("example_json")
+  assert string.contains(failure.reason, "structured_output_tool_call_missing")
+  let assert Ok(artifact) = dict.get(failure.artifacts, "example_json")
+  assert artifact.failure_code == Some("structured_output_tool_call_missing")
+}
+
 pub fn native_review_missing_generated_at_retries_and_records_diagnostics_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/structured-retry"
@@ -1043,7 +1138,10 @@ pub fn native_review_missing_generated_at_retries_and_records_diagnostics_test()
   let retry_agent =
     receive_event_with_prefix(subject, "agent:lane_correctness:", 10)
   assert string.contains(retry_agent, "Scherzo structured-output retry")
-  assert string.contains(retry_agent, "Native review lane id: correctness")
+  assert string.contains(
+    retry_agent,
+    "Structured-output artifact name: correctness_draft",
+  )
   assert string.contains(retry_agent, "generated_at_utc")
   assert !string.contains(
     retry_agent,
@@ -1123,7 +1221,10 @@ pub fn native_review_missing_nested_lane_metadata_retries_and_records_diagnostic
   let retry_agent =
     receive_event_with_prefix(subject, "agent:lane_correctness:", 10)
   assert string.contains(retry_agent, "Scherzo structured-output retry")
-  assert string.contains(retry_agent, "review_lane_draft")
+  assert string.contains(
+    retry_agent,
+    "Structured-output artifact name: correctness_draft",
+  )
   assert string.contains(retry_agent, "lane.category")
   let assert Ok(artifact) = dict.get(success.artifacts, "lane_correctness")
   assert artifact.status == step_artifact.StepSucceeded
@@ -1197,7 +1298,10 @@ pub fn native_review_transient_pi_termination_retries_once_test() {
     receive_event_with_prefix(subject, "agent:lane_correctness:", 10)
   assert string.contains(retry_agent, "Scherzo structured-output retry")
   assert string.contains(retry_agent, "agent_pi_failed")
-  assert string.contains(retry_agent, "Native review lane id: correctness")
+  assert string.contains(
+    retry_agent,
+    "Structured-output artifact name: correctness_draft",
+  )
   let assert Ok(artifact) = dict.get(success.artifacts, "lane_correctness")
   assert artifact.status == step_artifact.StepSucceeded
   let assert Some(step_artifact.StructuredOutputValid(metadata)) =

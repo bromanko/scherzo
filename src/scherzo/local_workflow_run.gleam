@@ -780,6 +780,8 @@ fn structured_output_json(
         #("sha256", json.string(metadata.sha256)),
         #("bytes", json.int(metadata.bytes)),
         #("schema_status", json.string(metadata.schema_status)),
+        #("source_type", json.string(metadata.source_type)),
+        #("source_tool_name", option_string_json(metadata.source_tool_name)),
         #("retry", structured_output_retry_json(metadata.retry)),
       ])
     Some(step_artifact.StructuredOutputAbsent(
