@@ -5,6 +5,7 @@ tracker:
   api_key: "$LINEAR_API_KEY"
   project_slug: YOUR_PROJECT_SLUG
   active_states: [Todo, In Progress]
+  dispatch_states: [Todo]
   terminal_states: [Closed, Cancelled, Canceled, Duplicate, Done]
 polling:
   interval_ms: 30000
@@ -31,13 +32,29 @@ workspace:
     noop:
       hooks:
         create: |
+          set -eu
           mkdir -p "$SCHERZO_WORKSPACE_PATH"
+          repo_root=${SCHERZO_REPO_ROOT:-}
+          if [ -z "$repo_root" ]; then
+            if [ -d "$SCHERZO_CONFIG_DIR/../scripts" ]; then
+              repo_root=$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)
+            else
+              repo_root=$(cd "$SCHERZO_CONFIG_DIR" && pwd -P)
+            fi
+          fi
+          if [ -d "$repo_root/scripts" ] && [ ! -e "$SCHERZO_WORKSPACE_PATH/scripts" ]; then
+            ln -s "$repo_root/scripts" "$SCHERZO_WORKSPACE_PATH/scripts"
+          fi
         before_step: |
           true
         after_step: |
           true
         remove: |
           rm -rf "$SCHERZO_WORKSPACE_PATH"
+        timeout_ms: 60000
+      driver:
+        command: scripts/scherzo-workspace-noop
+        capabilities: [status, changed-files, assert-only]
         timeout_ms: 60000
 agent:
   max_concurrent_agents: 1
