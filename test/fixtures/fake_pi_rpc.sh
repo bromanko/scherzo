@@ -64,6 +64,26 @@ record_input() {
   fi
 }
 
+maybe_block_after_message_update() {
+  if [[ -n "${FAKE_PI_AFTER_MESSAGE_UPDATE_MARKER:-}" ]]; then
+    mkdir -p "$(dirname "$FAKE_PI_AFTER_MESSAGE_UPDATE_MARKER")"
+    : > "$FAKE_PI_AFTER_MESSAGE_UPDATE_MARKER"
+  fi
+
+  if [[ -n "${FAKE_PI_AFTER_MESSAGE_UPDATE_RELEASE:-}" ]]; then
+    local waited_ms=0
+    local timeout_ms="${FAKE_PI_AFTER_MESSAGE_UPDATE_TIMEOUT_MS:-5000}"
+    while [[ ! -e "$FAKE_PI_AFTER_MESSAGE_UPDATE_RELEASE" ]]; do
+      if [[ "$waited_ms" -ge "$timeout_ms" ]]; then
+        echo "timed out waiting for FAKE_PI_AFTER_MESSAGE_UPDATE_RELEASE=$FAKE_PI_AFTER_MESSAGE_UPDATE_RELEASE" >&2
+        exit 124
+      fi
+      sleep 0.01
+      waited_ms=$((waited_ms + 10))
+    done
+  fi
+}
+
 maybe_interleave_event() {
   if [[ -n "${FAKE_PI_INTERLEAVE_EVENT_BEFORE_COMMAND_RESPONSE:-}" ]]; then
     jq -cn '{type:"message_update",delta:"interleaved"}'
@@ -177,6 +197,7 @@ while IFS= read -r line; do
         fake_pi_text="not-populated"
         jq -cn '{type:"message_update",delta:"not-populated"}'
       fi
+      maybe_block_after_message_update
       if [[ -n "${FAKE_PI_TOOL:-}" ]]; then
         if [[ -n "${FAKE_PI_TOOL_SECRET:-}" ]]; then
           jq -cn --arg secret "$FAKE_PI_TOOL_SECRET" '{type:"message",message:{role:"assistant",content:[{type:"toolCall",id:"call_fake",name:"bash",arguments:{command:("gleam test " + $secret)}}]}}'
