@@ -426,7 +426,7 @@ fn structured_output_dag(required: Bool) -> workflow_dag.WorkflowDag {
 fn native_review_lane_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: review-native\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    on_failure: continue\n    structured_output:\n      artifact_name: correctness_draft\n      schema:\n        required: [schema_version, artifact_type, generated_at_utc, producer, lane, input_refs, draft_findings, review_notes, evidence_requests, self_check, remote_mutations]\n",
+      "version: 1\nid: review-native\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    on_failure: continue\n    structured_output:\n      artifact_name: correctness_draft\n      validator: review_lane_draft\n      schema:\n        required: [schema_version, artifact_type, generated_at_utc, producer, lane, input_refs, draft_findings, review_notes, evidence_requests, self_check, remote_mutations]\n",
     )
   dag
 }
@@ -437,6 +437,10 @@ fn native_review_lane_draft_json() -> String {
 
 fn native_review_lane_draft_missing_generated_at_json() -> String {
   "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"producer\":{\"name\":\"workflow-run-test\",\"version\":\"1\",\"mode\":\"native\"},\"lane\":{\"id\":\"correctness\",\"name\":\"Correctness reviewer\",\"category\":\"correctness\",\"version\":\"1\"},\"input_refs\":[],\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"inspected_diff\":true,\"used_repository_relative_paths\":true},\"remote_mutations\":\"none\"}"
+}
+
+fn native_review_lane_draft_missing_lane_category_json() -> String {
+  "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"generated_at_utc\":\"2026-05-10T00:00:00Z\",\"producer\":{\"name\":\"workflow-run-test\",\"version\":\"1\",\"mode\":\"native\"},\"lane\":{\"id\":\"correctness\",\"name\":\"Correctness reviewer\",\"version\":\"1\"},\"input_refs\":[],\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"inspected_diff\":true,\"used_repository_relative_paths\":true},\"remote_mutations\":\"none\"}"
 }
 
 fn structured_output_downstream_dag() -> workflow_dag.WorkflowDag {
@@ -1062,6 +1066,75 @@ pub fn native_review_missing_generated_at_retries_and_records_diagnostics_test()
   assert initial.status == "error"
   assert initial.failure_code == Some("structured_output_schema_invalid")
   assert string.contains(initial.message, "generated_at_utc")
+  assert retried.status == "valid"
+  let assert Ok(_) = simplifile.read(metadata.path)
+}
+
+pub fn native_review_missing_nested_lane_metadata_retries_and_records_diagnostics_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/structured-nested-retry"
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        let prompt = prompt_text(prompt_mode)
+        process.send(subject, "agent:" <> context.step_id <> ":" <> prompt)
+        case prompt_mode {
+          workflow_attempt.StructuredOutputRetryPrompt(_) ->
+            Ok(success_agent_with_response(
+              Some(native_review_lane_draft_json()),
+              False,
+            ))
+          _ ->
+            Ok(success_agent_with_response(
+              Some(native_review_lane_draft_missing_lane_category_json()),
+              False,
+            ))
+        }
+      },
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      native_review_lane_structured_output_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let _initial_agent =
+    receive_event_with_prefix(subject, "agent:lane_correctness:", 10)
+  let retry_agent =
+    receive_event_with_prefix(subject, "agent:lane_correctness:", 10)
+  assert string.contains(retry_agent, "Scherzo structured-output retry")
+  assert string.contains(retry_agent, "review_lane_draft")
+  assert string.contains(retry_agent, "lane.category")
+  let assert Ok(artifact) = dict.get(success.artifacts, "lane_correctness")
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    artifact.structured_output
+  let assert Some(retry) = metadata.retry
+  assert retry.outcome == "succeeded"
+  let assert [initial, retried] = retry.diagnostics
+  assert initial.status == "error"
+  assert initial.failure_code == Some("structured_output_schema_invalid")
+  assert string.contains(initial.message, "lane.category")
   assert retried.status == "valid"
   let assert Ok(_) = simplifile.read(metadata.path)
 }

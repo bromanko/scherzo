@@ -2709,6 +2709,10 @@ fn agent_success_with_structured_output(
       success.result.structured_response,
       success.result.structured_response_truncated,
       secrets,
+      structured_output.default_validator_runner(
+        context.config_dir,
+        context.workspace_path,
+      ),
     )
   {
     Ok(structured_output.StructuredOutputAbsent) ->

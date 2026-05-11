@@ -13,6 +13,7 @@ steps:
       format: json
       artifact_name: valid_draft
       required: true
+      validator: review_lane_draft
       schema:
         type: object
         required:
@@ -37,6 +38,7 @@ steps:
       format: json
       artifact_name: malformed_draft
       required: true
+      validator: review_lane_draft
       schema:
         type: object
         required:
@@ -61,6 +63,7 @@ steps:
       format: json
       artifact_name: failed_draft
       required: true
+      validator: review_lane_draft
       schema:
         type: object
         required:

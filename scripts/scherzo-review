@@ -1676,14 +1676,16 @@ def lane_log_text(
     return "\n".join(lines) + "\n"
 
 
-def validate_string_field(value: dict[str, Any], field: str) -> None:
+def validate_string_field(value: dict[str, Any], field: str, *, display_field: str | None = None) -> None:
     if not isinstance(value.get(field), str) or not value.get(field):
-        raise ReviewError(f"artifact field {field!r} must be a non-empty string")
+        diagnostic_field = display_field or field
+        raise ReviewError(f"artifact field {diagnostic_field!r} must be a non-empty string")
 
 
-def validate_bool_field(value: dict[str, Any], field: str) -> None:
+def validate_bool_field(value: dict[str, Any], field: str, *, display_field: str | None = None) -> None:
     if not isinstance(value.get(field), bool):
-        raise ReviewError(f"artifact field {field!r} must be a boolean")
+        diagnostic_field = display_field or field
+        raise ReviewError(f"artifact field {diagnostic_field!r} must be a boolean")
 
 
 def validate_list_field(value: dict[str, Any], field: str) -> list[Any]:
@@ -1960,7 +1962,7 @@ def validate_review_lane_draft(value: dict[str, Any]) -> None:
     if not isinstance(lane, dict):
         raise ReviewError("review lane draft lane must be an object")
     for field in ["id", "name", "category", "version"]:
-        validate_string_field(lane, field)
+        validate_string_field(lane, field, display_field=f"lane.{field}")
     input_refs = validate_list_field(value, "input_refs")
     for index, ref in enumerate(input_refs):
         validate_artifact_ref(ref, field=f"input_refs[{index}]")
@@ -1971,8 +1973,8 @@ def validate_review_lane_draft(value: dict[str, Any]) -> None:
         if not isinstance(finding, dict):
             raise ReviewError("draft_findings items must be objects")
         for field in ["draft_finding_id", "title", "claim", "severity"]:
-            validate_string_field(finding, field)
-        validate_bool_field(finding, "proposed_blocking")
+            validate_string_field(finding, field, display_field=f"draft_findings[].{field}")
+        validate_bool_field(finding, "proposed_blocking", display_field="draft_findings[].proposed_blocking")
         finding_id = str(finding.get("draft_finding_id"))
         if finding_id in finding_ids:
             raise ReviewError("draft finding ids must be unique")
@@ -1990,7 +1992,7 @@ def validate_review_lane_draft(value: dict[str, Any]) -> None:
         if not isinstance(request, dict):
             raise ReviewError("evidence_requests items must be objects")
         for field in ["request_id", "draft_finding_id", "evidence_key", "claim", "expected_observation"]:
-            validate_string_field(request, field)
+            validate_string_field(request, field, display_field=f"evidence_requests[].{field}")
         request_id = str(request.get("request_id"))
         if request_id in seen_requests:
             raise ReviewError("evidence request ids must be unique")
@@ -6289,6 +6291,22 @@ def validate_command(args: argparse.Namespace) -> None:
         print("REVIEW_CUTOVER_READY=ok")
 
 
+def validate_structured_output_command(args: argparse.Namespace) -> None:
+    payload = sys.stdin.readline()
+    if not payload:
+        raise ReviewError("structured output payload on stdin is required")
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ReviewError(f"structured output payload must be valid JSON: {exc.msg}") from exc
+    if not isinstance(value, dict):
+        raise ReviewError("structured output payload must be a JSON object")
+    if args.validator == "review_lane_draft":
+        validate_review_lane_draft(value)
+        return
+    raise ReviewError(f"unknown structured-output validator: {args.validator}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scherzo-review",
@@ -6589,6 +6607,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="For preflight manifests, require the fixture/external cutover-readiness gate to be ready.",
     )
     validate.set_defaults(func=validate_command)
+
+    validate_structured = subparsers.add_parser(
+        "validate-structured-output",
+        help="Validate one structured-output JSON payload from stdin against a named contract.",
+    )
+    validate_structured.add_argument(
+        "--validator",
+        required=True,
+        help="Named structured-output validator to apply (for example: review_lane_draft).",
+    )
+    validate_structured.set_defaults(func=validate_structured_output_command)
     return parser
 
 
