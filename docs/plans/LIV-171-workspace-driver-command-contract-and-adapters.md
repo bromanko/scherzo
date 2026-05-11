@@ -53,17 +53,18 @@ The sixth risk is overfitting the no-op adapter to an empty workspace and later 
 ## Progress
 
 - [x] (2026-05-09 00:00Z) Read the repository-local ExecPlan authoring guidance and drafted this plan from the umbrella design plus current tree inspection.
-- [ ] Implement `docs/runbooks/workspace-driver-contract.md` with the initial command contract.
-- [ ] Add `scripts/scherzo-workspace-noop` and direct contract tests for lifecycle, `changed-files`, `status`, and `assert-only`.
-- [ ] Add `scripts/scherzo-workspace-jj` and direct contract tests for lifecycle delegation, `status`, `diff`, `changed-files`, and `assert-only`.
-- [ ] Add a jj driver local integration smoke test that exercises the new lifecycle verbs through existing hook execution.
-- [ ] Run formatting, unit tests, glinter, and Scherzo lint from the repository root.
-- [ ] Update Outcomes & Retrospective with the final command shapes, any deviations from this plan, and validation evidence.
+- [x] (2026-05-10 16:50Z) Implemented `docs/runbooks/workspace-driver-contract.md` with the initial command contract.
+- [x] (2026-05-10 16:50Z) Added `scripts/scherzo-workspace-noop` and direct contract tests for lifecycle, `changed-files`, `status`, and `assert-only`.
+- [x] (2026-05-10 16:50Z) Added `scripts/scherzo-workspace-jj` and direct contract tests for lifecycle delegation, `status`, `diff`, `changed-files`, and `assert-only`.
+- [x] (2026-05-10 16:50Z) Added a jj driver local integration smoke test that exercises the new lifecycle verbs through existing hook execution.
+- [x] (2026-05-10 16:50Z) Ran formatting, unit tests, glinter, and Scherzo lint from the repository root.
+- [x] (2026-05-10 16:50Z) Updated Outcomes & Retrospective with the final command shapes, deviations from this plan, and validation evidence.
+- [x] (2026-05-10 23:55Z) Review hardening made `scripts/scherzo-workspace-jj lifecycle remove` reject missing or empty `SCHERZO_WORKSPACE_PATH` before delegating to the legacy helper, added a regression test, and reran the unit and local-integration suites.
 
 ## Surprises & Discoveries
 
-- Observation: The repository already has named workspace profile support, but the profile type still stores hook commands and does not yet model driver commands or capabilities.
-  Evidence: `src/scherzo/config/types.gleam` defines `WorkspaceHookProfile(name, hooks, source)` and `WorkspaceHookProfiles(default_profile, profiles)`.
+- Observation: The implementation base already includes the prerequisite workspace driver schema types, so this adapter slice did not need production Gleam changes for profile parsing.
+  Evidence: `src/scherzo/config/types.gleam` defines `WorkspaceDriverConfig`, `WorkspaceLifecycleOperation`, `WorkspaceCapability`, and `WorkspaceHookProfile(name, hooks, driver, source)`.
 
 - Observation: The checked-in dogfood configuration still uses direct legacy `workspace.hooks` and calls the jj hook helper directly.
   Evidence: `.scherzo/scherzo.yaml` has `workspace.hooks.create`, `workspace.hooks.before_step`, `workspace.hooks.after_step`, and `workspace.hooks.remove` entries that invoke `scripts/scherzo-jj-workspace`.
@@ -76,6 +77,15 @@ The sixth risk is overfitting the no-op adapter to an empty workspace and later 
 
 - Observation: The current command-step environment does not yet expose a workspace driver command.
   Evidence: `src/scherzo/workflow_run.gleam` builds `step_command_env` with workflow, run, issue, step, attempt, workspace name, and workspace path fields, but not `SCHERZO_WORKSPACE_DRIVER`.
+
+- Observation: Command-step stdout diagnostics create transient files under `.scherzo/command-step-diagnostics`; the no-op adapter must exclude `.scherzo` scratch files from artifact changed-file output.
+  Evidence: `src/scherzo/command_step.gleam` prepares `.scherzo/command-step-diagnostics/<step>.stdout.raw`, and `scripts/scherzo-workspace-noop changed-files --json` now ignores `.scherzo` while tests assert only user artifact files.
+
+- Observation: An earlier full test run printed one `erl_child_setup: failed with error 32 on line 284` line during an existing broad suite path, but the runner completed successfully and a later full run did not repeat the line.
+  Evidence: The final `direnv exec . gleam test` run ended with `1069 passed, no failures`.
+
+- Observation: The first review pass found that `scripts/scherzo-workspace-jj lifecycle remove` delegated to the legacy helper before checking whether `SCHERZO_WORKSPACE_PATH` was explicit.
+  Evidence: The workspace driver contract forbids current-directory fallback for destructive lifecycle removal; `jj_driver_lifecycle_remove_requires_explicit_workspace_path_test` now covers unset and empty workspace paths without invoking fake `jj`.
 
 ## Decision Log
 
@@ -103,35 +113,63 @@ The sixth risk is overfitting the no-op adapter to an empty workspace and later 
   Rationale: This mirrors common shell conventions and lets command steps distinguish caller misuse from a valid assertion failure.
   Date: 2026-05-09
 
+- Decision: Implement the new adapter commands as shell-launchable Python standard-library programs, with shell shebang wrappers that work both as executable commands and when invoked as `sh <script>` by legacy hooks.
+  Rationale: Python provides correct JSON encoding and filesystem path handling for names containing spaces, quotes, and backslashes without adding a package dependency. The shell wrapper preserves the hook invocation style used by existing tests and smoke workflows.
+  Date: 2026-05-10
+
+- Decision: Locate the legacy jj helper as a sibling of `scripts/scherzo-workspace-jj`, not under `SCHERZO_REPO_ROOT`.
+  Rationale: `SCHERZO_REPO_ROOT` names the coordinating jj repository for lifecycle operations. The local integration smoke deliberately sets it to a temporary jj repository that does not contain Scherzo scripts, so the adapter must use its own script location to find `scripts/scherzo-jj-workspace` while passing `SCHERZO_REPO_ROOT` through for jj operations.
+  Date: 2026-05-10
+
+- Decision: Exclude `.scherzo` scratch files from the no-op adapter's changed-file set in addition to the private marker.
+  Rationale: Scherzo command-step diagnostics can create transient `.scherzo/command-step-diagnostics` files while a command runs. A no-op artifact driver should report workflow artifacts, not Scherzo's own diagnostics.
+  Date: 2026-05-10
+
+- Decision: Do not create a manual jj commit from this implementation workflow.
+  Rationale: The Scherzo `workflow:execplan-implementation` contract for LIV-183 says not to create commits; the publish step creates the final logical jj commit after review and validation.
+  Date: 2026-05-10
+
+- Decision: Require an explicit, non-empty `SCHERZO_WORKSPACE_PATH` for `scripts/scherzo-workspace-jj lifecycle remove` before delegating to `scripts/scherzo-jj-workspace before-remove`.
+  Rationale: The legacy helper falls back to the current directory when the workspace path is missing, but the new driver contract requires destructive lifecycle removal to have an explicit target.
+  Date: 2026-05-10
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Implementation completed the initial adapter contract without changing runtime configuration or production Gleam code. `docs/runbooks/workspace-driver-contract.md` now defines lifecycle and capability command shapes, exit codes, path-safety rules, output formats, supported adapter capability sets, and reserved future capability names.
+
+`scripts/scherzo-workspace-noop` now implements an artifact-only driver. It requires an explicit `SCHERZO_WORKSPACE_PATH` for lifecycle commands, writes `.scherzo-workspace-driver-noop` during create, refuses unsafe remove targets, reports sorted JSON regular-file artifacts for `changed-files --json`, prints deterministic human status, and enforces `assert-only --path <relative-file>` with relative diagnostics.
+
+`scripts/scherzo-workspace-jj` now implements the jj-backed driver. It delegates `lifecycle create`, `lifecycle before-step`, and `lifecycle remove` to `scripts/scherzo-jj-workspace`, treats `lifecycle after-step` as a successful no-op, delegates human `status` and `diff` to jj, and implements sorted JSON `changed-files --json` plus `assert-only` from `jj diff --from @- --to @ --name-only --color=never`.
+
+The test suite now has direct adapter tests in `test/workspace_driver_contract_test.gleam` and `test/jj_workspace_driver_test.gleam`, plus a driver lifecycle smoke test added to `test/local_integration/workflow_jj_workspace_smoke_test.gleam`. Validation from the repository root passed with `direnv exec . gleam test` reporting `1069 passed, no failures`, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter` reporting `0 errors` with the existing warning inventory, and `direnv exec . gleam run -m scherzo_lint` exiting 0 with the same existing warning inventory.
+
+Review hardening added an explicit-target guard for `scripts/scherzo-workspace-jj lifecycle remove` and a regression test for unset or empty `SCHERZO_WORKSPACE_PATH`. Targeted post-review validation passed with `direnv exec . gleam format --check test/jj_workspace_driver_test.gleam`, `direnv exec . gleam test --target erlang -- --suite unit` reporting `1070 passed, no failures`, and `direnv exec . gleam test --target erlang -- --suite local-integration` reporting `2 passed, no failures`.
 
 ## Context and Orientation
 
 Scherzo is a Gleam application that dispatches issues into workflow DAGs. A workflow DAG is a YAML file, such as `.scherzo/workflows/research.yaml`, that defines agent and command steps. Each step runs in a workspace directory prepared by Scherzo. A workspace profile is operator configuration that says how those workspaces are created, checked before steps, and removed afterward.
 
-The current repository has two related but separate workspace concepts. Runtime code has named workspace profiles, but the profile implementation still stores hook snippets. The dogfood configuration uses the legacy direct `workspace.hooks` shape rather than named profiles. The current jj lifecycle helper is `scripts/scherzo-jj-workspace`, and it uses environment variables such as `SCHERZO_WORKSPACE_PATH`, `SCHERZO_RUN_ROOT`, `SCHERZO_REPO_ROOT`, `SCHERZO_SOURCE_WORKSPACE_PATH`, `SCHERZO_WORKFLOW_ID`, `SCHERZO_ISSUE_IDENTIFIER`, `SCHERZO_RUN_ID`, and `SCHERZO_WORKSPACE_NAME`.
+The current repository has two related but separate workspace concepts. Runtime code now has named workspace profiles and typed driver profile schema, but runtime driver invocation and command-step exposure are still separate follow-up work. The dogfood configuration uses the legacy direct `workspace.hooks` shape rather than named driver profiles. The current jj lifecycle helper is `scripts/scherzo-jj-workspace`, and it uses environment variables such as `SCHERZO_WORKSPACE_PATH`, `SCHERZO_RUN_ROOT`, `SCHERZO_REPO_ROOT`, `SCHERZO_SOURCE_WORKSPACE_PATH`, `SCHERZO_WORKFLOW_ID`, `SCHERZO_ISSUE_IDENTIFIER`, `SCHERZO_RUN_ID`, and `SCHERZO_WORKSPACE_NAME`.
 
-A workspace driver is the next abstraction from the umbrella design. It is one trusted command configured by the operator. Scherzo will call it for lifecycle operations, and workflow command steps will call it for workflow-facing capabilities. This plan concerns the command contract and adapter scripts only. The runtime parser and validation changes that understand `workspace.profiles.<name>.driver` and workflow `workspace_capabilities` belong to the core schema child plan. The dogfood config migration and portable research workflow update are also separate child plans.
+A workspace driver is the next abstraction from the umbrella design. It is one trusted command configured by the operator. Scherzo will call it for lifecycle operations, and workflow command steps will call it for workflow-facing capabilities. This plan concerns the command contract and adapter scripts only. The runtime parser and validation changes that understand `workspace.profiles.<name>.driver` and workflow `workspace_capabilities` have landed before this adapter slice; runtime invocation, dogfood config migration, and portable research workflow updates remain separate child plans.
 
 The important current files are:
 
 - `scripts/scherzo-jj-workspace`, the existing jj lifecycle hook helper that the new jj driver should delegate to for lifecycle operations.
 - `.scherzo/scherzo.yaml`, the current dogfood orchestrator config, which still uses direct `workspace.hooks` and must not be changed by this plan.
 - `examples/scherzo.yaml`, which demonstrates named hook profiles today and includes a `noop` profile, but not the new driver contract.
-- `src/scherzo/config/types.gleam`, which currently defines hook-profile types rather than driver-profile types.
-- `src/scherzo/config.gleam`, which currently parses `workspace.hooks` and `workspace.profiles.<name>.hooks`.
-- `src/scherzo/workflow_dag.gleam`, which currently parses `workspace_profile` but not `workspace_capabilities`.
+- `src/scherzo/config/types.gleam`, which currently defines hook-profile and driver-profile types.
+- `src/scherzo/config.gleam`, which currently parses legacy hooks and driver profile schema.
+- `src/scherzo/workflow_dag.gleam`, which currently parses `workspace_profile` and `workspace_capabilities`.
 - `src/scherzo/workflow_run.gleam`, which currently prepares command-step environments without `SCHERZO_WORKSPACE_DRIVER`.
 - `test/jj_workspace_hook_test.gleam`, which shows the existing pattern for testing shell helpers with a fake `jj` executable.
 - `test/local_integration/workflow_jj_workspace_smoke_test.gleam`, which shows a real jj workspace smoke test through current hook execution.
 
 ## Preconditions and Verified Facts
 
-The current tree has no existing `docs/plans/LIV-171-*.md` plan file. The working copy was clean before this plan was written.
+This plan exists at `docs/plans/LIV-171-workspace-driver-command-contract-and-adapters.md`. The working copy was clean before the plan was originally written and before implementation began.
 
-The current repository does not contain a `docs/runbooks/workspace-driver-contract.md` file. It also does not contain `scripts/scherzo-workspace-jj` or `scripts/scherzo-workspace-noop`. These are new files for the implementation phase of this plan.
+Before this implementation, the repository did not contain `docs/runbooks/workspace-driver-contract.md`, `scripts/scherzo-workspace-jj`, or `scripts/scherzo-workspace-noop`. This implementation adds those files, and both scripts are executable.
 
 The current `scripts/scherzo-jj-workspace` usage is `scherzo-jj-workspace <after-create|before-run|before-remove> <workflow-name>`. It infers or uses `SCHERZO_REPO_ROOT`, creates jj workspaces with `jj workspace add`, verifies with `jj status --color=never`, and forgets workspaces before removal.
 
@@ -296,7 +334,7 @@ Do not update dogfood configs or public examples in this plan. Later child plans
 
 33. Update this ExecPlan's Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective sections with the final validation output and any contract deviations discovered during implementation.
 
-34. Commit the implementation as one logical adapter-contract commit after validation passes. Suggested commit message: `feat(workspace): add initial driver contract adapters`.
+34. When implementing outside Scherzo's managed implementation workflow, commit the implementation as one logical adapter-contract commit after validation passes. Suggested commit message: `feat(workspace): add initial driver contract adapters`. When implementing under `workflow:execplan-implementation`, do not create a manual commit; the publish step creates the final jj commit after review and validation.
 
 ## Testing and Falsifiability
 

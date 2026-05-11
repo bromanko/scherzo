@@ -133,6 +133,76 @@ fn orchestrator(
   )
 }
 
+fn driver_orchestrator(
+  root: String,
+  repo: String,
+  script: String,
+) -> config_types.OrchestratorConfig {
+  let workspace_root = root <> "/workspaces"
+  let dag_hooks =
+    config_types.DagHooksConfig(
+      create: Some(
+        "SCHERZO_REPO_ROOT=\""
+        <> repo
+        <> "\" SCHERZO_JJ_WORKSPACE_BASE=@ sh \""
+        <> script
+        <> "\" lifecycle create",
+      ),
+      before_step: Some(
+        "SCHERZO_REPO_ROOT=\""
+        <> repo
+        <> "\" sh \""
+        <> script
+        <> "\" lifecycle before-step",
+      ),
+      after_step: Some(
+        "SCHERZO_REPO_ROOT=\""
+        <> repo
+        <> "\" sh \""
+        <> script
+        <> "\" lifecycle after-step",
+      ),
+      remove: Some(
+        "if [ -d \"$SCHERZO_RUN_ROOT/workspaces\" ]; then\n"
+        <> "  SCHERZO_REPO_ROOT=\""
+        <> repo
+        <> "\" sh \""
+        <> script
+        <> "\" lifecycle remove\n"
+        <> "fi",
+      ),
+      timeout_ms: 20_000,
+    )
+  config_types.OrchestratorConfig(
+    effective: effective(workspace_root),
+    config_dir: root <> "/config",
+    routing: config_types.RoutingConfig(
+      workflow_label_prefix: "workflow:",
+      require_exactly_one_workflow_label: True,
+      default_workflow: None,
+      workflows: dict.from_list([#("smoke", "smoke.yaml")]),
+    ),
+    dag_hooks: dag_hooks,
+    workspace_profiles: config_types.WorkspaceHookProfiles(
+      default_profile: "default",
+      profiles: dict.from_list([
+        #(
+          "default",
+          config_types.WorkspaceHookProfile(
+            name: "default",
+            hooks: Some(dag_hooks),
+            driver: None,
+            source: config_types.LegacyWorkspaceHooks,
+          ),
+        ),
+      ]),
+    ),
+    artifact_limits: limits(),
+    model_settings: model_config.default_settings(),
+    scheduled_jobs: [],
+  )
+}
+
 fn empty_tracker() -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([]) },
@@ -205,6 +275,51 @@ pub fn workflow_jj_workspace_reuses_main_and_cleans_up_smoke_test() {
   let list =
     command_step.run(
       "jj_workspace_list",
+      "jj --repository \"" <> repo <> "\" workspace list --color=never",
+      ".",
+      20_000,
+      [],
+      limits(),
+    )
+  assert list.status == step_artifact.StepSucceeded
+  assert !string.contains(list.stdout, "scherzo-smoke-ABC-123-run-1-main")
+}
+
+pub fn workflow_jj_workspace_driver_lifecycle_reuses_main_and_cleans_up_smoke_test() {
+  let root = "test/tmp/workflow-jj-workspace-driver-smoke"
+  reset_dir(root)
+  let repo = setup_jj_repo(root)
+  let script = absolute("scripts/scherzo-workspace-jj")
+  let orch = driver_orchestrator(root, repo, script)
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      dag(),
+      orch,
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.default_dependencies(),
+    )
+
+  let assert Ok(first) = dict.get(success.artifacts, "first")
+  let assert Ok(second) = dict.get(success.artifacts, "second")
+  let first_fields = string.split(string.trim(first.stdout), on: "|")
+  let second_fields = string.split(string.trim(second.stdout), on: "|")
+  let assert [first_workspace, first_run_root, "first"] = first_fields
+  let assert [second_workspace, second_run_root, "second"] = second_fields
+  assert first_workspace == second_workspace
+  assert string.ends_with(
+    first_workspace,
+    "/workspaces/smoke/ABC-123/run-1/workspaces/main",
+  )
+  assert first_run_root == second_run_root
+  assert first_run_root == success.run_root
+  assert simplifile.is_directory(success.run_root) == Ok(False)
+
+  let list =
+    command_step.run(
+      "jj_workspace_driver_list",
       "jj --repository \"" <> repo <> "\" workspace list --color=never",
       ".",
       20_000,
