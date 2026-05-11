@@ -1188,6 +1188,34 @@ fn read_workspace_profile_entries(
   }
 }
 
+fn read_optional_dag_hooks(
+  node: Option(yay.Node),
+  path: String,
+) -> Result(Option(config_types.DagHooksConfig), error.ConfigError) {
+  case node {
+    None -> Ok(None)
+    Some(yay.NodeMap(_) as hooks) -> {
+      use hooks <- result.try(read_dag_hooks(hooks, path))
+      Ok(Some(hooks))
+    }
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a map"))
+  }
+}
+
+fn read_optional_workspace_driver(
+  node: Option(yay.Node),
+  path: String,
+) -> Result(Option(config_types.WorkspaceDriverConfig), error.ConfigError) {
+  case node {
+    None -> Ok(None)
+    Some(yay.NodeMap(_) as driver) -> {
+      use driver <- result.try(read_workspace_driver(driver, path))
+      Ok(Some(driver))
+    }
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a map"))
+  }
+}
+
 fn read_workspace_profile_entry(
   name: String,
   node: yay.Node,
@@ -1195,40 +1223,33 @@ fn read_workspace_profile_entry(
   let path = "workspace.profiles." <> name
   case node {
     yay.NodeMap(_) -> {
-      let hooks_node = get_node(node, "hooks")
-      let driver_node = get_node(node, "driver")
-      case hooks_node, driver_node {
-        Some(_), Some(_) ->
-          Error(error.InvalidConfig(path <> " must not mix hooks and driver"))
-        Some(yay.NodeMap(_) as hooks), None -> {
-          use hooks <- result.try(read_dag_hooks(hooks, path <> ".hooks"))
-          Ok(config_types.WorkspaceHookProfile(
-            name: name,
-            hooks: Some(hooks),
-            driver: None,
-            source: config_types.ConfiguredWorkspaceHooks,
-          ))
-        }
-        Some(_), None ->
-          Error(error.InvalidConfig(path <> ".hooks must be a map"))
-        None, Some(yay.NodeMap(_) as driver) -> {
-          use driver <- result.try(read_workspace_driver(
-            driver,
-            path <> ".driver",
-          ))
-          Ok(config_types.WorkspaceHookProfile(
-            name: name,
-            hooks: None,
-            driver: Some(driver),
-            source: config_types.ConfiguredWorkspaceDriver,
-          ))
-        }
-        None, Some(_) ->
-          Error(error.InvalidConfig(path <> ".driver must be a map"))
+      use hooks <- result.try(read_optional_dag_hooks(
+        get_node(node, "hooks"),
+        path <> ".hooks",
+      ))
+      use driver <- result.try(read_optional_workspace_driver(
+        get_node(node, "driver"),
+        path <> ".driver",
+      ))
+      case hooks, driver {
         None, None ->
           Error(error.InvalidConfig(
             path
-            <> " must define hooks for legacy runtime behavior or driver for the new workspace schema",
+            <> " must define hooks for runtime workspace preparation or driver for the new workspace schema",
+          ))
+        Some(_), _ ->
+          Ok(config_types.WorkspaceHookProfile(
+            name: name,
+            hooks: hooks,
+            driver: driver,
+            source: config_types.ConfiguredWorkspaceHooks,
+          ))
+        None, Some(_) ->
+          Ok(config_types.WorkspaceHookProfile(
+            name: name,
+            hooks: None,
+            driver: driver,
+            source: config_types.ConfiguredWorkspaceDriver,
           ))
       }
     }

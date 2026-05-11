@@ -240,6 +240,25 @@ pub fn rejects_missing_selected_workspace_capabilities_test() {
   assert string.contains(message, "missing: assert-only")
 }
 
+pub fn loads_hook_backed_profile_with_driver_capabilities_test() {
+  let dir = "test/tmp/runtime-bundle-hook-driver-capabilities"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/noop.yaml",
+      "version: 1\nid: noop\nworkspace_profile: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo noop\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n      driver:\n        command: scripts/scherzo-workspace-jj\n        capabilities: [assert-only, changed-files]\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+    )
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert dict.has_key(bundle.workflows, "noop")
+}
+
 pub fn blocks_selected_driver_profile_after_capability_match_test() {
   let dir = "test/tmp/runtime-bundle-driver-blocked"
   reset_dir(dir)

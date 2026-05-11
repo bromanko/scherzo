@@ -24,6 +24,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_run
 import scherzo/workflow_scheduler
+import scherzo/workspace_driver_context
 import scherzo/workspace_run
 import simplifile
 import support/expected_crash
@@ -104,6 +105,26 @@ fn workspace_profile(
     name: name,
     hooks: Some(hooks),
     driver: None,
+    source: source,
+  )
+}
+
+fn workspace_profile_with_driver(
+  name: String,
+  hooks: config_types.DagHooksConfig,
+  source: config_types.WorkspaceProfileSource,
+  command: String,
+  capabilities: List(config_types.WorkspaceCapability),
+) -> config_types.WorkspaceHookProfile {
+  config_types.WorkspaceHookProfile(
+    name: name,
+    hooks: Some(hooks),
+    driver: Some(config_types.WorkspaceDriverConfig(
+      command: command,
+      lifecycle: [],
+      capabilities: capabilities,
+      timeout_ms: hooks.timeout_ms,
+    )),
     source: source,
   )
 }
@@ -565,6 +586,330 @@ pub fn command_default_timeout_uses_selected_workspace_profile_test() {
 
   assert receive_event(subject) == "prepare:run:main:"
   assert receive_event(subject) == "timeout:42"
+}
+
+pub fn command_step_receives_workspace_driver_context_from_resolved_profile_test() {
+  let subject = process.new_subject()
+  let hooks = dag_hooks_with_timeout(1000)
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator(),
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "dogfood-jj",
+        profiles: dict.from_list([
+          #(
+            "dogfood-jj",
+            workspace_profile_with_driver(
+              "dogfood-jj",
+              hooks,
+              config_types.ConfiguredWorkspaceHooks,
+              "scripts/scherzo-workspace-jj",
+              [
+                config_types.WorkspaceAssertOnly,
+                config_types.WorkspaceChangedFiles,
+              ],
+            ),
+          ),
+        ]),
+      ),
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "driver_env:"
+            <> context.workspace_context.profile
+            <> "|"
+            <> context.workspace_context.driver
+            <> "|"
+            <> workspace_driver_context.serialize_capabilities(
+            context.workspace_context.capabilities,
+          ),
+        )
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "stdout",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      command_dag_with_profile("dogfood-jj"),
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert receive_event(subject) == "prepare:run:main:"
+  assert receive_event(subject)
+    == "driver_env:dogfood-jj|scripts/scherzo-workspace-jj|assert-only changed-files"
+}
+
+pub fn workflow_yaml_cannot_override_workspace_driver_context_test() {
+  let subject = process.new_subject()
+  let hooks = dag_hooks_with_timeout(1000)
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator(),
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "dogfood-jj",
+        profiles: dict.from_list([
+          #(
+            "dogfood-jj",
+            workspace_profile_with_driver(
+              "dogfood-jj",
+              hooks,
+              config_types.ConfiguredWorkspaceHooks,
+              "scripts/scherzo-workspace-jj",
+              [config_types.WorkspaceAssertOnly],
+            ),
+          ),
+        ]),
+      ),
+    )
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nworkspace_capabilities: [assert-only]\nworkspace_driver: scripts/malicious-driver\nsteps:\n  - id: run\n    kind: command\n    run: echo ok\n    workspace: main\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(subject, "driver:" <> context.workspace_context.driver)
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "stdout",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert receive_event(subject) == "prepare:run:main:"
+  assert receive_event(subject) == "driver:scripts/scherzo-workspace-jj"
+}
+
+pub fn agent_prompt_renders_workspace_driver_locals_test() {
+  let subject = process.new_subject()
+  let hooks = dag_hooks_with_timeout(1000)
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator(),
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "dogfood-jj",
+        profiles: dict.from_list([
+          #(
+            "dogfood-jj",
+            workspace_profile_with_driver(
+              "dogfood-jj",
+              hooks,
+              config_types.ConfiguredWorkspaceHooks,
+              "scripts/scherzo-workspace-jj",
+              [
+                config_types.WorkspaceAssertOnly,
+                config_types.WorkspaceChangedFiles,
+              ],
+            ),
+          ),
+        ]),
+      ),
+    )
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nsteps:\n  - id: implement\n    kind: agent\n    prompt: 'driver={{ workspace.driver }} profile={{ workspace.profile }} caps={% for capability in workspace.capabilities %}{{ capability }};{% endfor %}'\n    workspace: main\n",
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      deps(subject, None),
+    )
+
+  assert receive_event(subject) == "prepare:implement:main:"
+  let agent_event = receive_event(subject)
+  assert string.contains(agent_event, "driver=scripts/scherzo-workspace-jj")
+  assert string.contains(agent_event, "profile=dogfood-jj")
+  assert string.contains(agent_event, "assert-only;")
+  assert string.contains(agent_event, "changed-files;")
+}
+
+pub fn agent_prompt_preserves_artifact_locals_with_workspace_driver_locals_test() {
+  let subject = process.new_subject()
+  let hooks = dag_hooks_with_timeout(1000)
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator(),
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "dogfood-jj",
+        profiles: dict.from_list([
+          #(
+            "dogfood-jj",
+            workspace_profile_with_driver(
+              "dogfood-jj",
+              hooks,
+              config_types.ConfiguredWorkspaceHooks,
+              "scripts/scherzo-workspace-jj",
+              [config_types.WorkspaceAssertOnly],
+            ),
+          ),
+        ]),
+      ),
+    )
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n  - id: summarize\n    kind: agent\n    depends_on: [collect]\n    prompt: 'artifact={{ steps.collect.stdout }} driver={{ workspace.driver }}'\n    workspace: main\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(subject, "run:" <> context.step_id)
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "artifact-value",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let agent_event = receive_event_with_prefix(subject, "agent:", 5)
+  assert string.contains(agent_event, "artifact=artifact-value")
+  assert string.contains(agent_event, "driver=scripts/scherzo-workspace-jj")
+}
+
+pub fn recovery_prompt_does_not_rerender_workspace_driver_locals_test() {
+  let subject = process.new_subject()
+  let hooks = dag_hooks_with_timeout(1000)
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator(),
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "dogfood-jj",
+        profiles: dict.from_list([
+          #(
+            "dogfood-jj",
+            workspace_profile_with_driver(
+              "dogfood-jj",
+              hooks,
+              config_types.ConfiguredWorkspaceHooks,
+              "scripts/scherzo-workspace-jj",
+              [config_types.WorkspaceAssertOnly],
+            ),
+          ),
+        ]),
+      ),
+    )
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nsteps:\n  - id: resume\n    kind: agent\n    prompt: ORIGINAL {{ workspace.driver }}\n    workspace: main\n",
+    )
+  let context =
+    workflow_run.RecoveredRunContext(
+      ..recovered_context(
+        dag.id,
+        dict.new(),
+        dict.new(),
+        dict.new(),
+        dict.from_list([#("resume", 1)]),
+      ),
+      pi_session_continuations: dict.from_list([
+        #(
+          "resume",
+          workflow_attempt.PiContinuation(
+            run_id: "run-1",
+            issue_id: "issue-id",
+            issue_identifier: "ABC-123",
+            workflow_id: "implementation",
+            workflow_fingerprint: "wf-test",
+            step_id: "resume",
+            workspace_name: "main",
+            attempt_index: 1,
+            workspace_path: "test/tmp/workflow-run/workspaces/implementation/ABC-123/main",
+            session_id: "pi-session",
+            session_file: "test/tmp/session.json",
+            recovery_prompt: "RECOVERY {{ workspace.driver }}",
+          ),
+        ),
+      ]),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute_with_context(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      workflow_run.RecoveredRun(context),
+      deps(subject, None),
+    )
+
+  assert receive_event(subject) == "prepare_recovered:resume:main:"
+  let agent_event = receive_event(subject)
+  assert string.contains(agent_event, "RECOVERY {{ workspace.driver }}")
 }
 
 pub fn workflow_run_fans_out_fans_in_and_renders_artifacts_test() {
