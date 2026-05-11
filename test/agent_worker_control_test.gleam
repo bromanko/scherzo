@@ -147,6 +147,11 @@ fn tracker_returning(final_issue: tracker_issue.Issue) -> tracker.Client {
 
 const external_fixture_timeout_ms = 5000
 
+// Keep active-turn stdout polling short enough that queued operator commands are
+// observed promptly, while avoiding a 100ms external shell/JQ RPC deadline that
+// flakes under scheduler load.
+const external_fixture_read_timeout_ms = 500
+
 fn receive_update_named(
   subject: process.Subject(agent_types.RunnerUpdate),
   name: String,
@@ -224,8 +229,12 @@ pub fn operator_prompt_queued_during_turn_and_sent_next_turn_test() {
   reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
+  let assert Ok(release_after_message_update) =
+    path.absolute(root <> "/release-after-message-update")
   let pi_command =
-    "FAKE_PI_STALL_AFTER_PROMPT=500 FAKE_PI_TRANSCRIPT="
+    "FAKE_PI_AFTER_MESSAGE_UPDATE_RELEASE="
+    <> release_after_message_update
+    <> " FAKE_PI_TRANSCRIPT="
     <> transcript
     <> " "
     <> fake_pi()
@@ -236,19 +245,30 @@ pub fn operator_prompt_queued_during_turn_and_sent_next_turn_test() {
     process.spawn_unlinked(fn() {
       let command_subject = process.new_subject()
       process.send(ready_subject, command_subject)
+      let cfg = config(root, pi_command, 2, config_types.Cancel)
+      let cfg =
+        config_types.EffectiveConfig(
+          ..cfg,
+          pi: config_types.PiConfig(
+            ..cfg.pi,
+            read_timeout_ms: external_fixture_read_timeout_ms,
+            stall_timeout_ms: external_fixture_timeout_ms,
+          ),
+        )
       let result =
         runner.run_attempt_with_commands(
           issue("Todo"),
           None,
           workflow("Original task"),
-          config(root, pi_command, 2, config_types.Cancel),
+          cfg,
           tracker_returning(issue("Todo")),
           fn(_, update) { process.send(updates, update) },
           command_subject,
         )
       process.send(result_subject, result)
     })
-  let assert Ok(command_subject) = process.receive(ready_subject, within: 1000)
+  let command_subject =
+    test_async.expect_message_within(ready_subject, external_fixture_timeout_ms)
 
   let assert Ok(_) = receive_update_named(updates, "message_update", 50)
   let reply = process.new_subject()
@@ -256,8 +276,15 @@ pub fn operator_prompt_queued_during_turn_and_sent_next_turn_test() {
     command_subject,
     worker_command.QueuePrompt("operator follow-up", reply),
   )
-  let assert Ok(worker_command.Queued(_)) = process.receive(reply, within: 1000)
-  let assert Ok(Ok(success)) = process.receive(result_subject, within: 4000)
+  let assert worker_command.Queued(_) =
+    test_async.expect_message_within(reply, external_fixture_timeout_ms)
+  let assert Ok(_) = receive_update_named(updates, "operator_prompt_queued", 50)
+  let assert Ok(Nil) = simplifile.write(release_after_message_update, "release")
+  let assert Ok(success) =
+    test_async.expect_message_within(
+      result_subject,
+      external_fixture_timeout_ms,
+    )
   assert success.turns == 2
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "Original task")
