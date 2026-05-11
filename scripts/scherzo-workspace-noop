@@ -112,8 +112,13 @@ def regular_files(root: Path) -> list[str]:
     return sorted(files)
 
 
-def print_json(paths: list[str]) -> None:
-    print(json.dumps(paths, separators=(",", ":")))
+def changed_file_records(paths: list[str]) -> list[dict[str, str]]:
+    return [{"path": path, "status": "modified"} for path in paths]
+
+
+def print_changed_files_json(paths: list[str]) -> None:
+    payload = {"version": 1, "files": changed_file_records(paths)}
+    print(json.dumps(payload, separators=(",", ":")))
 
 
 def lifecycle(args: list[str]) -> None:
@@ -185,7 +190,7 @@ def main(argv: list[str]) -> None:
     if command == "changed-files":
         if rest != ["--json"]:
             usage_error("changed-files requires --json")
-        print_json(regular_files(capability_root()))
+        print_changed_files_json(regular_files(capability_root()))
         return
 
     if command == "assert-only":

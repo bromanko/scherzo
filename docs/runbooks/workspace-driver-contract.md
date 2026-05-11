@@ -45,18 +45,24 @@ The jj driver maps lifecycle operations to the existing legacy helper: `create` 
 
 ## Capability command forms
 
-The initial capability command forms are exactly:
+The portable capability command forms used by workflows are:
 
     <driver> status --human
     <driver> diff --human
     <driver> changed-files --json
     <driver> assert-only --path <relative-file>
 
+The jj-backed dogfood adapter also implements these source-control capabilities:
+
+    <driver> baseline --json
+    <driver> refresh-base --stage <stage> [--target <driver-ref>] --json
+    <driver> publish-change --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--allow-no-changes <true|false>] --json
+
 `status --human` prints a short human-oriented summary. Tests may assert basic text, but workflow automation should not parse it.
 
 `diff --human` prints a human-oriented diff. The initial jj driver supports it by invoking jj. The no-op artifact driver does not support `diff` because an empty artifact workspace has no baseline.
 
-`changed-files --json` prints one JSON array of workspace-root-relative path strings followed by a newline. The array is sorted lexicographically and deduplicated. For the no-op artifact driver, the changed-file set is every regular file under the workspace root except driver or Scherzo scratch files such as the private marker and `.scherzo` diagnostics. For the jj driver, the changed-file set is derived from `jj diff --from @- --to @ --name-only --color=never`.
+`changed-files --json` prints one JSON object followed by a newline. The object has `version: 1` and a `files` array. Each file record contains a workspace-root-relative `path` and a `status` of `added`, `modified`, `deleted`, `renamed`, or `conflicted`; records may include adapter-specific fields such as `old_path`. Records are sorted lexicographically by `path` and deduplicated. For the no-op artifact driver, the changed-file set is every regular file under the workspace root except driver or Scherzo scratch files such as the private marker and `.scherzo` diagnostics, reported with `status: "modified"` because the artifact workspace has no VCS baseline. For the jj driver, the changed-file set is derived from `jj diff --from @- --to @ --name-only --color=never` and enriched from `jj diff --summary` when status details are available.
 
 `assert-only --path <relative-file>` succeeds only when the changed-file set is exactly the given relative file path. The path argument must be non-empty, must not be `.`, must not be absolute, and must not contain `..` as a complete path segment. Unsafe path arguments fail before filesystem or VCS inspection.
 
@@ -78,9 +84,9 @@ Exit code 2 means the caller used the contract incorrectly, requested an unsuppo
 `scripts/scherzo-workspace-jj` supports these lifecycle operations and capabilities:
 
 - lifecycle: `create`, `before-step`, `after-step`, `remove`
-- capabilities: `status`, `diff`, `changed-files`, `assert-only`
+- capabilities: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, `publish-change`
 
-The capability names `baseline`, `refresh-base`, and `publish-change` are reserved for later plans. Initial adapters must not silently treat these names as successful operations.
+The no-op artifact driver intentionally rejects `diff`, `baseline`, `refresh-base`, and `publish-change` with usage errors because an empty artifact workspace has no VCS baseline or publication target.
 
 ## Safety rules for adapter authors
 
