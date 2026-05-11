@@ -1101,7 +1101,7 @@ fn validate_continuation_workspace(
 
 fn is_agent_step(dag: workflow_dag.WorkflowDag, step_id: String) -> Bool {
   case workflow_dag.step_by_id(dag, step_id) {
-    Ok(workflow_dag.WorkflowStep(kind: workflow_dag.AgentStep(_, _), ..)) ->
+    Ok(workflow_dag.WorkflowStep(kind: workflow_dag.AgentStep(_, _, _), ..)) ->
       True
     _ -> False
   }
@@ -1117,7 +1117,7 @@ fn interrupted_step_is_safe_to_retry(
       case step.kind {
         workflow_dag.CommandStep(_, _) ->
           Error("unsafe_interrupted_command_step:" <> step_id)
-        workflow_dag.AgentStep(_, _) -> Ok(Nil)
+        workflow_dag.AgentStep(_, _, _) -> Ok(Nil)
       }
   }
 }

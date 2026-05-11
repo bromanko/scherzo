@@ -32,6 +32,7 @@ pub fn parses_minimal_workflow_dag_test() {
   let assert workflow_dag.AgentStep(
     workflow_dag.PromptFile("prompts/research.md"),
     None,
+    None,
   ) = step.kind
 }
 
@@ -44,6 +45,7 @@ pub fn parses_agent_structured_output_defaults_test() {
   let assert workflow_dag.AgentStep(
     workflow_dag.PromptFile("prompts/review.md"),
     Some(spec),
+    None,
   ) = step.kind
   assert spec.format == workflow_dag.StructuredJson
   assert spec.artifact_name == "review_json"
@@ -62,6 +64,7 @@ pub fn parses_agent_structured_output_json_contract_test() {
   let assert workflow_dag.AgentStep(
     workflow_dag.PromptFile("prompts/review.md"),
     Some(spec),
+    None,
   ) = step.kind
   assert spec.format == workflow_dag.StructuredJson
   assert spec.artifact_name == "review_result"
@@ -70,6 +73,55 @@ pub fn parses_agent_structured_output_json_contract_test() {
     == workflow_dag.StructuredObjectSchema(["summary", "findings"])
   assert spec.validator == Some(workflow_dag.ReviewLaneDraftValidator)
   assert spec.validation_retries == 0
+}
+
+pub fn parses_agent_tool_submission_contract_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: tool_review\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompts/review.md\n    tool_submission:\n      tool_name: submit_review_lane_draft\n      artifact_name: correctness_draft\n      lane: correctness\n      required: true\n      validation_retries: 1\n",
+    )
+  let assert [step] = dag.steps
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptFile("prompts/review.md"),
+    None,
+    Some(spec),
+  ) = step.kind
+  assert spec.tool_name == "submit_review_lane_draft"
+  assert spec.artifact_name == "correctness_draft"
+  assert spec.lane_id == "correctness"
+  assert spec.required == True
+  assert spec.validation_retries == 1
+}
+
+pub fn rejects_invalid_tool_submission_contracts_test() {
+  assert error_code(
+      "version: 1\nid: tool_review\nsteps:\n  - id: lane_correctness\n    kind: command\n    run: echo ok\n    tool_submission:\n      tool_name: submit_review_lane_draft\n      artifact_name: correctness_draft\n      lane: correctness\n",
+    )
+    == "tool_submission_on_command_step"
+  assert error_code(
+      "version: 1\nid: tool_review\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompts/review.md\n    structured_output: {}\n    tool_submission:\n      tool_name: submit_review_lane_draft\n      artifact_name: correctness_draft\n      lane: correctness\n",
+    )
+    == "conflicting_agent_output_specs"
+  assert error_code(
+      "version: 1\nid: tool_review\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompts/review.md\n    tool_submission:\n      artifact_name: correctness_draft\n      lane: correctness\n",
+    )
+    == "missing_tool_submission_tool_name"
+  assert error_code(
+      "version: 1\nid: tool_review\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompts/review.md\n    tool_submission:\n      tool_name: submit-review-lane-draft\n      artifact_name: correctness_draft\n      lane: correctness\n",
+    )
+    == "invalid_tool_submission_tool_name"
+  assert error_code(
+      "version: 1\nid: tool_review\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompts/review.md\n    tool_submission:\n      tool_name: submit_review_lane_draft\n      artifact_name: bad-name\n      lane: correctness\n",
+    )
+    == "invalid_tool_submission_artifact_name"
+  assert error_code(
+      "version: 1\nid: tool_review\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompts/review.md\n    tool_submission:\n      tool_name: submit_review_lane_draft\n      artifact_name: correctness_draft\n      lane: ../correctness\n",
+    )
+    == "invalid_tool_submission_lane"
+  assert error_code(
+      "version: 1\nid: tool_review\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompts/review.md\n    tool_submission:\n      tool_name: submit_review_lane_draft\n      artifact_name: correctness_draft\n      lane: correctness\n      validation_retries: 2\n",
+    )
+    == "invalid_tool_submission_validation_retries"
 }
 
 pub fn rejects_invalid_structured_output_contracts_test() {

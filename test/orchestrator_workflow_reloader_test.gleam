@@ -184,6 +184,7 @@ pub fn workflow_reloader_changed_prompt_reloads_prompt_contents_test() {
         == workflow_dag.AgentStep(
           workflow_dag.PromptInline("Updated Prompt"),
           None,
+          None,
         )
     }
     _ -> panic as "expected prompt change to reload"
@@ -240,7 +241,11 @@ pub fn workflow_reloader_missing_prompt_keeps_last_known_good_and_names_path_tes
       let assert Ok(dag) = dict.get(next.bundle.workflows, "implementation")
       let assert [step] = dag.steps
       assert step.kind
-        == workflow_dag.AgentStep(workflow_dag.PromptInline("Prompt"), None)
+        == workflow_dag.AgentStep(
+          workflow_dag.PromptInline("Prompt"),
+          None,
+          None,
+        )
     }
     _ -> panic as "expected missing prompt reload outcome"
   }
@@ -275,7 +280,11 @@ pub fn workflow_reloader_recovers_when_created_prompt_was_not_in_last_good_bundl
         dict.get(recovered.bundle.workflows, "implementation")
       let assert [step] = dag.steps
       assert step.kind
-        == workflow_dag.AgentStep(workflow_dag.PromptInline("New Prompt"), None)
+        == workflow_dag.AgentStep(
+          workflow_dag.PromptInline("New Prompt"),
+          None,
+          None,
+        )
     }
     _ -> panic as "expected created missing prompt to recover"
   }
@@ -343,7 +352,11 @@ pub fn workflow_reloader_recovers_after_invalid_dependency_is_fixed_test() {
         dict.get(recovered.bundle.workflows, "implementation")
       let assert [step] = dag.steps
       assert step.kind
-        == workflow_dag.AgentStep(workflow_dag.PromptInline("Prompt"), None)
+        == workflow_dag.AgentStep(
+          workflow_dag.PromptInline("Prompt"),
+          None,
+          None,
+        )
     }
     _ -> panic as "expected exact last-good prompt restoration to recover"
   }
@@ -364,6 +377,7 @@ pub fn workflow_reloader_reload_now_reloads_when_config_contents_unchanged_test(
       assert step.kind
         == workflow_dag.AgentStep(
           workflow_dag.PromptInline("Updated Prompt"),
+          None,
           None,
         )
     }

@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -1911,8 +1912,13 @@ def validate_preflight_manifest(value: dict[str, Any]) -> None:
         for item in provenance:
             if not isinstance(item, dict):
                 raise ReviewError("native lane step provenance items must be objects")
-            for field in ["scenario_id", "lane_id", "step_id", "workflow_path", "structured_output_status"]:
+            for field in ["scenario_id", "lane_id", "step_id", "workflow_path", "structured_output_status", "execution_status", "submission_source", "tool_name"]:
                 validate_string_field(item, field)
+            if item.get("structured_output_status") == "valid" or item.get("execution_status") == "succeeded":
+                if item.get("submission_source") != "pi_tool":
+                    raise ReviewError("native lane step provenance submission_source must be pi_tool")
+                if item.get("tool_name") != "submit_review_lane_draft":
+                    raise ReviewError("native lane step provenance tool_name must be submit_review_lane_draft")
             validate_repo_relative_path(item.get("workflow_path"), field="native_lane_step_provenance.workflow_path")
 
 
@@ -2112,7 +2118,16 @@ def validate_legacy_pr_smoke_manifest(value: dict[str, Any]) -> None:
         if not isinstance(run.get("artifacts"), dict):
             raise ReviewError("legacy PR smoke run artifacts must be an object")
         if "lane_execution_states" in run:
-            validate_list_field(run, "lane_execution_states")
+            lane_states = validate_list_field(run, "lane_execution_states")
+            for lane_state in lane_states:
+                if not isinstance(lane_state, dict):
+                    raise ReviewError("legacy PR smoke lane_execution_states items must be objects")
+                for field in ["submission_source", "tool_name"]:
+                    validate_string_field(lane_state, field, display_field=f"lane_execution_states[].{field}")
+                if lane_state.get("submission_source") != "pi_tool":
+                    raise ReviewError("legacy PR smoke lane_execution_states submission_source must be pi_tool")
+                if lane_state.get("tool_name") != "submit_review_lane_draft":
+                    raise ReviewError("legacy PR smoke lane_execution_states tool_name must be submit_review_lane_draft")
 
 
 def validate_artifact(value: dict[str, Any]) -> None:
@@ -3226,6 +3241,18 @@ def step_structured_retry(step: dict[str, Any]) -> dict[str, Any] | None:
     return retry if isinstance(retry, dict) else None
 
 
+def step_submission_source(step: dict[str, Any]) -> str:
+    structured = step_structured_output(step)
+    source = structured.get("submission_source")
+    return str(source) if isinstance(source, str) and source else "unknown"
+
+
+def step_tool_name(step: dict[str, Any]) -> str:
+    structured = step_structured_output(step)
+    tool_name = structured.get("tool_name")
+    return str(tool_name) if isinstance(tool_name, str) and tool_name else "none"
+
+
 def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
     contract_dir = output_dir / "contract-spike"
     run_root = contract_dir / "native-run"
@@ -3346,8 +3373,11 @@ def run_native_preflight_scenario(scenario: dict[str, Any], output_dir: Path) ->
             "step_id": step_id,
             "workflow_path": ".scherzo/workflows/review-native.yml",
             "structured_output_status": step_structured_status(step),
+            "execution_status": str(execution_status.get("state", "unknown")),
             "structured_output_path": step_structured_path(step),
             "structured_output_retry": step_structured_retry(step),
+            "submission_source": step_submission_source(step),
+            "tool_name": step_tool_name(step),
             "metadata_path": str(lane_dir / "agent-step-metadata.v1.json"),
             "run_summary_path": str(run_root / "native-runner-summary.v1.json"),
             "runner_invocation": command_text,
@@ -3464,6 +3494,11 @@ def evaluate_native_cutover_readiness(manifest: dict[str, Any]) -> dict[str, Any
                 reasons.append(f"scenario {sid} lane {lane_id} missing native runner invocation")
             if not item.get("run_summary_path"):
                 reasons.append(f"scenario {sid} lane {lane_id} missing native runner summary path")
+            if item.get("structured_output_status") == "valid" or item.get("execution_status") == "succeeded":
+                if item.get("submission_source") != "pi_tool":
+                    reasons.append(f"scenario {sid} lane {lane_id} did not submit through pi_tool")
+                if item.get("tool_name") != "submit_review_lane_draft":
+                    reasons.append(f"scenario {sid} lane {lane_id} missing submit_review_lane_draft provenance")
     return {
         "ready": not reasons,
         "status": "ready" if not reasons else "not_ready",
@@ -3628,12 +3663,14 @@ def inspect_native_review_workflow_lanes(workflow_path: Path) -> dict[str, Any]:
         )
         block = match.group("block") if match else ""
         kind_match = re.search(r"(?m)^\s*kind:\s*([^\s#]+)", block)
-        required_match = re.search(r"(?m)^\s*required:\s*true\b", block)
+        tool_submission_match = re.search(r"(?m)^\s*tool_submission:\s*$", block)
+        tool_name_match = re.search(r"(?m)^\s*tool_name:\s*submit_review_lane_draft\b", block)
         lanes.append({
             "lane_id": lane_id,
             "step_id": step_id,
             "kind": kind_match.group(1) if kind_match else "missing",
-            "structured_output_required": bool(required_match),
+            "tool_submission_required": bool(tool_submission_match and required_match),
+            "tool_name": "submit_review_lane_draft" if tool_name_match else "missing",
         })
     all_agent = all(lane["kind"] == "agent" for lane in lanes)
     if not all_agent:
@@ -3643,6 +3680,9 @@ def inspect_native_review_workflow_lanes(workflow_path: Path) -> dict[str, Any]:
             if lane["kind"] != "agent"
         )
         raise ReviewError("legacy-pr-smoke requires native review lanes to be kind: agent; found " + bad)
+    missing_tool_submission = [lane["step_id"] for lane in lanes if not lane.get("tool_submission_required") or lane.get("tool_name") != "submit_review_lane_draft"]
+    if missing_tool_submission:
+        raise ReviewError("legacy-pr-smoke requires native review lanes to use submit_review_lane_draft tool_submission: " + ", ".join(missing_tool_submission))
     return {
         "workflow_path": workflow_path.as_posix(),
         "lane_steps": lanes,
@@ -3882,6 +3922,10 @@ def legacy_lane_execution_states(run_root: Path, runner_summary: dict[str, Any])
             raise ReviewError(f"lane {lane_id} did not retain draft producer provenance")
         if "fixture" in producer_text or "heuristic" in producer_text:
             raise ReviewError(f"lane {lane_id} draft producer indicates fixture/heuristic mode")
+        if step_submission_source(step) != "pi_tool":
+            raise ReviewError(f"lane {lane_id} did not record pi_tool submission_source")
+        if step_tool_name(step) != "submit_review_lane_draft":
+            raise ReviewError(f"lane {lane_id} did not record submit_review_lane_draft tool_name")
         lanes.append({
             "lane_id": lane_id,
             "step_id": step_id,
@@ -3889,6 +3933,8 @@ def legacy_lane_execution_states(run_root: Path, runner_summary: dict[str, Any])
             "structured_output_status": step_structured_status(step),
             "structured_output_path": step_structured_path(step),
             "structured_output_retry": step_structured_retry(step),
+            "submission_source": step_submission_source(step),
+            "tool_name": step_tool_name(step),
             "lane_result_state": execution_status.get("state", "missing"),
             "lane_result_path": str(lane_result_path),
             "agent_backend": agent_backend or "unknown",
@@ -6307,6 +6353,55 @@ def validate_structured_output_command(args: argparse.Namespace) -> None:
     raise ReviewError(f"unknown structured-output validator: {args.validator}")
 
 
+def load_review_lane_draft_from_json_text(text: str, source: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ReviewError(f"invalid review lane draft JSON from {source}: {exc.msg}") from exc
+    if not isinstance(value, dict):
+        raise ReviewError(f"review lane draft JSON from {source} must be an object")
+    if value.get("artifact_type") == "structured_output":
+        payload = value.get("payload")
+        if not isinstance(payload, dict):
+            raise ReviewError(f"structured output artifact from {source} did not contain an object payload")
+        return payload
+    return value
+
+
+def read_stdin_payload_without_requiring_eof() -> str:
+    payload = sys.stdin.readline()
+    while payload:
+        ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+        if not ready:
+            break
+        chunk = sys.stdin.readline()
+        if not chunk:
+            break
+        payload += chunk
+    return payload
+
+
+def validate_lane_draft_command(args: argparse.Namespace) -> None:
+    if args.draft:
+        draft = load_review_lane_draft(Path(args.draft))
+    elif args.draft_json == "-":
+        payload = read_stdin_payload_without_requiring_eof()
+        if not payload:
+            raise ReviewError("review lane draft JSON on stdin is required")
+        draft = load_review_lane_draft_from_json_text(payload, "stdin")
+    else:
+        raise ReviewError("validate-lane-draft requires --draft <path> or --draft-json -")
+    validate_review_lane_draft(draft)
+    lane = draft.get("lane")
+    lane_id = lane.get("id") if isinstance(lane, dict) else None
+    if lane_id != args.lane:
+        raise ReviewError(f"review lane draft lane.id must match --lane {args.lane}")
+    print("REVIEW_LANE_DRAFT_VALIDATION=ok")
+    print(f"REVIEW_LANE={args.lane}")
+    print(f"REVIEW_SCHEMA_VERSION={draft.get('schema_version')}")
+    print(f"REVIEW_REMOTE_MUTATIONS={draft.get('remote_mutations')}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scherzo-review",
@@ -6607,6 +6702,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="For preflight manifests, require the fixture/external cutover-readiness gate to be ready.",
     )
     validate.set_defaults(func=validate_command)
+
+    validate_lane_draft = subparsers.add_parser(
+        "validate-lane-draft",
+        help="Validate a native ReviewLaneDraft from a path or stdin before Scherzo persists it.",
+    )
+    validate_lane_draft.add_argument("--lane", required=True, choices=sorted(SPECIALIST_LANES.keys()))
+    draft_source = validate_lane_draft.add_mutually_exclusive_group(required=True)
+    draft_source.add_argument("--draft", help="ReviewLaneDraft or structured-output artifact path.")
+    draft_source.add_argument("--draft-json", choices=["-"], help="Read ReviewLaneDraft JSON from stdin with '-'.")
+    validate_lane_draft.set_defaults(func=validate_lane_draft_command)
 
     validate_structured = subparsers.add_parser(
         "validate-structured-output",

@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/error as scherzo_error
 import scherzo/log
 import scherzo/pi/protocol
 
@@ -16,6 +17,7 @@ pub type ResultArtifact {
     source: String,
     structured_response: Option(String),
     structured_response_truncated: Bool,
+    records: List(protocol.RpcRecord),
   )
 }
 
@@ -34,7 +36,31 @@ pub fn from_final_response(
     source: source,
     structured_response: final_response,
     structured_response_truncated: truncated,
+    records: [],
   )
+}
+
+pub fn from_tool_submission(
+  tool_name: String,
+  payload_json: String,
+  secrets: List(String),
+  max_chars: Int,
+) -> ResultArtifact {
+  let line =
+    "{\"type\":\"tool_execution_start\",\"toolName\":\""
+    <> tool_name
+    <> "\",\"input\":"
+    <> payload_json
+    <> "}"
+  case protocol.decode_record(line) {
+    Ok(record) -> from_records([record], secrets, max_chars)
+    Error(decode_error) ->
+      from_final_response(
+        Some(scherzo_error.pi_rpc_detail(decode_error)),
+        False,
+        "tool_submission_decode_failed",
+      )
+  }
 }
 
 pub fn from_records(
@@ -42,11 +68,12 @@ pub fn from_records(
   secrets: List(String),
   max_chars: Int,
 ) -> ResultArtifact {
-  case last_non_empty(assistant_messages(records)) {
+  let base = case last_non_empty(assistant_messages(records)) {
     Some(text) ->
       build_result(text, "completed_assistant_messages", secrets, max_chars)
     None -> empty()
   }
+  ResultArtifact(..base, records: records)
 }
 
 pub fn append(
@@ -64,6 +91,7 @@ pub fn append(
     source: source,
     structured_response: structured_response,
     structured_response_truncated: structured_response_truncated,
+    records: list.append(existing.records, next.records),
   )
 }
 
@@ -134,6 +162,7 @@ fn build_result(
     source: source,
     structured_response: Some(redacted),
     structured_response_truncated: False,
+    records: [],
   )
 }
 

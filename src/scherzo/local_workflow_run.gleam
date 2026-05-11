@@ -265,6 +265,7 @@ fn local_dependencies(
           )
       }
     },
+    validate_review_lane_draft: default_dependencies.validate_review_lane_draft,
     checkpoint: workflow_checkpoint.ledger_writer(options.run_root, fn() { 123 }),
   )
 }
@@ -373,13 +374,30 @@ fn native_fixture_agent_step(
         workspace_path: context.workspace_path,
         tokens: session_tokens.zero_token_totals(),
         turns: 1,
-        result: result_artifact.from_final_response(
-          Some(final_response),
-          False,
-          "native_review_fixture_agent",
-        ),
+        result: fixture_result_artifact(context.workflow_id, final_response),
       ))
     }
+  }
+}
+
+fn fixture_result_artifact(
+  workflow_id: String,
+  final_response: String,
+) -> result_artifact.ResultArtifact {
+  case workflow_id {
+    "review-native-contract-spike" ->
+      result_artifact.from_final_response(
+        Some(final_response),
+        False,
+        "native_fixture",
+      )
+    _ ->
+      result_artifact.from_tool_submission(
+        "submit_review_lane_draft",
+        final_response,
+        [],
+        20_000,
+      )
   }
 }
 
@@ -766,6 +784,13 @@ fn step_summary(
   ])
 }
 
+fn optional_string_json(value: Option(String)) -> json.Json {
+  case value {
+    Some(text) -> json.string(text)
+    None -> json.null()
+  }
+}
+
 fn structured_output_json(
   outcome: Option(step_artifact.StructuredOutputOutcome),
 ) -> json.Json {
@@ -780,6 +805,8 @@ fn structured_output_json(
         #("sha256", json.string(metadata.sha256)),
         #("bytes", json.int(metadata.bytes)),
         #("schema_status", json.string(metadata.schema_status)),
+        #("submission_source", optional_string_json(metadata.submission_source)),
+        #("tool_name", optional_string_json(metadata.tool_name)),
         #("retry", structured_output_retry_json(metadata.retry)),
       ])
     Some(step_artifact.StructuredOutputAbsent(

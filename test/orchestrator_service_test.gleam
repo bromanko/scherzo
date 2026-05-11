@@ -206,6 +206,7 @@ fn workflow_deps() -> workflow_run.Dependencies {
         ),
       ))
     },
+    validate_review_lane_draft: workflow_run.default_dependencies().validate_review_lane_draft,
     checkpoint: workflow_checkpoint.noop_writer(),
   )
 }

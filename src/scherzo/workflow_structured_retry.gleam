@@ -43,6 +43,31 @@ pub fn transient_native_lane_agent_failure_diagnostic(
   }
 }
 
+pub fn transient_native_lane_tool_failure_diagnostic(
+  spec: Option(workflow_dag.ToolSubmissionSpec),
+  failure: agent_types.WorkerFailure,
+  secrets: List(String),
+) -> Option(step_artifact.StructuredOutputRetryDiagnostic) {
+  case spec {
+    Some(spec) ->
+      case
+        spec.required
+        && spec.validation_retries > 0
+        && is_transient_pi_termination(failure.reason)
+      {
+        True ->
+          Some(step_artifact.StructuredOutputRetryDiagnostic(
+            attempt: 1,
+            status: "agent_failure",
+            failure_code: Some(error.agent_code(failure.reason)),
+            message: failure_message(failure, secrets),
+          ))
+        False -> None
+      }
+    None -> None
+  }
+}
+
 pub fn agent_failure_as_success(
   failure: agent_types.WorkerFailure,
 ) -> agent_types.WorkerSuccess {
@@ -79,6 +104,19 @@ pub fn agent_failure_artifact_with_structured_output(
 
 pub fn retry_info(
   spec: workflow_dag.StructuredOutputSpec,
+  outcome: String,
+  diagnostics: List(step_artifact.StructuredOutputRetryDiagnostic),
+) -> step_artifact.StructuredOutputRetryInfo {
+  step_artifact.StructuredOutputRetryInfo(
+    max_retries: spec.validation_retries,
+    attempts: list.length(diagnostics),
+    outcome: outcome,
+    diagnostics: diagnostics,
+  )
+}
+
+pub fn tool_submission_retry_info(
+  spec: workflow_dag.ToolSubmissionSpec,
   outcome: String,
   diagnostics: List(step_artifact.StructuredOutputRetryDiagnostic),
 ) -> step_artifact.StructuredOutputRetryInfo {
@@ -150,6 +188,46 @@ pub fn retry_prompt(
   <> "\nNamed validator: "
   <> validator_text
   <> "\nRemote mutations are forbidden; set remote_mutations to \"none\" when the artifact schema includes it."
+}
+
+pub fn tool_submission_retry_prompt(
+  step_id: String,
+  run_root: String,
+  workspace_path: String,
+  spec: workflow_dag.ToolSubmissionSpec,
+  diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
+) -> String {
+  let failure_code = case diagnostic.failure_code {
+    Some(code) -> code
+    None -> "review_lane_draft_tool_missing"
+  }
+  "Scherzo native review tool-submission retry for workflow step `"
+  <> step_id
+  <> "`.\n\n"
+  <> "The previous attempt did not complete the required Pi tool-submission contract. This is the only automatic retry for this lane-output failure.\n"
+  <> "Failure code: "
+  <> failure_code
+  <> "\nFailure summary: "
+  <> log.truncate(diagnostic.message, 500)
+  <> "\n\n"
+  <> "Call `"
+  <> spec.tool_name
+  <> "` exactly once as the final action for lane `"
+  <> spec.lane_id
+  <> "`. Do not print the review lane draft as final JSON text. Do not batch `"
+  <> spec.tool_name
+  <> "` with any other tool call.\n"
+  <> "Use retained local context instead of large inline context:\n"
+  <> "- run root: "
+  <> run_root
+  <> "\n- workspace: "
+  <> workspace_path
+  <> "\n- native review inputs: "
+  <> run_root
+  <> "/artifacts/review/prepare_review\n"
+  <> "Structured artifact name after acceptance: "
+  <> spec.artifact_name
+  <> "\nRemote mutations are forbidden; set remote_mutations to \"none\"."
 }
 
 fn is_native_review_lane_step(step_id: String, artifact_name: String) -> Bool {

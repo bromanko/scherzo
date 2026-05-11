@@ -31,7 +31,11 @@ pub type WorkflowStep {
 }
 
 pub type StepKind {
-  AgentStep(prompt: PromptRef, structured_output: Option(StructuredOutputSpec))
+  AgentStep(
+    prompt: PromptRef,
+    structured_output: Option(StructuredOutputSpec),
+    tool_submission: Option(ToolSubmissionSpec),
+  )
   CommandStep(run: String, timeout_ms: Option(Int))
 }
 
@@ -54,6 +58,16 @@ pub type StructuredOutputSpec {
     format: StructuredOutputFormat,
     schema: StructuredOutputSchema,
     validator: Option(StructuredOutputValidator),
+    validation_retries: Int,
+  )
+}
+
+pub type ToolSubmissionSpec {
+  ToolSubmissionSpec(
+    tool_name: String,
+    artifact_name: String,
+    lane_id: String,
+    required: Bool,
     validation_retries: Int,
   )
 }
@@ -127,15 +141,18 @@ pub fn terminal_step(dag: WorkflowDag) -> Option(WorkflowStep) {
 
 pub fn prompt_file_path(step: WorkflowStep) -> Option(String) {
   case step.kind {
-    AgentStep(PromptFile(path), _) -> Some(path)
+    AgentStep(PromptFile(path), _, _) -> Some(path)
     _ -> None
   }
 }
 
 pub fn with_prompt(step: WorkflowStep, prompt: PromptRef) -> WorkflowStep {
   case step.kind {
-    AgentStep(_, structured_output) ->
-      WorkflowStep(..step, kind: AgentStep(prompt, structured_output))
+    AgentStep(_, structured_output, tool_submission) ->
+      WorkflowStep(
+        ..step,
+        kind: AgentStep(prompt, structured_output, tool_submission),
+      )
     _ -> step
   }
 }
@@ -360,10 +377,15 @@ fn read_step_kind(
             node,
             step_id,
           ))
-          Ok(AgentStep(PromptFile(prompt), structured_output))
+          use tool_submission <- result.try(read_tool_submission(node, step_id))
+          use _ <- result.try(reject_conflicting_agent_output_specs(
+            structured_output,
+            tool_submission,
+          ))
+          Ok(AgentStep(PromptFile(prompt), structured_output, tool_submission))
         }
         "command" -> {
-          use _ <- result.try(reject_command_structured_output(node))
+          use _ <- result.try(reject_command_output_specs(node))
           use run <- result.try(required_string(node, "run", "missing_run"))
           Ok(CommandStep(run: run, timeout_ms: optional_int(node, "timeout_ms")))
         }
@@ -382,10 +404,15 @@ fn infer_step_kind(
   case optional_string(node, "prompt"), optional_string(node, "run") {
     Some(prompt), None -> {
       use structured_output <- result.try(read_structured_output(node, step_id))
-      Ok(AgentStep(PromptFile(prompt), structured_output))
+      use tool_submission <- result.try(read_tool_submission(node, step_id))
+      use _ <- result.try(reject_conflicting_agent_output_specs(
+        structured_output,
+        tool_submission,
+      ))
+      Ok(AgentStep(PromptFile(prompt), structured_output, tool_submission))
     }
     None, Some(run) -> {
-      use _ <- result.try(reject_command_structured_output(node))
+      use _ <- result.try(reject_command_output_specs(node))
       Ok(CommandStep(run: run, timeout_ms: optional_int(node, "timeout_ms")))
     }
     Some(_), Some(_) ->
@@ -439,6 +466,73 @@ fn read_structured_output(
   }
 }
 
+fn read_tool_submission(
+  node: yay.Node,
+  step_id: String,
+) -> Result(Option(ToolSubmissionSpec), DagError) {
+  case get_node(node, "tool_submission") {
+    None -> Ok(None)
+    Some(tool_node) ->
+      case tool_node {
+        yay.NodeMap(_) -> {
+          use tool_name <- result.try(required_string(
+            tool_node,
+            "tool_name",
+            "missing_tool_submission_tool_name",
+          ))
+          use _ <- result.try(validate_tool_name(tool_name))
+          use artifact_name <- result.try(read_tool_submission_artifact_name(
+            tool_node,
+            step_id,
+          ))
+          use lane_id <- result.try(required_string(
+            tool_node,
+            "lane",
+            "missing_tool_submission_lane",
+          ))
+          use _ <- result.try(validate_lane_id(lane_id))
+          use required <- result.try(read_tool_submission_required(tool_node))
+          use validation_retries <- result.try(
+            read_tool_submission_validation_retries(tool_node),
+          )
+          Ok(
+            Some(ToolSubmissionSpec(
+              tool_name: tool_name,
+              artifact_name: artifact_name,
+              lane_id: lane_id,
+              required: required,
+              validation_retries: validation_retries,
+            )),
+          )
+        }
+        _ ->
+          Error(DagError(
+            "tool_submission_not_map",
+            "tool_submission must be a map",
+          ))
+      }
+  }
+}
+
+fn reject_conflicting_agent_output_specs(
+  structured_output: Option(StructuredOutputSpec),
+  tool_submission: Option(ToolSubmissionSpec),
+) -> Result(Nil, DagError) {
+  case structured_output, tool_submission {
+    Some(_), Some(_) ->
+      Error(DagError(
+        "conflicting_agent_output_specs",
+        "agent step cannot configure both structured_output and tool_submission",
+      ))
+    _, _ -> Ok(Nil)
+  }
+}
+
+fn reject_command_output_specs(node: yay.Node) -> Result(Nil, DagError) {
+  use _ <- result.try(reject_command_structured_output(node))
+  reject_command_tool_submission(node)
+}
+
 fn reject_command_structured_output(node: yay.Node) -> Result(Nil, DagError) {
   case get_node(node, "structured_output") {
     None -> Ok(Nil)
@@ -446,6 +540,17 @@ fn reject_command_structured_output(node: yay.Node) -> Result(Nil, DagError) {
       Error(DagError(
         "structured_output_on_command_step",
         "structured_output is only valid on agent steps",
+      ))
+  }
+}
+
+fn reject_command_tool_submission(node: yay.Node) -> Result(Nil, DagError) {
+  case get_node(node, "tool_submission") {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(DagError(
+        "tool_submission_on_command_step",
+        "tool_submission is only valid on agent steps",
       ))
   }
 }
@@ -534,18 +639,103 @@ fn read_structured_validation_retries(node: yay.Node) -> Result(Int, DagError) {
   case get_node(node, "validation_retries") {
     None -> Ok(1)
     Some(yay.NodeInt(retries)) ->
-      case retries == 0 || retries == 1 {
-        True -> Ok(retries)
-        False ->
-          Error(DagError(
-            "invalid_structured_output_validation_retries",
-            "structured_output.validation_retries must be 0 or 1",
-          ))
-      }
+      validate_retry_count(
+        retries,
+        "invalid_structured_output_validation_retries",
+        "structured_output.validation_retries must be 0 or 1",
+      )
     Some(_) ->
       Error(DagError(
         "structured_output_validation_retries_not_int",
         "structured_output.validation_retries must be an integer",
+      ))
+  }
+}
+
+fn read_tool_submission_artifact_name(
+  node: yay.Node,
+  step_id: String,
+) -> Result(String, DagError) {
+  let name_result = case get_node(node, "artifact_name") {
+    None -> Ok(step_id)
+    Some(yay.NodeStr(value)) -> Ok(value)
+    Some(_) ->
+      Error(DagError(
+        "tool_submission_artifact_name_not_string",
+        "tool_submission.artifact_name must be a string",
+      ))
+  }
+  use name <- result.try(name_result)
+  case valid_step_id(name) {
+    True -> Ok(name)
+    False ->
+      Error(DagError(
+        "invalid_tool_submission_artifact_name",
+        "invalid tool_submission.artifact_name: " <> name,
+      ))
+  }
+}
+
+fn read_tool_submission_required(node: yay.Node) -> Result(Bool, DagError) {
+  case get_node(node, "required") {
+    None -> Ok(True)
+    Some(yay.NodeBool(value)) -> Ok(value)
+    Some(_) ->
+      Error(DagError(
+        "tool_submission_required_not_bool",
+        "tool_submission.required must be a boolean",
+      ))
+  }
+}
+
+fn read_tool_submission_validation_retries(
+  node: yay.Node,
+) -> Result(Int, DagError) {
+  case get_node(node, "validation_retries") {
+    None -> Ok(1)
+    Some(yay.NodeInt(retries)) ->
+      validate_retry_count(
+        retries,
+        "invalid_tool_submission_validation_retries",
+        "tool_submission.validation_retries must be 0 or 1",
+      )
+    Some(_) ->
+      Error(DagError(
+        "tool_submission_validation_retries_not_int",
+        "tool_submission.validation_retries must be an integer",
+      ))
+  }
+}
+
+fn validate_retry_count(
+  retries: Int,
+  invalid_code: String,
+  invalid_message: String,
+) -> Result(Int, DagError) {
+  case retries == 0 || retries == 1 {
+    True -> Ok(retries)
+    False -> Error(DagError(invalid_code, invalid_message))
+  }
+}
+
+fn validate_tool_name(tool_name: String) -> Result(Nil, DagError) {
+  case valid_step_id(tool_name) {
+    True -> Ok(Nil)
+    False ->
+      Error(DagError(
+        "invalid_tool_submission_tool_name",
+        "invalid tool_submission.tool_name: " <> tool_name,
+      ))
+  }
+}
+
+fn validate_lane_id(lane_id: String) -> Result(Nil, DagError) {
+  case valid_lane_id(lane_id) {
+    True -> Ok(Nil)
+    False ->
+      Error(DagError(
+        "invalid_tool_submission_lane",
+        "invalid tool_submission.lane: " <> lane_id,
       ))
   }
 }
@@ -698,7 +888,7 @@ fn read_model_settings(
   node: yay.Node,
 ) -> Result(model_config.Settings, DagError) {
   case kind {
-    AgentStep(_, _) -> read_agent_model_settings(node)
+    AgentStep(_, _, _) -> read_agent_model_settings(node)
     CommandStep(_, _) -> reject_command_model_settings(node)
   }
 }
@@ -1006,6 +1196,13 @@ fn valid_step_id(value: String) -> Bool {
   case string.to_graphemes(value) {
     [] -> False
     [first, ..rest] -> is_lower(first) && all(rest, is_step_char)
+  }
+}
+
+fn valid_lane_id(value: String) -> Bool {
+  case string.to_graphemes(value) {
+    [] -> False
+    [first, ..rest] -> is_lower(first) && all(rest, is_workflow_workspace_char)
   }
 }
 

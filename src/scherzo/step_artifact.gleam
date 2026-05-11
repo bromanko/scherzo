@@ -46,6 +46,8 @@ pub type StructuredOutputMetadata {
     sha256: String,
     bytes: Int,
     schema_status: String,
+    submission_source: Option(String),
+    tool_name: Option(String),
     retry: Option(StructuredOutputRetryInfo),
   )
 }
@@ -264,6 +266,11 @@ fn structured_output_to_json(outcome: StructuredOutputOutcome) -> json.Json {
         #("sha256", json.string(metadata.sha256)),
         #("bytes", json.int(metadata.bytes)),
         #("schema_status", json.string(metadata.schema_status)),
+        #(
+          "submission_source",
+          option_string_to_json(metadata.submission_source),
+        ),
+        #("tool_name", option_string_to_json(metadata.tool_name)),
         #("retry", option_retry_info_to_json(metadata.retry)),
       ])
     StructuredOutputAbsent(artifact_name, format, schema_status) ->
@@ -324,6 +331,16 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
       use sha256 <- decode.field("sha256", decode.string)
       use bytes <- decode.field("bytes", decode.int)
       use schema_status <- decode.field("schema_status", decode.string)
+      use submission_source <- decode.optional_field(
+        "submission_source",
+        None,
+        decode.optional(decode.string),
+      )
+      use tool_name <- decode.optional_field(
+        "tool_name",
+        None,
+        decode.optional(decode.string),
+      )
       use retry <- decode.optional_field(
         "retry",
         None,
@@ -338,6 +355,8 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
           sha256: sha256,
           bytes: bytes,
           schema_status: schema_status,
+          submission_source: submission_source,
+          tool_name: tool_name,
           retry: retry,
         )),
       )
@@ -1049,6 +1068,13 @@ fn artifact_locals(
   )
 }
 
+fn option_string_template_value(value: Option(String)) -> template.Value {
+  case value {
+    Some(value) -> template.VString(value)
+    None -> template.VNil
+  }
+}
+
 fn structured_output_locals(
   prefix: String,
   outcome: Option(StructuredOutputOutcome),
@@ -1066,6 +1092,14 @@ fn structured_output_locals(
           #(prefix <> "sha256", template.VString(metadata.sha256)),
           #(prefix <> "bytes", template.VInt(metadata.bytes)),
           #(prefix <> "schema_status", template.VString(metadata.schema_status)),
+          #(
+            prefix <> "submission_source",
+            option_string_template_value(metadata.submission_source),
+          ),
+          #(
+            prefix <> "tool_name",
+            option_string_template_value(metadata.tool_name),
+          ),
           #(prefix <> "error", template.VNil),
         ],
         retry_info_locals(prefix, metadata.retry),
@@ -1081,6 +1115,8 @@ fn structured_output_locals(
           #(prefix <> "sha256", template.VNil),
           #(prefix <> "bytes", template.VNil),
           #(prefix <> "schema_status", template.VString(schema_status)),
+          #(prefix <> "submission_source", template.VNil),
+          #(prefix <> "tool_name", template.VNil),
           #(prefix <> "error", template.VNil),
         ],
         retry_info_locals(prefix, None),
@@ -1096,6 +1132,8 @@ fn structured_output_locals(
           #(prefix <> "sha256", template.VNil),
           #(prefix <> "bytes", template.VNil),
           #(prefix <> "schema_status", template.VNil),
+          #(prefix <> "submission_source", template.VNil),
+          #(prefix <> "tool_name", template.VNil),
           #(prefix <> "error", template.VString(message)),
         ],
         retry_info_locals(prefix, retry),
@@ -1111,6 +1149,8 @@ fn structured_output_locals(
           #(prefix <> "sha256", template.VNil),
           #(prefix <> "bytes", template.VNil),
           #(prefix <> "schema_status", template.VNil),
+          #(prefix <> "submission_source", template.VNil),
+          #(prefix <> "tool_name", template.VNil),
           #(prefix <> "error", template.VNil),
         ],
         retry_info_locals(prefix, None),

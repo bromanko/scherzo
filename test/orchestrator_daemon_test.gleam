@@ -449,6 +449,7 @@ type FetchDirective {
 fn fake_workflow_run_dependencies(
   log_subject: process.Subject(String),
 ) -> workflow_run.Dependencies {
+  let default_dependencies = workflow_run.default_dependencies()
   workflow_run.Dependencies(
     prepare_step: fn(
       issue,
@@ -568,6 +569,7 @@ fn fake_workflow_run_dependencies(
         result: result_artifact.from_final_response(Some(prompt), False, "test"),
       ))
     },
+    validate_review_lane_draft: default_dependencies.validate_review_lane_draft,
     checkpoint: workflow_checkpoint.noop_writer(),
   )
 }

@@ -84,6 +84,8 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
       sha256: "abc123",
       bytes: 42,
       schema_status: "valid",
+      submission_source: Some("pi_tool"),
+      tool_name: Some("submit_review_lane_draft"),
       retry: None,
     )
   let artifact =
@@ -120,6 +122,10 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
     == template.VInt(42)
   assert lookup(locals, "steps.review_json.structured_output.schema_status")
     == template.VString("valid")
+  assert lookup(locals, "steps.review_json.structured_output.submission_source")
+    == template.VString("pi_tool")
+  assert lookup(locals, "steps.review_json.structured_output.tool_name")
+    == template.VString("submit_review_lane_draft")
   assert lookup(locals, "steps.review_json.structured_output.error")
     == template.VNil
   assert lookup(locals, "steps.review_json.structured_output.retry_outcome")
@@ -373,6 +379,7 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
           id: "implement",
           kind: workflow_dag.AgentStep(
             workflow_dag.PromptInline("implement"),
+            None,
             None,
           ),
           depends_on: [],

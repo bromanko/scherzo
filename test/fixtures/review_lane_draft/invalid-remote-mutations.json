@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "artifact_type": "review_lane_draft",
+  "generated_at_utc": "2026-05-10T00:00:00Z",
+  "producer": {"name": "fixture", "version": "1", "mode": "native"},
+  "lane": {"id": "correctness", "name": "Correctness reviewer", "category": "correctness", "version": "1"},
+  "input_refs": [],
+  "draft_findings": [],
+  "review_notes": [],
+  "evidence_requests": [],
+  "self_check": {"inspected_diff": true, "used_repository_relative_paths": true},
+  "remote_mutations": "commented"
+}

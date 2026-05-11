@@ -22,25 +22,12 @@ steps:
     prompt: prompts/review-native-correctness.md
     on_failure: continue
     workspace: main
-    structured_output:
-      format: json
+    tool_submission:
+      tool_name: submit_review_lane_draft
       artifact_name: correctness_draft
+      lane: correctness
       required: true
-      validator: review_lane_draft
-      schema:
-        type: object
-        required:
-          - schema_version
-          - artifact_type
-          - generated_at_utc
-          - producer
-          - lane
-          - input_refs
-          - draft_findings
-          - review_notes
-          - evidence_requests
-          - self_check
-          - remote_mutations
+      validation_retries: 1
 
   - id: lane_test_quality
     kind: agent
@@ -48,25 +35,12 @@ steps:
     prompt: prompts/review-native-test-quality.md
     on_failure: continue
     workspace: main
-    structured_output:
-      format: json
+    tool_submission:
+      tool_name: submit_review_lane_draft
       artifact_name: test_quality_draft
+      lane: test-quality
       required: true
-      validator: review_lane_draft
-      schema:
-        type: object
-        required:
-          - schema_version
-          - artifact_type
-          - generated_at_utc
-          - producer
-          - lane
-          - input_refs
-          - draft_findings
-          - review_notes
-          - evidence_requests
-          - self_check
-          - remote_mutations
+      validation_retries: 1
 
   - id: lane_idioms_maintainability
     kind: agent
@@ -74,25 +48,12 @@ steps:
     prompt: prompts/review-native-idioms-maintainability.md
     on_failure: continue
     workspace: main
-    structured_output:
-      format: json
+    tool_submission:
+      tool_name: submit_review_lane_draft
       artifact_name: idioms_maintainability_draft
+      lane: idioms-maintainability
       required: true
-      validator: review_lane_draft
-      schema:
-        type: object
-        required:
-          - schema_version
-          - artifact_type
-          - generated_at_utc
-          - producer
-          - lane
-          - input_refs
-          - draft_findings
-          - review_notes
-          - evidence_requests
-          - self_check
-          - remote_mutations
+      validation_retries: 1
 
   - id: lane_security_performance
     kind: agent
@@ -100,25 +61,12 @@ steps:
     prompt: prompts/review-native-security-performance.md
     on_failure: continue
     workspace: main
-    structured_output:
-      format: json
+    tool_submission:
+      tool_name: submit_review_lane_draft
       artifact_name: security_performance_draft
+      lane: security-performance
       required: true
-      validator: review_lane_draft
-      schema:
-        type: object
-        required:
-          - schema_version
-          - artifact_type
-          - generated_at_utc
-          - producer
-          - lane
-          - input_refs
-          - draft_findings
-          - review_notes
-          - evidence_requests
-          - self_check
-          - remote_mutations
+      validation_retries: 1
 
   - id: assert_clean_after_lanes
     kind: command

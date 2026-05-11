@@ -12,6 +12,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
 import scherzo/result_artifact
+import scherzo/review_lane_draft_validator
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/template
@@ -196,6 +197,12 @@ fn success_agent_with_response(
   ))
 }
 
+fn success_agent_with_records(
+  records: List(pi_rpc.RpcRecord),
+) -> agent_types.WorkerSuccess {
+  success_agent_with_result(result_artifact.from_records(records, [], 4000))
+}
+
 fn success_agent_with_result(
   result: result_artifact.ResultArtifact,
 ) -> agent_types.WorkerSuccess {
@@ -310,6 +317,9 @@ fn deps(
       let prompt = prompt_text(prompt_mode)
       process.send(subject, "agent:" <> context.workspace_path <> ":" <> prompt)
       Ok(success_agent(prompt))
+    },
+    validate_review_lane_draft: fn(_payload_json, _lane_id, _secrets) {
+      Ok(review_lane_draft_validator.ValidatedReviewLaneDraft(stdout: "ok"))
     },
     checkpoint: workflow_checkpoint.noop_writer(),
   )
@@ -431,6 +441,14 @@ fn native_review_lane_structured_output_dag() -> workflow_dag.WorkflowDag {
   dag
 }
 
+fn native_review_lane_tool_submission_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: review-native\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    on_failure: continue\n    tool_submission:\n      tool_name: submit_review_lane_draft\n      artifact_name: correctness_draft\n      lane: correctness\n      required: true\n      validation_retries: 1\n",
+    )
+  dag
+}
+
 fn native_review_lane_draft_json() -> String {
   "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"generated_at_utc\":\"2026-05-10T00:00:00Z\",\"producer\":{\"name\":\"workflow-run-test\",\"version\":\"1\",\"mode\":\"native\"},\"lane\":{\"id\":\"correctness\",\"name\":\"Correctness reviewer\",\"category\":\"correctness\",\"version\":\"1\"},\"input_refs\":[],\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"inspected_diff\":true,\"used_repository_relative_paths\":true},\"remote_mutations\":\"none\"}"
 }
@@ -473,6 +491,24 @@ fn final_message_record(content: String) -> pi_rpc.RpcRecord {
   record
 }
 
+fn tool_submission_record(payload_json: String) -> pi_rpc.RpcRecord {
+  let line =
+    "{\"type\":\"tool_execution_start\",\"toolName\":\"submit_review_lane_draft\",\"input\":"
+    <> payload_json
+    <> "}"
+  let assert Ok(record) = pi_rpc.decode_record(line)
+  record
+}
+
+fn sibling_tool_submission_record(payload_json: String) -> pi_rpc.RpcRecord {
+  let line =
+    "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"name\":\"submit_review_lane_draft\",\"input\":"
+    <> payload_json
+    <> "},{\"type\":\"toolCall\",\"name\":\"bash\",\"input\":{\"command\":\"echo no\"}}]}}"
+  let assert Ok(record) = pi_rpc.decode_record(line)
+  record
+}
+
 fn over_display_limit_result(
   response: String,
 ) -> result_artifact.ResultArtifact {
@@ -484,6 +520,7 @@ fn over_display_limit_result(
     source: "completed_assistant_messages",
     structured_response: Some(structured_response),
     structured_response_truncated: False,
+    records: _,
   ) = result
   assert display_response == string.slice(response, 0, 40) <> "..."
   assert structured_response == response
@@ -988,6 +1025,219 @@ pub fn valid_json_final_response_becomes_retained_structured_artifact_test() {
   assert string.contains(contents, "\"artifact_type\":\"structured_output\"")
   assert string.contains(contents, "[REDACTED]")
   assert !string.contains(contents, "token-123")
+}
+
+pub fn native_review_tool_submission_success_writes_retained_artifact_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/tool-submission-valid"
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent:" <> context.step_id <> ":" <> prompt_text(prompt_mode),
+        )
+        Ok(
+          success_agent_with_records([
+            tool_submission_record(native_review_lane_draft_json()),
+          ]),
+        )
+      },
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      native_review_lane_tool_submission_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "lane_correctness")
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    artifact.structured_output
+  assert metadata.ref
+    == "runs/run-1/lane_correctness/attempt-1/structured/correctness_draft.json"
+  assert metadata.submission_source == Some("pi_tool")
+  assert metadata.tool_name == Some("submit_review_lane_draft")
+  let assert Ok(contents) = simplifile.read(metadata.path)
+  assert string.contains(contents, "review_lane_draft")
+}
+
+pub fn native_review_final_json_without_tool_retries_and_fails_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/tool-submission-missing"
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent:" <> context.step_id <> ":" <> prompt_text(prompt_mode),
+        )
+        Ok(success_agent_with_response(
+          Some(native_review_lane_draft_json()),
+          False,
+        ))
+      },
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      native_review_lane_tool_submission_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "lane_correctness")
+  assert artifact.failure_code == Some("review_lane_draft_tool_missing")
+  let assert Some(step_artifact.StructuredOutputError(
+    _,
+    _,
+    message,
+    Some(retry),
+  )) = artifact.structured_output
+  assert string.contains(message, "submit_review_lane_draft")
+  assert retry.attempts == 2
+  let retry_agent =
+    receive_event_with_prefix(subject, "agent:lane_correctness:", 10)
+  assert string.contains(retry_agent, "review prompt")
+  let retry_prompt =
+    receive_event_with_prefix(subject, "agent:lane_correctness:", 10)
+  assert string.contains(retry_prompt, "submit_review_lane_draft")
+  assert string.contains(retry_prompt, "Do not print")
+}
+
+pub fn native_review_domain_invalid_tool_payload_fails_before_persistence_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/tool-submission-domain-invalid"
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent:" <> context.step_id <> ":" <> prompt_text(prompt_mode),
+        )
+        Ok(
+          success_agent_with_records([
+            tool_submission_record(native_review_lane_draft_json()),
+          ]),
+        )
+      },
+      validate_review_lane_draft: fn(_payload_json, _lane_id, _secrets) {
+        Error(review_lane_draft_validator.ReviewLaneDraftValidationRejected(
+          "remote_mutations must be none",
+        ))
+      },
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      native_review_lane_tool_submission_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  let assert Ok(artifact) = dict.get(success.artifacts, "lane_correctness")
+  assert artifact.failure_code == Some("review_lane_draft_domain_invalid")
+}
+
+pub fn native_review_extra_sibling_tool_call_is_rejected_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/tool-submission-extra-tool"
+  reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent:" <> context.step_id <> ":" <> prompt_text(prompt_mode),
+        )
+        Ok(
+          success_agent_with_records([
+            sibling_tool_submission_record(native_review_lane_draft_json()),
+          ]),
+        )
+      },
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      native_review_lane_tool_submission_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  let assert Ok(artifact) = dict.get(success.artifacts, "lane_correctness")
+  assert artifact.failure_code == Some("review_lane_draft_extra_tool_call")
 }
 
 pub fn native_review_missing_generated_at_retries_and_records_diagnostics_test() {

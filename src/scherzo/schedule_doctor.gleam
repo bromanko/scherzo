@@ -372,8 +372,8 @@ fn issue_references_in_step(
   step: workflow_dag.WorkflowStep,
 ) -> List(IssueReference) {
   let source = case step.kind {
-    workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), _) -> prompt
-    workflow_dag.AgentStep(workflow_dag.PromptFile(path), _) -> path
+    workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), _, _) -> prompt
+    workflow_dag.AgentStep(workflow_dag.PromptFile(path), _, _) -> path
     workflow_dag.CommandStep(run, _) -> run
   }
   template.referenced_variables(source)

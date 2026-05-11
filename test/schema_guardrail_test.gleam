@@ -142,6 +142,7 @@ pub fn workflow_dag_yaml_fixture_parses_documented_schema_shape_test() {
   let assert workflow_dag.AgentStep(
     workflow_dag.PromptFile("prompts/implement.md"),
     None,
+    None,
   ) = implement_step.kind
 
   assert test_step.id == "test"

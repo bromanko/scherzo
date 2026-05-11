@@ -234,11 +234,12 @@ fn kind_to_json(kind: workflow_dag.StepKind) -> json.Json {
         #("run", json.string(run)),
         #("timeout_ms", option_int_to_json(timeout_ms)),
       ])
-    workflow_dag.AgentStep(prompt_ref, structured_output) ->
+    workflow_dag.AgentStep(prompt_ref, structured_output, tool_submission) ->
       json.object([
         #("type", json.string("agent")),
         #("prompt", prompt_ref_to_json(prompt_ref)),
         #("structured_output", structured_output_to_json(structured_output)),
+        #("tool_submission", tool_submission_to_json(tool_submission)),
       ])
   }
 }
@@ -260,6 +261,22 @@ fn structured_output_to_json(
         #("required", json.bool(spec.required)),
         #("schema", structured_output_schema_to_json(spec.schema)),
         #("validator", structured_output_validator_to_json(spec.validator)),
+        #("validation_retries", json.int(spec.validation_retries)),
+      ])
+  }
+}
+
+fn tool_submission_to_json(
+  tool_submission: Option(workflow_dag.ToolSubmissionSpec),
+) -> json.Json {
+  case tool_submission {
+    None -> json.null()
+    Some(spec) ->
+      json.object([
+        #("tool_name", json.string(spec.tool_name)),
+        #("artifact_name", json.string(spec.artifact_name)),
+        #("lane", json.string(spec.lane_id)),
+        #("required", json.bool(spec.required)),
         #("validation_retries", json.int(spec.validation_retries)),
       ])
   }
