@@ -83,6 +83,8 @@ fn config(
       max_retry_backoff_ms: 300_000,
       max_retry_attempts: 5,
       max_sessions_per_issue: 3,
+      context_recovery_max_attempts: 1,
+      context_recovery_prompt_char_limit: 40_000,
       max_concurrent_agents_by_state: dict.new(),
     ),
     pi: config_types.PiConfig(
@@ -240,6 +242,14 @@ fn find_update_with_tool_output(
   }
 }
 
+fn occurrence_count(text: String, needle: String) -> Int {
+  string.split(text, needle) |> list.length |> subtract_one
+}
+
+fn subtract_one(value: Int) -> Int {
+  value - 1
+}
+
 fn turn_event_names(updates: List(agent_types.RunnerUpdate)) -> List(String) {
   updates
   |> list.filter_map(fn(update) {
@@ -389,6 +399,110 @@ pub fn runner_fails_when_pi_reports_stop_reason_error_test() {
     ))
   assert turn_event_names(drain_updates(update_subject, []))
     == ["turn_started", "turn_failed"]
+}
+
+pub fn runner_recovers_context_exhaustion_with_pi_compaction_test() {
+  let root = "test/tmp/runner-context-recovery-compact"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let command =
+    "FAKE_PI_CONTEXT_ERROR_ONCE=1 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let update_subject = process.new_subject()
+
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it with SECRET_VALUE"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert success.final_classification == agent_types.FinalTerminal
+  let updates = drain_updates(update_subject, [])
+  let assert Some(_) = find_update(updates, "context_recovery_started")
+  let assert Some(_) = find_update(updates, "context_recovery_succeeded")
+  assert turn_event_names(updates)
+    == ["turn_started", "turn_started", "turn_finished"]
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert string.contains(contents, "compact")
+  assert string.contains(contents, "attempt-1-prompt-excerpt.md")
+  assert string.contains(contents, "context-window-exhausted.json")
+}
+
+pub fn runner_stops_after_repeated_context_exhaustion_test() {
+  let root = "test/tmp/runner-context-recovery-exhausted"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let command =
+    "FAKE_PI_CONTEXT_ERROR_ALWAYS=1 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert failure.reason
+    == error.PiFailed(error.PiContextWindowExhausted(
+      provider: Some("openai-codex"),
+      provider_code: Some("context_length_exceeded"),
+      detail: "Your input exceeds the context window of this model. Please adjust your input and try again.",
+    ))
+  let updates = drain_updates(update_subject, [])
+  let assert Some(_) = find_update(updates, "context_recovery_failed")
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert occurrence_count(contents, "\"type\":\"prompt\"") == 2
+}
+
+pub fn runner_context_recovery_can_be_disabled_test() {
+  let root = "test/tmp/runner-context-recovery-disabled"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let command =
+    "FAKE_PI_CONTEXT_ERROR_ONCE=1 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let base = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      agent: config_types.AgentConfig(
+        ..base.agent,
+        context_recovery_max_attempts: 0,
+      ),
+    )
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      emit,
+    )
+
+  let assert error.PiFailed(error.PiContextWindowExhausted(..)) = failure.reason
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert !string.contains(contents, "compact")
+  assert occurrence_count(contents, "\"type\":\"prompt\"") == 1
 }
 
 pub fn recovery_prompt_reopens_recorded_session_without_original_prompt_test() {

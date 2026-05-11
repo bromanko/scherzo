@@ -2,6 +2,9 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/context_exhaustion
+import scherzo/agent/context_recovery_artifact
+import scherzo/agent/context_recovery_prompt
 import scherzo/agent/operator_control
 import scherzo/agent/pi_event
 import scherzo/agent/probe
@@ -18,6 +21,7 @@ import scherzo/pi/protocol
 import scherzo/result_artifact
 import scherzo/session/redaction
 import scherzo/session/tokens as session_tokens
+import scherzo/state/artifact_store
 import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
@@ -475,6 +479,8 @@ fn run_pi_loop(
         [],
         False,
         workspace_path,
+        attempt_context,
+        0,
       )
     }
   }
@@ -513,6 +519,8 @@ fn loop_turns(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   workspace_path: String,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  context_recovery_attempts: Int,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   case stop_after_turn {
     True ->
@@ -560,15 +568,22 @@ fn loop_turns(
           }
           case client.send_prompt(session, prompt, config.pi.read_timeout_ms) {
             Error(err) ->
-              fail_pi(
+              handle_context_or_fail(
                 session,
-                issue.id,
-                workspace_path,
-                config,
-                emit_update,
-                prompt_queue,
-                err,
+                issue,
+                prompt,
+                turn,
                 totals,
+                result,
+                config,
+                tracker_client,
+                emit_update,
+                command_subject,
+                prompt_queue,
+                workspace_path,
+                attempt_context,
+                context_recovery_attempts,
+                err,
                 None,
               )
             Ok(#(session, skipped)) -> {
@@ -644,7 +659,31 @@ fn loop_turns(
                   stall_deadline_ms,
                 )
               {
-                Error(failure) -> Error(failure)
+                Error(turn_loop.FinalFailure(failure)) -> Error(failure)
+                Error(turn_loop.RecoverableContextExhaustion(
+                  session: session,
+                  prompt_queue: prompt_queue,
+                  reason: err,
+                  tokens: tokens,
+                )) ->
+                  handle_context_or_fail(
+                    session,
+                    issue,
+                    prompt,
+                    turn,
+                    tokens,
+                    result,
+                    config,
+                    tracker_client,
+                    emit_update,
+                    command_subject,
+                    prompt_queue,
+                    workspace_path,
+                    attempt_context,
+                    context_recovery_attempts,
+                    err,
+                    Some(turn),
+                  )
                 Ok(turn_loop.ActiveTurn(
                   session,
                   prompt_queue,
@@ -676,6 +715,8 @@ fn loop_turns(
                     prompt_queue,
                     stop_after_turn,
                     workspace_path,
+                    attempt_context,
+                    context_recovery_attempts,
                   )
                 }
               }
@@ -683,6 +724,470 @@ fn loop_turns(
           }
         }
       }
+  }
+}
+
+fn handle_context_or_fail(
+  session: client.Session,
+  issue: tracker_issue.Issue,
+  failed_prompt: String,
+  turn: Int,
+  totals: session_tokens.TokenTotals,
+  result: result_artifact.ResultArtifact,
+  config: config_types.EffectiveConfig,
+  tracker_client: tracker.Client,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  command_subject: process.Subject(worker_command.Command),
+  prompt_queue: List(String),
+  workspace_path: String,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  context_recovery_attempts: Int,
+  err: error.PiRpcError,
+  active_turn: Option(Int),
+) -> Result(types.WorkerSuccess, types.WorkerFailure) {
+  case context_exhaustion.from_pi_rpc_error(err) {
+    None ->
+      fail_pi(
+        session,
+        issue.id,
+        workspace_path,
+        config,
+        emit_update,
+        prompt_queue,
+        err,
+        totals,
+        active_turn,
+      )
+    Some(context) ->
+      case
+        context_recovery_attempts >= config.agent.context_recovery_max_attempts
+      {
+        True ->
+          Error(cleanup_failure(
+            session,
+            issue.id,
+            workspace_path,
+            config,
+            emit_update,
+            prompt_queue,
+            error.PiFailed(err),
+            totals,
+            None,
+            active_turn,
+          ))
+        False ->
+          recover_context_exhaustion(
+            session,
+            issue,
+            failed_prompt,
+            turn,
+            totals,
+            result,
+            config,
+            tracker_client,
+            emit_update,
+            command_subject,
+            prompt_queue,
+            workspace_path,
+            attempt_context,
+            context_recovery_attempts + 1,
+            context,
+          )
+      }
+  }
+}
+
+fn recover_context_exhaustion(
+  session: client.Session,
+  issue: tracker_issue.Issue,
+  failed_prompt: String,
+  turn: Int,
+  totals: session_tokens.TokenTotals,
+  result: result_artifact.ResultArtifact,
+  config: config_types.EffectiveConfig,
+  tracker_client: tracker.Client,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  command_subject: process.Subject(worker_command.Command),
+  prompt_queue: List(String),
+  workspace_path: String,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  recovery_attempt: Int,
+  context: context_exhaustion.ContextExhaustion,
+) -> Result(types.WorkerSuccess, types.WorkerFailure) {
+  emit_update(
+    issue.id,
+    lifecycle_update_with_message(
+      pi_event.ContextRecoveryStarted,
+      Some(
+        "context window exhausted; compacting Pi session before retrying step "
+        <> attempt_context.step_id,
+      ),
+    ),
+  )
+  let store = artifact_store.new(config.workspace.root)
+  let method = context_recovery_prompt.PiRpcCompact
+  let artifacts_input =
+    context_recovery_artifact.RecoveryArtifactInput(
+      store: store,
+      run_id: attempt_context.run_id,
+      workflow_id: attempt_context.workflow_id,
+      step_id: attempt_context.step_id,
+      step_attempt_index: attempt_context.attempt_index,
+      pi_attempt: recovery_attempt,
+      context: context,
+      original_prompt: failed_prompt,
+      secrets: config_module.resolved_secrets(config),
+      workspace_path: workspace_path,
+      recovery_attempted: True,
+      recovery_exhausted: False,
+      recovery_method: method,
+    )
+  case context_recovery_artifact.write_initial(artifacts_input) {
+    Error(_) ->
+      Error(cleanup_failure(
+        session,
+        issue.id,
+        workspace_path,
+        config,
+        emit_update,
+        prompt_queue,
+        error.PiFailed(error.PiProtocolError(
+          "context recovery artifact write failed",
+        )),
+        totals,
+        None,
+        Some(turn),
+      ))
+    Ok(artifacts) ->
+      try_compacted_recovery(
+        session,
+        issue,
+        failed_prompt,
+        turn,
+        totals,
+        result,
+        config,
+        tracker_client,
+        emit_update,
+        command_subject,
+        prompt_queue,
+        workspace_path,
+        attempt_context,
+        recovery_attempt,
+        artifacts,
+      )
+  }
+}
+
+fn try_compacted_recovery(
+  session: client.Session,
+  issue: tracker_issue.Issue,
+  failed_prompt: String,
+  turn: Int,
+  totals: session_tokens.TokenTotals,
+  result: result_artifact.ResultArtifact,
+  config: config_types.EffectiveConfig,
+  tracker_client: tracker.Client,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  command_subject: process.Subject(worker_command.Command),
+  prompt_queue: List(String),
+  workspace_path: String,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  recovery_attempt: Int,
+  artifacts: context_recovery_artifact.RecoveryArtifacts,
+) -> Result(types.WorkerSuccess, types.WorkerFailure) {
+  let instructions =
+    "Compact prior context for Scherzo workflow step "
+    <> attempt_context.step_id
+    <> ". Preserve durable workspace state, completed edits, important artifact refs, and next actions."
+  case client.compact(session, Some(instructions), config.pi.read_timeout_ms) {
+    Ok(#(session, skipped)) -> {
+      emit_records(
+        issue.id,
+        skipped,
+        turn,
+        config_module.resolved_secrets(config),
+        emit_update,
+      )
+      let reasons = compaction_reasons(skipped)
+      let prompt =
+        build_recovery_prompt(
+          issue,
+          failed_prompt,
+          config,
+          attempt_context,
+          recovery_attempt,
+          context_recovery_prompt.PiRpcCompact,
+          reasons,
+          artifacts,
+        )
+      let _ =
+        context_recovery_artifact.write_recovery_prompt(
+          artifact_store.new(config.workspace.root),
+          attempt_context.run_id,
+          attempt_context.workflow_id,
+          attempt_context.step_id,
+          attempt_context.attempt_index,
+          prompt,
+        )
+      run_recovery_prompt(
+        session,
+        issue,
+        prompt,
+        turn,
+        totals,
+        result,
+        config,
+        tracker_client,
+        emit_update,
+        command_subject,
+        prompt_queue,
+        workspace_path,
+        attempt_context,
+        recovery_attempt,
+        context_recovery_prompt.PiRpcCompact,
+        reasons,
+      )
+    }
+    Error(_) ->
+      fresh_session_recovery(
+        session,
+        issue,
+        failed_prompt,
+        turn,
+        totals,
+        result,
+        config,
+        tracker_client,
+        emit_update,
+        command_subject,
+        prompt_queue,
+        workspace_path,
+        attempt_context,
+        recovery_attempt,
+        artifacts,
+      )
+  }
+}
+
+fn fresh_session_recovery(
+  failed_session: client.Session,
+  issue: tracker_issue.Issue,
+  failed_prompt: String,
+  turn: Int,
+  totals: session_tokens.TokenTotals,
+  result: result_artifact.ResultArtifact,
+  config: config_types.EffectiveConfig,
+  tracker_client: tracker.Client,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  command_subject: process.Subject(worker_command.Command),
+  prompt_queue: List(String),
+  workspace_path: String,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  recovery_attempt: Int,
+  artifacts: context_recovery_artifact.RecoveryArtifacts,
+) -> Result(types.WorkerSuccess, types.WorkerFailure) {
+  emit_update(
+    issue.id,
+    lifecycle_update_with_message(
+      pi_event.ContextRecoveryStarted,
+      Some(
+        "context window exhausted; retrying step "
+        <> attempt_context.step_id
+        <> " in a fresh compact session",
+      ),
+    ),
+  )
+  let _ = client.terminate(failed_session)
+  let prompt =
+    build_recovery_prompt(
+      issue,
+      failed_prompt,
+      config,
+      attempt_context,
+      recovery_attempt,
+      context_recovery_prompt.FreshSession,
+      [],
+      artifacts,
+    )
+  let _ =
+    context_recovery_artifact.write_recovery_prompt(
+      artifact_store.new(config.workspace.root),
+      attempt_context.run_id,
+      attempt_context.workflow_id,
+      attempt_context.step_id,
+      attempt_context.attempt_index,
+      prompt,
+    )
+  case
+    launch_for_prompt_mode(
+      workflow_attempt.OriginalPrompt(prompt),
+      attempt_context,
+      config,
+      workspace_path,
+      issue,
+    )
+  {
+    Error(err) -> {
+      let _ = workspace.after_run(workspace_path, config.hooks)
+      Error(worker_failure_with(
+        error.PiFailed(err),
+        Some(workspace_path),
+        totals,
+        None,
+      ))
+    }
+    Ok(session) -> {
+      emit_update(issue.id, pi_session_started_update(session.session_id))
+      run_recovery_prompt(
+        session,
+        issue,
+        prompt,
+        turn,
+        totals,
+        result,
+        config,
+        tracker_client,
+        emit_update,
+        command_subject,
+        prompt_queue,
+        workspace_path,
+        attempt_context,
+        recovery_attempt,
+        context_recovery_prompt.FreshSession,
+        [],
+      )
+    }
+  }
+}
+
+fn run_recovery_prompt(
+  session: client.Session,
+  issue: tracker_issue.Issue,
+  prompt: String,
+  turn: Int,
+  totals: session_tokens.TokenTotals,
+  result: result_artifact.ResultArtifact,
+  config: config_types.EffectiveConfig,
+  tracker_client: tracker.Client,
+  emit_update: fn(String, types.RunnerUpdate) -> Nil,
+  command_subject: process.Subject(worker_command.Command),
+  prompt_queue: List(String),
+  workspace_path: String,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  recovery_attempt: Int,
+  method: context_recovery_prompt.RecoveryMethod,
+  compaction_event_reasons: List(String),
+) -> Result(types.WorkerSuccess, types.WorkerFailure) {
+  let outcome =
+    loop_turns(
+      session,
+      issue,
+      prompt,
+      turn + 1,
+      totals,
+      result,
+      config,
+      tracker_client,
+      emit_update,
+      command_subject,
+      prompt_queue,
+      False,
+      workspace_path,
+      attempt_context,
+      recovery_attempt,
+    )
+  case outcome {
+    Ok(success) -> {
+      emit_update(
+        issue.id,
+        lifecycle_update_with_message(
+          pi_event.ContextRecoverySucceeded,
+          Some(
+            "context recovery succeeded with "
+            <> context_recovery_prompt.recovery_method_to_string(method),
+          ),
+        ),
+      )
+      let _ =
+        context_recovery_artifact.write_result(
+          artifact_store.new(config.workspace.root),
+          attempt_context.run_id,
+          attempt_context.workflow_id,
+          attempt_context.step_id,
+          attempt_context.attempt_index,
+          "succeeded",
+          method,
+          compaction_event_reasons,
+        )
+      Ok(success)
+    }
+    Error(failure) -> {
+      emit_update(
+        issue.id,
+        lifecycle_update_with_message(
+          pi_event.ContextRecoveryFailed,
+          Some("context recovery failed or was exhausted"),
+        ),
+      )
+      let _ =
+        context_recovery_artifact.write_result(
+          artifact_store.new(config.workspace.root),
+          attempt_context.run_id,
+          attempt_context.workflow_id,
+          attempt_context.step_id,
+          attempt_context.attempt_index,
+          "failed",
+          method,
+          compaction_event_reasons,
+        )
+      Error(failure)
+    }
+  }
+}
+
+fn build_recovery_prompt(
+  issue: tracker_issue.Issue,
+  failed_prompt: String,
+  config: config_types.EffectiveConfig,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  recovery_attempt: Int,
+  method: context_recovery_prompt.RecoveryMethod,
+  compaction_event_reasons: List(String),
+  artifacts: context_recovery_artifact.RecoveryArtifacts,
+) -> String {
+  let _ = failed_prompt
+  context_recovery_prompt.build(context_recovery_prompt.RecoveryPromptInput(
+    workflow_id: attempt_context.workflow_id,
+    run_id: attempt_context.run_id,
+    step_id: attempt_context.step_id,
+    step_attempt_index: attempt_context.attempt_index,
+    issue_identifier: Some(issue.identifier),
+    issue_title: Some(issue.title),
+    recovery_attempt: recovery_attempt,
+    recovery_method: method,
+    compaction_event_reasons: compaction_event_reasons,
+    prompt_excerpt_ref: artifacts.prompt_excerpt_ref,
+    error_artifact_ref: artifacts.error_ref,
+    prompt_excerpt_display_path: artifacts.prompt_excerpt_display_path,
+    error_artifact_display_path: artifacts.error_display_path,
+    current_status: "Scherzo did not preload full status; run jj status --color=never before editing.",
+    original_prompt_excerpt: artifacts.prompt_excerpt,
+    max_chars: config.agent.context_recovery_prompt_char_limit,
+  ))
+}
+
+fn compaction_reasons(records: List(protocol.RpcRecord)) -> List(String) {
+  records
+  |> list.filter_map(fn(record) {
+    protocol.compaction_reason(record) |> option_to_result
+  })
+}
+
+fn option_to_result(value: Option(a)) -> Result(a, Nil) {
+  case value {
+    Some(value) -> Ok(value)
+    None -> Error(Nil)
   }
 }
 
@@ -699,6 +1204,8 @@ fn finish_after_turn(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   workspace_path: String,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  context_recovery_attempts: Int,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   case client.get_session_stats(session, config.pi.read_timeout_ms) {
     Error(err) ->
@@ -743,6 +1250,8 @@ fn finish_after_turn(
             prompt_queue,
             stop_after_turn,
             workspace_path,
+            attempt_context,
+            context_recovery_attempts,
           )
         Ok(_) ->
           decide_after_refresh(
@@ -758,6 +1267,8 @@ fn finish_after_turn(
             prompt_queue,
             stop_after_turn,
             workspace_path,
+            attempt_context,
+            context_recovery_attempts,
           )
       }
     }
@@ -777,6 +1288,8 @@ fn decide_after_refresh(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   workspace_path: String,
+  attempt_context: workflow_attempt.StepAttemptContext,
+  context_recovery_attempts: Int,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   case stop_after_turn {
     True ->
@@ -840,6 +1353,8 @@ fn decide_after_refresh(
                 prompt_queue,
                 False,
                 workspace_path,
+                attempt_context,
+                context_recovery_attempts,
               )
           }
       }

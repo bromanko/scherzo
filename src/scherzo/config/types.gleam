@@ -50,6 +50,8 @@ pub type AgentConfig {
     max_retry_backoff_ms: Int,
     max_retry_attempts: Int,
     max_sessions_per_issue: Int,
+    context_recovery_max_attempts: Int,
+    context_recovery_prompt_char_limit: Int,
     max_concurrent_agents_by_state: Dict(issue_state.IssueStateKey, Int),
   )
 }

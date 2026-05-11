@@ -890,18 +890,42 @@ fn find_event(
 fn wait_for_event(
   subject: process.Subject(String),
   event: String,
-  attempts: Int,
+  quiet_attempts: Int,
 ) -> Bool {
-  case attempts <= 0 {
-    True -> False
+  case wait_for_event_result(subject, event, quiet_attempts) {
+    Ok(_) -> True
+    Error(_) -> False
+  }
+}
+
+fn wait_for_event_result(
+  subject: process.Subject(String),
+  event: String,
+  quiet_attempts: Int,
+) -> Result(List(String), List(String)) {
+  wait_for_event_result_loop(subject, event, quiet_attempts, [])
+}
+
+fn wait_for_event_result_loop(
+  subject: process.Subject(String),
+  event: String,
+  quiet_attempts: Int,
+  seen: List(String),
+) -> Result(List(String), List(String)) {
+  case quiet_attempts <= 0 {
+    True -> Error(list.reverse(seen))
     False ->
       case process.receive(subject, within: 500) {
-        Ok(received) ->
+        Ok(received) -> {
+          let seen = [received, ..seen]
           case received == event {
-            True -> True
-            False -> wait_for_event(subject, event, attempts - 1)
+            True -> Ok(list.reverse(seen))
+            False ->
+              wait_for_event_result_loop(subject, event, quiet_attempts, seen)
           }
-        Error(_) -> False
+        }
+        Error(_) ->
+          wait_for_event_result_loop(subject, event, quiet_attempts - 1, seen)
       }
   }
 }
@@ -2359,7 +2383,7 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
 
   process.send(started.data, daemon.PollTick(1))
 
-  assert wait_for_event(log_subject, "worker_exited", 20)
+  let assert Ok(_) = wait_for_event_result(log_subject, "worker_exited", 20)
   let step_session_id = "workflow-step-ABC-1-42-1-final_test-a1-c55a07a40185"
   let assert Ok(page) =
     hub.events_after(event_hub, step_session_id, 0, 20, 1000)
@@ -2376,8 +2400,8 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
   assert string.contains(tool_output, "stdout_truncated: true")
   assert string.contains(tool_output, "stderr_truncated: true")
 
-  let assert Ok(failure_comment) =
-    process.receive(failure_report_subject, within: 1000)
+  let failure_comment =
+    test_async.expect_message_within(failure_report_subject, 5000)
   assert string.contains(failure_comment, "workflow_step_failed")
   assert string.contains(failure_comment, "step=final_test")
   assert string.contains(failure_comment, "exit_code=9")

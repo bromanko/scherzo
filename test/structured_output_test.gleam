@@ -1,15 +1,37 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/json_value
+import scherzo/result_artifact
 import scherzo/structured_output
+import scherzo/structured_output_source
 import scherzo/workflow_dag
 
 fn spec(required: Bool) -> workflow_dag.StructuredOutputSpec {
   workflow_dag.StructuredOutputSpec(
     artifact_name: "review_result",
     required: required,
+    source: structured_output_source.FinalResponseSource,
     format: workflow_dag.StructuredJson,
     schema: workflow_dag.StructuredObjectSchema(["summary", "findings"]),
+    validator: None,
+    validation_retries: 1,
+  )
+}
+
+fn tool_source_spec() -> workflow_dag.StructuredOutputSpec {
+  workflow_dag.StructuredOutputSpec(
+    artifact_name: "example_artifact",
+    required: True,
+    source: structured_output_source.PiToolCallSource(
+      tool_name: "submit_example_artifact",
+      require_single: True,
+      reject_sibling_tool_calls: True,
+    ),
+    format: workflow_dag.StructuredJson,
+    schema: workflow_dag.StructuredObjectSchema([
+      "schema_version",
+      "artifact_type",
+    ]),
     validator: None,
     validation_retries: 1,
   )
@@ -19,6 +41,7 @@ fn review_lane_draft_spec() -> workflow_dag.StructuredOutputSpec {
   workflow_dag.StructuredOutputSpec(
     artifact_name: "review_lane_draft",
     required: True,
+    source: structured_output_source.FinalResponseSource,
     format: workflow_dag.StructuredJson,
     schema: workflow_dag.StructuredObjectSchema([
       "schema_version",
@@ -52,6 +75,41 @@ fn validate(
     truncated,
     [],
     structured_output.noop_validator_runner,
+  )
+}
+
+fn validate_tool_source(
+  tool_calls: List(result_artifact.ToolCallSubmission),
+) -> Result(
+  structured_output.StructuredOutputValidation,
+  structured_output.StructuredOutputError,
+) {
+  structured_output.validate_agent_result(
+    tool_source_spec(),
+    result_artifact.from_final_response_with_tool_calls(
+      Some(
+        "{\"schema_version\":1,\"artifact_type\":\"final_response_not_source\"}",
+      ),
+      False,
+      "test",
+      tool_calls,
+    ),
+    [],
+    structured_output.noop_validator_runner,
+  )
+}
+
+fn tool_call(
+  name: String,
+  arguments_json: Option(String),
+  status: Option(String),
+  sibling_count: Int,
+) -> result_artifact.ToolCallSubmission {
+  result_artifact.ToolCallSubmission(
+    name: name,
+    arguments_json: arguments_json,
+    status: status,
+    sibling_count: sibling_count,
   )
 }
 
@@ -111,6 +169,100 @@ pub fn optional_structured_output_absence_succeeds_but_invalid_present_fails_tes
   let assert Error(truncated) = validate(False, None, True)
   assert structured_output.error_code(truncated)
     == "structured_output_truncated"
+}
+
+pub fn pi_tool_call_source_accepts_matching_successful_object_arguments_test() {
+  let assert Ok(structured_output.StructuredOutputPresent(payload)) =
+    validate_tool_source([
+      tool_call(
+        "submit_example_artifact",
+        Some("{\"schema_version\":1,\"artifact_type\":\"example\"}"),
+        Some("success"),
+        1,
+      ),
+    ])
+  let assert Ok(json_value.JObject(entries)) = json_value.parse(payload)
+  assert json_value.object_has_key(entries, "schema_version")
+  assert json_value.object_has_key(entries, "artifact_type")
+}
+
+pub fn pi_tool_call_source_rejects_missing_wrong_failed_bad_multiple_and_sibling_test() {
+  let assert Error(missing) = validate_tool_source([])
+  assert structured_output.error_code(missing)
+    == "structured_output_tool_call_missing"
+
+  let assert Error(wrong_name) =
+    validate_tool_source([
+      tool_call(
+        "submit_wrong_artifact",
+        Some("{\"schema_version\":1,\"artifact_type\":\"example\"}"),
+        Some("success"),
+        1,
+      ),
+    ])
+  assert structured_output.error_code(wrong_name)
+    == "structured_output_tool_call_wrong_name"
+
+  let assert Error(failed) =
+    validate_tool_source([
+      tool_call(
+        "submit_example_artifact",
+        Some("{\"schema_version\":1,\"artifact_type\":\"example\"}"),
+        Some("failed"),
+        1,
+      ),
+    ])
+  assert structured_output.error_code(failed)
+    == "structured_output_tool_call_failed"
+
+  let assert Error(malformed) =
+    validate_tool_source([
+      tool_call(
+        "submit_example_artifact",
+        Some("{not json"),
+        Some("success"),
+        1,
+      ),
+    ])
+  assert structured_output.error_code(malformed)
+    == "structured_output_tool_call_arguments_invalid"
+
+  let assert Error(non_object) =
+    validate_tool_source([
+      tool_call("submit_example_artifact", Some("[]"), Some("success"), 1),
+    ])
+  assert structured_output.error_code(non_object)
+    == "structured_output_tool_call_arguments_invalid"
+
+  let assert Error(multiple) =
+    validate_tool_source([
+      tool_call(
+        "submit_example_artifact",
+        Some("{\"schema_version\":1,\"artifact_type\":\"example\"}"),
+        Some("success"),
+        1,
+      ),
+      tool_call(
+        "submit_example_artifact",
+        Some("{\"schema_version\":1,\"artifact_type\":\"example\"}"),
+        Some("success"),
+        1,
+      ),
+    ])
+  assert structured_output.error_code(multiple)
+    == "structured_output_tool_call_multiple"
+
+  let assert Error(sibling) =
+    validate_tool_source([
+      tool_call(
+        "submit_example_artifact",
+        Some("{\"schema_version\":1,\"artifact_type\":\"example\"}"),
+        Some("success"),
+        2,
+      ),
+    ])
+  assert structured_output.error_code(sibling)
+    == "structured_output_tool_call_sibling"
 }
 
 pub fn redacts_secret_strings_before_returning_payload_test() {

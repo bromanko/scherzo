@@ -107,6 +107,70 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
     simplifile.is_directory(".pi/skills/gleam-performance-review")
 }
 
+pub fn implementation_like_workflows_use_workspace_driver_language_test() {
+  let workflow_expectations = [
+    #(
+      ".scherzo/workflows/implementation.yaml",
+      "workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+    ),
+    #(
+      ".scherzo/workflows/execplan.yaml",
+      "workspace_capabilities: [status, diff, changed-files, publish-change]",
+    ),
+    #(
+      ".scherzo/workflows/execplan-revision.yaml",
+      "workspace_capabilities: [status, diff, changed-files, refresh-base, publish-change]",
+    ),
+    #(
+      ".scherzo/workflows/execplan-implementation.yaml",
+      "workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+    ),
+    #(
+      ".scherzo/workflows/merge-conflict-resolution.yaml",
+      "workspace_capabilities: [status, diff, changed-files, publish-change]",
+    ),
+  ]
+
+  list.each(workflow_expectations, fn(expectation) {
+    let #(path, capabilities) = expectation
+    let workflow = read_file(path)
+    assert_contains(workflow, "workspace_profile: dogfood-jj")
+    assert_contains(workflow, capabilities)
+    assert_not_contains(workflow, "--from @- --to @")
+  })
+
+  let prompt_paths = [
+    ".scherzo/workflows/prompts/implement.md",
+    ".scherzo/workflows/prompts/code-review.md",
+    ".scherzo/workflows/prompts/apply-feedback.md",
+    ".scherzo/workflows/prompts/repair-base-drift.md",
+    ".scherzo/workflows/prompts/execplan-draft.md",
+    ".scherzo/workflows/prompts/execplan-repair-validation.md",
+    ".scherzo/workflows/prompts/execplan-review.md",
+    ".scherzo/workflows/prompts/execplan-incorporate-review.md",
+    ".scherzo/workflows/prompts/execplan-revision.md",
+    ".scherzo/workflows/prompts/execplan-implementation-implement.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-review.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
+    ".scherzo/workflows/prompts/resolve-merge-conflicts.md",
+  ]
+
+  list.each(prompt_paths, fn(path) {
+    let prompt = read_file(path)
+    assert_not_contains_any(prompt, [
+      "dedicated jj workspace",
+      "jj status --color=never",
+      "jj diff --color=never",
+      "jj diff --from @-",
+      "manage jj workspaces",
+    ])
+  })
+}
+
 pub fn workflow_docs_explain_vendored_skill_update_and_validation_test() {
   let docs = read_file(".scherzo/README.md")
 

@@ -84,6 +84,8 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
       sha256: "abc123",
       bytes: 42,
       schema_status: "valid",
+      source_type: "final_response",
+      source_tool_name: None,
       retry: None,
     )
   let artifact =

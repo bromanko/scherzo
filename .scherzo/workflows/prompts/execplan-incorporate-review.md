@@ -33,7 +33,7 @@ Review step response:
 
 Workflow contract:
 
-- You are already inside the same dedicated jj workspace as the draft plan. Do not create, forget, finish, switch, push, or otherwise manage jj workspaces.
+- You are already inside the same dedicated workflow workspace prepared by Scherzo as the draft plan. Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
 - Use the repo-local exec-plan skill by reading `.pi/skills/exec-plan/SKILL.md` before revising.
 - Use the repo-local exec-plan-review skill by reading `.pi/skills/exec-plan-review/SKILL.md` before interpreting the review.
 - Read `tmp/execplan-review.md` and the HTML plan artifact under `docs/plans/`.
@@ -54,7 +54,7 @@ Dogfood time budget:
 Incorporation process:
 
 1. Read both repo-local skill files.
-2. Read the HTML plan path printed as `PLAN_PATH=<path>` in the final validation stdout above, or discover it with `jj diff --from @- --to @ --name-only --color=never` if needed.
+2. Read the HTML plan path printed as `PLAN_PATH=<path>` in the final validation stdout above, or discover it with `$SCHERZO_WORKSPACE_DRIVER changed-files --json` if needed.
 3. Read `tmp/execplan-review.md`.
 4. Update the plan so a later implementation workflow can start from the plan alone.
 5. Re-read the final plan for consistency across purpose, scope, milestones, concrete steps, tests, validation, rollout, risks, and open questions.

@@ -34,9 +34,9 @@ Synthesis and final review artifact output:
 
 Review contract:
 
-- You are in the same dedicated jj workspace as the implementation.
-- Do not create, forget, finish, switch, push, or otherwise manage jj workspaces.
-- Use `jj status --color=never` and `jj diff --from @- --to @ --color=never` only for orientation; the analysis output above is authoritative for changed files across the workflow run.
+- You are in the same dedicated workflow workspace prepared by Scherzo as the implementation.
+- Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
+- Use `$SCHERZO_WORKSPACE_DRIVER status --human` and `$SCHERZO_WORKSPACE_DRIVER diff --human` only for orientation; the analysis output above is authoritative for changed files across the workflow run.
 - If `REVIEW_BRIEF_PATH=...` is present in the dry-run output, read that local artifact for orientation. It is additive context only; do not post the artifact to PRs or Linear.
 - If any specialist lane output includes `REVIEW_LANE_RESULT_PATH=...`, read the referenced `ReviewLaneResult` and its log/analysis artifacts produced by `scripts/scherzo-review`. Treat lane findings as normalized review input: fix or report blocking findings, preserve non-blocking suspicions as feedback, and do not discard empty-finding lane logs.
 - If synthesis output includes `REVIEW_SYNTHESIS_PATH=...` or `REVIEW_FINAL_ARTIFACT_PATH=...`, read the referenced artifacts first. Use the final artifact as the concise normalized review input, including lane failures and downgraded/unproven correctness claims, but still inspect the actual diff before applying fixes.

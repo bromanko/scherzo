@@ -97,6 +97,11 @@ pub fn decode_captured_assistant_tool_call_and_tool_result_test() {
   assert call.tool_input == Some("gc prime")
   assert call.tool_output == None
   assert call.tool_status == None
+  let assert [tool_call] = call.tool_calls
+  assert tool_call.name == "bash"
+  assert tool_call.arguments_json
+    == Some("{\"command\":\"gc prime\",\"timeout\":120}")
+  assert tool_call.sibling_count == 1
 
   let assert Ok(result) = protocol.decode_record(result_line)
   assert result.type_ == "message"
@@ -107,6 +112,7 @@ pub fn decode_captured_assistant_tool_call_and_tool_result_test() {
       "/bin/bash: gc: command not found\n\n\nCommand exited with code 127",
     )
   assert result.tool_status == Some("failed")
+  assert result.tool_call_id == Some("call_example")
 }
 
 pub fn decode_top_level_and_data_tool_execution_aliases_test() {
@@ -136,4 +142,7 @@ pub fn decode_top_level_and_data_tool_execution_aliases_test() {
     )
   assert structured.tool_input
     == Some("[structured tool input; use --json for raw details]")
+  let assert [structured_call] = structured.tool_calls
+  assert structured_call.arguments_json
+    == Some("{\"argv\":[\"gleam\",\"test\"]}")
 }

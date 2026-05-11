@@ -6,6 +6,7 @@ import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/model_config
+import scherzo/structured_output_source
 import yay
 
 pub type WorkflowDag {
@@ -51,6 +52,7 @@ pub type StructuredOutputSpec {
   StructuredOutputSpec(
     artifact_name: String,
     required: Bool,
+    source: structured_output_source.StructuredOutputSource,
     format: StructuredOutputFormat,
     schema: StructuredOutputSchema,
     validator: Option(StructuredOutputValidator),
@@ -148,28 +150,11 @@ pub fn structured_output_format_to_string(
   }
 }
 
-pub fn structured_output_schema_required_keys(
-  schema: StructuredOutputSchema,
-) -> List(String) {
-  case schema {
-    StructuredObjectSchema(required_keys) -> required_keys
-  }
-}
-
 pub fn structured_output_validator_to_string(
   validator: StructuredOutputValidator,
 ) -> String {
   case validator {
     ReviewLaneDraftValidator -> "review_lane_draft"
-  }
-}
-
-pub fn structured_output_validator_from_string(
-  value: String,
-) -> Result(StructuredOutputValidator, Nil) {
-  case string.trim(value) |> string.lowercase {
-    "review_lane_draft" -> Ok(ReviewLaneDraftValidator)
-    _ -> Error(Nil)
   }
 }
 
@@ -414,6 +399,7 @@ fn read_structured_output(
             step_id,
           ))
           use required <- result.try(read_structured_required(structured_node))
+          use source <- result.try(read_structured_source(structured_node))
           use schema <- result.try(read_structured_schema(structured_node))
           use validator <- result.try(read_structured_validator(structured_node))
           use validation_retries <- result.try(
@@ -423,6 +409,7 @@ fn read_structured_output(
             Some(StructuredOutputSpec(
               artifact_name: artifact_name,
               required: required,
+              source: source,
               format: format,
               schema: schema,
               validator: validator,
@@ -508,15 +495,25 @@ fn read_structured_required(node: yay.Node) -> Result(Bool, DagError) {
   }
 }
 
+fn read_structured_source(
+  node: yay.Node,
+) -> Result(structured_output_source.StructuredOutputSource, DagError) {
+  structured_output_source.parse(node)
+  |> result.map_error(fn(error) {
+    let structured_output_source.SourceError(code, message) = error
+    DagError(code, message)
+  })
+}
+
 fn read_structured_validator(
   node: yay.Node,
 ) -> Result(Option(StructuredOutputValidator), DagError) {
   case get_node(node, "validator") {
     None -> Ok(None)
     Some(yay.NodeStr(value)) ->
-      case structured_output_validator_from_string(value) {
-        Ok(validator) -> Ok(Some(validator))
-        Error(Nil) ->
+      case string.trim(value) |> string.lowercase {
+        "review_lane_draft" -> Ok(Some(ReviewLaneDraftValidator))
+        _ ->
           Error(DagError(
             "unknown_structured_output_validator",
             "unknown structured_output.validator: " <> value,

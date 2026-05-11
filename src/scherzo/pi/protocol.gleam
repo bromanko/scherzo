@@ -4,7 +4,17 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/error
+import scherzo/json_value.{type JsonValue}
 import scherzo/session/tokens as session_tokens
+
+pub type ToolCallRecord {
+  ToolCallRecord(
+    id: Option(String),
+    name: String,
+    arguments_json: Option(String),
+    sibling_count: Int,
+  )
+}
 
 pub type RpcRecord {
   RpcRecord(
@@ -26,6 +36,8 @@ pub type RpcRecord {
     tool_input: Option(String),
     tool_output: Option(String),
     tool_status: Option(String),
+    tool_call_id: Option(String),
+    tool_calls: List(ToolCallRecord),
     assistant_messages: List(String),
     raw_json: String,
   )
@@ -47,6 +59,31 @@ pub fn encode_set_auto_retry(id: String, enabled enabled: Bool) -> String {
     #("enabled", json.bool(enabled)),
   ])
   |> json.to_string
+}
+
+pub fn encode_set_auto_compaction(id: String, enabled enabled: Bool) -> String {
+  json.object([
+    #("id", json.string(id)),
+    #("type", json.string("set_auto_compaction")),
+    #("enabled", json.bool(enabled)),
+  ])
+  |> json.to_string
+}
+
+pub fn encode_compact(
+  id: String,
+  custom_instructions: Option(String),
+) -> String {
+  let fields = [
+    #("id", json.string(id)),
+    #("type", json.string("compact")),
+  ]
+  let fields = case custom_instructions {
+    Some(instructions) ->
+      list.append(fields, [#("customInstructions", json.string(instructions))])
+    None -> fields
+  }
+  json.object(fields) |> json.to_string
 }
 
 pub fn encode_get_state(id: String) -> String {
@@ -106,6 +143,7 @@ type MessageObject {
   MessageObject(
     role: Option(String),
     tool_name: Option(String),
+    tool_call_id: Option(String),
     is_error: Option(Bool),
     stop_reason: Option(String),
     error_message: Option(String),
@@ -121,8 +159,10 @@ type ContentItem {
   ContentItem(
     type_: String,
     text: Option(String),
+    id: Option(String),
     name: Option(String),
     command: Option(String),
+    arguments_json: Option(String),
   )
 }
 
@@ -187,6 +227,11 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     None,
     tolerant_optional_string_decoder(),
   )
+  use top_error <- decode.optional_field(
+    "error",
+    None,
+    tolerant_optional_string_decoder(),
+  )
   use assistant_messages <- decode.optional_field(
     "messages",
     [],
@@ -207,20 +252,45 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     None,
     tolerant_optional_string_decoder(),
   )
+  use top_tool_call_id_camel <- decode.optional_field(
+    "toolCallId",
+    None,
+    tolerant_optional_string_decoder(),
+  )
+  use top_tool_call_id_snake <- decode.optional_field(
+    "tool_call_id",
+    None,
+    tolerant_optional_string_decoder(),
+  )
   use top_command <- decode.optional_field(
     "command",
     None,
     structured_optional_string_decoder(),
+  )
+  use top_command_json <- decode.optional_field(
+    "command",
+    None,
+    optional_json_value_decoder(),
   )
   use top_input <- decode.optional_field(
     "input",
     None,
     structured_optional_string_decoder(),
   )
+  use top_input_json <- decode.optional_field(
+    "input",
+    None,
+    optional_json_value_decoder(),
+  )
   use top_args <- decode.optional_field(
     "args",
     None,
     structured_optional_string_decoder(),
+  )
+  use top_args_json <- decode.optional_field(
+    "args",
+    None,
+    optional_json_value_decoder(),
   )
   use top_output <- decode.optional_field(
     "output",
@@ -281,6 +351,7 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     error_message: first_non_empty([
       top_error_message_camel,
       top_error_message_snake,
+      top_error,
       message_object.error_message,
     ]),
     method: method,
@@ -317,9 +388,69 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
       success,
       data.tool_status,
     ),
+    tool_call_id: tool_call_id_for_record(
+      message_object,
+      top_tool_call_id_camel,
+      top_tool_call_id_snake,
+    ),
+    tool_calls: tool_calls_for_record(
+      type_,
+      message_object,
+      top_tool_name_camel,
+      top_tool_name_snake,
+      top_name,
+      top_args_json,
+      top_input_json,
+      top_command_json,
+      data.tool_name,
+      data.tool_arguments_json,
+    ),
     assistant_messages: assistant_messages,
     raw_json: raw_json,
   ))
+}
+
+pub fn compaction_reason(record: RpcRecord) -> Option(String) {
+  case record.type_ == "compaction_start" || record.type_ == "compaction_end" {
+    False -> None
+    True ->
+      case json_value.parse(record.raw_json) {
+        Error(_) -> None
+        Ok(value) ->
+          first_non_empty([
+            json_string_at(value, ["reason"]),
+            json_string_at(value, ["data", "reason"]),
+            json_string_at(value, ["message", "reason"]),
+          ])
+      }
+  }
+}
+
+fn json_string_at(value: JsonValue, path: List(String)) -> Option(String) {
+  case path, value {
+    [], json_value.JString(text) -> Some(text)
+    [], _ -> None
+    [key, ..rest], json_value.JObject(entries) ->
+      case object_get(entries, key) {
+        Some(child) -> json_string_at(child, rest)
+        None -> None
+      }
+    _, _ -> None
+  }
+}
+
+fn object_get(
+  entries: List(#(String, JsonValue)),
+  key: String,
+) -> Option(JsonValue) {
+  case entries {
+    [] -> None
+    [#(entry_key, value), ..rest] ->
+      case entry_key == key {
+        True -> Some(value)
+        False -> object_get(rest, key)
+      }
+  }
 }
 
 fn tolerant_optional_string_decoder() -> decode.Decoder(Option(String)) {
@@ -333,6 +464,18 @@ fn structured_optional_string_decoder() -> decode.Decoder(Option(String)) {
     decode.dynamic
     |> decode.map(fn(_) { Some(structured_tool_input_placeholder) }),
   ])
+}
+
+fn optional_json_value_decoder() -> decode.Decoder(Option(String)) {
+  decode.one_of(decode.optional(json_value.decoder()), or: [
+    decode.dynamic |> decode.map(fn(_) { None }),
+  ])
+  |> decode.map(fn(value) {
+    case value {
+      Some(value) -> Some(json_value.to_string(value))
+      None -> None
+    }
+  })
 }
 
 fn tolerant_message_object_decoder() -> decode.Decoder(MessageObject) {
@@ -438,6 +581,11 @@ fn message_object_decoder() -> decode.Decoder(MessageObject) {
     None,
     tolerant_optional_string_decoder(),
   )
+  use tool_call_id <- decode.optional_field(
+    "toolCallId",
+    None,
+    tolerant_optional_string_decoder(),
+  )
   use is_error <- decode.optional_field(
     "isError",
     None,
@@ -475,6 +623,7 @@ fn message_object_decoder() -> decode.Decoder(MessageObject) {
   decode.success(MessageObject(
     role: role,
     tool_name: tool_name,
+    tool_call_id: tool_call_id,
     is_error: is_error,
     stop_reason: first_non_empty([stop_reason_camel, stop_reason_snake]),
     error_message: first_non_empty([error_message_camel, error_message_snake]),
@@ -489,6 +638,11 @@ fn content_item_decoder() -> decode.Decoder(ContentItem) {
     None,
     tolerant_optional_string_decoder(),
   )
+  use id <- decode.optional_field(
+    "id",
+    None,
+    tolerant_optional_string_decoder(),
+  )
   use name <- decode.optional_field(
     "name",
     None,
@@ -499,11 +653,18 @@ fn content_item_decoder() -> decode.Decoder(ContentItem) {
     None,
     structured_optional_string_decoder(),
   ))
+  use arguments_json <- decode.optional_field(
+    "arguments",
+    None,
+    optional_json_value_decoder(),
+  )
   decode.success(ContentItem(
     type_: type_,
     text: text,
+    id: id,
     name: name,
     command: command,
+    arguments_json: arguments_json,
   ))
 }
 
@@ -511,6 +672,7 @@ fn empty_message_object() -> MessageObject {
   MessageObject(
     role: None,
     tool_name: None,
+    tool_call_id: None,
     is_error: None,
     stop_reason: None,
     error_message: None,
@@ -605,6 +767,90 @@ fn tool_status_for_record(
   }
 }
 
+fn tool_call_id_for_record(
+  message: MessageObject,
+  top_tool_call_id_camel: Option(String),
+  top_tool_call_id_snake: Option(String),
+) -> Option(String) {
+  case message.role {
+    Some("toolResult") -> first_non_empty([message.tool_call_id])
+    _ -> first_non_empty([top_tool_call_id_camel, top_tool_call_id_snake])
+  }
+}
+
+fn tool_calls_for_record(
+  type_: String,
+  message: MessageObject,
+  top_tool_name_camel: Option(String),
+  top_tool_name_snake: Option(String),
+  top_name: Option(String),
+  top_args_json: Option(String),
+  top_input_json: Option(String),
+  top_command_json: Option(String),
+  data_tool_name: Option(String),
+  data_tool_arguments_json: Option(String),
+) -> List(ToolCallRecord) {
+  case message.role {
+    Some("assistant") -> content_tool_calls(message.content)
+    _ ->
+      case string.starts_with(type_, "tool_execution_start") {
+        False -> []
+        True ->
+          case
+            first_non_empty([
+              top_tool_name_camel,
+              top_tool_name_snake,
+              top_name,
+              data_tool_name,
+            ])
+          {
+            None -> []
+            Some(name) -> [
+              ToolCallRecord(
+                id: None,
+                name: name,
+                arguments_json: first_non_empty([
+                  top_args_json,
+                  top_input_json,
+                  top_command_json,
+                  data_tool_arguments_json,
+                ]),
+                sibling_count: 1,
+              ),
+            ]
+          }
+      }
+  }
+}
+
+fn content_tool_calls(items: List(ContentItem)) -> List(ToolCallRecord) {
+  let sibling_count = tool_call_count(items)
+  items
+  |> list.filter_map(fn(item) {
+    case item.type_ == "toolCall", item.name {
+      True, Some(name) ->
+        Ok(ToolCallRecord(
+          id: item.id,
+          name: name,
+          arguments_json: item.arguments_json,
+          sibling_count: sibling_count,
+        ))
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+fn tool_call_count(items: List(ContentItem)) -> Int {
+  case items {
+    [] -> 0
+    [item, ..rest] ->
+      case item.type_ == "toolCall" {
+        True -> 1 + tool_call_count(rest)
+        False -> tool_call_count(rest)
+      }
+  }
+}
+
 fn status_from_success(is_error: Option(Bool)) -> Option(String) {
   case is_error {
     Some(True) -> Some("failed")
@@ -683,6 +929,7 @@ pub type Data {
     tool_input: Option(String),
     tool_output: Option(String),
     tool_status: Option(String),
+    tool_arguments_json: Option(String),
   )
 }
 
@@ -696,6 +943,7 @@ fn empty_data() -> Data {
     tool_input: None,
     tool_output: None,
     tool_status: None,
+    tool_arguments_json: None,
   )
 }
 
@@ -740,15 +988,30 @@ fn data_decoder() -> decode.Decoder(Data) {
     None,
     structured_optional_string_decoder(),
   )
+  use command_json <- decode.optional_field(
+    "command",
+    None,
+    optional_json_value_decoder(),
+  )
   use input <- decode.optional_field(
     "input",
     None,
     structured_optional_string_decoder(),
   )
+  use input_json <- decode.optional_field(
+    "input",
+    None,
+    optional_json_value_decoder(),
+  )
   use args <- decode.optional_field(
     "args",
     None,
     structured_optional_string_decoder(),
+  )
+  use args_json <- decode.optional_field(
+    "args",
+    None,
+    optional_json_value_decoder(),
   )
   use output <- decode.optional_field(
     "output",
@@ -784,6 +1047,7 @@ fn data_decoder() -> decode.Decoder(Data) {
     tool_input: first_non_empty([command, input, args]),
     tool_output: first_non_empty([output, stdout, stderr]),
     tool_status: first_non_empty([status, result]),
+    tool_arguments_json: first_non_empty([args_json, input_json, command_json]),
   ))
 }
 

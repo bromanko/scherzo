@@ -6,10 +6,10 @@ import scherzo/error
 import scherzo/log
 import scherzo/result_artifact
 import scherzo/step_artifact
+import scherzo/structured_output_source
 import scherzo/workflow_dag
 
-pub fn transient_native_lane_agent_failure_diagnostic(
-  step_id: String,
+pub fn transient_agent_failure_diagnostic(
   spec: Option(workflow_dag.StructuredOutputSpec),
   failure: agent_types.WorkerFailure,
   secrets: List(String),
@@ -24,7 +24,6 @@ pub fn transient_native_lane_agent_failure_diagnostic(
       case
         spec.required
         && spec.validation_retries > 0
-        && is_native_review_lane_step(step_id, spec.artifact_name)
         && is_transient_pi_termination(failure.reason)
       {
         True ->
@@ -107,16 +106,10 @@ pub fn retry_prompt(
   diagnostic: step_artifact.StructuredOutputRetryDiagnostic,
 ) -> String {
   let format = workflow_dag.structured_output_format_to_string(spec.format)
-  let required_keys =
-    workflow_dag.structured_output_schema_required_keys(spec.schema)
+  let workflow_dag.StructuredObjectSchema(required_keys) = spec.schema
   let required_keys_text = case required_keys {
     [] -> "(no additional required keys)"
     _ -> string.join(required_keys, with: ", ")
-  }
-  let validator_text = case spec.validator {
-    None -> "(none)"
-    Some(validator) ->
-      workflow_dag.structured_output_validator_to_string(validator)
   }
   let failure_code = case diagnostic.failure_code {
     Some(code) -> code
@@ -127,35 +120,45 @@ pub fn retry_prompt(
   <> "`.\n\n"
   <> "The previous attempt did not produce valid retained "
   <> format
-  <> " structured output. This is the only automatic retry for this lane-output failure.\n"
+  <> " structured output. This is the only automatic retry for this structured-output failure.\n"
   <> "Failure code: "
   <> failure_code
   <> "\nFailure summary: "
   <> log.truncate(diagnostic.message, 500)
   <> "\n\n"
-  <> "Return JSON only: no Markdown, code fences, commentary, transcripts, or prior full responses.\n"
+  <> source_retry_instruction(spec)
   <> "Use retained local context instead of large inline context:\n"
   <> "- run root: "
   <> run_root
   <> "\n- workspace: "
   <> workspace_path
-  <> "\n- native review inputs, when present: "
-  <> run_root
-  <> "/artifacts/review/prepare_review\n"
-  <> native_review_lane_retry_hint(step_id, spec.artifact_name)
-  <> "Structured-output artifact name: "
+  <> "\nStructured-output artifact name: "
   <> spec.artifact_name
   <> "\nRequired top-level keys: "
   <> required_keys_text
-  <> "\nNamed validator: "
-  <> validator_text
-  <> "\nRemote mutations are forbidden; set remote_mutations to \"none\" when the artifact schema includes it."
 }
 
-fn is_native_review_lane_step(step_id: String, artifact_name: String) -> Bool {
-  case native_review_lane_id(step_id, artifact_name) {
-    Some(_) -> True
-    None -> False
+fn source_retry_instruction(spec: workflow_dag.StructuredOutputSpec) -> String {
+  case spec.source {
+    structured_output_source.FinalResponseSource ->
+      "Return JSON only: no Markdown, code fences, commentary, transcripts, or prior full responses.\n"
+    structured_output_source.PiToolCallSource(
+      tool_name,
+      require_single,
+      reject_sibling_tool_calls,
+    ) ->
+      "Call the Pi tool `"
+      <> tool_name
+      <> "` with the structured artifact as object-valued JSON arguments. Do not submit final assistant JSON instead.\n"
+      <> case require_single {
+        True -> "Submit exactly one `" <> tool_name <> "` call.\n"
+        False -> "Submit the configured Pi tool call.\n"
+      }
+      <> case reject_sibling_tool_calls {
+        True ->
+          "Do not include sibling tool calls in the same assistant tool-call batch.\n"
+        False -> ""
+      }
   }
 }
 
@@ -167,36 +170,5 @@ fn is_transient_pi_termination(reason: error.AgentRunnerError) -> Bool {
       && string.contains(normalized, "terminated")
     }
     _ -> False
-  }
-}
-
-fn native_review_lane_retry_hint(
-  step_id: String,
-  artifact_name: String,
-) -> String {
-  case native_review_lane_id(step_id, artifact_name) {
-    Some(lane_id) ->
-      "Native review lane id: "
-      <> lane_id
-      <> ". Produce a review_lane_draft artifact for that lane.\n"
-    None ->
-      "If this is a native review lane, re-read the retained review artifacts and produce the lane draft JSON required by the original lane contract.\n"
-  }
-}
-
-fn native_review_lane_id(
-  step_id: String,
-  artifact_name: String,
-) -> Option(String) {
-  case step_id, artifact_name {
-    "lane_correctness", _ -> Some("correctness")
-    "lane_test_quality", _ -> Some("test-quality")
-    "lane_idioms_maintainability", _ -> Some("idioms-maintainability")
-    "lane_security_performance", _ -> Some("security-performance")
-    _, "correctness_draft" -> Some("correctness")
-    _, "test_quality_draft" -> Some("test-quality")
-    _, "idioms_maintainability_draft" -> Some("idioms-maintainability")
-    _, "security_performance_draft" -> Some("security-performance")
-    _, _ -> None
   }
 }

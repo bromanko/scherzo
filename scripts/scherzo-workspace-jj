@@ -18,11 +18,23 @@ USAGE = """Usage:
   scherzo-workspace-jj lifecycle <create|before-step|after-step|remove>
   scherzo-workspace-jj status --human
   scherzo-workspace-jj diff --human
+  scherzo-workspace-jj diff --json
   scherzo-workspace-jj changed-files --json
+  scherzo-workspace-jj baseline --json
+  scherzo-workspace-jj refresh-base --stage <stage> [--target <driver-ref>] --json
+  scherzo-workspace-jj publish-change --kind <kind> --title-file <path> --body-file <path> --branch-prefix <prefix> --base <driver-ref> [--target-branch <branch>] [--target-pr <number>] [--allow-no-changes <true|false>] --json
   scherzo-workspace-jj assert-only --path <relative-file>
 """
 
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+REFRESH_STAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+STATUS_MAP = {
+    "A": "added",
+    "M": "modified",
+    "D": "deleted",
+    "R": "renamed",
+    "C": "modified",
+}
 
 
 def usage_error(message: str | None = None) -> None:
@@ -35,6 +47,29 @@ def usage_error(message: str | None = None) -> None:
 def fail(message: str) -> None:
     print(f"scherzo-workspace-jj: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def json_dump(value: dict[str, object]) -> None:
+    print(json.dumps(value, separators=(",", ":")))
+
+
+def json_failure(
+    *,
+    status: str,
+    failure_code: str,
+    message: str,
+    exit_code: int = 1,
+    **extra: object,
+) -> None:
+    payload: dict[str, object] = {
+        "version": 1,
+        "status": status,
+        "failure_code": failure_code,
+        "message": message,
+    }
+    payload.update(extra)
+    json_dump(payload)
+    raise SystemExit(exit_code)
 
 
 def safe_resolve(raw: str) -> Path:
@@ -66,23 +101,23 @@ def helper_path() -> Path:
     fail("could not find sibling scherzo-jj-workspace helper")
 
 
-def validate_relative_path(value: str) -> str:
+def validate_relative_path(value: str, *, usage_label: str = "path") -> str:
     if value == "":
-        usage_error("assert-only path must not be empty")
+        usage_error(f"{usage_label} must not be empty")
     if value == ".":
-        usage_error("assert-only path must name a file, not .")
+        usage_error(f"{usage_label} must name a file, not .")
     if Path(value).is_absolute() or WINDOWS_ABSOLUTE_RE.match(value):
-        usage_error("assert-only path must be relative to the workspace root")
+        usage_error(f"{usage_label} must be relative to the workspace root")
     segments = value.replace("\\", "/").split("/")
     if any(segment == ".." for segment in segments):
-        usage_error("assert-only path must not contain .. segments")
+        usage_error(f"{usage_label} must not contain .. segments")
     return value
 
 
 def parse_path_argument(args: list[str]) -> str:
     if len(args) != 2 or args[0] != "--path":
         usage_error("assert-only requires --path <relative-file>")
-    return validate_relative_path(args[1])
+    return validate_relative_path(args[1], usage_label="assert-only path")
 
 
 def require_explicit_workspace_path(operation: str) -> None:
@@ -116,9 +151,13 @@ def lifecycle(args: list[str]) -> None:
     usage_error(f"unsupported lifecycle operation: {operation}")
 
 
-def run_jj_stream(root: Path, args: list[str]) -> None:
+def ensure_workspace(root: Path) -> None:
     if not root.is_dir():
         fail("workspace directory does not exist")
+
+
+def run_jj_stream(root: Path, args: list[str]) -> None:
+    ensure_workspace(root)
     try:
         status = subprocess.call(["jj", *args], cwd=str(root))
     except FileNotFoundError:
@@ -126,11 +165,10 @@ def run_jj_stream(root: Path, args: list[str]) -> None:
     raise SystemExit(0 if status == 0 else 1)
 
 
-def run_jj_capture(root: Path, args: list[str]) -> str:
-    if not root.is_dir():
-        fail("workspace directory does not exist")
+def run_jj_proc(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    ensure_workspace(root)
     try:
-        completed = subprocess.run(
+        return subprocess.run(
             ["jj", *args],
             cwd=str(root),
             text=True,
@@ -140,6 +178,10 @@ def run_jj_capture(root: Path, args: list[str]) -> str:
         )
     except FileNotFoundError:
         fail("jj executable not found")
+
+
+def run_jj_capture(root: Path, args: list[str]) -> str:
+    completed = run_jj_proc(root, args)
     if completed.returncode != 0:
         if completed.stderr:
             sys.stderr.write(completed.stderr[:4000])
@@ -149,25 +191,97 @@ def run_jj_capture(root: Path, args: list[str]) -> str:
     return completed.stdout
 
 
-def changed_files(root: Path) -> list[str]:
+def run_jj_capture_json(root: Path, args: list[str], failure_code: str) -> str:
+    completed = run_jj_proc(root, args)
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "jj command failed").strip()
+        json_failure(
+            status="command_failed",
+            failure_code=failure_code,
+            message=message[:4000] or "jj command failed",
+        )
+    return completed.stdout
+
+
+def clean_lines(output: str) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for line in output.splitlines():
+        path = line.rstrip("\r").strip()
+        if path and path not in seen:
+            values.append(path)
+            seen.add(path)
+    return values
+
+
+def changed_paths(root: Path) -> list[str]:
     output = run_jj_capture(
         root,
         ["diff", "--from", "@-", "--to", "@", "--name-only", "--color=never"],
     )
-    paths: set[str] = set()
-    for line in output.splitlines():
-        path = line.rstrip("\r")
-        if path != "":
-            paths.add(path)
-    return sorted(paths)
+    return sorted(clean_lines(output))
 
 
-def print_json(paths: list[str]) -> None:
-    print(json.dumps(paths, separators=(",", ":")))
+def parse_summary_records(summary: str) -> dict[str, dict[str, str]]:
+    records: dict[str, dict[str, str]] = {}
+    for raw_line in summary.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        token, rest = parts[0], parts[1].strip()
+        status = STATUS_MAP.get(token[:1], "modified")
+        record: dict[str, str]
+        if status == "renamed":
+            old_path = ""
+            new_path = rest
+            if " -> " in rest:
+                old_path, new_path = rest.split(" -> ", 1)
+            elif "=>" in rest:
+                old_path, new_path = rest.split("=>", 1)
+                old_path = old_path.strip("{} ")
+                new_path = new_path.strip("{} ")
+            record = {"path": new_path.strip(), "status": "renamed"}
+            if old_path.strip():
+                record["old_path"] = old_path.strip()
+        else:
+            record = {"path": rest, "status": status}
+        path = record.get("path", "").strip()
+        if path:
+            records[path] = record
+    return records
+
+
+def changed_file_records(root: Path) -> list[dict[str, str]]:
+    paths = changed_paths(root)
+    summary_proc = run_jj_proc(
+        root,
+        ["diff", "--summary", "--from", "@-", "--to", "@", "--color=never"],
+    )
+    summary_records = (
+        parse_summary_records(summary_proc.stdout) if summary_proc.returncode == 0 else {}
+    )
+    records: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for path in paths:
+        record = summary_records.get(path, {"path": path, "status": "modified"})
+        records.append(record)
+        seen.add(path)
+    for path, record in summary_records.items():
+        if path not in seen:
+            records.append(record)
+    records.sort(key=lambda record: record.get("path", ""))
+    return records
+
+
+def print_changed_files_json(root: Path) -> None:
+    json_dump({"version": 1, "files": changed_file_records(root)})
 
 
 def assert_only(root: Path, target: str) -> None:
-    files = changed_files(root)
+    files = [record["path"] for record in changed_file_records(root)]
     if files == [target]:
         return
     actual = ", ".join(files) if files else "none"
@@ -178,6 +292,455 @@ def assert_only(root: Path, target: str) -> None:
     raise SystemExit(1)
 
 
+def revision_value(root: Path, revision: str, template: str, *, default: str = "") -> str:
+    proc = run_jj_proc(
+        root,
+        ["log", "-r", revision, "--no-graph", "-T", template, "--color=never"],
+    )
+    if proc.returncode != 0:
+        return default
+    return proc.stdout.strip() or default
+
+
+def revision_commit_ids(root: Path, revision: str) -> list[str] | None:
+    proc = run_jj_proc(
+        root,
+        ["log", "-r", revision, "--no-graph", "-T", "commit_id ++ \"\\n\"", "--color=never"],
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return clean_lines(proc.stdout)
+
+
+def current_parent_commit_ids(root: Path) -> list[str]:
+    return revision_commit_ids(root, "@-") or []
+
+
+def has_unresolved_conflicts(root: Path, revision: str = "@") -> bool:
+    proc = run_jj_proc(
+        root,
+        [
+            "log",
+            "-r",
+            f"conflicts() & ({revision})",
+            "--no-graph",
+            "-T",
+            "change_id.short()",
+            "--color=never",
+        ],
+    )
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def normalize_conflict_file_path(value: str) -> str:
+    return re.sub(r"\s+\d+-sided conflict(?:\s+.*)?$", "", value.strip())
+
+
+def conflict_files(root: Path) -> list[str]:
+    proc = run_jj_proc(root, ["resolve", "--list", "--color=never"])
+    if proc.returncode == 0:
+        return sorted(
+            path
+            for path in [normalize_conflict_file_path(line) for line in proc.stdout.splitlines()]
+            if path
+        )
+    if "No conflicts found" in proc.stdout or "No conflicts found" in proc.stderr:
+        return []
+    return []
+
+
+def baseline_json(root: Path) -> None:
+    records = changed_file_records(root)
+    json_dump({
+        "version": 1,
+        "baseline_id": revision_value(root, "@-", "change_id", default="unknown-baseline"),
+        "workspace_revision_id": revision_value(root, "@", "commit_id", default="unknown-revision"),
+        "change_id": revision_value(root, "@", "change_id.short()", default="unknown-change"),
+        "dirty": bool(records),
+    })
+
+
+def diff_json(root: Path) -> None:
+    text = run_jj_capture_json(
+        root,
+        ["diff", "--from", "@-", "--to", "@", "--git", "--color=never"],
+        "diff_failed",
+    )
+    json_dump({"version": 1, "format": "unified", "text": text, "truncated": False})
+
+
+def configured_base_ref() -> tuple[str, str, str]:
+    base = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
+    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    return base, remote, f"{base}@{remote}"
+
+
+def parse_refresh_args(args: list[str]) -> tuple[str, str | None]:
+    stage: str | None = None
+    target: str | None = None
+    saw_json = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--stage" and index + 1 < len(args):
+            stage = args[index + 1]
+            index += 2
+        elif arg == "--target" and index + 1 < len(args):
+            target = args[index + 1]
+            index += 2
+        elif arg == "--json":
+            saw_json = True
+            index += 1
+        else:
+            usage_error(f"unsupported refresh-base argument: {arg}")
+    if not saw_json:
+        usage_error("refresh-base requires --json")
+    if not stage or not REFRESH_STAGE_RE.fullmatch(stage):
+        usage_error("refresh-base requires safe --stage <stage>")
+    if target is not None and target.strip() == "":
+        usage_error("refresh-base --target must not be empty")
+    return stage, target
+
+
+def fetch_ref(root: Path, base: str, remote: str) -> tuple[bool, str]:
+    proc = run_jj_proc(root, ["git", "fetch", "--remote", remote, "--branch", base])
+    text = (proc.stderr or proc.stdout or "").strip()
+    return proc.returncode == 0, text
+
+
+def refresh_base(root: Path, args: list[str]) -> None:
+    stage, target = parse_refresh_args(args)
+    base, remote, remote_base = configured_base_ref()
+    base_ref = base
+    base_revision = remote_base
+    before_revision = revision_value(root, "@", "commit_id", default="unknown-before")
+
+    if target:
+        base_ref = target
+        base_revision = target
+        if "@" in target:
+            branch, target_remote = target.rsplit("@", 1)
+            if branch and target_remote:
+                ok, message = fetch_ref(root, branch, target_remote)
+                if not ok:
+                    json_failure(
+                        status="fetch_failed",
+                        failure_code="fetch_failed",
+                        message=message or f"could not fetch {target}",
+                        stage=stage,
+                        base_ref=base_ref,
+                        base_revision=base_revision,
+                        before_revision=before_revision,
+                        after_revision=before_revision,
+                        conflict_files=[],
+                    )
+    else:
+        ok, message = fetch_ref(root, base, remote)
+        if not ok:
+            json_failure(
+                status="fetch_failed",
+                failure_code="fetch_failed",
+                message=message or f"could not fetch {base} from {remote}",
+                stage=stage,
+                base_ref=base_ref,
+                base_revision=base_revision,
+                before_revision=before_revision,
+                after_revision=before_revision,
+                conflict_files=conflict_files(root),
+            )
+        if revision_commit_ids(root, remote_base) is None:
+            if revision_commit_ids(root, base) is None:
+                json_failure(
+                    status="base_not_found",
+                    failure_code="base_not_found",
+                    message=f"could not find base revision {remote_base} or {base}",
+                    stage=stage,
+                    base_ref=base_ref,
+                    base_revision=remote_base,
+                    before_revision=before_revision,
+                    after_revision=before_revision,
+                    conflict_files=conflict_files(root),
+                )
+            base_revision = base
+
+    base_commits = revision_commit_ids(root, base_revision)
+    if base_commits is None:
+        json_failure(
+            status="base_not_found",
+            failure_code="base_not_found",
+            message=f"could not find base revision {base_revision}",
+            stage=stage,
+            base_ref=base_ref,
+            base_revision=base_revision,
+            before_revision=before_revision,
+            after_revision=before_revision,
+            conflict_files=conflict_files(root),
+        )
+
+    parent_commits = current_parent_commit_ids(root)
+    if len(base_commits) == 1 and parent_commits == base_commits:
+        json_dump({
+            "version": 1,
+            "status": "fresh",
+            "stage": stage,
+            "base_ref": base_ref,
+            "base_revision": base_revision,
+            "before_revision": before_revision,
+            "after_revision": revision_value(root, "@", "commit_id", default=before_revision),
+            "conflict_files": [],
+        })
+        return
+
+    proc = run_jj_proc(root, ["rebase", "-r", "@", "-d", base_revision, "--color=never"])
+    files = conflict_files(root) if has_unresolved_conflicts(root) else []
+    after_revision = revision_value(root, "@", "commit_id", default=before_revision)
+    if files:
+        json_failure(
+            status="conflicts",
+            failure_code="conflicts",
+            message="refresh-base left unresolved conflicts",
+            exit_code=20,
+            stage=stage,
+            base_ref=base_ref,
+            base_revision=base_revision,
+            before_revision=before_revision,
+            after_revision=after_revision,
+            conflict_files=files,
+        )
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout or "could not rebase workspace").strip()
+        json_failure(
+            status="rebase_failed",
+            failure_code="rebase_failed",
+            message=message[:4000],
+            stage=stage,
+            base_ref=base_ref,
+            base_revision=base_revision,
+            before_revision=before_revision,
+            after_revision=after_revision,
+            conflict_files=[],
+        )
+    json_dump({
+        "version": 1,
+        "status": "rebased_clean",
+        "stage": stage,
+        "base_ref": base_ref,
+        "base_revision": base_revision,
+        "before_revision": before_revision,
+        "after_revision": after_revision,
+        "conflict_files": [],
+    })
+
+
+def parse_publish_args(args: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {"allow-no-changes": "false"}
+    saw_json = False
+    with_value = {
+        "--kind",
+        "--title-file",
+        "--body-file",
+        "--branch-prefix",
+        "--base",
+        "--target-branch",
+        "--target-pr",
+        "--allow-no-changes",
+    }
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--json":
+            saw_json = True
+            index += 1
+        elif arg in with_value and index + 1 < len(args):
+            values[arg[2:]] = args[index + 1]
+            index += 2
+        else:
+            usage_error(f"unsupported publish-change argument: {arg}")
+    for key in ["kind", "title-file", "body-file", "branch-prefix", "base"]:
+        if not values.get(key):
+            usage_error(f"publish-change requires --{key}")
+    if not saw_json:
+        usage_error("publish-change requires --json")
+    if values.get("allow-no-changes") not in {"true", "false"}:
+        usage_error("--allow-no-changes must be true or false")
+    if values["kind"] not in {"implementation", "execplan", "execplan-revision", "merge-conflict"}:
+        usage_error("unsupported publish-change kind")
+    return values
+
+
+def sanitize_ref_part(value: str) -> str:
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9._-]+", "-", value)
+    value = re.sub(r"-+", "-", value).strip("-._")
+    return value or "change"
+
+
+def read_required_file(path: str, label: str) -> str:
+    relative = validate_relative_path(path, usage_label=label)
+    full = capability_root() / relative
+    try:
+        return full.read_text(encoding="utf-8")
+    except OSError as exc:
+        usage_error(f"could not read {label}: {exc}")
+
+
+def remote_url(root: Path, remote: str) -> str | None:
+    proc = run_jj_proc(root, ["git", "remote", "list", "--color=never"])
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == remote:
+            return parts[1]
+    return None
+
+
+def owner_repo_from_url(url: str) -> str | None:
+    if url.startswith("https://github.com/"):
+        value = url.removeprefix("https://github.com/")
+    elif url.startswith("git@github.com:"):
+        value = url.removeprefix("git@github.com:")
+    elif url.startswith("ssh://git@github.com/"):
+        value = url.removeprefix("ssh://git@github.com/")
+    else:
+        return None
+    value = value.removesuffix(".git")
+    parts = value.split("/")
+    if len(parts) >= 2 and parts[0] and parts[1]:
+        return f"{parts[0]}/{parts[1]}"
+    return None
+
+
+def default_repo(root: Path, remote: str) -> str:
+    explicit = os.environ.get("SCHERZO_PR_REPO", "").strip()
+    if explicit:
+        return explicit
+    url = remote_url(root, remote)
+    if not url:
+        json_failure(status="invalid_request", failure_code="repo_not_found", message=f"could not find jj git remote: {remote}")
+    repo = owner_repo_from_url(url)
+    if not repo:
+        json_failure(status="invalid_request", failure_code="repo_not_found", message=f"could not infer GitHub owner/repo from remote URL: {url}")
+    return repo
+
+
+def run_capture(args: list[str], root: Path) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            args,
+            cwd=str(root),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError:
+        json_failure(status="invalid_request", failure_code="command_not_found", message=f"required command not found: {args[0]}")
+
+
+def publish_change(root: Path, args: list[str]) -> None:
+    values = parse_publish_args(args)
+    title = read_required_file(values["title-file"], "title-file").strip().splitlines()
+    title_text = title[0].strip() if title else "Scherzo change"
+    _body = read_required_file(values["body-file"], "body-file")
+    records = changed_file_records(root)
+    allow_no_changes = values["allow-no-changes"] == "true"
+    base = values["base"]
+    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    repo = default_repo(root, remote)
+
+    if not records and allow_no_changes:
+        branch = values.get("target-branch") or ""
+        url = ""
+        if values.get("target-pr"):
+            proc = run_capture(
+                ["gh", "pr", "view", values["target-pr"], "--repo", repo, "--json", "url", "--jq", ".url"],
+                root,
+            )
+            url = proc.stdout.strip() if proc.returncode == 0 else ""
+        json_dump({
+            "version": 1,
+            "status": "unchanged",
+            "url": url,
+            "branch": branch,
+            "base_ref": base,
+            "base_revision": base,
+            "head_revision": revision_value(root, "@", "commit_id", default=""),
+            "change_id": revision_value(root, "@", "change_id.short()", default=""),
+            "created": False,
+            "updated": False,
+        })
+        return
+    if not records:
+        json_failure(status="nothing_to_publish", failure_code="nothing_to_publish", message="no changed files to publish")
+
+    change_id = revision_value(root, "@", "change_id.short()", default="change")
+    branch = values.get("target-branch") or f"{values['branch-prefix'].rstrip('/')}/{sanitize_ref_part(title_text)[:60]}-{change_id}"
+    describe = run_jj_proc(root, ["describe", "-m", title_text])
+    if describe.returncode != 0:
+        json_failure(status="publication_failed", failure_code="describe_failed", message=(describe.stderr or describe.stdout or "jj describe failed").strip())
+    bookmark = run_jj_proc(root, ["bookmark", "set", branch, "--revision", "@"])
+    if bookmark.returncode != 0:
+        json_failure(status="publication_failed", failure_code="bookmark_failed", message=(bookmark.stderr or bookmark.stdout or "jj bookmark failed").strip())
+    push_args = ["git", "push", "--remote", remote, "--bookmark", branch]
+    if not values.get("target-branch"):
+        push_args.append("--allow-new")
+    push = run_jj_proc(root, push_args)
+    if push.returncode != 0:
+        json_failure(status="remote_rejected", failure_code="push_failed", message=(push.stderr or push.stdout or "jj git push failed").strip())
+
+    pr_url = ""
+    created = False
+    updated = bool(values.get("target-branch") or values.get("target-pr"))
+    if values.get("target-pr"):
+        view = run_capture(["gh", "pr", "view", values["target-pr"], "--repo", repo, "--json", "url", "--jq", ".url"], root)
+        if view.returncode == 0:
+            pr_url = view.stdout.strip()
+    if not pr_url:
+        view = run_capture(["gh", "pr", "view", branch, "--repo", repo, "--json", "url", "--jq", ".url"], root)
+        if view.returncode == 0:
+            pr_url = view.stdout.strip()
+    if not pr_url and not values.get("target-pr"):
+        gh_base = base.split("@", 1)[0]
+        create = run_capture(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                repo,
+                "--base",
+                gh_base,
+                "--head",
+                branch,
+                "--title",
+                title_text,
+                "--body-file",
+                values["body-file"],
+            ],
+            root,
+        )
+        if create.returncode == 0:
+            pr_url = create.stdout.strip()
+            created = True
+            updated = False
+    if not pr_url:
+        json_failure(status="publication_failed", failure_code="pr_url_missing", message=f"failed to create or locate hosted review URL for {branch}")
+
+    json_dump({
+        "version": 1,
+        "status": "published" if created else "updated",
+        "url": pr_url,
+        "branch": branch,
+        "base_ref": base,
+        "base_revision": base,
+        "head_revision": revision_value(root, "@", "commit_id", default=""),
+        "change_id": change_id,
+        "created": created,
+        "updated": updated,
+    })
+
+
 def main(argv: list[str]) -> None:
     if not argv:
         usage_error()
@@ -186,30 +749,46 @@ def main(argv: list[str]) -> None:
         lifecycle(rest)
         return
 
+    root = capability_root()
+
     if command == "status":
         if rest != ["--human"]:
             usage_error("status requires --human")
-        run_jj_stream(capability_root(), ["status", "--color=never"])
+        run_jj_stream(root, ["status", "--color=never"])
         return
 
     if command == "diff":
-        if rest != ["--human"]:
-            usage_error("diff requires --human")
-        run_jj_stream(
-            capability_root(),
-            ["diff", "--from", "@-", "--to", "@", "--color=never"],
-        )
-        return
+        if rest == ["--human"]:
+            run_jj_stream(root, ["diff", "--from", "@-", "--to", "@", "--color=never"])
+            return
+        if rest == ["--json"]:
+            diff_json(root)
+            return
+        usage_error("diff requires --human or --json")
 
     if command == "changed-files":
         if rest != ["--json"]:
             usage_error("changed-files requires --json")
-        print_json(changed_files(capability_root()))
+        print_changed_files_json(root)
+        return
+
+    if command == "baseline":
+        if rest != ["--json"]:
+            usage_error("baseline requires --json")
+        baseline_json(root)
+        return
+
+    if command == "refresh-base":
+        refresh_base(root, rest)
+        return
+
+    if command == "publish-change":
+        publish_change(root, rest)
         return
 
     if command == "assert-only":
         target = parse_path_argument(rest)
-        assert_only(capability_root(), target)
+        assert_only(root, target)
         return
 
     usage_error(f"unsupported command: {command}")

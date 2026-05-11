@@ -2368,8 +2368,7 @@ fn agent_failure_result(
       orchestrator.artifact_limits,
     )
   case
-    workflow_structured_retry.transient_native_lane_agent_failure_diagnostic(
-      step.id,
+    workflow_structured_retry.transient_agent_failure_diagnostic(
       structured_output_spec,
       failure,
       secrets,
@@ -2469,11 +2468,9 @@ fn structured_output_retry_diagnostic(
 
 fn is_structured_output_validation_failure(code: Option(String)) -> Bool {
   case code {
-    Some("structured_output_missing") -> True
-    Some("structured_output_truncated") -> True
-    Some("structured_output_invalid_json") -> True
-    Some("structured_output_schema_invalid") -> True
-    _ -> False
+    Some("structured_output_artifact_write_failed") -> False
+    Some(value) -> string.starts_with(value, "structured_output_")
+    None -> False
   }
 }
 
@@ -2700,13 +2697,11 @@ fn agent_success_with_structured_output(
 ) -> step_artifact.StepArtifact {
   let base = step_artifact.from_agent_success(step.id, success, secrets, limits)
   let format = workflow_dag.structured_output_format_to_string(spec.format)
-  let required_keys =
-    workflow_dag.structured_output_schema_required_keys(spec.schema)
+  let workflow_dag.StructuredObjectSchema(required_keys) = spec.schema
   case
-    structured_output.validate_final_response(
+    structured_output.validate_agent_result(
       spec,
-      success.result.structured_response,
-      success.result.structured_response_truncated,
+      success.result,
       secrets,
       structured_output.default_validator_runner(
         context.config_dir,
@@ -2788,6 +2783,8 @@ fn write_structured_output_artifact(
           sha256: written.sha256,
           bytes: written.bytes,
           schema_status: "valid",
+          source_type: structured_output.source_type_to_string(spec.source),
+          source_tool_name: structured_output.source_tool_name(spec.source),
           retry: None,
         ),
       )

@@ -397,6 +397,55 @@ def source_from_jj(from_rev: str, to_rev: str) -> tuple[str, dict[str, Any]]:
     }
 
 
+def workspace_driver_command() -> str | None:
+    value = os.environ.get("SCHERZO_WORKSPACE_DRIVER", "").strip()
+    return value or None
+
+
+def run_workspace_driver_json(args: list[str]) -> dict[str, Any]:
+    driver = workspace_driver_command()
+    if not driver:
+        raise ReviewError("SCHERZO_WORKSPACE_DRIVER is required for driver-backed review input")
+    proc = subprocess.run(
+        [driver, *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        payload = json.loads(proc.stdout) if proc.stdout.strip() else None
+    except json.JSONDecodeError as exc:
+        raise ReviewError(f"workspace driver returned malformed JSON for {' '.join(args)}: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise ReviewError(f"workspace driver {' '.join(args)} must return a JSON object with version=1")
+    if proc.returncode != 0:
+        raise ReviewError(str(payload.get("message") or "workspace driver command failed"))
+    return payload
+
+
+def source_from_workspace_driver() -> tuple[str, dict[str, Any]]:
+    diff_payload = run_workspace_driver_json(["diff", "--json"])
+    changed_payload = run_workspace_driver_json(["changed-files", "--json"])
+    text = diff_payload.get("text")
+    truncated = diff_payload.get("truncated")
+    if not isinstance(text, str) or not isinstance(truncated, bool):
+        raise ReviewError("workspace driver diff JSON must include text and truncated fields")
+    files = changed_payload.get("files")
+    if not isinstance(files, list):
+        raise ReviewError("workspace driver changed-files JSON must contain a files list")
+    changed_files = []
+    for item in files:
+        if isinstance(item, dict) and isinstance(item.get("path"), str):
+            changed_files.append(item.get("path"))
+    return text, {
+        "kind": "workspace_driver",
+        "label": "workspace driver diff",
+        "driver": workspace_driver_command(),
+        "diff_truncated": truncated,
+        "changed_files": changed_files,
+    }
+
+
 def source_from_pr(pr: str, repo: str | None) -> tuple[str, dict[str, Any]]:
     require_command("gh")
     args = ["gh", "pr", "diff", pr, "--color=never"]
@@ -2181,6 +2230,8 @@ def diff_source_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]
         diff, source = source_from_diff_file(Path(args.diff_file))
     elif args.pr:
         diff, source = source_from_pr(args.pr, args.repo)
+    elif workspace_driver_command() and args.from_rev == "@-" and args.to_rev == "@":
+        diff, source = source_from_workspace_driver()
     else:
         diff, source = source_from_jj(args.from_rev, args.to_rev)
 
