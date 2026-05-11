@@ -39,6 +39,16 @@ if [[ -n "${FAKE_PI_ARGV_LOG:-}" ]]; then
   } >> "$FAKE_PI_ARGV_LOG"
 fi
 
+if [[ -n "${FAKE_PI_ENV_LOG:-}" ]]; then
+  {
+    printf 'SCHERZO_WORKSPACE_PROFILE=%s\n' "${SCHERZO_WORKSPACE_PROFILE:-}"
+    printf 'SCHERZO_WORKSPACE_DRIVER=%s\n' "${SCHERZO_WORKSPACE_DRIVER:-}"
+    printf 'SCHERZO_WORKSPACE_CAPABILITIES=%s\n' "${SCHERZO_WORKSPACE_CAPABILITIES:-}"
+    printf 'SCHERZO_WORKSPACE_NAME=%s\n' "${SCHERZO_WORKSPACE_NAME:-}"
+    printf 'SCHERZO_WORKSPACE_PATH=%s\n' "${SCHERZO_WORKSPACE_PATH:-}"
+  } >> "$FAKE_PI_ENV_LOG"
+fi
+
 session_file_for_state() {
   if [[ -n "${FAKE_PI_SESSION_FILE_MISMATCH:-}" ]]; then
     printf '%s' "$FAKE_PI_SESSION_FILE_MISMATCH"

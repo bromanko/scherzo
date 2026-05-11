@@ -11,6 +11,7 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
+import scherzo/path
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
@@ -213,6 +214,15 @@ fn reset_dir(path: String) -> Nil {
   let _ = simplifile.delete(path)
   let assert Ok(Nil) = simplifile.create_directory_all(path)
   Nil
+}
+
+fn fake_pi() -> String {
+  let assert Ok(abs) = path.absolute("test/fixtures/fake_pi_rpc.sh")
+  abs
+}
+
+fn shell_quote(value: String) -> String {
+  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
 
 fn deps(
@@ -664,6 +674,70 @@ pub fn command_step_receives_workspace_driver_context_from_resolved_profile_test
   assert receive_event(subject) == "prepare:run:main:"
   assert receive_event(subject)
     == "driver_env:dogfood-jj|scripts/scherzo-workspace-jj|assert-only changed-files"
+}
+
+pub fn default_agent_step_receives_workspace_driver_environment_test() {
+  let root = "test/tmp/workflow-run-agent-driver-env"
+  reset_dir(root)
+  let assert Ok(env_log) = path.absolute(root <> "/pi-env.log")
+  let hooks = dag_hooks_with_timeout(1000)
+  let base = orchestrator()
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..base,
+      effective: config_types.EffectiveConfig(
+        ..base.effective,
+        workspace: config_types.WorkspaceConfig(root: root <> "/workspaces"),
+        pi: config_types.PiConfig(
+          ..base.effective.pi,
+          command: "FAKE_PI_ENV_LOG="
+            <> shell_quote(env_log)
+            <> " "
+            <> shell_quote(fake_pi()),
+          compatibility_probe: False,
+        ),
+      ),
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "dogfood-jj",
+        profiles: dict.from_list([
+          #(
+            "dogfood-jj",
+            workspace_profile_with_driver(
+              "dogfood-jj",
+              hooks,
+              config_types.ConfiguredWorkspaceHooks,
+              "scripts/scherzo-workspace-jj",
+              [config_types.WorkspaceAssertOnly],
+            ),
+          ),
+        ]),
+      ),
+    )
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nsteps:\n  - id: implement\n    kind: agent\n    prompt: check env\n    workspace: main\n",
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.default_dependencies(),
+    )
+
+  let assert Ok(log) = simplifile.read(env_log)
+  assert string.contains(log, "SCHERZO_WORKSPACE_PROFILE=dogfood-jj")
+  assert string.contains(
+    log,
+    "SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-jj",
+  )
+  assert string.contains(log, "SCHERZO_WORKSPACE_CAPABILITIES=assert-only")
+  assert string.contains(log, "SCHERZO_WORKSPACE_NAME=main")
+  assert string.contains(log, "SCHERZO_WORKSPACE_PATH=")
 }
 
 pub fn workspace_driver_context_resolves_repo_root_placeholder_test() {

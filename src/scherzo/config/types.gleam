@@ -564,3 +564,87 @@ pub type EffectiveConfig {
     linear_commands: LinearCommandConfig,
   )
 }
+
+pub fn with_pi_env(
+  config: EffectiveConfig,
+  env: List(#(String, String)),
+) -> EffectiveConfig {
+  case env {
+    [] -> config
+    _ ->
+      EffectiveConfig(
+        ..config,
+        pi: PiConfig(
+          ..config.pi,
+          command: shell_command_with_env(config.pi.command, env),
+          argv_command: argv_command_with_env(config.pi.argv_command, env),
+        ),
+      )
+  }
+}
+
+fn shell_command_with_env(
+  command: String,
+  env: List(#(String, String)),
+) -> String {
+  case env {
+    [] -> command
+    _ -> shell_export_lines(env) <> command
+  }
+}
+
+fn shell_export_lines(env: List(#(String, String))) -> String {
+  case env {
+    [] -> ""
+    [#(key, value), ..rest] ->
+      "export "
+      <> key
+      <> "="
+      <> shell_quote(value)
+      <> "\n"
+      <> shell_export_lines(rest)
+  }
+}
+
+fn shell_quote(value: String) -> String {
+  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
+}
+
+fn argv_command_with_env(
+  command: Option(PiArgvCommand),
+  env: List(#(String, String)),
+) -> Option(PiArgvCommand) {
+  case command {
+    None -> None
+    Some(command) ->
+      Some(PiArgvCommand(..command, env: merge_env(command.env, env)))
+  }
+}
+
+fn merge_env(
+  base: List(#(String, String)),
+  override: List(#(String, String)),
+) -> List(#(String, String)) {
+  list.append(remove_env_keys(base, env_keys(override)), override)
+}
+
+fn remove_env_keys(
+  env: List(#(String, String)),
+  keys: List(String),
+) -> List(#(String, String)) {
+  case env {
+    [] -> []
+    [#(key, _) as entry, ..rest] ->
+      case list.contains(keys, key) {
+        True -> remove_env_keys(rest, keys)
+        False -> [entry, ..remove_env_keys(rest, keys)]
+      }
+  }
+}
+
+fn env_keys(env: List(#(String, String))) -> List(String) {
+  case env {
+    [] -> []
+    [#(key, _), ..rest] -> [key, ..env_keys(rest)]
+  }
+}

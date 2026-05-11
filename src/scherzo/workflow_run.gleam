@@ -274,7 +274,7 @@ pub fn default_dependencies() -> Dependencies {
         issue,
         prompt_mode,
         attempt_context,
-        effective,
+        config_types.with_pi_env(effective, step_command_env(context)),
         tracker_client,
         fn(_, update) { emit_update(update) },
         command_subject,
