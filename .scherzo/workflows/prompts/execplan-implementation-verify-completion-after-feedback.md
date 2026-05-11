@@ -1,9 +1,9 @@
 Verify ExecPlan completion after the plan-feedback repair chance for Scherzo's `workflow:execplan-implementation` workflow on Linear issue {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
-{{ issue.description }}
+Issue URL:
+{{ issue.url }}
 
-Plan preparation output:
+Plan preparation output (contains the authoritative `PLAN_PATH`):
 {{ steps.prepare_plan.stdout }}
 
 Initial implementation step response:

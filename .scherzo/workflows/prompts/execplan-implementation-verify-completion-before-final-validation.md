@@ -1,9 +1,9 @@
 Verify final ExecPlan completion before final validation and publish for Scherzo's `workflow:execplan-implementation` workflow on Linear issue {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
-{{ issue.description }}
+Issue URL:
+{{ issue.url }}
 
-Plan preparation output:
+Plan preparation output (contains the authoritative `PLAN_PATH`):
 {{ steps.prepare_plan.stdout }}
 
 Initial implementation step response:
@@ -21,8 +21,11 @@ Review feedback application response:
 Base refresh output before validation:
 {{ steps.refresh_base_before_validation.stdout }}
 
-Validation output after refresh:
-{{ steps.validate_after_refresh.stdout }}
+Validation result after refresh:
+- `validate_after_refresh` exit code: {{ steps.validate_after_refresh.exit_code }}
+- Structured validation artifact: `tmp/scherzo-implementation-validation.json`
+- If the exit code is `0`, treat validation as passed without reading or quoting full SelfCI stdout unless an unexpected inconsistency needs investigation.
+- If the exit code is nonzero, read `failure_summary`, `stdout_excerpt`, and `stderr_excerpt` from `tmp/scherzo-implementation-validation.json`; those fields are bounded. Full stdout/stderr remains available in `.scherzo/command-step-diagnostics/validate_after_refresh.txt` in the retained workspace when available.
 
 Base-drift repair response:
 {{ steps.repair_base_drift.final_response }}
@@ -64,7 +67,7 @@ Use `"verdict": "fail"` when promised behavior is incomplete in the final curren
 Process:
 
 1. Read `tmp/scherzo-implementation.json` and the full ExecPlan at `PLAN_PATH`.
-2. Read the review/review-feedback and base-refresh/repair outputs above.
+2. Read the review/review-feedback and base-refresh/repair summaries above. Inspect `tmp/scherzo-implementation-validation.json` only when the validation exit code or repair response needs clarification.
 3. Inspect current changed files/tests only as needed to verify promised behavior and acceptance criteria.
 4. Run `scripts/scherzo-implementation plan-completion-context` and copy the context values exactly.
 5. Replace `tmp/scherzo-plan-completion-verdict.json` with the final validation-time verdict.

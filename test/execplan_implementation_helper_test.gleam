@@ -1416,6 +1416,78 @@ pub fn repair_base_drift_prompt_contains_state_table_test() {
   assert string.contains(prompt, "pull requests")
 }
 
+pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
+  let execplan_prompt_paths = [
+    ".scherzo/workflows/prompts/execplan-implementation-implement.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-review.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
+  ]
+
+  list.each(execplan_prompt_paths, fn(path) {
+    let assert Ok(prompt) = simplifile.read(path)
+    assert !string.contains(prompt, "{{ issue.description }}")
+    assert string.contains(prompt, "{{ issue.url }}")
+    assert string.contains(prompt, "PLAN_PATH")
+  })
+
+  let assert Ok(final_prompt) =
+    simplifile.read(
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
+    )
+  assert !string.contains(
+    final_prompt,
+    "{{ steps.validate_after_refresh.stdout }}",
+  )
+  assert !string.contains(
+    final_prompt,
+    "{{ steps.validate_after_refresh.stderr }}",
+  )
+  assert string.contains(
+    final_prompt,
+    "{{ steps.validate_after_refresh.exit_code }}",
+  )
+  assert string.contains(
+    final_prompt,
+    "tmp/scherzo-implementation-validation.json",
+  )
+  assert string.contains(final_prompt, "failure_summary")
+  assert string.contains(
+    final_prompt,
+    ".scherzo/command-step-diagnostics/validate_after_refresh.txt",
+  )
+
+  let assert Ok(repair_prompt) =
+    simplifile.read(".scherzo/workflows/prompts/repair-base-drift.md")
+  assert !string.contains(repair_prompt, "{{ issue.description }}")
+  assert !string.contains(
+    repair_prompt,
+    "{{ steps.validate_after_refresh.stdout }}",
+  )
+  assert !string.contains(
+    repair_prompt,
+    "{{ steps.validate_after_refresh.stderr }}",
+  )
+  assert string.contains(
+    repair_prompt,
+    "{{ steps.validate_after_refresh.exit_code }}",
+  )
+  assert string.contains(
+    repair_prompt,
+    "tmp/scherzo-implementation-validation.json",
+  )
+  assert string.contains(repair_prompt, "failure_summary")
+  assert string.contains(repair_prompt, "stdout_excerpt")
+  assert string.contains(repair_prompt, "stderr_excerpt")
+  assert string.contains(
+    repair_prompt,
+    ".scherzo/command-step-diagnostics/validate_after_refresh.txt",
+  )
+}
+
 pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
   let assert Ok(implementation) =
     simplifile.read(".scherzo/workflows/implementation.yaml")
