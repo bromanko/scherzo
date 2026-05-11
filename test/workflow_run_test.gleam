@@ -666,6 +666,70 @@ pub fn command_step_receives_workspace_driver_context_from_resolved_profile_test
     == "driver_env:dogfood-jj|scripts/scherzo-workspace-jj|assert-only changed-files"
 }
 
+pub fn workspace_driver_context_resolves_repo_root_placeholder_test() {
+  let subject = process.new_subject()
+  let hooks = dag_hooks_with_timeout(1000)
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator(),
+      config_dir: "test/tmp/workflow-run/.scherzo",
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "dogfood-jj",
+        profiles: dict.from_list([
+          #(
+            "dogfood-jj",
+            workspace_profile_with_driver(
+              "dogfood-jj",
+              hooks,
+              config_types.ConfiguredWorkspaceHooks,
+              "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj",
+              [config_types.WorkspaceAssertOnly],
+            ),
+          ),
+        ]),
+      ),
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(subject, "driver:" <> context.workspace_context.driver)
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "stdout",
+          "stderr",
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      command_dag_with_profile("dogfood-jj"),
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert receive_event(subject) == "prepare:run:main:"
+  let driver = receive_event(subject)
+  assert string.starts_with(driver, "driver:")
+  assert !string.contains(driver, "$SCHERZO_REPO_ROOT")
+  assert string.ends_with(driver, "/scripts/scherzo-workspace-jj")
+}
+
 pub fn workflow_yaml_cannot_override_workspace_driver_context_test() {
   let subject = process.new_subject()
   let hooks = dag_hooks_with_timeout(1000)

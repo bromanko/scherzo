@@ -3,6 +3,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/template
+import scherzo/workspace_driver_command
 
 pub type Context {
   Context(
@@ -15,6 +16,20 @@ pub type Context {
 pub fn from_profile(profile: config_types.WorkspaceHookProfile) -> Context {
   let #(driver, capabilities) = case profile.driver {
     Some(driver) -> #(driver.command, driver.capabilities)
+    None -> #("", [])
+  }
+  Context(profile: profile.name, driver: driver, capabilities: capabilities)
+}
+
+pub fn from_profile_for_orchestrator(
+  profile: config_types.WorkspaceHookProfile,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Context {
+  let #(driver, capabilities) = case profile.driver {
+    Some(driver) -> #(
+      workspace_driver_command.resolve(driver.command, orchestrator),
+      driver.capabilities,
+    )
     None -> #("", [])
   }
   Context(profile: profile.name, driver: driver, capabilities: capabilities)

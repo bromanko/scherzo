@@ -309,6 +309,63 @@ pub type WorkspaceDriverConfig {
   )
 }
 
+pub fn validate_workspace_driver_command(
+  command: String,
+) -> Result(String, String) {
+  let command = string.trim(command)
+  case command == "" {
+    True -> Error("must be non-empty")
+    False -> validate_workspace_driver_command_token(command)
+  }
+}
+
+fn validate_workspace_driver_command_token(
+  command: String,
+) -> Result(String, String) {
+  case contains_workspace_driver_command_whitespace(command) {
+    True -> Error("must be one executable token without whitespace")
+    False ->
+      case contains_workspace_driver_shell_metacharacter(command) {
+        True -> Error("must not contain shell metacharacters")
+        False ->
+          case uses_supported_workspace_driver_env(command) {
+            True -> Ok(command)
+            False ->
+              Error(
+                "may only use $SCHERZO_REPO_ROOT as an environment placeholder",
+              )
+          }
+      }
+  }
+}
+
+fn contains_workspace_driver_command_whitespace(command: String) -> Bool {
+  string.contains(command, " ")
+  || string.contains(command, "\n")
+  || string.contains(command, "\r")
+  || string.contains(command, "\t")
+}
+
+fn contains_workspace_driver_shell_metacharacter(command: String) -> Bool {
+  string.contains(command, ";")
+  || string.contains(command, "&")
+  || string.contains(command, "|")
+  || string.contains(command, "<")
+  || string.contains(command, ">")
+  || string.contains(command, "`")
+  || string.contains(command, "'")
+  || string.contains(command, "\"")
+}
+
+fn uses_supported_workspace_driver_env(command: String) -> Bool {
+  case string.contains(command, "$") {
+    False -> True
+    True ->
+      command == "$SCHERZO_REPO_ROOT"
+      || string.starts_with(command, "$SCHERZO_REPO_ROOT/")
+  }
+}
+
 pub type WorkspaceProfileSource {
   LegacyWorkspaceHooks
   ConfiguredWorkspaceHooks

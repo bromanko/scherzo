@@ -1049,13 +1049,11 @@ fn read_driver_command(
   path: String,
 ) -> Result(String, error.ConfigError) {
   case get_node(node, "command") {
-    Some(yay.NodeStr(value)) -> {
-      let value = string.trim(value)
-      case value == "" {
-        True -> Error(error.InvalidConfig(path <> " must be non-empty"))
-        False -> Ok(value)
-      }
-    }
+    Some(yay.NodeStr(value)) ->
+      config_types.validate_workspace_driver_command(value)
+      |> result.map_error(fn(reason) {
+        error.InvalidConfig(path <> " " <> reason)
+      })
     Some(_) -> Error(error.InvalidConfig(path <> " must be a string"))
     None -> Error(error.InvalidConfig(path <> " is required"))
   }

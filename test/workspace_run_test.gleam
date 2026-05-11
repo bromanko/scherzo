@@ -1,9 +1,11 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
@@ -42,6 +44,20 @@ fn reset_dir(path: String) -> Nil {
   let _ = simplifile.delete(path)
   let assert Ok(Nil) = simplifile.create_directory_all(path)
   Nil
+}
+
+fn limits() -> config_types.ArtifactLimits {
+  config_types.ArtifactLimits(
+    command_stream_max_chars: 4000,
+    template_field_max_chars: 4000,
+    workflow_summary_max_chars: 4000,
+  )
+}
+
+fn chmod_executable(path: String) -> Nil {
+  let artifact =
+    command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
+  assert artifact.status == step_artifact.StepSucceeded
 }
 
 fn orchestrator(
@@ -248,19 +264,20 @@ pub fn selected_profile_uses_selected_hook_bodies_test() {
 
 fn driver_profile_orchestrator(dir: String) -> config_types.OrchestratorConfig {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: sh driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        capabilities: [status, assert-only]\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: ./driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        capabilities: [status, assert-only]\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(root(source), dir <> "/scherzo.yaml", env)
   orchestrator
 }
 
 fn write_lifecycle_driver(dir: String) -> Nil {
+  let driver = dir <> "/driver.sh"
   let assert Ok(Nil) =
     simplifile.write(
-      dir <> "/driver.sh",
+      driver,
       "#!/bin/sh\nset -eu\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
     )
-  Nil
+  chmod_executable(driver)
 }
 
 pub fn driver_profile_invokes_lifecycle_create_before_after_and_remove_test() {
@@ -294,7 +311,7 @@ pub fn driver_profile_invokes_lifecycle_create_before_after_and_remove_test() {
   assert string.contains(log, "lifecycle remove|")
   assert string.contains(
     log,
-    "|profile=dogfood-jj|driver=sh driver.sh|caps=status assert-only",
+    "|profile=dogfood-jj|driver=./driver.sh|caps=status assert-only",
   )
 }
 

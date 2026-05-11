@@ -10,10 +10,11 @@ import scherzo/workspace_driver_context
 pub type WorkspaceDriverContext =
   workspace_driver_context.Context
 
-pub fn driver_context_from_profile(
+pub fn driver_context(
   profile: config_types.WorkspaceHookProfile,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> WorkspaceDriverContext {
-  workspace_driver_context.from_profile(profile)
+  workspace_driver_context.from_profile_for_orchestrator(profile, orchestrator)
 }
 
 pub fn driver_context_env_vars(

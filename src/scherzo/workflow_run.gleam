@@ -2958,7 +2958,7 @@ fn step_context(
     attempt_index: workspace.attempt_index,
     workspace_name: workspace.workspace_name,
     workspace_path: workspace.path,
-    workspace_context: workspace_profile.driver_context_from_profile(profile),
+    workspace_context: workspace_profile.driver_context(profile, orchestrator),
     config_dir: orchestrator.config_dir,
     issue_id: issue.id,
     issue_identifier: issue.identifier,
