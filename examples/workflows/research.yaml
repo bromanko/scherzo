@@ -16,8 +16,26 @@ steps:
     run: |
       set -eu
       findings=research-findings.md
-      : "${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required for the research workflow}"
+      driver_command=${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required for the research workflow}
+      : "${SCHERZO_CONFIG_DIR:?SCHERZO_CONFIG_DIR is required for relative workspace drivers}"
+      case "$driver_command" in
+        /*)
+          driver=$driver_command
+          ;;
+        */*)
+          if test -x "$SCHERZO_CONFIG_DIR/$driver_command"; then
+            driver=$SCHERZO_CONFIG_DIR/$driver_command
+          elif test -x "$SCHERZO_CONFIG_DIR/../$driver_command"; then
+            driver=$SCHERZO_CONFIG_DIR/../$driver_command
+          else
+            driver=$driver_command
+          fi
+          ;;
+        *)
+          driver=$driver_command
+          ;;
+      esac
       test -f "$findings"
-      "$SCHERZO_WORKSPACE_DRIVER" assert-only --path "$findings"
+      "$driver" assert-only --path "$findings"
       cat "$findings"
     workspace: main

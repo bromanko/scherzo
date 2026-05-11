@@ -19,7 +19,7 @@ The workflow selects `workspace_profile: noop` and declares `workspace_capabilit
 
 ## Minimal profile
 
-In the current transition release, driver-only workspace lifecycle invocation is not yet enabled. Use a hook-backed profile with driver metadata, so hooks still create and remove the workspace while command steps receive `SCHERZO_WORKSPACE_DRIVER`.
+Use a driver-backed profile so Scherzo can create, check, and remove the artifact workspace through the same trusted command that provides `assert-only`.
 
 A minimal artifact-only profile looks like this:
 
@@ -28,22 +28,13 @@ A minimal artifact-only profile looks like this:
       default_profile: noop
       profiles:
         noop:
-          hooks:
-            create: |
-              mkdir -p "$SCHERZO_WORKSPACE_PATH"
-            before_step: |
-              true
-            after_step: |
-              true
-            remove: |
-              rm -rf "$SCHERZO_WORKSPACE_PATH"
-            timeout_ms: 60000
           driver:
             command: scripts/scherzo-workspace-noop
-            capabilities: [status, changed-files, assert-only]
+            lifecycle: [create, before-step, after-step, remove]
+            capabilities: [assert-only]
             timeout_ms: 60000
 
-The `driver.command` value must be one executable token with no embedded shell arguments because the workflow invokes it as `"$SCHERZO_WORKSPACE_DRIVER" assert-only --path "$findings"`. If the command is relative, make sure it is visible from workflow workspaces. The checked-in `examples/scherzo.yaml` keeps the command repository-relative and its `noop` create hook makes the repository `scripts/` directory visible from the artifact workspace. In another repository, you may instead install a wrapper on `PATH` or configure a local absolute wrapper path such as `<absolute-local-path>/scherzo-workspace-noop`. Do not put arguments, shell pipelines, or secret material in `driver.command`.
+The `driver.command` value should name the trusted executable configured by the operator. If the config file is at the repository root, `scripts/scherzo-workspace-noop` works for the checked script layout; the checked-in `examples/scherzo.yaml` lives under `examples/` and therefore uses `../scripts/scherzo-workspace-noop`. In another repository, place the wrapper at the same relative path from the config file, install it on `PATH`, or configure an absolute trusted script path. Command steps receive `SCHERZO_WORKSPACE_DRIVER` verbatim and run from the prepared workspace, so workflows that call driver capabilities should resolve simple relative driver paths against `SCHERZO_CONFIG_DIR`, as `examples/workflows/research.yaml` does. Do not put secret material in `driver.command`.
 
 ## Driver behavior by workspace style
 
@@ -65,9 +56,28 @@ If a command would be useful but would create artifacts that cannot be cleaned s
 
 ## Validation before adoption
 
-Before routing real issues to the workflow, run a small manual check in a disposable workspace:
+Before routing real issues to the workflow, run a small manual check in a disposable workspace. Resolve the configured command the same way the example workflow does, then call the resolved path:
 
-1. Create only `research-findings.md` and run the configured driver as `"$SCHERZO_WORKSPACE_DRIVER" assert-only --path research-findings.md`; expect exit code 0.
+    driver_command=${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required}
+    case "$driver_command" in
+      /*)
+        driver=$driver_command
+        ;;
+      */*)
+        if test -x "$SCHERZO_CONFIG_DIR/$driver_command"; then
+          driver=$SCHERZO_CONFIG_DIR/$driver_command
+        elif test -x "$SCHERZO_CONFIG_DIR/../$driver_command"; then
+          driver=$SCHERZO_CONFIG_DIR/../$driver_command
+        else
+          driver=$driver_command
+        fi
+        ;;
+      *)
+        driver=$driver_command
+        ;;
+    esac
+
+1. Create only `research-findings.md` and run `"$driver" assert-only --path research-findings.md`; expect exit code 0.
 2. Add `unexpected-artifact.txt` and run the same command; expect a nonzero exit and a diagnostic naming the unexpected artifact or changed-file set.
 3. Remove the unexpected file and run the workflow against a low-risk issue; expect the terminal result to be the contents of `research-findings.md`.
 

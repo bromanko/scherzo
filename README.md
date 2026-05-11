@@ -14,7 +14,7 @@ Expect rough edges:
 
 - Runtime configuration and workflow definitions are YAML-only and may still change; legacy Markdown runtime workflows (`WORKFLOW.md` or `.scherzo/workflows/*.md`) are no longer supported. Markdown remains supported for prompt templates only.
 - The default integration path is Linear + `pi`; other trackers and agent runtimes are not yet first-class.
-- Workspaces, hooks, credentials, and model/provider settings are intentionally explicit. Scherzo will not hide project-specific setup from you.
+- Workspaces, workspace drivers, credentials, and model/provider settings are intentionally explicit. Scherzo will not hide project-specific setup from you.
 - Operator docs and examples are improving, but you should expect to inspect logs, artifacts, and `scherzoctl` output when something goes wrong.
 
 Agents making architecture or workflow changes should start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the current module map, invariants, change checklists, and validation guidance.
@@ -50,7 +50,7 @@ direnv exec . gleam run -- --version
 # Readiness validation before dispatching work
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml
 
-# Read-only readiness subset when you do not want workspace hooks or pi probing
+# Read-only readiness subset when you do not want workspace lifecycle checks or pi probing
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check workflow-config --check linear-contract --check linear-smoke .scherzo/scherzo.yaml
 
 # Run one eligible issue and exit
@@ -78,7 +78,7 @@ Longer validations live in explicit suites and are not selected by default:
 | Suite | Command | When to run | Required dependencies |
 | --- | --- | --- | --- |
 | Unit | `direnv exec . gleam test` or `direnv exec . scherzo-test-unit` | Every PR, before pushing, and during normal implementation feedback | Devenv Gleam/Erlang toolchain only; no network or real Linear/pi calls |
-| Local integration | `direnv exec . scherzo-test-local-integration` or `direnv exec . gleam test -- --suite local-integration` | Before changing workspace hooks, workflow-run workspace behavior, pre-release checks, and scheduled/nightly local infrastructure validation | Local shell tools plus `jj`; creates temporary repositories under `test/tmp/` |
+| Local integration | `direnv exec . scherzo-test-local-integration` or `direnv exec . gleam test -- --suite local-integration` | Before changing workspace drivers, workflow-run workspace behavior, pre-release checks, and scheduled/nightly local infrastructure validation | Local shell tools plus `jj`; creates temporary repositories under `test/tmp/` |
 | External real-pi validation | `direnv exec . scherzo-test-real-pi-validation` or `direnv exec . gleam test -- --suite real-pi-validation` | Manual operator validation before releases or after pi session-persistence changes | `pi` on `PATH`, model/provider credentials, network access, and enough time for live RPC turns |
 
 Use `direnv exec . gleam test -- --suite all` only for an explicit full local sweep; it includes the external real-pi validation and will fail if those dependencies are absent.
@@ -125,7 +125,7 @@ in
 {
   packages = [
     inputs.scherzo.packages.${system}.default
-    # Add pi and any tools used by your workspace hooks/workflows separately.
+    # Add pi and any tools used by your workspace drivers/workflows separately.
   ];
 }
 ```
@@ -189,7 +189,7 @@ Scherzo is still moving quickly, so implementation plans should not assume backw
 
 ## Orchestrator config
 
-The orchestrator config owns runtime policy: tracker settings, polling, workspace hooks, pi command and timeouts, agent limits, handoff, workflow routing, artifact limits, Linear contract checking, and Linear comment command transport.
+The orchestrator config owns runtime policy: tracker settings, polling, workspace profiles and drivers, pi command and timeouts, agent limits, handoff, workflow routing, artifact limits, Linear contract checking, and Linear comment command transport.
 
 Minimal shape:
 
@@ -208,27 +208,16 @@ workspace:
   default_profile: isolated
   profiles:
     isolated:
-      hooks:
-        create: |
-          mkdir -p "$SCHERZO_WORKSPACE_PATH"
-          git clone "$REPO_URL" "$SCHERZO_WORKSPACE_PATH"
-        before_step: |
-          test -d "$SCHERZO_WORKSPACE_PATH/.git"
-        after_step: |
-          true
-        remove: |
-          rm -rf "$SCHERZO_WORKSPACE_PATH"
+      driver:
+        command: scripts/scherzo-workspace-jj
+        lifecycle: [create, before-step, after-step, remove]
+        capabilities: [status, diff, changed-files, assert-only]
         timeout_ms: 60000
     noop:
-      hooks:
-        create: |
-          mkdir -p "$SCHERZO_WORKSPACE_PATH"
-        before_step: |
-          true
-        after_step: |
-          true
-        remove: |
-          rm -rf "$SCHERZO_WORKSPACE_PATH"
+      driver:
+        command: scripts/scherzo-workspace-noop
+        lifecycle: [create, before-step, after-step, remove]
+        capabilities: [assert-only]
         timeout_ms: 60000
 
 agent:
@@ -261,22 +250,9 @@ routing:
     implementation: workflows/implementation.yaml
 ```
 
-Relative paths are resolved from the orchestrator config file directory.
+Relative config paths are resolved from the orchestrator config file directory. Driver commands are trusted operator config: workflows can select a named profile and require capabilities, but workflow YAML cannot define the shell command that creates, copies, validates, or removes workspaces. The fully qualified driver schema is `workspace.profiles.<name>.driver.command`, with sibling `lifecycle`, `capabilities`, and `timeout_ms` fields. The checked `examples/scherzo.yaml` file lives under `examples/`, so it uses `../scripts/...` for the checked driver scripts; a config copied to a repository root would normally use `scripts/...`, and a packaged install can use a PATH command or absolute trusted wrapper.
 
-For migration, the older direct hook shape remains valid and becomes the synthetic `default` profile:
-
-```yaml
-workspace:
-  root: .scherzo/workspaces
-  hooks:
-    create: |
-      mkdir -p "$SCHERZO_WORKSPACE_PATH"
-    before_step: |
-      test -d "$SCHERZO_WORKSPACE_PATH"
-    remove: |
-      rm -rf "$SCHERZO_WORKSPACE_PATH"
-    timeout_ms: 60000
-```
+For migration, legacy workspace.hooks and profile-local hook blocks are documented in [`docs/runbooks/workspace-driver-migration.md`](docs/runbooks/workspace-driver-migration.md). Current Scherzo still warns about legacy hook shapes during doctor checks so operators can migrate safely, but new checked configs and examples should prefer driver-backed profiles.
 
 ## Workflow DAG files
 
@@ -286,8 +262,8 @@ A workflow file describes one routed issue workflow. Steps may be `agent` steps 
 version: 1
 id: implementation
 description: Implement, test, review, apply feedback, and validate.
-# Optional: select an orchestrator-defined workspace hook profile. Omit this
-# field to use workspace.default_profile.
+# Optional: select an orchestrator-defined workspace profile. Omit this field
+# to use workspace.default_profile. Workflows can also require driver capabilities.
 workspace_profile: isolated
 max_parallel_steps: 4
 steps:
@@ -329,6 +305,7 @@ Important rules:
 - Prompt paths are relative to the workflow YAML file and must stay within that workflow directory.
 - Steps sharing the same logical workspace are serialized.
 - Steps using different logical workspaces may run concurrently up to `max_parallel_steps` and global agent limits.
+- Workflows may select a trusted profile with `workspace_profile` and require driver capabilities with top-level `workspace_capabilities`; Scherzo validates those requirements before dispatch.
 - A derived workspace (`name` + `from`) is prepared from the named source workspace before the step runs.
 - Agent steps inherit `pi.model` and `pi.thinking` from the orchestrator config. An agent step can override `model`, `thinking`, or both; unspecified values continue to inherit the project default.
 - Command steps do not run pi, so `model` and `thinking` are only valid on agent steps.
@@ -350,11 +327,13 @@ Previous test output:
 
 Markdown prompt templates are not runtime workflow files; they are only prompt bodies referenced by YAML DAG steps.
 
-## Workspace hooks
+## Workspace profiles and drivers
 
-Workspace hooks are trusted shell snippets from the orchestrator config. Prefer defining named `workspace.profiles` and selecting one with a workflow's top-level `workspace_profile`; workflow YAML can select a profile but cannot define hook scripts. Existing configs may still use legacy direct `workspace.hooks`, which Scherzo treats as a synthetic `default` profile for workflows that omit `workspace_profile`.
+A workspace profile is trusted operator policy for preparing the directory where a workflow step runs. A workspace driver is the trusted command configured under a profile at `workspace.profiles.<name>.driver.command`. Scherzo invokes that command for lifecycle operations such as `create`, `before-step`, `after-step`, and `remove`; the driver may also expose named workspace capabilities such as `status`, `diff`, `changed-files`, or `assert-only`.
 
-Scherzo creates and prepares per-issue/per-run workflow workspaces and calls hooks with environment such as:
+Workflows choose policy, not shell. A workflow DAG may select a profile with top-level `workspace_profile` and may require capability names with top-level `workspace_capabilities`, but it cannot define or override the driver command. Scherzo validates the required capabilities against the selected profile before dispatching the workflow. This keeps untrusted workflow YAML from smuggling in new workspace commands while still allowing portable workflows to ask for the operations they need.
+
+Command steps receive driver context through environment variables. `SCHERZO_WORKSPACE_DRIVER` is the configured driver command string, exposed verbatim. Because command steps run from the prepared workspace, a workflow that calls driver capabilities should either use a PATH or absolute driver command, or resolve a simple relative driver path against `SCHERZO_CONFIG_DIR` before invoking it.
 
 - `SCHERZO_CONFIG_DIR`
 - `SCHERZO_WORKFLOW_ID`
@@ -362,10 +341,50 @@ Scherzo creates and prepares per-issue/per-run workflow workspaces and calls hoo
 - `SCHERZO_ISSUE_ID`
 - `SCHERZO_ISSUE_IDENTIFIER`
 - `SCHERZO_WORKSPACE_PROFILE`
+- `SCHERZO_WORKSPACE_DRIVER`
+- `SCHERZO_WORKSPACE_CAPABILITIES`
 - `SCHERZO_WORKSPACE_NAME`
 - `SCHERZO_WORKSPACE_PATH`
 - `SCHERZO_SOURCE_WORKSPACE_NAME`
 - `SCHERZO_SOURCE_WORKSPACE_PATH`
+
+A portable artifact-only workflow can require `assert-only` and then use the selected driver's command rather than hardcoding a repository-specific VCS command:
+
+```yaml
+version: 1
+id: research
+workspace_profile: noop
+workspace_capabilities: [assert-only]
+steps:
+  - id: collect_findings
+    kind: command
+    run: |
+      set -eu
+      driver_command=${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required}
+      : "${SCHERZO_CONFIG_DIR:?SCHERZO_CONFIG_DIR is required for relative workspace drivers}"
+      case "$driver_command" in
+        /*)
+          driver=$driver_command
+          ;;
+        */*)
+          if test -x "$SCHERZO_CONFIG_DIR/$driver_command"; then
+            driver=$SCHERZO_CONFIG_DIR/$driver_command
+          elif test -x "$SCHERZO_CONFIG_DIR/../$driver_command"; then
+            driver=$SCHERZO_CONFIG_DIR/../$driver_command
+          else
+            driver=$driver_command
+          fi
+          ;;
+        *)
+          driver=$driver_command
+          ;;
+      esac
+      "$driver" assert-only --path research-findings.md
+      cat research-findings.md
+    workspace: main
+```
+
+Legacy workspace.hooks config is migration material, not the preferred current model. If doctor reports `legacy_workspace_hooks`, follow [`docs/runbooks/workspace-driver-migration.md`](docs/runbooks/workspace-driver-migration.md) and move the trusted commands into named driver-backed profiles.
 
 Use `agent.max_concurrent_agents: 0` to pause new dispatch while keeping daemon reload and reconciliation alive.
 
@@ -539,13 +558,13 @@ Summary: 6 passed, 0 warnings, 0 failed, 0 skipped
 Ready for cautious real-board operation.
 ```
 
-Use repeated `--check` flags to run a subset. This read-only subset loads config and queries Linear metadata/issues, but it does not acquire the local instance lock, run workspace hooks, prepare a scratch workspace, or launch pi:
+Use repeated `--check` flags to run a subset. This read-only subset loads config and queries Linear metadata/issues, but it does not acquire the local instance lock, run workspace lifecycle checks, prepare a scratch workspace, or launch pi:
 
 ```sh
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check workflow-config --check linear-contract --check linear-smoke .scherzo/scherzo.yaml
 ```
 
-The default doctor run includes local checks. `workspace-hooks` prepares and cleans up a scratch workflow-run workspace using the orchestrator default workspace profile's `create`, `before_step`, and `remove` hooks. `pi-probe` launches pi RPC in that scratch workspace and performs the compatibility probe without sending a task prompt.
+The default doctor run includes local checks. The `workspace-hooks` check name is retained for compatibility, but the check prepares and cleans up a scratch workflow-run workspace using the orchestrator default workspace profile's driver lifecycle operations, or legacy hooks when a repository has not migrated yet. `pi-probe` launches pi RPC in that scratch workspace and performs the compatibility probe without sending a task prompt.
 
 The focused one-off readiness modes remain available for troubleshooting individual surfaces:
 
