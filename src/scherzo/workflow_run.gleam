@@ -508,10 +508,9 @@ pub fn execute_with_context(
   dependencies: Dependencies,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   case workspace_profile.resolve(dag, orchestrator) {
-    Error(_) ->
+    Error(err) ->
       Error(WorkflowRunFailure(
-        reason: "workspace_profile_resolution_failed:"
-          <> workspace_profile.selected_name(dag, orchestrator),
+        reason: workspace_profile.error_label(err),
         agent_reason: None,
         artifacts: run_context_artifacts(context),
         run_root: run_context_run_root(context),

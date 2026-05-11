@@ -602,6 +602,53 @@ pub fn command_default_timeout_uses_selected_workspace_profile_test() {
   assert receive_event(subject) == "timeout:42"
 }
 
+pub fn execute_rejects_missing_workspace_capabilities_before_prepare_test() {
+  let subject = process.new_subject()
+  let hooks = dag_hooks_with_timeout(1000)
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator(),
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "dogfood-jj",
+        profiles: dict.from_list([
+          #(
+            "dogfood-jj",
+            workspace_profile_with_driver(
+              "dogfood-jj",
+              hooks,
+              config_types.ConfiguredWorkspaceHooks,
+              "scripts/scherzo-workspace-jj",
+              [config_types.WorkspaceStatus],
+            ),
+          ),
+        ]),
+      ),
+    )
+
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nworkspace_profile: dogfood-jj\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: run\n    kind: command\n    run: echo ok\n    workspace: main\n",
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      deps(subject, None),
+    )
+
+  assert string.starts_with(
+    failure.reason,
+    "workspace_capabilities_unavailable:",
+  )
+  assert string.contains(failure.reason, "missing: assert-only")
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
 pub fn command_step_receives_workspace_driver_context_from_resolved_profile_test() {
   let subject = process.new_subject()
   let hooks = dag_hooks_with_timeout(1000)

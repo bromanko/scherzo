@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/template
@@ -64,7 +65,11 @@ pub fn resolve(
 ) -> Result(config_types.WorkspaceHookProfile, ProfileResolutionError) {
   let profile_name = selected_name(dag, orchestrator)
   case dict.get(orchestrator.workspace_profiles.profiles, profile_name) {
-    Ok(profile) -> Ok(profile)
+    Ok(profile) -> {
+      use _ <- result.try(validate_capabilities(dag, profile))
+      use _ <- result.try(validate_dispatchable_profile(dag, profile))
+      Ok(profile)
+    }
     Error(_) ->
       Error(UnknownWorkspaceProfile(
         workflow_id: dag.id,
@@ -109,6 +114,10 @@ pub fn error_code(error: ProfileResolutionError) -> String {
   }
 }
 
+pub fn error_label(error: ProfileResolutionError) -> String {
+  error_code(error) <> ":" <> error_message(error)
+}
+
 pub fn error_message(error: ProfileResolutionError) -> String {
   case error {
     UnknownWorkspaceProfile(workflow_id, profile_name, available) ->
@@ -140,7 +149,7 @@ pub fn error_message(error: ProfileResolutionError) -> String {
       <> workflow_id
       <> " selects workspace_profile "
       <> profile_name
-      <> ", but workspace driver invocation is not implemented in this Scherzo version; use a hook-backed profile or wait for the driver invocation migration. See docs/runbooks/workspace-driver-migration.md"
+      <> ", but the selected workspace profile is not dispatchable. See docs/runbooks/workspace-driver-migration.md"
   }
 }
 
