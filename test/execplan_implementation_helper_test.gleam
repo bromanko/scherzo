@@ -444,7 +444,7 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_WORKSPACE_DRIVER=/outer/driver SCHERZO_WORKSPACE_PROFILE=dogfood-jj SCHERZO_WORKSPACE_CAPABILITIES=status,diff SCHERZO_WORKSPACE_ROOT=/outer/workspaces SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1987,6 +1987,7 @@ fn write_fake_direnv(path: String) -> Nil {
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> direnv.log\n"
         <> "if [ \"${SCHERZO_FAIL_IF_RUN_ROOT_LEAKS:-}\" = 1 ] && [ -n \"${SCHERZO_RUN_ROOT:-}\" ]; then echo 'SCHERZO_RUN_ROOT leaked into validation' >&2; exit 1; fi\n"
+        <> "if [ \"${SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS:-}\" = 1 ] && { [ -n \"${SCHERZO_WORKSPACE_DRIVER:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_PROFILE:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_CAPABILITIES:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_ROOT:-}\" ]; }; then echo 'SCHERZO_WORKSPACE driver context leaked into validation' >&2; exit 1; fi\n"
         <> "case \"$*\" in\n"
         <> "  'exec . selfci check '*) if [ \"${SCHERZO_FAKE_DIRENV_SELFCI_FAIL:-}\" = 1 ] || [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ]; then echo 'simulated SelfCI validation failure' >&2; exit 1; fi;;\n"
         <> "  'exec . gleam test') if [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ]; then echo 'simulated validation failure' >&2; exit 1; fi;;\n"

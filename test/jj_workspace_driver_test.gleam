@@ -162,8 +162,18 @@ fn log_lines(log: String) -> List(String) {
   }
 }
 
+fn changed_path_decoder() -> decode.Decoder(String) {
+  use path <- decode.field("path", decode.string)
+  decode.success(path)
+}
+
+fn changed_paths_decoder() -> decode.Decoder(List(String)) {
+  use files <- decode.field("files", decode.list(of: changed_path_decoder()))
+  decode.success(files)
+}
+
 fn decode_paths(value: String) -> List(String) {
-  let assert Ok(paths) = json.parse(value, decode.list(of: decode.string))
+  let assert Ok(paths) = json.parse(value, changed_paths_decoder())
   paths
 }
 
@@ -220,8 +230,15 @@ pub fn jj_driver_changed_files_json_is_sorted_and_deduplicated_test() {
     )
 
   assert_exit(artifact, 0)
-  assert artifact.stdout == "[\"alpha.md\",\"zeta.md\"]\n"
-  assert log_lines(log) == ["diff --from @- --to @ --name-only --color=never"]
+  assert string.contains(artifact.stdout, "\"version\":1")
+  assert string.contains(artifact.stdout, "\"path\":\"alpha.md\"")
+  assert string.contains(artifact.stdout, "\"status\":\"modified\"")
+  assert string.contains(artifact.stdout, "\"path\":\"zeta.md\"")
+  assert log_lines(log)
+    == [
+      "diff --from @- --to @ --name-only --color=never",
+      "diff --summary --from @- --to @ --color=never",
+    ]
 }
 
 pub fn jj_driver_changed_files_json_escapes_special_path_names_test() {
@@ -276,10 +293,25 @@ pub fn jj_driver_status_and_diff_use_human_jj_commands_test() {
     )
   assert_exit(diff, 0)
   assert diff.stdout == "diff text\n"
+
+  let diff_json =
+    run_jj(
+      "jj_driver_diff_json",
+      "diff --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_DIFF", "diff --git a/a b/a\n"),
+      ]),
+    )
+  assert_exit(diff_json, 0)
+  assert string.contains(diff_json.stdout, "\"version\":1")
+  assert string.contains(diff_json.stdout, "diff --git a/a b/a")
+  assert string.contains(diff_json.stdout, "\"truncated\":false")
+
   assert log_lines(log)
     == [
       "status --color=never",
       "diff --from @- --to @ --color=never",
+      "diff --from @- --to @ --git --color=never",
     ]
 }
 
