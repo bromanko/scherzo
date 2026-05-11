@@ -965,10 +965,26 @@ def project_validation_skipped_by_env() -> bool:
 def validation_env() -> dict[str, str]:
     env = os.environ.copy()
     # Project validation runs the repository test suite, and some tests execute
-    # Scherzo helper scripts against fixture directories. SCHERZO_RUN_ROOT is a
-    # workflow-run-scoped setting; inheriting it makes nested helper invocations
-    # read/write the outer merge-conflict run artifacts instead of fixture data.
-    env.pop("SCHERZO_RUN_ROOT", None)
+    # Scherzo helper scripts against fixture directories. Workflow-run-scoped
+    # settings must not leak into those nested helper invocations; otherwise
+    # fixtures can infer the outer Scherzo run's issue/run/workspace or use the
+    # outer workspace driver instead of their own temporary test context.
+    for key in [
+        "SCHERZO_CONFIG_DIR",
+        "SCHERZO_ISSUE_ID",
+        "SCHERZO_ISSUE_IDENTIFIER",
+        "SCHERZO_RUN_ID",
+        "SCHERZO_RUN_ROOT",
+        "SCHERZO_SOURCE_WORKSPACE_PATH",
+        "SCHERZO_WORKFLOW_ID",
+        "SCHERZO_WORKSPACE_CAPABILITIES",
+        "SCHERZO_WORKSPACE_DRIVER",
+        "SCHERZO_WORKSPACE_NAME",
+        "SCHERZO_WORKSPACE_PATH",
+        "SCHERZO_WORKSPACE_PROFILE",
+        "SCHERZO_WORKSPACE_ROOT",
+    ]:
+        env.pop(key, None)
     return env
 
 

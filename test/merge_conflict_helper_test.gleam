@@ -184,6 +184,41 @@ pub fn validate_accepts_resolved_conflicts_when_only_conflicted_files_changed_te
   assert string.contains(artifact.stdout, "PROJECT_VALIDATION=skipped")
 }
 
+pub fn validate_project_validation_scrubs_outer_workflow_context_test() {
+  let dir = "test/tmp/merge-conflict-validate-env-clean"
+  write_validation_fixture(dir, "safe\n")
+  write_fake_direnv_with_leak_guard(dir <> "/bin/direnv")
+  chmod_executable(dir <> "/bin/direnv")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_CONFIG_DIR=/outer/config "
+        <> "SCHERZO_ISSUE_ID=issue-id "
+        <> "SCHERZO_ISSUE_IDENTIFIER=LIV-123 "
+        <> "SCHERZO_RUN_ID=run-id "
+        <> "SCHERZO_SOURCE_WORKSPACE_PATH=/outer/source "
+        <> "SCHERZO_WORKFLOW_ID=merge-conflict-resolution "
+        <> "SCHERZO_WORKSPACE_CAPABILITIES=status,diff "
+        <> "SCHERZO_WORKSPACE_DRIVER=/outer/driver "
+        <> "SCHERZO_WORKSPACE_NAME=main "
+        <> "SCHERZO_WORKSPACE_PATH=/outer/workspace "
+        <> "SCHERZO_WORKSPACE_PROFILE=dogfood-jj "
+        <> "SCHERZO_WORKSPACE_ROOT=/outer/workspaces "
+        <> "SCHERZO_FAIL_IF_WORKFLOW_CONTEXT_LEAKS=1 "
+        <> "PATH=\"$PWD/bin:$PATH\" "
+        <> "../../../scripts/scherzo-merge-conflict validate",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PROJECT_VALIDATION=passed")
+  let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
+  assert string.contains(direnv_log, "allow .")
+  assert string.contains(direnv_log, "exec . gleam format --check src test")
+  assert string.contains(direnv_log, "exec . gleam test")
+}
+
 pub fn validate_accepts_prepare_metadata_with_jj_conflict_status_suffix_test() {
   let dir = "test/tmp/merge-conflict-validate-status-suffix"
   write_validation_fixture(dir, "safe\n")
@@ -294,6 +329,30 @@ fn write_validation_fixture(dir: String, safe_contents: String) -> Nil {
     )
   write_fake_validation_jj(dir <> "/bin/jj")
   chmod_executable(dir <> "/bin/jj")
+}
+
+fn write_fake_direnv_with_leak_guard(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "set -eu\n"
+        <> "printf '%s\\n' \"$*\" >> direnv.log\n"
+        <> "if [ \"${SCHERZO_FAIL_IF_WORKFLOW_CONTEXT_LEAKS:-}\" = 1 ]; then\n"
+        <> "  if env | grep -E '^(SCHERZO_CONFIG_DIR|SCHERZO_ISSUE_ID|SCHERZO_ISSUE_IDENTIFIER|SCHERZO_RUN_ID|SCHERZO_RUN_ROOT|SCHERZO_SOURCE_WORKSPACE_PATH|SCHERZO_WORKFLOW_ID|SCHERZO_WORKSPACE_CAPABILITIES|SCHERZO_WORKSPACE_DRIVER|SCHERZO_WORKSPACE_NAME|SCHERZO_WORKSPACE_PATH|SCHERZO_WORKSPACE_PROFILE|SCHERZO_WORKSPACE_ROOT)=' >/dev/null; then\n"
+        <> "    echo 'SCHERZO workflow context leaked into validation' >&2\n"
+        <> "    env | grep -E '^(SCHERZO_CONFIG_DIR|SCHERZO_ISSUE_ID|SCHERZO_ISSUE_IDENTIFIER|SCHERZO_RUN_ID|SCHERZO_RUN_ROOT|SCHERZO_SOURCE_WORKSPACE_PATH|SCHERZO_WORKFLOW_ID|SCHERZO_WORKSPACE_CAPABILITIES|SCHERZO_WORKSPACE_DRIVER|SCHERZO_WORKSPACE_NAME|SCHERZO_WORKSPACE_PATH|SCHERZO_WORKSPACE_PROFILE|SCHERZO_WORKSPACE_ROOT)=' >&2\n"
+        <> "    exit 1\n"
+        <> "  fi\n"
+        <> "fi\n"
+        <> "case \"$*\" in\n"
+        <> "  'allow .') exit 0 ;;\n"
+        <> "  'exec . gleam format --check src test') exit 0 ;;\n"
+        <> "  'exec . gleam test') exit 0 ;;\n"
+        <> "  *) echo \"unexpected direnv command: $*\" >&2; exit 2 ;;\n"
+        <> "esac\n",
+    )
+  Nil
 }
 
 fn write_fake_unresolved_conflict_jj(path: String) -> Nil {
