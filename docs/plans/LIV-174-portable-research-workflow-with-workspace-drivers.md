@@ -72,13 +72,14 @@ The main dogfood risk is breaking in-progress research runs by changing the work
 
 - [x] (2026-05-09 00:00Z) Drafted this ExecPlan from LIV-174 and the workspace driver umbrella, after inspecting the current dogfood research workflow, public example workflow, example config, workflow parser, runtime profile validation, command-step environment, and workspace preparation code.
 - [x] (2026-05-09 00:15Z) Incorporated adversarial review feedback by closing the driver invocation prerequisite, adding package-level config validation, adding executable collection-command tests, documenting strict `assert-only` side effects, and making dogfood migration depend on an active-run check or operator confirmation.
-- [ ] Confirm the driver platform prerequisites exist in the current tree before implementation begins, and record the exact landed driver invocation and profile schema in the Decision Log.
-- [ ] Update the public example research workflow and prompt to use `workspace_capabilities: [assert-only]`, a two-step artifact collection flow, side-effect-aware instructions, and tracker/VCS-neutral wording.
-- [ ] Update the example Scherzo config and portable research runbook so third-party operators can configure a profile with `assert-only`.
-- [ ] Update the dogfood research workflow and prompt to the same portable contract if the dogfood config has a driver-backed profile that provides `assert-only` and no active dogfood research run is in progress.
-- [ ] Add tests that parse the portable workflow, validate the example config/workflow package, inspect prompt wording, and execute the collection command with a fake driver.
-- [ ] Run the targeted tests and standard repository validation commands.
-- [ ] Fill in Outcomes & Retrospective with the observed behavior and any remaining gaps.
+- [x] (2026-05-10 00:00Z) Confirmed the driver platform surfaces needed by the public portable workflow exist: workflow DAGs parse `workspace_capabilities`, profiles parse `driver.command` and `driver.capabilities`, runtime bundle validation checks required capabilities, command steps receive `SCHERZO_WORKSPACE_DRIVER`, and `scripts/scherzo-workspace-noop` implements `assert-only --path <relative-file>`.
+- [x] (2026-05-10 00:20Z) Updated the public example research workflow and prompt to use `workspace_capabilities: [assert-only]`, a two-step artifact collection flow, side-effect-aware instructions, and tracker/VCS-neutral wording.
+- [x] (2026-05-10 00:35Z) Updated the example Scherzo config and added `docs/runbooks/portable-research-workflow.md` so third-party operators can configure a profile with `assert-only`.
+- [x] (2026-05-10 00:40Z) Skipped dogfood research migration because `.scherzo/scherzo.yaml` does not yet define a driver-backed `dogfood-jj` profile that provides `assert-only`.
+- [x] (2026-05-10 01:00Z) Added tests that parse the portable workflow, validate the example config/workflow package, inspect prompt wording, and execute the collection command with a fake driver.
+- [x] (2026-05-10 01:10Z) Ran `direnv exec . gleam test`, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`; tests and gates passed, with existing glinter warnings and 0 errors.
+- [x] (2026-05-10 01:15Z) Filled in Outcomes & Retrospective with the observed behavior and remaining dogfood gap.
+- [x] (2026-05-11 02:59Z) Applied review feedback by confirming `docs/runbooks/portable-research-workflow.md` documents the exact jj `assert-only` comparison command and that no remaining review findings require code changes.
 
 ## Surprises & Discoveries
 
@@ -102,6 +103,15 @@ The main dogfood risk is breaking in-progress research runs by changing the work
 
 - Observation: A strict one-artifact workflow can fail even when the agent only intended to research.
   Evidence: Common repository commands may write build caches, downloaded indexes, generated metadata, or lockfile changes, so the prompt and runbook must tell agents and operators how to avoid, clean up, or report those side effects.
+
+- Observation: The landed driver transition supports hook-backed profiles with driver metadata, but still rejects selected driver-only profiles before dispatch.
+  Evidence: `docs/runbooks/workspace-driver-migration.md` says hook-backed profiles may expose `SCHERZO_WORKSPACE_DRIVER` while driver-only profiles fail with `workspace_driver_invocation_unavailable`; `src/scherzo/workspace_profile.gleam` implements that rejection.
+
+- Observation: Dogfood research is not ready for migration in this change because its selected profile has hooks but no driver metadata.
+  Evidence: `.scherzo/scherzo.yaml` defines `workspace.profiles.dogfood-jj.hooks` and no `workspace.profiles.dogfood-jj.driver`, so a workflow-level `workspace_capabilities: [assert-only]` requirement would fail bundle validation.
+
+- Observation: The checked-in public example config also needed the current tracker dispatch-state field before a package-level runtime-bundle test could load it.
+  Evidence: The first `direnv exec . gleam test` run failed in `example_research_package_profile_supports_assert_only_test` with `tracker.dispatch_states is required; add dispatch_states: [Todo] under tracker` until `examples/scherzo.yaml` gained `dispatch_states: [Todo]`.
 
 ## Decision Log
 
@@ -149,9 +159,27 @@ The main dogfood risk is breaking in-progress research runs by changing the work
   Rationale: The workflow file fingerprint can affect running sessions. A bounded read-only daemon inspection, or a human operator confirmation when inspection is unavailable, keeps migration safe and avoids guessing.
   Date: 2026-05-09
 
+- Decision: Use the landed names `workspace_capabilities`, `SCHERZO_WORKSPACE_DRIVER`, `assert-only --path <relative-file>`, and `workspace.profiles.<name>.driver.command` plus `workspace.profiles.<name>.driver.capabilities`; use `scripts/scherzo-workspace-noop` as the example reusable driver command.
+  Rationale: These are the exact names in the current tree. `src/scherzo/workflow_dag.gleam` parses `workspace_capabilities` into `List(WorkspaceCapability)`, `src/scherzo/workspace_driver_context.gleam` exposes `SCHERZO_WORKSPACE_DRIVER` as the single configured command token, `src/scherzo/config.gleam` parses `driver.command`, `driver.lifecycle`, `driver.capabilities`, and `driver.timeout_ms`, and `scripts/scherzo-workspace-noop` implements `assert-only --path <relative-file>`. The collection command can safely quote the driver endpoint as `"$SCHERZO_WORKSPACE_DRIVER"` because the configured command is one executable token with no embedded shell arguments.
+  Date: 2026-05-10
+
+- Decision: Keep the public `noop` example profile hook-backed while adding driver metadata, rather than switching it to driver-only in this change.
+  Rationale: The current Scherzo release intentionally rejects selected driver-only profiles with `workspace_driver_invocation_unavailable` until lifecycle driver invocation lands. A hook-backed profile with `driver.command` and `driver.capabilities` is the production-safe transition shape documented in `docs/runbooks/workspace-driver-migration.md`; it still lets workflow command steps call `SCHERZO_WORKSPACE_DRIVER` for `assert-only`.
+  Date: 2026-05-10
+
+- Decision: Add `dispatch_states: [Todo]` to `examples/scherzo.yaml` while validating the portable research package.
+  Rationale: Runtime bundle loading now requires `tracker.dispatch_states`. The package-level test should exercise the checked-in example config through the same loader Scherzo uses, so the reusable example must include the required field rather than relying on stale config shape.
+  Date: 2026-05-10
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+The public portable research package now ships as a two-step workflow under `examples/workflows/research.yaml`: the agent writes `research-findings.md`, and `collect_findings` requires `SCHERZO_WORKSPACE_DRIVER`, checks that the file exists, runs `"$SCHERZO_WORKSPACE_DRIVER" assert-only --path "$findings"`, and only then streams the report with `cat`. The prompt in `examples/workflows/prompts/research.md` uses tracker-neutral and workspace-neutral language, requires the report sections, and warns agents to avoid, clean up, or report command side effects that would violate the one-artifact contract.
+
+`examples/scherzo.yaml` now loads with the current runtime bundle loader, includes `dispatch_states: [Todo]`, and gives the `noop` profile `driver.command: scripts/scherzo-workspace-noop` plus capabilities including `assert-only`. Because the current driver transition still requires hook-backed lifecycle for dispatchable profiles, `noop` remains hook-backed and its create hook makes the repository `scripts/` directory visible from the artifact workspace when possible. The new runbook explains this transition shape, trusted driver-command rules, driver behavior for artifact, copy/worktree, and jj styles, including that `scripts/scherzo-workspace-jj` implements `assert-only` with `jj diff --from @- --to @ --name-only --color=never`, and cleanup guidance after an `assert-only` failure.
+
+The dogfood research workflow was intentionally not migrated. The selected dogfood profile in `.scherzo/scherzo.yaml` has no `driver` block, so adding `workspace_capabilities: [assert-only]` to `.scherzo/workflows/research.yaml` would make dogfood bundle validation fail. A later dogfood profile migration can add `driver.command` and `driver.capabilities` to `dogfood-jj`; after that, dogfood research can move to the same portable collection contract with an active-run gate.
+
+Validation passed with `direnv exec . gleam test`, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`. The glinter run reported the existing warning inventory and 0 errors; no new production source warnings were introduced by this change.
 
 ## Context and Orientation
 

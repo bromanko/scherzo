@@ -1,10 +1,23 @@
 version: 1
 id: research
-description: Investigate an issue and report findings without broad code changes.
+description: Investigate an issue, write one Markdown findings artifact, verify it through the workspace driver, and stream it as the workflow result.
 workspace_profile: noop
+workspace_capabilities: [assert-only]
 max_parallel_steps: 1
 steps:
   - id: research
     kind: agent
     prompt: prompts/research.md
+    workspace: main
+
+  - id: collect_findings
+    kind: command
+    depends_on: [research]
+    run: |
+      set -eu
+      findings=research-findings.md
+      : "${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required for the research workflow}"
+      test -f "$findings"
+      "$SCHERZO_WORKSPACE_DRIVER" assert-only --path "$findings"
+      cat "$findings"
     workspace: main
