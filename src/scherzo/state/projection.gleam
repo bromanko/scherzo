@@ -4163,7 +4163,7 @@ fn append_unique_strings(
 }
 
 fn insert_unique_string(values: List(String), value: String) -> List(String) {
-  case list.contains(values, value) {
+  case string.trim(value) == "" || list.contains(values, value) {
     True -> values
     False -> [value, ..values]
   }

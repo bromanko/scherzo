@@ -166,6 +166,39 @@ pub fn projection_exposes_recovery_facts_test() {
   ]) = projection.pending_outbox_replays(folded)
 }
 
+pub fn known_issue_ids_omits_blank_issue_ids_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-workflow-finished",
+        1000,
+        record.WorkflowRunFinished(
+          run_id: "schedule-repair-20260505T120000Z",
+          workflow_id: "repair",
+          issue_id: "",
+          outcome: "completed",
+          token_total: 0,
+          turns: 0,
+        ),
+      ),
+      record.with_id(
+        "retry-real",
+        1001,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "SCH-1",
+          delay_ms: 5000,
+          generation: 1,
+          reason: "failure",
+        ),
+      ),
+    ])
+
+  let ids = projection.known_issue_ids(folded)
+  assert list.contains(ids, "") == False
+  assert list.contains(ids, "issue-1")
+}
+
 pub fn payload_less_pending_outbox_is_skipped_test() {
   let folded =
     projection.fold([
