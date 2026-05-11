@@ -4,7 +4,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/error
-import scherzo/json_value
+import scherzo/json_value.{type JsonValue}
 import scherzo/session/tokens as session_tokens
 
 pub type ToolCallRecord {
@@ -59,6 +59,31 @@ pub fn encode_set_auto_retry(id: String, enabled enabled: Bool) -> String {
     #("enabled", json.bool(enabled)),
   ])
   |> json.to_string
+}
+
+pub fn encode_set_auto_compaction(id: String, enabled enabled: Bool) -> String {
+  json.object([
+    #("id", json.string(id)),
+    #("type", json.string("set_auto_compaction")),
+    #("enabled", json.bool(enabled)),
+  ])
+  |> json.to_string
+}
+
+pub fn encode_compact(
+  id: String,
+  custom_instructions: Option(String),
+) -> String {
+  let fields = [
+    #("id", json.string(id)),
+    #("type", json.string("compact")),
+  ]
+  let fields = case custom_instructions {
+    Some(instructions) ->
+      list.append(fields, [#("customInstructions", json.string(instructions))])
+    None -> fields
+  }
+  json.object(fields) |> json.to_string
 }
 
 pub fn encode_get_state(id: String) -> String {
@@ -202,6 +227,11 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     None,
     tolerant_optional_string_decoder(),
   )
+  use top_error <- decode.optional_field(
+    "error",
+    None,
+    tolerant_optional_string_decoder(),
+  )
   use assistant_messages <- decode.optional_field(
     "messages",
     [],
@@ -321,6 +351,7 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     error_message: first_non_empty([
       top_error_message_camel,
       top_error_message_snake,
+      top_error,
       message_object.error_message,
     ]),
     method: method,
@@ -377,6 +408,49 @@ fn record_decoder(raw_json: String) -> decode.Decoder(RpcRecord) {
     assistant_messages: assistant_messages,
     raw_json: raw_json,
   ))
+}
+
+pub fn compaction_reason(record: RpcRecord) -> Option(String) {
+  case record.type_ == "compaction_start" || record.type_ == "compaction_end" {
+    False -> None
+    True ->
+      case json_value.parse(record.raw_json) {
+        Error(_) -> None
+        Ok(value) ->
+          first_non_empty([
+            json_string_at(value, ["reason"]),
+            json_string_at(value, ["data", "reason"]),
+            json_string_at(value, ["message", "reason"]),
+          ])
+      }
+  }
+}
+
+fn json_string_at(value: JsonValue, path: List(String)) -> Option(String) {
+  case path, value {
+    [], json_value.JString(text) -> Some(text)
+    [], _ -> None
+    [key, ..rest], json_value.JObject(entries) ->
+      case object_get(entries, key) {
+        Some(child) -> json_string_at(child, rest)
+        None -> None
+      }
+    _, _ -> None
+  }
+}
+
+fn object_get(
+  entries: List(#(String, JsonValue)),
+  key: String,
+) -> Option(JsonValue) {
+  case entries {
+    [] -> None
+    [#(entry_key, value), ..rest] ->
+      case entry_key == key {
+        True -> Some(value)
+        False -> object_get(rest, key)
+      }
+  }
 }
 
 fn tolerant_optional_string_decoder() -> decode.Decoder(Option(String)) {

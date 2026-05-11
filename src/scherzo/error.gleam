@@ -1,4 +1,5 @@
 import gleam/int
+import gleam/option.{type Option, None, Some}
 
 pub type ConfigError {
   UnsupportedTrackerKind(String)
@@ -47,6 +48,11 @@ pub type PiRpcError {
   PiStallTimeout
   PiExited(Int)
   PiProtocolError(String)
+  PiContextWindowExhausted(
+    provider: Option(String),
+    provider_code: Option(String),
+    detail: String,
+  )
 }
 
 pub type AgentRunnerError {
@@ -173,6 +179,7 @@ pub fn pi_rpc_code(error: PiRpcError) -> String {
     PiStallTimeout -> "pi_stall_timeout"
     PiExited(_) -> "pi_exited"
     PiProtocolError(_) -> "pi_protocol_error"
+    PiContextWindowExhausted(..) -> "pi_context_window_exhausted"
   }
 }
 
@@ -183,6 +190,7 @@ pub fn agent_code(error: AgentRunnerError) -> String {
     HookFailedError(_) -> "agent_hook_failed"
     WorkflowHookFailed(_) -> "workflow_hook_failed"
     ProbeFailed(_) -> "agent_probe_failed"
+    PiFailed(PiContextWindowExhausted(..)) -> "pi_context_window_exhausted"
     PiFailed(_) -> "agent_pi_failed"
     WorkflowCommandFailed(code: code, ..) -> code
     StateRefreshFailed(_) -> "agent_state_refresh_failed"
@@ -221,6 +229,19 @@ pub fn pi_rpc_detail(error: PiRpcError) -> String {
     PiExited(status) ->
       "pi process exited with status " <> int.to_string(status)
     PiProtocolError(message) -> "pi protocol error: " <> message
+    PiContextWindowExhausted(provider, provider_code, detail) ->
+      "pi context window exhausted"
+      <> option_detail("provider", provider)
+      <> option_detail("code", provider_code)
+      <> ": "
+      <> detail
+  }
+}
+
+fn option_detail(label: String, value: Option(String)) -> String {
+  case value {
+    Some(text) -> " (" <> label <> ": " <> text <> ")"
+    None -> ""
   }
 }
 
