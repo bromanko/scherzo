@@ -7,6 +7,8 @@ import scherzo/json_value
 import scherzo/log
 import scherzo/path
 import scherzo/port
+import scherzo/result_artifact
+import scherzo/structured_output_source
 import scherzo/workflow_dag
 import simplifile
 
@@ -20,10 +22,46 @@ pub type StructuredOutputError {
   StructuredOutputTruncated(message: String)
   StructuredOutputInvalidJson(message: String)
   StructuredOutputSchemaInvalid(message: String)
+  StructuredOutputToolSourceInvalid(code: String, message: String)
 }
 
 pub type NamedValidatorError {
   NamedValidatorError(message: String)
+}
+
+pub fn validate_agent_result(
+  spec: workflow_dag.StructuredOutputSpec,
+  result: result_artifact.ResultArtifact,
+  secrets: List(String),
+  validator_runner: fn(
+    workflow_dag.StructuredOutputValidator,
+    json_value.JsonValue,
+  ) -> Result(Nil, NamedValidatorError),
+) -> Result(StructuredOutputValidation, StructuredOutputError) {
+  case spec.source {
+    structured_output_source.FinalResponseSource ->
+      validate_final_response(
+        spec,
+        result.structured_response,
+        result.structured_response_truncated,
+        secrets,
+        validator_runner,
+      )
+    structured_output_source.PiToolCallSource(
+      tool_name,
+      require_single,
+      reject_sibling_tool_calls,
+    ) ->
+      validate_tool_call_source(
+        spec,
+        result,
+        tool_name,
+        require_single,
+        reject_sibling_tool_calls,
+        secrets,
+        validator_runner,
+      )
+  }
 }
 
 pub fn validate_final_response(
@@ -49,6 +87,18 @@ pub fn validate_final_response(
         validator_runner,
       )
   }
+}
+
+pub fn source_type_to_string(
+  source: structured_output_source.StructuredOutputSource,
+) -> String {
+  structured_output_source.type_to_string(source)
+}
+
+pub fn source_tool_name(
+  source: structured_output_source.StructuredOutputSource,
+) -> Option(String) {
+  structured_output_source.tool_name(source)
 }
 
 pub fn noop_validator_runner(
@@ -95,6 +145,7 @@ pub fn error_code(error: StructuredOutputError) -> String {
     StructuredOutputTruncated(_) -> "structured_output_truncated"
     StructuredOutputInvalidJson(_) -> "structured_output_invalid_json"
     StructuredOutputSchemaInvalid(_) -> "structured_output_schema_invalid"
+    StructuredOutputToolSourceInvalid(code, _) -> code
   }
 }
 
@@ -103,7 +154,8 @@ pub fn error_message(error: StructuredOutputError) -> String {
     StructuredOutputMissing(message)
     | StructuredOutputTruncated(message)
     | StructuredOutputInvalidJson(message)
-    | StructuredOutputSchemaInvalid(message) -> message
+    | StructuredOutputSchemaInvalid(message)
+    | StructuredOutputToolSourceInvalid(_, message) -> message
   }
 }
 
@@ -158,6 +210,140 @@ fn validate_present_response(
   ) -> Result(Nil, NamedValidatorError),
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
   use value <- result.try(parse_present_json(trimmed))
+  validate_present_value(spec, value, secrets, validator_runner)
+}
+
+fn validate_tool_call_source(
+  spec: workflow_dag.StructuredOutputSpec,
+  agent_result: result_artifact.ResultArtifact,
+  tool_name: String,
+  require_single: Bool,
+  reject_sibling_tool_calls: Bool,
+  secrets: List(String),
+  validator_runner: fn(
+    workflow_dag.StructuredOutputValidator,
+    json_value.JsonValue,
+  ) -> Result(Nil, NamedValidatorError),
+) -> Result(StructuredOutputValidation, StructuredOutputError) {
+  let matching = matching_tool_calls(agent_result.tool_calls, tool_name)
+  case matching {
+    [] -> missing_tool_call_result(spec, tool_name, agent_result.tool_calls)
+    [call] ->
+      validate_single_tool_call(
+        spec,
+        call,
+        tool_name,
+        reject_sibling_tool_calls,
+        secrets,
+        validator_runner,
+      )
+    [_, ..] ->
+      case require_single {
+        True ->
+          Error(tool_source_error(
+            "structured_output_tool_call_multiple",
+            "expected exactly one successful Pi tool call named `"
+              <> tool_name
+              <> "` for structured artifact `"
+              <> spec.artifact_name
+              <> "`, but multiple matching calls were observed",
+          ))
+        False ->
+          Error(tool_source_error(
+            "structured_output_tool_call_multiple",
+            "multiple Pi tool calls named `"
+              <> tool_name
+              <> "` were observed; Scherzo only supports single-call structured-output sources",
+          ))
+      }
+  }
+}
+
+fn validate_single_tool_call(
+  spec: workflow_dag.StructuredOutputSpec,
+  call: result_artifact.ToolCallSubmission,
+  tool_name: String,
+  reject_sibling_tool_calls: Bool,
+  secrets: List(String),
+  validator_runner: fn(
+    workflow_dag.StructuredOutputValidator,
+    json_value.JsonValue,
+  ) -> Result(Nil, NamedValidatorError),
+) -> Result(StructuredOutputValidation, StructuredOutputError) {
+  case reject_sibling_tool_calls && call.sibling_count > 1 {
+    True ->
+      Error(tool_source_error(
+        "structured_output_tool_call_sibling",
+        "Pi tool call `"
+          <> tool_name
+          <> "` for structured artifact `"
+          <> spec.artifact_name
+          <> "` was submitted in the same assistant batch as another tool call",
+      ))
+    False ->
+      case successful_tool_status(call.status) {
+        False ->
+          Error(tool_source_error(
+            "structured_output_tool_call_failed",
+            "Pi tool call `"
+              <> tool_name
+              <> "` for structured artifact `"
+              <> spec.artifact_name
+              <> "` did not report successful completion",
+          ))
+        True ->
+          validate_tool_call_arguments(
+            spec,
+            call,
+            tool_name,
+            secrets,
+            validator_runner,
+          )
+      }
+  }
+}
+
+fn validate_tool_call_arguments(
+  spec: workflow_dag.StructuredOutputSpec,
+  call: result_artifact.ToolCallSubmission,
+  tool_name: String,
+  secrets: List(String),
+  validator_runner: fn(
+    workflow_dag.StructuredOutputValidator,
+    json_value.JsonValue,
+  ) -> Result(Nil, NamedValidatorError),
+) -> Result(StructuredOutputValidation, StructuredOutputError) {
+  case call.arguments_json {
+    None ->
+      Error(tool_source_error(
+        "structured_output_tool_call_arguments_invalid",
+        "Pi tool call `"
+          <> tool_name
+          <> "` for structured artifact `"
+          <> spec.artifact_name
+          <> "` did not include JSON arguments",
+      ))
+    Some(arguments_json) -> {
+      use value <- result.try(parse_tool_arguments(arguments_json, tool_name))
+      use value <- result.try(require_tool_arguments_object(
+        value,
+        tool_name,
+        spec.artifact_name,
+      ))
+      validate_present_value(spec, value, secrets, validator_runner)
+    }
+  }
+}
+
+fn validate_present_value(
+  spec: workflow_dag.StructuredOutputSpec,
+  value: json_value.JsonValue,
+  secrets: List(String),
+  validator_runner: fn(
+    workflow_dag.StructuredOutputValidator,
+    json_value.JsonValue,
+  ) -> Result(Nil, NamedValidatorError),
+) -> Result(StructuredOutputValidation, StructuredOutputError) {
   use value <- result.try(validate_schema(spec.schema, value))
   use value <- result.try(validate_named_validator(
     spec.validator,
@@ -166,6 +352,88 @@ fn validate_present_response(
   ))
   let redacted = redact_value(value, secrets)
   Ok(StructuredOutputPresent(json_value.to_string(redacted)))
+}
+
+fn matching_tool_calls(
+  calls: List(result_artifact.ToolCallSubmission),
+  tool_name: String,
+) -> List(result_artifact.ToolCallSubmission) {
+  list.filter(calls, fn(call) { call.name == tool_name })
+}
+
+fn missing_tool_call_result(
+  spec: workflow_dag.StructuredOutputSpec,
+  tool_name: String,
+  calls: List(result_artifact.ToolCallSubmission),
+) -> Result(StructuredOutputValidation, StructuredOutputError) {
+  case calls, spec.required {
+    [], False -> Ok(StructuredOutputAbsent)
+    [], True ->
+      Error(tool_source_error(
+        "structured_output_tool_call_missing",
+        "required Pi tool call `"
+          <> tool_name
+          <> "` for structured artifact `"
+          <> spec.artifact_name
+          <> "`, but no Pi tool calls were observed",
+      ))
+    _, _ ->
+      Error(tool_source_error(
+        "structured_output_tool_call_wrong_name",
+        "required Pi tool call `"
+          <> tool_name
+          <> "` for structured artifact `"
+          <> spec.artifact_name
+          <> "`, but only different tool names were observed",
+      ))
+  }
+}
+
+fn successful_tool_status(status: Option(String)) -> Bool {
+  case status {
+    Some(value) -> {
+      let normalized = string.lowercase(string.trim(value))
+      normalized == "success" || normalized == "succeeded"
+    }
+    None -> False
+  }
+}
+
+fn parse_tool_arguments(
+  arguments_json: String,
+  tool_name: String,
+) -> Result(json_value.JsonValue, StructuredOutputError) {
+  case json_value.parse(arguments_json) {
+    Ok(value) -> Ok(value)
+    Error(Nil) ->
+      Error(tool_source_error(
+        "structured_output_tool_call_arguments_invalid",
+        "Pi tool call `" <> tool_name <> "` arguments were not valid JSON",
+      ))
+  }
+}
+
+fn require_tool_arguments_object(
+  value: json_value.JsonValue,
+  tool_name: String,
+  artifact_name: String,
+) -> Result(json_value.JsonValue, StructuredOutputError) {
+  case value {
+    json_value.JObject(_) -> Ok(value)
+    _ ->
+      Error(tool_source_error(
+        "structured_output_tool_call_arguments_invalid",
+        "Pi tool call `"
+          <> tool_name
+          <> "` for structured artifact `"
+          <> artifact_name
+          <> "` arguments must be a JSON object",
+      ))
+  }
+}
+
+fn tool_source_error(code: String, message: String) -> StructuredOutputError {
+  StructuredOutputToolSourceInvalid(code, message)
 }
 
 fn parse_present_json(

@@ -184,6 +184,24 @@ pub fn workflow_fingerprint_changes_for_structured_output_contract_test() {
   )
 }
 
+pub fn workflow_fingerprint_changes_for_structured_output_source_test() {
+  let final_response =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    workspace: main\n    structured_output:\n      artifact_name: example_artifact\n      schema:\n        required: [schema_version, artifact_type]\n",
+    )
+  let tool_call =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    workspace: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+    )
+
+  assert workflow_fingerprint.for_dag("implementation", final_response)
+    != workflow_fingerprint.for_dag("implementation", tool_call)
+  assert string.contains(
+    workflow_fingerprint.canonical_input(tool_call),
+    "submit_example_artifact",
+  )
+}
+
 pub fn workflow_dag_fingerprint_includes_explicit_workspace_profile_test() {
   let noop =
     parse(

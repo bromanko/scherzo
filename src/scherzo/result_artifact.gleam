@@ -4,6 +4,15 @@ import gleam/string
 import scherzo/log
 import scherzo/pi/protocol
 
+pub type ToolCallSubmission {
+  ToolCallSubmission(
+    name: String,
+    arguments_json: Option(String),
+    status: Option(String),
+    sibling_count: Int,
+  )
+}
+
 /// Captured assistant result text.
 ///
 /// `final_response` is the display-safe response used by handoff and step
@@ -16,6 +25,7 @@ pub type ResultArtifact {
     source: String,
     structured_response: Option(String),
     structured_response_truncated: Bool,
+    tool_calls: List(ToolCallSubmission),
   )
 }
 
@@ -28,12 +38,22 @@ pub fn from_final_response(
   truncated: Bool,
   source: String,
 ) -> ResultArtifact {
+  from_final_response_with_tool_calls(final_response, truncated, source, [])
+}
+
+pub fn from_final_response_with_tool_calls(
+  final_response: Option(String),
+  truncated: Bool,
+  source: String,
+  tool_calls: List(ToolCallSubmission),
+) -> ResultArtifact {
   ResultArtifact(
     final_response: final_response,
     truncated: truncated,
     source: source,
     structured_response: final_response,
     structured_response_truncated: truncated,
+    tool_calls: tool_calls,
   )
 }
 
@@ -42,11 +62,13 @@ pub fn from_records(
   secrets: List(String),
   max_chars: Int,
 ) -> ResultArtifact {
-  case last_non_empty(assistant_messages(records)) {
+  let tool_calls = tool_call_submissions(records)
+  let result = case last_non_empty(assistant_messages(records)) {
     Some(text) ->
       build_result(text, "completed_assistant_messages", secrets, max_chars)
     None -> empty()
   }
+  ResultArtifact(..result, tool_calls: tool_calls)
 }
 
 pub fn append(
@@ -64,6 +86,7 @@ pub fn append(
     source: source,
     structured_response: structured_response,
     structured_response_truncated: structured_response_truncated,
+    tool_calls: list.append(existing.tool_calls, next.tool_calls),
   )
 }
 
@@ -134,6 +157,7 @@ fn build_result(
     source: source,
     structured_response: Some(redacted),
     structured_response_truncated: False,
+    tool_calls: [],
   )
 }
 
@@ -156,6 +180,47 @@ fn assistant_messages(records: List(protocol.RpcRecord)) -> List(String) {
     [] -> []
     [record, ..rest] ->
       list.append(record.assistant_messages, assistant_messages(rest))
+  }
+}
+
+fn tool_call_submissions(
+  records: List(protocol.RpcRecord),
+) -> List(ToolCallSubmission) {
+  records
+  |> list.flat_map(fn(record) {
+    record.tool_calls
+    |> list.map(fn(call) {
+      ToolCallSubmission(
+        name: call.name,
+        arguments_json: call.arguments_json,
+        status: tool_status_for_call(records, call),
+        sibling_count: call.sibling_count,
+      )
+    })
+  })
+}
+
+fn tool_status_for_call(
+  records: List(protocol.RpcRecord),
+  call: protocol.ToolCallRecord,
+) -> Option(String) {
+  case records {
+    [] -> None
+    [record, ..rest] ->
+      case record_matches_tool_call(record, call), record.tool_status {
+        True, Some(status) -> Some(status)
+        _, _ -> tool_status_for_call(rest, call)
+      }
+  }
+}
+
+fn record_matches_tool_call(
+  record: protocol.RpcRecord,
+  call: protocol.ToolCallRecord,
+) -> Bool {
+  case call.id {
+    Some(id) -> record.tool_call_id == Some(id)
+    None -> record.tool_name == Some(call.name)
   }
 }
 
