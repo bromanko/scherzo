@@ -43,10 +43,6 @@ pub type ProfileResolutionError {
     provided: List(config_types.WorkspaceCapability),
     missing: List(config_types.WorkspaceCapability),
   )
-  WorkspaceDriverInvocationUnavailable(
-    workflow_id: String,
-    profile_name: String,
-  )
 }
 
 pub fn selected_name(
@@ -67,7 +63,6 @@ pub fn resolve(
   case dict.get(orchestrator.workspace_profiles.profiles, profile_name) {
     Ok(profile) -> {
       use _ <- result.try(validate_capabilities(dag, profile))
-      use _ <- result.try(validate_dispatchable_profile(dag, profile))
       Ok(profile)
     }
     Error(_) ->
@@ -98,19 +93,10 @@ pub fn validate_capabilities(
   }
 }
 
-pub fn validate_dispatchable_profile(
-  _dag: workflow_dag.WorkflowDag,
-  _profile: config_types.WorkspaceHookProfile,
-) -> Result(Nil, ProfileResolutionError) {
-  Ok(Nil)
-}
-
 pub fn error_code(error: ProfileResolutionError) -> String {
   case error {
     UnknownWorkspaceProfile(..) -> "unknown_workspace_profile"
     WorkspaceCapabilitiesUnavailable(..) -> "workspace_capabilities_unavailable"
-    WorkspaceDriverInvocationUnavailable(..) ->
-      "workspace_driver_invocation_unavailable"
   }
 }
 
@@ -144,12 +130,6 @@ pub fn error_message(error: ProfileResolutionError) -> String {
       <> config_types.workspace_capabilities_to_string(provided)
       <> "; missing: "
       <> config_types.workspace_capabilities_to_string(missing)
-    WorkspaceDriverInvocationUnavailable(workflow_id, profile_name) ->
-      "workflow "
-      <> workflow_id
-      <> " selects workspace_profile "
-      <> profile_name
-      <> ", but the selected workspace profile is not dispatchable. See docs/runbooks/workspace-driver-migration.md"
   }
 }
 
