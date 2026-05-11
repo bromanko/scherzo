@@ -259,8 +259,8 @@ pub fn loads_hook_backed_profile_with_driver_capabilities_test() {
   assert dict.has_key(bundle.workflows, "noop")
 }
 
-pub fn blocks_selected_driver_profile_after_capability_match_test() {
-  let dir = "test/tmp/runtime-bundle-driver-blocked"
+pub fn loads_selected_driver_profile_after_capability_match_test() {
+  let dir = "test/tmp/runtime-bundle-driver-dispatchable"
   reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
   let assert Ok(Nil) =
@@ -271,14 +271,63 @@ pub fn blocks_selected_driver_profile_after_capability_match_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n        capabilities: [assert-only]\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: scripts/noop\n        lifecycle: [create, before-step, after-step, remove]\n        capabilities: [assert-only]\nrouting:\n  workflows:\n    noop: workflows/noop.yaml\n",
     )
-  let assert Error(runtime_bundle.BundleError(code, message)) =
+  let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
-  assert code == "workspace_driver_invocation_unavailable"
-  assert string.contains(message, "workflow noop")
-  assert string.contains(message, "workspace_profile noop")
-  assert string.contains(message, "docs/runbooks/workspace-driver-migration.md")
+  assert dict.has_key(bundle.workflows, "noop")
+}
+
+pub fn dogfood_workflows_select_existing_driver_profile_test() {
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(".scherzo/scherzo.yaml"), env)
+  let assert Ok(profile) =
+    dict.get(bundle.orchestrator.workspace_profiles.profiles, "dogfood-jj")
+  assert profile.hooks == None
+  let assert Some(driver) = profile.driver
+  assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
+  assert driver.lifecycle
+    == [
+      config_types.LifecycleCreate,
+      config_types.LifecycleBeforeStep,
+      config_types.LifecycleAfterStep,
+      config_types.LifecycleRemove,
+    ]
+  assert driver.capabilities
+    == [
+      config_types.WorkspaceStatus,
+      config_types.WorkspaceDiff,
+      config_types.WorkspaceChangedFiles,
+      config_types.WorkspaceAssertOnly,
+    ]
+
+  assert_dogfood_workflows_select_profile(
+    [
+      "research",
+      "implementation",
+      "execplan",
+      "execplan-revision",
+      "execplan-implementation",
+      "merge-conflict-resolution",
+      "github-pr-conflict-scout",
+    ],
+    bundle.workflows,
+  )
+}
+
+fn assert_dogfood_workflows_select_profile(
+  ids: List(String),
+  workflows: dict.Dict(String, workflow_dag.WorkflowDag),
+) -> Nil {
+  case ids {
+    [] -> Nil
+    [id, ..rest] -> {
+      let assert Ok(dag) = dict.get(workflows, id)
+      assert dag.workspace_profile == Some("dogfood-jj")
+      assert dag.workspace_capabilities == []
+      assert_dogfood_workflows_select_profile(rest, workflows)
+    }
+  }
 }
 
 pub fn rejects_default_profile_missing_workspace_capabilities_test() {
@@ -460,21 +509,25 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
   let assert Ok(profile) =
     dict.get(bundle.orchestrator.workspace_profiles.profiles, "dogfood-jj")
   assert profile.name == "dogfood-jj"
-  assert profile.source == config_types.ConfiguredWorkspaceHooks
-  assert profile.driver == None
-  let assert Some(hooks) = profile.hooks
-  assert hooks.timeout_ms == 60_000
-  let assert Some(create_hook) = hooks.create
-  assert string.contains(create_hook, "scripts/scherzo-jj-workspace")
-  assert string.contains(create_hook, "after-create")
-  let assert Some(before_step_hook) = hooks.before_step
-  assert string.contains(before_step_hook, "scripts/scherzo-jj-workspace")
-  assert string.contains(before_step_hook, "before-run")
-  let assert Some(after_step_hook) = hooks.after_step
-  assert string.contains(after_step_hook, "true")
-  let assert Some(remove_hook) = hooks.remove
-  assert string.contains(remove_hook, "scripts/scherzo-jj-workspace")
-  assert string.contains(remove_hook, "before-remove")
+  assert profile.source == config_types.ConfiguredWorkspaceDriver
+  assert profile.hooks == None
+  let assert Some(driver) = profile.driver
+  assert driver.command == "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
+  assert driver.lifecycle
+    == [
+      config_types.LifecycleCreate,
+      config_types.LifecycleBeforeStep,
+      config_types.LifecycleAfterStep,
+      config_types.LifecycleRemove,
+    ]
+  assert driver.capabilities
+    == [
+      config_types.WorkspaceStatus,
+      config_types.WorkspaceDiff,
+      config_types.WorkspaceChangedFiles,
+      config_types.WorkspaceAssertOnly,
+    ]
+  assert driver.timeout_ms == 60_000
 
   list.each(
     [

@@ -246,6 +246,58 @@ pub fn selected_profile_uses_selected_hook_bodies_test() {
   assert remove_profile == "noop"
 }
 
+fn driver_profile_orchestrator(dir: String) -> config_types.OrchestratorConfig {
+  let source =
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: sh driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        capabilities: [status, assert-only]\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(root(source), dir <> "/scherzo.yaml", env)
+  orchestrator
+}
+
+fn write_lifecycle_driver(dir: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/driver.sh",
+      "#!/bin/sh\nset -eu\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
+    )
+  Nil
+}
+
+pub fn driver_profile_invokes_lifecycle_create_before_after_and_remove_test() {
+  let dir = "test/tmp/workspace-run-driver-lifecycle"
+  reset_dir(dir)
+  write_lifecycle_driver(dir)
+  let orchestrator = driver_profile_orchestrator(dir)
+  let profile = named_profile(orchestrator, "dogfood-jj")
+  let assert Ok(main) =
+    workspace_run.prepare_step(
+      issue(),
+      "implementation",
+      "run-driver",
+      "implement",
+      workflow_dag.WorkspaceRef(name: "main", from: None),
+      orchestrator,
+      profile,
+      dict.new(),
+    )
+  let assert Ok(True) = simplifile.is_file(main.path <> "/created")
+
+  workspace_run.after_step(issue(), "implement", main, orchestrator, profile)
+  let assert Ok(Nil) =
+    workspace_run.cleanup_run(main.run_root, orchestrator, profile)
+  let assert Ok(False) = simplifile.is_directory(main.run_root)
+  let assert Ok(log) = simplifile.read(orchestrator.config_dir <> "/driver.log")
+
+  assert string.contains(log, "lifecycle create|")
+  assert string.contains(log, "lifecycle before-step|")
+  assert string.contains(log, "lifecycle after-step|")
+  assert string.contains(log, "lifecycle remove|")
+  assert string.contains(
+    log,
+    "|profile=dogfood-jj|driver=sh driver.sh|caps=status assert-only",
+  )
+}
+
 pub fn scheduled_run_paths_and_hook_env_are_issue_free_test() {
   let dir = "test/tmp/workspace-run-scheduled"
   reset_dir(dir)
