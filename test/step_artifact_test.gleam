@@ -7,6 +7,7 @@ import scherzo/model_config
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
+import scherzo/structured_output_metadata
 import scherzo/template
 import scherzo/workflow_dag
 
@@ -86,6 +87,14 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
       schema_status: "valid",
       source_type: "final_response",
       source_tool_name: None,
+      baseline_required_keys: ["summary", "findings"],
+      validators: [
+        structured_output_metadata.ValidatorSummary(
+          name: "shape",
+          validator_type: "json_schema",
+          status: "passed",
+        ),
+      ],
       retry: None,
     )
   let artifact =
@@ -191,6 +200,47 @@ pub fn structured_output_error_exposes_error_status_test() {
     == template.VNil
 }
 
+pub fn structured_output_error_details_encode_decode_and_expose_locals_test() {
+  let artifact =
+    step_artifact.from_agent_structured_output_error_with_details(
+      "review_json",
+      agent_success("not json"),
+      [],
+      limits(),
+      "structured_output_command_rejected",
+      "step review_json validator rejected payload",
+      "review_result",
+      "json",
+      Some(step_artifact.StructuredOutputErrorDetails(
+        code: "structured_output_command_rejected",
+        retryable: True,
+        validator_name: Some("shape"),
+        validator_type: Some("command"),
+        diagnostic_summary: "lane.category is required",
+        stdout_truncated: False,
+        stderr_truncated: True,
+      )),
+    )
+  let assert Ok(decoded) =
+    step_artifact.decode_string(step_artifact.to_string(artifact))
+  let assert Some(step_artifact.StructuredOutputError(_, _, _, Some(details), _)) =
+    decoded.structured_output
+  assert details.retryable
+  assert details.validator_name == Some("shape")
+  assert details.stderr_truncated
+  let locals =
+    step_artifact.to_template_locals(
+      dict.from_list([#("review_json", decoded)]),
+    )
+  assert lookup(
+      locals,
+      "steps.review_json.structured_output.failure_validator_name",
+    )
+    == template.VString("shape")
+  assert lookup(locals, "steps.review_json.structured_output.failure_retryable")
+    == template.VBool(True)
+}
+
 pub fn structured_output_retry_info_encodes_decodes_and_exposes_locals_test() {
   let artifact =
     step_artifact.from_agent_structured_output_error(
@@ -227,7 +277,7 @@ pub fn structured_output_retry_info_encodes_decodes_and_exposes_locals_test() {
     step_artifact.with_structured_output_retry_info(artifact, retry)
   let assert Ok(decoded) =
     step_artifact.decode_string(step_artifact.to_string(artifact))
-  let assert Some(step_artifact.StructuredOutputError(_, _, _, Some(retry))) =
+  let assert Some(step_artifact.StructuredOutputError(_, _, _, _, Some(retry))) =
     decoded.structured_output
   assert retry.outcome == "failed"
   assert retry.attempts == 2

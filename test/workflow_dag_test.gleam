@@ -51,7 +51,7 @@ pub fn parses_agent_structured_output_defaults_test() {
   assert spec.required == True
   assert spec.source == structured_output_source.FinalResponseSource
   assert spec.schema == workflow_dag.StructuredObjectSchema([])
-  assert spec.validator == None
+  assert spec.validators == []
   assert spec.validation_retries == 1
 }
 
@@ -71,7 +71,22 @@ pub fn parses_agent_structured_output_json_contract_test() {
   assert spec.source == structured_output_source.FinalResponseSource
   assert spec.schema
     == workflow_dag.StructuredObjectSchema(["summary", "findings"])
-  assert spec.validator == Some(workflow_dag.ReviewLaneDraftValidator)
+  assert spec.validators
+    == [
+      workflow_dag.CommandValidator(
+        name: "review_lane_draft_compat",
+        argv: [
+          "python3",
+          "scripts/scherzo-review",
+          "validate-structured-output",
+          "--validator",
+          "review_lane_draft",
+        ],
+        timeout_ms: 30_000,
+        working_directory: workflow_dag.ValidatorInRepository,
+        env: [],
+      ),
+    ]
   assert spec.validation_retries == 0
 }
 

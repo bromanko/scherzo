@@ -23,6 +23,7 @@ in
     pkgs.erlang
     pkgs.rebar3
     pkgs.nodejs_22
+    (pkgs.python3.withPackages (ps: [ ps.jsonschema ]))
     pkgs.git
     pkgs.jq
     pkgs.selfci

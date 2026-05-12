@@ -48,7 +48,21 @@ fn validate_result(
     spec,
     result,
     [],
-    structured_output.scherzo_review_validator_runner("."),
+    structured_output.default_validator_runner(
+      structured_output.default_validator_context(
+        ".scherzo",
+        ".",
+        "review_native",
+        "test_run",
+        "lane_correctness",
+        1,
+        ".",
+        spec.artifact_name,
+        "json",
+        spec.source,
+      ),
+      [],
+    ),
   )
 }
 

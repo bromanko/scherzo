@@ -55,6 +55,17 @@ pub fn start_argv(
   |> result.map_error(fn(error) { raw_error("start_argv", error) })
 }
 
+pub fn start_argv_with_input(
+  executable: String,
+  args: List(String),
+  cwd: String,
+  env: List(#(String, String)),
+  stdin: String,
+) -> Result(Process, PortError) {
+  ffi_start_argv_with_input(executable, args, cwd, env, stdin)
+  |> result.map_error(fn(error) { raw_error("start_argv_with_input", error) })
+}
+
 pub fn send_line(process: Process, line: String) -> Result(Nil, PortError) {
   ffi_send_line(process, line)
   |> result.map_error(fn(error) { raw_error("send_line", error) })
@@ -161,6 +172,15 @@ fn ffi_start_argv(
   args: List(String),
   cwd: String,
   env: List(#(String, String)),
+) -> Result(Process, String)
+
+@external(erlang, "scherzo_port_ffi", "start_argv_with_input")
+fn ffi_start_argv_with_input(
+  executable: String,
+  args: List(String),
+  cwd: String,
+  env: List(#(String, String)),
+  stdin: String,
 ) -> Result(Process, String)
 
 @external(erlang, "scherzo_port_ffi", "send_line")

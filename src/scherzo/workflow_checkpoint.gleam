@@ -6,6 +6,7 @@ import scherzo/state/artifact_store
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/step_artifact
+import scherzo/structured_output_metadata
 import scherzo/workflow_attempt
 import scherzo/workflow_identity
 import scherzo/workspace_run
@@ -28,6 +29,7 @@ pub type StructuredOutputWrite {
     artifact_name: String,
     format: String,
     schema_required_keys: List(String),
+    validation: structured_output_metadata.ValidationMetadata,
     payload_json: String,
   )
 }
@@ -250,6 +252,7 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
         write.artifact_name,
         write.format,
         write.schema_required_keys,
+        write.validation,
         write.payload_json,
       )
       |> result.map(fn(ref) {

@@ -18,7 +18,17 @@ steps:
         require_single: true
         reject_sibling_tool_calls: true
       required: true
-      validator: review_lane_draft
+      validators:
+        - name: review_lane_draft
+          type: command
+          argv:
+            - python3
+            - scripts/scherzo-review
+            - validate-structured-output
+            - --validator
+            - review_lane_draft
+          timeout_ms: 30000
+          working_directory: repository
       schema:
         type: object
         required:
@@ -48,7 +58,17 @@ steps:
         require_single: true
         reject_sibling_tool_calls: true
       required: true
-      validator: review_lane_draft
+      validators:
+        - name: review_lane_draft
+          type: command
+          argv:
+            - python3
+            - scripts/scherzo-review
+            - validate-structured-output
+            - --validator
+            - review_lane_draft
+          timeout_ms: 30000
+          working_directory: repository
       schema:
         type: object
         required:
@@ -78,7 +98,17 @@ steps:
         require_single: true
         reject_sibling_tool_calls: true
       required: true
-      validator: review_lane_draft
+      validators:
+        - name: review_lane_draft
+          type: command
+          argv:
+            - python3
+            - scripts/scherzo-review
+            - validate-structured-output
+            - --validator
+            - review_lane_draft
+          timeout_ms: 30000
+          working_directory: repository
       schema:
         type: object
         required:

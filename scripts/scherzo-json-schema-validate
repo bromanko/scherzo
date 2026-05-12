@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import sys
+import traceback
+
+try:
+    import jsonschema
+    from jsonschema import Draft202012Validator
+except Exception as exc:  # pragma: no cover - exercised only when env is broken
+    print(json.dumps({
+        "status": "error",
+        "code": "json_schema_config_error",
+        "message": f"jsonschema import failed: {exc}",
+        "instance_path": "",
+        "schema_path": "",
+        "schema_file": "",
+        "draft": "2020-12",
+    }))
+    sys.exit(2)
+
+
+def diagnostic(status, code, message, instance_path="", schema_path="", schema_file="", draft="2020-12"):
+    return {
+        "status": status,
+        "code": code,
+        "message": message,
+        "instance_path": instance_path,
+        "schema_path": schema_path,
+        "schema_file": schema_file,
+        "draft": draft,
+    }
+
+
+def emit(diag, status):
+    print(json.dumps(diag, separators=(",", ":"), sort_keys=True))
+    sys.exit(status)
+
+
+def safe_schema_path(path):
+    if not path or os.path.isabs(path):
+        return False
+    normalized = os.path.normpath(path)
+    if normalized == ".." or normalized.startswith("../"):
+        return False
+    return True
+
+
+def pointer(parts):
+    if not parts:
+        return ""
+    escaped = []
+    for part in parts:
+        text = str(part).replace("~", "~0").replace("/", "~1")
+        escaped.append(text)
+    return "/" + "/".join(escaped)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--schema", required=True)
+    parser.add_argument("--draft", default="2020-12")
+    args = parser.parse_args()
+
+    if args.draft != "2020-12":
+        emit(diagnostic(
+            "error",
+            "json_schema_config_error",
+            f"unsupported JSON Schema draft: {args.draft}",
+            schema_file=args.schema,
+            draft=args.draft,
+        ), 2)
+
+    if not safe_schema_path(args.schema):
+        emit(diagnostic(
+            "error",
+            "json_schema_config_error",
+            "schema path must be repository-relative and confined to the repository",
+            schema_file=args.schema,
+            draft=args.draft,
+        ), 2)
+
+    try:
+        with open(args.schema, "r", encoding="utf-8") as handle:
+            schema = json.load(handle)
+    except FileNotFoundError:
+        emit(diagnostic(
+            "error",
+            "json_schema_config_error",
+            f"schema file not found: {args.schema}",
+            schema_file=args.schema,
+            draft=args.draft,
+        ), 2)
+    except Exception as exc:
+        emit(diagnostic(
+            "error",
+            "json_schema_config_error",
+            f"could not read schema file: {exc}",
+            schema_file=args.schema,
+            draft=args.draft,
+        ), 2)
+
+    try:
+        Draft202012Validator.check_schema(schema)
+    except Exception as exc:
+        emit(diagnostic(
+            "error",
+            "json_schema_config_error",
+            f"invalid JSON Schema document: {exc}",
+            schema_file=args.schema,
+            draft=args.draft,
+        ), 2)
+
+    try:
+        payload = json.loads(sys.stdin.read())
+    except Exception as exc:
+        emit(diagnostic(
+            "error",
+            "json_schema_config_error",
+            f"payload on stdin is not valid JSON: {exc}",
+            schema_file=args.schema,
+            draft=args.draft,
+        ), 2)
+
+    validator = Draft202012Validator(schema)
+    errors = sorted(validator.iter_errors(payload), key=lambda err: list(err.path))
+    if not errors:
+        emit(diagnostic(
+            "accepted",
+            "ok",
+            "payload satisfies schema",
+            schema_file=args.schema,
+            draft=args.draft,
+        ), 0)
+
+    first = errors[0]
+    emit(diagnostic(
+        "rejected",
+        "json_schema_rejected",
+        first.message,
+        instance_path=pointer(first.absolute_path),
+        schema_path=pointer(first.absolute_schema_path),
+        schema_file=args.schema,
+        draft=args.draft,
+    ), 1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        print(json.dumps(diagnostic(
+            "error",
+            "json_schema_config_error",
+            "unexpected helper failure",
+        )))
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(2)

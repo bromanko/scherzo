@@ -1978,7 +1978,7 @@ pub fn native_review_missing_nested_lane_metadata_retries_and_records_diagnostic
   assert retry.outcome == "succeeded"
   let assert [initial, retried] = retry.diagnostics
   assert initial.status == "error"
-  assert initial.failure_code == Some("structured_output_schema_invalid")
+  assert initial.failure_code == Some("structured_output_command_rejected")
   assert string.contains(initial.message, "lane.category")
   assert retried.status == "valid"
   let assert Ok(_) = simplifile.read(metadata.path)
@@ -2126,6 +2126,7 @@ pub fn over_display_limit_malformed_json_reports_invalid_not_truncated_test() {
       _,
       message,
       _,
+      _,
     )),
     ..,
   )) = dict.get(failure.artifacts, "review_json")
@@ -2159,6 +2160,7 @@ pub fn invalid_json_structured_output_fails_agent_step_clearly_test() {
     _,
     _,
     message,
+    _,
     Some(retry),
   )) = artifact.structured_output
   assert string.contains(message, "review_json")
@@ -2260,7 +2262,7 @@ pub fn structured_artifact_write_failure_fails_step_without_metadata_test() {
   let assert Ok(artifact) = dict.get(failure.artifacts, "review_json")
   assert artifact.failure_code
     == Some("structured_output_artifact_write_failed")
-  let assert Some(step_artifact.StructuredOutputError(_, _, message, _)) =
+  let assert Some(step_artifact.StructuredOutputError(_, _, message, _, _)) =
     artifact.structured_output
   assert string.contains(message, "structured write failed")
 }
