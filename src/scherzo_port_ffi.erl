@@ -171,7 +171,7 @@ read_stdout_line(Process, TimeoutMs) ->
                         erase_stdout_state(Key),
                         {error, <<"closed">>};
                     wait ->
-                        read_stdout_line_loop(Port, Key, State, Timeout)
+                        read_stdout_line_loop(Port, Key, State, now_ms() + Timeout)
                 end
             catch
                 Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
@@ -179,8 +179,14 @@ read_stdout_line(Process, TimeoutMs) ->
         error -> {error, <<"closed">>}
     end.
 
-read_stdout_line_loop(Port, Key, State, Timeout) ->
-    receive
+read_stdout_line_loop(Port, Key, State, Deadline) ->
+    Timeout = remaining_ms(Deadline),
+    case Timeout =< 0 of
+        true ->
+            put_stdout_state(Key, State),
+            {error, <<"timeout">>};
+        false ->
+            receive
         {Port, {data, Bytes}} ->
             Buffer = maps:get(buffer, State, <<>>),
             NextState = State#{buffer => <<Buffer/binary, Bytes/binary>>},
@@ -199,7 +205,7 @@ read_stdout_line_loop(Port, Key, State, Timeout) ->
                     {error, <<"closed">>};
                 wait ->
                     put_stdout_state(Key, NextState),
-                    read_stdout_line_loop(Port, Key, NextState, Timeout)
+                    read_stdout_line_loop(Port, Key, NextState, Deadline)
             end;
         {Port, {exit_status, Status}} ->
             NextState = State#{status => {exit_status, Status}},
@@ -218,7 +224,7 @@ read_stdout_line_loop(Port, Key, State, Timeout) ->
                     {error, <<"closed">>};
                 wait ->
                     put_stdout_state(Key, NextState),
-                    read_stdout_line_loop(Port, Key, NextState, Timeout)
+                    read_stdout_line_loop(Port, Key, NextState, Deadline)
             end;
         {'EXIT', Port, _Reason} ->
             NextState = State#{status => closed},
@@ -237,11 +243,12 @@ read_stdout_line_loop(Port, Key, State, Timeout) ->
                     {error, <<"closed">>};
                 wait ->
                     put_stdout_state(Key, NextState),
-                    read_stdout_line_loop(Port, Key, NextState, Timeout)
+                    read_stdout_line_loop(Port, Key, NextState, Deadline)
             end
-    after Timeout ->
-        put_stdout_state(Key, State),
-        {error, <<"timeout">>}
+            after Timeout ->
+                put_stdout_state(Key, State),
+                {error, <<"timeout">>}
+            end
     end.
 
 get_stdout_state(Key) ->

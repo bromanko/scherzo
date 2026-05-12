@@ -143,6 +143,24 @@ pub fn port_read_timeout_leaves_process_terminable_test() {
   let assert Ok(Nil) = port.terminate(process)
 }
 
+pub fn port_read_timeout_is_absolute_for_partial_lines_test() {
+  let cwd = "test/tmp/port-partial-line-timeout"
+  reset_dir(cwd)
+
+  let assert Ok(process) =
+    port.start(
+      "i=0; while [ $i -lt 10 ]; do printf x; i=$((i + 1)); sleep 0.03; done; sleep 1",
+      cwd,
+    )
+  let started_ms = monotonic_ms()
+  let result = port.read_stdout_line(process, 120)
+  let elapsed_ms = monotonic_ms() - started_ms
+  let _ = port.terminate(process)
+
+  let assert Error(port.ReadTimeout) = result
+  assert elapsed_ms < 250
+}
+
 pub fn port_diagnostics_survive_await_cleanup_test() {
   let cwd = "test/tmp/port-diagnostics-cleanup"
   reset_dir(cwd)
@@ -208,6 +226,9 @@ fn wait_until_dead(pid: Int, attempts: Int) -> Bool {
 
 @external(erlang, "scherzo_test_ffi", "pid_alive")
 fn pid_alive(pid: Int) -> Bool
+
+@external(erlang, "scherzo_time_ffi", "monotonic_ms")
+fn monotonic_ms() -> Int
 
 @external(erlang, "erlang", "integer_to_binary")
 fn int_to_string(value: Int) -> String

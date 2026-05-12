@@ -877,7 +877,11 @@ pub fn retry_candidate_can_dispatch_self_claimed_issue_test() {
   let core.Transition(state: next, effects: effects) =
     core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(updated)))
 
-  assert effects == [core.Dispatch(updated)]
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "retry_dispatch"),
+      core.Dispatch(updated),
+    ]
   assert !dict.has_key(next.retry_attempts, "a")
   assert dict.has_key(next.claimed, "a")
 }
@@ -900,7 +904,11 @@ pub fn continuation_retry_can_dispatch_self_claimed_issue_test() {
   let core.Transition(state: next, effects: effects) =
     core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(issue)))
 
-  assert effects == [core.Dispatch(issue)]
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "retry_dispatch"),
+      core.Dispatch(issue),
+    ]
   assert !dict.has_key(next.retry_attempts, "a")
   assert dict.has_key(next.claimed, "a")
 }
@@ -920,7 +928,11 @@ pub fn retry_candidate_terminal_issue_clears_retry_without_no_slots_test() {
   let core.Transition(state: next, effects: effects) =
     core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(done)))
 
-  assert effects == [core.ReleaseClaim("a")]
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "retry_not_dispatchable"),
+      core.ReleaseClaim("a"),
+    ]
   assert !dict.has_key(next.retry_attempts, "a")
   assert !dict.has_key(next.claimed, "a")
 }
@@ -940,7 +952,11 @@ pub fn retry_candidate_non_active_issue_clears_retry_without_no_slots_test() {
   let core.Transition(state: next, effects: effects) =
     core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(backlog)))
 
-  assert effects == [core.ReleaseClaim("a")]
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "retry_not_dispatchable"),
+      core.ReleaseClaim("a"),
+    ]
   assert !dict.has_key(next.retry_attempts, "a")
   assert !dict.has_key(next.claimed, "a")
 }
@@ -1008,7 +1024,11 @@ pub fn retry_timer_handling_test() {
 
   let core.Transition(effects: absent, state: released) =
     core.handle_retry_candidate(kept_again, config(), "a", Ok(None))
-  assert absent == [core.ReleaseClaim("a")]
+  assert absent
+    == [
+      core.CancelRetry("a", 3, "retry_issue_missing"),
+      core.ReleaseClaim("a"),
+    ]
   assert !dict.has_key(released.claimed, "a")
 }
 

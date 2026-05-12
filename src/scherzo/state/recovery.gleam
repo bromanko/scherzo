@@ -1799,20 +1799,44 @@ fn restore_scheduled_retry(
   now_ms: Int,
 ) -> Build {
   case list.contains(build.auto_unparked_issue_ids, issue_id) {
-    True -> build
+    True ->
+      cancel_recovered_retry(
+        build,
+        issue_id,
+        generation,
+        "recovery_auto_unparked",
+      )
     False ->
       case dict.has_key(build.runtime.parked, issue_id) {
-        True -> build
+        True ->
+          cancel_recovered_retry(build, issue_id, generation, "recovery_parked")
         False ->
           case dict.get(issue_by_id, issue_id) {
-            Error(_) -> warn(build, "missing_issue_for_retry:" <> issue_id)
+            Error(Nil) ->
+              cancel_recovered_retry(
+                build,
+                issue_id,
+                generation,
+                "recovery_missing_issue",
+              )
             Ok(issue) ->
               case core.is_terminal(config, issue.state) {
-                True -> build
+                True ->
+                  cancel_recovered_retry(
+                    build,
+                    issue_id,
+                    generation,
+                    "recovery_terminal_issue",
+                  )
                 False ->
                   case core.is_active(config, issue.state) {
                     False ->
-                      warn(build, "non_active_issue_for_retry:" <> issue_id)
+                      cancel_recovered_retry(
+                        build,
+                        issue_id,
+                        generation,
+                        "recovery_non_active_issue",
+                      )
                     True -> {
                       let remaining = remaining_retry_delay(status, now_ms)
                       let retry =
@@ -1853,6 +1877,26 @@ fn restore_scheduled_retry(
           }
       }
   }
+}
+
+fn cancel_recovered_retry(
+  build: Build,
+  issue_id: String,
+  generation: Int,
+  reason: String,
+) -> Build {
+  Build(
+    ..build,
+    runtime: orchestrator_state.RuntimeState(
+      ..build.runtime,
+      retry_attempts: dict.delete(build.runtime.retry_attempts, issue_id),
+      claimed: dict.delete(build.runtime.claimed, issue_id),
+    ),
+    record_bodies: [
+      record.RetryCancelled(issue_id, generation, reason),
+      ..build.record_bodies
+    ],
+  )
 }
 
 fn recover_interrupted_runs(

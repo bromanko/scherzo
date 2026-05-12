@@ -1106,7 +1106,7 @@ fn handle_retry_candidate_after_refresh(
         issue_id,
         orchestrator_reason.RetryPollFailed,
       )
-    Ok(None) -> release_retry_claim(state, issue_id)
+    Ok(None) -> release_retry_claim(state, issue_id, "retry_issue_missing")
     Ok(Some(issue)) ->
       handle_retry_issue_candidate(state, issue_id, issue, context)
   }
@@ -1163,7 +1163,7 @@ fn handle_retry_issue_candidate(
           issue,
         )
       {
-        False -> release_retry_claim(state, issue_id)
+        False -> release_retry_claim(state, issue_id, "retry_not_dispatchable")
         True ->
           case
             workflow_policy.classify_issue(
@@ -1196,20 +1196,7 @@ fn handle_retry_issue_candidate(
                     issue_id,
                     orchestrator_reason.RetryNoSlots,
                   )
-                True -> {
-                  let state =
-                    transition_types.State(
-                      ..state,
-                      runtime: clear_retry(state.runtime, issue_id),
-                    )
-                  claims.begin_for_issue(
-                    state,
-                    issue,
-                    [],
-                    context,
-                    claim_callbacks(),
-                  )
-                }
+                True -> dispatch_retry_claim(state, issue_id, issue, context)
               }
           }
       }
@@ -1220,14 +1207,52 @@ fn handle_retry_issue_candidate(
 fn release_retry_claim(
   state: transition_types.State,
   issue_id: String,
+  cancel_reason: String,
 ) -> transition_types.Outcome {
+  let generation = current_retry_generation(state.runtime, issue_id)
   transition_types.Outcome(
     state: transition_types.State(
       ..state,
       runtime: release_claim(clear_retry(state.runtime, issue_id), issue_id),
     ),
-    effects: [effects_types.ReleaseClaim(issue_id)],
+    effects: list.append(
+      cancel_retry_effects(issue_id, generation, cancel_reason),
+      [effects_types.ReleaseClaim(issue_id)],
+    ),
   )
+}
+
+fn dispatch_retry_claim(
+  state: transition_types.State,
+  issue_id: String,
+  issue: tracker_issue.Issue,
+  context: transition_types.DispatchContext,
+) -> transition_types.Outcome {
+  let generation = current_retry_generation(state.runtime, issue_id)
+  let state =
+    transition_types.State(
+      ..state,
+      runtime: clear_retry(state.runtime, issue_id),
+    )
+  let outcome =
+    claims.begin_for_issue(state, issue, [], context, claim_callbacks())
+  transition_types.Outcome(
+    state: outcome.state,
+    effects: list.append(
+      cancel_retry_effects(issue_id, generation, "retry_dispatch"),
+      outcome.effects,
+    ),
+  )
+}
+
+fn current_retry_generation(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+) -> Int {
+  case dict.get(runtime.retry_attempts, issue_id) {
+    Ok(entry) -> entry.timer_generation
+    Error(Nil) -> 0
+  }
 }
 
 fn schedule_retry_with_backoff(

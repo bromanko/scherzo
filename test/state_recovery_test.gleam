@@ -350,6 +350,67 @@ pub fn future_retry_keeps_remaining_delay_test() {
   assert retry.delay_ms == 3000
 }
 
+pub fn retry_for_missing_issue_is_cancelled_during_recovery_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "retry",
+        1000,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "failure",
+        ),
+      ),
+    ])
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
+
+  assert plan.retry_timers == []
+  assert !dict.has_key(plan.runtime.retry_attempts, "issue-1")
+  assert !dict.has_key(plan.runtime.claimed, "issue-1")
+  assert plan.warnings == []
+  assert has_retry_cancelled(
+    plan.records_to_append,
+    "issue-1",
+    2,
+    "recovery_missing_issue",
+  )
+}
+
+pub fn retry_for_non_active_issue_is_cancelled_during_recovery_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "retry",
+        1000,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "ABC-1",
+          delay_ms: 5000,
+          generation: 2,
+          reason: "failure",
+        ),
+      ),
+    ])
+  let refreshed = issue("issue-1", "ABC-1", "Triage")
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [refreshed], 7000)
+
+  assert plan.retry_timers == []
+  assert !dict.has_key(plan.runtime.retry_attempts, "issue-1")
+  assert !dict.has_key(plan.runtime.claimed, "issue-1")
+  assert plan.warnings == []
+  assert has_retry_cancelled(
+    plan.records_to_append,
+    "issue-1",
+    2,
+    "recovery_non_active_issue",
+  )
+}
+
 pub fn payload_less_pending_outbox_is_marked_failed_test() {
   let projection =
     projection.fold([
@@ -604,6 +665,27 @@ fn has_outbox_failed(
         error_code: failed_error_code,
         ..,
       ) -> failed_outbox_id == outbox_id && failed_error_code == error_code
+      _ -> False
+    }
+  })
+}
+
+fn has_retry_cancelled(
+  records: List(record.LedgerRecord),
+  issue_id: String,
+  generation: Int,
+  reason: String,
+) -> Bool {
+  list.any(records, fn(ledger_record) {
+    case ledger_record.body {
+      record.RetryCancelled(
+        issue_id: cancelled_issue_id,
+        generation: cancelled_generation,
+        reason: cancelled_reason,
+      ) ->
+        cancelled_issue_id == issue_id
+        && cancelled_generation == generation
+        && cancelled_reason == reason
       _ -> False
     }
   })

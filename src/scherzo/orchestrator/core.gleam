@@ -567,11 +567,7 @@ pub fn handle_retry_candidate(
         issue_id,
         reason.RetryPollFailed,
       )
-    Ok(None) ->
-      Transition(
-        state: release_claim(clear_retry(state, issue_id), issue_id),
-        effects: [ReleaseClaim(issue_id)],
-      )
+    Ok(None) -> release_retry_claim(state, issue_id, "retry_issue_missing")
     Ok(Some(issue)) -> {
       let state = unpark_if_issue_changed(state, issue)
       let dispatchable_without_slot_capacity =
@@ -584,17 +580,10 @@ pub fn handle_retry_candidate(
         && workflow_policy_satisfied(config, issue)
 
       case dispatchable_without_slot_capacity {
-        False ->
-          Transition(
-            state: release_claim(clear_retry(state, issue_id), issue_id),
-            effects: [ReleaseClaim(issue_id)],
-          )
+        False -> release_retry_claim(state, issue_id, "retry_not_dispatchable")
         True ->
           case slots_available(state, config, issue.state) {
-            True ->
-              Transition(state: clear_retry(state, issue_id), effects: [
-                Dispatch(issue),
-              ])
+            True -> dispatch_retry_claim(state, issue_id, issue)
             False ->
               schedule_retry_with_backoff(
                 state,
@@ -606,6 +595,33 @@ pub fn handle_retry_candidate(
       }
     }
   }
+}
+
+fn release_retry_claim(
+  state: orchestrator_state.RuntimeState,
+  issue_id: String,
+  cancel_reason: String,
+) -> Transition {
+  let generation = retry_generation(state, issue_id)
+  Transition(
+    state: release_claim(clear_retry(state, issue_id), issue_id),
+    effects: [
+      CancelRetry(issue_id, generation, cancel_reason),
+      ReleaseClaim(issue_id),
+    ],
+  )
+}
+
+fn dispatch_retry_claim(
+  state: orchestrator_state.RuntimeState,
+  issue_id: String,
+  issue: tracker_issue.Issue,
+) -> Transition {
+  let generation = retry_generation(state, issue_id)
+  Transition(state: clear_retry(state, issue_id), effects: [
+    CancelRetry(issue_id, generation, "retry_dispatch"),
+    Dispatch(issue),
+  ])
 }
 
 pub fn schedule_retry_with_backoff(

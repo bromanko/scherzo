@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/json_value
 import scherzo/log
 import scherzo/pi/protocol
 
@@ -183,44 +184,204 @@ fn assistant_messages(records: List(protocol.RpcRecord)) -> List(String) {
   }
 }
 
+type ObservedToolCall {
+  ObservedToolCall(
+    origin: ToolCallOrigin,
+    call: protocol.ToolCallRecord,
+    status: Option(String),
+  )
+}
+
+type ToolCallOrigin {
+  AssistantToolCall
+  ToolExecutionStart
+}
+
 fn tool_call_submissions(
   records: List(protocol.RpcRecord),
 ) -> List(ToolCallSubmission) {
-  records
-  |> list.flat_map(fn(record) {
-    record.tool_calls
-    |> list.map(fn(call) {
-      ToolCallSubmission(
-        name: call.name,
-        arguments_json: call.arguments_json,
-        status: tool_status_for_call(records, call),
-        sibling_count: call.sibling_count,
-      )
+  let observed =
+    records
+    |> list.flat_map(fn(record) {
+      record.tool_calls
+      |> list.map(fn(call) {
+        ObservedToolCall(
+          origin: tool_call_origin(record),
+          call: call,
+          status: tool_status_for_call(records, call),
+        )
+      })
     })
+
+  observed
+  |> list.filter(fn(call) { !duplicate_execution_start_alias(call, observed) })
+  |> unique_tool_observations([])
+  |> list.map(fn(observed) {
+    ToolCallSubmission(
+      name: observed.call.name,
+      arguments_json: observed.call.arguments_json,
+      status: observed.status,
+      sibling_count: observed.call.sibling_count,
+    )
   })
+}
+
+fn tool_call_origin(record: protocol.RpcRecord) -> ToolCallOrigin {
+  case string.starts_with(record.type_, "tool_execution_start") {
+    True -> ToolExecutionStart
+    False -> AssistantToolCall
+  }
+}
+
+fn duplicate_execution_start_alias(
+  observed: ObservedToolCall,
+  all_observed: List(ObservedToolCall),
+) -> Bool {
+  case observed.origin {
+    AssistantToolCall -> False
+    ToolExecutionStart ->
+      list.any(all_observed, fn(candidate) {
+        candidate.origin == AssistantToolCall
+        && same_tool_call_alias(candidate.call, observed.call)
+      })
+  }
+}
+
+fn unique_tool_observations(
+  observed: List(ObservedToolCall),
+  accepted: List(ObservedToolCall),
+) -> List(ObservedToolCall) {
+  case observed {
+    [] -> list.reverse(accepted)
+    [call, ..rest] -> {
+      let #(replaced, accepted) = replace_same_id_observation(call, accepted)
+      case replaced {
+        True -> unique_tool_observations(rest, accepted)
+        False ->
+          case duplicate_of_accepted(call, accepted) {
+            True -> unique_tool_observations(rest, accepted)
+            False -> unique_tool_observations(rest, [call, ..accepted])
+          }
+      }
+    }
+  }
+}
+
+fn replace_same_id_observation(
+  observed: ObservedToolCall,
+  accepted: List(ObservedToolCall),
+) -> #(Bool, List(ObservedToolCall)) {
+  case accepted {
+    [] -> #(False, [])
+    [candidate, ..rest] ->
+      case same_present_tool_call_id(candidate.call, observed.call) {
+        True -> #(True, [observed, ..rest])
+        False -> {
+          let #(replaced, rest) = replace_same_id_observation(observed, rest)
+          #(replaced, [candidate, ..rest])
+        }
+      }
+  }
+}
+
+fn same_present_tool_call_id(
+  left: protocol.ToolCallRecord,
+  right: protocol.ToolCallRecord,
+) -> Bool {
+  case left.id, right.id {
+    Some(left_id), Some(right_id) -> left_id == right_id
+    _, _ -> False
+  }
+}
+
+fn duplicate_of_accepted(
+  observed: ObservedToolCall,
+  accepted: List(ObservedToolCall),
+) -> Bool {
+  list.any(accepted, fn(candidate) {
+    same_logical_tool_call(candidate.call, observed.call)
+  })
+}
+
+fn same_logical_tool_call(
+  left: protocol.ToolCallRecord,
+  right: protocol.ToolCallRecord,
+) -> Bool {
+  case left.id, right.id {
+    Some(left_id), Some(right_id) -> left_id == right_id
+    None, None -> same_tool_call_name_and_arguments(left, right)
+    _, _ -> False
+  }
+}
+
+fn same_tool_call_alias(
+  left: protocol.ToolCallRecord,
+  right: protocol.ToolCallRecord,
+) -> Bool {
+  case left.id, right.id {
+    Some(left_id), Some(right_id) -> left_id == right_id
+    _, _ -> same_tool_call_name_and_arguments(left, right)
+  }
+}
+
+fn same_tool_call_name_and_arguments(
+  left: protocol.ToolCallRecord,
+  right: protocol.ToolCallRecord,
+) -> Bool {
+  left.name == right.name
+  && same_arguments_json(left.arguments_json, right.arguments_json)
+}
+
+fn same_arguments_json(left: Option(String), right: Option(String)) -> Bool {
+  case left, right {
+    Some(left), Some(right) ->
+      case json_value.parse(left), json_value.parse(right) {
+        Ok(left), Ok(right) -> left == right
+        _, _ -> left == right
+      }
+    _, _ -> left == right
+  }
 }
 
 fn tool_status_for_call(
   records: List(protocol.RpcRecord),
   call: protocol.ToolCallRecord,
 ) -> Option(String) {
+  case call.id {
+    Some(id) ->
+      case tool_status_for_id(records, id) {
+        Some(status) -> Some(status)
+        None -> tool_status_for_name(records, call.name)
+      }
+    None -> tool_status_for_name(records, call.name)
+  }
+}
+
+fn tool_status_for_id(
+  records: List(protocol.RpcRecord),
+  id: String,
+) -> Option(String) {
   case records {
     [] -> None
     [record, ..rest] ->
-      case record_matches_tool_call(record, call), record.tool_status {
+      case record.tool_call_id == Some(id), record.tool_status {
         True, Some(status) -> Some(status)
-        _, _ -> tool_status_for_call(rest, call)
+        _, _ -> tool_status_for_id(rest, id)
       }
   }
 }
 
-fn record_matches_tool_call(
-  record: protocol.RpcRecord,
-  call: protocol.ToolCallRecord,
-) -> Bool {
-  case call.id {
-    Some(id) -> record.tool_call_id == Some(id)
-    None -> record.tool_name == Some(call.name)
+fn tool_status_for_name(
+  records: List(protocol.RpcRecord),
+  name: String,
+) -> Option(String) {
+  case records {
+    [] -> None
+    [record, ..rest] ->
+      case record.tool_name == Some(name), record.tool_status {
+        True, Some(status) -> Some(status)
+        _, _ -> tool_status_for_name(rest, name)
+      }
   }
 }
 

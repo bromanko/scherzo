@@ -136,6 +136,22 @@ pub fn retry_prompt(
   <> spec.artifact_name
   <> "\nRequired top-level keys: "
   <> required_keys_text
+  <> validator_retry_instruction(spec.validators)
+}
+
+fn validator_retry_instruction(
+  validators: List(workflow_dag.StructuredOutputValidator),
+) -> String {
+  case list.any(validators, is_review_lane_draft_validator) {
+    True ->
+      "\nReview-lane draft nested contract reminders:\n"
+      <> "- `artifact_type` must be exactly `review_lane_draft` and `remote_mutations` must be exactly `none`.\n"
+      <> "- Every `input_refs` item must be an object with non-empty `artifact_type` and repository- or run-root-relative `path`.\n"
+      <> "- Every `draft_findings` item must include non-empty `draft_finding_id`, `title`, `claim`, and `severity`, boolean `proposed_blocking`, list `locations`, and list `evidence_request_ids`.\n"
+      <> "- Every `review_notes` item must include non-empty `id`, `kind`, `category`, `severity`, `summary`, `details`, `suggested_action`, and list `locations`.\n"
+      <> "- Every `evidence_requests` item must include non-empty `request_id`, `draft_finding_id`, `evidence_key`, `claim`, and `expected_observation`, plus object `target` (`target.changed_file_path` or `target.artifact_path` when applicable).\n"
+    False -> ""
+  }
 }
 
 fn source_retry_instruction(spec: workflow_dag.StructuredOutputSpec) -> String {

@@ -1,6 +1,7 @@
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/pi_rpc
+import scherzo/json_value
 import scherzo/result_artifact
 
 fn decode(line: String) -> pi_rpc.RpcRecord {
@@ -135,4 +136,88 @@ pub fn append_combines_turn_results_test() {
   assert combined.final_response == Some("first\n\nsecond")
   assert combined.source == "combined_turns"
   assert combined.truncated == False
+}
+
+pub fn dedupes_assistant_tool_call_and_execution_start_alias_test() {
+  let records = [
+    decode(
+      "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call_review\",\"name\":\"submit_review_lane_draft\",\"arguments\":{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\"}}]}}",
+    ),
+    decode(
+      "{\"type\":\"tool_execution_start\",\"toolCallId\":\"call_review\",\"toolName\":\"submit_review_lane_draft\",\"args\":{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\"}}",
+    ),
+    decode(
+      "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call_review\",\"toolName\":\"submit_review_lane_draft\",\"isError\":false,\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}",
+    ),
+  ]
+
+  let artifact = result_artifact.from_records(records, [], 8000)
+
+  let assert [call] = artifact.tool_calls
+  assert call.name == "submit_review_lane_draft"
+  let assert Some(arguments_json) = call.arguments_json
+  let assert Ok(json_value.JObject(arguments)) =
+    json_value.parse(arguments_json)
+  assert json_value.object_has_key(arguments, "schema_version")
+  assert json_value.object_has_key(arguments, "artifact_type")
+  assert call.status == Some("success")
+  assert call.sibling_count == 1
+}
+
+pub fn keeps_execution_start_tool_call_when_no_assistant_alias_exists_test() {
+  let records = [
+    decode(
+      "{\"type\":\"tool_execution_start\",\"toolName\":\"submit_review_lane_draft\",\"args\":{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\"}}",
+    ),
+    decode(
+      "{\"type\":\"tool_execution_end\",\"toolName\":\"submit_review_lane_draft\",\"success\":true}",
+    ),
+  ]
+
+  let artifact = result_artifact.from_records(records, [], 8000)
+
+  let assert [call] = artifact.tool_calls
+  assert call.name == "submit_review_lane_draft"
+  assert call.status == Some("success")
+}
+
+pub fn dedupes_repeated_assistant_tool_call_lifecycle_records_test() {
+  let records = [
+    decode(
+      "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call_review\",\"name\":\"submit_review_lane_draft\",\"arguments\":{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\"}}]}}",
+    ),
+    decode(
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call_review\",\"name\":\"submit_review_lane_draft\",\"arguments\":{\"artifact_type\":\"review_lane_draft\",\"schema_version\":1}}]}}",
+    ),
+    decode(
+      "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call_review\",\"toolName\":\"submit_review_lane_draft\",\"isError\":false,\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}",
+    ),
+  ]
+
+  let artifact = result_artifact.from_records(records, [], 8000)
+
+  let assert [_] = artifact.tool_calls
+}
+
+pub fn keeps_latest_tool_call_snapshot_for_streaming_updates_test() {
+  let records = [
+    decode(
+      "{\"type\":\"message_update\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call_review\",\"name\":\"submit_review_lane_draft\",\"arguments\":{\"schema_version\":1}}]}}",
+    ),
+    decode(
+      "{\"type\":\"message_update\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call_review\",\"name\":\"submit_review_lane_draft\",\"arguments\":{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\"}}]}}",
+    ),
+    decode(
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call_review\",\"toolName\":\"submit_review_lane_draft\",\"isError\":false,\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}",
+    ),
+  ]
+
+  let artifact = result_artifact.from_records(records, [], 8000)
+
+  let assert [call] = artifact.tool_calls
+  let assert Some(arguments_json) = call.arguments_json
+  let assert Ok(json_value.JObject(arguments)) =
+    json_value.parse(arguments_json)
+  assert json_value.object_has_key(arguments, "schema_version")
+  assert json_value.object_has_key(arguments, "artifact_type")
 }

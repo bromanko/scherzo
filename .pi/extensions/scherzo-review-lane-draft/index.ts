@@ -6,13 +6,59 @@ export const SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME = "submit_review_lane_draft";
 export const REVIEW_LANE_DRAFT_WORKFLOW_IDS = ["review-native", "review-native-contract-spike"] as const;
 const allowedLaneIds = ["correctness", "test-quality", "idioms-maintainability", "security-performance"] as const;
 
+const artifactRefSchema = Type.Object({
+	artifact_type: Type.String({ description: "Non-empty retained artifact type, for example review_brief, diff, changed_files, validation_status, or context_manifest." }),
+	path: Type.String({ description: "Repository- or run-root-relative path to the retained input artifact." }),
+	sha256: Type.Optional(Type.String()),
+}, { additionalProperties: true });
+
+const reviewLocationSchema = Type.Object({
+	path: Type.String({ description: "Repository-relative file path." }),
+	start_line: Type.Number({ description: "1-indexed start line." }),
+	end_line: Type.Optional(Type.Number({ description: "1-indexed end line." })),
+	symbol: Type.Optional(Type.String()),
+}, { additionalProperties: true });
+
+const draftFindingSchema = Type.Object({
+	draft_finding_id: Type.String({ description: "Non-empty lane-local finding id." }),
+	title: Type.String(),
+	claim: Type.String(),
+	severity: Type.String({ description: "critical, high, medium, low, or info." }),
+	proposed_blocking: Type.Boolean(),
+	locations: Type.Array(reviewLocationSchema),
+	evidence_request_ids: Type.Array(Type.String()),
+	category: Type.Optional(Type.String()),
+	details: Type.Optional(Type.String()),
+	suggested_fix: Type.Optional(Type.String()),
+}, { additionalProperties: true });
+
+const reviewNoteSchema = Type.Object({
+	id: Type.String({ description: "Non-empty note id." }),
+	kind: Type.String(),
+	category: Type.String(),
+	severity: Type.String({ description: "critical, high, medium, low, or info." }),
+	summary: Type.String(),
+	details: Type.String(),
+	suggested_action: Type.String(),
+	locations: Type.Array(reviewLocationSchema),
+}, { additionalProperties: true });
+
+const evidenceRequestSchema = Type.Object({
+	request_id: Type.String({ description: "Non-empty evidence request id." }),
+	draft_finding_id: Type.String({ description: "Matching draft_finding_id." }),
+	evidence_key: Type.String(),
+	claim: Type.String(),
+	expected_observation: Type.String(),
+	target: Type.Object({}, { additionalProperties: true, description: "Evidence target object, optionally including artifact_path or changed_file_path." }),
+}, { additionalProperties: true });
+
 export function shouldRegisterReviewLaneDraftTool(workflowId = process.env.SCHERZO_WORKFLOW_ID || ""): boolean {
 	return REVIEW_LANE_DRAFT_WORKFLOW_IDS.includes(workflowId as typeof REVIEW_LANE_DRAFT_WORKFLOW_IDS[number]);
 }
 
 export const submitReviewLaneDraftParameters = Type.Object({
 	schema_version: Type.Number({ description: "Must be 1." }),
-	artifact_type: Type.String({ description: "Must be review_lane_draft." }),
+	artifact_type: StringEnum(["review_lane_draft"] as const),
 	generated_at_utc: Type.String(),
 	producer: Type.Object({}, { additionalProperties: true }),
 	lane: Type.Object({
@@ -21,10 +67,10 @@ export const submitReviewLaneDraftParameters = Type.Object({
 		category: Type.String(),
 		version: Type.String(),
 	}, { additionalProperties: true }),
-	input_refs: Type.Array(Type.Unknown()),
-	draft_findings: Type.Array(Type.Unknown()),
-	review_notes: Type.Array(Type.Unknown()),
-	evidence_requests: Type.Array(Type.Unknown()),
+	input_refs: Type.Array(artifactRefSchema),
+	draft_findings: Type.Array(draftFindingSchema),
+	review_notes: Type.Array(reviewNoteSchema),
+	evidence_requests: Type.Array(evidenceRequestSchema),
 	self_check: Type.Object({}, { additionalProperties: true }),
 	remote_mutations: StringEnum(["none"] as const),
 }, { additionalProperties: true });
