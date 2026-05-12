@@ -69,7 +69,7 @@ scripts/scherzoctl / scherzo ctl
 | Durable state/recovery | `src/scherzo/state/record.gleam`, `ledger.gleam`, `projection.gleam`, `recovery.gleam`, `artifact_store.gleam`, `local_artifacts.gleam`, `src/scherzo/workflow_checkpoint.gleam` | Append-only ledger, projection snapshots, artifact storage, startup recovery, cleanup/retention. |
 | Control API/CLI | `src/scherzo/control/*`, `src/scherzo/ctl.gleam`, `scripts/scherzoctl`, `src/scherzo/session/*`, `src/scherzo/terminal/*` | Local loopback control protocol, EventHub queries, attach rendering, mutating operator commands, offline state commands. |
 | FFI | `src/*_ffi.erl` plus `@external` declarations in Gleam files | Erlang boundaries for ports, TCP, filesystem sync/locking, signals, terminal, hashing, paths/env, shutdown, time. See `docs/ffi.md` for the contract every FFI export and wrapper must preserve. |
-| Examples/docs | `.scherzo/scherzo.yaml`, `.scherzo/workflows/*.yaml`, `examples/`, `README.md`, `docs/runbooks/`, `docs/plans/` | Dogfood workflows and reusable examples must track user-visible config/schema changes. |
+| Examples/docs | `.scherzo/scherzo.yaml`, `.scherzo/workflows/*.yaml`, `examples/`, `README.md`, `docs/specs/`, `docs/runbooks/`, `docs/plans/` | Dogfood workflows and reusable examples must track user-visible config/schema changes. |
 
 ## Core invariants
 
@@ -106,13 +106,14 @@ scripts/scherzoctl / scherzo ctl
 - Workflow runner executes a ready batch concurrently, then applies artifacts in
   DAG order so downstream template rendering is deterministic.
 - Workspaces are prepared by orchestrator-defined workspace profiles. A driver-backed
-  workspace profile names a trusted workspace driver command, the lifecycle operations
-  it supports, and the workspace capability names it provides. A workflow may select one
-  trusted profile with top-level `workspace_profile` and may require top-level
-  `workspace_capabilities`; omitted selectors use the orchestrator default profile.
-  Scherzo validates required capabilities against the selected profile before dispatch.
-  Direct `workspace.hooks` and profile-local hook blocks are legacy migration shapes
-  surfaced by doctor guidance, not the current architecture invariant.
+  workspace profile names a trusted workspace driver command and the lifecycle operations
+  Scherzo may invoke; driver capability names are discovered from `describe --json`.
+  A workflow may select one trusted profile with top-level `workspace_profile` and may
+  require top-level `workspace_capabilities`; omitted selectors use the orchestrator
+  default profile. Scherzo validates required capabilities against the selected profile
+  before dispatch. `docs/specs/WORKSPACE_DRIVER_SPEC.md` is the normative driver
+  contract. Direct `workspace.hooks` and profile-local hook blocks are legacy migration
+  shapes surfaced by doctor guidance, not the current architecture invariant.
 
 ### Orchestrator dispatch
 

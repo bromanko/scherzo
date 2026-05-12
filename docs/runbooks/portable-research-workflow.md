@@ -4,7 +4,7 @@ The portable research workflow lets an operator run a Scherzo research issue in 
 
 ## Terms
 
-A workspace is the directory where Scherzo runs a workflow step. A workspace profile is operator configuration that decides how that directory is created, checked, and removed. A workspace driver is a trusted local executable named by the operator in the workspace profile. Workflow YAML may require a capability, but it must not supply the trusted driver command itself.
+A workspace is the directory where Scherzo runs a workflow step. A workspace profile is operator configuration that decides how that directory is created, checked, and removed. A workspace driver is a trusted local executable named by the operator in the workspace profile. Workflow YAML may require a capability, but it must not supply the trusted driver command itself. The full normative driver contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
 
 The `assert-only --path research-findings.md` capability must exit 0 only when `research-findings.md` is the only produced file or change according to the selected profile's baseline. It must exit nonzero with a bounded diagnostic when the file is missing or when any unexpected artifact is present.
 

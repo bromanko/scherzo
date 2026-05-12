@@ -1,6 +1,8 @@
 # Workspace driver capability discovery
 
-Scherzo no longer accepts `workspace.profiles.<name>.driver.capabilities` in orchestrator YAML. Driver capability metadata now comes from the trusted driver command itself through:
+Scherzo no longer accepts `workspace.profiles.<name>.driver.capabilities` in orchestrator YAML. Driver capability metadata now comes from the trusted driver command itself. The normative discovery and capability contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
+
+Drivers self-describe through:
 
 ```sh
 <driver> describe --json

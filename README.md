@@ -250,7 +250,7 @@ routing:
 
 Relative config paths are resolved from the orchestrator config file directory. Driver commands are trusted operator config: workflows can select a named profile and require capabilities, but workflow YAML cannot define the shell command that creates, copies, validates, or removes workspaces. The fully qualified driver schema is `workspace.profiles.<name>.driver.command`, with sibling `lifecycle` and `timeout_ms` fields. Driver capabilities are discovered from `<driver> describe --json`; profile-local `driver.capabilities` was removed and now fails config loading with migration guidance. The checked `examples/scherzo.yaml` file lives under `examples/`, so it uses `../scripts/...` for the checked driver scripts; a config copied to a repository root would normally use `scripts/...`, and a packaged install can use a PATH command or absolute trusted wrapper.
 
-For migration, legacy workspace.hooks and profile-local hook blocks are documented in [`docs/runbooks/workspace-driver-migration.md`](docs/runbooks/workspace-driver-migration.md). Current Scherzo still warns about legacy hook shapes during doctor checks so operators can migrate safely, but new checked configs and examples should prefer driver-backed profiles.
+The normative driver command contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](docs/specs/WORKSPACE_DRIVER_SPEC.md). For migration, legacy workspace.hooks and profile-local hook blocks are documented in [`docs/runbooks/workspace-driver-migration.md`](docs/runbooks/workspace-driver-migration.md). Current Scherzo still warns about legacy hook shapes during doctor checks so operators can migrate safely, but new checked configs and examples should prefer driver-backed profiles.
 
 ## Workflow DAG files
 
@@ -327,7 +327,7 @@ Markdown prompt templates are not runtime workflow files; they are only prompt b
 
 ## Workspace profiles and drivers
 
-A workspace profile is trusted operator policy for preparing the directory where a workflow step runs. A workspace driver is the trusted command configured under a profile at `workspace.profiles.<name>.driver.command`. Scherzo invokes that command for lifecycle operations such as `create`, `before-step`, `after-step`, and `remove`; the driver may also expose named workspace capabilities such as `status`, `diff`, `changed-files`, or `assert-only`.
+A workspace profile is trusted operator policy for preparing the directory where a workflow step runs. A workspace driver is the trusted command configured under a profile at `workspace.profiles.<name>.driver.command`. Scherzo invokes that command for lifecycle operations such as `create`, `before-step`, `after-step`, and `remove`; the driver may also expose named workspace capabilities such as `status`, `diff`, `changed-files`, or `assert-only`. [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](docs/specs/WORKSPACE_DRIVER_SPEC.md) defines the normative command, JSON, exit-code, and safety contract for driver authors.
 
 Workflows choose policy, not shell. A workflow DAG may select a profile with top-level `workspace_profile` and may require capability names with top-level `workspace_capabilities`, but it cannot define or override the driver command. Scherzo validates the required capabilities against the selected profile before dispatching the workflow. This keeps untrusted workflow YAML from smuggling in new workspace commands while still allowing portable workflows to ask for the operations they need.
 

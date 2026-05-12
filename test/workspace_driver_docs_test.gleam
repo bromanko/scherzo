@@ -46,6 +46,30 @@ pub fn readme_documents_workspace_driver_model_test() {
   assert_contains(path, readme, "SCHERZO_WORKSPACE_CAPABILITIES")
   assert_contains(path, readme, "legacy workspace.hooks")
   assert_contains(path, readme, "docs/runbooks/workspace-driver-migration.md")
+  assert_contains(path, readme, "docs/specs/WORKSPACE_DRIVER_SPEC.md")
+}
+
+pub fn workspace_driver_spec_is_normative_contract_test() {
+  let path = "docs/specs/WORKSPACE_DRIVER_SPEC.md"
+  let spec = read_file(path)
+
+  assert_contains(path, spec, "RFC 2119")
+  assert_contains(path, spec, "workspace.profiles.<name>.driver.command")
+  assert_contains(path, spec, "<driver> describe --json")
+  assert_contains(path, spec, "<driver> lifecycle create")
+  assert_contains(path, spec, "<driver> changed-files --json")
+  assert_contains(path, spec, "<driver> publish-change")
+  assert_contains(path, spec, "Exit code")
+  assert_contains(path, spec, "scripts/scherzo-workspace-noop")
+  assert_contains(path, spec, "scripts/scherzo-workspace-jj")
+}
+
+pub fn old_workspace_driver_contract_points_to_spec_test() {
+  let path = "docs/runbooks/workspace-driver-contract.md"
+  let contract = read_file(path)
+
+  assert_contains(path, contract, "docs/specs/WORKSPACE_DRIVER_SPEC.md")
+  assert_contains(path, contract, "contract now lives")
 }
 
 pub fn migration_guide_is_actionable_test() {
@@ -57,6 +81,7 @@ pub fn migration_guide_is_actionable_test() {
   assert_contains(path, guide, "workspace.hooks")
   assert_contains(path, guide, "driver:")
   assert_contains(path, guide, "describe --json")
+  assert_contains(path, guide, "docs/specs/WORKSPACE_DRIVER_SPEC.md")
   assert_contains(
     path,
     guide,
