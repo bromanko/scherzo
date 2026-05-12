@@ -3,6 +3,8 @@ import gleam/string
 import scherzo/agent/context_exhaustion
 import scherzo/agent/context_recovery_artifact
 import scherzo/agent/context_recovery_prompt
+import scherzo/error
+import scherzo/pi/protocol
 import scherzo/state/artifact_store
 import simplifile
 
@@ -54,4 +56,53 @@ pub fn writes_redacted_bounded_context_recovery_artifacts_test() {
     artifact_store.read_artifact_unverified(store, artifacts.error_ref)
   assert string.contains(error_contents, "pi_context_window_exhausted")
   assert !string.contains(error_contents, "SECRET_VALUE")
+}
+
+pub fn writes_compact_failure_fallback_diagnostics_test() {
+  let root = "test/tmp/context-recovery-compact-diagnostics"
+  reset_dir(root)
+  let store = artifact_store.new(root)
+  let assert Ok(response) =
+    protocol.decode_record(
+      "{\"id\":\"3\",\"type\":\"response\",\"command\":\"compact\",\"success\":false,\"error\":\"compact failed SECRET_VALUE /tmp/workspace\"}",
+    )
+  let diagnostic =
+    context_recovery_artifact.compaction_failed(
+      error.PiProtocolError(
+        "compact failed SECRET_VALUE /tmp/workspace "
+        <> string.repeat("x", times: 5000),
+      ),
+      ["manual"],
+      1,
+      Some(response),
+      ["SECRET_VALUE"],
+      "/tmp/workspace",
+    )
+  let assert Ok(result_ref) =
+    context_recovery_artifact.write_result(
+      store,
+      "run 1",
+      "workflow",
+      "step!",
+      2,
+      "failed",
+      context_recovery_prompt.FreshSession,
+      ["manual"],
+      diagnostic,
+    )
+  let assert Ok(contents) =
+    artifact_store.read_artifact_unverified(store, result_ref.ref)
+
+  assert string.contains(
+    contents,
+    "\"fallback_from_method\":\"pi_rpc_compact\"",
+  )
+  assert string.contains(contents, "\"fallback_reason\":\"compact_rpc_failed\"")
+  assert string.contains(contents, "\"error_code\":\"pi_protocol_error\"")
+  assert string.contains(contents, "\"error_detail_truncated\":true")
+  assert string.contains(contents, "\"raw_json_truncated\":false")
+  assert string.contains(contents, "[REDACTED]")
+  assert string.contains(contents, "[REDACTED_WORKSPACE]")
+  assert !string.contains(contents, "SECRET_VALUE")
+  assert !string.contains(contents, "/tmp/workspace")
 }
