@@ -57,6 +57,8 @@ pub fn readme_documents_workspace_driver_model_test() {
   assert_contains(path, readme, "docs/runbooks/workspace-driver-migration.md")
   assert_contains(path, readme, "docs/specs/WORKSPACE_DRIVER_SPEC.md")
   assert_contains(path, readme, "command: scherzo-workspace-noop")
+  assert_contains(path, readme, "driver.env")
+  assert_contains(path, readme, "not a secret store")
 }
 
 pub fn workspace_driver_spec_is_normative_contract_test() {
@@ -72,6 +74,12 @@ pub fn workspace_driver_spec_is_normative_contract_test() {
   assert_contains(path, spec, "Exit code")
   assert_contains(path, spec, "scripts/scherzo-workspace-noop")
   assert_contains(path, spec, "scripts/scherzo-workspace-jj")
+  assert_contains(path, spec, "driver.env")
+  assert_contains(path, spec, "literal strings")
+  assert_contains(path, spec, "PATH")
+  assert_contains(path, spec, "not a secret store")
+  assert_contains(path, spec, "limited redaction")
+  assert_contains(path, spec, "value_sha256")
 }
 
 pub fn old_workspace_driver_contract_points_to_spec_test() {
@@ -100,6 +108,10 @@ pub fn migration_guide_is_actionable_test() {
   assert_contains(path, guide, "direnv exec . gleam test")
   assert_contains(path, guide, "Rollback")
   assert_contains(path, guide, "Troubleshooting")
+  assert_contains(path, guide, "driver.env")
+  assert_contains(path, guide, "SCHERZO_JJ_WORKSPACE_BASE")
+  assert_contains(path, guide, "wrapper")
+  assert_contains(path, guide, "not a secret store")
 }
 
 pub fn examples_use_driver_profiles_test() {
@@ -109,6 +121,9 @@ pub fn examples_use_driver_profiles_test() {
   assert_contains(path, example, "driver:")
   assert_contains(path, example, "command: ../scripts/scherzo-workspace-jj")
   assert_contains(path, example, "command: ../scripts/scherzo-workspace-noop")
+  assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_BASE")
+  assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_REMOTE")
+  assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
   assert_contains(path, example, "lifecycle:")
   assert_not_contains(path, example, "capabilities:")
   assert_not_contains(path, example, "    isolated:\n      hooks:")

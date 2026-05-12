@@ -72,6 +72,7 @@ pub fn agent_failure_artifact_with_structured_output(
       workflow_dag.structured_output_format_to_string(spec.format),
       failure_message(failure, secrets),
       None,
+      None,
     )),
   )
 }
@@ -152,6 +153,13 @@ fn validator_retry_instruction(
       <> "- Every `evidence_requests` item must include non-empty `request_id`, `draft_finding_id`, `evidence_key`, `claim`, and `expected_observation`, plus object `target` (`target.changed_file_path` or `target.artifact_path` when applicable).\n"
     False -> ""
   }
+}
+
+fn is_review_lane_draft_validator(
+  validator: workflow_dag.StructuredOutputValidator,
+) -> Bool {
+  workflow_dag.structured_output_validator_name(validator)
+  == "review_lane_draft"
 }
 
 fn source_retry_instruction(spec: workflow_dag.StructuredOutputSpec) -> String {

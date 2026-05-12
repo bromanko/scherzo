@@ -14,6 +14,7 @@ import scherzo/error
 import scherzo/model_config
 import scherzo/path
 import scherzo/result_artifact
+import scherzo/session/event as session_event
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/template
@@ -119,6 +120,24 @@ fn workspace_profile_with_driver(
   command: String,
   capabilities: List(config_types.WorkspaceCapability),
 ) -> config_types.WorkspaceHookProfile {
+  workspace_profile_with_driver_env(
+    name,
+    hooks,
+    source,
+    command,
+    capabilities,
+    [],
+  )
+}
+
+fn workspace_profile_with_driver_env(
+  name: String,
+  hooks: config_types.DagHooksConfig,
+  source: config_types.WorkspaceProfileSource,
+  command: String,
+  capabilities: List(config_types.WorkspaceCapability),
+  env: List(#(String, String)),
+) -> config_types.WorkspaceHookProfile {
   config_types.WorkspaceHookProfile(
     name: name,
     hooks: Some(hooks),
@@ -127,6 +146,7 @@ fn workspace_profile_with_driver(
       lifecycle: [],
       capabilities: capabilities,
       timeout_ms: hooks.timeout_ms,
+      env: env,
     )),
     source: source,
   )
@@ -475,6 +495,127 @@ fn prepare_fake_step(
     },
     workspace_profile: profile.name,
   ))
+}
+
+pub fn default_command_step_receives_profile_driver_env_test() {
+  let root = "test/tmp/workflow-run/profile-driver-env-command"
+  reset_dir(root)
+  let bin = root <> "/bin"
+  let assert Ok(Nil) = simplifile.create_directory_all(bin)
+  let helper = bin <> "/profile-helper"
+  let assert Ok(Nil) =
+    simplifile.write(helper, "#!/bin/sh\necho helper-found\n")
+  chmod_executable(helper)
+  let context =
+    workflow_run.StepContext(
+      workflow_id: "workflow",
+      run_id: "run",
+      run_root: root <> "/run",
+      step_id: "step",
+      attempt_index: 0,
+      workspace_name: "main",
+      workspace_path: root,
+      workspace_context: workspace_driver_context.Context(
+        profile: "isolated",
+        driver: "driver-command",
+        capabilities: [config_types.WorkspaceStatus],
+        env: [
+          #("SCHERZO_JJ_WORKSPACE_BASE", "profile-base"),
+          #("PATH", absolute_path(bin)),
+        ],
+      ),
+      config_dir: root,
+      issue_id: "issue-id",
+      issue_identifier: "ABC-123",
+      run_kind: "issue",
+      scheduled_job_id: "",
+      schedule_due_at: "",
+      schedule_started_at: "",
+      run_attempt: 0,
+    )
+  let dependencies = workflow_run.default_dependencies()
+  let artifact =
+    dependencies.command_step(
+      context,
+      "printf '%s\\n' \"$SCHERZO_JJ_WORKSPACE_BASE\"; if command -v ls >/dev/null 2>&1; then echo unexpected-system-path; exit 1; fi; profile-helper",
+      1000,
+      [],
+      test_limits(),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(artifact.stdout, "profile-base")
+  assert string.contains(artifact.stdout, "helper-found")
+  assert !string.contains(artifact.stdout, "unexpected-system-path")
+}
+
+pub fn workflow_command_redacts_sensitive_profile_driver_env_test() {
+  let subject = process.new_subject()
+  let redaction_probe = "redaction-probe-value-123"
+  let profile =
+    workspace_profile_with_driver_env(
+      "isolated",
+      dag_hooks(),
+      config_types.ConfiguredWorkspaceDriver,
+      "driver-command",
+      [],
+      [#("DRIVER_SECRET_TOKEN", redaction_probe)],
+    )
+  let base = orchestrator()
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..base,
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "isolated",
+        profiles: dict.from_list([#("isolated", profile)]),
+      ),
+    )
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nworkspace_profile: isolated\nsteps:\n  - id: leak\n    kind: command\n    run: leak\n    workspace: main\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        process.send(subject, "run:" <> context.step_id)
+        step_artifact.from_command_result(
+          context.step_id,
+          1,
+          "stdout " <> redaction_probe,
+          "stderr " <> redaction_probe,
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator,
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  let assert Some(step_id) = failure.failed_step_id
+  let assert Ok(artifact) = dict.get(failure.artifacts, step_id)
+  assert string.contains(artifact.stdout, "[REDACTED]")
+  assert string.contains(artifact.stderr, "[REDACTED]")
+  assert !string.contains(artifact.stdout, redaction_probe)
+  assert !string.contains(artifact.stderr, redaction_probe)
+  let report = workflow_run.failure_report(failure)
+  assert string.contains(report, "[REDACTED]")
+  assert !string.contains(report, redaction_probe)
 }
 
 fn implementation_dag() -> workflow_dag.WorkflowDag {
@@ -904,17 +1045,20 @@ pub fn packaged_noop_command_name_discovers_and_runs_driver_lifecycle_test() {
     config_types.WorkspaceHookProfile(
       name: "noop",
       hooks: None,
-      driver: Some(config_types.WorkspaceDriverConfig(
-        command: "scherzo-workspace-noop",
-        lifecycle: [
-          config_types.LifecycleCreate,
-          config_types.LifecycleBeforeStep,
-          config_types.LifecycleAfterStep,
-          config_types.LifecycleRemove,
-        ],
-        capabilities: [],
-        timeout_ms: 5000,
-      )),
+      driver: Some(
+        config_types.WorkspaceDriverConfig(
+          command: "scherzo-workspace-noop",
+          lifecycle: [
+            config_types.LifecycleCreate,
+            config_types.LifecycleBeforeStep,
+            config_types.LifecycleAfterStep,
+            config_types.LifecycleRemove,
+          ],
+          capabilities: [],
+          timeout_ms: 5000,
+          env: [],
+        ),
+      ),
       source: config_types.ConfiguredWorkspaceDriver,
     )
   let orchestrator =
@@ -986,6 +1130,8 @@ pub fn default_agent_step_receives_workspace_driver_environment_test() {
   let root = "test/tmp/workflow-run-agent-driver-env"
   reset_dir(root)
   let assert Ok(env_log) = path.absolute(root <> "/pi-env.log")
+  let profile_path =
+    path_with_prefix(absolute_path(root <> "/profile-bin"), path.env("PATH"))
   let hooks = dag_hooks_with_timeout(1000)
   let base = orchestrator()
   let orchestrator =
@@ -1008,12 +1154,16 @@ pub fn default_agent_step_receives_workspace_driver_environment_test() {
         profiles: dict.from_list([
           #(
             "dogfood-jj",
-            workspace_profile_with_driver(
+            workspace_profile_with_driver_env(
               "dogfood-jj",
               hooks,
               config_types.ConfiguredWorkspaceHooks,
               "scripts/scherzo-workspace-jj",
               [config_types.WorkspaceAssertOnly],
+              [
+                #("SCHERZO_JJ_WORKSPACE_BASE", "profile-base"),
+                #("PATH", profile_path),
+              ],
             ),
           ),
         ]),
@@ -1042,8 +1192,188 @@ pub fn default_agent_step_receives_workspace_driver_environment_test() {
     "SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-jj",
   )
   assert string.contains(log, "SCHERZO_WORKSPACE_CAPABILITIES=assert-only")
+  assert string.contains(log, "SCHERZO_JJ_WORKSPACE_BASE=profile-base")
+  assert string.contains(log, "PATH=" <> profile_path)
   assert string.contains(log, "SCHERZO_WORKSPACE_NAME=main")
   assert string.contains(log, "SCHERZO_WORKSPACE_PATH=")
+}
+
+fn agent_driver_env_step_context(
+  root: String,
+  profile_env: List(#(String, String)),
+) -> workflow_run.StepContext {
+  workflow_run.StepContext(
+    workflow_id: "workflow",
+    run_id: "run-1",
+    run_root: root <> "/run",
+    step_id: "implement",
+    attempt_index: 0,
+    workspace_name: "main",
+    workspace_path: root,
+    workspace_context: workspace_driver_context.Context(
+      profile: "dogfood-jj",
+      driver: "scripts/scherzo-workspace-jj",
+      capabilities: [config_types.WorkspaceAssertOnly],
+      env: profile_env,
+    ),
+    config_dir: root,
+    issue_id: "issue-id",
+    issue_identifier: "ABC-123",
+    run_kind: "issue",
+    scheduled_job_id: "",
+    schedule_due_at: "",
+    schedule_started_at: "",
+    run_attempt: 0,
+  )
+}
+
+fn agent_attempt_context(root: String) -> workflow_attempt.StepAttemptContext {
+  workflow_attempt.StepAttemptContext(
+    run_id: "run-1",
+    issue_id: "issue-id",
+    issue_identifier: "ABC-123",
+    workflow_id: "workflow",
+    workflow_fingerprint: "fingerprint",
+    step_id: "implement",
+    workspace_name: "main",
+    attempt_index: 0,
+    workspace_path: root,
+    continuation_capable: False,
+    continuation_session_file: None,
+  )
+}
+
+pub fn default_agent_step_argv_mode_receives_profile_driver_environment_test() {
+  let root = "test/tmp/workflow-run-agent-driver-env-argv"
+  reset_dir(root)
+  let assert Ok(env_log) = path.absolute(root <> "/pi-env.log")
+  let profile_path =
+    path_with_prefix(absolute_path(root <> "/profile-bin"), path.env("PATH"))
+  let base = orchestrator()
+  let effective =
+    config_types.EffectiveConfig(
+      ..base.effective,
+      workspace: config_types.WorkspaceConfig(root: root <> "/workspaces"),
+      pi: config_types.PiConfig(
+        ..base.effective.pi,
+        command: "unused-shell-pi-command",
+        compatibility_probe: False,
+        argv_command: Some(
+          config_types.PiArgvCommand(executable: fake_pi(), args: [], env: [
+            #("FAKE_PI_ENV_LOG", env_log),
+            #("SCHERZO_JJ_WORKSPACE_BASE", "pi-base"),
+            #("PATH", "pi-base-path"),
+          ]),
+        ),
+        session_persistence: config_types.PiSessionPersistenceConfig(
+          enabled: True,
+          recovery_prompt: "recover",
+        ),
+      ),
+    )
+  let context =
+    agent_driver_env_step_context(root, [
+      #("SCHERZO_JJ_WORKSPACE_BASE", "profile-base"),
+      #("PATH", profile_path),
+    ])
+
+  let assert Ok(_) =
+    workflow_run.default_dependencies().agent_step(
+      issue(),
+      context,
+      workflow_attempt.OriginalPrompt("check env"),
+      agent_attempt_context(root),
+      effective,
+      empty_tracker(),
+      fn(_) { Nil },
+      fn(_) { Nil },
+      fn(_) { Nil },
+    )
+
+  let assert Ok(log) = simplifile.read(env_log)
+  assert string.contains(log, "SCHERZO_WORKSPACE_PROFILE=dogfood-jj")
+  assert string.contains(
+    log,
+    "SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-jj",
+  )
+  assert string.contains(log, "SCHERZO_WORKSPACE_CAPABILITIES=assert-only")
+  assert string.contains(log, "SCHERZO_JJ_WORKSPACE_BASE=profile-base")
+  assert string.contains(log, "PATH=" <> profile_path)
+  assert !string.contains(log, "SCHERZO_JJ_WORKSPACE_BASE=pi-base")
+  assert !string.contains(log, "PATH=pi-base-path")
+}
+
+pub fn default_agent_step_redacts_sensitive_profile_driver_env_updates_test() {
+  let root = "test/tmp/workflow-run-agent-driver-env-redaction"
+  reset_dir(root)
+  let redaction_probe = "redaction-probe-value-123"
+  let update_subject = process.new_subject()
+  let base = orchestrator()
+  let effective =
+    config_types.EffectiveConfig(
+      ..base.effective,
+      workspace: config_types.WorkspaceConfig(root: root <> "/workspaces"),
+      pi: config_types.PiConfig(
+        ..base.effective.pi,
+        command: "FAKE_PI_MESSAGE_SECRET="
+          <> shell_quote(redaction_probe)
+          <> " "
+          <> shell_quote(fake_pi()),
+        compatibility_probe: False,
+      ),
+    )
+
+  let assert Ok(_) =
+    workflow_run.default_dependencies().agent_step(
+      issue(),
+      agent_driver_env_step_context(root, [
+        #("DRIVER_SECRET_TOKEN", redaction_probe),
+      ]),
+      workflow_attempt.OriginalPrompt("emit secret"),
+      agent_attempt_context(root),
+      effective,
+      empty_tracker(),
+      emit_update_text(update_subject),
+      fn(_) { Nil },
+      fn(_) { Nil },
+    )
+
+  let updates =
+    string.join(test_async.drain_subject(update_subject), with: "\n")
+  assert string.contains(updates, "[REDACTED]")
+  assert !string.contains(updates, redaction_probe)
+}
+
+fn emit_update_text(
+  subject: process.Subject(String),
+) -> fn(agent_types.RunnerUpdate) -> Nil {
+  fn(update) {
+    case update {
+      agent_types.RunnerTurnUpdate(_) -> Nil
+      agent_types.RunnerPiUpdate(update) -> {
+        emit_optional_text(subject, update.message)
+        emit_optional_text(subject, update.tool_input)
+        emit_optional_text(subject, update.tool_output)
+        case update.raw_json {
+          Some(raw) -> {
+            let session_event.RedactedRawJson(value: value, truncated: _) = raw
+            process.send(subject, value)
+          }
+          None -> Nil
+        }
+      }
+    }
+  }
+}
+
+fn emit_optional_text(
+  subject: process.Subject(String),
+  value: Option(String),
+) -> Nil {
+  case value {
+    Some(value) -> process.send(subject, value)
+    None -> Nil
+  }
 }
 
 pub fn workspace_driver_context_resolves_repo_root_placeholder_test() {
@@ -1648,7 +1978,7 @@ pub fn native_review_missing_nested_lane_metadata_retries_and_records_diagnostic
   assert retry.outcome == "succeeded"
   let assert [initial, retried] = retry.diagnostics
   assert initial.status == "error"
-  assert initial.failure_code == Some("structured_output_schema_invalid")
+  assert initial.failure_code == Some("structured_output_command_rejected")
   assert string.contains(initial.message, "lane.category")
   assert retried.status == "valid"
   let assert Ok(_) = simplifile.read(metadata.path)
@@ -1796,6 +2126,7 @@ pub fn over_display_limit_malformed_json_reports_invalid_not_truncated_test() {
       _,
       message,
       _,
+      _,
     )),
     ..,
   )) = dict.get(failure.artifacts, "review_json")
@@ -1829,6 +2160,7 @@ pub fn invalid_json_structured_output_fails_agent_step_clearly_test() {
     _,
     _,
     message,
+    _,
     Some(retry),
   )) = artifact.structured_output
   assert string.contains(message, "review_json")
@@ -1930,7 +2262,7 @@ pub fn structured_artifact_write_failure_fails_step_without_metadata_test() {
   let assert Ok(artifact) = dict.get(failure.artifacts, "review_json")
   assert artifact.failure_code
     == Some("structured_output_artifact_write_failed")
-  let assert Some(step_artifact.StructuredOutputError(_, _, message, _)) =
+  let assert Some(step_artifact.StructuredOutputError(_, _, message, _, _)) =
     artifact.structured_output
   assert string.contains(message, "structured write failed")
 }

@@ -1,6 +1,7 @@
 import gleam/option.{type Option}
 import scherzo/agent/pi_event
 import scherzo/error
+import scherzo/log
 import scherzo/result_artifact
 import scherzo/session/event as session_event
 import scherzo/session/tokens as session_tokens
@@ -53,4 +54,45 @@ pub type PiUpdate {
 pub type RunnerUpdate {
   RunnerPiUpdate(PiUpdate)
   RunnerTurnUpdate(turn_telemetry.TurnLifecycleUpdate)
+}
+
+pub fn redact_runner_update(
+  update: RunnerUpdate,
+  secrets: List(String),
+) -> RunnerUpdate {
+  case update {
+    RunnerTurnUpdate(_) -> update
+    RunnerPiUpdate(pi_update) ->
+      RunnerPiUpdate(redact_pi_update(pi_update, secrets))
+  }
+}
+
+fn redact_pi_update(update: PiUpdate, secrets: List(String)) -> PiUpdate {
+  PiUpdate(
+    ..update,
+    message: redact_optional(update.message, secrets),
+    raw_json: redact_raw_json(update.raw_json, secrets),
+    tool_input: redact_optional(update.tool_input, secrets),
+    tool_output: redact_optional(update.tool_output, secrets),
+  )
+}
+
+fn redact_optional(
+  value: Option(String),
+  secrets: List(String),
+) -> Option(String) {
+  option.map(value, fn(value) { log.redact("runner_update", value, secrets) })
+}
+
+fn redact_raw_json(
+  value: Option(session_event.RedactedRawJson),
+  secrets: List(String),
+) -> Option(session_event.RedactedRawJson) {
+  option.map(value, fn(raw) {
+    let session_event.RedactedRawJson(value: value, truncated: truncated) = raw
+    session_event.RedactedRawJson(
+      value: log.redact("runner_update_raw_json", value, secrets),
+      truncated: truncated,
+    )
+  })
 }

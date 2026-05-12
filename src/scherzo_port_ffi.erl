@@ -6,6 +6,7 @@
     start/2,
     start_with_env/3,
     start_argv/4,
+    start_argv_with_input/5,
     send_line/2,
     read_stdout_line/2,
     read_diagnostics/1,
@@ -43,24 +44,44 @@ start_with_env(Command, Cwd, Env) ->
 
 start_argv(Executable, Args, Cwd, Env) ->
     try
-        case validate_executable(Executable) of
-            {ok, Exe} ->
-                case validate_args(Args) of
-                    {ok, ArgList} ->
-                        case validate_cwd(Cwd) of
-                            {ok, Dir} ->
-                                case normalize_env_checked(Env) of
-                                    {ok, NormalizedEnv} -> start_argv_checked(Exe, ArgList, Dir, NormalizedEnv);
-                                    {error, Error} -> {error, Error}
-                                end;
-                            {error, Error} -> {error, Error}
-                        end;
-                    {error, Error} -> {error, Error}
+        case validate_argv_start(Executable, Args, Cwd, Env) of
+            {ok, Exe, ArgList, Dir, NormalizedEnv} -> start_argv_checked(Exe, ArgList, Dir, NormalizedEnv);
+            {error, Error} -> {error, Error}
+        end
+    catch
+        Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
+    end.
+
+start_argv_with_input(Executable, Args, Cwd, Env, Stdin) ->
+    try
+        case validate_argv_start(Executable, Args, Cwd, Env) of
+            {ok, Exe, ArgList, Dir, NormalizedEnv} ->
+                case safe_to_binary(Stdin) of
+                    {ok, StdinBytes} -> start_argv_checked_with_input(Exe, ArgList, Dir, NormalizedEnv, StdinBytes);
+                    error -> {error, tagged_error(invalid_arg, <<"stdin_not_string">>)}
                 end;
             {error, Error} -> {error, Error}
         end
     catch
         Class:CatchReason -> {error, unexpected_error(Class, CatchReason)}
+    end.
+
+validate_argv_start(Executable, Args, Cwd, Env) ->
+    case validate_executable(Executable) of
+        {ok, Exe} ->
+            case validate_args(Args) of
+                {ok, ArgList} ->
+                    case validate_cwd(Cwd) of
+                        {ok, Dir} ->
+                            case normalize_env_checked(Env) of
+                                {ok, NormalizedEnv} -> {ok, Exe, ArgList, Dir, NormalizedEnv};
+                                {error, Error} -> {error, Error}
+                            end;
+                        {error, Error} -> {error, Error}
+                    end;
+                {error, Error} -> {error, Error}
+            end;
+        {error, Error} -> {error, Error}
     end.
 
 start_shell(Cmd, Dir, Env) ->
@@ -105,6 +126,36 @@ start_argv_checked(Exe, ArgList, Dir, Env) ->
         {error, Error} -> {error, Error}
     end.
 
+start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes) ->
+    case new_temp_storage() of
+        {ok, TmpDir, ErrPath, ChildPidPath} ->
+            InputPath = filename:join(TmpDir, "stdin.json"),
+            case file:write_file(InputPath, StdinBytes) of
+                ok ->
+                    try
+                        EnvAssignments = env_assignments(Env),
+                        EnvCount = integer_to_list(length(EnvAssignments)),
+                        Port = open_port({spawn_executable, "/bin/bash"}, [
+                            binary,
+                            exit_status,
+                            use_stdio,
+                            {args, ["-c", argv_launch_wrapper_with_input(), "scherzo-argv-input", ErrPath, ChildPidPath, InputPath, EnvCount | EnvAssignments ++ [Exe | ArgList]]},
+                            {cd, Dir},
+                            {env, Env}
+                        ]),
+                        {ok, {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir}}
+                    catch
+                        Class:CatchReason ->
+                            _ = cleanup_private_temp_dir(TmpDir),
+                            {error, tagged_error(spawn_failed, format_error(Class, CatchReason))}
+                    end;
+                {error, Reason} ->
+                    _ = cleanup_private_temp_dir(TmpDir),
+                    {error, tagged_error(spawn_failed, <<"write_stdin:", (reason_to_binary(Reason))/binary>>)}
+            end;
+        {error, Error} -> {error, Error}
+    end.
+
 shell_launch_wrapper() ->
     "exec 2> \"$1\"\n"
     "child_pid_path=\"$2\"\n"
@@ -124,6 +175,27 @@ argv_launch_wrapper() ->
     "shift 2\n"
     "if set -m 2>/dev/null; then :; fi\n"
     "\"$@\" <&0 &\n"
+    "child_pid=$!\n"
+    "set +m 2>/dev/null || true\n"
+    "printf '%s\\n' \"$child_pid\" > \"$child_pid_path\"\n"
+    "wait \"$child_pid\"\n"
+    "status=$?\n"
+    "exit \"$status\"\n".
+
+argv_launch_wrapper_with_input() ->
+    "exec 2> \"$1\"\n"
+    "child_pid_path=\"$2\"\n"
+    "stdin_path=\"$3\"\n"
+    "env_count=\"$4\"\n"
+    "shift 4\n"
+    "env_args=()\n"
+    "while [ \"$env_count\" -gt 0 ]; do\n"
+    "  env_args+=(\"$1\")\n"
+    "  shift\n"
+    "  env_count=$((env_count - 1))\n"
+    "done\n"
+    "if set -m 2>/dev/null; then :; fi\n"
+    "env -i \"${env_args[@]}\" \"$@\" < \"$stdin_path\" &\n"
     "child_pid=$!\n"
     "set +m 2>/dev/null || true\n"
     "printf '%s\\n' \"$child_pid\" > \"$child_pid_path\"\n"
@@ -776,9 +848,16 @@ normalize_env_checked([{Key, Value} | Rest], Acc) ->
 normalize_env_checked([_Entry | _Rest], _Acc) ->
     {error, tagged_error(invalid_env, <<"entry_not_pair">>)}.
 
+env_assignments(Env) ->
+    [Key ++ "=" ++ Value || {Key, Value} <- Env].
+
 safe_to_list(Value) when is_binary(Value) -> {ok, binary_to_list(Value)};
 safe_to_list(Value) when is_list(Value) -> {ok, Value};
 safe_to_list(_Value) -> error.
+
+safe_to_binary(Value) when is_binary(Value) -> {ok, Value};
+safe_to_binary(Value) when is_list(Value) -> {ok, unicode:characters_to_binary(Value)};
+safe_to_binary(_Value) -> error.
 
 line_too_long_error() ->
     <<"line_too_long:", (integer_to_binary(?MAX_LINE))/binary>>.

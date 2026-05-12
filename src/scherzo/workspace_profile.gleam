@@ -7,6 +7,7 @@ import scherzo/config/types as config_types
 import scherzo/template
 import scherzo/workflow_dag
 import scherzo/workspace_driver_context
+import scherzo/workspace_driver_env
 
 pub type WorkspaceDriverContext =
   workspace_driver_context.Context
@@ -22,6 +23,31 @@ pub fn driver_context_env_vars(
   context: WorkspaceDriverContext,
 ) -> List(#(String, String)) {
   workspace_driver_context.env_vars(context)
+}
+
+pub fn driver_context_env_vars_with_generated(
+  context: WorkspaceDriverContext,
+  generated: List(#(String, String)),
+) -> List(#(String, String)) {
+  workspace_driver_env.merge(
+    context.env,
+    list.append(generated, workspace_driver_context.generated_env_vars(context)),
+  )
+}
+
+pub fn driver_context_redaction_values(
+  context: WorkspaceDriverContext,
+) -> List(String) {
+  workspace_driver_env.values_for_redaction(context.env)
+}
+
+pub fn profile_redaction_values(
+  profile: config_types.WorkspaceHookProfile,
+) -> List(String) {
+  case profile.driver {
+    Some(driver) -> workspace_driver_env.values_for_redaction(driver.env)
+    None -> []
+  }
 }
 
 pub fn driver_context_template_locals(

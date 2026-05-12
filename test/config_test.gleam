@@ -193,6 +193,83 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured_explicit.tracker.api_key == Some("other-secret")
 }
 
+fn workspace_driver_env_front(env_body: String) -> String {
+  minimal_front()
+  <> "workspace:\n  root: test/tmp/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step]\n        timeout_ms: 60000\n"
+  <> env_body
+}
+
+fn workspace_driver_env_error(env_body: String) -> String {
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_orchestrator_root(
+      definition(workspace_driver_env_front(env_body)),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  message
+}
+
+pub fn workspace_driver_env_parses_literal_sorted_values_test() {
+  let front =
+    workspace_driver_env_front(
+      "        env:\n          SCHERZO_JJ_WORKSPACE_REMOTE: upstream\n          SCHERZO_JJ_WORKSPACE_BASE: \"@\"\n          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk\n          PATH: /profile/bin:/usr/bin\n          EMPTY_VALUE: \"\"\n          LITERAL_REF: \"$LINEAR_API_KEY\"\n",
+    )
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      definition(front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let assert Ok(profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "isolated")
+  let assert Some(driver) = profile.driver
+  assert driver.env
+    == [
+      #("EMPTY_VALUE", ""),
+      #("LITERAL_REF", "$LINEAR_API_KEY"),
+      #("PATH", "/profile/bin:/usr/bin"),
+      #("SCHERZO_JJ_WORKSPACE_BASE", "@"),
+      #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "trunk"),
+      #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+    ]
+}
+
+pub fn workspace_driver_env_defaults_empty_when_absent_test() {
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      definition(workspace_driver_env_front("")),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let assert Ok(profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "isolated")
+  let assert Some(driver) = profile.driver
+  assert driver.env == []
+}
+
+pub fn workspace_driver_env_rejects_invalid_shapes_test() {
+  assert workspace_driver_env_error("        env: [A=B]\n")
+    == "workspace.profiles.isolated.driver.env must be a map"
+  assert workspace_driver_env_error("        env:\n          123: value\n")
+    == "workspace.profiles.isolated.driver.env keys must be strings"
+  assert workspace_driver_env_error("        env:\n          1BAD: value\n")
+    == "workspace.profiles.isolated.driver.env.1BAD has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*"
+  assert workspace_driver_env_error("        env:\n          BAD-NAME: value\n")
+    == "workspace.profiles.isolated.driver.env.BAD-NAME has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*"
+  assert workspace_driver_env_error(
+      "        env:\n          SCHERZO_WORKSPACE_DRIVER: value\n",
+    )
+    == "workspace.profiles.isolated.driver.env.SCHERZO_WORKSPACE_DRIVER is reserved by Scherzo and cannot be configured in driver.env"
+  assert workspace_driver_env_error("        env:\n          GOOD: 123\n")
+    == "workspace.profiles.isolated.driver.env.GOOD must be a string"
+  assert workspace_driver_env_error("        env:\n          GOOD:\n")
+    == "workspace.profiles.isolated.driver.env.GOOD must be a string"
+  assert workspace_driver_env_error(
+      "        env:\n          SCHERZO_JJ_WORKSPACE_BASE: one\n          SCHERZO_JJ_WORKSPACE_BASE: two\n",
+    )
+    == "workspace.profiles.isolated.driver.env has duplicate key: SCHERZO_JJ_WORKSPACE_BASE"
+}
+
 pub fn path_resolution_and_env_indirection_test() {
   let front = minimal_front() <> "workspace:\n  root: relative-workspaces\n"
   let assert Ok(configured) =

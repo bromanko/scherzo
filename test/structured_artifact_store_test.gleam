@@ -2,6 +2,7 @@ import gleam/bit_array
 import gleam/string
 import scherzo/json_value
 import scherzo/state/artifact_store
+import scherzo/structured_output_metadata
 import simplifile
 
 fn reset_dir(path: String) -> Nil {
@@ -25,6 +26,7 @@ pub fn structured_output_artifact_store_writes_wrapped_json_test() {
       "review_result",
       "json",
       ["summary", "findings"],
+      structured_output_metadata.baseline_only(["summary", "findings"]),
       "{\"summary\":\"ok\",\"findings\":[]}",
     )
 
@@ -36,6 +38,7 @@ pub fn structured_output_artifact_store_writes_wrapped_json_test() {
   assert ref.sha256 != ""
   assert string.contains(contents, "\"artifact_type\":\"structured_output\"")
   assert string.contains(contents, "\"payload\":")
+  assert string.contains(contents, "\"validation\":")
   assert string.contains(contents, "\"summary\":\"ok\"")
 
   let assert Ok(decoded) =
@@ -67,6 +70,7 @@ pub fn structured_output_artifact_store_receives_redacted_payload_test() {
       "review_result",
       "json",
       ["summary"],
+      structured_output_metadata.baseline_only(["summary"]),
       "{\"summary\":\"[REDACTED]\"}",
     )
 

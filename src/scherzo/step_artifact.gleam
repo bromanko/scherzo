@@ -11,6 +11,7 @@ import scherzo/config/types as config_types
 import scherzo/log
 import scherzo/path
 import scherzo/result_artifact
+import scherzo/structured_output_metadata
 import scherzo/template
 import scherzo/workflow_dag
 
@@ -37,6 +38,18 @@ pub type StructuredOutputRetryInfo {
   )
 }
 
+pub type StructuredOutputErrorDetails {
+  StructuredOutputErrorDetails(
+    code: String,
+    retryable: Bool,
+    validator_name: Option(String),
+    validator_type: Option(String),
+    diagnostic_summary: String,
+    stdout_truncated: Bool,
+    stderr_truncated: Bool,
+  )
+}
+
 pub type StructuredOutputMetadata {
   StructuredOutputMetadata(
     artifact_name: String,
@@ -48,6 +61,8 @@ pub type StructuredOutputMetadata {
     schema_status: String,
     source_type: String,
     source_tool_name: Option(String),
+    baseline_required_keys: List(String),
+    validators: List(structured_output_metadata.ValidatorSummary),
     retry: Option(StructuredOutputRetryInfo),
   )
 }
@@ -63,6 +78,7 @@ pub type StructuredOutputOutcome {
     artifact_name: String,
     format: String,
     message: String,
+    details: Option(StructuredOutputErrorDetails),
     retry: Option(StructuredOutputRetryInfo),
   )
 }
@@ -268,6 +284,17 @@ fn structured_output_to_json(outcome: StructuredOutputOutcome) -> json.Json {
         #("schema_status", json.string(metadata.schema_status)),
         #("source_type", json.string(metadata.source_type)),
         #("source_tool_name", option_string_to_json(metadata.source_tool_name)),
+        #(
+          "baseline_required_keys",
+          json.array(metadata.baseline_required_keys, of: json.string),
+        ),
+        #(
+          "validators",
+          json.array(
+            metadata.validators,
+            of: structured_output_metadata.summary_to_json,
+          ),
+        ),
         #("retry", option_retry_info_to_json(metadata.retry)),
       ])
     StructuredOutputAbsent(artifact_name, format, schema_status) ->
@@ -277,12 +304,13 @@ fn structured_output_to_json(outcome: StructuredOutputOutcome) -> json.Json {
         #("format", json.string(format)),
         #("schema_status", json.string(schema_status)),
       ])
-    StructuredOutputError(artifact_name, format, message, retry) ->
+    StructuredOutputError(artifact_name, format, message, details, retry) ->
       json.object([
         #("status", json.string("error")),
         #("artifact_name", json.string(artifact_name)),
         #("format", json.string(format)),
         #("error", json.string(message)),
+        #("failure", option_error_details_to_json(details)),
         #("retry", option_retry_info_to_json(retry)),
       ])
   }
@@ -295,6 +323,27 @@ fn option_retry_info_to_json(
     Some(info) -> retry_info_to_json(info)
     None -> json.null()
   }
+}
+
+fn option_error_details_to_json(
+  details: Option(StructuredOutputErrorDetails),
+) -> json.Json {
+  case details {
+    Some(details) -> error_details_to_json(details)
+    None -> json.null()
+  }
+}
+
+fn error_details_to_json(details: StructuredOutputErrorDetails) -> json.Json {
+  json.object([
+    #("code", json.string(details.code)),
+    #("retryable", json.bool(details.retryable)),
+    #("validator_name", option_string_to_json(details.validator_name)),
+    #("validator_type", option_string_to_json(details.validator_type)),
+    #("diagnostic_summary", json.string(details.diagnostic_summary)),
+    #("stdout_truncated", json.bool(details.stdout_truncated)),
+    #("stderr_truncated", json.bool(details.stderr_truncated)),
+  ])
 }
 
 fn retry_info_to_json(info: StructuredOutputRetryInfo) -> json.Json {
@@ -338,6 +387,16 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
         None,
         decode.optional(decode.string),
       )
+      use baseline_required_keys <- decode.optional_field(
+        "baseline_required_keys",
+        [],
+        decode.list(decode.string),
+      )
+      use validators <- decode.optional_field(
+        "validators",
+        [],
+        decode.list(structured_output_metadata.summary_decoder()),
+      )
       use retry <- decode.optional_field(
         "retry",
         None,
@@ -354,6 +413,8 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
           schema_status: schema_status,
           source_type: source_type,
           source_tool_name: source_tool_name,
+          baseline_required_keys: baseline_required_keys,
+          validators: validators,
           retry: retry,
         )),
       )
@@ -372,6 +433,11 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
       use artifact_name <- decode.field("artifact_name", decode.string)
       use format <- decode.field("format", decode.string)
       use message <- decode.field("error", decode.string)
+      use details <- decode.optional_field(
+        "failure",
+        None,
+        decode.optional(error_details_decoder()),
+      )
       use retry <- decode.optional_field(
         "retry",
         None,
@@ -381,15 +447,55 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
         artifact_name,
         format,
         message,
+        details,
         retry,
       ))
     }
     _ ->
       decode.failure(
-        StructuredOutputError("", "", "", None),
+        StructuredOutputError("", "", "", None, None),
         expected: "StructuredOutputOutcome",
       )
   }
+}
+
+fn error_details_decoder() -> decode.Decoder(StructuredOutputErrorDetails) {
+  use code <- decode.field("code", decode.string)
+  use retryable <- decode.field("retryable", decode.bool)
+  use validator_name <- decode.optional_field(
+    "validator_name",
+    None,
+    decode.optional(decode.string),
+  )
+  use validator_type <- decode.optional_field(
+    "validator_type",
+    None,
+    decode.optional(decode.string),
+  )
+  use diagnostic_summary <- decode.optional_field(
+    "diagnostic_summary",
+    "",
+    decode.string,
+  )
+  use stdout_truncated <- decode.optional_field(
+    "stdout_truncated",
+    False,
+    decode.bool,
+  )
+  use stderr_truncated <- decode.optional_field(
+    "stderr_truncated",
+    False,
+    decode.bool,
+  )
+  decode.success(StructuredOutputErrorDetails(
+    code: code,
+    retryable: retryable,
+    validator_name: validator_name,
+    validator_type: validator_type,
+    diagnostic_summary: diagnostic_summary,
+    stdout_truncated: stdout_truncated,
+    stderr_truncated: stderr_truncated,
+  ))
 }
 
 fn retry_info_decoder() -> decode.Decoder(StructuredOutputRetryInfo) {
@@ -515,6 +621,30 @@ pub fn from_agent_structured_output_error(
   artifact_name: String,
   format: String,
 ) -> StepArtifact {
+  from_agent_structured_output_error_with_details(
+    step_id,
+    success,
+    secrets,
+    limits,
+    failure_code,
+    message,
+    artifact_name,
+    format,
+    None,
+  )
+}
+
+pub fn from_agent_structured_output_error_with_details(
+  step_id: String,
+  success: agent_types.WorkerSuccess,
+  secrets: List(String),
+  limits: config_types.ArtifactLimits,
+  failure_code: String,
+  message: String,
+  artifact_name: String,
+  format: String,
+  details: Option(StructuredOutputErrorDetails),
+) -> StepArtifact {
   let base = from_agent_success(step_id, success, secrets, limits)
   StepArtifact(
     ..base,
@@ -530,6 +660,7 @@ pub fn from_agent_structured_output_error(
       artifact_name,
       format,
       message,
+      details,
       None,
     )),
   )
@@ -544,8 +675,14 @@ pub fn with_structured_output_retry_info(
       Some(StructuredOutputValid(
         StructuredOutputMetadata(..metadata, retry: Some(retry)),
       ))
-    Some(StructuredOutputError(artifact_name, format, message, _)) ->
-      Some(StructuredOutputError(artifact_name, format, message, Some(retry)))
+    Some(StructuredOutputError(artifact_name, format, message, details, _)) ->
+      Some(StructuredOutputError(
+        artifact_name,
+        format,
+        message,
+        details,
+        Some(retry),
+      ))
     other -> other
   }
   StepArtifact(
@@ -1101,19 +1238,22 @@ fn structured_output_locals(
         ],
         retry_info_locals(prefix, None),
       )
-    Some(StructuredOutputError(artifact_name, format, message, retry)) ->
+    Some(StructuredOutputError(artifact_name, format, message, details, retry)) ->
       list.append(
-        [
-          #(prefix <> "status", template.VString("error")),
-          #(prefix <> "artifact_name", template.VString(artifact_name)),
-          #(prefix <> "format", template.VString(format)),
-          #(prefix <> "ref", template.VNil),
-          #(prefix <> "path", template.VNil),
-          #(prefix <> "sha256", template.VNil),
-          #(prefix <> "bytes", template.VNil),
-          #(prefix <> "schema_status", template.VNil),
-          #(prefix <> "error", template.VString(message)),
-        ],
+        list.append(
+          [
+            #(prefix <> "status", template.VString("error")),
+            #(prefix <> "artifact_name", template.VString(artifact_name)),
+            #(prefix <> "format", template.VString(format)),
+            #(prefix <> "ref", template.VNil),
+            #(prefix <> "path", template.VNil),
+            #(prefix <> "sha256", template.VNil),
+            #(prefix <> "bytes", template.VNil),
+            #(prefix <> "schema_status", template.VNil),
+            #(prefix <> "error", template.VString(message)),
+          ],
+          error_details_locals(prefix, details),
+        ),
         retry_info_locals(prefix, retry),
       )
     None ->
@@ -1131,6 +1271,39 @@ fn structured_output_locals(
         ],
         retry_info_locals(prefix, None),
       )
+  }
+}
+
+fn error_details_locals(
+  prefix: String,
+  details: Option(StructuredOutputErrorDetails),
+) -> List(#(String, template.Value)) {
+  case details {
+    Some(details) -> [
+      #(prefix <> "failure_code", template.VString(details.code)),
+      #(prefix <> "failure_retryable", template.VBool(details.retryable)),
+      #(
+        prefix <> "failure_validator_name",
+        option_string_value(details.validator_name),
+      ),
+      #(
+        prefix <> "failure_validator_type",
+        option_string_value(details.validator_type),
+      ),
+      #(
+        prefix <> "failure_diagnostic_summary",
+        template.VString(details.diagnostic_summary),
+      ),
+      #(
+        prefix <> "failure_stdout_truncated",
+        template.VBool(details.stdout_truncated),
+      ),
+      #(
+        prefix <> "failure_stderr_truncated",
+        template.VBool(details.stderr_truncated),
+      ),
+    ]
+    None -> []
   }
 }
 

@@ -7,6 +7,7 @@ import gleam/string
 import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/structured_output_source
+import scherzo/workflow_dag_validator_parser
 import yay
 
 pub type WorkflowDag {
@@ -45,7 +46,20 @@ pub type StructuredOutputSchema {
 }
 
 pub type StructuredOutputValidator {
-  ReviewLaneDraftValidator
+  JsonSchemaValidator(name: String, path: String, draft: Option(String))
+  CommandValidator(
+    name: String,
+    argv: List(String),
+    timeout_ms: Int,
+    working_directory: ValidatorWorkingDirectory,
+    env: List(#(String, String)),
+  )
+}
+
+pub type ValidatorWorkingDirectory {
+  ValidatorInWorkspace
+  ValidatorInRepository
+  ValidatorInRunRoot
 }
 
 pub type StructuredOutputSpec {
@@ -55,7 +69,7 @@ pub type StructuredOutputSpec {
     source: structured_output_source.StructuredOutputSource,
     format: StructuredOutputFormat,
     schema: StructuredOutputSchema,
-    validator: Option(StructuredOutputValidator),
+    validators: List(StructuredOutputValidator),
     validation_retries: Int,
   )
 }
@@ -150,11 +164,37 @@ pub fn structured_output_format_to_string(
   }
 }
 
-pub fn structured_output_validator_to_string(
+pub fn structured_output_validator_name(
   validator: StructuredOutputValidator,
 ) -> String {
   case validator {
-    ReviewLaneDraftValidator -> "review_lane_draft"
+    JsonSchemaValidator(name: name, ..) -> name
+    CommandValidator(name: name, ..) -> name
+  }
+}
+
+pub fn structured_output_validator_type_to_string(
+  validator: StructuredOutputValidator,
+) -> String {
+  case validator {
+    JsonSchemaValidator(..) -> "json_schema"
+    CommandValidator(..) -> "command"
+  }
+}
+
+pub fn structured_output_validator_to_string(
+  validator: StructuredOutputValidator,
+) -> String {
+  structured_output_validator_name(validator)
+}
+
+pub fn validator_working_directory_to_string(
+  working_directory: ValidatorWorkingDirectory,
+) -> String {
+  case working_directory {
+    ValidatorInWorkspace -> "workspace"
+    ValidatorInRepository -> "repository"
+    ValidatorInRunRoot -> "run_root"
   }
 }
 
@@ -401,7 +441,9 @@ fn read_structured_output(
           use required <- result.try(read_structured_required(structured_node))
           use source <- result.try(read_structured_source(structured_node))
           use schema <- result.try(read_structured_schema(structured_node))
-          use validator <- result.try(read_structured_validator(structured_node))
+          use validators <- result.try(read_structured_validators(
+            structured_node,
+          ))
           use validation_retries <- result.try(
             read_structured_validation_retries(structured_node),
           )
@@ -412,7 +454,7 @@ fn read_structured_output(
               source: source,
               format: format,
               schema: schema,
-              validator: validator,
+              validators: validators,
               validation_retries: validation_retries,
             )),
           )
@@ -505,25 +547,51 @@ fn read_structured_source(
   })
 }
 
-fn read_structured_validator(
+fn read_structured_validators(
   node: yay.Node,
-) -> Result(Option(StructuredOutputValidator), DagError) {
-  case get_node(node, "validator") {
-    None -> Ok(None)
-    Some(yay.NodeStr(value)) ->
-      case string.trim(value) |> string.lowercase {
-        "review_lane_draft" -> Ok(Some(ReviewLaneDraftValidator))
-        _ ->
-          Error(DagError(
-            "unknown_structured_output_validator",
-            "unknown structured_output.validator: " <> value,
-          ))
-      }
-    Some(_) ->
-      Error(DagError(
-        "structured_output_validator_not_string",
-        "structured_output.validator must be a string",
-      ))
+) -> Result(List(StructuredOutputValidator), DagError) {
+  workflow_dag_validator_parser.parse(node)
+  |> result.map(list.map(_, parsed_validator_to_runtime))
+  |> result.map_error(fn(error) {
+    let workflow_dag_validator_parser.ValidatorParseError(code, message) = error
+    DagError(code, message)
+  })
+}
+
+fn parsed_validator_to_runtime(
+  validator: workflow_dag_validator_parser.ParsedValidator,
+) -> StructuredOutputValidator {
+  case validator {
+    workflow_dag_validator_parser.ParsedJsonSchemaValidator(name, path, draft) ->
+      JsonSchemaValidator(name: name, path: path, draft: draft)
+    workflow_dag_validator_parser.ParsedCommandValidator(
+      name,
+      argv,
+      timeout_ms,
+      working_directory,
+      env,
+    ) ->
+      CommandValidator(
+        name: name,
+        argv: argv,
+        timeout_ms: timeout_ms,
+        working_directory: parsed_working_directory_to_runtime(
+          working_directory,
+        ),
+        env: env,
+      )
+  }
+}
+
+fn parsed_working_directory_to_runtime(
+  working_directory: workflow_dag_validator_parser.ParsedValidatorWorkingDirectory,
+) -> ValidatorWorkingDirectory {
+  case working_directory {
+    workflow_dag_validator_parser.ParsedValidatorInWorkspace ->
+      ValidatorInWorkspace
+    workflow_dag_validator_parser.ParsedValidatorInRepository ->
+      ValidatorInRepository
+    workflow_dag_validator_parser.ParsedValidatorInRunRoot -> ValidatorInRunRoot
   }
 }
 

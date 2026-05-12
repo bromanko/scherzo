@@ -1,4 +1,3 @@
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -6,9 +5,11 @@ import gleam/string
 import scherzo/json_value
 import scherzo/log
 import scherzo/path
-import scherzo/port
 import scherzo/result_artifact
+import scherzo/structured_output_command_validator
+import scherzo/structured_output_json_schema
 import scherzo/structured_output_source
+import scherzo/structured_output_validator
 import scherzo/workflow_dag
 import simplifile
 
@@ -18,25 +19,32 @@ pub type StructuredOutputValidation {
 }
 
 pub type StructuredOutputError {
-  StructuredOutputMissing(message: String)
-  StructuredOutputTruncated(message: String)
-  StructuredOutputInvalidJson(message: String)
-  StructuredOutputSchemaInvalid(message: String)
-  StructuredOutputToolSourceInvalid(code: String, message: String)
+  StructuredOutputMissing(message: String, retryable: Bool)
+  StructuredOutputTruncated(message: String, retryable: Bool)
+  StructuredOutputInvalidJson(message: String, retryable: Bool)
+  StructuredOutputSchemaInvalid(message: String, retryable: Bool)
+  StructuredOutputValidatorFailed(
+    failure: structured_output_validator.ValidatorFailure,
+  )
+  StructuredOutputToolSourceInvalid(
+    code: String,
+    message: String,
+    retryable: Bool,
+  )
 }
 
-pub type NamedValidatorError {
-  NamedValidatorError(message: String)
-}
+pub type ValidatorRunner =
+  fn(workflow_dag.StructuredOutputValidator, json_value.JsonValue, String, Int) ->
+    Result(
+      structured_output_validator.ValidatorPass,
+      structured_output_validator.ValidatorFailure,
+    )
 
 pub fn validate_agent_result(
   spec: workflow_dag.StructuredOutputSpec,
   result: result_artifact.ResultArtifact,
   secrets: List(String),
-  validator_runner: fn(
-    workflow_dag.StructuredOutputValidator,
-    json_value.JsonValue,
-  ) -> Result(Nil, NamedValidatorError),
+  validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
   case spec.source {
     structured_output_source.FinalResponseSource ->
@@ -69,15 +77,13 @@ pub fn validate_final_response(
   final_response: Option(String),
   capture_truncated: Bool,
   secrets: List(String),
-  validator_runner: fn(
-    workflow_dag.StructuredOutputValidator,
-    json_value.JsonValue,
-  ) -> Result(Nil, NamedValidatorError),
+  validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
   case capture_truncated {
     True ->
       Error(StructuredOutputTruncated(
         "structured output capture was truncated before validation; cannot validate structured JSON",
+        spec.required,
       ))
     False ->
       validate_nontruncated_response(
@@ -104,28 +110,67 @@ pub fn source_tool_name(
 pub fn noop_validator_runner(
   _validator: workflow_dag.StructuredOutputValidator,
   _value: json_value.JsonValue,
-) -> Result(Nil, NamedValidatorError) {
-  Ok(Nil)
-}
-
-pub fn scherzo_review_validator_runner(
-  repo_root: String,
-) -> fn(workflow_dag.StructuredOutputValidator, json_value.JsonValue) ->
-  Result(Nil, NamedValidatorError) {
-  fn(validator, value) {
-    run_scherzo_review_validator(repo_root, validator, value)
-  }
+  _redacted_payload_json: String,
+  _index: Int,
+) -> Result(
+  structured_output_validator.ValidatorPass,
+  structured_output_validator.ValidatorFailure,
+) {
+  Ok(structured_output_validator.ValidatorPass)
 }
 
 pub fn default_validator_runner(
+  context: structured_output_validator.ValidatorContext,
+  secrets: List(String),
+) -> ValidatorRunner {
+  fn(validator, value, redacted_payload_json, index) {
+    let validator_context =
+      structured_output_validator.for_validator(context, validator, index)
+    case validator {
+      workflow_dag.JsonSchemaValidator(..) ->
+        structured_output_json_schema.run_json_schema_validator(
+          validator,
+          value,
+          validator_context,
+          secrets,
+        )
+      workflow_dag.CommandValidator(..) ->
+        structured_output_command_validator.run_command_validator(
+          validator,
+          redacted_payload_json,
+          validator_context,
+          secrets,
+        )
+    }
+  }
+}
+
+pub fn default_validator_context(
   config_dir: String,
+  run_root: String,
+  workflow_id: String,
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
   workspace_path: String,
-) -> fn(workflow_dag.StructuredOutputValidator, json_value.JsonValue) ->
-  Result(Nil, NamedValidatorError) {
-  scherzo_review_validator_runner(validator_repo_root(
+  artifact_name: String,
+  format: String,
+  source: structured_output_source.StructuredOutputSource,
+) -> structured_output_validator.ValidatorContext {
+  structured_output_validator.base_context(
     config_dir,
+    validator_repo_root(config_dir, workspace_path),
+    run_root,
+    workflow_id,
+    run_id,
+    step_id,
+    attempt_index,
     workspace_path,
-  ))
+    artifact_name,
+    format,
+    source_type_to_string(source),
+    source_tool_name(source),
+  )
 }
 
 pub fn validator_repo_root(
@@ -141,21 +186,70 @@ pub fn validator_repo_root(
 
 pub fn error_code(error: StructuredOutputError) -> String {
   case error {
-    StructuredOutputMissing(_) -> "structured_output_missing"
-    StructuredOutputTruncated(_) -> "structured_output_truncated"
-    StructuredOutputInvalidJson(_) -> "structured_output_invalid_json"
-    StructuredOutputSchemaInvalid(_) -> "structured_output_schema_invalid"
-    StructuredOutputToolSourceInvalid(code, _) -> code
+    StructuredOutputMissing(_, _) -> "structured_output_missing"
+    StructuredOutputTruncated(_, _) -> "structured_output_truncated"
+    StructuredOutputInvalidJson(_, _) -> "structured_output_invalid_json"
+    StructuredOutputSchemaInvalid(_, _) -> "structured_output_schema_invalid"
+    StructuredOutputValidatorFailed(failure) -> failure.code
+    StructuredOutputToolSourceInvalid(code, _, _) -> code
   }
 }
 
 pub fn error_message(error: StructuredOutputError) -> String {
   case error {
-    StructuredOutputMissing(message)
-    | StructuredOutputTruncated(message)
-    | StructuredOutputInvalidJson(message)
-    | StructuredOutputSchemaInvalid(message)
-    | StructuredOutputToolSourceInvalid(_, message) -> message
+    StructuredOutputMissing(message, _)
+    | StructuredOutputTruncated(message, _)
+    | StructuredOutputInvalidJson(message, _)
+    | StructuredOutputSchemaInvalid(message, _)
+    | StructuredOutputToolSourceInvalid(_, message, _) -> message
+    StructuredOutputValidatorFailed(failure) ->
+      validator_failure_message(failure)
+  }
+}
+
+pub fn error_retryable(error: StructuredOutputError) -> Bool {
+  case error {
+    StructuredOutputMissing(_, retryable)
+    | StructuredOutputTruncated(_, retryable)
+    | StructuredOutputInvalidJson(_, retryable)
+    | StructuredOutputSchemaInvalid(_, retryable)
+    | StructuredOutputToolSourceInvalid(_, _, retryable) -> retryable
+    StructuredOutputValidatorFailed(failure) -> failure.retryable
+  }
+}
+
+pub fn error_validator_name(error: StructuredOutputError) -> Option(String) {
+  case error {
+    StructuredOutputValidatorFailed(failure) -> Some(failure.validator_name)
+    _ -> None
+  }
+}
+
+pub fn error_validator_type(error: StructuredOutputError) -> Option(String) {
+  case error {
+    StructuredOutputValidatorFailed(failure) -> Some(failure.validator_type)
+    _ -> None
+  }
+}
+
+pub fn error_diagnostic_summary(error: StructuredOutputError) -> String {
+  case error {
+    StructuredOutputValidatorFailed(failure) -> failure.diagnostic_summary
+    _ -> error_message(error)
+  }
+}
+
+pub fn error_stdout_truncated(error: StructuredOutputError) -> Bool {
+  case error {
+    StructuredOutputValidatorFailed(failure) -> failure.stdout_truncated
+    _ -> False
+  }
+}
+
+pub fn error_stderr_truncated(error: StructuredOutputError) -> Bool {
+  case error {
+    StructuredOutputValidatorFailed(failure) -> failure.stderr_truncated
+    _ -> False
   }
 }
 
@@ -170,10 +264,7 @@ fn validate_nontruncated_response(
   spec: workflow_dag.StructuredOutputSpec,
   final_response: Option(String),
   secrets: List(String),
-  validator_runner: fn(
-    workflow_dag.StructuredOutputValidator,
-    json_value.JsonValue,
-  ) -> Result(Nil, NamedValidatorError),
+  validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
   case final_response {
     None -> missing_or_absent(spec)
@@ -195,6 +286,7 @@ fn missing_or_absent(
     True ->
       Error(StructuredOutputMissing(
         "required a JSON final response but the agent returned none",
+        True,
       ))
     False -> Ok(StructuredOutputAbsent)
   }
@@ -204,12 +296,9 @@ fn validate_present_response(
   spec: workflow_dag.StructuredOutputSpec,
   trimmed: String,
   secrets: List(String),
-  validator_runner: fn(
-    workflow_dag.StructuredOutputValidator,
-    json_value.JsonValue,
-  ) -> Result(Nil, NamedValidatorError),
+  validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
-  use value <- result.try(parse_present_json(trimmed))
+  use value <- result.try(parse_present_json(trimmed, spec.required))
   validate_present_value(spec, value, secrets, validator_runner)
 }
 
@@ -220,10 +309,7 @@ fn validate_tool_call_source(
   require_single: Bool,
   reject_sibling_tool_calls: Bool,
   secrets: List(String),
-  validator_runner: fn(
-    workflow_dag.StructuredOutputValidator,
-    json_value.JsonValue,
-  ) -> Result(Nil, NamedValidatorError),
+  validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
   let matching = matching_tool_calls(agent_result.tool_calls, tool_name)
   case matching {
@@ -241,6 +327,7 @@ fn validate_tool_call_source(
       case require_single {
         True ->
           Error(tool_source_error(
+            spec,
             "structured_output_tool_call_multiple",
             "expected exactly one successful Pi tool call named `"
               <> tool_name
@@ -250,6 +337,7 @@ fn validate_tool_call_source(
           ))
         False ->
           Error(tool_source_error(
+            spec,
             "structured_output_tool_call_multiple",
             "multiple Pi tool calls named `"
               <> tool_name
@@ -265,14 +353,12 @@ fn validate_single_tool_call(
   tool_name: String,
   reject_sibling_tool_calls: Bool,
   secrets: List(String),
-  validator_runner: fn(
-    workflow_dag.StructuredOutputValidator,
-    json_value.JsonValue,
-  ) -> Result(Nil, NamedValidatorError),
+  validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
   case reject_sibling_tool_calls && call.sibling_count > 1 {
     True ->
       Error(tool_source_error(
+        spec,
         "structured_output_tool_call_sibling",
         "Pi tool call `"
           <> tool_name
@@ -284,6 +370,7 @@ fn validate_single_tool_call(
       case successful_tool_status(call.status) {
         False ->
           Error(tool_source_error(
+            spec,
             "structured_output_tool_call_failed",
             "Pi tool call `"
               <> tool_name
@@ -308,14 +395,12 @@ fn validate_tool_call_arguments(
   call: result_artifact.ToolCallSubmission,
   tool_name: String,
   secrets: List(String),
-  validator_runner: fn(
-    workflow_dag.StructuredOutputValidator,
-    json_value.JsonValue,
-  ) -> Result(Nil, NamedValidatorError),
+  validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
   case call.arguments_json {
     None ->
       Error(tool_source_error(
+        spec,
         "structured_output_tool_call_arguments_invalid",
         "Pi tool call `"
           <> tool_name
@@ -324,11 +409,16 @@ fn validate_tool_call_arguments(
           <> "` did not include JSON arguments",
       ))
     Some(arguments_json) -> {
-      use value <- result.try(parse_tool_arguments(arguments_json, tool_name))
+      use value <- result.try(parse_tool_arguments(
+        arguments_json,
+        tool_name,
+        spec.required,
+      ))
       use value <- result.try(require_tool_arguments_object(
         value,
         tool_name,
         spec.artifact_name,
+        spec.required,
       ))
       validate_present_value(spec, value, secrets, validator_runner)
     }
@@ -339,19 +429,47 @@ fn validate_present_value(
   spec: workflow_dag.StructuredOutputSpec,
   value: json_value.JsonValue,
   secrets: List(String),
-  validator_runner: fn(
-    workflow_dag.StructuredOutputValidator,
-    json_value.JsonValue,
-  ) -> Result(Nil, NamedValidatorError),
+  validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
-  use value <- result.try(validate_schema(spec.schema, value))
-  use value <- result.try(validate_named_validator(
-    spec.validator,
+  use value <- result.try(validate_baseline_schema(
+    spec.schema,
     value,
-    validator_runner,
+    spec.required,
   ))
   let redacted = redact_value(value, secrets)
-  Ok(StructuredOutputPresent(json_value.to_string(redacted)))
+  let redacted_payload_json = json_value.to_string(redacted)
+  use Nil <- result.try(validate_configured_validators(
+    spec.validators,
+    value,
+    redacted_payload_json,
+    validator_runner,
+    0,
+  ))
+  Ok(StructuredOutputPresent(redacted_payload_json))
+}
+
+fn validate_configured_validators(
+  validators: List(workflow_dag.StructuredOutputValidator),
+  value: json_value.JsonValue,
+  redacted_payload_json: String,
+  validator_runner: ValidatorRunner,
+  index: Int,
+) -> Result(Nil, StructuredOutputError) {
+  case validators {
+    [] -> Ok(Nil)
+    [validator, ..rest] ->
+      case validator_runner(validator, value, redacted_payload_json, index) {
+        Ok(structured_output_validator.ValidatorPass) ->
+          validate_configured_validators(
+            rest,
+            value,
+            redacted_payload_json,
+            validator_runner,
+            index + 1,
+          )
+        Error(failure) -> Error(StructuredOutputValidatorFailed(failure))
+      }
+  }
 }
 
 fn matching_tool_calls(
@@ -370,6 +488,7 @@ fn missing_tool_call_result(
     [], False -> Ok(StructuredOutputAbsent)
     [], True ->
       Error(tool_source_error(
+        spec,
         "structured_output_tool_call_missing",
         "required Pi tool call `"
           <> tool_name
@@ -379,6 +498,7 @@ fn missing_tool_call_result(
       ))
     _, _ ->
       Error(tool_source_error(
+        spec,
         "structured_output_tool_call_wrong_name",
         "required Pi tool call `"
           <> tool_name
@@ -402,13 +522,15 @@ fn successful_tool_status(status: Option(String)) -> Bool {
 fn parse_tool_arguments(
   arguments_json: String,
   tool_name: String,
+  retryable: Bool,
 ) -> Result(json_value.JsonValue, StructuredOutputError) {
   case json_value.parse(arguments_json) {
     Ok(value) -> Ok(value)
     Error(Nil) ->
-      Error(tool_source_error(
+      Error(StructuredOutputToolSourceInvalid(
         "structured_output_tool_call_arguments_invalid",
         "Pi tool call `" <> tool_name <> "` arguments were not valid JSON",
+        retryable,
       ))
   }
 }
@@ -417,38 +539,49 @@ fn require_tool_arguments_object(
   value: json_value.JsonValue,
   tool_name: String,
   artifact_name: String,
+  retryable: Bool,
 ) -> Result(json_value.JsonValue, StructuredOutputError) {
   case value {
     json_value.JObject(_) -> Ok(value)
     _ ->
-      Error(tool_source_error(
+      Error(StructuredOutputToolSourceInvalid(
         "structured_output_tool_call_arguments_invalid",
         "Pi tool call `"
           <> tool_name
           <> "` for structured artifact `"
           <> artifact_name
           <> "` arguments must be a JSON object",
+        retryable,
       ))
   }
 }
 
-fn tool_source_error(code: String, message: String) -> StructuredOutputError {
-  StructuredOutputToolSourceInvalid(code, message)
+fn tool_source_error(
+  spec: workflow_dag.StructuredOutputSpec,
+  code: String,
+  message: String,
+) -> StructuredOutputError {
+  StructuredOutputToolSourceInvalid(code, message, spec.required)
 }
 
 fn parse_present_json(
   trimmed: String,
+  retryable: Bool,
 ) -> Result(json_value.JsonValue, StructuredOutputError) {
   case json_value.parse(trimmed) {
     Ok(value) -> Ok(value)
     Error(Nil) ->
-      Error(StructuredOutputInvalidJson("required a JSON-only final response"))
+      Error(StructuredOutputInvalidJson(
+        "required a JSON-only final response",
+        retryable,
+      ))
   }
 }
 
-fn validate_schema(
+fn validate_baseline_schema(
   schema: workflow_dag.StructuredOutputSchema,
   value: json_value.JsonValue,
+  retryable: Bool,
 ) -> Result(json_value.JsonValue, StructuredOutputError) {
   case schema, value {
     workflow_dag.StructuredObjectSchema(required_keys),
@@ -460,38 +593,16 @@ fn validate_schema(
         _ ->
           Error(StructuredOutputSchemaInvalid(
             "schema invalid; missing required keys: "
-            <> string.join(missing, with: ", "),
+              <> string.join(missing, with: ", "),
+            retryable,
           ))
       }
     }
     workflow_dag.StructuredObjectSchema(_), _ ->
       Error(StructuredOutputSchemaInvalid(
         "schema invalid; top-level JSON value must be an object",
+        retryable,
       ))
-  }
-}
-
-fn validate_named_validator(
-  validator: Option(workflow_dag.StructuredOutputValidator),
-  value: json_value.JsonValue,
-  validator_runner: fn(
-    workflow_dag.StructuredOutputValidator,
-    json_value.JsonValue,
-  ) -> Result(Nil, NamedValidatorError),
-) -> Result(json_value.JsonValue, StructuredOutputError) {
-  case validator {
-    None -> Ok(value)
-    Some(validator) ->
-      case validator_runner(validator, value) {
-        Ok(Nil) -> Ok(value)
-        Error(NamedValidatorError(message)) ->
-          Error(StructuredOutputSchemaInvalid(
-            "validator "
-            <> workflow_dag.structured_output_validator_to_string(validator)
-            <> " rejected structured output: "
-            <> string.trim(message),
-          ))
-      }
   }
 }
 
@@ -513,125 +624,19 @@ fn has_scherzo_review_script(candidate: String) -> Bool {
   }
 }
 
-fn run_scherzo_review_validator(
-  repo_root: String,
-  validator: workflow_dag.StructuredOutputValidator,
-  value: json_value.JsonValue,
-) -> Result(Nil, NamedValidatorError) {
-  let validator_name =
-    workflow_dag.structured_output_validator_to_string(validator)
-  case
-    port.start_argv(
-      "python3",
-      [
-        "scripts/scherzo-review",
-        "validate-structured-output",
-        "--validator",
-        validator_name,
-      ],
-      repo_root,
-      [],
-    )
-  {
-    Error(error) ->
-      Error(NamedValidatorError(
-        "could not start structured-output validator "
-        <> validator_name
-        <> ": "
-        <> port.port_error_to_string(error),
-      ))
-    Ok(process) ->
-      run_started_scherzo_review_validator(
-        process,
-        validator_name,
-        json_value.to_string(value),
-      )
-  }
-}
-
-fn run_started_scherzo_review_validator(
-  process: port.Process,
-  validator_name: String,
-  payload_json: String,
-) -> Result(Nil, NamedValidatorError) {
-  case port.send_line(process, payload_json) {
-    Error(error) -> {
-      let diagnostics = validator_diagnostics(process)
-      let _cleanup_result = port.terminate(process)
-      Error(NamedValidatorError(
-        "could not send payload to structured-output validator "
-        <> validator_name
-        <> ": "
-        <> port.port_error_to_string(error)
-        <> diagnostics_suffix(diagnostics),
-      ))
-    }
-    Ok(Nil) -> await_scherzo_review_validator(process, validator_name)
-  }
-}
-
-fn await_scherzo_review_validator(
-  process: port.Process,
-  validator_name: String,
-) -> Result(Nil, NamedValidatorError) {
-  case port.await_exit(process, 30_000) {
-    Ok(0) -> {
-      let _cleanup_result = port.terminate(process)
-      Ok(Nil)
-    }
-    Ok(status) -> {
-      let diagnostics = validator_diagnostics(process)
-      let _cleanup_result = port.terminate(process)
-      Error(
-        NamedValidatorError(validator_exit_message(
-          validator_name,
-          status,
-          diagnostics,
-        )),
-      )
-    }
-    Error(error) -> {
-      let diagnostics = validator_diagnostics(process)
-      let _cleanup_result = port.terminate(process)
-      Error(NamedValidatorError(
-        "structured-output validator "
-        <> validator_name
-        <> " failed: "
-        <> port.port_error_to_string(error)
-        <> diagnostics_suffix(diagnostics),
-      ))
-    }
-  }
-}
-
-fn validator_diagnostics(process: port.Process) -> String {
-  case port.read_diagnostics(process) {
-    Ok(diagnostics) -> string.trim(diagnostics)
-    Error(error) ->
-      "could not read validator diagnostics: "
-      <> port.port_error_to_string(error)
-  }
-}
-
-fn validator_exit_message(
-  validator_name: String,
-  status: Int,
-  diagnostics: String,
+fn validator_failure_message(
+  failure: structured_output_validator.ValidatorFailure,
 ) -> String {
-  case diagnostics == "" {
-    True ->
-      "structured-output validator "
-      <> validator_name
-      <> " exited "
-      <> int.to_string(status)
-    False -> diagnostics
-  }
-}
-
-fn diagnostics_suffix(diagnostics: String) -> String {
-  case diagnostics == "" {
-    True -> ""
-    False -> ": " <> diagnostics
+  let base =
+    "validator "
+    <> failure.validator_name
+    <> " ("
+    <> failure.validator_type
+    <> ") failed: "
+    <> string.trim(failure.message)
+  case string.trim(failure.diagnostic_summary) {
+    "" -> base
+    diagnostic -> base <> ": " <> diagnostic
   }
 }
 

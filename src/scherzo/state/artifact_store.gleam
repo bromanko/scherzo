@@ -9,6 +9,7 @@ import scherzo/hash
 import scherzo/json_value
 import scherzo/path
 import scherzo/step_artifact
+import scherzo/structured_output_metadata
 import scherzo/workflow_identity
 import simplifile
 
@@ -33,6 +34,7 @@ pub type StructuredOutputArtifact {
     artifact_name: String,
     format: String,
     schema_required_keys: List(String),
+    validation: structured_output_metadata.ValidationMetadata,
     payload: json_value.JsonValue,
   )
 }
@@ -121,6 +123,7 @@ pub fn write_structured_output_artifact(
   artifact_name: String,
   format: String,
   schema_required_keys: List(String),
+  validation: structured_output_metadata.ValidationMetadata,
   payload_json: String,
 ) -> Result(StructuredArtifactRef, ArtifactError) {
   let ref =
@@ -142,6 +145,7 @@ pub fn write_structured_output_artifact(
       artifact_name: artifact_name,
       format: format,
       schema_required_keys: schema_required_keys,
+      validation: validation,
       payload: payload,
     ))
   use Nil <- result.try(
@@ -374,6 +378,7 @@ fn structured_output_to_json(artifact: StructuredOutputArtifact) -> json.Json {
         ),
       ]),
     ),
+    #("validation", structured_output_metadata.to_json(artifact.validation)),
     #("payload", json_value.to_json(artifact.payload)),
   ])
 }
@@ -411,9 +416,20 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputArtifact) {
           use attempt_index <- decode.field("attempt_index", decode.int)
           use artifact_name <- decode.field("artifact_name", decode.string)
           use format <- decode.field("format", decode.string)
-          use schema_required_keys <- decode.field(
+          use schema_required_keys <- decode.optional_field(
             "schema",
+            [],
             structured_output_schema_required_decoder(),
+          )
+          use legacy_required_keys <- decode.optional_field(
+            "schema_required_keys",
+            schema_required_keys,
+            decode.list(decode.string),
+          )
+          use validation <- decode.optional_field(
+            "validation",
+            structured_output_metadata.baseline_only(legacy_required_keys),
+            structured_output_metadata.decoder(),
           )
           use payload <- decode.field("payload", json_value.decoder())
           decode.success(StructuredOutputArtifact(
@@ -423,7 +439,10 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputArtifact) {
             attempt_index: attempt_index,
             artifact_name: artifact_name,
             format: format,
-            schema_required_keys: schema_required_keys,
+            schema_required_keys: structured_output_metadata.required_keys(
+              validation,
+            ),
+            validation: validation,
             payload: payload,
           ))
         }
@@ -446,6 +465,7 @@ fn empty_structured_output_artifact() -> StructuredOutputArtifact {
     artifact_name: "",
     format: "",
     schema_required_keys: [],
+    validation: structured_output_metadata.baseline_only([]),
     payload: json_value.JNull,
   )
 }

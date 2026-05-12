@@ -61,6 +61,10 @@ workspace:
         command: scripts/scherzo-workspace-jj
         lifecycle: [create, before-step, after-step, remove]
         timeout_ms: 60000
+        env:
+          SCHERZO_JJ_WORKSPACE_BASE: "@"
+          SCHERZO_JJ_WORKSPACE_REMOTE: upstream
+          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
 ```
 
 The driver schema fields are:
@@ -70,6 +74,7 @@ The driver schema fields are:
 | `command` | yes | One executable token naming the trusted driver command. See [command validation](#4-driver-command-validation). |
 | `lifecycle` | no | A list of lifecycle operation names Scherzo may invoke: `create`, `before-step`, `after-step`, and `remove`. Missing means the driver declares no lifecycle operations. Entries MUST be strings, known, and unique. |
 | `timeout_ms` | no | Positive integer timeout used by Scherzo for driver lifecycle and discovery invocations. Missing defaults to `60000`. |
+| `env` | no | A map of profile-local environment variable names to literal strings. Missing means no profile-local driver environment. Keys MUST match `[A-Za-z_][A-Za-z0-9_]*`, MUST be unique, and MUST NOT be Scherzo-generated variables such as `SCHERZO_WORKSPACE_DRIVER`, `SCHERZO_WORKSPACE_PATH`, or `SCHERZO_RUN_ID`. `PATH` is allowed. Values MUST be strings, including empty strings. |
 
 `workspace.profiles.<name>.driver.capabilities` MUST NOT be configured. Scherzo discovers driver capabilities by invoking `<driver> describe --json`.
 
@@ -114,9 +119,12 @@ Discovery runs without a prepared workflow workspace. Scherzo runs discovery fro
 Discovery MUST use a minimal environment containing:
 
 - `PATH` when available,
+- profile-local `driver.env` entries,
 - `SCHERZO_CONFIG_DIR`,
 - `SCHERZO_REPO_ROOT`, and
 - `SCHERZO_WORKSPACE_DRIVER` set to the resolved driver command.
+
+Profile `driver.env` values are trusted operator config and are literal strings. Scherzo MUST NOT expand `$NAME` or append inherited `PATH`; `PATH: "$PATH:/tool/bin"` is passed as the literal text `$PATH:/tool/bin`. If `driver.env` includes `PATH`, it replaces inherited `PATH` for discovery. Generated Scherzo variables override profile entries for the exact same key, and config validation rejects those generated keys before dispatch.
 
 Discovery MUST NOT pass `SCHERZO_WORKSPACE_PATH` or `SCHERZO_WORKSPACE_CAPABILITIES`. A driver MUST NOT require a prepared workspace, credentials, network access, VCS access, or mutable filesystem state for `describe --json`.
 
@@ -131,13 +139,13 @@ For driver-only profiles, Scherzo invokes lifecycle operations as argv commands,
 <driver> lifecycle remove
 ```
 
-Lifecycle invocations run from the inferred repository root described above. Scherzo passes the selected profile's resolved driver context plus the workflow/run/workspace environment described in [environment variables](#54-environment-variables). Drivers MUST treat `SCHERZO_WORKSPACE_PATH` as the lifecycle target. Destructive lifecycle operations MUST NOT fall back to the current directory when `SCHERZO_WORKSPACE_PATH` is missing or empty.
+Lifecycle invocations run from the inferred repository root described above. Scherzo passes profile-local `driver.env`, then the selected profile's resolved driver context plus the workflow/run/workspace environment described in [environment variables](#54-environment-variables). Drivers MUST treat `SCHERZO_WORKSPACE_PATH` as the lifecycle target. Destructive lifecycle operations MUST NOT fall back to the current directory when `SCHERZO_WORKSPACE_PATH` is missing or empty.
 
 If a driver-only profile omits `create` from `driver.lifecycle`, Scherzo may create the workspace directory itself. If `before-step`, `after-step`, or `remove` are omitted, Scherzo skips those driver lifecycle calls. Drivers intended for full lifecycle ownership SHOULD declare all four lifecycle operations.
 
 ### 5.3 Capability invocation
 
-Workflow code invokes capabilities through `SCHERZO_WORKSPACE_DRIVER`. Command steps and agent-step shells run from the prepared workspace root. A driver SHOULD interpret `SCHERZO_WORKSPACE_PATH` as the workspace root when it is set. Read-only or assertion capability commands MAY fall back to the current directory when `SCHERZO_WORKSPACE_PATH` is unset, because manually running a driver from a prepared workspace is useful for debugging.
+Workflow code invokes capabilities through `SCHERZO_WORKSPACE_DRIVER`. Command steps and agent-step shells run from the prepared workspace root and receive profile-local `driver.env` in addition to Scherzo-generated variables. A driver SHOULD interpret `SCHERZO_WORKSPACE_PATH` as the workspace root when it is set. Read-only or assertion capability commands MAY fall back to the current directory when `SCHERZO_WORKSPACE_PATH` is unset, because manually running a driver from a prepared workspace is useful for debugging.
 
 Relative driver commands are exposed as configured or resolved by Scherzo. Workflow shell code that needs to call a simple relative driver command SHOULD resolve it against `SCHERZO_CONFIG_DIR` before invoking it, as the checked example workflows do.
 
@@ -172,7 +180,7 @@ Scherzo-provided driver environments may include:
 | `SCHERZO_SCHEDULE_STARTED_AT` | Scheduled start timestamp for scheduled runs. |
 | `SCHERZO_RUN_ATTEMPT` | Scheduled-run attempt number. |
 
-Drivers MUST tolerate absent optional variables. Drivers MUST NOT print secrets. Driver-authored output SHOULD avoid local absolute workspace roots unless it is relaying bounded output from an underlying tool failure.
+Drivers MUST tolerate absent optional variables. `driver.env` is not a secret store. Its values are visible to discovery, lifecycle, command-step, and agent-step subprocesses, may be printed by those subprocesses, and are included in execution fingerprints only as key names plus SHA-256 value digests under `value_sha256`. Prompt templates do not receive a `workspace.env` map. Scherzo applies limited redaction to Scherzo-owned diagnostics and artifacts only for likely-sensitive `driver.env` keys such as `SECRET`, `TOKEN`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`, or `SESSION_KEY`, and only for non-empty values of at least eight characters. Drivers MUST NOT print secrets. Driver-authored output SHOULD avoid local absolute workspace roots unless it is relaying bounded output from an underlying tool failure.
 
 ## 6. Metadata command: `describe --json`
 

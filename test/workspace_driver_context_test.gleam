@@ -7,15 +7,18 @@ fn driver_profile() -> config_types.WorkspaceHookProfile {
   config_types.WorkspaceHookProfile(
     name: "dogfood-jj",
     hooks: Some(config_types.empty_dag_hooks()),
-    driver: Some(config_types.WorkspaceDriverConfig(
-      command: "scripts/scherzo-workspace-jj",
-      lifecycle: [],
-      capabilities: [
-        config_types.WorkspaceAssertOnly,
-        config_types.WorkspaceChangedFiles,
-      ],
-      timeout_ms: 1000,
-    )),
+    driver: Some(
+      config_types.WorkspaceDriverConfig(
+        command: "scripts/scherzo-workspace-jj",
+        lifecycle: [],
+        capabilities: [
+          config_types.WorkspaceAssertOnly,
+          config_types.WorkspaceChangedFiles,
+        ],
+        timeout_ms: 1000,
+        env: [#("SCHERZO_JJ_WORKSPACE_BASE", "profile-base")],
+      ),
+    ),
     source: config_types.ConfiguredWorkspaceHooks,
   )
 }
@@ -30,6 +33,7 @@ pub fn context_from_profile_uses_profile_driver_metadata_test() {
       config_types.WorkspaceAssertOnly,
       config_types.WorkspaceChangedFiles,
     ]
+  assert context.env == [#("SCHERZO_JJ_WORKSPACE_BASE", "profile-base")]
 }
 
 pub fn env_vars_serialize_workspace_driver_context_test() {
@@ -37,6 +41,7 @@ pub fn env_vars_serialize_workspace_driver_context_test() {
 
   assert workspace_driver_context.env_vars(context)
     == [
+      #("SCHERZO_JJ_WORKSPACE_BASE", "profile-base"),
       #("SCHERZO_WORKSPACE_PROFILE", "dogfood-jj"),
       #("SCHERZO_WORKSPACE_DRIVER", "scripts/scherzo-workspace-jj"),
       #("SCHERZO_WORKSPACE_CAPABILITIES", "assert-only changed-files"),
@@ -75,4 +80,5 @@ pub fn driverless_profile_uses_empty_driver_context_test() {
       #("SCHERZO_WORKSPACE_DRIVER", ""),
       #("SCHERZO_WORKSPACE_CAPABILITIES", ""),
     ]
+  assert context.env == []
 }
