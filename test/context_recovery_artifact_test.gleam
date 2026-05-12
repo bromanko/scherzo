@@ -1,4 +1,4 @@
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/context_exhaustion
 import scherzo/agent/context_recovery_artifact
@@ -87,8 +87,10 @@ pub fn writes_compact_failure_fallback_diagnostics_test() {
       2,
       "failed",
       context_recovery_prompt.FreshSession,
+      False,
       ["manual"],
       diagnostic,
+      None,
     )
   let assert Ok(contents) =
     artifact_store.read_artifact_unverified(store, result_ref.ref)
