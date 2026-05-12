@@ -131,7 +131,7 @@ For dangling jj workflow workspaces, prefer letting Scherzo publish/cleanup run 
 repo_root=$(pwd -P)
 run_root=.scherzo/workspaces/<workflow>/<issue>/<run>
 workflow=<workflow>
-SCHERZO_REPO_ROOT="$repo_root" SCHERZO_CONFIG_DIR="$repo_root/.scherzo" SCHERZO_RUN_ROOT="$run_root" SCHERZO_WORKSPACE_PATH="$run_root" SCHERZO_WORKFLOW_ID="$workflow" scripts/scherzo-jj-workspace before-remove "$workflow"
+SCHERZO_REPO_ROOT="$repo_root" SCHERZO_CONFIG_DIR="$repo_root/.scherzo" SCHERZO_RUN_ROOT="$run_root" SCHERZO_WORKSPACE_PATH="$run_root" SCHERZO_WORKFLOW_ID="$workflow" scripts/scherzo-workspace-jj lifecycle remove
 rm -rf "$run_root"
 ```
 

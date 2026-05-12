@@ -549,17 +549,26 @@ pub fn plan_completion_gate_blocks_stale_verdict_test() {
   assert string.contains(artifact.stderr, "stale verdict fingerprint")
 }
 
-pub fn jj_workspace_hook_prefers_configured_remote_base_for_new_root_workspaces_test() {
-  let assert Ok(script) = simplifile.read("scripts/scherzo-jj-workspace")
+pub fn jj_workspace_driver_prefers_configured_remote_base_for_new_root_workspaces_test() {
+  let assert Ok(script) = simplifile.read("scripts/scherzo-workspace-jj")
   assert string.contains(script, "SCHERZO_JJ_WORKSPACE_BASE")
-  assert string.contains(script, "default_base=${SCHERZO_PR_BASE:-main}")
-  assert string.contains(script, "default_remote=${SCHERZO_PR_REMOTE:-origin}")
   assert string.contains(
     script,
-    "remote_base=\"${default_base}@${default_remote}\"",
+    "default_base = os.environ.get(\"SCHERZO_PR_BASE\", \"main\")",
   )
-  assert string.contains(script, "elif revision_exists \"$remote_base\"")
-  assert string.contains(script, "--revision \"$base_revision\"")
+  assert string.contains(
+    script,
+    "default_remote = os.environ.get(\"SCHERZO_PR_REMOTE\", \"origin\")",
+  )
+  assert string.contains(
+    script,
+    "remote_base = f\"{default_base}@{default_remote}\"",
+  )
+  assert string.contains(script, "if revision_exists(repo_root, remote_base):")
+  assert string.contains(
+    script,
+    "base_revision = workspace_base_revision(repo_root)",
+  )
 }
 
 pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {

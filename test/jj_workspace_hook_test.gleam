@@ -74,7 +74,7 @@ fn write_fake_jj(path: String) -> Nil {
   Nil
 }
 
-fn setup_hook_fixture(dir: String) -> #(String, String, String, String) {
+fn setup_driver_fixture(dir: String) -> #(String, String, String, String) {
   reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/repo/.jj")
@@ -90,16 +90,16 @@ fn setup_hook_fixture(dir: String) -> #(String, String, String, String) {
   )
 }
 
-fn run_hook(
+fn run_driver_create(
   repo: String,
   workspace_path: String,
   bin: String,
   log: String,
   extra_env: String,
 ) -> step_artifact.StepArtifact {
-  let script = absolute("scripts/scherzo-jj-workspace")
+  let script = absolute("scripts/scherzo-workspace-jj")
   command_step.run(
-    "workspace_hook",
+    "workspace_driver_create",
     extra_env
       <> "SCHERZO_FAKE_JJ_LOG=\""
       <> log
@@ -109,9 +109,9 @@ fn run_hook(
       <> repo
       <> "\" SCHERZO_WORKSPACE_PATH=\""
       <> workspace_path
-      <> "\" sh \""
+      <> "\" SCHERZO_WORKFLOW_ID=implementation sh \""
       <> script
-      <> "\" after-create implementation",
+      <> "\" lifecycle create",
     ".",
     5000,
     [],
@@ -120,11 +120,11 @@ fn run_hook(
 }
 
 pub fn root_workspace_fetches_configured_publish_base_before_add_test() {
-  let dir = "test/tmp/jj-workspace-hook-fetches-base"
-  let #(repo, workspace_path, bin, log) = setup_hook_fixture(dir)
+  let dir = "test/tmp/jj-workspace-driver-fetches-base"
+  let #(repo, workspace_path, bin, log) = setup_driver_fixture(dir)
 
   let artifact =
-    run_hook(
+    run_driver_create(
       repo,
       workspace_path,
       bin,
@@ -158,11 +158,11 @@ pub fn root_workspace_fetches_configured_publish_base_before_add_test() {
 }
 
 pub fn explicit_workspace_base_skips_fetch_test() {
-  let dir = "test/tmp/jj-workspace-hook-explicit-base"
-  let #(repo, workspace_path, bin, log) = setup_hook_fixture(dir)
+  let dir = "test/tmp/jj-workspace-driver-explicit-base"
+  let #(repo, workspace_path, bin, log) = setup_driver_fixture(dir)
 
   let artifact =
-    run_hook(
+    run_driver_create(
       repo,
       workspace_path,
       bin,
@@ -184,13 +184,13 @@ pub fn explicit_workspace_base_skips_fetch_test() {
 }
 
 pub fn derived_workspace_skips_fetch_and_uses_source_at_test() {
-  let dir = "test/tmp/jj-workspace-hook-derived"
-  let #(repo, workspace_path, bin, log) = setup_hook_fixture(dir)
+  let dir = "test/tmp/jj-workspace-driver-derived"
+  let #(repo, workspace_path, bin, log) = setup_driver_fixture(dir)
   let source_path = absolute(dir <> "/source")
   let assert Ok(Nil) = simplifile.create_directory_all(source_path <> "/.jj")
 
   let artifact =
-    run_hook(
+    run_driver_create(
       repo,
       workspace_path,
       bin,
@@ -210,11 +210,11 @@ pub fn derived_workspace_skips_fetch_and_uses_source_at_test() {
 }
 
 pub fn fetch_failure_fails_root_workspace_creation_with_override_hint_test() {
-  let dir = "test/tmp/jj-workspace-hook-fetch-failure"
-  let #(repo, workspace_path, bin, log) = setup_hook_fixture(dir)
+  let dir = "test/tmp/jj-workspace-driver-fetch-failure"
+  let #(repo, workspace_path, bin, log) = setup_driver_fixture(dir)
 
   let artifact =
-    run_hook(
+    run_driver_create(
       repo,
       workspace_path,
       bin,

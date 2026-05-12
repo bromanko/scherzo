@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -105,18 +106,6 @@ def capability_root() -> Path:
         fail(f"could not resolve current workspace: {exc}")
 
 
-def helper_path() -> Path:
-    script = Path(os.environ.get("SCHERZO_DRIVER_SCRIPT", "scripts/scherzo-workspace-jj"))
-    script = script.resolve(strict=False)
-    helper = script.with_name("scherzo-jj-workspace")
-    if helper.is_file():
-        return helper
-    fallback = script.parent.parent / "scripts" / "scherzo-jj-workspace"
-    if fallback.is_file():
-        return fallback
-    fail("could not find sibling scherzo-jj-workspace helper")
-
-
 def validate_relative_path(value: str, *, usage_label: str = "path") -> str:
     if value == "":
         usage_error(f"{usage_label} must not be empty")
@@ -142,13 +131,350 @@ def require_explicit_workspace_path(operation: str) -> None:
         usage_error(f"SCHERZO_WORKSPACE_PATH is required for lifecycle {operation}")
 
 
-def run_helper(legacy_operation: str) -> None:
-    workflow = os.environ.get("SCHERZO_WORKFLOW_ID") or "workflow"
+def resolve_existing_dir(raw: str, label: str) -> Path:
     try:
-        status = subprocess.call([str(helper_path()), legacy_operation, workflow])
+        path = Path(raw).resolve(strict=True)
+    except OSError as exc:
+        fail(f"could not resolve {label}: {exc}")
+    if not path.is_dir():
+        fail(f"{label} is not a directory: {path}")
+    return path
+
+
+def resolve_dir_or_raw(raw: str) -> Path:
+    path = Path(raw)
+    try:
+        if path.is_dir():
+            return path.resolve(strict=True)
+    except OSError:
+        pass
+    return path.resolve(strict=False)
+
+
+def lifecycle_workspace_path() -> Path:
+    raw = os.environ.get("SCHERZO_WORKSPACE_PATH")
+    if raw:
+        return resolve_dir_or_raw(raw)
+    try:
+        return Path.cwd().resolve(strict=True)
+    except OSError as exc:
+        fail(f"could not resolve current workspace: {exc}")
+
+
+def lifecycle_run_root() -> Path | None:
+    raw = os.environ.get("SCHERZO_RUN_ROOT")
+    if not raw:
+        return None
+    return resolve_dir_or_raw(raw)
+
+
+def same_or_contained_by(child: Path, parent: Path) -> bool:
+    try:
+        child_text = str(child.resolve(strict=False))
+        parent_text = str(parent.resolve(strict=False))
+        return os.path.commonpath([child_text, parent_text]) == parent_text
+    except (OSError, ValueError):
+        return False
+
+
+def validate_remove_target(workspace_path: Path, run_root: Path | None) -> None:
+    if workspace_path.parent == workspace_path:
+        usage_error("refusing filesystem root as workspace path")
+    if run_root is not None and not same_or_contained_by(workspace_path, run_root):
+        usage_error("refusing to remove workspace outside SCHERZO_RUN_ROOT")
+
+
+def infer_repo_root(workspace_path: Path) -> Path:
+    raw_repo = os.environ.get("SCHERZO_REPO_ROOT")
+    if raw_repo:
+        return resolve_existing_dir(raw_repo, "repo root")
+
+    raw_config = os.environ.get("SCHERZO_CONFIG_DIR")
+    if raw_config:
+        config_dir = resolve_existing_dir(raw_config, "config directory")
+        return resolve_existing_dir(str(config_dir.parent), "repo root")
+
+    try:
+        candidate = workspace_path.parents[6]
+    except IndexError:
+        fail("could not infer repo root from workspace path; set SCHERZO_REPO_ROOT")
+    return resolve_existing_dir(str(candidate), "repo root")
+
+
+def sanitize_workspace_key(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value)
+    sanitized = re.sub(r"-+", "-", sanitized).strip("-")
+    return sanitized
+
+
+def lifecycle_workspace_name(workspace_path: Path) -> str:
+    workflow = os.environ.get("SCHERZO_WORKFLOW_ID") or "workflow"
+    issue_key = sanitize_workspace_key(os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "issue")) or "issue"
+    run_key = sanitize_workspace_key(os.environ.get("SCHERZO_RUN_ID", "run")) or "run"
+    logical = os.environ.get("SCHERZO_WORKSPACE_NAME") or workspace_path.name
+    logical_key = sanitize_workspace_key(logical) or "workspace"
+    return f"scherzo-{workflow}-{issue_key}-{run_key}-{logical_key}"
+
+
+def run_backend_proc(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            args,
+            cwd=str(cwd) if cwd is not None else None,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
     except FileNotFoundError:
-        fail("could not execute scherzo-jj-workspace helper")
-    raise SystemExit(0 if status == 0 else 1)
+        fail(f"required command not found: {args[0]}")
+
+
+def run_backend_stream(args: list[str], *, cwd: Path | None = None) -> int:
+    try:
+        return subprocess.call(args, cwd=str(cwd) if cwd is not None else None)
+    except FileNotFoundError:
+        fail(f"required command not found: {args[0]}")
+
+
+def write_bounded_backend_output(proc: subprocess.CompletedProcess[str]) -> None:
+    text = proc.stderr or proc.stdout
+    if text:
+        sys.stderr.write(text[:4000])
+        if not text.endswith("\n"):
+            sys.stderr.write("\n")
+
+
+def require_jj_repo_root(repo_root: Path) -> None:
+    if not (repo_root / ".jj").is_dir():
+        fail(f"repo root is not a jj repository: {repo_root}")
+
+
+def revision_exists(repo_root: Path, revision: str) -> bool:
+    proc = run_backend_proc(
+        [
+            "jj",
+            "--repository",
+            str(repo_root),
+            "log",
+            "-r",
+            revision,
+            "--no-graph",
+            "-T",
+            "commit_id",
+            "--color=never",
+        ]
+    )
+    return proc.returncode == 0
+
+
+def fetch_workspace_publish_base(repo_root: Path) -> None:
+    default_base = os.environ.get("SCHERZO_PR_BASE", "main")
+    default_remote = os.environ.get("SCHERZO_PR_REMOTE", "origin")
+    proc = run_backend_proc(
+        [
+            "jj",
+            "--repository",
+            str(repo_root),
+            "git",
+            "fetch",
+            "--remote",
+            default_remote,
+            "--branch",
+            default_base,
+        ]
+    )
+    if proc.returncode != 0:
+        write_bounded_backend_output(proc)
+        fail(
+            f"could not fetch publish base '{default_base}' from remote "
+            f"'{default_remote}' before creating root workspace; set "
+            "SCHERZO_PR_REMOTE/SCHERZO_PR_BASE to a fetchable branch or set "
+            "SCHERZO_JJ_WORKSPACE_BASE to an explicit local revision to skip this fetch"
+        )
+
+
+def workspace_base_revision(repo_root: Path) -> str:
+    default_base = os.environ.get("SCHERZO_PR_BASE", "main")
+    default_remote = os.environ.get("SCHERZO_PR_REMOTE", "origin")
+    remote_base = f"{default_base}@{default_remote}"
+    explicit_base = os.environ.get("SCHERZO_JJ_WORKSPACE_BASE")
+
+    if explicit_base:
+        if not revision_exists(repo_root, explicit_base):
+            fail(f"SCHERZO_JJ_WORKSPACE_BASE does not resolve in repo: {explicit_base}")
+        return explicit_base
+    if revision_exists(repo_root, remote_base):
+        return remote_base
+    if revision_exists(repo_root, default_base):
+        return default_base
+    if remote_base != "main@origin" and revision_exists(repo_root, "main@origin"):
+        return "main@origin"
+    if default_base != "main" and revision_exists(repo_root, "main"):
+        return "main"
+    return "@"
+
+
+def prepare_destination_for_workspace_add(workspace_path: Path) -> Path:
+    workspace_parent = workspace_path.parent
+    try:
+        workspace_parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        fail(f"could not create workspace parent: {workspace_parent}: {exc}")
+    if workspace_path.is_dir():
+        try:
+            workspace_path.rmdir()
+        except OSError:
+            fail(f"workspace path exists and is not empty before jj workspace add: {workspace_path}")
+    return workspace_parent
+
+
+def run_jj_root(workspace_path: Path) -> str:
+    proc = run_backend_proc(["jj", "root"], cwd=workspace_path)
+    if proc.returncode != 0:
+        write_bounded_backend_output(proc)
+        fail("jj root failed")
+    return proc.stdout.strip()
+
+
+def verify_current_workspace(workspace_path: Path) -> None:
+    if not (workspace_path / ".jj").exists():
+        fail(f"workspace is missing .jj: {workspace_path}")
+    if run_jj_root(workspace_path) != str(workspace_path):
+        fail("jj root does not match workspace path")
+
+    current_root = run_jj_root(workspace_path)
+    if current_root != str(workspace_path):
+        fail(f"jj root does not match workspace path: expected {workspace_path}, got {current_root}")
+
+    status = run_backend_stream(["jj", "status", "--color=never"], cwd=workspace_path)
+    if status != 0:
+        fail("jj status failed")
+
+
+def allow_trusted_envrc_after_create(workspace_path: Path) -> None:
+    if not (workspace_path / ".envrc").is_file():
+        return
+    if shutil.which("direnv") is None:
+        fail(".envrc exists but direnv is not installed in workspace setup environment")
+    proc = run_backend_proc(["direnv", "allow", "."], cwd=workspace_path)
+    if proc.returncode != 0:
+        write_bounded_backend_output(proc)
+        print(
+            f"scherzo-workspace-jj: warning: direnv allow failed for workspace: {workspace_path}",
+            file=sys.stderr,
+        )
+
+
+def add_workspace(args: list[str], workspace_parent: Path) -> None:
+    status = run_backend_stream(args, cwd=workspace_parent)
+    if status != 0:
+        fail("jj workspace add failed")
+
+
+def lifecycle_create() -> None:
+    workspace_path = lifecycle_workspace_path()
+    repo_root = infer_repo_root(workspace_path)
+    require_jj_repo_root(repo_root)
+
+    if (workspace_path / ".jj").is_dir():
+        verify_current_workspace(workspace_path)
+        return
+
+    source_workspace = os.environ.get("SCHERZO_SOURCE_WORKSPACE_PATH")
+    explicit_base = os.environ.get("SCHERZO_JJ_WORKSPACE_BASE")
+    if not source_workspace and not explicit_base:
+        fetch_workspace_publish_base(repo_root)
+
+    workspace_parent = prepare_destination_for_workspace_add(workspace_path)
+    workspace_name = lifecycle_workspace_name(workspace_path)
+    if source_workspace:
+        source_path = resolve_dir_or_raw(source_workspace)
+        if not (source_path / ".jj").is_dir():
+            fail(f"source workspace is missing .jj: {source_path}")
+        add_workspace(
+            [
+                "jj",
+                "--repository",
+                str(source_path),
+                "workspace",
+                "add",
+                "--name",
+                workspace_name,
+                "--revision",
+                "@",
+                "--sparse-patterns",
+                "full",
+                str(workspace_path),
+            ],
+            workspace_parent,
+        )
+    else:
+        base_revision = workspace_base_revision(repo_root)
+        add_workspace(
+            [
+                "jj",
+                "--repository",
+                str(repo_root),
+                "workspace",
+                "add",
+                "--name",
+                workspace_name,
+                "--revision",
+                base_revision,
+                "--sparse-patterns",
+                "full",
+                str(workspace_path),
+            ],
+            workspace_parent,
+        )
+
+    verify_current_workspace(workspace_path)
+    allow_trusted_envrc_after_create(workspace_path)
+
+
+def forget_workspace_at(target: Path) -> None:
+    if not target.is_dir():
+        return
+    root_proc = run_backend_proc(["jj", "root"], cwd=target)
+    if root_proc.returncode != 0:
+        return
+    status = run_backend_stream(["jj", "workspace", "forget"], cwd=target)
+    if status != 0:
+        fail(f"could not forget jj workspace: {target}")
+
+
+def forget_workspace_children(base: Path) -> None:
+    if not base.is_dir():
+        return
+    for target in sorted(base.iterdir()):
+        if target.is_dir() and (target / ".jj").is_dir():
+            forget_workspace_at(target)
+
+
+def forget_run_workspaces(workspace_path: Path, run_root: Path | None) -> None:
+    if run_root is not None:
+        forget_workspace_children(run_root / "workspaces")
+        return
+    if (workspace_path / "workspaces").is_dir():
+        forget_workspace_children(workspace_path / "workspaces")
+        return
+    if (workspace_path / ".jj").is_dir():
+        forget_workspace_at(workspace_path)
+
+
+def lifecycle_remove() -> None:
+    require_explicit_workspace_path("remove")
+    workspace_path = lifecycle_workspace_path()
+    run_root = lifecycle_run_root()
+    validate_remove_target(workspace_path, run_root)
+    if shutil.which("jj") is None:
+        return
+    forget_run_workspaces(workspace_path, run_root)
 
 
 def lifecycle(args: list[str]) -> None:
@@ -156,14 +482,16 @@ def lifecycle(args: list[str]) -> None:
         usage_error("lifecycle requires one operation")
     operation = args[0]
     if operation == "create":
-        run_helper("after-create")
+        lifecycle_create()
+        return
     if operation == "before-step":
-        run_helper("before-run")
+        verify_current_workspace(lifecycle_workspace_path())
+        return
     if operation == "after-step":
         return
     if operation == "remove":
-        require_explicit_workspace_path("remove")
-        run_helper("before-remove")
+        lifecycle_remove()
+        return
     usage_error(f"unsupported lifecycle operation: {operation}")
 
 

@@ -1,9 +1,11 @@
 #!/bin/sh
-# Shared jj workspace hook helpers for checked-in Scherzo workflows.
+# Deprecated compatibility wrapper for legacy Scherzo jj workspace hooks.
 #
-# Scherzo passes the logical run/workspace identity explicitly. The target
-# workspace path is SCHERZO_WORKSPACE_PATH; hook cwd may be the config directory
-# or the workspace depending on the caller.
+# The authoritative jj workspace driver is scripts/scherzo-workspace-jj. Keep
+# this wrapper only for older local hook snippets that still call the historical
+# after-create/before-run/before-remove verbs. Follow-up: delete this wrapper once
+# downstream hook snippets have migrated. New config and workflows must call
+# scripts/scherzo-workspace-jj lifecycle <operation> directly.
 
 set -eu
 
@@ -11,19 +13,11 @@ usage() {
   cat >&2 <<'EOF'
 Usage: scherzo-jj-workspace <after-create|before-run|before-remove> <workflow-name>
 
-Run from a Scherzo hook. SCHERZO_WORKSPACE_PATH points at the logical workspace
-and SCHERZO_RUN_ROOT points at the workflow run root. SCHERZO_REPO_ROOT may point
-at the coordinating jj repository; otherwise the script uses SCHERZO_CONFIG_DIR.
-Set SCHERZO_JJ_WORKSPACE_BASE to override the initial base revision. Without
-that override, new root workspaces fetch ${SCHERZO_PR_BASE:-main} from
-${SCHERZO_PR_REMOTE:-origin} before preferring ${SCHERZO_PR_BASE:-main}@${SCHERZO_PR_REMOTE:-origin},
-then ${SCHERZO_PR_BASE:-main}, then main@origin, then main, then @.
+Deprecated compatibility wrapper. Use:
+  scherzo-workspace-jj lifecycle create
+  scherzo-workspace-jj lifecycle before-step
+  scherzo-workspace-jj lifecycle remove
 EOF
-}
-
-fail() {
-  echo "scherzo-jj-workspace: $*" >&2
-  exit 1
 }
 
 if [ "$#" -ne 2 ]; then
@@ -31,213 +25,25 @@ if [ "$#" -ne 2 ]; then
   exit 2
 fi
 
-command=$1
-workflow_name=$2
-workspace_path=${SCHERZO_WORKSPACE_PATH:-$(pwd -P)}
-workspace_path=$(cd "$workspace_path" 2>/dev/null && pwd -P || printf '%s\n' "$workspace_path")
-run_root=${SCHERZO_RUN_ROOT:-}
-if [ -n "$run_root" ]; then
-  run_root=$(cd "$run_root" 2>/dev/null && pwd -P || printf '%s\n' "$run_root")
-fi
+case "$0" in
+  */*) wrapper_script=$0 ;;
+  *) wrapper_script=$(command -v "$0" 2>/dev/null || printf '%s\n' "$0") ;;
+esac
+wrapper_dir=$(CDPATH= cd "$(dirname "$wrapper_script")" && pwd -P)
+driver=$wrapper_dir/scherzo-workspace-jj
 
-sanitize_key() {
-  printf '%s' "$1" \
-    | tr -c 'A-Za-z0-9_.-' '-' \
-    | sed 's/^-*//; s/-*$//; s/--*/-/g'
-}
-
-issue_key=$(sanitize_key "${SCHERZO_ISSUE_IDENTIFIER:-issue}")
-run_key=$(sanitize_key "${SCHERZO_RUN_ID:-run}")
-logical_workspace_key=$(sanitize_key "${SCHERZO_WORKSPACE_NAME:-$(basename "$workspace_path")}")
-
-[ -n "$issue_key" ] || issue_key=issue
-[ -n "$run_key" ] || run_key=run
-[ -n "$logical_workspace_key" ] || logical_workspace_key=workspace
-
-workspace_key="${issue_key}-${run_key}-${logical_workspace_key}"
-workspace_name="scherzo-${workflow_name}-${workspace_key}"
-
-infer_repo_root() {
-  if [ -n "${SCHERZO_REPO_ROOT:-}" ]; then
-    (cd "$SCHERZO_REPO_ROOT" && pwd -P)
-    return
-  fi
-
-  if [ -n "${SCHERZO_CONFIG_DIR:-}" ]; then
-    (cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)
-    return
-  fi
-
-  # Expected checked-in convention:
-  #   <repo>/.scherzo/workspaces/<workflow-name>/<issue-key>/<run-key>/workspaces/<workspace-name>
-  (cd "$workspace_path/../../../../../../.." && pwd -P)
-}
-
-repo_root=$(infer_repo_root)
-
-require_jj_repo_root() {
-  test -d "$repo_root/.jj" || fail "repo root is not a jj repository: $repo_root"
-}
-
-current_change_id() {
-  jj log -r @ --no-graph -T 'change_id'
-}
-
-revision_exists() {
-  revision=$1
-  jj --repository "$repo_root" log -r "$revision" --no-graph -T 'commit_id' --color=never >/dev/null 2>&1
-}
-
-fetch_workspace_publish_base() {
-  default_base=${SCHERZO_PR_BASE:-main}
-  default_remote=${SCHERZO_PR_REMOTE:-origin}
-
-  if ! output=$(jj --repository "$repo_root" git fetch --remote "$default_remote" --branch "$default_base" 2>&1); then
-    printf '%s\n' "$output" >&2
-    fail "could not fetch publish base '${default_base}' from remote '${default_remote}' before creating root workspace; set SCHERZO_PR_REMOTE/SCHERZO_PR_BASE to a fetchable branch or set SCHERZO_JJ_WORKSPACE_BASE to an explicit local revision to skip this fetch"
-  fi
-}
-
-workspace_base_revision() {
-  default_base=${SCHERZO_PR_BASE:-main}
-  default_remote=${SCHERZO_PR_REMOTE:-origin}
-  remote_base="${default_base}@${default_remote}"
-
-  if [ -n "${SCHERZO_JJ_WORKSPACE_BASE:-}" ]; then
-    revision_exists "$SCHERZO_JJ_WORKSPACE_BASE" || \
-      fail "SCHERZO_JJ_WORKSPACE_BASE does not resolve in repo: $SCHERZO_JJ_WORKSPACE_BASE"
-    printf '%s\n' "$SCHERZO_JJ_WORKSPACE_BASE"
-  elif revision_exists "$remote_base"; then
-    printf '%s\n' "$remote_base"
-  elif revision_exists "$default_base"; then
-    printf '%s\n' "$default_base"
-  elif [ "$remote_base" != main@origin ] && revision_exists main@origin; then
-    printf '%s\n' main@origin
-  elif [ "$default_base" != main ] && revision_exists main; then
-    printf '%s\n' main
-  else
-    printf '%s\n' @
-  fi
-}
-
-prepare_destination_for_workspace_add() {
-  workspace_parent=$(dirname "$workspace_path")
-  workspace_leaf=$(basename "$workspace_path")
-  mkdir -p "$workspace_parent" || fail "could not create workspace parent: $workspace_parent"
-  cd "$workspace_parent"
-  if [ -d "$workspace_leaf" ]; then
-    rmdir "$workspace_leaf" 2>/dev/null || \
-      fail "workspace path exists and is not empty before jj workspace add: $workspace_path"
-  fi
-}
-
-verify_current_workspace() {
-  cd "$workspace_path"
-  test -e .jj || fail "workspace is missing .jj: $workspace_path"
-  test "$(jj root)" = "$workspace_path" || fail "jj root does not match workspace path"
-
-  current_root=$(jj root)
-  test "$current_root" = "$workspace_path" || \
-    fail "jj root does not match workspace path: expected $workspace_path, got $current_root"
-
-  jj status --color=never
-}
-
-allow_trusted_envrc_after_create() {
-  cd "$workspace_path"
-  if [ -f .envrc ]; then
-    command -v direnv >/dev/null 2>&1 || \
-      fail ".envrc exists but direnv is not installed in workspace setup environment"
-    if ! output=$(direnv allow . 2>&1); then
-      printf '%s\n' "$output" >&2
-      echo "scherzo-jj-workspace: warning: direnv allow failed for workspace: $workspace_path" >&2
-    fi
-  fi
-}
-
-forget_workspace_at() {
-  target=$1
-  [ -d "$target" ] || return 0
-  (
-    cd "$target"
-    if jj root >/dev/null 2>&1; then
-      jj workspace forget
-    fi
-  )
-}
-
-forget_workspace_children() {
-  base=$1
-  [ -d "$base" ] || return 0
-  for target in "$base"/*; do
-    [ -d "$target" ] || continue
-    if [ -d "$target/.jj" ]; then
-      forget_workspace_at "$target"
-    fi
-  done
-  return 0
-}
-
-forget_run_workspaces() {
-  if [ -n "$run_root" ]; then
-    forget_workspace_children "$run_root/workspaces"
-    return 0
-  fi
-
-  if [ -d "$workspace_path/workspaces" ]; then
-    forget_workspace_children "$workspace_path/workspaces"
-    return 0
-  fi
-
-  if [ -d "$workspace_path/.jj" ]; then
-    forget_workspace_at "$workspace_path"
-    return 0
-  fi
-}
-
-case "$command" in
-  after-create)
-    require_jj_repo_root
-    if [ -d "$workspace_path/.jj" ]; then
-      verify_current_workspace
-      exit 0
-    fi
-    if [ -z "${SCHERZO_SOURCE_WORKSPACE_PATH:-}" ] && [ -z "${SCHERZO_JJ_WORKSPACE_BASE:-}" ]; then
-      fetch_workspace_publish_base
-    fi
-    prepare_destination_for_workspace_add
-    if [ -n "${SCHERZO_SOURCE_WORKSPACE_PATH:-}" ]; then
-      test -d "$SCHERZO_SOURCE_WORKSPACE_PATH/.jj" || \
-        fail "source workspace is missing .jj: $SCHERZO_SOURCE_WORKSPACE_PATH"
-      jj --repository "$SCHERZO_SOURCE_WORKSPACE_PATH" workspace add \
-        --name "$workspace_name" \
-        --revision @ \
-        --sparse-patterns full \
-        "$workspace_path"
-    else
-      base_revision=$(workspace_base_revision)
-      jj --repository "$repo_root" workspace add \
-        --name "$workspace_name" \
-        --revision "$base_revision" \
-        --sparse-patterns full \
-        "$workspace_path"
-    fi
-    verify_current_workspace
-    allow_trusted_envrc_after_create
-    ;;
-
-  before-run)
-    verify_current_workspace
-    ;;
-
-  before-remove)
-    if command -v jj >/dev/null 2>&1; then
-      forget_run_workspaces
-    fi
-    ;;
-
+case "$1" in
+  after-create) lifecycle_operation=create ;;
+  before-run) lifecycle_operation=before-step ;;
+  before-remove) lifecycle_operation=remove ;;
   *)
     usage
     exit 2
     ;;
 esac
+
+SCHERZO_WORKFLOW_ID=$2
+export SCHERZO_WORKFLOW_ID
+
+echo "scherzo-jj-workspace: deprecated; use scherzo-workspace-jj lifecycle $lifecycle_operation" >&2
+exec "$driver" lifecycle "$lifecycle_operation"
