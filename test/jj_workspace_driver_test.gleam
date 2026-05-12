@@ -243,7 +243,7 @@ pub fn jj_driver_describe_json_is_static_and_workspace_free_test() {
   assert log_lines(log) == []
 }
 
-pub fn jj_driver_lifecycle_create_delegates_to_existing_helper_test() {
+pub fn jj_driver_lifecycle_create_implements_root_workspace_creation_test() {
   let dir = "test/tmp/jj-workspace-driver-lifecycle-create"
   let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
 
@@ -279,6 +279,11 @@ pub fn jj_driver_lifecycle_create_delegates_to_existing_helper_test() {
   assert string.contains(add_line, "--repository " <> repo <> " workspace add")
   assert string.contains(add_line, "--revision develop@upstream")
   assert simplifile.is_directory(workspace <> "/.jj") == Ok(True)
+}
+
+pub fn jj_driver_lifecycle_is_self_contained_test() {
+  let assert Ok(script) = simplifile.read("scripts/scherzo-workspace-jj")
+  assert !string.contains(script, "scherzo-jj-workspace")
 }
 
 pub fn jj_driver_changed_files_json_is_sorted_and_deduplicated_test() {
@@ -426,6 +431,65 @@ pub fn jj_driver_assert_only_rejects_unsafe_paths_without_invoking_jj_test() {
       )
     assert_exit(artifact, 2)
   })
+  assert log_lines(log) == []
+}
+
+pub fn jj_driver_lifecycle_before_step_verifies_workspace_test() {
+  let dir = "test/tmp/jj-workspace-driver-before-step"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_before_step",
+      "lifecycle before-step",
+      fake_env(workspace, bin, log, []),
+    )
+
+  assert_exit(artifact, 0)
+  assert log_lines(log) == ["root", "root", "status --color=never"]
+}
+
+pub fn jj_driver_lifecycle_remove_forgets_run_workspaces_test() {
+  let dir = "test/tmp/jj-workspace-driver-remove-run"
+  let #(_, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_forget",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [#("SCHERZO_RUN_ROOT", run_root)]),
+    )
+
+  assert_exit(artifact, 0)
+  assert log_lines(log) == ["root", "workspace forget"]
+}
+
+pub fn jj_driver_lifecycle_remove_rejects_unsafe_targets_test() {
+  let dir = "test/tmp/jj-workspace-driver-remove-unsafe-targets"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+
+  let root =
+    run_jj(
+      "jj_driver_remove_root",
+      "lifecycle remove",
+      fake_env("/", bin, log, []),
+    )
+  assert_exit(root, 2)
+  assert string.contains(root.stderr, "refusing filesystem root")
+
+  let outside_run_root =
+    run_jj(
+      "jj_driver_remove_outside_run_root",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [#("SCHERZO_RUN_ROOT", run_root)]),
+    )
+  assert_exit(outside_run_root, 2)
+  assert string.contains(outside_run_root.stderr, "outside SCHERZO_RUN_ROOT")
   assert log_lines(log) == []
 }
 

@@ -75,21 +75,18 @@ fn orchestrator(
   let dag_hooks =
     config_types.DagHooksConfig(
       create: Some(
-        "mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n"
-        <> "cd \"$SCHERZO_WORKSPACE_PATH\"\n"
-        <> "SCHERZO_REPO_ROOT=\""
+        "SCHERZO_REPO_ROOT=\""
         <> repo
         <> "\" SCHERZO_JJ_WORKSPACE_BASE=@ sh \""
         <> script
-        <> "\" after-create \"$SCHERZO_WORKFLOW_ID\"",
+        <> "\" lifecycle create",
       ),
       before_step: Some(
-        "cd \"$SCHERZO_WORKSPACE_PATH\"\n"
-        <> "SCHERZO_REPO_ROOT=\""
+        "SCHERZO_REPO_ROOT=\""
         <> repo
         <> "\" sh \""
         <> script
-        <> "\" before-run \"$SCHERZO_WORKFLOW_ID\"",
+        <> "\" lifecycle before-step",
       ),
       after_step: None,
       remove: Some(
@@ -98,7 +95,7 @@ fn orchestrator(
         <> repo
         <> "\" sh \""
         <> script
-        <> "\" before-remove \"$SCHERZO_WORKFLOW_ID\"\n"
+        <> "\" lifecycle remove\n"
         <> "fi",
       ),
       timeout_ms: 20_000,
@@ -225,7 +222,7 @@ fn setup_jj_repo(root: String) -> String {
   let setup =
     command_step.run(
       "setup_jj_repo",
-      "mkdir -p repo && cd repo && jj git init --colocate . && printf 'hello\\n' > file.txt && jj file track file.txt && jj describe -m initial",
+      "mkdir -p repo && cd repo && jj git init --colocate . && printf 'hello\\n' > file.txt && jj file track file.txt && jj describe -m initial && jj bookmark set main -r @ && jj git export && jj git remote add origin . && jj git remote add scherzo-agent .",
       root,
       20_000,
       [],
@@ -239,7 +236,7 @@ pub fn workflow_jj_workspace_reuses_main_and_cleans_up_smoke_test() {
   let root = "test/tmp/workflow-jj-workspace-smoke"
   reset_dir(root)
   let repo = setup_jj_repo(root)
-  let script = absolute("scripts/scherzo-jj-workspace")
+  let script = absolute("scripts/scherzo-workspace-jj")
   let orch = orchestrator(root, repo, script)
   let assert Ok(success) =
     workflow_run.execute(

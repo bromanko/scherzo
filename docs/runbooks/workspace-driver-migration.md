@@ -140,9 +140,9 @@ workspace:
 
 The profile name can stay stable, so existing workflows that already say `workspace_profile: isolated` do not need to change unless they also require a new capability.
 
-## Hook-backed profile with workflow-facing driver context
+## Legacy hook-backed profile with workflow-facing driver context
 
-During the transition, a hook-backed profile can also declare a driver command. Hooks still own workspace lifecycle; the driver command is discovered with `describe --json` and exposed to workflow command steps, agent subprocesses, and prompt templates as workflow-facing context.
+During the transition, a hook-backed profile can also declare a driver command. Prefer the direct `driver:` profile shape above for new config. If a legacy hook-backed profile must remain temporarily, call the same driver lifecycle operations directly from hooks; the driver command is discovered with `describe --json` and exposed to workflow command steps, agent subprocesses, and prompt templates as workflow-facing context.
 
 ```yaml
 workspace:
@@ -151,10 +151,10 @@ workspace:
   profiles:
     isolated:
       hooks:
-        create: scripts/scherzo-jj-workspace after-create
-        before_step: scripts/scherzo-jj-workspace before-run
-        after_step: true
-        remove: scripts/scherzo-jj-workspace before-remove
+        create: scripts/scherzo-workspace-jj lifecycle create
+        before_step: scripts/scherzo-workspace-jj lifecycle before-step
+        after_step: scripts/scherzo-workspace-jj lifecycle after-step
+        remove: scripts/scherzo-workspace-jj lifecycle remove
         timeout_ms: 60000
       driver:
         command: scripts/scherzo-workspace-jj
@@ -204,7 +204,7 @@ workspace:
         timeout_ms: 60000
 ```
 
-Older dogfood configs called `scripts/scherzo-jj-workspace` from hook snippets. That helper still exists behind the driver adapter, but new docs and workflows should point at `scripts/scherzo-workspace-jj` as the driver command.
+Older dogfood configs called `scripts/scherzo-jj-workspace` from hook snippets. That path is now only a deprecated compatibility wrapper; the driver no longer depends on it. New docs and workflows should point at `scripts/scherzo-workspace-jj` as the driver command.
 
 ## Validation
 

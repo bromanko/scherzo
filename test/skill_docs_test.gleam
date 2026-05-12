@@ -119,7 +119,7 @@ pub fn scherzo_operator_reference_documents_artifacts_and_linear_cli_test() {
   assert_contains(reference, ".scherzo-keep-workspace")
   assert_contains(reference, "command-step-diagnostics")
   assert_contains(reference, ".scherzo-state/artifacts/runs")
-  assert_contains(reference, "scripts/scherzo-jj-workspace before-remove")
+  assert_contains(reference, "scripts/scherzo-workspace-jj lifecycle remove")
   assert_contains(reference, "direnv exec . linear issue view LIV-104 --json")
   assert_contains(
     reference,
