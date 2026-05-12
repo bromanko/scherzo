@@ -308,6 +308,7 @@ pub type WorkspaceDriverConfig {
     lifecycle: List(WorkspaceLifecycleOperation),
     capabilities: List(WorkspaceCapability),
     timeout_ms: Int,
+    env: List(#(String, String)),
   )
 }
 

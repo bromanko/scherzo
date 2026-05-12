@@ -270,13 +270,20 @@ pub fn default_dependencies() -> Dependencies {
       record_pi_session,
     ) {
       let command_subject = process.new_subject()
+      let redaction_secrets =
+        step_redaction_secrets(context, effective_config_secrets(effective))
       run_attempt.run_prompt_mode_in_workspace(
         issue,
         prompt_mode,
         attempt_context,
         config_types.with_pi_env(effective, step_command_env(context)),
         tracker_client,
-        fn(_, update) { emit_update(update) },
+        fn(_, update) {
+          emit_update(agent_types.redact_runner_update(
+            update,
+            redaction_secrets,
+          ))
+        },
         command_subject,
         fn() { command_ready(command_subject) },
         context.workspace_path,
@@ -285,6 +292,32 @@ pub fn default_dependencies() -> Dependencies {
     },
     checkpoint: workflow_checkpoint.noop_writer(),
   )
+}
+
+fn profile_redaction_secrets(
+  profile: config_types.WorkspaceHookProfile,
+  secrets: List(String),
+) -> List(String) {
+  list.append(secrets, workspace_profile.profile_redaction_values(profile))
+}
+
+fn step_redaction_secrets(
+  context: StepContext,
+  secrets: List(String),
+) -> List(String) {
+  list.append(
+    secrets,
+    workspace_profile.driver_context_redaction_values(context.workspace_context),
+  )
+}
+
+fn effective_config_secrets(
+  config: config_types.EffectiveConfig,
+) -> List(String) {
+  case config.tracker.api_key {
+    Some(value) -> [value]
+    None -> []
+  }
 }
 
 pub fn execute(
@@ -516,7 +549,8 @@ pub fn execute_with_context(
         run_root: run_context_run_root(context),
         failed_step_id: None,
       ))
-    Ok(profile) ->
+    Ok(profile) -> {
+      let secrets = profile_redaction_secrets(profile, secrets)
       case context {
         FreshRun(run_id) ->
           loop(
@@ -594,6 +628,7 @@ pub fn execute_with_context(
               }
           }
       }
+    }
   }
 }
 
@@ -2967,7 +3002,7 @@ fn step_context(
 }
 
 fn step_command_env(context: StepContext) -> List(#(String, String)) {
-  [
+  let generated = [
     #("SCHERZO_CONFIG_DIR", context.config_dir),
     #("SCHERZO_WORKFLOW_ID", context.workflow_id),
     #("SCHERZO_RUN_ID", context.run_id),
@@ -2996,9 +3031,10 @@ fn step_command_env(context: StepContext) -> List(#(String, String)) {
     #("SCHERZO_WORKSPACE_NAME", context.workspace_name),
     #("SCHERZO_WORKSPACE_PATH", context.workspace_path),
   ]
-  |> list.append(workspace_profile.driver_context_env_vars(
+  workspace_profile.driver_context_env_vars_with_generated(
     context.workspace_context,
-  ))
+    generated,
+  )
 }
 
 fn effective_for_step(

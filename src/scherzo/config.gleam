@@ -10,6 +10,7 @@ import scherzo/model_config
 import scherzo/orchestrator/schedule_core
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workspace_driver_env
 import yay
 
 pub type ReloadStatus {
@@ -1042,6 +1043,7 @@ fn read_workspace_driver(
         "lifecycle",
         path <> ".lifecycle",
       ))
+      use env <- result.try(read_workspace_driver_env(driver, path <> ".env"))
       let timeout = get_int(driver, "timeout_ms") |> int_default(60_000)
       case timeout > 0 {
         False ->
@@ -1052,6 +1054,7 @@ fn read_workspace_driver(
             lifecycle: lifecycle,
             capabilities: [],
             timeout_ms: timeout,
+            env: env,
           ))
       }
     }
@@ -1070,6 +1073,80 @@ fn read_driver_command(
       })
     Some(_) -> Error(error.InvalidConfig(path <> " must be a string"))
     None -> Error(error.InvalidConfig(path <> " is required"))
+  }
+}
+
+fn read_workspace_driver_env(
+  node: yay.Node,
+  path: String,
+) -> Result(List(#(String, String)), error.ConfigError) {
+  case get_node(node, "env") {
+    None -> Ok([])
+    Some(yay.NodeMap(entries)) ->
+      read_workspace_driver_env_entries(entries, path, [], [])
+    Some(_) -> Error(error.InvalidConfig(path <> " must be a map"))
+  }
+}
+
+fn read_workspace_driver_env_entries(
+  entries: List(#(yay.Node, yay.Node)),
+  path: String,
+  seen: List(String),
+  acc: List(#(String, String)),
+) -> Result(List(#(String, String)), error.ConfigError) {
+  case entries {
+    [] -> Ok(workspace_driver_env.canonicalize(acc))
+    [#(yay.NodeStr(key), value), ..rest] ->
+      case list.contains(seen, key) {
+        True ->
+          Error(error.InvalidConfig(path <> " has duplicate key: " <> key))
+        False -> {
+          use pair <- result.try(read_workspace_driver_env_entry(
+            key,
+            value,
+            path,
+          ))
+          read_workspace_driver_env_entries(rest, path, [key, ..seen], [
+            pair,
+            ..acc
+          ])
+        }
+      }
+    [#(_, _), ..] -> Error(error.InvalidConfig(path <> " keys must be strings"))
+  }
+}
+
+fn read_workspace_driver_env_entry(
+  key: String,
+  value: yay.Node,
+  path: String,
+) -> Result(#(String, String), error.ConfigError) {
+  case workspace_driver_env.valid_key(key) {
+    False ->
+      Error(error.InvalidConfig(
+        path
+        <> "."
+        <> key
+        <> " has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*",
+      ))
+    True ->
+      case workspace_driver_env.reserved_generated_key(key) {
+        True ->
+          Error(error.InvalidConfig(
+            path
+            <> "."
+            <> key
+            <> " is reserved by Scherzo and cannot be configured in driver.env",
+          ))
+        False ->
+          case value {
+            yay.NodeStr(value) -> Ok(#(key, value))
+            _ ->
+              Error(error.InvalidConfig(
+                path <> "." <> key <> " must be a string",
+              ))
+          }
+      }
   }
 }
 

@@ -38,12 +38,22 @@ fn orchestrator(
   command: String,
   timeout_ms: Int,
 ) -> config_types.OrchestratorConfig {
+  orchestrator_with_env(dir, command, timeout_ms, [])
+}
+
+fn orchestrator_with_env(
+  dir: String,
+  command: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+) -> config_types.OrchestratorConfig {
   let driver =
     config_types.WorkspaceDriverConfig(
       command: command,
       lifecycle: [],
       capabilities: [],
       timeout_ms: timeout_ms,
+      env: env,
     )
   config_types.OrchestratorConfig(
     effective: effective(dir),
@@ -136,6 +146,69 @@ fn selected_driver(
     dict.get(orchestrator.workspace_profiles.profiles, "noop")
   let assert Some(driver) = profile.driver
   driver
+}
+
+pub fn discovery_receives_profile_env_without_workspace_values_test() {
+  let dir = "test/tmp/workspace-driver-discovery-env"
+  write_driver(
+    dir,
+    "#!/bin/sh\n"
+      <> "if [ \"$SCHERZO_JJ_WORKSPACE_BASE\" != profile-base ]; then echo missing profile base >&2; exit 1; fi\n"
+      <> "if [ \"${SCHERZO_WORKSPACE_PATH+x}\" = x ]; then echo workspace path leaked >&2; exit 1; fi\n"
+      <> "if [ \"${SCHERZO_WORKSPACE_CAPABILITIES+x}\" = x ]; then echo capabilities leaked >&2; exit 1; fi\n"
+      <> "printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\"]}'\n",
+  )
+
+  let assert Ok(enriched) =
+    workspace_driver_discovery.enrich_orchestrator(
+      orchestrator_with_env(dir, "./driver.sh", 1000, [
+        #("SCHERZO_JJ_WORKSPACE_BASE", "profile-base"),
+      ]),
+    )
+  assert selected_driver(enriched).capabilities
+    == [config_types.WorkspaceStatus]
+}
+
+pub fn discovery_profile_path_overrides_process_path_test() {
+  let dir = "test/tmp/workspace-driver-discovery-path"
+  write_driver(
+    dir,
+    "#!/bin/sh\n"
+      <> "profile-helper >/dev/null 2>&1 || { echo helper missing >&2; exit 9; }\n"
+      <> "printf '%s\\n' '{\"version\":1,\"capabilities\":[]}'\n",
+  )
+  let bin = dir <> "/bin"
+  let assert Ok(Nil) = simplifile.create_directory_all(bin)
+  let helper = bin <> "/profile-helper"
+  let assert Ok(Nil) = simplifile.write(helper, "#!/bin/sh\necho helper\n")
+  chmod_executable(helper)
+
+  let assert Ok(enriched) =
+    workspace_driver_discovery.enrich_orchestrator(
+      orchestrator_with_env(dir, "./driver.sh", 1000, [#("PATH", "./bin")]),
+    )
+  assert selected_driver(enriched).capabilities == []
+}
+
+pub fn discovery_errors_redact_sensitive_profile_env_values_test() {
+  let dir = "test/tmp/workspace-driver-discovery-redaction"
+  write_driver(
+    dir,
+    "#!/bin/sh\n"
+      <> "echo token=$DRIVER_SECRET_TOKEN base=$SCHERZO_JJ_WORKSPACE_BASE @ marker >&2\n"
+      <> "exit 7\n",
+  )
+  let assert Error(error) =
+    workspace_driver_discovery.enrich_orchestrator(
+      orchestrator_with_env(dir, "./driver.sh", 1000, [
+        #("DRIVER_SECRET_TOKEN", "driver-env-redaction-token"),
+        #("SCHERZO_JJ_WORKSPACE_BASE", "@"),
+      ]),
+    )
+  let message = workspace_driver_discovery.error_message(error)
+  assert string.contains(message, "[REDACTED]")
+  assert !string.contains(message, "driver-env-redaction-token")
+  assert string.contains(message, "@ marker")
 }
 
 fn discovery_error_for(dir: String, body: String) -> #(String, String) {

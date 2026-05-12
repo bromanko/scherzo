@@ -5,6 +5,7 @@ import scherzo/error
 import scherzo/hooks
 import scherzo/path
 import scherzo/workspace_driver_command
+import scherzo/workspace_driver_env
 import simplifile
 
 pub fn supports(
@@ -34,13 +35,14 @@ pub fn run(
   orchestrator: config_types.OrchestratorConfig,
   env: List(#(String, String)),
 ) -> Result(Nil, error.HookError) {
-  hooks.run_argv_with_env(
+  hooks.run_argv_with_env_redacting(
     name,
     workspace_driver_command.resolve(driver.command, orchestrator),
     lifecycle_args(operation),
     cwd(orchestrator),
     driver.timeout_ms,
     lifecycle_env(env, driver, orchestrator),
+    workspace_driver_env.values_for_redaction(driver.env),
   )
 }
 
@@ -55,13 +57,14 @@ pub fn run_best_effort(
     False -> Nil
     True -> {
       let _ =
-        hooks.run_best_effort_argv_with_env(
+        hooks.run_best_effort_argv_with_env_redacting(
           name,
           workspace_driver_command.resolve(driver.command, orchestrator),
           lifecycle_args(operation),
           cwd(orchestrator),
           driver.timeout_ms,
           lifecycle_env(env, driver, orchestrator),
+          workspace_driver_env.values_for_redaction(driver.env),
         )
       Nil
     }
@@ -172,7 +175,7 @@ fn lifecycle_env(
   driver: config_types.WorkspaceDriverConfig,
   orchestrator: config_types.OrchestratorConfig,
 ) -> List(#(String, String)) {
-  [
+  workspace_driver_env.merge(driver.env, [
     #(
       "SCHERZO_WORKSPACE_DRIVER",
       workspace_driver_command.resolve(driver.command, orchestrator),
@@ -187,7 +190,7 @@ fn lifecycle_env(
       workspace_driver_command.default_repo_root(orchestrator),
     ),
     ..env
-  ]
+  ])
 }
 
 fn cwd(orchestrator: config_types.OrchestratorConfig) -> String {

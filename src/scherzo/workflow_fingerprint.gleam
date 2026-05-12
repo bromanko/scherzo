@@ -8,6 +8,7 @@ import scherzo/hash
 import scherzo/model_config
 import scherzo/structured_output_source
 import scherzo/workflow_dag
+import scherzo/workspace_driver_env
 import scherzo/workspace_profile
 
 pub type FingerprintError {
@@ -354,12 +355,32 @@ fn workspace_lifecycle_to_json(
 fn workspace_driver_to_json(
   driver: config_types.WorkspaceDriverConfig,
 ) -> json.Json {
-  json.object([
+  let fields = [
     #("command", json.string(driver.command)),
     #("lifecycle", workspace_lifecycle_to_json(driver.lifecycle)),
     #("capabilities", workspace_capabilities_to_json(driver.capabilities)),
     #("timeout_ms", json.int(driver.timeout_ms)),
-  ])
+  ]
+  let fields = case driver.env {
+    [] -> fields
+    _ ->
+      list.append(fields, [
+        #("env", workspace_driver_env_to_json(driver.env)),
+      ])
+  }
+  json.object(fields)
+}
+
+fn workspace_driver_env_to_json(env: List(#(String, String))) -> json.Json {
+  env
+  |> workspace_driver_env.fingerprint_entries
+  |> json.array(of: fn(entry) {
+    let #(name, value_sha256) = entry
+    json.object([
+      #("name", json.string(name)),
+      #("value_sha256", json.string(value_sha256)),
+    ])
+  })
 }
 
 fn workspace_profile_to_json(

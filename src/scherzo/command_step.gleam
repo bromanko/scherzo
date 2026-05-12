@@ -43,10 +43,11 @@ pub fn run_with_env(
 ) -> step_artifact.StepArtifact {
   let started_ms = monotonic_ms()
   let diagnostics = prepare_diagnostics(workspace_path, step_id)
+  let command_for_child = command_with_shell_path_override(command, env)
   let command_to_run = case diagnostics {
     Some(DiagnosticsCapture(stdout_path: stdout_path, ..)) ->
-      command_with_stdout_capture(command, stdout_path)
-    None -> command
+      command_with_stdout_capture(command_for_child, stdout_path)
+    None -> command_for_child
   }
   case port.start_with_env(command_to_run, workspace_path, env) {
     Error(err) -> {
@@ -221,8 +222,37 @@ fn prepare_diagnostics(
   }
 }
 
+// The port shell uses a login Bash, which may rewrite PATH after the
+// process environment is applied. Re-export only PATH inside the user script so
+// profile-local PATH remains a literal command-step override without copying
+// every env value into the shell argv.
+fn command_with_shell_path_override(
+  command: String,
+  env: List(#(String, String)),
+) -> String {
+  case env_value(env, "PATH") {
+    Some(path) -> "export PATH=" <> shell_quote(path) <> "\n" <> command
+    None -> command
+  }
+}
+
+fn env_value(env: List(#(String, String)), key: String) -> Option(String) {
+  case env {
+    [] -> None
+    [#(current, value), ..rest] ->
+      case current == key {
+        True -> Some(value)
+        False -> env_value(rest, key)
+      }
+  }
+}
+
 fn command_with_stdout_capture(command: String, stdout_path: String) -> String {
-  "(\n" <> command <> "\n) > >(tee " <> shell_quote(stdout_path) <> ")"
+  "(\n"
+  <> command
+  <> "\n) > >(command -p tee "
+  <> shell_quote(stdout_path)
+  <> ")"
 }
 
 fn finish_command(
