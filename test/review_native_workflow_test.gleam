@@ -1,0 +1,101 @@
+import gleam/option.{None, Some}
+import gleam/string
+import scherzo/result_artifact
+import scherzo/structured_output
+import scherzo/structured_output_source
+import scherzo/workflow_dag
+import simplifile
+
+const submit_review_lane_draft_tool = "submit_review_lane_draft"
+
+fn review_native_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(contents) =
+    simplifile.read(".scherzo/workflows/review-native.yml")
+  let assert Ok(dag) = workflow_dag.parse(contents)
+  dag
+}
+
+fn lane_spec(
+  dag: workflow_dag.WorkflowDag,
+  step_id: String,
+) -> workflow_dag.StructuredOutputSpec {
+  let assert Ok(step) = workflow_dag.step_by_id(dag, step_id)
+  let assert workflow_dag.AgentStep(_, Some(spec)) = step.kind
+  spec
+}
+
+fn assert_review_tool_source(spec: workflow_dag.StructuredOutputSpec) -> Nil {
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: submit_review_lane_draft_tool,
+      require_single: True,
+      reject_sibling_tool_calls: True,
+    )
+}
+
+fn valid_review_lane_draft_json() -> String {
+  "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"generated_at_utc\":\"2026-05-11T00:00:00Z\",\"producer\":{\"name\":\"review-native-workflow-test\",\"version\":\"1\",\"mode\":\"native\"},\"lane\":{\"id\":\"correctness\",\"name\":\"Correctness reviewer\",\"category\":\"correctness\",\"version\":\"1\"},\"input_refs\":[],\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"inspected_diff\":true,\"used_repository_relative_paths\":true},\"remote_mutations\":\"none\"}"
+}
+
+fn validate_result(
+  spec: workflow_dag.StructuredOutputSpec,
+  result: result_artifact.ResultArtifact,
+) -> Result(
+  structured_output.StructuredOutputValidation,
+  structured_output.StructuredOutputError,
+) {
+  structured_output.validate_agent_result(
+    spec,
+    result,
+    [],
+    structured_output.scherzo_review_validator_runner("."),
+  )
+}
+
+pub fn review_native_lane_steps_use_submit_review_lane_draft_tool_source_test() {
+  let dag = review_native_dag()
+
+  assert_review_tool_source(lane_spec(dag, "lane_correctness"))
+  assert_review_tool_source(lane_spec(dag, "lane_test_quality"))
+  assert_review_tool_source(lane_spec(dag, "lane_idioms_maintainability"))
+  assert_review_tool_source(lane_spec(dag, "lane_security_performance"))
+}
+
+pub fn review_native_rejects_final_response_only_and_accepts_tool_submission_test() {
+  let spec = lane_spec(review_native_dag(), "lane_correctness")
+  let final_response_only =
+    result_artifact.from_final_response_with_tool_calls(
+      Some(valid_review_lane_draft_json()),
+      False,
+      "review_native_workflow_test",
+      [],
+    )
+
+  let assert Error(missing_tool_call) =
+    validate_result(spec, final_response_only)
+  assert structured_output.error_code(missing_tool_call)
+    == "structured_output_tool_call_missing"
+  assert string.contains(
+    structured_output.error_message(missing_tool_call),
+    submit_review_lane_draft_tool,
+  )
+
+  let tool_call_result =
+    result_artifact.from_final_response_with_tool_calls(
+      None,
+      False,
+      "review_native_workflow_test",
+      [
+        result_artifact.ToolCallSubmission(
+          name: submit_review_lane_draft_tool,
+          arguments_json: Some(valid_review_lane_draft_json()),
+          status: Some("success"),
+          sibling_count: 1,
+        ),
+      ],
+    )
+
+  let assert Ok(structured_output.StructuredOutputPresent(payload)) =
+    validate_result(spec, tool_call_result)
+  assert string.contains(payload, "review_lane_draft")
+}

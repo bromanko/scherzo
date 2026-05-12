@@ -20,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ DEFAULT_SYNTHESIS_OUTPUT_DIR = Path("tmp/scherzo-review-synthesis")
 DEFAULT_PREFLIGHT_OUTPUT_DIR = Path("tmp/scherzo-review-preflight")
 DEFAULT_NATIVE_OUTPUT_DIR = Path("tmp/scherzo-review-native")
 DEFAULT_NATIVE_PREFLIGHT_OUTPUT_DIR = Path("tmp/scherzo-review-native-preflight")
+DEFAULT_EXTENSION_SCHEMA_SMOKE_OUTPUT_DIR = Path("tmp/scherzo-review-extension-smoke")
 DEFAULT_LEGACY_PR_SMOKE_OUTPUT_DIR = Path("tmp/native-review-legacy-pr-smoke")
 LEGACY_PR_SMOKE_WORKFLOW_PATH = ".scherzo/workflows/review-native.yml"
 LEGACY_PR_SMOKE_FORBIDDEN_ENV_VARS = [
@@ -1746,7 +1748,12 @@ def validate_list_field(value: dict[str, Any], field: str) -> list[Any]:
 
 def path_is_unsafe(path: str) -> bool:
     candidate = Path(path)
-    return candidate.is_absolute() or ".." in candidate.parts or bool(re.match(r"^[A-Za-z]:[\\\\/]", path))
+    return (
+        candidate.is_absolute()
+        or ".." in candidate.parts
+        or path.startswith("<absolute-local-path>")
+        or bool(re.match(r"^[A-Za-z]:[\\\\/]", path))
+    )
 
 
 def validate_repo_relative_path(path: Any, *, field: str) -> None:
@@ -1960,9 +1967,15 @@ def validate_preflight_manifest(value: dict[str, Any]) -> None:
         for item in provenance:
             if not isinstance(item, dict):
                 raise ReviewError("native lane step provenance items must be objects")
-            for field in ["scenario_id", "lane_id", "step_id", "workflow_path", "structured_output_status"]:
+            for field in ["scenario_id", "lane_id", "step_id", "workflow_path", "structured_output_status", "source_type", "source_tool_name"]:
                 validate_string_field(item, field)
             validate_repo_relative_path(item.get("workflow_path"), field="native_lane_step_provenance.workflow_path")
+            if item.get("source_type") != "pi_tool_call":
+                raise ReviewError("native lane step provenance source_type must be pi_tool_call")
+            if item.get("source_tool_name") != "submit_review_lane_draft":
+                raise ReviewError("native lane step provenance source_tool_name must be submit_review_lane_draft")
+            if not isinstance(item.get("review_local_validation"), dict):
+                raise ReviewError("native lane step provenance must record review_local_validation")
 
 
 def validate_final_review(value: dict[str, Any]) -> None:
@@ -2161,7 +2174,42 @@ def validate_legacy_pr_smoke_manifest(value: dict[str, Any]) -> None:
         if not isinstance(run.get("artifacts"), dict):
             raise ReviewError("legacy PR smoke run artifacts must be an object")
         if "lane_execution_states" in run:
-            validate_list_field(run, "lane_execution_states")
+            lane_states = validate_list_field(run, "lane_execution_states")
+            for lane_state in lane_states:
+                if not isinstance(lane_state, dict):
+                    raise ReviewError("legacy PR smoke lane_execution_states items must be objects")
+                for field in ["lane_id", "step_id", "structured_output_status", "source_type", "source_tool_name"]:
+                    validate_string_field(lane_state, field)
+                if lane_state.get("source_type") != "pi_tool_call":
+                    raise ReviewError("legacy PR smoke lane source_type must be pi_tool_call")
+                if lane_state.get("source_tool_name") != "submit_review_lane_draft":
+                    raise ReviewError("legacy PR smoke lane source_tool_name must be submit_review_lane_draft")
+
+
+def validate_review_extension_schema_smoke(value: dict[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("extension schema smoke schema_version must be 1")
+    if value.get("artifact_type") != "review_extension_schema_smoke":
+        raise ReviewError("extension schema smoke artifact_type must be review_extension_schema_smoke")
+    for field in ["generated_at_utc", "tool_name", "extension_dir", "contract_path", "advertisement_status", "global_scope_status", "runtime_fixture_status", "remote_mutations"]:
+        validate_string_field(value, field)
+    if value.get("tool_name") != "submit_review_lane_draft":
+        raise ReviewError("extension schema smoke tool_name must be submit_review_lane_draft")
+    if value.get("remote_mutations") != "none":
+        raise ReviewError("extension schema smoke remote_mutations must be none")
+    validate_repo_relative_path(value.get("extension_dir"), field="extension_dir")
+    validate_repo_relative_path(value.get("contract_path"), field="contract_path")
+    fixtures = validate_list_field(value, "fixtures")
+    for fixture in fixtures:
+        if not isinstance(fixture, dict):
+            raise ReviewError("extension schema smoke fixtures must be objects")
+        for field in ["name", "extension_contract_status", "extension_runtime_status", "script_deep_status", "expected"]:
+            validate_string_field(fixture, field)
+    summary = value.get("summary")
+    if not isinstance(summary, dict):
+        raise ReviewError("extension schema smoke summary must be an object")
+    if summary.get("status") != "passed":
+        raise ReviewError("extension schema smoke summary status must be passed")
 
 
 def validate_artifact(value: dict[str, Any]) -> None:
@@ -2188,9 +2236,11 @@ def validate_artifact(value: dict[str, Any]) -> None:
         validate_publish_manifest(value)
     elif artifact_type == "legacy_pr_smoke_manifest":
         validate_legacy_pr_smoke_manifest(value)
+    elif artifact_type == "review_extension_schema_smoke":
+        validate_review_extension_schema_smoke(value)
     else:
         raise ReviewError(
-            "artifact_type must be review_brief, review_finding, review_lane_result, review_synthesis, final_review, preflight_manifest, review_lane_draft, review_evidence_ledger, review_feedback_manifest, review_publish_manifest, or legacy_pr_smoke_manifest"
+            "artifact_type must be review_brief, review_finding, review_lane_result, review_synthesis, final_review, preflight_manifest, review_lane_draft, review_evidence_ledger, review_feedback_manifest, review_publish_manifest, legacy_pr_smoke_manifest, or review_extension_schema_smoke"
         )
 
 
@@ -2206,6 +2256,331 @@ def load_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReviewError(f"artifact JSON must be an object: {path}")
     return value
+
+
+def load_extension_tool_contract(extension_dir: Path) -> dict[str, Any]:
+    contract_path = extension_dir / "tool-contract.v1.json"
+    contract = load_json(contract_path)
+    if contract.get("schema_version") != SCHEMA_VERSION:
+        raise ReviewError("extension tool contract schema_version must be 1")
+    if contract.get("artifact_type") != "pi_extension_tool_contract":
+        raise ReviewError("extension tool contract artifact_type must be pi_extension_tool_contract")
+    if contract.get("tool_name") != "submit_review_lane_draft":
+        raise ReviewError("extension tool contract tool_name must be submit_review_lane_draft")
+    return contract
+
+
+def extension_contract_validate_fixture(contract: dict[str, Any], fixture: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    required = contract.get("top_level_required")
+    if not isinstance(required, list):
+        return ["contract top_level_required must be a list"]
+    for field in required:
+        if isinstance(field, str) and field not in fixture:
+            errors.append(f"missing required field {field}")
+    rules = contract.get("defense_in_depth_rules")
+    if not isinstance(rules, dict):
+        errors.append("contract defense_in_depth_rules must be an object")
+    else:
+        if fixture.get("schema_version") != rules.get("schema_version"):
+            errors.append("schema_version must be 1")
+        if fixture.get("artifact_type") != rules.get("artifact_type"):
+            errors.append("artifact_type must be review_lane_draft")
+        if fixture.get("remote_mutations") != rules.get("remote_mutations"):
+            errors.append("remote_mutations must be none")
+    allowed_lane_ids = contract.get("allowed_lane_ids")
+    lane = fixture.get("lane")
+    if not isinstance(allowed_lane_ids, list) or not all(isinstance(item, str) for item in allowed_lane_ids):
+        errors.append("contract allowed_lane_ids must be a list of strings")
+    elif not isinstance(lane, dict) or lane.get("id") not in set(allowed_lane_ids):
+        errors.append("lane.id must be one of the native review lane ids")
+    return errors
+
+
+def script_deep_validate_fixture(fixture: dict[str, Any]) -> list[str]:
+    try:
+        validate_review_lane_draft(fixture)
+        return []
+    except ReviewError as exc:
+        return [str(exc)]
+
+
+def resolve_pi_package_dir() -> Path:
+    candidates: list[Path] = []
+    pi_bin = shutil.which("pi")
+    if pi_bin:
+        pi_root = Path(pi_bin).resolve().parent.parent
+        candidates.append(pi_root / "lib/node_modules/@mariozechner/pi-coding-agent")
+    for root in [Path.cwd(), *Path.cwd().parents]:
+        candidates.append(root / "node_modules/@mariozechner/pi-coding-agent")
+    for candidate in candidates:
+        if (candidate / "package.json").exists():
+            return candidate
+    raise ReviewError("could not locate @mariozechner/pi-coding-agent package for extension runtime smoke")
+
+
+def symlink_or_copy(src: Path, dst: Path) -> None:
+    if dst.exists() or dst.is_symlink():
+        return
+    try:
+        os.symlink(src, dst, target_is_directory=src.is_dir())
+    except OSError:
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+
+
+def prepare_extension_node_runtime(extension_dir: Path, runtime_dir: Path) -> None:
+    package_dir = resolve_pi_package_dir()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(extension_dir / "index.ts", runtime_dir / "index.ts")
+    node_modules = runtime_dir / "node_modules"
+    scoped = node_modules / "@mariozechner"
+    scoped.mkdir(parents=True, exist_ok=True)
+    symlink_or_copy(package_dir, scoped / "pi-coding-agent")
+    dependency_root = package_dir / "node_modules"
+    symlink_or_copy(dependency_root / "@mariozechner/pi-ai", scoped / "pi-ai")
+    symlink_or_copy(dependency_root / "typebox", node_modules / "typebox")
+
+
+def extension_runtime_validate_fixture(extension_dir: Path, fixture_path: Path) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="scherzo-review-extension-runtime-") as tmp:
+        runtime_dir = Path(tmp)
+        prepare_extension_node_runtime(extension_dir, runtime_dir)
+        node_script = r'''
+import { Value } from "typebox/value";
+import * as extension from "./index.ts";
+import fs from "node:fs";
+
+const fixturePath = process.argv[process.argv.length - 1];
+const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+const typeboxErrors = Value.Check(extension.submitReviewLaneDraftParameters, fixture)
+  ? []
+  : [...Value.Errors(extension.submitReviewLaneDraftParameters, fixture)].map((error) => `${error.path || "/"}: ${error.message}`);
+const shallowErrors = extension.shallowValidateReviewLaneDraft(fixture);
+let executeTerminate = false;
+let executeError = null;
+if (typeboxErrors.length === 0 && shallowErrors.length === 0) {
+  try {
+    const result = await extension.submitReviewLaneDraftTool.execute("extension-schema-smoke", fixture);
+    executeTerminate = result?.terminate === true;
+    if (!executeTerminate) executeError = "tool execute result did not include terminate: true";
+  } catch (error) {
+    executeError = error instanceof Error ? error.message : String(error);
+  }
+}
+const errors = [...typeboxErrors, ...shallowErrors];
+if (executeError) errors.push(executeError);
+console.log(JSON.stringify({
+  status: errors.length === 0 ? "passed" : "rejected",
+  typebox_status: typeboxErrors.length === 0 ? "passed" : "rejected",
+  shallow_status: shallowErrors.length === 0 ? "passed" : "rejected",
+  execute_terminate: executeTerminate,
+  errors,
+}));
+'''
+        proc = subprocess.run(
+            ["node", "--input-type=module", "-e", node_script, str(fixture_path.resolve())],
+            cwd=runtime_dir,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    if proc.returncode != 0:
+        return {
+            "status": "rejected",
+            "typebox_status": "unknown",
+            "shallow_status": "unknown",
+            "execute_terminate": False,
+            "errors": [proc.stderr.strip() or proc.stdout.strip() or f"node exited {proc.returncode}"],
+        }
+    try:
+        value = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        return {
+            "status": "rejected",
+            "typebox_status": "unknown",
+            "shallow_status": "unknown",
+            "execute_terminate": False,
+            "errors": [f"could not parse extension runtime smoke output: {exc}: {proc.stdout}"],
+        }
+    return value if isinstance(value, dict) else {"status": "rejected", "errors": ["runtime output was not an object"]}
+
+
+def pi_advertisement_probe(workflow_id: str) -> dict[str, Any]:
+    require_command("pi")
+    env = os.environ.copy()
+    env["SCHERZO_WORKFLOW_ID"] = workflow_id
+    rpc_request = json.dumps({
+        "id": "review-lane-draft-tool-info",
+        "type": "prompt",
+        "message": "/review-lane-draft-tool-info",
+    }) + "\n"
+    try:
+        proc = subprocess.run(
+            [
+                "pi",
+                "--mode",
+                "rpc",
+                "--no-builtin-tools",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
+                "--no-context-files",
+                "--no-session",
+            ],
+            input=rpc_request,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ReviewError(f"Pi advertisement probe timed out for workflow {workflow_id}") from exc
+    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    line = ""
+    for candidate in combined.splitlines():
+        if candidate.startswith("REVIEW_LANE_DRAFT_TOOL_ADVERTISED="):
+            line = candidate
+    if not line:
+        raise ReviewError(
+            "Pi advertisement probe did not print REVIEW_LANE_DRAFT_TOOL_ADVERTISED for workflow "
+            + workflow_id
+            + f"; exit={proc.returncode}; stdout={proc.stdout!r}; stderr={proc.stderr!r}"
+        )
+    payload_text = line.split("=", 1)[1]
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        raise ReviewError(f"Pi advertisement payload was not JSON: {payload_text}") from exc
+    if not isinstance(payload, dict):
+        raise ReviewError("Pi advertisement payload was not an object")
+    return {"line": line, "payload": payload, "exit_code": proc.returncode}
+
+
+def run_pi_advertisement_check(extension_dir: Path) -> dict[str, Any]:
+    if not (extension_dir / "index.ts").exists():
+        raise ReviewError(f"extension index.ts does not exist: {extension_dir / 'index.ts'}")
+    active = pi_advertisement_probe("review-native-contract-spike")
+    inactive = pi_advertisement_probe("unrelated-workflow")
+    active_payload = active["payload"]
+    inactive_payload = inactive["payload"]
+    value = {
+        "status": "passed" if active_payload.get("status") == "active" and inactive_payload.get("status") == "disabled_workflow_scope" else "failed",
+        "advertisement_status": active_payload.get("status"),
+        "advertisement_workflow_id": active_payload.get("workflow_id"),
+        "global_scope_status": "inactive_outside_review_workflows" if inactive_payload.get("status") == "disabled_workflow_scope" else inactive_payload.get("status"),
+        "lines": [active["line"], inactive["line"]],
+        "checks": [active_payload, inactive_payload],
+    }
+    if value.get("status") != "passed":
+        raise ReviewError("Pi advertisement check failed: " + json.dumps(value, sort_keys=True))
+    return value
+
+
+def extension_fixture_expected(name: str) -> str:
+    if name.startswith("valid-"):
+        return "valid"
+    if name == "absolute-path.arguments.json":
+        return "invalid_deep_validation"
+    return "invalid_shallow"
+
+
+def extension_schema_smoke_command(args: argparse.Namespace) -> None:
+    extension_dir = Path(args.extension_dir)
+    fixtures_dir = Path(args.fixtures)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    contract = load_extension_tool_contract(extension_dir)
+    fixture_paths = sorted(fixtures_dir.glob("*.arguments.json"))
+    if not fixture_paths:
+        raise ReviewError(f"no extension smoke fixtures found under {fixtures_dir}")
+    advertisement: dict[str, Any] = {
+        "advertisement_status": "not_checked",
+        "advertisement_workflow_id": "not_checked",
+        "global_scope_status": "not_checked",
+        "lines": [],
+    }
+    if args.verify_pi_advertisement:
+        advertisement = run_pi_advertisement_check(extension_dir)
+        for line in advertisement.get("lines", []):
+            if isinstance(line, str):
+                print(line)
+    fixture_results: list[dict[str, Any]] = []
+    failures: list[str] = []
+    valid_count = 0
+    invalid_count = 0
+    for fixture_path in fixture_paths:
+        fixture = load_json(fixture_path)
+        expected = extension_fixture_expected(fixture_path.name)
+        if expected == "valid":
+            valid_count += 1
+        else:
+            invalid_count += 1
+        contract_errors = extension_contract_validate_fixture(contract, fixture)
+        runtime_result = extension_runtime_validate_fixture(extension_dir, fixture_path)
+        deep_errors = script_deep_validate_fixture(fixture)
+        contract_status = "passed" if not contract_errors else "rejected"
+        runtime_status = str(runtime_result.get("status") or "rejected")
+        deep_status = "passed" if not deep_errors else "rejected"
+        if expected == "valid":
+            ok = contract_status == "passed" and runtime_status == "passed" and deep_status == "passed"
+        elif expected == "invalid_deep_validation":
+            ok = contract_status == "passed" and runtime_status == "passed" and deep_status == "rejected"
+        else:
+            ok = contract_status == "rejected" and runtime_status == "rejected" and deep_status == "rejected"
+        if not ok:
+            failures.append(
+                f"{fixture_path.name}: expected {expected}, got contract={contract_status} runtime={runtime_status} script={deep_status}"
+            )
+        fixture_results.append({
+            "name": fixture_path.name,
+            "extension_contract_status": contract_status,
+            "extension_runtime_status": runtime_status,
+            "script_deep_status": deep_status,
+            "expected": expected,
+            "extension_contract_errors": contract_errors,
+            "extension_runtime_errors": runtime_result.get("errors", []),
+            "script_deep_errors": deep_errors,
+        })
+        print(
+            "REVIEW_EXTENSION_SCHEMA_SMOKE "
+            f"fixture={fixture_path.name} extension_runtime={runtime_status} script={deep_status}"
+        )
+    if valid_count != 4 or invalid_count != 3:
+        failures.append(f"expected 4 valid and 3 invalid fixtures, got valid={valid_count} invalid={invalid_count}")
+    manifest = {
+        "$schema": CONTRACT_SCHEMA_REF,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_extension_schema_smoke",
+        "generated_at_utc": now_utc(),
+        "tool_name": "submit_review_lane_draft",
+        "extension_dir": extension_dir.as_posix(),
+        "contract_path": (extension_dir / "tool-contract.v1.json").as_posix(),
+        "advertisement_status": str(advertisement.get("advertisement_status") or "not_checked"),
+        "advertisement_workflow_id": str(advertisement.get("advertisement_workflow_id") or "not_checked"),
+        "global_scope_status": str(advertisement.get("global_scope_status") or "not_checked"),
+        "runtime_fixture_status": "failed" if failures else "passed",
+        "remote_mutations": "none",
+        "fixtures": fixture_results,
+        "summary": {
+            "valid_fixture_count": valid_count,
+            "invalid_fixture_count": invalid_count,
+            "status": "failed" if failures else "passed",
+            "failures": failures,
+        },
+    }
+    manifest_path = output_dir / "extension-schema-smoke.v1.json"
+    write_json(manifest_path, manifest)
+    if failures:
+        raise ReviewError("extension schema smoke failed: " + "; ".join(failures))
+    validate_review_extension_schema_smoke(manifest)
+    print(
+        "REVIEW_EXTENSION_SCHEMA_SMOKE "
+        f"status=passed valid={valid_count} invalid={invalid_count} manifest={manifest_path}"
+    )
 
 
 def load_review_lane_draft(path: Path) -> dict[str, Any]:
@@ -3277,6 +3652,54 @@ def step_structured_retry(step: dict[str, Any]) -> dict[str, Any] | None:
     return retry if isinstance(retry, dict) else None
 
 
+def workflow_step_block(workflow_path: Path, step_id: str) -> str:
+    if not workflow_path.exists():
+        return ""
+    text = workflow_path.read_text()
+    match = re.search(
+        r"(?ms)^\s*-\s+id:\s*" + re.escape(step_id) + r"\b(?P<block>.*?)(?=^\s*-\s+id:|\Z)",
+        text,
+    )
+    return match.group("block") if match else ""
+
+
+def workflow_lane_source_config(workflow_path: Path, step_id: str) -> dict[str, str]:
+    block = workflow_step_block(workflow_path, step_id)
+    source_match = re.search(r"(?m)^\s*type:\s*pi_tool_call\b", block)
+    tool_match = re.search(r"(?m)^\s*tool_name:\s*([^\s#]+)", block)
+    if source_match:
+        return {
+            "source_type": "pi_tool_call",
+            "source_tool_name": tool_match.group(1) if tool_match else "",
+        }
+    return {"source_type": "final_response", "source_tool_name": ""}
+
+
+def step_structured_source_type(step: dict[str, Any], workflow_path: Path, step_id: str) -> str:
+    structured = step_structured_output(step)
+    source_type = structured.get("source_type")
+    if isinstance(source_type, str) and source_type:
+        return source_type
+    return workflow_lane_source_config(workflow_path, step_id)["source_type"]
+
+
+def step_structured_source_tool_name(step: dict[str, Any], workflow_path: Path, step_id: str) -> str:
+    structured = step_structured_output(step)
+    source_tool_name = structured.get("source_tool_name")
+    if isinstance(source_tool_name, str) and source_tool_name:
+        return source_tool_name
+    return workflow_lane_source_config(workflow_path, step_id)["source_tool_name"]
+
+
+def require_review_lane_pi_tool_provenance(provenance: list[dict[str, Any]], *, context: str) -> None:
+    for item in provenance:
+        lane_id = str(item.get("lane_id") or "unknown")
+        if item.get("source_type") != "pi_tool_call":
+            raise ReviewError(f"{context} lane {lane_id} source_type must be pi_tool_call")
+        if item.get("source_tool_name") != "submit_review_lane_draft":
+            raise ReviewError(f"{context} lane {lane_id} source_tool_name must be submit_review_lane_draft")
+
+
 def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
     contract_dir = output_dir / "contract-spike"
     run_root = contract_dir / "native-run"
@@ -3291,10 +3714,15 @@ def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
     malformed_step = summary_step(summary, "malformed_lane")
     failed_step = summary_step(summary, "failed_lane")
     inspect_step = summary_step(summary, "inspect_contract")
+    workflow_path = Path(".scherzo/workflows/review-native-contract-spike.yml")
     assertions = {
         "valid_structured_output": step_structured_status(valid_step) == "valid" and bool(step_structured_path(valid_step)),
-        "malformed_output_continued": step_structured_status(malformed_step) == "error",
-        "failed_agent_continued": failed_step.get("status") == "failure",
+        "valid_tool_call_source": step_structured_source_type(valid_step, workflow_path, "valid_lane") == "pi_tool_call"
+        and step_structured_source_tool_name(valid_step, workflow_path, "valid_lane") == "submit_review_lane_draft",
+        "malformed_tool_call_continued": step_structured_status(malformed_step) == "error"
+        and step_structured_source_type(malformed_step, workflow_path, "malformed_lane") == "pi_tool_call",
+        "missing_tool_call_continued": step_structured_status(failed_step) == "error"
+        and step_structured_source_type(failed_step, workflow_path, "failed_lane") == "pi_tool_call",
         "downstream_command_ran": inspect_step.get("status") == "success",
     }
     failed = [name for name, passed in assertions.items() if not passed]
@@ -3316,8 +3744,9 @@ def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
             "malformed_lane_status": step_structured_status(malformed_step),
             "malformed_lane_failure_code": malformed_step.get("failure_code"),
             "malformed_lane_structured_output_retry": step_structured_retry(malformed_step),
-            "failed_lane_status": failed_step.get("status"),
-            "failed_lane_failure_code": failed_step.get("failure_code"),
+            "missing_tool_call_lane_status": step_structured_status(failed_step),
+            "missing_tool_call_lane_failure_code": failed_step.get("failure_code"),
+            "missing_tool_call_lane_structured_output_retry": step_structured_retry(failed_step),
         },
     }
 
@@ -3391,19 +3820,29 @@ def run_native_preflight_scenario(scenario: dict[str, Any], output_dir: Path) ->
             "artifact_path": str(lane_result_path),
             "native_step_id": step_id,
         })
+        workflow_path = Path(".scherzo/workflows/review-native.yml")
         provenance.append({
             "scenario_id": scenario_id,
             "lane_id": lane_id,
             "step_id": step_id,
-            "workflow_path": ".scherzo/workflows/review-native.yml",
+            "workflow_path": workflow_path.as_posix(),
+            "artifact_name": step_structured_output(step).get("artifact_name", ""),
             "structured_output_status": step_structured_status(step),
             "structured_output_path": step_structured_path(step),
             "structured_output_retry": step_structured_retry(step),
+            "source_type": step_structured_source_type(step, workflow_path, step_id),
+            "source_tool_name": step_structured_source_tool_name(step, workflow_path, step_id),
+            "review_local_validation": {
+                "validator": "scripts/scherzo-review validate_review_lane_draft",
+                "lane_result_state": str(execution_status.get("state", "unknown")),
+                "lane_result_path": str(lane_result_path),
+            },
             "metadata_path": str(lane_dir / "agent-step-metadata.v1.json"),
             "run_summary_path": str(run_root / "native-runner-summary.v1.json"),
             "runner_invocation": command_text,
             "native_artifact_source": "scherzo_workflow_runner",
         })
+    require_review_lane_pi_tool_provenance(provenance, context=f"native preflight scenario {scenario_id}")
 
     expectations = {
         **scenario,
@@ -3511,6 +3950,12 @@ def evaluate_native_cutover_readiness(manifest: dict[str, Any]) -> dict[str, Any
             item = matching[0]
             if item.get("native_artifact_source") != "scherzo_workflow_runner":
                 reasons.append(f"scenario {sid} lane {lane_id} did not come from the Scherzo workflow runner")
+            if item.get("source_type") != "pi_tool_call":
+                reasons.append(f"scenario {sid} lane {lane_id} source_type was not pi_tool_call")
+            if item.get("source_tool_name") != "submit_review_lane_draft":
+                reasons.append(f"scenario {sid} lane {lane_id} source_tool_name was not submit_review_lane_draft")
+            if not isinstance(item.get("review_local_validation"), dict):
+                reasons.append(f"scenario {sid} lane {lane_id} missing review-local validation record")
             if "gleam run -- workflow run .scherzo/workflows/review-native.yml" not in str(item.get("runner_invocation") or ""):
                 reasons.append(f"scenario {sid} lane {lane_id} missing native runner invocation")
             if not item.get("run_summary_path"):
@@ -3621,6 +4066,10 @@ def native_preflight_command(args: argparse.Namespace) -> None:
     print(f"REVIEW_PREFLIGHT_ARTIFACT_DIR={output_dir}")
     print(f"REVIEW_PREFLIGHT_MANIFEST_PATH={manifest_path}")
     print(f"REVIEW_PREFLIGHT_SCENARIOS={len(scenarios)}")
+    print(
+        "REVIEW_NATIVE_PREFLIGHT "
+        f"status=passed manifest={manifest_path} source_type=pi_tool_call source_tool_name=submit_review_lane_draft"
+    )
     print("REVIEW_REMOTE_MUTATIONS=none")
 
 
@@ -3673,18 +4122,17 @@ def inspect_native_review_workflow_lanes(workflow_path: Path) -> dict[str, Any]:
     lanes: list[dict[str, Any]] = []
     for lane_id in NATIVE_PREFLIGHT_LANE_IDS:
         step_id = native_lane_step_id(lane_id)
-        match = re.search(
-            r"(?ms)^\s*-\s+id:\s*" + re.escape(step_id) + r"\b(?P<block>.*?)(?=^\s*-\s+id:|\Z)",
-            text,
-        )
-        block = match.group("block") if match else ""
+        block = workflow_step_block(workflow_path, step_id)
         kind_match = re.search(r"(?m)^\s*kind:\s*([^\s#]+)", block)
         required_match = re.search(r"(?m)^\s*required:\s*true\b", block)
+        source_config = workflow_lane_source_config(workflow_path, step_id)
         lanes.append({
             "lane_id": lane_id,
             "step_id": step_id,
             "kind": kind_match.group(1) if kind_match else "missing",
             "structured_output_required": bool(required_match),
+            "source_type": source_config["source_type"],
+            "source_tool_name": source_config["source_tool_name"],
         })
     all_agent = all(lane["kind"] == "agent" for lane in lanes)
     if not all_agent:
@@ -3694,6 +4142,7 @@ def inspect_native_review_workflow_lanes(workflow_path: Path) -> dict[str, Any]:
             if lane["kind"] != "agent"
         )
         raise ReviewError("legacy-pr-smoke requires native review lanes to be kind: agent; found " + bad)
+    require_review_lane_pi_tool_provenance(lanes, context="legacy PR smoke workflow")
     return {
         "workflow_path": workflow_path.as_posix(),
         "lane_steps": lanes,
@@ -3933,6 +4382,7 @@ def legacy_lane_execution_states(run_root: Path, runner_summary: dict[str, Any])
             raise ReviewError(f"lane {lane_id} did not retain draft producer provenance")
         if "fixture" in producer_text or "heuristic" in producer_text:
             raise ReviewError(f"lane {lane_id} draft producer indicates fixture/heuristic mode")
+        workflow_path = Path(LEGACY_PR_SMOKE_WORKFLOW_PATH)
         lanes.append({
             "lane_id": lane_id,
             "step_id": step_id,
@@ -3940,11 +4390,18 @@ def legacy_lane_execution_states(run_root: Path, runner_summary: dict[str, Any])
             "structured_output_status": step_structured_status(step),
             "structured_output_path": step_structured_path(step),
             "structured_output_retry": step_structured_retry(step),
+            "source_type": step_structured_source_type(step, workflow_path, step_id),
+            "source_tool_name": step_structured_source_tool_name(step, workflow_path, step_id),
             "lane_result_state": execution_status.get("state", "missing"),
             "lane_result_path": str(lane_result_path),
+            "review_local_validation": {
+                "validator": "scripts/scherzo-review validate_review_lane_draft",
+                "lane_result_state": str(execution_status.get("state", "missing")),
+            },
             "agent_backend": agent_backend or "unknown",
             "draft_producer": draft_producer,
         })
+    require_review_lane_pi_tool_provenance(lanes, context="legacy PR smoke")
     return lanes
 
 
@@ -6531,6 +6988,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Backend to pass to internal run-lane invocations.",
     )
     preflight.set_defaults(func=preflight_command)
+
+    extension_schema_smoke = subparsers.add_parser(
+        "extension-schema-smoke",
+        help="Validate the review lane draft Pi extension schema, runtime exports, fixtures, and workflow-scoped advertisement.",
+    )
+    extension_schema_smoke.add_argument(
+        "--extension-dir",
+        default=".pi/extensions/scherzo-review-lane-draft",
+        help="Review lane draft Pi extension directory.",
+    )
+    extension_schema_smoke.add_argument(
+        "--fixtures",
+        default="test/fixtures/review-lane-draft-tool",
+        help="Directory containing *.arguments.json smoke fixtures.",
+    )
+    extension_schema_smoke.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_EXTENSION_SCHEMA_SMOKE_OUTPUT_DIR),
+        help="Directory for extension schema smoke artifacts (default: tmp/scherzo-review-extension-smoke).",
+    )
+    extension_schema_smoke.add_argument(
+        "--verify-pi-advertisement",
+        action="store_true",
+        help="Also prove the tool is active only in review-native workflow scopes.",
+    )
+    extension_schema_smoke.set_defaults(func=extension_schema_smoke_command)
 
     legacy_pr_smoke = subparsers.add_parser(
         "legacy-pr-smoke",

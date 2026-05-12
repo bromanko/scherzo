@@ -1,1 +1,1 @@
-Return no final JSON for the native structured-output contract spike. This lane is expected to exercise failure-continuation or missing-output metadata.
+Do not call `submit_review_lane_draft`. Return the valid `review_lane_draft` object as final assistant JSON only. Final assistant JSON alone is invalid for this workflow, so this lane is expected to exercise the missing-tool-call failure path while downstream continuation still runs.

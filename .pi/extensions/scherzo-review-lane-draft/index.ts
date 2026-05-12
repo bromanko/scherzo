@@ -1,0 +1,111 @@
+import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { StringEnum } from "@mariozechner/pi-ai";
+import { Type, type Static } from "typebox";
+
+export const SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME = "submit_review_lane_draft";
+export const REVIEW_LANE_DRAFT_WORKFLOW_IDS = ["review-native", "review-native-contract-spike"] as const;
+const allowedLaneIds = ["correctness", "test-quality", "idioms-maintainability", "security-performance"] as const;
+
+export function shouldRegisterReviewLaneDraftTool(workflowId = process.env.SCHERZO_WORKFLOW_ID || ""): boolean {
+	return REVIEW_LANE_DRAFT_WORKFLOW_IDS.includes(workflowId as typeof REVIEW_LANE_DRAFT_WORKFLOW_IDS[number]);
+}
+
+export const submitReviewLaneDraftParameters = Type.Object({
+	schema_version: Type.Number({ description: "Must be 1." }),
+	artifact_type: Type.String({ description: "Must be review_lane_draft." }),
+	generated_at_utc: Type.String(),
+	producer: Type.Object({}, { additionalProperties: true }),
+	lane: Type.Object({
+		id: StringEnum(allowedLaneIds),
+		name: Type.String(),
+		category: Type.String(),
+		version: Type.String(),
+	}, { additionalProperties: true }),
+	input_refs: Type.Array(Type.Unknown()),
+	draft_findings: Type.Array(Type.Unknown()),
+	review_notes: Type.Array(Type.Unknown()),
+	evidence_requests: Type.Array(Type.Unknown()),
+	self_check: Type.Object({}, { additionalProperties: true }),
+	remote_mutations: StringEnum(["none"] as const),
+}, { additionalProperties: true });
+
+export type SubmitReviewLaneDraftInput = Static<typeof submitReviewLaneDraftParameters>;
+
+export function shallowValidateReviewLaneDraft(params: SubmitReviewLaneDraftInput): string[] {
+	const errors: string[] = [];
+
+	// Keep these extension checks deliberately shallow. The extension only
+	// confirms the top-level contract and duplicated defense-in-depth constants;
+	// scripts/scherzo-review owns path portability, evidence linkage, finding
+	// policy, duplicate id checks, and synthesis-readiness validation.
+	if (!params || typeof params !== "object" || Array.isArray(params)) {
+		return ["arguments must be a JSON object"];
+	}
+	if (params.schema_version !== 1) errors.push("schema_version must be 1");
+	if (params.artifact_type !== "review_lane_draft") errors.push("artifact_type must be review_lane_draft");
+	if (params.remote_mutations !== "none") errors.push("remote_mutations must be none");
+	if (!params.lane || typeof params.lane !== "object" || !allowedLaneIds.includes(params.lane.id as typeof allowedLaneIds[number])) {
+		errors.push("lane.id must be one of the native review lane ids");
+	}
+	return errors;
+}
+
+export const submitReviewLaneDraftTool = defineTool({
+	name: SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME,
+	label: "Submit Review Lane Draft",
+	description: "Submit the final review_lane_draft object for a native Scherzo review lane. This tool has no side effects.",
+	promptSnippet: "Submit a native review_lane_draft object as the final terminating review-lane artifact",
+	promptGuidelines: [
+		"Use submit_review_lane_draft exactly once as the final action for native Scherzo review lanes.",
+		"Do not print review_lane_draft as final assistant JSON; pass the object as submit_review_lane_draft arguments instead.",
+		"Do not call sibling tools in the same tool-call batch as submit_review_lane_draft.",
+	],
+	parameters: submitReviewLaneDraftParameters,
+	async execute(_toolCallId, params) {
+		const errors = shallowValidateReviewLaneDraft(params);
+		if (errors.length > 0) {
+			throw new Error(`invalid review_lane_draft: ${errors.join("; ")}`);
+		}
+		return {
+			content: [{ type: "text", text: `Accepted review_lane_draft for ${params.lane.id}` }],
+			details: {
+				artifact_type: "review_lane_draft_tool_receipt",
+				tool_name: SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME,
+				lane_id: params.lane.id,
+				remote_mutations: "none",
+			},
+			terminate: true,
+		};
+	},
+});
+
+export default function scherzoReviewLaneDraftExtension(pi: ExtensionAPI) {
+	const workflowId = process.env.SCHERZO_WORKFLOW_ID || "";
+	const enabledForWorkflow = shouldRegisterReviewLaneDraftTool(workflowId);
+	if (enabledForWorkflow) {
+		pi.registerTool(submitReviewLaneDraftTool);
+	}
+
+	pi.registerCommand("review-lane-draft-tool-info", {
+		description: "Print whether submit_review_lane_draft is active in this Pi session.",
+		handler: async () => {
+			const activeToolNames = new Set(pi.getActiveTools());
+			const tool = pi.getAllTools().find((candidate) => candidate.name === SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME);
+			const active = activeToolNames.has(SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME);
+			const status = active ? "active" : enabledForWorkflow ? "inactive" : "disabled_workflow_scope";
+			console.log(`REVIEW_LANE_DRAFT_TOOL_ADVERTISED=${JSON.stringify({
+				status,
+				tool_name: SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME,
+				workflow_id: workflowId || null,
+				source: tool?.sourceInfo?.source || null,
+				path: tool?.sourceInfo?.path || null,
+			})}`);
+			if (enabledForWorkflow && !active) {
+				throw new Error("submit_review_lane_draft was registered for this workflow scope but is not active");
+			}
+			if (!enabledForWorkflow && active) {
+				throw new Error("submit_review_lane_draft is active outside review-native workflow scopes");
+			}
+		},
+	});
+}

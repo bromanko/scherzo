@@ -25,6 +25,11 @@ steps:
     structured_output:
       format: json
       artifact_name: correctness_draft
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        require_single: true
+        reject_sibling_tool_calls: true
       required: true
       validator: review_lane_draft
       schema:
@@ -51,6 +56,11 @@ steps:
     structured_output:
       format: json
       artifact_name: test_quality_draft
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        require_single: true
+        reject_sibling_tool_calls: true
       required: true
       validator: review_lane_draft
       schema:
@@ -77,6 +87,11 @@ steps:
     structured_output:
       format: json
       artifact_name: idioms_maintainability_draft
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        require_single: true
+        reject_sibling_tool_calls: true
       required: true
       validator: review_lane_draft
       schema:
@@ -103,6 +118,11 @@ steps:
     structured_output:
       format: json
       artifact_name: security_performance_draft
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        require_single: true
+        reject_sibling_tool_calls: true
       required: true
       validator: review_lane_draft
       schema:
