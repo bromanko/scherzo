@@ -154,6 +154,7 @@ fn driver_orchestrator(
         config_types.WorkspaceAssertOnly,
       ],
       timeout_ms: 20_000,
+      env: [],
     )
   config_types.OrchestratorConfig(
     effective: effective(workspace_root),

@@ -18,6 +18,13 @@ workspace:
         command: ../scripts/scherzo-workspace-jj
         lifecycle: [create, before-step, after-step, remove]
         timeout_ms: 60000
+        # Profile-local driver env values are literal strings, not secrets.
+        # Uncomment and adjust these jj base-policy examples when this profile
+        # should use a non-default base or remote without a wrapper script.
+        # env:
+        #   SCHERZO_JJ_WORKSPACE_BASE: "@"
+        #   SCHERZO_JJ_WORKSPACE_REMOTE: upstream
+        #   SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
     noop:
       driver:
         command: ../scripts/scherzo-workspace-noop

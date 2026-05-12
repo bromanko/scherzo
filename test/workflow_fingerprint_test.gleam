@@ -57,12 +57,15 @@ fn hook_profile_with_driver(
   config_types.WorkspaceHookProfile(
     name: name,
     hooks: Some(hooks),
-    driver: Some(config_types.WorkspaceDriverConfig(
-      command: command,
-      lifecycle: [],
-      capabilities: capabilities,
-      timeout_ms: hooks.timeout_ms,
-    )),
+    driver: Some(
+      config_types.WorkspaceDriverConfig(
+        command: command,
+        lifecycle: [],
+        capabilities: capabilities,
+        timeout_ms: hooks.timeout_ms,
+        env: [],
+      ),
+    ),
     source: config_types.ConfiguredWorkspaceHooks,
   )
 }
@@ -73,6 +76,16 @@ fn driver_profile_with_timeout(
   capabilities: List(config_types.WorkspaceCapability),
   timeout_ms: Int,
 ) -> config_types.WorkspaceHookProfile {
+  driver_profile_with_env(command, lifecycle, capabilities, timeout_ms, [])
+}
+
+fn driver_profile_with_env(
+  command: String,
+  lifecycle: List(config_types.WorkspaceLifecycleOperation),
+  capabilities: List(config_types.WorkspaceCapability),
+  timeout_ms: Int,
+  env: List(#(String, String)),
+) -> config_types.WorkspaceHookProfile {
   config_types.WorkspaceHookProfile(
     name: "noop",
     hooks: None,
@@ -81,6 +94,7 @@ fn driver_profile_with_timeout(
       lifecycle: lifecycle,
       capabilities: capabilities,
       timeout_ms: timeout_ms,
+      env: env,
     )),
     source: config_types.ConfiguredWorkspaceDriver,
   )
@@ -435,6 +449,95 @@ pub fn execution_fingerprint_includes_selected_driver_metadata_test() {
     ),
     "workspace_driver",
   )
+}
+
+pub fn execution_fingerprint_includes_profile_driver_env_digests_test() {
+  let dag =
+    parse(
+      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    workspace: main\n",
+    )
+  let settings = model_config.default_settings()
+  let base =
+    driver_profile_with_env(
+      "scripts/noop",
+      [config_types.LifecycleCreate],
+      [config_types.WorkspaceAssertOnly],
+      1000,
+      [#("DRIVER_SECRET_TOKEN", "driver-env-redaction-token")],
+    )
+  let changed_value =
+    driver_profile_with_env(
+      "scripts/noop",
+      [config_types.LifecycleCreate],
+      [config_types.WorkspaceAssertOnly],
+      1000,
+      [#("DRIVER_SECRET_TOKEN", "different-token")],
+    )
+  let reordered =
+    driver_profile_with_env(
+      "scripts/noop",
+      [config_types.LifecycleCreate],
+      [config_types.WorkspaceAssertOnly],
+      1000,
+      [
+        #("SCHERZO_JJ_WORKSPACE_BASE", "profile-base"),
+        #("DRIVER_SECRET_TOKEN", "driver-env-redaction-token"),
+      ],
+    )
+  let reordered_same =
+    driver_profile_with_env(
+      "scripts/noop",
+      [config_types.LifecycleCreate],
+      [config_types.WorkspaceAssertOnly],
+      1000,
+      [
+        #("DRIVER_SECRET_TOKEN", "driver-env-redaction-token"),
+        #("SCHERZO_JJ_WORKSPACE_BASE", "profile-base"),
+      ],
+    )
+
+  let fingerprint =
+    workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      base,
+      limits(1000),
+      settings,
+    )
+  assert fingerprint
+    != workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      changed_value,
+      limits(1000),
+      settings,
+    )
+  assert workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      reordered,
+      limits(1000),
+      settings,
+    )
+    == workflow_fingerprint.for_execution_profile_options(
+      "implementation",
+      dag,
+      reordered_same,
+      limits(1000),
+      settings,
+    )
+
+  let canonical =
+    workflow_fingerprint.canonical_execution_input_for_profile(
+      "implementation",
+      dag,
+      base,
+      limits(1000),
+      settings,
+    )
+  assert string.contains(canonical, "DRIVER_SECRET_TOKEN")
+  assert string.contains(canonical, "value_sha256")
+  assert !string.contains(canonical, "driver-env-redaction-token")
 }
 
 pub fn execution_fingerprint_changes_for_hook_profile_driver_context_test() {

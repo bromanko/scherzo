@@ -29,7 +29,7 @@ pub fn run_hook_with_env(
     script -> {
       case port.start_with_env(script, cwd, env) {
         Error(err) -> Error(error.HookIo(port_error_to_string(err)))
-        Ok(process) -> wait_for_hook(name, process, timeout_ms)
+        Ok(process) -> wait_for_hook(name, process, timeout_ms, [])
       }
     }
   }
@@ -43,9 +43,28 @@ pub fn run_argv_with_env(
   timeout_ms: Int,
   env: List(#(String, String)),
 ) -> Result(Nil, error.HookError) {
+  run_argv_with_env_redacting(name, executable, args, cwd, timeout_ms, env, [])
+}
+
+pub fn run_argv_with_env_redacting(
+  name: String,
+  executable: String,
+  args: List(String),
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+  secrets: List(String),
+) -> Result(Nil, error.HookError) {
   case port.start_argv(executable, args, cwd, env) {
-    Error(err) -> Error(error.HookIo(port_error_to_string(err)))
-    Ok(process) -> wait_for_hook(name, process, timeout_ms)
+    Error(err) ->
+      Error(
+        error.HookIo(log.redact(
+          "hook_error",
+          port_error_to_string(err),
+          secrets,
+        )),
+      )
+    Ok(process) -> wait_for_hook(name, process, timeout_ms, secrets)
   }
 }
 
@@ -84,7 +103,37 @@ pub fn run_best_effort_argv_with_env(
   timeout_ms: Int,
   env: List(#(String, String)),
 ) -> String {
-  case run_argv_with_env(name, executable, args, cwd, timeout_ms, env) {
+  run_best_effort_argv_with_env_redacting(
+    name,
+    executable,
+    args,
+    cwd,
+    timeout_ms,
+    env,
+    [],
+  )
+}
+
+pub fn run_best_effort_argv_with_env_redacting(
+  name: String,
+  executable: String,
+  args: List(String),
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+  secrets: List(String),
+) -> String {
+  case
+    run_argv_with_env_redacting(
+      name,
+      executable,
+      args,
+      cwd,
+      timeout_ms,
+      env,
+      secrets,
+    )
+  {
     Ok(Nil) -> log.info("hook_succeeded", [#("hook", name), #("cwd", cwd)])
     Error(err) ->
       log.warn("hook_failed", [
@@ -99,13 +148,14 @@ fn wait_for_hook(
   name: String,
   process: port.Process,
   timeout_ms: Int,
+  secrets: List(String),
 ) -> Result(Nil, error.HookError) {
   case port.await_exit(process, timeout_ms) {
     Ok(0) -> Ok(Nil)
     Ok(status) -> {
-      let diagnostics =
-        read_diagnostics_or_error(process)
-        |> log.truncate(4000)
+      let diagnostics = read_diagnostics_or_error(process)
+      let diagnostics = log.redact("hook_diagnostics", diagnostics, secrets)
+      let diagnostics = log.truncate(diagnostics, 4000)
       Error(error.HookFailed(name, status, diagnostics))
     }
     Error(port.ReadTimeout) -> {

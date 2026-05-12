@@ -333,6 +333,21 @@ Workflows choose policy, not shell. A workflow DAG may select a profile with top
 
 Command steps receive driver context through environment variables. `SCHERZO_WORKSPACE_DRIVER` is the configured driver command string, exposed verbatim. Because command steps run from the prepared workspace, a workflow that calls driver capabilities should either use a PATH or absolute driver command, or resolve a simple relative driver path against `SCHERZO_CONFIG_DIR` before invoking it. Installed-package users can configure the bundled artifact driver as `command: scherzo-workspace-noop`; source-tree checkouts and the checked `examples/scherzo.yaml` use config-relative script paths such as `../scripts/scherzo-workspace-noop`.
 
+Profiles may also configure profile-local driver environment with `driver.env`. Values are literal strings passed to driver discovery, lifecycle calls, workflow command steps, and agent subprocesses; `PATH` is a full replacement, not an append expression. `driver.env` is not a secret store. Scherzo only applies limited redaction for likely-sensitive keys in Scherzo-owned output, so operators should keep real secrets in their existing secret-management path rather than profile YAML.
+
+```yaml
+workspace:
+  profiles:
+    isolated:
+      driver:
+        command: scripts/scherzo-workspace-jj
+        lifecycle: [create, before-step, after-step, remove]
+        env:
+          SCHERZO_JJ_WORKSPACE_BASE: "@"
+          SCHERZO_JJ_WORKSPACE_REMOTE: upstream
+          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
+```
+
 - `SCHERZO_CONFIG_DIR`
 - `SCHERZO_WORKFLOW_ID`
 - `SCHERZO_RUN_ID`

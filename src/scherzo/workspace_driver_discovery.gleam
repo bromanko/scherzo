@@ -10,6 +10,7 @@ import scherzo/log
 import scherzo/path
 import scherzo/port
 import scherzo/workspace_driver_command
+import scherzo/workspace_driver_env
 
 const repo_root_placeholder = "$SCHERZO_REPO_ROOT"
 
@@ -102,7 +103,7 @@ fn discover_capabilities(
       "env",
       [
         "-i",
-        ..list.append(discovery_env_args(command, orchestrator), [
+        ..list.append(discovery_env_args(command, driver.env, orchestrator), [
           command,
           "describe",
           "--json",
@@ -117,25 +118,42 @@ fn discover_capabilities(
         profile_name,
         driver.command,
         "could not start describe --json: " <> port.port_error_to_string(error),
+        workspace_driver_env.values_for_redaction(driver.env),
       )
     Ok(process) ->
-      read_description(profile_name, driver.command, process, driver.timeout_ms)
+      read_description(
+        profile_name,
+        driver.command,
+        process,
+        driver.timeout_ms,
+        workspace_driver_env.values_for_redaction(driver.env),
+      )
   }
 }
 
 fn discovery_env_args(
   resolved_command: String,
+  profile_env: List(#(String, String)),
   orchestrator: config_types.OrchestratorConfig,
 ) -> List(String) {
-  let required = [
-    "SCHERZO_CONFIG_DIR=" <> orchestrator.config_dir,
-    "SCHERZO_REPO_ROOT=" <> discovery_repo_root(orchestrator),
-    "SCHERZO_WORKSPACE_DRIVER=" <> resolved_command,
+  let generated = [
+    #("SCHERZO_CONFIG_DIR", orchestrator.config_dir),
+    #("SCHERZO_REPO_ROOT", discovery_repo_root(orchestrator)),
+    #("SCHERZO_WORKSPACE_DRIVER", resolved_command),
   ]
-  case path.env("PATH") {
-    Some("") | None -> required
-    Some(path_value) -> ["PATH=" <> path_value, ..required]
+  let base = case path.env("PATH") {
+    Some(path_value) ->
+      case path_value != "" && !env_has_key(profile_env, "PATH") {
+        True -> [#("PATH", path_value)]
+        False -> []
+      }
+    None -> []
   }
+  list.append(base, workspace_driver_env.merge(profile_env, generated))
+  |> list.map(fn(entry) {
+    let #(key, value) = entry
+    key <> "=" <> value
+  })
 }
 
 fn resolve_command(
@@ -165,13 +183,26 @@ fn read_description(
   command: String,
   process: port.Process,
   timeout_ms: Int,
+  redaction_values: List(String),
 ) -> Result(List(config_types.WorkspaceCapability), DiscoveryError) {
   case port.read_stdout_line(process, timeout_ms) {
     Ok(line) ->
-      wait_for_description(profile_name, command, process, timeout_ms, line)
+      wait_for_description(
+        profile_name,
+        command,
+        process,
+        timeout_ms,
+        line,
+        redaction_values,
+      )
     Error(port.ReadTimeout) -> {
       let _cleanup_result = port.terminate(process)
-      discovery_error(profile_name, command, "describe --json timed out")
+      discovery_error(
+        profile_name,
+        command,
+        "describe --json timed out",
+        redaction_values,
+      )
     }
     Error(port.ProcessExited(0)) -> {
       let _cleanup_result = port.terminate(process)
@@ -179,6 +210,7 @@ fn read_description(
         profile_name,
         command,
         "describe --json produced no stdout",
+        redaction_values,
       )
     }
     Error(port.ProcessExited(status)) -> {
@@ -190,6 +222,7 @@ fn read_description(
         "describe --json exited "
           <> int.to_string(status)
           <> diagnostic_suffix(diagnostics),
+        redaction_values,
       )
     }
     Error(error) -> {
@@ -199,6 +232,7 @@ fn read_description(
         command,
         "could not read describe --json stdout: "
           <> port.port_error_to_string(error),
+        redaction_values,
       )
     }
   }
@@ -210,12 +244,21 @@ fn wait_for_description(
   process: port.Process,
   timeout_ms: Int,
   stdout_line: String,
+  redaction_values: List(String),
 ) -> Result(List(config_types.WorkspaceCapability), DiscoveryError) {
   case port.await_exit(process, timeout_ms) {
     Ok(0) ->
       parse_description(stdout_line)
       |> result.map_error(fn(error) {
-        DiscoveryError(profile_name, command, description_error_message(error))
+        DiscoveryError(
+          profile_name,
+          command,
+          log.redact(
+            "workspace_driver_discovery",
+            description_error_message(error),
+            redaction_values,
+          ),
+        )
       })
     Ok(status) -> {
       let diagnostics = read_diagnostics(process)
@@ -225,11 +268,17 @@ fn wait_for_description(
         "describe --json exited "
           <> int.to_string(status)
           <> diagnostic_suffix(diagnostics),
+        redaction_values,
       )
     }
     Error(port.ReadTimeout) -> {
       let _cleanup_result = port.terminate(process)
-      discovery_error(profile_name, command, "describe --json timed out")
+      discovery_error(
+        profile_name,
+        command,
+        "describe --json timed out",
+        redaction_values,
+      )
     }
     Error(error) ->
       discovery_error(
@@ -237,6 +286,7 @@ fn wait_for_description(
         command,
         "could not wait for describe --json: "
           <> port.port_error_to_string(error),
+        redaction_values,
       )
   }
 }
@@ -357,6 +407,18 @@ fn discovery_error(
   profile_name: String,
   command: String,
   reason: String,
+  redaction_values: List(String),
 ) -> Result(a, DiscoveryError) {
-  Error(DiscoveryError(profile_name, command, reason))
+  Error(DiscoveryError(
+    profile_name,
+    command,
+    log.redact("workspace_driver_discovery", reason, redaction_values),
+  ))
+}
+
+fn env_has_key(env: List(#(String, String)), key: String) -> Bool {
+  case env {
+    [] -> False
+    [#(current, _), ..rest] -> current == key || env_has_key(rest, key)
+  }
 }

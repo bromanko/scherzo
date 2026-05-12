@@ -233,6 +233,35 @@ workspace:
 
 Older dogfood configs called `scripts/scherzo-jj-workspace` from hook snippets. That path is now only a deprecated compatibility wrapper; the driver no longer depends on it. New docs and workflows should point at `scripts/scherzo-workspace-jj` as the driver command.
 
+## Replacing simple environment wrapper scripts
+
+Some old profiles used a wrapper only to export driver policy variables before execing the real driver:
+
+```sh
+#!/bin/sh
+export SCHERZO_JJ_WORKSPACE_BASE="@"
+export SCHERZO_JJ_WORKSPACE_REMOTE="upstream"
+export SCHERZO_JJ_WORKSPACE_BASE_BRANCH="trunk"
+exec scripts/scherzo-workspace-jj "$@"
+```
+
+That wrapper can now move to `driver.env` under the same trusted profile:
+
+```yaml
+workspace:
+  profiles:
+    isolated:
+      driver:
+        command: scripts/scherzo-workspace-jj
+        lifecycle: [create, before-step, after-step, remove]
+        env:
+          SCHERZO_JJ_WORKSPACE_BASE: "@"
+          SCHERZO_JJ_WORKSPACE_REMOTE: upstream
+          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
+```
+
+`driver.env` values are literal strings. Scherzo does not expand `$LINEAR_API_KEY` or append `$PATH`; a configured `PATH` is a full replacement for discovery, lifecycle, command-step, and agent-step subprocesses under that profile. `driver.env` is not a secret store. Scherzo performs limited redaction for likely-sensitive keys in Scherzo-owned diagnostics, but operators should not put durable secrets there. Keep a wrapper when it also supplies arguments, performs authentication, discovers tools dynamically, or enforces safety checks that are more than fixed environment variables.
+
 ## Validation
 
 Run validation from the repository root after changing config or workflows:
