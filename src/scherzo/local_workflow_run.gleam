@@ -834,6 +834,7 @@ fn structured_output_json(
       artifact_name,
       format,
       message,
+      details,
       retry,
     )) ->
       json.object([
@@ -841,6 +842,7 @@ fn structured_output_json(
         #("artifact_name", json.string(artifact_name)),
         #("format", json.string(format)),
         #("error", json.string(message)),
+        #("failure", structured_output_error_details_json(details)),
         #("retry", structured_output_retry_json(retry)),
       ])
     None -> json.null()
@@ -865,6 +867,24 @@ fn structured_output_retry_json(
           ),
         ),
       ])
+  }
+}
+
+fn structured_output_error_details_json(
+  details: Option(step_artifact.StructuredOutputErrorDetails),
+) -> json.Json {
+  case details {
+    Some(details) ->
+      json.object([
+        #("code", json.string(details.code)),
+        #("retryable", json.bool(details.retryable)),
+        #("validator_name", option_string_json(details.validator_name)),
+        #("validator_type", option_string_json(details.validator_type)),
+        #("diagnostic_summary", json.string(details.diagnostic_summary)),
+        #("stdout_truncated", json.bool(details.stdout_truncated)),
+        #("stderr_truncated", json.bool(details.stderr_truncated)),
+      ])
+    None -> json.null()
   }
 }
 

@@ -65,11 +65,11 @@ The eighth risk is fingerprint drift. If validator declarations are not included
 - [x] (2026-05-11 00:00Z) Drafted this ExecPlan from Linear issue LIV-238 and current source inspection.
 - [x] (2026-05-11 00:00Z) Incorporated adversarial review findings by choosing the JSON Schema helper strategy, defining command validator trust and environment policy, fixing copyable code blocks, specifying artifact metadata, and splitting concrete implementation steps.
 - [x] (2026-05-12 00:00Z) Reconciled this ExecPlan against `docs/specs/STRUCTURED_OUTPUT_VALIDATOR_SPEC.md`, added the spec conformance matrix, updated command-validator environment and fingerprint requirements, and made the spec the normative source of truth.
-- [ ] Replace review-native validator types with generic structured-output validator declarations.
-- [ ] Add baseline admission, JSON Schema, and command validator execution with retry-aware errors.
-- [ ] Migrate review-native structured outputs away from `validator: review_lane_draft`.
-- [ ] Update artifacts, diagnostics, fingerprints, and tests.
-- [ ] Run the validation commands and update Outcomes & Retrospective.
+- [x] (2026-05-12 19:52Z) Replaced review-native runtime validator types with generic structured-output validator declarations and compatibility lowering for `validator: review_lane_draft`.
+- [x] (2026-05-12 19:52Z) Added baseline admission integration, JSON Schema validation through `scripts/scherzo-json-schema-validate`, command validator execution, and retry-aware structured-output errors.
+- [x] (2026-05-12 19:52Z) Migrated review-native workflow declarations and fixtures to generic `validators:` syntax while retaining legacy parser compatibility tests.
+- [x] (2026-05-12 19:52Z) Updated artifact metadata, failed-step diagnostics, retry prompt diagnostics, workflow fingerprints, fixtures, and structured-output tests.
+- [x] (2026-05-12 19:52Z) Ran final validation commands and updated Outcomes & Retrospective.
 
 ## Surprises & Discoveries
 
@@ -84,6 +84,15 @@ The eighth risk is fingerprint drift. If validator declarations are not included
 
 - Observation: The reviewed HTML artifact rendered important YAML and shell examples as prose and list fragments instead of copyable code blocks.
   Evidence: The review found the representative `validators:` YAML and validation gate collapsed into invalid text; this revision renders examples as indented code blocks before implementation begins.
+
+- Observation: The retained LIV-240 workspace already contained a nearly complete implementation after Scherzo's context-recovery failure, and manual continuation could focus on verification and handoff rather than rewriting the feature.
+  Evidence: `direnv exec . gleam test` passed with `1213 passed, no failures` before the final plan update.
+
+- Observation: The post-migration inventory still finds legacy `validator: review_lane_draft` only in compatibility tests, specifications, historical plans, and migration notes, not as a production runtime type.
+  Evidence: Searching `src`, `test`, `.scherzo/workflows`, `docs`, and `scripts` finds no `ReviewLaneDraftValidator` occurrence in `src/`; production workflow files use `validators:` declarations.
+
+- Observation: The lint gates still report the existing warning inventory but no errors.
+  Evidence: `direnv exec . gleam run -m glinter` and `direnv exec . gleam run -m scherzo_lint` both reported `Found 378 issues (0 errors, 292 warnings)`.
 
 ## Decision Log
 
@@ -127,11 +136,18 @@ The eighth risk is fingerprint drift. If validator declarations are not included
 
   Date: 2026-05-12
 
+- Decision: Keep legacy `validator: review_lane_draft` support as a parser compatibility shim only.
+  Rationale: `SOV-COMPAT-005` makes legacy removal a separate migration decision. The implementation lowers the legacy field to a generic command validator so retained and test workflows can still parse, while new production workflow files and examples use `validators:`.
+
+  Date: 2026-05-12
+
 ## Outcomes & Retrospective
 
 Review incorporation completed on 2026-05-11. The plan remains unimplemented, but it resolved the review's blocking design gaps and contains copyable examples, explicit security boundaries, exact fixture and test paths, artifact metadata shape, and green-milestone validation gates.
 
 Spec reconciliation completed on 2026-05-12. `docs/specs/STRUCTURED_OUTPUT_VALIDATOR_SPEC.md` is now the normative contract. This plan was updated to follow the spec's requirement ids, environment-variable list, artifact persistence rule, retry classification, fingerprint contract-version requirement, compatibility rules, and conformance test expectations.
+
+Implementation completed on 2026-05-12. Scherzo now parses ordered generic `json_schema` and `command` structured-output validators, lowers legacy `validator: review_lane_draft` to a compatibility command validator, validates JSON Schema draft 2020-12 through `scripts/scherzo-json-schema-validate`, runs command validators with redacted stdin, clean environment, timeout, and bounded diagnostics, persists generic validation metadata, exposes retryable validator errors without string-prefix inference, includes validator semantics in workflow fingerprints, and migrates review-native workflow files to `validators:`. Validation passed with `direnv exec . gleam format --check src test`, `direnv exec . gleam test` reporting `1213 passed, no failures`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`; the lint commands retained the existing warning inventory and reported `0 errors`.
 
 ## Context and Orientation
 

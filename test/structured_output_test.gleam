@@ -4,6 +4,7 @@ import scherzo/json_value
 import scherzo/result_artifact
 import scherzo/structured_output
 import scherzo/structured_output_source
+import scherzo/structured_output_validator
 import scherzo/workflow_dag
 
 fn spec(required: Bool) -> workflow_dag.StructuredOutputSpec {
@@ -13,7 +14,7 @@ fn spec(required: Bool) -> workflow_dag.StructuredOutputSpec {
     source: structured_output_source.FinalResponseSource,
     format: workflow_dag.StructuredJson,
     schema: workflow_dag.StructuredObjectSchema(["summary", "findings"]),
-    validator: None,
+    validators: [],
     validation_retries: 1,
   )
 }
@@ -32,7 +33,7 @@ fn tool_source_spec() -> workflow_dag.StructuredOutputSpec {
       "schema_version",
       "artifact_type",
     ]),
-    validator: None,
+    validators: [],
     validation_retries: 1,
   )
 }
@@ -56,7 +57,21 @@ fn review_lane_draft_spec() -> workflow_dag.StructuredOutputSpec {
       "self_check",
       "remote_mutations",
     ]),
-    validator: Some(workflow_dag.ReviewLaneDraftValidator),
+    validators: [
+      workflow_dag.CommandValidator(
+        name: "review_lane_draft_compat",
+        argv: [
+          "python3",
+          "scripts/scherzo-review",
+          "validate-structured-output",
+          "--validator",
+          "review_lane_draft",
+        ],
+        timeout_ms: 30_000,
+        working_directory: workflow_dag.ValidatorInRepository,
+        env: [],
+      ),
+    ],
     validation_retries: 1,
   )
 }
@@ -281,12 +296,20 @@ pub fn redacts_secret_strings_before_returning_payload_test() {
   assert json_value.object_has_key(entries, "findings")
 }
 
-pub fn named_validator_dispatches_and_preserves_diagnostics_test() {
-  let failing_runner = fn(validator, _value) {
-    case validator {
-      workflow_dag.ReviewLaneDraftValidator ->
-        Error(structured_output.NamedValidatorError("lane.category is required"))
-    }
+pub fn generic_validator_dispatches_and_preserves_diagnostics_test() {
+  let failing_runner = fn(validator, _value, _payload, _index) {
+    Error(structured_output_validator.ValidatorFailure(
+      validator_name: workflow_dag.structured_output_validator_name(validator),
+      validator_type: workflow_dag.structured_output_validator_type_to_string(
+        validator,
+      ),
+      code: "structured_output_command_rejected",
+      message: "lane.category is required",
+      retryable: True,
+      diagnostic_summary: "lane.category is required",
+      stdout_truncated: False,
+      stderr_truncated: False,
+    ))
   }
   let assert Error(error) =
     structured_output.validate_final_response(
@@ -298,10 +321,11 @@ pub fn named_validator_dispatches_and_preserves_diagnostics_test() {
     )
 
   assert structured_output.error_code(error)
-    == "structured_output_schema_invalid"
+    == "structured_output_command_rejected"
+  assert structured_output.error_retryable(error)
   assert string.contains(
     structured_output.error_message(error),
-    "validator review_lane_draft rejected structured output",
+    "validator review_lane_draft_compat (command) failed",
   )
   assert string.contains(
     structured_output.error_message(error),
@@ -319,7 +343,7 @@ pub fn review_lane_draft_validator_rejects_missing_nested_lane_metadata_test() {
     validate_review_lane_draft(missing_lane_category_and_version_json())
 
   assert structured_output.error_code(error)
-    == "structured_output_schema_invalid"
+    == "structured_output_command_rejected"
   assert string.contains(
     structured_output.error_message(error),
     "lane.category",
@@ -331,7 +355,7 @@ pub fn review_lane_draft_validator_rejects_stale_finding_shape_test() {
     validate_review_lane_draft(stale_finding_shape_json())
 
   assert structured_output.error_code(error)
-    == "structured_output_schema_invalid"
+    == "structured_output_command_rejected"
   assert string.contains(
     structured_output.error_message(error),
     "draft_findings[].draft_finding_id",
@@ -343,7 +367,7 @@ pub fn review_lane_draft_validator_rejects_malformed_input_refs_test() {
     validate_review_lane_draft(malformed_input_refs_json())
 
   assert structured_output.error_code(error)
-    == "structured_output_schema_invalid"
+    == "structured_output_command_rejected"
   assert string.contains(
     structured_output.error_message(error),
     "input_refs[0].path",
@@ -361,7 +385,21 @@ fn validate_review_lane_draft(
     Some(payload),
     False,
     [],
-    structured_output.scherzo_review_validator_runner("."),
+    structured_output.default_validator_runner(
+      structured_output.default_validator_context(
+        ".scherzo",
+        ".",
+        "test_workflow",
+        "test_run",
+        "review_json",
+        1,
+        ".",
+        "review_lane_draft",
+        "json",
+        structured_output_source.FinalResponseSource,
+      ),
+      [],
+    ),
   )
 }
 

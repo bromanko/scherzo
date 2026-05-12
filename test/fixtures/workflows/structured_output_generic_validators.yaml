@@ -1,0 +1,32 @@
+version: 1
+id: structured-output-generic-validators
+steps:
+  - id: produce_review
+    kind: agent
+    prompt: prompts/review.md
+    workspace: main
+    structured_output:
+      artifact_name: review_lane_draft
+      required: true
+      format: json
+      source:
+        type: final_response
+      schema:
+        type: object
+        required:
+          - schema_version
+          - artifact_type
+          - findings
+      validators:
+        - name: review_lane_shape
+          type: json_schema
+          path: test/fixtures/structured_output/review_lane_draft.schema.json
+          draft: "2020-12"
+        - name: review_lane_semantics
+          type: command
+          argv:
+            - python3
+            - test/fixtures/structured_output/command_validator_accept.py
+          timeout_ms: 30000
+          working_directory: repository
+      validation_retries: 1

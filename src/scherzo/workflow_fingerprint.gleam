@@ -6,10 +6,12 @@ import gleam/string
 import scherzo/config/types as config_types
 import scherzo/hash
 import scherzo/model_config
+import scherzo/path as scherzo_path
 import scherzo/structured_output_source
 import scherzo/workflow_dag
 import scherzo/workspace_driver_env
 import scherzo/workspace_profile
+import simplifile
 
 pub type FingerprintError {
   PromptFileReadFailed(path: String)
@@ -43,12 +45,13 @@ pub fn for_execution(
     workspace_profile.resolve(dag, orchestrator)
     |> result.map_error(workspace_profile_error_to_fingerprint_error),
   )
-  Ok(for_execution_profile_options(
+  Ok(for_execution_profile_options_with_schema_root(
     workflow_id,
     dag,
     profile,
     orchestrator.artifact_limits,
     orchestrator.model_settings,
+    Some(repository_root(orchestrator.config_dir)),
   ))
 }
 
@@ -88,6 +91,24 @@ pub fn for_execution_profile_options(
     profile,
     artifact_limits,
     model_settings,
+  ))
+}
+
+fn for_execution_profile_options_with_schema_root(
+  workflow_id: String,
+  dag: workflow_dag.WorkflowDag,
+  profile: config_types.WorkspaceHookProfile,
+  artifact_limits: config_types.ArtifactLimits,
+  model_settings: model_config.Settings,
+  schema_root: Option(String),
+) -> String {
+  hash.sha256_hex(canonical_execution_input_for_profile_with_schema_root(
+    workflow_id,
+    dag,
+    profile,
+    artifact_limits,
+    model_settings,
+    schema_root,
   ))
 }
 
@@ -132,7 +153,32 @@ pub fn canonical_execution_input_for_profile(
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
 ) -> String {
-  execution_to_json(workflow_id, dag, profile, artifact_limits, model_settings)
+  canonical_execution_input_for_profile_with_schema_root(
+    workflow_id,
+    dag,
+    profile,
+    artifact_limits,
+    model_settings,
+    None,
+  )
+}
+
+fn canonical_execution_input_for_profile_with_schema_root(
+  workflow_id: String,
+  dag: workflow_dag.WorkflowDag,
+  profile: config_types.WorkspaceHookProfile,
+  artifact_limits: config_types.ArtifactLimits,
+  model_settings: model_config.Settings,
+  schema_root: Option(String),
+) -> String {
+  execution_to_json(
+    workflow_id,
+    dag,
+    profile,
+    artifact_limits,
+    model_settings,
+    schema_root,
+  )
   |> json.to_string
 }
 
@@ -142,8 +188,11 @@ fn execution_to_json(
   profile: config_types.WorkspaceHookProfile,
   artifact_limits: config_types.ArtifactLimits,
   model_settings: model_config.Settings,
+  schema_root: Option(String),
 ) -> json.Json {
-  let fields = [#("dag", dag_to_json(workflow_id, dag))]
+  let fields = [
+    #("dag", dag_to_json_with_schema_root(workflow_id, dag, schema_root)),
+  ]
   let fields = case profile.source {
     config_types.LegacyWorkspaceHooks
     | config_types.SyntheticDefaultWorkspace -> fields
@@ -177,6 +226,14 @@ fn dag_to_json(
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
 ) -> json.Json {
+  dag_to_json_with_schema_root(workflow_id, dag, None)
+}
+
+fn dag_to_json_with_schema_root(
+  workflow_id: String,
+  dag: workflow_dag.WorkflowDag,
+  schema_root: Option(String),
+) -> json.Json {
   let prefix = [
     #("id", json.string(workflow_id)),
     #("description", option_string_to_json(dag.description)),
@@ -199,7 +256,10 @@ fn dag_to_json(
   json.object(
     list.append(prefix, [
       #("max_parallel_steps", json.int(dag.max_parallel_steps)),
-      #("steps", json.array(sorted_steps(dag.steps), of: step_to_json)),
+      #(
+        "steps",
+        json.array(sorted_steps(dag.steps), of: step_to_json(_, schema_root)),
+      ),
     ]),
   )
 }
@@ -214,21 +274,27 @@ fn sorted_strings(values: List(String)) -> List(String) {
   list.sort(values, by: string.compare)
 }
 
-fn step_to_json(step: workflow_dag.WorkflowStep) -> json.Json {
+fn step_to_json(
+  step: workflow_dag.WorkflowStep,
+  schema_root: Option(String),
+) -> json.Json {
   json.object([
     #("id", json.string(step.id)),
     #(
       "depends_on",
       json.array(sorted_strings(step.depends_on), of: json.string),
     ),
-    #("kind", kind_to_json(step.kind)),
+    #("kind", kind_to_json(step.kind, schema_root)),
     #("workspace", workspace_to_json(step.workspace)),
     #("on_failure", json.string(failure_policy_to_string(step.on_failure))),
     #("model_settings", model_settings_to_json(step.model_settings)),
   ])
 }
 
-fn kind_to_json(kind: workflow_dag.StepKind) -> json.Json {
+fn kind_to_json(
+  kind: workflow_dag.StepKind,
+  schema_root: Option(String),
+) -> json.Json {
   case kind {
     workflow_dag.CommandStep(run, timeout_ms) ->
       json.object([
@@ -240,13 +306,17 @@ fn kind_to_json(kind: workflow_dag.StepKind) -> json.Json {
       json.object([
         #("type", json.string("agent")),
         #("prompt", prompt_ref_to_json(prompt_ref)),
-        #("structured_output", structured_output_to_json(structured_output)),
+        #(
+          "structured_output",
+          structured_output_to_json(structured_output, schema_root),
+        ),
       ])
   }
 }
 
 fn structured_output_to_json(
   structured_output: Option(workflow_dag.StructuredOutputSpec),
+  schema_root: Option(String),
 ) -> json.Json {
   case structured_output {
     None -> json.null()
@@ -262,7 +332,11 @@ fn structured_output_to_json(
         #("required", json.bool(spec.required)),
         #("source", structured_output_source_to_json(spec.source)),
         #("schema", structured_output_schema_to_json(spec.schema)),
-        #("validator", structured_output_validator_to_json(spec.validator)),
+        #("validator_contract_version", json.int(1)),
+        #(
+          "validators",
+          structured_output_validators_to_json(spec.validators, schema_root),
+        ),
         #("validation_retries", json.int(spec.validation_retries)),
       ])
   }
@@ -288,13 +362,100 @@ fn structured_output_source_to_json(
   }
 }
 
+fn structured_output_validators_to_json(
+  validators: List(workflow_dag.StructuredOutputValidator),
+  schema_root: Option(String),
+) -> json.Json {
+  json.array(validators, of: structured_output_validator_to_json(_, schema_root))
+}
+
 fn structured_output_validator_to_json(
-  validator: Option(workflow_dag.StructuredOutputValidator),
+  validator: workflow_dag.StructuredOutputValidator,
+  schema_root: Option(String),
 ) -> json.Json {
   case validator {
-    None -> json.null()
-    Some(validator) ->
-      json.string(workflow_dag.structured_output_validator_to_string(validator))
+    workflow_dag.JsonSchemaValidator(name, schema_path, draft) -> {
+      let fields = [
+        #("name", json.string(name)),
+        #("type", json.string("json_schema")),
+        #("path", json.string(schema_path)),
+        #("draft", json.string(option_string(draft, "2020-12"))),
+      ]
+      json.object(add_schema_hash_field(fields, schema_root, schema_path))
+    }
+    workflow_dag.CommandValidator(
+      name,
+      argv,
+      timeout_ms,
+      working_directory,
+      env,
+    ) ->
+      json.object([
+        #("name", json.string(name)),
+        #("type", json.string("command")),
+        #("argv", json.array(argv, of: json.string)),
+        #("timeout_ms", json.int(timeout_ms)),
+        #(
+          "working_directory",
+          json.string(workflow_dag.validator_working_directory_to_string(
+            working_directory,
+          )),
+        ),
+        #("env", structured_output_validator_env_to_json(env)),
+      ])
+  }
+}
+
+fn structured_output_validator_env_to_json(
+  env: List(#(String, String)),
+) -> json.Json {
+  env
+  |> list.sort(by: fn(left, right) {
+    let #(left_key, _) = left
+    let #(right_key, _) = right
+    string.compare(left_key, right_key)
+  })
+  |> json.array(of: fn(entry) {
+    let #(name, value) = entry
+    json.object([
+      #("name", json.string(name)),
+      #("value_sha256", json.string(hash.sha256_hex(value))),
+    ])
+  })
+}
+
+fn add_schema_hash_field(
+  fields: List(#(String, json.Json)),
+  schema_root: Option(String),
+  schema_path: String,
+) -> List(#(String, json.Json)) {
+  case schema_root {
+    Some(root) ->
+      case simplifile.read(scherzo_path.join(root, schema_path)) {
+        Ok(contents) ->
+          list.append(fields, [
+            #("schema_sha256", json.string(hash.sha256_hex(contents))),
+          ])
+        Error(read_error) -> {
+          let _reason = simplifile.describe_error(read_error)
+          fields
+        }
+      }
+    None -> fields
+  }
+}
+
+fn repository_root(config_dir: String) -> String {
+  case scherzo_path.dirname(config_dir) {
+    Ok(parent) -> parent
+    Error(Nil) -> config_dir
+  }
+}
+
+fn option_string(value: Option(String), default: String) -> String {
+  case value {
+    Some(value) -> value
+    None -> default
   }
 }
 

@@ -72,6 +72,7 @@ pub fn agent_failure_artifact_with_structured_output(
       workflow_dag.structured_output_format_to_string(spec.format),
       failure_message(failure, secrets),
       None,
+      None,
     )),
   )
 }

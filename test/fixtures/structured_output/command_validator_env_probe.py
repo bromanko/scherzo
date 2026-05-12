@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+import json
+import os
+import sys
+sys.stdin.read()
+keys = [
+    "HOME",
+    "PWD",
+    "SECRET_TOKEN",
+    "SCHERZO_CONFIG_DIR",
+    "SCHERZO_REPO_ROOT",
+    "SCHERZO_RUN_ROOT",
+    "SCHERZO_WORKFLOW_ID",
+    "SCHERZO_RUN_ID",
+    "SCHERZO_STEP_ID",
+    "SCHERZO_ATTEMPT_INDEX",
+    "SCHERZO_WORKSPACE_PATH",
+    "SCHERZO_STRUCTURED_OUTPUT_ARTIFACT_NAME",
+    "SCHERZO_STRUCTURED_OUTPUT_FORMAT",
+    "SCHERZO_STRUCTURED_OUTPUT_SOURCE_TYPE",
+    "SCHERZO_STRUCTURED_OUTPUT_SOURCE_TOOL_NAME",
+    "SCHERZO_VALIDATOR_NAME",
+    "SCHERZO_VALIDATOR_TYPE",
+    "SCHERZO_VALIDATOR_INDEX",
+    "CUSTOM_VALUE",
+]
+print(json.dumps({key: os.environ.get(key) for key in keys}, sort_keys=True))
+sys.exit(1)

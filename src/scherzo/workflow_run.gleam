@@ -18,6 +18,7 @@ import scherzo/process_ext
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/structured_output
+import scherzo/structured_output_metadata
 import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
@@ -2492,7 +2493,7 @@ fn structured_output_retry_diagnostic(
       case
         spec.required
         && spec.validation_retries > 0
-        && is_structured_output_validation_failure(artifact.failure_code)
+        && structured_output_artifact_retryable(artifact)
       {
         True -> structured_output_attempt_diagnostic(1, artifact)
         False -> None
@@ -2501,9 +2502,22 @@ fn structured_output_retry_diagnostic(
   }
 }
 
+fn structured_output_artifact_retryable(
+  artifact: step_artifact.StepArtifact,
+) -> Bool {
+  case artifact.structured_output {
+    Some(step_artifact.StructuredOutputError(_, _, _, Some(details), _)) ->
+      details.retryable
+    _ -> is_structured_output_validation_failure(artifact.failure_code)
+  }
+}
+
 fn is_structured_output_validation_failure(code: Option(String)) -> Bool {
   case code {
-    Some("structured_output_artifact_write_failed") -> False
+    Some("structured_output_artifact_write_failed")
+    | Some("structured_output_json_schema_config_error")
+    | Some("structured_output_command_config_error")
+    | Some("structured_output_command_timeout") -> False
     Some(value) -> string.starts_with(value, "structured_output_")
     None -> False
   }
@@ -2521,14 +2535,32 @@ fn structured_output_attempt_diagnostic(
         failure_code: None,
         message: "required structured output validated",
       ))
-    Some(step_artifact.StructuredOutputError(_, _, message, _)) ->
+    Some(step_artifact.StructuredOutputError(_, _, message, details, _)) ->
       Some(step_artifact.StructuredOutputRetryDiagnostic(
         attempt: attempt,
         status: "error",
         failure_code: artifact.failure_code,
-        message: message,
+        message: structured_output_retry_message(message, details),
       ))
     _ -> None
+  }
+}
+
+fn structured_output_retry_message(
+  message: String,
+  details: Option(step_artifact.StructuredOutputErrorDetails),
+) -> String {
+  case details {
+    Some(details) ->
+      message <> "\nRetryable: " <> bool_string(details.retryable)
+    None -> message
+  }
+}
+
+fn bool_string(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
   }
 }
 
@@ -2739,8 +2771,19 @@ fn agent_success_with_structured_output(
       success.result,
       secrets,
       structured_output.default_validator_runner(
-        context.config_dir,
-        context.workspace_path,
+        structured_output.default_validator_context(
+          context.config_dir,
+          context.run_root,
+          context.workflow_id,
+          context.run_id,
+          step.id,
+          context.attempt_index,
+          context.workspace_path,
+          spec.artifact_name,
+          format,
+          spec.source,
+        ),
+        secrets,
       ),
     )
   {
@@ -2766,17 +2809,28 @@ fn agent_success_with_structured_output(
         limits,
         checkpoint,
       )
-    Error(error) ->
-      step_artifact.from_agent_structured_output_error(
+    Error(error) -> {
+      let failure_code = structured_output.error_code(error)
+      step_artifact.from_agent_structured_output_error_with_details(
         step.id,
         success,
         secrets,
         limits,
-        structured_output.error_code(error),
+        failure_code,
         structured_output.error_message_for_step(error, step.id),
         spec.artifact_name,
         format,
+        Some(step_artifact.StructuredOutputErrorDetails(
+          code: failure_code,
+          retryable: structured_output.error_retryable(error),
+          validator_name: structured_output.error_validator_name(error),
+          validator_type: structured_output.error_validator_type(error),
+          diagnostic_summary: structured_output.error_diagnostic_summary(error),
+          stdout_truncated: structured_output.error_stdout_truncated(error),
+          stderr_truncated: structured_output.error_stderr_truncated(error),
+        )),
       )
+    }
   }
 }
 
@@ -2792,6 +2846,14 @@ fn write_structured_output_artifact(
   limits: config_types.ArtifactLimits,
   checkpoint: workflow_checkpoint.Writer,
 ) -> step_artifact.StepArtifact {
+  let validation =
+    structured_output_metadata.from_spec(
+      spec,
+      structured_output.validator_repo_root(
+        context.config_dir,
+        context.workspace_path,
+      ),
+    )
   let write =
     workflow_checkpoint.StructuredOutputWrite(
       run_id: context.run_id,
@@ -2801,6 +2863,7 @@ fn write_structured_output_artifact(
       artifact_name: spec.artifact_name,
       format: format,
       schema_required_keys: required_keys,
+      validation: validation,
       payload_json: payload_json,
     )
   case checkpoint.write_structured_output_artifact(write) {
@@ -2820,6 +2883,8 @@ fn write_structured_output_artifact(
           schema_status: "valid",
           source_type: structured_output.source_type_to_string(spec.source),
           source_tool_name: structured_output.source_tool_name(spec.source),
+          baseline_required_keys: required_keys,
+          validators: structured_output_metadata.validator_summaries(validation),
           retry: None,
         ),
       )

@@ -260,6 +260,69 @@ pub fn workflow_fingerprint_changes_for_structured_output_source_test() {
   )
 }
 
+pub fn workflow_fingerprint_changes_for_structured_output_validators_test() {
+  let without_validator =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n",
+    )
+  let with_schema_validator =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
+    )
+  let with_command_validator =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout_ms: 30000\n          env:\n            CHECK_MODE: strict\n",
+    )
+  let with_changed_env =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout_ms: 30000\n          env:\n            CHECK_MODE: relaxed\n",
+    )
+
+  let base = workflow_fingerprint.for_dag("implementation", without_validator)
+  assert base
+    != workflow_fingerprint.for_dag("implementation", with_schema_validator)
+  assert base
+    != workflow_fingerprint.for_dag("implementation", with_command_validator)
+  assert workflow_fingerprint.for_dag("implementation", with_command_validator)
+    != workflow_fingerprint.for_dag("implementation", with_changed_env)
+  assert string.contains(
+    workflow_fingerprint.canonical_input(with_schema_validator),
+    "validator_contract_version",
+  )
+}
+
+pub fn execution_fingerprint_changes_for_json_schema_content_hash_test() {
+  let dir = "test/tmp/workflow-fingerprint-schema-hash"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/.scherzo")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/schemas")
+  let schema_path = dir <> "/schemas/review.schema.json"
+  let dag =
+    parse(
+      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
+    )
+  let orchestrator =
+    orchestrator_with_profiles([#("noop", profile("noop", hooks(None)))])
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..orchestrator,
+      config_dir: dir <> "/.scherzo",
+    )
+
+  let assert Ok(Nil) = simplifile.write(schema_path, "{\"type\":\"object\"}\n")
+  let assert Ok(first) =
+    workflow_fingerprint.fingerprint_for_execution(dag, orchestrator)
+  let assert Ok(Nil) =
+    simplifile.write(
+      schema_path,
+      "{\"type\":\"object\",\"required\":[\"summary\"]}\n",
+    )
+  let assert Ok(second) =
+    workflow_fingerprint.fingerprint_for_execution(dag, orchestrator)
+
+  assert first != second
+}
+
 pub fn workflow_dag_fingerprint_includes_explicit_workspace_profile_test() {
   let noop =
     parse(
