@@ -112,11 +112,23 @@ fn write_file(path: String, contents: String) -> Nil {
 }
 
 pub fn noop_driver_describe_json_is_static_and_workspace_free_test() {
-  let artifact = run_noop("noop_describe_json", "describe --json", [])
+  let root = "test/tmp/workspace-driver-noop-describe"
+  reset_dir(root)
+  let workspace = absolute(root <> "/workspace")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let sentinel = workspace <> "/sentinel.txt"
+  write_file(sentinel, "unchanged\n")
+
+  let artifact =
+    run_noop("noop_describe_json", "describe --json", workspace_env(workspace))
   assert_exit(artifact, 0)
+  assert artifact.stdout
+    == "{\"version\":1,\"capabilities\":[\"status\",\"changed-files\",\"assert-only\"]}\n"
   assert artifact.stderr == ""
   assert decode_driver_description(artifact.stdout)
     == #(1, ["status", "changed-files", "assert-only"])
+  let assert Ok(contents) = simplifile.read(sentinel)
+  assert contents == "unchanged\n"
 
   let unsupported = run_noop("noop_describe_unsupported", "describe --yaml", [])
   assert_exit(unsupported, 2)
@@ -210,6 +222,16 @@ pub fn noop_driver_lifecycle_remove_rejects_unset_empty_unmarked_and_outside_run
     )
   assert_exit(outside_result, 2)
   assert simplifile.is_directory(outside) == Ok(True)
+
+  let filesystem_root = absolute("/")
+  let root_result =
+    run_noop(
+      "noop_remove_filesystem_root",
+      "lifecycle remove",
+      workspace_run_env(filesystem_root, filesystem_root),
+    )
+  assert_exit(root_result, 2)
+  assert string.contains(root_result.stderr, "refusing filesystem root")
 }
 
 pub fn noop_driver_changed_files_json_is_sorted_relative_and_empty_safe_test() {
@@ -229,6 +251,9 @@ pub fn noop_driver_changed_files_json_is_sorted_relative_and_empty_safe_test() {
 
   write_file(workspace <> "/zeta.md", "z\n")
   write_file(workspace <> "/nested/alpha.md", "a\n")
+  write_file(workspace <> "/" <> marker, "created by test\n")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.scherzo")
+  write_file(workspace <> "/.scherzo/diagnostic.log", "ignored\n")
 
   let changed =
     run_noop(
@@ -237,6 +262,7 @@ pub fn noop_driver_changed_files_json_is_sorted_relative_and_empty_safe_test() {
       workspace_env(workspace),
     )
   assert_exit(changed, 0)
+  assert changed.stderr == ""
   assert decode_changed_files(changed.stdout)
     == #(1, [
       #("nested/alpha.md", "modified"),
@@ -267,6 +293,31 @@ pub fn noop_driver_status_human_is_deterministic_and_relative_test() {
   assert_exit(populated, 0)
   assert populated.stdout == "Files:\nnested/alpha.md\nzeta.md\n"
   assert !string.contains(populated.stdout, workspace)
+}
+
+pub fn noop_driver_unsupported_commands_and_flags_are_usage_errors_test() {
+  let root = "test/tmp/workspace-driver-noop-unsupported"
+  reset_dir(root)
+  let workspace = absolute(root <> "/workspace")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let unsupported = [
+    "diff --json",
+    "baseline --json",
+    "refresh-base --stage test --json",
+    "publish-change --json",
+    "status --json",
+    "changed-files --human",
+    "unknown-command",
+  ]
+  list_each(unsupported, fn(args) {
+    let artifact = run_noop("noop_unsupported", args, workspace_env(workspace))
+    assert_exit(artifact, 2)
+    assert artifact.stdout == ""
+    assert string.length(artifact.stderr) < 1000
+    assert string.contains(artifact.stderr, "Usage:")
+    assert !string.contains(artifact.stderr, workspace)
+  })
 }
 
 pub fn noop_driver_changed_files_json_escapes_special_path_names_test() {
@@ -311,6 +362,24 @@ pub fn noop_driver_assert_only_accepts_exact_single_file_test() {
   assert artifact.stderr == ""
 }
 
+pub fn noop_driver_assert_only_rejects_missing_file_test() {
+  let root = "test/tmp/workspace-driver-noop-assert-only-missing"
+  reset_dir(root)
+  let workspace = absolute(root <> "/workspace")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_noop(
+      "noop_assert_missing",
+      "assert-only --path research-findings.md",
+      workspace_env(workspace),
+    )
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stderr, "research-findings.md")
+  assert string.contains(artifact.stderr, "none")
+  assert !string.contains(artifact.stderr, workspace)
+}
+
 pub fn noop_driver_assert_only_rejects_extra_file_test() {
   let root = "test/tmp/workspace-driver-noop-assert-only-extra"
   reset_dir(root)
@@ -331,22 +400,31 @@ pub fn noop_driver_assert_only_rejects_extra_file_test() {
   assert !string.contains(artifact.stderr, workspace)
 }
 
-pub fn driver_assert_only_rejects_unsafe_paths_test() {
+pub fn driver_assert_only_rejects_unsafe_paths_before_workspace_inspection_test() {
   let root = "test/tmp/workspace-driver-noop-unsafe-paths"
   reset_dir(root)
-  let workspace = absolute(root <> "/workspace")
-  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let missing_workspace = absolute(root <> "/missing-workspace")
   let absolute_path = absolute(root <> "/outside.md")
 
-  let unsafe_paths = ["", "../outside.md", ".", absolute_path]
+  let unsafe_paths = [
+    "",
+    "../outside.md",
+    "nested/../outside.md",
+    "nested\\..\\outside.md",
+    ".",
+    absolute_path,
+    "C:\\path\\file.md",
+  ]
   list_each(unsafe_paths, fn(value) {
     let artifact =
       run_noop(
         "noop_assert_unsafe",
         "assert-only --path " <> shell_quote(value),
-        workspace_env(workspace),
+        workspace_env(missing_workspace),
       )
     assert_exit(artifact, 2)
+    assert string.contains(artifact.stderr, "assert-only path")
+    assert !string.contains(artifact.stderr, missing_workspace)
   })
 }
 

@@ -6,6 +6,7 @@
   rebar3,
   cacert,
   coreutils,
+  python3,
   makeWrapper,
   src,
   sourceRevision ? "unknown",
@@ -19,6 +20,10 @@ let
   version = manifest.version;
   runtimePath = lib.makeBinPath [
     erlang
+    coreutils
+  ];
+  driverRuntimePath = lib.makeBinPath [
+    python3
     coreutils
   ];
   startRunnerPath = lib.makeBinPath [ coreutils ];
@@ -119,9 +124,11 @@ stdenvNoCC.mkDerivation {
     mkdir -p "$out/lib/${pname}" "$out/libexec/${pname}" "$out/bin"
     cp -R build/erlang-shipment/. "$out/lib/${pname}/"
     cp scripts/scherzo-start-runner "$out/libexec/${pname}/scherzo-start-runner"
+    install -m755 scripts/scherzo-workspace-noop "$out/libexec/${pname}/scherzo-workspace-noop"
 
     patchShebangs "$out/lib/${pname}/entrypoint.sh"
     patchShebangs "$out/libexec/${pname}/scherzo-start-runner"
+    patchShebangs "$out/libexec/${pname}/scherzo-workspace-noop"
     makeWrapper "$out/lib/${pname}/entrypoint.sh" "$out/bin/scherzo" \
       --add-flags run \
       --set-default SCHERZO_SOURCE_REVISION "${sourceRevision}" \
@@ -134,6 +141,8 @@ stdenvNoCC.mkDerivation {
       --add-flags -- \
       --add-flags "$out/bin/scherzo" \
       --prefix PATH : ${startRunnerPath}
+    makeWrapper "$out/libexec/${pname}/scherzo-workspace-noop" "$out/bin/scherzo-workspace-noop" \
+      --prefix PATH : ${driverRuntimePath}
 
     runHook postInstall
   '';
@@ -158,6 +167,46 @@ stdenvNoCC.mkDerivation {
 
     PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzoctl" --help > scherzoctl-help
     grep -q "Usage: scherzo ctl" scherzoctl-help
+
+    PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo-workspace-noop" describe --json > noop-describe
+    test "$(cat noop-describe)" = '{"version":1,"capabilities":["status","changed-files","assert-only"]}'
+
+    noop_run_root="$TMPDIR/noop-run"
+    noop_workspace="$noop_run_root/workspaces/main"
+    env -i PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" \
+      SCHERZO_WORKSPACE_PATH="$noop_workspace" SCHERZO_RUN_ROOT="$noop_run_root" \
+      "$out/bin/scherzo-workspace-noop" lifecycle create
+    test -f "$noop_workspace/.scherzo-workspace-driver-noop"
+
+    env -i PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" \
+      SCHERZO_WORKSPACE_PATH="$noop_workspace" SCHERZO_RUN_ROOT="$noop_run_root" \
+      "$out/bin/scherzo-workspace-noop" changed-files --json > noop-empty-changed
+    test "$(cat noop-empty-changed)" = '{"version":1,"files":[]}'
+
+    printf 'findings\n' > "$noop_workspace/research-findings.md"
+    env -i PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" \
+      SCHERZO_WORKSPACE_PATH="$noop_workspace" SCHERZO_RUN_ROOT="$noop_run_root" \
+      "$out/bin/scherzo-workspace-noop" changed-files --json > noop-changed
+    test "$(cat noop-changed)" = '{"version":1,"files":[{"path":"research-findings.md","status":"modified"}]}'
+
+    env -i PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" \
+      SCHERZO_WORKSPACE_PATH="$noop_workspace" SCHERZO_RUN_ROOT="$noop_run_root" \
+      "$out/bin/scherzo-workspace-noop" assert-only --path research-findings.md
+
+    if env -i PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" \
+      SCHERZO_WORKSPACE_PATH="$noop_workspace" SCHERZO_RUN_ROOT="$noop_run_root" \
+      "$out/bin/scherzo-workspace-noop" diff --json > noop-unsupported.out 2> noop-unsupported.err; then
+      echo "expected unsupported diff command to fail" >&2
+      exit 1
+    else
+      status=$?
+      test "$status" -eq 2
+    fi
+
+    env -i PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" \
+      SCHERZO_WORKSPACE_PATH="$noop_workspace" SCHERZO_RUN_ROOT="$noop_run_root" \
+      "$out/bin/scherzo-workspace-noop" lifecycle remove
+    test ! -e "$noop_workspace"
 
     runHook postInstallCheck
   '';

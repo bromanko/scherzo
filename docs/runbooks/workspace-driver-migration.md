@@ -18,7 +18,7 @@ The accepted lifecycle names are `create`, `before-step`, `after-step`, and `rem
 
 If the selected profile has hooks and a driver, the hooks still prepare and clean up the workspace while command steps, agent subprocesses, and prompt templates receive the selected driver context. If the selected profile is driver-only, Scherzo invokes the configured driver for supported lifecycle operations. A hook-backed profile with a driver command remains a production-safe bridge, and a driver-only profile is the target shape for profiles whose driver implements the lifecycle contract in [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../specs/WORKSPACE_DRIVER_SPEC.md).
 
-`examples/scherzo.yaml` is the canonical runnable checked example for reusable configuration. Because that file lives under `examples/`, its driver commands use `../scripts/...` to reach the checked driver scripts. A config copied to a repository root would normally use `scripts/...`, while a packaged installation can use a PATH command or an absolute trusted wrapper. Keep snippets in this guide aligned with the checked example when driver field names, command paths, lifecycle operations, or metadata behavior change.
+`examples/scherzo.yaml` is the canonical runnable checked source-tree example for reusable configuration. Because that file lives under `examples/`, its driver commands use `../scripts/...` to reach the checked driver scripts. A config copied to a repository root would normally use `scripts/...`. A packaged installation should use `command: scherzo-workspace-noop` for the bundled no-op driver, as shown by `examples/scherzo-packaged-noop.yaml`, or another PATH command/absolute trusted wrapper. Keep snippets in this guide aligned with the checked examples when driver field names, command paths, lifecycle operations, or metadata behavior change.
 
 ## Doctor warnings to expect
 
@@ -61,6 +61,20 @@ workspace:
     noop:
       driver:
         command: scripts/scherzo-workspace-noop
+        lifecycle: [create, before-step, after-step, remove]
+        timeout_ms: 60000
+```
+
+If Scherzo is installed as a package, prefer the packaged executable instead of a source-tree script path:
+
+```yaml
+workspace:
+  root: .scherzo/workspaces
+  default_profile: noop
+  profiles:
+    noop:
+      driver:
+        command: scherzo-workspace-noop
         lifecycle: [create, before-step, after-step, remove]
         timeout_ms: 60000
 ```
@@ -173,7 +187,20 @@ A workflow that invokes the selected driver for `assert-only --path research-fin
 
 ## No-op or artifact-only workflows
 
-Use the no-op driver when a workflow only needs an empty workspace for generated artifacts. The checked research example uses this shape from `examples/scherzo.yaml`, where `../scripts/...` is relative to the `examples/` config directory:
+Use the no-op driver when a workflow only needs an empty workspace for generated artifacts. Packaged deployments should use the installed command name:
+
+```yaml
+workspace:
+  default_profile: noop
+  profiles:
+    noop:
+      driver:
+        command: scherzo-workspace-noop
+        lifecycle: [create, before-step, after-step, remove]
+        timeout_ms: 60000
+```
+
+The checked research source-tree example uses this shape from `examples/scherzo.yaml`, where `../scripts/...` is relative to the `examples/` config directory:
 
 ```yaml
 workspace:
@@ -213,6 +240,7 @@ Run validation from the repository root after changing config or workflows:
 ```sh
 LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
 LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config examples/scherzo.yaml
+direnv exec . env PATH="$PWD/result/bin:$PATH" LINEAR_API_KEY=dummy gleam run -- doctor --check workflow-config examples/scherzo-packaged-noop.yaml
 direnv exec . gleam test
 ```
 
