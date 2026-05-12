@@ -57,6 +57,8 @@ pub fn readme_documents_workspace_driver_model_test() {
   assert_contains(path, readme, "docs/runbooks/workspace-driver-migration.md")
   assert_contains(path, readme, "docs/specs/WORKSPACE_DRIVER_SPEC.md")
   assert_contains(path, readme, "command: scherzo-workspace-noop")
+  assert_contains(path, readme, "command: scherzo-workspace-jj")
+  assert_contains(path, readme, "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE")
   assert_contains(path, readme, "driver.env")
   assert_contains(path, readme, "not a secret store")
 }
@@ -148,6 +150,31 @@ pub fn packaged_noop_example_uses_installed_command_test() {
   assert_no_local_absolute_path_prefixes(path, example)
 }
 
+pub fn packaged_jj_example_uses_installed_command_test() {
+  let path = "examples/scherzo-packaged-jj.yaml"
+  let example = read_file(path)
+
+  assert_contains(path, example, "default_profile: isolated")
+  assert_contains(path, example, "command: scherzo-workspace-jj")
+  assert_contains(
+    path,
+    example,
+    "lifecycle: [create, before-step, after-step, remove]",
+  )
+  assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_BASE")
+  assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_FETCH_BASE")
+  assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_REMOTE")
+  assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
+  assert_contains(path, example, "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE")
+  assert_contains(
+    path,
+    example,
+    "implementation: workflows/implementation.yaml",
+  )
+  assert_not_contains(path, example, "../scripts/scherzo-workspace-jj")
+  assert_no_local_absolute_path_prefixes(path, example)
+}
+
 pub fn packaged_and_source_tree_noop_docs_are_distinct_test() {
   let migration_path = "docs/runbooks/workspace-driver-migration.md"
   let migration = read_file(migration_path)
@@ -157,6 +184,7 @@ pub fn packaged_and_source_tree_noop_docs_are_distinct_test() {
   let capabilities = read_file(capabilities_path)
 
   assert_contains(migration_path, migration, "command: scherzo-workspace-noop")
+  assert_contains(migration_path, migration, "command: scherzo-workspace-jj")
   assert_contains(
     migration_path,
     migration,
@@ -168,6 +196,7 @@ pub fn packaged_and_source_tree_noop_docs_are_distinct_test() {
     "examples/scherzo-packaged-noop.yaml",
   )
   assert_contains(portable_path, portable, "command: scherzo-workspace-noop")
+  assert_contains(portable_path, portable, "command: scherzo-workspace-jj")
   assert_contains(portable_path, portable, "../scripts/scherzo-workspace-noop")
   assert_contains(
     capabilities_path,
@@ -177,11 +206,49 @@ pub fn packaged_and_source_tree_noop_docs_are_distinct_test() {
   assert_contains(
     capabilities_path,
     capabilities,
+    "command: scherzo-workspace-jj",
+  )
+  assert_contains(
+    capabilities_path,
+    capabilities,
     "result/bin/scherzo-workspace-noop describe --json",
+  )
+  assert_contains(
+    capabilities_path,
+    capabilities,
+    "result/bin/scherzo-workspace-jj describe --json",
   )
   assert_no_local_absolute_path_prefixes(migration_path, migration)
   assert_no_local_absolute_path_prefixes(portable_path, portable)
   assert_no_local_absolute_path_prefixes(capabilities_path, capabilities)
+}
+
+pub fn packaged_jj_docs_cover_base_fetch_and_publication_policy_test() {
+  let readme_path = "README.md"
+  let readme = read_file(readme_path)
+  let migration_path = "docs/runbooks/workspace-driver-migration.md"
+  let migration = read_file(migration_path)
+  let capabilities_path = "docs/runbooks/workspace-driver-capabilities.md"
+  let capabilities = read_file(capabilities_path)
+  let docs = readme <> "\n" <> migration <> "\n" <> capabilities
+
+  assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_BASE")
+  assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_REMOTE")
+  assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
+  assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_FETCH_BASE")
+  assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE")
+  assert_contains(readme_path, docs, "SCHERZO_PR_REMOTE")
+  assert_contains(readme_path, docs, "SCHERZO_PR_BASE")
+  assert_contains(readme_path, docs, "SCHERZO_JJ_WORKSPACE_BASE=@")
+  assert_contains(readme_path, docs, "trunk")
+  assert_contains(readme_path, docs, "upstream")
+  assert_contains(readme_path, docs, "origin")
+  assert_contains(readme_path, docs, "publish-change")
+  assert_contains(readme_path, docs, "requires `gh`")
+  assert_contains(readme_path, docs, "trunk@upstream")
+  assert_contains(readme_path, docs, "publishes through `origin`")
+  assert_contains(readme_path, docs, "fork remote")
+  assert_no_local_absolute_path_prefixes(readme_path, docs)
 }
 
 pub fn research_workflow_resolves_relative_driver_test() {

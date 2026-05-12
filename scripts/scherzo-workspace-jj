@@ -89,6 +89,59 @@ def json_failure(
     raise SystemExit(exit_code)
 
 
+def env_value(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def env_is_present(name: str) -> bool:
+    return env_value(name) is not None
+
+
+def selected_workspace_base_branch() -> str:
+    return env_value("SCHERZO_JJ_WORKSPACE_BASE_BRANCH") or env_value("SCHERZO_PR_BASE") or "main"
+
+
+def selected_workspace_base_remote() -> str:
+    return env_value("SCHERZO_JJ_WORKSPACE_REMOTE") or env_value("SCHERZO_PR_REMOTE") or "origin"
+
+
+def selected_publication_remote() -> str:
+    return env_value("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE") or env_value("SCHERZO_PR_REMOTE") or "origin"
+
+
+def base_selection_was_configured() -> bool:
+    return any(
+        env_is_present(name)
+        for name in [
+            "SCHERZO_JJ_WORKSPACE_REMOTE",
+            "SCHERZO_JJ_WORKSPACE_BASE_BRANCH",
+            "SCHERZO_PR_REMOTE",
+            "SCHERZO_PR_BASE",
+        ]
+    )
+
+
+def fetch_base_enabled() -> bool:
+    value = env_value("SCHERZO_JJ_WORKSPACE_FETCH_BASE")
+    if value is None or value == "true":
+        return True
+    if value == "false":
+        return False
+    usage_error("SCHERZO_JJ_WORKSPACE_FETCH_BASE must be true or false")
+
+
+def unique_values(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    for value in values:
+        if value not in unique:
+            unique.append(value)
+    return unique
+
+
 def safe_resolve(raw: str) -> Path:
     try:
         return Path(raw).resolve(strict=False)
@@ -168,11 +221,14 @@ def lifecycle_run_root() -> Path | None:
     return resolve_dir_or_raw(raw)
 
 
-def same_or_contained_by(child: Path, parent: Path) -> bool:
+def contained_by(child: Path, parent: Path) -> bool:
     try:
         child_text = str(child.resolve(strict=False))
         parent_text = str(parent.resolve(strict=False))
-        return os.path.commonpath([child_text, parent_text]) == parent_text
+        return (
+            child_text != parent_text
+            and os.path.commonpath([child_text, parent_text]) == parent_text
+        )
     except (OSError, ValueError):
         return False
 
@@ -180,7 +236,7 @@ def same_or_contained_by(child: Path, parent: Path) -> bool:
 def validate_remove_target(workspace_path: Path, run_root: Path | None) -> None:
     if workspace_path.parent == workspace_path:
         usage_error("refusing filesystem root as workspace path")
-    if run_root is not None and not same_or_contained_by(workspace_path, run_root):
+    if run_root is not None and not contained_by(workspace_path, run_root):
         usage_error("refusing to remove workspace outside SCHERZO_RUN_ROOT")
 
 
@@ -272,9 +328,7 @@ def revision_exists(repo_root: Path, revision: str) -> bool:
     return proc.returncode == 0
 
 
-def fetch_workspace_publish_base(repo_root: Path) -> None:
-    default_base = os.environ.get("SCHERZO_PR_BASE", "main")
-    default_remote = os.environ.get("SCHERZO_PR_REMOTE", "origin")
+def fetch_workspace_base(repo_root: Path, branch: str, remote: str) -> None:
     proc = run_backend_proc(
         [
             "jj",
@@ -283,40 +337,64 @@ def fetch_workspace_publish_base(repo_root: Path) -> None:
             "git",
             "fetch",
             "--remote",
-            default_remote,
+            remote,
             "--branch",
-            default_base,
+            branch,
         ]
     )
     if proc.returncode != 0:
         write_bounded_backend_output(proc)
         fail(
-            f"could not fetch publish base '{default_base}' from remote "
-            f"'{default_remote}' before creating root workspace; set "
-            "SCHERZO_PR_REMOTE/SCHERZO_PR_BASE to a fetchable branch or set "
-            "SCHERZO_JJ_WORKSPACE_BASE to an explicit local revision to skip this fetch"
+            f"could not fetch workspace base '{branch}' from remote "
+            f"'{remote}' before creating root workspace; for local-only use set "
+            "SCHERZO_JJ_WORKSPACE_BASE=@ or SCHERZO_JJ_WORKSPACE_FETCH_BASE=false, "
+            "for non-main branches set SCHERZO_JJ_WORKSPACE_BASE_BRANCH, and for "
+            "alternate remotes set SCHERZO_JJ_WORKSPACE_REMOTE. Legacy "
+            "SCHERZO_PR_REMOTE and SCHERZO_PR_BASE remain supported when the "
+            "jj-specific names are absent."
         )
 
 
-def workspace_base_revision(repo_root: Path) -> str:
-    default_base = os.environ.get("SCHERZO_PR_BASE", "main")
-    default_remote = os.environ.get("SCHERZO_PR_REMOTE", "origin")
-    remote_base = f"{default_base}@{default_remote}"
-    explicit_base = os.environ.get("SCHERZO_JJ_WORKSPACE_BASE")
+def configured_base_candidates(branch: str, remote: str) -> list[str]:
+    return unique_values([f"{branch}@{remote}", branch])
 
-    if explicit_base:
+
+def default_base_candidates(branch: str, remote: str) -> list[str]:
+    return unique_values([f"{branch}@{remote}", branch, "main@origin", "main", "@"])
+
+
+def first_existing_revision(repo_root: Path, candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        if revision_exists(repo_root, candidate):
+            return candidate
+    return None
+
+
+def workspace_base_revision(repo_root: Path) -> str:
+    explicit_base = env_value("SCHERZO_JJ_WORKSPACE_BASE")
+    if explicit_base is not None:
         if not revision_exists(repo_root, explicit_base):
             fail(f"SCHERZO_JJ_WORKSPACE_BASE does not resolve in repo: {explicit_base}")
         return explicit_base
-    if revision_exists(repo_root, remote_base):
-        return remote_base
-    if revision_exists(repo_root, default_base):
-        return default_base
-    if remote_base != "main@origin" and revision_exists(repo_root, "main@origin"):
-        return "main@origin"
-    if default_base != "main" and revision_exists(repo_root, "main"):
-        return "main"
-    return "@"
+
+    branch = selected_workspace_base_branch()
+    remote = selected_workspace_base_remote()
+    configured = base_selection_was_configured()
+    candidates = configured_base_candidates(branch, remote) if configured else default_base_candidates(branch, remote)
+    revision = first_existing_revision(repo_root, candidates)
+    if revision is not None:
+        return revision
+    if configured:
+        tried = ", ".join(configured_base_candidates(branch, remote))
+        fail(
+            f"configured workspace base did not resolve for branch '{branch}' "
+            f"from remote '{remote}'; tried {tried}. Set "
+            "SCHERZO_JJ_WORKSPACE_BASE to an explicit local revision, use "
+            "SCHERZO_JJ_WORKSPACE_BASE_BRANCH and SCHERZO_JJ_WORKSPACE_REMOTE "
+            "for jj-specific base policy, or update legacy SCHERZO_PR_BASE and "
+            "SCHERZO_PR_REMOTE."
+        )
+    fail("could not resolve any default workspace base candidate: main@origin, main, @")
 
 
 def prepare_destination_for_workspace_add(workspace_path: Path) -> Path:
@@ -385,10 +463,13 @@ def lifecycle_create() -> None:
         verify_current_workspace(workspace_path)
         return
 
-    source_workspace = os.environ.get("SCHERZO_SOURCE_WORKSPACE_PATH")
-    explicit_base = os.environ.get("SCHERZO_JJ_WORKSPACE_BASE")
-    if not source_workspace and not explicit_base:
-        fetch_workspace_publish_base(repo_root)
+    source_workspace = env_value("SCHERZO_SOURCE_WORKSPACE_PATH")
+    explicit_base = env_value("SCHERZO_JJ_WORKSPACE_BASE")
+    if source_workspace is None and explicit_base is None:
+        branch = selected_workspace_base_branch()
+        remote = selected_workspace_base_remote()
+        if fetch_base_enabled():
+            fetch_workspace_base(repo_root, branch, remote)
 
     workspace_parent = prepare_destination_for_workspace_add(workspace_path)
     workspace_name = lifecycle_workspace_name(workspace_path)
@@ -467,6 +548,15 @@ def forget_run_workspaces(workspace_path: Path, run_root: Path | None) -> None:
         forget_workspace_at(workspace_path)
 
 
+def remove_workspace_directory(workspace_path: Path, run_root: Path | None) -> None:
+    if run_root is None or not workspace_path.exists():
+        return
+    try:
+        shutil.rmtree(workspace_path)
+    except OSError as exc:
+        fail(f"could not remove workspace directory: {workspace_path}: {exc}")
+
+
 def lifecycle_remove() -> None:
     require_explicit_workspace_path("remove")
     workspace_path = lifecycle_workspace_path()
@@ -475,6 +565,7 @@ def lifecycle_remove() -> None:
     if shutil.which("jj") is None:
         return
     forget_run_workspaces(workspace_path, run_root)
+    remove_workspace_directory(workspace_path, run_root)
 
 
 def lifecycle(args: list[str]) -> None:
@@ -714,8 +805,8 @@ def diff_json(root: Path) -> None:
 
 
 def configured_base_ref() -> tuple[str, str, str]:
-    base = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
-    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    base = selected_workspace_base_branch()
+    remote = selected_workspace_base_remote()
     return base, remote, f"{base}@{remote}"
 
 
@@ -754,6 +845,7 @@ def fetch_ref(root: Path, base: str, remote: str) -> tuple[bool, str]:
 
 def refresh_base(root: Path, args: list[str]) -> None:
     stage, target = parse_refresh_args(args)
+    fetch_enabled = fetch_base_enabled()
     base, remote, remote_base = configured_base_ref()
     base_ref = base
     base_revision = remote_base
@@ -762,7 +854,7 @@ def refresh_base(root: Path, args: list[str]) -> None:
     if target:
         base_ref = target
         base_revision = target
-        if "@" in target:
+        if fetch_enabled and "@" in target:
             branch, target_remote = target.rsplit("@", 1)
             if branch and target_remote:
                 ok, message = fetch_ref(root, branch, target_remote)
@@ -779,19 +871,20 @@ def refresh_base(root: Path, args: list[str]) -> None:
                         conflict_files=[],
                     )
     else:
-        ok, message = fetch_ref(root, base, remote)
-        if not ok:
-            json_failure(
-                status="fetch_failed",
-                failure_code="fetch_failed",
-                message=message or f"could not fetch {base} from {remote}",
-                stage=stage,
-                base_ref=base_ref,
-                base_revision=base_revision,
-                before_revision=before_revision,
-                after_revision=before_revision,
-                conflict_files=conflict_files(root),
-            )
+        if fetch_enabled:
+            ok, message = fetch_ref(root, base, remote)
+            if not ok:
+                json_failure(
+                    status="fetch_failed",
+                    failure_code="fetch_failed",
+                    message=message or f"could not fetch {base} from {remote}",
+                    stage=stage,
+                    base_ref=base_ref,
+                    base_revision=base_revision,
+                    before_revision=before_revision,
+                    after_revision=before_revision,
+                    conflict_files=conflict_files(root),
+                )
         if revision_commit_ids(root, remote_base) is None:
             if revision_commit_ids(root, base) is None:
                 json_failure(
@@ -956,7 +1049,7 @@ def owner_repo_from_url(url: str) -> str | None:
 
 
 def default_repo(root: Path, remote: str) -> str:
-    explicit = os.environ.get("SCHERZO_PR_REPO", "").strip()
+    explicit = env_value("SCHERZO_PR_REPO")
     if explicit:
         return explicit
     url = remote_url(root, remote)
@@ -990,7 +1083,7 @@ def publish_change(root: Path, args: list[str]) -> None:
     records = changed_file_records(root)
     allow_no_changes = values["allow-no-changes"] == "true"
     base = values["base"]
-    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    remote = selected_publication_remote()
     repo = default_repo(root, remote)
 
     if not records and allow_no_changes:

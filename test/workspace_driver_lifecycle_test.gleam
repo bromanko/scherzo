@@ -186,6 +186,50 @@ pub fn lifecycle_invocations_receive_profile_env_test() {
   assert string.contains(log, "SCHERZO_WORKSPACE_PATH=" <> dir <> "/workspace")
 }
 
+pub fn lifecycle_invokes_path_installed_packaged_jj_command_name_test() {
+  let dir = "test/tmp/workspace-driver-lifecycle-packaged-jj"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let driver_path = dir <> "/bin/scherzo-workspace-jj"
+  let log_path = dir <> "/driver.log"
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver_path,
+      "#!/bin/sh\nname=${0##*/}\nprintf '%s %s %s\\n' \"$name\" \"$1\" \"$2\" >> driver.log\n",
+    )
+  chmod_executable(driver_path)
+  let orchestrator = orchestrator(dir)
+  let driver =
+    config_types.WorkspaceDriverConfig(
+      command: "scherzo-workspace-jj",
+      lifecycle: [config_types.LifecycleCreate, config_types.LifecycleRemove],
+      capabilities: [],
+      timeout_ms: 1000,
+      env: [#("PATH", "./bin")],
+    )
+
+  let assert Ok(Nil) =
+    workspace_driver_lifecycle.run(
+      "driver_lifecycle_create",
+      config_types.LifecycleCreate,
+      driver,
+      orchestrator,
+      env(dir),
+    )
+  let assert Ok(Nil) =
+    workspace_driver_lifecycle.run(
+      "driver_lifecycle_remove",
+      config_types.LifecycleRemove,
+      driver,
+      orchestrator,
+      env(dir),
+    )
+
+  let assert Ok(log) = simplifile.read(log_path)
+  assert string.contains(log, "scherzo-workspace-jj lifecycle create")
+  assert string.contains(log, "scherzo-workspace-jj lifecycle remove")
+}
+
 pub fn lifecycle_failures_redact_sensitive_profile_env_test() {
   let dir = "test/tmp/workspace-driver-lifecycle-redaction"
   write_driver(dir, "#!/bin/sh\necho token=$DRIVER_SECRET_TOKEN >&2\nexit 9\n")

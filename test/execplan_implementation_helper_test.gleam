@@ -552,19 +552,13 @@ pub fn plan_completion_gate_blocks_stale_verdict_test() {
 pub fn jj_workspace_driver_prefers_configured_remote_base_for_new_root_workspaces_test() {
   let assert Ok(script) = simplifile.read("scripts/scherzo-workspace-jj")
   assert string.contains(script, "SCHERZO_JJ_WORKSPACE_BASE")
-  assert string.contains(
-    script,
-    "default_base = os.environ.get(\"SCHERZO_PR_BASE\", \"main\")",
-  )
-  assert string.contains(
-    script,
-    "default_remote = os.environ.get(\"SCHERZO_PR_REMOTE\", \"origin\")",
-  )
-  assert string.contains(
-    script,
-    "remote_base = f\"{default_base}@{default_remote}\"",
-  )
-  assert string.contains(script, "if revision_exists(repo_root, remote_base):")
+  assert string.contains(script, "selected_workspace_base_branch")
+  assert string.contains(script, "selected_workspace_base_remote")
+  assert string.contains(script, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
+  assert string.contains(script, "SCHERZO_JJ_WORKSPACE_REMOTE")
+  assert string.contains(script, "SCHERZO_PR_BASE")
+  assert string.contains(script, "SCHERZO_PR_REMOTE")
+  assert string.contains(script, "configured_base_candidates(branch, remote)")
   assert string.contains(
     script,
     "base_revision = workspace_base_revision(repo_root)",
