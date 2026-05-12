@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/result_artifact
@@ -11,6 +12,13 @@ const submit_review_lane_draft_tool = "submit_review_lane_draft"
 fn review_native_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(contents) =
     simplifile.read(".scherzo/workflows/review-native.yml")
+  let assert Ok(dag) = workflow_dag.parse(contents)
+  dag
+}
+
+fn implementation_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(contents) =
+    simplifile.read(".scherzo/workflows/implementation.yaml")
   let assert Ok(dag) = workflow_dag.parse(contents)
   dag
 }
@@ -31,6 +39,36 @@ fn assert_review_tool_source(spec: workflow_dag.StructuredOutputSpec) -> Nil {
       require_single: True,
       reject_sibling_tool_calls: True,
     )
+}
+
+fn assert_contains(contents: String, expected: String) -> Nil {
+  case string.contains(contents, expected) {
+    True -> Nil
+    False -> {
+      let message = "expected text not found: " <> expected
+      panic as message
+    }
+  }
+}
+
+fn assert_not_contains(contents: String, unexpected: String) -> Nil {
+  case string.contains(contents, unexpected) {
+    False -> Nil
+    True -> {
+      let message = "unexpected text still present: " <> unexpected
+      panic as message
+    }
+  }
+}
+
+fn assert_list_contains(values: List(String), expected: String) -> Nil {
+  case list.contains(values, expected) {
+    True -> Nil
+    False -> {
+      let message = "expected list item not found: " <> expected
+      panic as message
+    }
+  }
 }
 
 fn valid_review_lane_draft_json() -> String {
@@ -75,6 +113,47 @@ pub fn review_native_lane_steps_use_submit_review_lane_draft_tool_source_test() 
   assert_review_tool_source(lane_spec(dag, "lane_security_performance"))
 }
 
+pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
+  let dag = implementation_dag()
+
+  assert_review_tool_source(lane_spec(dag, "lane_correctness"))
+  assert_review_tool_source(lane_spec(dag, "lane_test_quality"))
+  assert_review_tool_source(lane_spec(dag, "lane_idioms_maintainability"))
+  assert_review_tool_source(lane_spec(dag, "lane_security_performance"))
+
+  let assert Ok(cutover_step) =
+    workflow_dag.step_by_id(dag, "assert_native_review_cutover")
+  let assert workflow_dag.CommandStep(cutover_run, _) = cutover_step.kind
+  assert_contains(cutover_run, "refuses fixture/scenario/heuristic")
+  assert_contains(cutover_run, "SCHERZO_STAGED_REVIEW_AGENT_BACKEND")
+
+  let assert Ok(prepare_step) = workflow_dag.step_by_id(dag, "prepare_review")
+  let assert workflow_dag.CommandStep(prepare_run, _) = prepare_step.kind
+  assert_contains(prepare_run, "prepare-native")
+  assert_not_contains(prepare_run, "--native-review-scenario")
+  assert_not_contains(prepare_run, "--agent-backend")
+
+  let assert Ok(mutation_check) =
+    workflow_dag.step_by_id(dag, "assert_clean_after_lanes")
+  assert mutation_check.on_failure == workflow_dag.FailWorkflow
+
+  let assert Ok(validate_step) =
+    workflow_dag.step_by_id(dag, "validate_native_review_artifacts")
+  let assert workflow_dag.CommandStep(validate_run, _) = validate_step.kind
+  assert_contains(
+    validate_run,
+    "native review infrastructure issue blocks publication",
+  )
+  assert_contains(validate_run, "lane_failed")
+  assert_contains(validate_run, "execution_issues")
+
+  let assert Ok(code_review) = workflow_dag.step_by_id(dag, "code_review")
+  assert_list_contains(
+    code_review.depends_on,
+    "validate_native_review_artifacts",
+  )
+}
+
 pub fn review_native_rejects_final_response_only_and_accepts_tool_submission_test() {
   let spec = lane_spec(review_native_dag(), "lane_correctness")
   let final_response_only =
@@ -89,7 +168,7 @@ pub fn review_native_rejects_final_response_only_and_accepts_tool_submission_tes
     validate_result(spec, final_response_only)
   assert structured_output.error_code(missing_tool_call)
     == "structured_output_tool_call_missing"
-  assert string.contains(
+  assert_contains(
     structured_output.error_message(missing_tool_call),
     submit_review_lane_draft_tool,
   )
@@ -111,5 +190,5 @@ pub fn review_native_rejects_final_response_only_and_accepts_tool_submission_tes
 
   let assert Ok(structured_output.StructuredOutputPresent(payload)) =
     validate_result(spec, tool_call_result)
-  assert string.contains(payload, "review_lane_draft")
+  assert_contains(payload, "review_lane_draft")
 }

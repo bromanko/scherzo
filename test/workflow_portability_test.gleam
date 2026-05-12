@@ -7,12 +7,24 @@ fn read_file(path: String) -> String {
   contents
 }
 
-fn assert_contains(contents: String, expected: String) {
-  assert string.contains(contents, expected)
+fn assert_contains(contents: String, expected: String) -> Nil {
+  case string.contains(contents, expected) {
+    True -> Nil
+    False -> {
+      let message = "expected text not found: " <> expected
+      panic as message
+    }
+  }
 }
 
-fn assert_not_contains(contents: String, unexpected: String) {
-  assert !string.contains(contents, unexpected)
+fn assert_not_contains(contents: String, unexpected: String) -> Nil {
+  case string.contains(contents, unexpected) {
+    False -> Nil
+    True -> {
+      let message = "unexpected text still present: " <> unexpected
+      panic as message
+    }
+  }
 }
 
 fn assert_not_contains_any(contents: String, unexpected_terms: List(String)) {
@@ -77,17 +89,27 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
   let execplan_prompt =
     read_file(".scherzo/workflows/prompts/execplan-implementation-review.md")
 
-  list.each(
-    [implementation_workflow, execplan_implementation_workflow],
-    fn(workflow) {
-      assert_contains(workflow, "correctness_review_lane")
-      assert_contains(workflow, "test_quality_review_lane")
-      assert_contains(workflow, "idioms_maintainability_review_lane")
-      assert_contains(workflow, "security_performance_review_lane")
-      assert_contains(workflow, "synthesize_review")
-      assert_contains(workflow, "scripts/scherzo-review")
-    },
+  assert_contains(implementation_workflow, "lane_correctness")
+  assert_contains(implementation_workflow, "lane_test_quality")
+  assert_contains(implementation_workflow, "lane_idioms_maintainability")
+  assert_contains(implementation_workflow, "lane_security_performance")
+  assert_contains(implementation_workflow, "submit_review_lane_draft")
+  assert_contains(implementation_workflow, "prepare-native")
+  assert_contains(implementation_workflow, "synthesize_review")
+  assert_contains(implementation_workflow, "scripts/scherzo-review")
+
+  assert_contains(execplan_implementation_workflow, "correctness_review_lane")
+  assert_contains(execplan_implementation_workflow, "test_quality_review_lane")
+  assert_contains(
+    execplan_implementation_workflow,
+    "idioms_maintainability_review_lane",
   )
+  assert_contains(
+    execplan_implementation_workflow,
+    "security_performance_review_lane",
+  )
+  assert_contains(execplan_implementation_workflow, "synthesize_review")
+  assert_contains(execplan_implementation_workflow, "scripts/scherzo-review")
 
   list.each([implementation_prompt, execplan_prompt], fn(prompt) {
     assert_contains(prompt, "REVIEW_FINAL_ARTIFACT_PATH")
