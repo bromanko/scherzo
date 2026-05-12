@@ -618,6 +618,78 @@ pub fn workflow_command_redacts_sensitive_profile_driver_env_test() {
   assert !string.contains(report, redaction_probe)
 }
 
+pub fn context_recovery_exhausted_agent_failure_marks_artifact_summary_test() {
+  let subject = process.new_subject()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: do it\n    workspace: main\n",
+    )
+  let context_ref =
+    "runs/run-1/implement/attempt-1/context-recovery/context-window-exhausted.json"
+  let result_ref =
+    "runs/run-1/implement/attempt-1/context-recovery/attempt-2-result.json"
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        Error(agent_types.WorkerFailure(
+          reason: error.ContextRecoveryExhausted(
+            recovery_method: "fresh_session",
+            context_artifact_ref: Some(context_ref),
+            result_artifact_ref: Some(result_ref),
+            final_error: error.PiContextWindowExhausted(
+              provider: Some("openai-codex"),
+              provider_code: Some("context_length_exceeded"),
+              detail: "too many input tokens",
+            ),
+          ),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  let assert Ok(artifact) = dict.get(failure.artifacts, "implement")
+  assert string.contains(
+    artifact.stderr,
+    "context recovery attempted but exhausted",
+  )
+  assert string.contains(artifact.stderr, "recovery_method: fresh_session")
+  assert string.contains(artifact.stderr, "provider: openai-codex")
+  assert string.contains(artifact.summary_text, "context_recovery=failed")
+  assert string.contains(artifact.summary_text, "recovery_exhausted=true")
+  assert string.contains(artifact.summary_text, "recovery_method=fresh_session")
+  assert string.contains(
+    artifact.summary_text,
+    "context_artifact=" <> context_ref,
+  )
+  assert string.contains(
+    artifact.summary_text,
+    "result_artifact=" <> result_ref,
+  )
+}
+
 fn implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(

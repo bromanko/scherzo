@@ -874,6 +874,7 @@ fn recover_context_exhaustion(
         workspace_path,
         attempt_context,
         recovery_attempt,
+        context,
         artifacts,
       )
   }
@@ -894,6 +895,7 @@ fn try_compacted_recovery(
   workspace_path: String,
   attempt_context: workflow_attempt.StepAttemptContext,
   recovery_attempt: Int,
+  context: context_exhaustion.ContextExhaustion,
   artifacts: context_recovery_artifact.RecoveryArtifacts,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   let instructions =
@@ -945,6 +947,8 @@ fn try_compacted_recovery(
         workspace_path,
         attempt_context,
         recovery_attempt,
+        context,
+        artifacts,
         context_recovery_prompt.PiRpcCompact,
         reasons,
       )
@@ -965,6 +969,7 @@ fn try_compacted_recovery(
         workspace_path,
         attempt_context,
         recovery_attempt,
+        context,
         artifacts,
       )
   }
@@ -985,6 +990,7 @@ fn fresh_session_recovery(
   workspace_path: String,
   attempt_context: workflow_attempt.StepAttemptContext,
   recovery_attempt: Int,
+  context: context_exhaustion.ContextExhaustion,
   artifacts: context_recovery_artifact.RecoveryArtifacts,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   emit_update(
@@ -1054,6 +1060,8 @@ fn fresh_session_recovery(
         workspace_path,
         attempt_context,
         recovery_attempt,
+        context,
+        artifacts,
         context_recovery_prompt.FreshSession,
         [],
       )
@@ -1076,6 +1084,8 @@ fn run_recovery_prompt(
   workspace_path: String,
   attempt_context: workflow_attempt.StepAttemptContext,
   recovery_attempt: Int,
+  context: context_exhaustion.ContextExhaustion,
+  artifacts: context_recovery_artifact.RecoveryArtifacts,
   method: context_recovery_prompt.RecoveryMethod,
   compaction_event_reasons: List(String),
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
@@ -1118,31 +1128,139 @@ fn run_recovery_prompt(
           attempt_context.attempt_index,
           "succeeded",
           method,
+          False,
           compaction_event_reasons,
+          None,
         )
       Ok(success)
     }
     Error(failure) -> {
-      emit_update(
-        issue.id,
-        lifecycle_update_with_message(
-          pi_event.ContextRecoveryFailed,
-          Some("context recovery failed or was exhausted"),
-        ),
-      )
-      let _ =
+      let store = artifact_store.new(config.workspace.root)
+      let recovery_exhausted = context_failure_reason(failure.reason)
+      let failure_diagnostic =
+        context_recovery_artifact.failure_diagnostic(failure.reason)
+      let result_write =
         context_recovery_artifact.write_result(
-          artifact_store.new(config.workspace.root),
+          store,
           attempt_context.run_id,
           attempt_context.workflow_id,
           attempt_context.step_id,
           attempt_context.attempt_index,
           "failed",
           method,
+          recovery_exhausted,
           compaction_event_reasons,
+          Some(failure_diagnostic),
         )
-      Error(failure)
+      let result_ref = case result_write {
+        Ok(result_artifact) -> Some(result_artifact.ref)
+        Error(_) -> None
+      }
+      case recovery_exhausted {
+        True -> {
+          let _ =
+            context_recovery_artifact.write_terminal_exhausted(
+              context_recovery_artifact.TerminalExhaustionInput(
+                store: store,
+                run_id: attempt_context.run_id,
+                workflow_id: attempt_context.workflow_id,
+                step_id: attempt_context.step_id,
+                step_attempt_index: attempt_context.attempt_index,
+                pi_attempt: recovery_attempt,
+                context: context,
+                prompt_excerpt_ref: artifacts.prompt_excerpt_ref,
+                recovery_method: method,
+                failure: failure_diagnostic,
+                result_ref: result_ref,
+              ),
+            )
+          Nil
+        }
+        False -> Nil
+      }
+      emit_update(
+        issue.id,
+        lifecycle_update_with_message(
+          pi_event.ContextRecoveryFailed,
+          Some(context_recovery_failed_message(
+            method,
+            recovery_exhausted,
+            result_ref,
+          )),
+        ),
+      )
+      Error(mark_context_recovery_exhausted(
+        failure,
+        method,
+        artifacts.error_ref,
+        result_ref,
+      ))
     }
+  }
+}
+
+fn mark_context_recovery_exhausted(
+  failure: types.WorkerFailure,
+  method: context_recovery_prompt.RecoveryMethod,
+  context_artifact_ref: String,
+  result_artifact_ref: Option(String),
+) -> types.WorkerFailure {
+  case failure.reason {
+    error.PiFailed(pi_error) ->
+      case context_exhaustion.from_pi_rpc_error(pi_error) {
+        Some(_) ->
+          types.WorkerFailure(
+            ..failure,
+            reason: error.ContextRecoveryExhausted(
+              recovery_method: context_recovery_prompt.recovery_method_to_string(
+                method,
+              ),
+              context_artifact_ref: Some(context_artifact_ref),
+              result_artifact_ref: result_artifact_ref,
+              final_error: pi_error,
+            ),
+          )
+        None -> failure
+      }
+    _ -> failure
+  }
+}
+
+fn context_failure_reason(reason: error.AgentRunnerError) -> Bool {
+  case reason {
+    error.ContextRecoveryExhausted(..) -> True
+    error.PiFailed(pi_error) ->
+      case context_exhaustion.from_pi_rpc_error(pi_error) {
+        Some(_) -> True
+        None -> False
+      }
+    _ -> False
+  }
+}
+
+fn context_recovery_failed_message(
+  method: context_recovery_prompt.RecoveryMethod,
+  recovery_exhausted: Bool,
+  result_ref: Option(String),
+) -> String {
+  let method_text = context_recovery_prompt.recovery_method_to_string(method)
+  let base = case recovery_exhausted {
+    True ->
+      "context recovery attempted but exhausted; outcome=failed recovery_exhausted=true recovery_method="
+      <> method_text
+    False ->
+      "context recovery failed; outcome=failed recovery_exhausted=false recovery_method="
+      <> method_text
+  }
+  base <> recovery_result_suffix(result_ref)
+}
+
+fn recovery_result_suffix(result_ref: Option(String)) -> String {
+  case result_ref {
+    Some(result_ref) ->
+      " terminal_diagnostics="
+      <> artifact_store.context_recovery_display_path(result_ref)
+    None -> ""
   }
 }
 
@@ -1755,6 +1873,11 @@ fn emit_turn_failure_if_active(
     None -> Nil
     Some(turn) ->
       case reason {
+        error.ContextRecoveryExhausted(..) ->
+          emit_update(
+            issue_id,
+            turn_failed_update(turn, turn_telemetry.ReasonPiError, totals),
+          )
         error.PiFailed(error.PiStallTimeout) ->
           emit_update(
             issue_id,

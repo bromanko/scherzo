@@ -1749,6 +1749,16 @@ fn worker_failure_message(
     error.PiFailed(error.PiProtocolError(reason)) ->
       code <> ":pi_protocol_error:" <> log.redact("failure", reason, secrets)
     error.PiFailed(pi_error) -> code <> ":" <> error.pi_rpc_code(pi_error)
+    error.ContextRecoveryExhausted(
+      recovery_method: recovery_method,
+      final_error: final_error,
+      ..,
+    ) ->
+      code
+      <> ":context_recovery_exhausted:"
+      <> recovery_method
+      <> ":"
+      <> error.pi_rpc_code(final_error)
     error.WorkflowCommandFailed(step_id: step_id, detail: detail, ..) ->
       code
       <> ":workflow_command_failed:"

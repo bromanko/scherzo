@@ -441,7 +441,7 @@ pub fn runner_stops_after_repeated_context_exhaustion_test() {
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
-    "FAKE_PI_CONTEXT_ERROR_ALWAYS=1 FAKE_PI_TRANSCRIPT="
+    "FAKE_PI_CONTEXT_ERROR_ALWAYS=1 FAKE_PI_COMPACT_FAIL=1 FAKE_PI_TRANSCRIPT="
     <> transcript
     <> " "
     <> fake_pi()
@@ -457,14 +457,46 @@ pub fn runner_stops_after_repeated_context_exhaustion_test() {
       fn(_, update) { process.send(update_subject, update) },
     )
 
-  assert failure.reason
-    == error.PiFailed(error.PiContextWindowExhausted(
+  let assert error.ContextRecoveryExhausted(
+    recovery_method: "fresh_session",
+    context_artifact_ref: Some(context_ref),
+    result_artifact_ref: Some(result_ref),
+    final_error: error.PiContextWindowExhausted(
       provider: Some("openai-codex"),
       provider_code: Some("context_length_exceeded"),
       detail: "Your input exceeds the context window of this model. Please adjust your input and try again.",
-    ))
+    ),
+  ) = failure.reason
   let updates = drain_updates(update_subject, [])
-  let assert Some(_) = find_update(updates, "context_recovery_failed")
+  let assert Some(failed_update) =
+    find_update(updates, "context_recovery_failed")
+  let assert Some(failed_message) = failed_update.message
+  assert string.contains(failed_message, "attempted but exhausted")
+  assert string.contains(failed_message, "recovery_method=fresh_session")
+  assert string.contains(failed_message, "terminal_diagnostics=")
+  let assert Ok(context_contents) =
+    simplifile.read(root <> "/.scherzo-state/artifacts/" <> context_ref)
+  assert string.contains(context_contents, "\"recovery_exhausted\":true")
+  assert string.contains(context_contents, "\"budget_exhausted\":true")
+  assert string.contains(
+    context_contents,
+    "\"terminal_recovery_method\":\"fresh_session\"",
+  )
+  assert string.contains(context_contents, "\"final_failure\"")
+  assert string.contains(context_contents, "\"provider\":\"openai-codex\"")
+  assert string.contains(
+    context_contents,
+    "\"provider_code\":\"context_length_exceeded\"",
+  )
+  let assert Ok(result_contents) =
+    simplifile.read(root <> "/.scherzo-state/artifacts/" <> result_ref)
+  assert string.contains(result_contents, "\"outcome\":\"failed\"")
+  assert string.contains(result_contents, "\"recovery_exhausted\":true")
+  assert string.contains(
+    result_contents,
+    "\"recovery_method\":\"fresh_session\"",
+  )
+  assert string.contains(result_contents, "\"final_failure\"")
   let assert Ok(contents) = simplifile.read(transcript)
   assert occurrence_count(contents, "\"type\":\"prompt\"") == 2
 }

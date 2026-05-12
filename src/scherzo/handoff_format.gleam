@@ -311,6 +311,7 @@ fn friendly_error(reason: error.AgentRunnerError) -> String {
     error.HookFailedError(_) -> "Hook failed"
     error.WorkflowHookFailed(_) -> "Workflow hook failed"
     error.ProbeFailed(_) | error.PiFailed(_) -> "Pi process failed"
+    error.ContextRecoveryExhausted(..) -> "Pi context recovery exhausted"
     error.WorkflowCommandFailed(..) -> "Workflow command failed"
     error.StateRefreshFailed(_) -> "Tracker refresh failed"
     error.OperatorAbort -> "Operator stopped the run"
@@ -401,6 +402,8 @@ fn underlying_error_code(reason: error.AgentRunnerError) -> Option(String) {
     error.WorkflowHookFailed(hook_error) -> Some(error.hook_code(hook_error))
     error.ProbeFailed(pi_error) -> Some(error.pi_rpc_code(pi_error))
     error.PiFailed(pi_error) -> Some(error.pi_rpc_code(pi_error))
+    error.ContextRecoveryExhausted(final_error: final_error, ..) ->
+      Some(error.pi_rpc_code(final_error))
     error.WorkflowCommandFailed(..) -> None
     error.StateRefreshFailed(tracker_error) ->
       Some(error.tracker_code(tracker_error))
@@ -420,6 +423,18 @@ fn failure_detail(
     error.WorkflowHookFailed(hook_error) -> hook_detail(hook_error)
     error.ProbeFailed(pi_error) -> pi_detail(pi_error)
     error.PiFailed(pi_error) -> pi_detail(pi_error)
+    error.ContextRecoveryExhausted(
+      recovery_method: recovery_method,
+      context_artifact_ref: context_artifact_ref,
+      result_artifact_ref: result_artifact_ref,
+      final_error: final_error,
+    ) ->
+      Some(context_recovery_exhausted_detail(
+        recovery_method,
+        context_artifact_ref,
+        result_artifact_ref,
+        final_error,
+      ))
     error.WorkflowCommandFailed(code: code, step_id: step_id, detail: detail) ->
       Some(workflow_command_detail(code, step_id, detail, workspace_path))
     error.StateRefreshFailed(tracker_error) -> tracker_detail(tracker_error)
@@ -478,6 +493,28 @@ fn pi_detail(pi_error: error.PiRpcError) -> Option(String) {
       provider_code: _,
       detail: detail,
     ) -> Some("pi context window exhausted: " <> detail)
+  }
+}
+
+fn context_recovery_exhausted_detail(
+  recovery_method: String,
+  context_artifact_ref: Option(String),
+  result_artifact_ref: Option(String),
+  final_error: error.PiRpcError,
+) -> String {
+  "context recovery attempted but exhausted (recovery_method: "
+  <> recovery_method
+  <> ")"
+  <> optional_ref_detail("context_artifact", context_artifact_ref)
+  <> optional_ref_detail("result_artifact", result_artifact_ref)
+  <> "\nfinal failure: "
+  <> error.pi_rpc_detail(final_error)
+}
+
+fn optional_ref_detail(label: String, value: Option(String)) -> String {
+  case value {
+    Some(value) -> "\n" <> label <> ": " <> value
+    None -> ""
   }
 }
 
