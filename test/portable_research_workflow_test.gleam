@@ -78,6 +78,22 @@ fn chmod_executable(path: String) -> Nil {
   assert artifact.exit_code == Some(0)
 }
 
+fn write_describe_driver(path: String, capabilities_json: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "if [ \"$1\" = describe ] && [ \"$2\" = --json ]; then\n"
+        <> "  printf '%s\\n' '{\"version\":1,\"capabilities\":"
+        <> capabilities_json
+        <> "}'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "exit 2\n",
+    )
+  chmod_executable(path)
+}
+
 fn write_fake_driver(path: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
@@ -184,6 +200,11 @@ pub fn example_research_package_rejects_profile_without_assert_only_test() {
   let dir = "test/tmp/portable-research-workflow/missing-capability-package"
   reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/scripts")
+  write_describe_driver(
+    dir <> "/scripts/scherzo-workspace-noop",
+    "[\"status\"]",
+  )
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/workflows/research.yaml",
@@ -192,7 +213,7 @@ pub fn example_research_package_rejects_profile_without_assert_only_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/scherzo.yaml",
-      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n      driver:\n        command: scripts/scherzo-workspace-noop\n        capabilities: [status]\nrouting:\n  workflows:\n    research: workflows/research.yaml\n",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n      driver:\n        command: scripts/scherzo-workspace-noop\nrouting:\n  workflows:\n    research: workflows/research.yaml\n",
     )
 
   let assert Error(runtime_bundle.BundleError(code, message)) =

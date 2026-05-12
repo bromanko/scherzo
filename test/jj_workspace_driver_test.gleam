@@ -137,10 +137,27 @@ fn run_jj(
   args: String,
   env: List(#(String, String)),
 ) -> step_artifact.StepArtifact {
+  run_jj_command(step_id, "sh ", args, env)
+}
+
+fn run_jj_without_inherited_workspace(
+  step_id: String,
+  args: String,
+  env: List(#(String, String)),
+) -> step_artifact.StepArtifact {
+  run_jj_command(step_id, "env -u SCHERZO_WORKSPACE_PATH sh ", args, env)
+}
+
+fn run_jj_command(
+  step_id: String,
+  prefix: String,
+  args: String,
+  env: List(#(String, String)),
+) -> step_artifact.StepArtifact {
   let script = absolute("scripts/scherzo-workspace-jj")
   command_step.run_with_env(
     step_id,
-    "sh " <> shell_quote(script) <> " " <> args,
+    prefix <> shell_quote(script) <> " " <> args,
     ".",
     5000,
     env,
@@ -172,9 +189,58 @@ fn changed_paths_decoder() -> decode.Decoder(List(String)) {
   decode.success(files)
 }
 
+fn driver_description_decoder() -> decode.Decoder(#(Int, List(String))) {
+  use version <- decode.field("version", decode.int)
+  use capabilities <- decode.field(
+    "capabilities",
+    decode.list(of: decode.string),
+  )
+  decode.success(#(version, capabilities))
+}
+
 fn decode_paths(value: String) -> List(String) {
   let assert Ok(paths) = json.parse(value, changed_paths_decoder())
   paths
+}
+
+fn decode_driver_description(value: String) -> #(Int, List(String)) {
+  let assert Ok(description) = json.parse(value, driver_description_decoder())
+  description
+}
+
+pub fn jj_driver_describe_json_is_static_and_workspace_free_test() {
+  let dir = "test/tmp/jj-workspace-driver-describe"
+  let #(_, _, bin, log) = setup_driver_fixture(dir)
+
+  let artifact =
+    run_jj(
+      "jj_driver_describe_json",
+      "describe --json",
+      fake_env_without_workspace(bin, log, []),
+    )
+  assert_exit(artifact, 0)
+  assert artifact.stderr == ""
+  assert decode_driver_description(artifact.stdout)
+    == #(1, [
+      "status",
+      "diff",
+      "changed-files",
+      "assert-only",
+      "baseline",
+      "refresh-base",
+      "publish-change",
+    ])
+  assert log_lines(log) == []
+
+  let unsupported =
+    run_jj(
+      "jj_driver_describe_unsupported",
+      "describe --yaml",
+      fake_env_without_workspace(bin, log, []),
+    )
+  assert_exit(unsupported, 2)
+  assert string.contains(unsupported.stderr, "describe requires --json")
+  assert log_lines(log) == []
 }
 
 pub fn jj_driver_lifecycle_create_delegates_to_existing_helper_test() {
@@ -368,7 +434,7 @@ pub fn jj_driver_lifecycle_remove_requires_explicit_workspace_path_test() {
   let #(_, _, bin, log) = setup_driver_fixture(dir)
 
   let unset =
-    run_jj(
+    run_jj_without_inherited_workspace(
       "jj_driver_remove_unset_workspace",
       "lifecycle remove",
       fake_env_without_workspace(bin, log, []),

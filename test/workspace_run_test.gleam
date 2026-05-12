@@ -9,6 +9,7 @@ import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
+import scherzo/workspace_driver_discovery
 import scherzo/workspace_run
 import simplifile
 import yay
@@ -264,9 +265,11 @@ pub fn selected_profile_uses_selected_hook_bodies_test() {
 
 fn driver_profile_orchestrator(dir: String) -> config_types.OrchestratorConfig {
   let source =
-    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: ./driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        capabilities: [status, assert-only]\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
+    "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: ./driver.sh\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 5000\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n"
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(root(source), dir <> "/scherzo.yaml", env)
+  let assert Ok(orchestrator) =
+    workspace_driver_discovery.enrich_orchestrator(orchestrator)
   orchestrator
 }
 
@@ -275,7 +278,7 @@ fn write_lifecycle_driver(dir: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       driver,
-      "#!/bin/sh\nset -eu\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
+      "#!/bin/sh\nset -eu\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\nop=\"$1 $2\"\nprintf '%s|pwd=%s|workspace=%s|run=%s|profile=%s|driver=%s|caps=%s\\n' \"$op\" \"$PWD\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_WORKSPACE_PROFILE\" \"$SCHERZO_WORKSPACE_DRIVER\" \"$SCHERZO_WORKSPACE_CAPABILITIES\" >> \"$SCHERZO_CONFIG_DIR/driver.log\"\ncase \"$op\" in\n  'lifecycle create') mkdir -p \"$SCHERZO_WORKSPACE_PATH\"; printf created > \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle before-step') test -f \"$SCHERZO_WORKSPACE_PATH/created\" ;;\n  'lifecycle after-step') test -d \"$SCHERZO_WORKSPACE_PATH\" ;;\n  'lifecycle remove') rm -rf \"$SCHERZO_WORKSPACE_PATH\" ;;\n  *) exit 2 ;;\nesac\n",
     )
   chmod_executable(driver)
 }

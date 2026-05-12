@@ -31,10 +31,9 @@ A minimal artifact-only profile looks like this:
           driver:
             command: scripts/scherzo-workspace-noop
             lifecycle: [create, before-step, after-step, remove]
-            capabilities: [assert-only]
             timeout_ms: 60000
 
-The `driver.command` value should name the trusted executable configured by the operator. If the config file is at the repository root, `scripts/scherzo-workspace-noop` works for the checked script layout; the checked-in `examples/scherzo.yaml` lives under `examples/` and therefore uses `../scripts/scherzo-workspace-noop`. In another repository, place the wrapper at the same relative path from the config file, install it on `PATH`, or configure an absolute trusted script path. Command steps receive `SCHERZO_WORKSPACE_DRIVER` verbatim and run from the prepared workspace, so workflows that call driver capabilities should resolve simple relative driver paths against `SCHERZO_CONFIG_DIR`, as `examples/workflows/research.yaml` does. Do not put secret material in `driver.command`.
+The `driver.command` value should name the trusted executable configured by the operator. If the config file is at the repository root, `scripts/scherzo-workspace-noop` works for the checked script layout; the checked-in `examples/scherzo.yaml` lives under `examples/` and therefore uses `../scripts/scherzo-workspace-noop`. In another repository, place the wrapper at the same relative path from the config file, install it on `PATH`, or configure an absolute trusted script path. The driver must self-describe `assert-only` from `describe --json`; do not add profile-local `driver.capabilities`. Command steps receive `SCHERZO_WORKSPACE_DRIVER` verbatim and run from the prepared workspace, so workflows that call driver capabilities should resolve simple relative driver paths against `SCHERZO_CONFIG_DIR`, as `examples/workflows/research.yaml` does. Do not put secret material in `driver.command`.
 
 ## Driver behavior by workspace style
 
@@ -77,8 +76,9 @@ Before routing real issues to the workflow, run a small manual check in a dispos
         ;;
     esac
 
-1. Create only `research-findings.md` and run `"$driver" assert-only --path research-findings.md`; expect exit code 0.
-2. Add `unexpected-artifact.txt` and run the same command; expect a nonzero exit and a diagnostic naming the unexpected artifact or changed-file set.
-3. Remove the unexpected file and run the workflow against a low-risk issue; expect the terminal result to be the contents of `research-findings.md`.
+1. Run `"$driver" describe --json`; expect version `1` metadata that includes `assert-only`.
+2. Create only `research-findings.md` and run `"$driver" assert-only --path research-findings.md`; expect exit code 0.
+3. Add `unexpected-artifact.txt` and run the same command; expect a nonzero exit and a diagnostic naming the unexpected artifact or changed-file set.
+4. Remove the unexpected file and run the workflow against a low-risk issue; expect the terminal result to be the contents of `research-findings.md`.
 
 This workflow is safe to roll back by reverting the workflow YAML, prompt, and profile changes. It does not change stored tracker state or repository data beyond the temporary workflow workspace.

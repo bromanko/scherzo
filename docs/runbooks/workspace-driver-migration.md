@@ -12,13 +12,13 @@ Workflow authors also need this guide when a workflow previously assumed a parti
 
 The old model put trusted shell snippets directly in YAML as hooks. The new model keeps named profiles but moves trusted shell into a driver command configured by the operator. Scherzo calls the driver for lifecycle operations and exposes the selected driver command verbatim to command steps through `SCHERZO_WORKSPACE_DRIVER`.
 
-Driver commands are trusted operator config, not workflow-defined shell. A workflow can select `workspace_profile: isolated` or require `workspace_capabilities: [assert-only]`, but it cannot set `workspace.profiles.<name>.driver.command` and cannot override the configured command at runtime. Scherzo validates the selected profile's declared driver capabilities during runtime bundle loading and again before direct workflow execution.
+Driver commands are trusted operator config, not workflow-defined shell. A workflow can select `workspace_profile: isolated` or require `workspace_capabilities: [assert-only]`, but it cannot set `workspace.profiles.<name>.driver.command` and cannot override the configured command at runtime. Scherzo discovers the selected profile's driver capabilities by running `<driver> describe --json`, then validates workflow requirements during runtime bundle loading and again before direct workflow execution.
 
-The accepted lifecycle names are `create`, `before-step`, `after-step`, and `remove`. The accepted public capability names are `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. The `driver.command` value must be one executable token without whitespace or shell metacharacters. It may use `$SCHERZO_REPO_ROOT` as a leading placeholder, which Scherzo resolves before exposing `SCHERZO_WORKSPACE_DRIVER` to workflow steps.
+The accepted lifecycle names are `create`, `before-step`, `after-step`, and `remove`. The accepted public capability names are `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. The `driver.command` value must be one executable token without whitespace or shell metacharacters. It may use `$SCHERZO_REPO_ROOT` as a leading placeholder, which Scherzo resolves before exposing `SCHERZO_WORKSPACE_DRIVER` to workflow steps. Profiles configure command, lifecycle, and timeout; drivers self-describe capabilities with `describe --json`.
 
-If the selected profile has hooks and a driver, the hooks still prepare and clean up the workspace while command steps, agent subprocesses, and prompt templates receive the selected driver context. If the selected profile is driver-only, Scherzo invokes the configured driver for supported lifecycle operations. A hook-backed profile with driver metadata remains a production-safe bridge, and a driver-only profile is the target shape for profiles whose driver implements the lifecycle contract in `docs/runbooks/workspace-driver-contract.md`.
+If the selected profile has hooks and a driver, the hooks still prepare and clean up the workspace while command steps, agent subprocesses, and prompt templates receive the selected driver context. If the selected profile is driver-only, Scherzo invokes the configured driver for supported lifecycle operations. A hook-backed profile with a driver command remains a production-safe bridge, and a driver-only profile is the target shape for profiles whose driver implements the lifecycle contract in `docs/runbooks/workspace-driver-contract.md`.
 
-`examples/scherzo.yaml` is the canonical runnable checked example for reusable configuration. Because that file lives under `examples/`, its driver commands use `../scripts/...` to reach the checked driver scripts. A config copied to a repository root would normally use `scripts/...`, while a packaged installation can use a PATH command or an absolute trusted wrapper. Keep snippets in this guide aligned with the checked example when driver field names, command paths, or capabilities change.
+`examples/scherzo.yaml` is the canonical runnable checked example for reusable configuration. Because that file lives under `examples/`, its driver commands use `../scripts/...` to reach the checked driver scripts. A config copied to a repository root would normally use `scripts/...`, while a packaged installation can use a PATH command or an absolute trusted wrapper. Keep snippets in this guide aligned with the checked example when driver field names, command paths, lifecycle operations, or metadata behavior change.
 
 ## Doctor warnings to expect
 
@@ -62,7 +62,6 @@ workspace:
       driver:
         command: scripts/scherzo-workspace-noop
         lifecycle: [create, before-step, after-step, remove]
-        capabilities: [assert-only]
         timeout_ms: 60000
 ```
 
@@ -125,7 +124,7 @@ workspace:
         timeout_ms: 60000
 ```
 
-After, keep the profile name and replace `hooks:` with `driver:`. For a jj-backed repository, use the checked driver adapter and advertise only the capabilities it actually supports:
+After, keep the profile name and replace `hooks:` with `driver:`. For a jj-backed repository, use the checked driver adapter and let it self-describe supported capabilities:
 
 ```yaml
 workspace:
@@ -136,7 +135,6 @@ workspace:
       driver:
         command: scripts/scherzo-workspace-jj
         lifecycle: [create, before-step, after-step, remove]
-        capabilities: [status, diff, changed-files, assert-only, baseline, refresh-base, publish-change]
         timeout_ms: 60000
 ```
 
@@ -144,7 +142,7 @@ The profile name can stay stable, so existing workflows that already say `worksp
 
 ## Hook-backed profile with workflow-facing driver context
 
-During the transition, a hook-backed profile can also declare a driver command and capabilities. Hooks still own workspace lifecycle; the driver command is exposed to workflow command steps, agent subprocesses, and prompt templates as workflow-facing context.
+During the transition, a hook-backed profile can also declare a driver command. Hooks still own workspace lifecycle; the driver command is discovered with `describe --json` and exposed to workflow command steps, agent subprocesses, and prompt templates as workflow-facing context.
 
 ```yaml
 workspace:
@@ -160,19 +158,18 @@ workspace:
         timeout_ms: 60000
       driver:
         command: scripts/scherzo-workspace-jj
-        capabilities: [status, diff, changed-files, assert-only, baseline, refresh-base, publish-change]
 ```
 
 Command steps and agent subprocesses run under this profile receive `SCHERZO_WORKSPACE_PROFILE=isolated`, `SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-jj`, and `SCHERZO_WORKSPACE_CAPABILITIES="status diff changed-files assert-only baseline refresh-base publish-change"`. An original agent prompt can render `{{ workspace.driver }}` or loop over `{% for capability in workspace.capabilities %}`.
 
 ## Choosing capabilities
 
-Declare only capabilities that the workflow actually needs. The current checked drivers support these public capability names:
+Declare only workflow requirements that the workflow actually needs. Driver profiles no longer declare provided capabilities in YAML. The current checked drivers self-describe these public capability names from `describe --json`:
 
-- `scripts/scherzo-workspace-noop`: `status`, `changed-files`, and `assert-only`. The reusable no-op profile in `examples/scherzo.yaml` advertises only `assert-only` because the research workflow only requires that capability.
+- `scripts/scherzo-workspace-noop`: `status`, `changed-files`, and `assert-only`.
 - `scripts/scherzo-workspace-jj`: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`.
 
-A workflow that invokes the selected driver for `assert-only --path research-findings.md` should declare `workspace_capabilities: [assert-only]`. A workflow that asks the driver for changed files should declare `workspace_capabilities: [changed-files]`. If a workflow declares a capability missing from the selected profile, Scherzo fails workflow-config loading before dispatch.
+A workflow that invokes the selected driver for `assert-only --path research-findings.md` should declare `workspace_capabilities: [assert-only]`. A workflow that asks the driver for changed files should declare `workspace_capabilities: [changed-files]`. If a workflow declares a capability missing from the selected driver's `describe --json` response, Scherzo fails workflow-config loading before dispatch.
 
 ## No-op or artifact-only workflows
 
@@ -186,7 +183,6 @@ workspace:
       driver:
         command: ../scripts/scherzo-workspace-noop
         lifecycle: [create, before-step, after-step, remove]
-        capabilities: [assert-only]
         timeout_ms: 60000
 ```
 
@@ -205,7 +201,6 @@ workspace:
       driver:
         command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
         lifecycle: [create, before-step, after-step, remove]
-        capabilities: [status, diff, changed-files, assert-only, baseline, refresh-base, publish-change]
         timeout_ms: 60000
 ```
 
@@ -228,13 +223,13 @@ test -x scripts/scherzo-workspace-jj
 test -x scripts/scherzo-workspace-noop
 ```
 
-A passing workflow-config check means Scherzo can parse the orchestrator config, resolve routed workflow DAGs, and validate capability requirements against the selected workspace profiles. It does not contact Linear when `LINEAR_API_KEY=dummy` is used with only the workflow-config check.
+A passing workflow-config check means Scherzo can parse the orchestrator config, resolve routed workflow DAGs, run each configured driver's `describe --json`, and validate capability requirements against the selected workspace profiles. It does not contact Linear when `LINEAR_API_KEY=dummy` is used with only the workflow-config check.
 
 ## Troubleshooting
 
 If doctor reports `legacy_workspace_hooks`, find the `workspace.hooks` or `workspace.profiles.<name>.hooks` block named in the message and migrate that block to a named `driver:` profile. Keep the old profile name when possible so existing `workspace_profile` selectors continue to work.
 
-If workflow-config fails with `workspace_capabilities_unavailable`, the workflow requires a capability that the selected profile does not advertise. Either remove the unnecessary workflow capability, select a profile that provides it, or teach the trusted driver to support it in a separate runtime change.
+If workflow-config fails with `workspace_capabilities_unavailable`, the workflow requires a capability that the selected driver's `describe --json` response does not include. Either remove the unnecessary workflow capability, select a profile whose driver reports it, or teach the trusted driver to support it in a separate runtime change.
 
 If a command step says `SCHERZO_WORKSPACE_DRIVER` is empty, the selected profile does not have a driver. Move the workflow to a driver-backed profile before calling driver capabilities.
 
@@ -244,7 +239,7 @@ If a lifecycle command cannot find `scripts/scherzo-workspace-jj`, `scripts/sche
 
 ## Rollback
 
-There is no stored data migration in this transition. If doctor warnings are disruptive, operators can temporarily ignore the `workspace-hooks` warning or pin to the previous Scherzo version. To roll back a driver-only profile, restore the previous hook-backed profile or select a hook-backed profile with equivalent driver metadata.
+There is no stored data migration in this transition. If doctor warnings are disruptive, operators can temporarily ignore the `workspace-hooks` warning or pin to the previous Scherzo version. To roll back a driver-only profile, restore the previous hook-backed profile and a Scherzo version whose config schema matches that profile.
 
 Keep config and Scherzo binary versions together. If you must roll back after migrating to drivers, restore the previous config at the same time as the previous Scherzo version. Do not mix a future driver-only Scherzo binary with old direct-hook config; either finish the migration or roll back both the binary and config.
 

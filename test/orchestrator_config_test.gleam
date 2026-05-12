@@ -145,7 +145,7 @@ pub fn workspace_profiles_resolve_default_and_named_hooks_test() {
 pub fn driver_workspace_profile_parses_schema_test() {
   let source =
     base_config_with_workspace(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: \"$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop\"\n        lifecycle: [create, remove]\n        capabilities: [assert-only]\n        timeout_ms: 1234\n    default-timeout:\n      driver:\n        command: scripts/default-timeout\n",
+      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: \"$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop\"\n        lifecycle: [create, remove]\n        timeout_ms: 1234\n    default-timeout:\n      driver:\n        command: scripts/default-timeout\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -166,7 +166,7 @@ pub fn driver_workspace_profile_parses_schema_test() {
       config_types.LifecycleCreate,
       config_types.LifecycleRemove,
     ]
-  assert driver.capabilities == [config_types.WorkspaceAssertOnly]
+  assert driver.capabilities == []
   assert driver.timeout_ms == 1234
   let assert Ok(default_timeout_profile) =
     dict.get(orchestrator.workspace_profiles.profiles, "default-timeout")
@@ -178,7 +178,7 @@ pub fn driver_workspace_profile_parses_schema_test() {
 pub fn workspace_driver_profiles_resolve_dogfood_jj_shape_test() {
   let source =
     base_config_with_workspace(
-      "  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: \"$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj\"\n        lifecycle: [create, before-step, after-step, remove]\n        capabilities: [status, diff, changed-files, assert-only]\n        timeout_ms: 60000\n",
+      "  root: workspaces\n  default_profile: dogfood-jj\n  profiles:\n    dogfood-jj:\n      driver:\n        command: \"$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj\"\n        lifecycle: [create, before-step, after-step, remove]\n        timeout_ms: 60000\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -201,20 +201,14 @@ pub fn workspace_driver_profiles_resolve_dogfood_jj_shape_test() {
       config_types.LifecycleAfterStep,
       config_types.LifecycleRemove,
     ]
-  assert driver.capabilities
-    == [
-      config_types.WorkspaceStatus,
-      config_types.WorkspaceDiff,
-      config_types.WorkspaceChangedFiles,
-      config_types.WorkspaceAssertOnly,
-    ]
+  assert driver.capabilities == []
   assert driver.timeout_ms == 60_000
 }
 
 pub fn hook_workspace_profile_can_include_driver_context_test() {
   let source =
     base_config_with_workspace(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        timeout_ms: 111\n      driver:\n        command: scripts/scherzo-workspace-jj\n        capabilities: [assert-only, changed-files]\n",
+      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      hooks:\n        create: mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n        timeout_ms: 111\n      driver:\n        command: scripts/scherzo-workspace-jj\n",
     )
   let assert Ok(orchestrator) =
     config.resolve_orchestrator_root(
@@ -229,12 +223,21 @@ pub fn hook_workspace_profile_can_include_driver_context_test() {
   let assert Some(driver) = profile.driver
   assert hooks.timeout_ms == 111
   assert driver.command == "scripts/scherzo-workspace-jj"
-  assert driver.capabilities
-    == [
-      config_types.WorkspaceAssertOnly,
-      config_types.WorkspaceChangedFiles,
-    ]
+  assert driver.capabilities == []
   assert orchestrator.dag_hooks == hooks
+}
+
+pub fn rejects_removed_driver_capabilities_config_test() {
+  let message =
+    invalid_workspace_error(
+      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        capabilities: [assert-only]\n",
+    )
+  assert string.contains(message, "workspace.profiles.noop.driver.capabilities")
+  assert string.contains(message, "describe --json")
+  assert string.contains(
+    message,
+    "docs/runbooks/workspace-driver-capabilities.md",
+  )
 }
 
 pub fn workspace_profiles_reject_invalid_driver_shapes_test() {
@@ -289,23 +292,19 @@ pub fn workspace_profiles_reject_invalid_driver_shapes_test() {
     )
   assert string.contains(duplicate_lifecycle, "duplicate lifecycle operation")
 
-  let capabilities_not_list =
+  let removed_capabilities =
     invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        capabilities: assert-only\n",
+      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        capabilities: [assert-only]\n",
     )
-  assert string.contains(capabilities_not_list, "capabilities must be a list")
-
-  let unknown_capability =
-    invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        capabilities: [pull-request]\n",
-    )
-  assert string.contains(unknown_capability, "unknown workspace capability")
-
-  let duplicate_capability =
-    invalid_workspace_error(
-      "  root: workspaces\n  default_profile: noop\n  profiles:\n    noop:\n      driver:\n        command: run\n        capabilities: [assert-only, assert-only]\n",
-    )
-  assert string.contains(duplicate_capability, "duplicate workspace capability")
+  assert string.contains(
+    removed_capabilities,
+    "workspace.profiles.noop.driver.capabilities",
+  )
+  assert string.contains(removed_capabilities, "describe --json")
+  assert string.contains(
+    removed_capabilities,
+    "docs/runbooks/workspace-driver-capabilities.md",
+  )
 
   let invalid_timeout =
     invalid_workspace_error(

@@ -87,14 +87,40 @@ fn changed_files_decoder() -> decode.Decoder(#(Int, List(#(String, String)))) {
   decode.success(#(version, files))
 }
 
+fn driver_description_decoder() -> decode.Decoder(#(Int, List(String))) {
+  use version <- decode.field("version", decode.int)
+  use capabilities <- decode.field(
+    "capabilities",
+    decode.list(of: decode.string),
+  )
+  decode.success(#(version, capabilities))
+}
+
 fn decode_changed_files(value: String) -> #(Int, List(#(String, String))) {
   let assert Ok(records) = json.parse(value, changed_files_decoder())
   records
 }
 
+fn decode_driver_description(value: String) -> #(Int, List(String)) {
+  let assert Ok(description) = json.parse(value, driver_description_decoder())
+  description
+}
+
 fn write_file(path: String, contents: String) -> Nil {
   let assert Ok(Nil) = simplifile.write(path, contents)
   Nil
+}
+
+pub fn noop_driver_describe_json_is_static_and_workspace_free_test() {
+  let artifact = run_noop("noop_describe_json", "describe --json", [])
+  assert_exit(artifact, 0)
+  assert artifact.stderr == ""
+  assert decode_driver_description(artifact.stdout)
+    == #(1, ["status", "changed-files", "assert-only"])
+
+  let unsupported = run_noop("noop_describe_unsupported", "describe --yaml", [])
+  assert_exit(unsupported, 2)
+  assert string.contains(unsupported.stderr, "describe requires --json")
 }
 
 pub fn noop_driver_lifecycle_create_before_after_and_remove_test() {
