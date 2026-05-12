@@ -366,46 +366,80 @@ fn native_fixture_agent_step(
         final_issue: Some(issue),
       ))
     False -> {
-      let final_response = fixture_final_response(scenario_id, context)
       Ok(agent_types.WorkerSuccess(
         final_issue: Some(issue),
         final_classification: agent_types.FinalTerminal,
         workspace_path: context.workspace_path,
         tokens: session_tokens.zero_token_totals(),
         turns: 1,
-        result: result_artifact.from_final_response(
-          Some(final_response),
-          False,
-          "native_review_fixture_agent",
-        ),
+        result: fixture_result(scenario_id, context),
       ))
     }
   }
 }
 
 fn should_fail_agent_step(scenario_id: String, step_id: String) -> Bool {
-  { scenario_id == "lane-failure" && step_id == "lane_correctness" }
-  || step_id == "failed_lane"
+  scenario_id == "lane-failure" && step_id == "lane_correctness"
 }
 
-fn fixture_final_response(
+fn fixture_result(
   scenario_id: String,
   context: workflow_run.StepContext,
-) -> String {
-  case should_emit_malformed_json(scenario_id, context.step_id) {
-    True -> "{ this is not valid JSON from the native fixture agent\n"
-    False ->
-      review_lane_draft_json(
-        lane_id_for_step(context.step_id),
-        scenario_id,
-        context.run_root,
+) -> result_artifact.ResultArtifact {
+  let draft_json =
+    review_lane_draft_json_with_artifact_type(
+      lane_id_for_step(context.step_id),
+      scenario_id,
+      context.run_root,
+      artifact_type_for_step(context.step_id),
+    )
+  case should_emit_missing_tool_call(scenario_id, context.step_id) {
+    True ->
+      result_artifact.from_final_response(
+        Some(draft_json),
+        False,
+        "native_review_fixture_agent_final_response_only",
       )
+    False -> {
+      let arguments_json = case
+        should_emit_malformed_json(scenario_id, context.step_id)
+      {
+        True -> "{ this is not valid JSON from the native fixture agent\n"
+        False -> draft_json
+      }
+      result_artifact.from_final_response_with_tool_calls(
+        None,
+        False,
+        "native_review_fixture_agent_tool_call",
+        [
+          result_artifact.ToolCallSubmission(
+            name: "submit_review_lane_draft",
+            arguments_json: Some(arguments_json),
+            status: Some("success"),
+            sibling_count: 1,
+          ),
+        ],
+      )
+    }
   }
 }
 
+fn should_emit_missing_tool_call(
+  _scenario_id: String,
+  step_id: String,
+) -> Bool {
+  step_id == "failed_lane"
+}
+
 fn should_emit_malformed_json(scenario_id: String, step_id: String) -> Bool {
-  { scenario_id == "malformed-agent-output" && step_id == "lane_correctness" }
-  || step_id == "malformed_lane"
+  scenario_id == "malformed-agent-output" && step_id == "lane_correctness"
+}
+
+fn artifact_type_for_step(step_id: String) -> String {
+  case step_id {
+    "malformed_lane" -> "not_review_lane_draft"
+    _ -> "review_lane_draft"
+  }
 }
 
 fn lane_id_for_step(step_id: String) -> String {
@@ -419,16 +453,17 @@ fn lane_id_for_step(step_id: String) -> String {
   }
 }
 
-fn review_lane_draft_json(
+fn review_lane_draft_json_with_artifact_type(
   lane_id: String,
   scenario_id: String,
   run_root: String,
+  artifact_type: String,
 ) -> String {
   let #(findings, notes, requests) = draft_parts(lane_id, scenario_id)
   json.object([
     #("$schema", json.string("docs/schemas/review-artifacts.v1.schema.json")),
     #("schema_version", json.int(1)),
-    #("artifact_type", json.string("review_lane_draft")),
+    #("artifact_type", json.string(artifact_type)),
     #("generated_at_utc", json.string("2026-05-09T00:00:00Z")),
     #(
       "producer",

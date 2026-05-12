@@ -1,1 +1,1 @@
-Return deliberately malformed non-JSON text for the native structured-output contract spike. This lane is expected to fail structured-output parsing while retaining raw output and metadata.
+Call `submit_review_lane_draft` exactly once as the final action for this native structured-output contract spike, but intentionally submit malformed arguments that are not a valid `review_lane_draft`: set `artifact_type` to `not_review_lane_draft` while keeping the rest of the object JSON-shaped. This lane is expected to fail generic structured-output validation and continue downstream.
