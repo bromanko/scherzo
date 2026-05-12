@@ -23,6 +23,26 @@ fn run_command(command: String) -> step_artifact.StepArtifact {
   command_step.run("review-artifacts", command, ".", 120_000, [], limits())
 }
 
+fn assert_contains(contents: String, expected: String) -> Nil {
+  case string.contains(contents, expected) {
+    True -> Nil
+    False -> {
+      let message = "expected text not found: " <> expected
+      panic as message
+    }
+  }
+}
+
+fn assert_not_contains(contents: String, unexpected: String) -> Nil {
+  case string.contains(contents, unexpected) {
+    False -> Nil
+    True -> {
+      let message = "unexpected text still present: " <> unexpected
+      panic as message
+    }
+  }
+}
+
 pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
   let dir = "test/tmp/review-artifacts-dry-run"
   reset_dir(dir)
@@ -822,14 +842,17 @@ pub fn heuristic_preflight_is_not_cutover_ready_test() {
   )
 }
 
-pub fn implementation_workflow_backend_default_stays_heuristic_test() {
+pub fn implementation_workflow_native_cutover_removes_legacy_backend_default_test() {
   let assert Ok(workflow) =
     simplifile.read(".scherzo/workflows/implementation.yaml")
-  assert string.contains(
+  assert_contains(workflow, "submit_review_lane_draft")
+  assert_contains(workflow, "prepare-native")
+  assert_contains(workflow, "refuses fixture/scenario/heuristic")
+  assert_not_contains(workflow, "--agent-backend")
+  assert_not_contains(
     workflow,
     "SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic",
   )
-  assert string.contains(workflow, "--agent-backend \"$backend\"")
 }
 
 pub fn review_preflight_runs_full_dry_run_suite_test() {
@@ -1278,6 +1301,42 @@ pub fn correctness_blocker_downgraded_without_verified_reproduction_test() {
   assert string.contains(result, "\"blocking\": false")
   assert string.contains(result, "\"verified\": false")
   assert string.contains(result, "downgraded_unproven_correctness_claim")
+}
+
+pub fn missing_evidence_ledger_produces_failed_lane_result_test() {
+  let dir = "test/tmp/native-missing-evidence-ledger"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let draft_path = dir <> "/draft.v1.json"
+  let metadata_path = dir <> "/agent-step-metadata.v1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      draft_path,
+      review_lane_draft_json("src/example.gleam", "none"),
+    )
+  write_metadata(metadata_path)
+
+  let normalized =
+    run_command(
+      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      <> draft_path
+      <> " --evidence-ledger "
+      <> dir
+      <> "/missing-ledger.json --agent-step-metadata "
+      <> metadata_path
+      <> " --brief "
+      <> dir
+      <> "/review-brief.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert normalized.status == step_artifact.StepSucceeded
+  assert string.contains(normalized.stdout, "REVIEW_LANE_STATE=failed")
+  let assert Ok(result) =
+    simplifile.read(lane_dir <> "/review-lane-correctness.v1.json")
+  assert string.contains(result, "\"state\": \"failed\"")
+  assert string.contains(result, "evidence verification failed")
+  assert string.contains(result, "missing-ledger.json")
 }
 
 pub fn missing_or_malformed_draft_produces_failed_lane_result_test() {

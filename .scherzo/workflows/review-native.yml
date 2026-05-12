@@ -183,8 +183,7 @@ steps:
   - id: assert_clean_after_lanes
     kind: command
     depends_on: [lane_correctness, lane_test_quality, lane_idioms_maintainability, lane_security_performance]
-    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt"; cmp -s "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt"'
-    on_failure: continue
+    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt"; cmp -s "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" || { printf "native review lane workspace mutation detected; see %s and %s\n" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" >&2; exit 1; }'
     workspace: main
 
   - id: verify_correctness_evidence
