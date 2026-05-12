@@ -55,7 +55,7 @@ For a copied repository workspace, use an adapter that records or knows the prep
 
 For a worktree or clone backed by a version-control system, the adapter should use that system's changed-file view from the prepared baseline. The workflow itself must not call the version-control tool directly. If generated files, build outputs, or lockfile updates appear in the changed-file view, `assert-only` should fail before the report is streamed.
 
-For a jj workspace, `scripts/scherzo-workspace-jj` implements `assert-only` by comparing `@-` to `@` with `jj diff --from @- --to @ --name-only --color=never`. Files reported by that diff count as produced changes. Files ignored by jj's own ignore rules are not reported by that diff, but tracked or unignored generated files are counted and will make the assertion fail.
+For a jj workspace, `scripts/scherzo-workspace-jj` implements `assert-only` from the current jj change with `jj diff --name-only --color=never`. In ordinary single-parent workflow workspaces this is the prepared parent-to-current diff; in merge-resolution workspaces it avoids ambiguous `@-` revsets. Files reported by that diff count as produced changes. Files ignored by jj's own ignore rules are not reported by that diff, but tracked or unignored generated files are counted and will make the assertion fail.
 
 ## Agent side effects and cleanup
 

@@ -559,10 +559,9 @@ def clean_lines(output: str) -> list[str]:
 
 
 def changed_paths(root: Path) -> list[str]:
-    output = run_jj_capture(
-        root,
-        ["diff", "--from", "@-", "--to", "@", "--name-only", "--color=never"],
-    )
+    # Use jj's current-change diff instead of an explicit @-..@ range. Merge
+    # resolution workspaces have two parents, so @- is ambiguous there.
+    output = run_jj_capture(root, ["diff", "--name-only", "--color=never"])
     return sorted(clean_lines(output))
 
 
@@ -600,10 +599,7 @@ def parse_summary_records(summary: str) -> dict[str, dict[str, str]]:
 
 def changed_file_records(root: Path) -> list[dict[str, str]]:
     paths = changed_paths(root)
-    summary_proc = run_jj_proc(
-        root,
-        ["diff", "--summary", "--from", "@-", "--to", "@", "--color=never"],
-    )
+    summary_proc = run_jj_proc(root, ["diff", "--summary", "--color=never"])
     summary_records = (
         parse_summary_records(summary_proc.stdout) if summary_proc.returncode == 0 else {}
     )
@@ -707,7 +703,7 @@ def baseline_json(root: Path) -> None:
 def diff_json(root: Path) -> None:
     text = run_jj_capture_json(
         root,
-        ["diff", "--from", "@-", "--to", "@", "--git", "--color=never"],
+        ["diff", "--git", "--color=never"],
         "diff_failed",
     )
     json_dump({"version": 1, "format": "unified", "text": text, "truncated": False})
@@ -1109,7 +1105,7 @@ def main(argv: list[str]) -> None:
 
     if command == "diff":
         if rest == ["--human"]:
-            run_jj_stream(root, ["diff", "--from", "@-", "--to", "@", "--color=never"])
+            run_jj_stream(root, ["diff", "--color=never"])
             return
         if rest == ["--json"]:
             diff_json(root)

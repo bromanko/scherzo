@@ -70,6 +70,9 @@ fn write_fake_jj(path: String) -> Nil {
         <> "if [ \"$1\" = root ]; then pwd -P; exit 0; fi\n"
         <> "if [ \"$1\" = status ]; then printf '%s' \"${SCHERZO_FAKE_JJ_STATUS:-}\"; exit 0; fi\n"
         <> "if [ \"$1\" = diff ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_FAIL_ON_AT_MINUS:-}\" = 1 ]; then\n"
+        <> "    for arg in \"$@\"; do if [ \"$arg\" = @- ]; then echo 'ambiguous @-' >&2; exit 1; fi; done\n"
+        <> "  fi\n"
         <> "  name_only=0\n"
         <> "  for arg in \"$@\"; do if [ \"$arg\" = --name-only ]; then name_only=1; fi; done\n"
         <> "  if [ \"$name_only\" = 1 ]; then\n"
@@ -306,10 +309,29 @@ pub fn jj_driver_changed_files_json_is_sorted_and_deduplicated_test() {
   assert string.contains(artifact.stdout, "\"status\":\"modified\"")
   assert string.contains(artifact.stdout, "\"path\":\"zeta.md\"")
   assert log_lines(log)
-    == [
-      "diff --from @- --to @ --name-only --color=never",
-      "diff --summary --from @- --to @ --color=never",
-    ]
+    == ["diff --name-only --color=never", "diff --summary --color=never"]
+}
+
+pub fn jj_driver_changed_files_uses_default_current_change_diff_for_merge_revisions_test() {
+  let dir = "test/tmp/jj-workspace-driver-changed-files-merge"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_changed_merge",
+      "changed-files --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "src/merged.gleam\n"),
+        #("SCHERZO_FAKE_JJ_FAIL_ON_AT_MINUS", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert decode_paths(artifact.stdout) == ["src/merged.gleam"]
+  assert artifact.stderr == ""
+  assert log_lines(log)
+    == ["diff --name-only --color=never", "diff --summary --color=never"]
 }
 
 pub fn jj_driver_changed_files_json_escapes_special_path_names_test() {
@@ -381,8 +403,8 @@ pub fn jj_driver_status_and_diff_use_human_jj_commands_test() {
   assert log_lines(log)
     == [
       "status --color=never",
-      "diff --from @- --to @ --color=never",
-      "diff --from @- --to @ --git --color=never",
+      "diff --color=never",
+      "diff --git --color=never",
     ]
 }
 

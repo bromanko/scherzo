@@ -506,7 +506,7 @@ A VCS-backed driver is suitable for workflows that run in a source workspace and
 - keep changed-file and diff semantics stable enough for workflow validation, and
 - document which ignored files, generated files, caches, and backend metadata appear in `changed-files`.
 
-`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`. Its changed-file baseline is the jj diff from `@-` to `@`, enriched from `jj diff --summary` when status details are available.
+`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`. Its changed-file view is the jj current-change diff (`jj diff` without explicit revision arguments), enriched from `jj diff --summary` when status details are available; this preserves the normal prepared-parent baseline for single-parent changes while avoiding ambiguous `@-` revsets for merge-resolution workspaces.
 
 ## 13. Compatibility and versioning
 
