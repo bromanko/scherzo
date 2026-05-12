@@ -14,6 +14,7 @@ import scherzo/orchestrator/event_publisher
 import scherzo/path
 import scherzo/session/event
 import scherzo/session/tokens as session_tokens
+import scherzo/state/artifact_store
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
@@ -435,13 +436,13 @@ pub fn runner_recovers_context_exhaustion_with_pi_compaction_test() {
   assert string.contains(contents, "context-window-exhausted.json")
 }
 
-pub fn runner_stops_after_repeated_context_exhaustion_test() {
-  let root = "test/tmp/runner-context-recovery-exhausted"
+pub fn runner_records_compact_failure_reason_before_fresh_session_fallback_test() {
+  let root = "test/tmp/runner-context-recovery-compact-fail"
   reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
   let command =
-    "FAKE_PI_CONTEXT_ERROR_ALWAYS=1 FAKE_PI_TRANSCRIPT="
+    "FAKE_PI_CONTEXT_ERROR_ONCE=1 FAKE_PI_COMPACT_FAIL=1 FAKE_PI_COMPACT_EVENTS_BEFORE_FAIL=1 FAKE_PI_TRANSCRIPT="
     <> transcript
     <> " "
     <> fake_pi()
@@ -457,14 +458,111 @@ pub fn runner_stops_after_repeated_context_exhaustion_test() {
       fn(_, update) { process.send(update_subject, update) },
     )
 
-  assert failure.reason
-    == error.PiFailed(error.PiContextWindowExhausted(
+  let assert error.ContextRecoveryExhausted(
+    recovery_method: "fresh_session",
+    context_artifact_ref: Some(_),
+    result_artifact_ref: Some(_),
+    final_error: error.PiContextWindowExhausted(..),
+  ) = failure.reason
+  let updates = drain_updates(update_subject, [])
+  let assert Some(_) = find_update(updates, "context_recovery_failed")
+  let assert Some(_) = find_update(updates, "compaction_start")
+  let store = artifact_store.new(root)
+  let result_ref =
+    artifact_store.context_recovery_artifact_ref(
+      "",
+      "",
+      0,
+      "attempt-2-result.json",
+    )
+  let assert Ok(result_contents) =
+    artifact_store.read_artifact_unverified(store, result_ref)
+  assert string.contains(
+    result_contents,
+    "\"recovery_method\":\"fresh_session\"",
+  )
+  assert string.contains(
+    result_contents,
+    "\"fallback_from_method\":\"pi_rpc_compact\"",
+  )
+  assert string.contains(
+    result_contents,
+    "\"fallback_reason\":\"compact_rpc_failed\"",
+  )
+  assert string.contains(
+    result_contents,
+    "\"error_code\":\"pi_protocol_error\"",
+  )
+  assert string.contains(result_contents, "\"compact_rpc\"")
+  assert string.contains(
+    result_contents,
+    "\"compaction_event_reasons\":[\"manual\",\"manual\"]",
+  )
+  assert string.contains(result_contents, "\"response\"")
+}
+
+pub fn runner_stops_after_repeated_context_exhaustion_test() {
+  let root = "test/tmp/runner-context-recovery-exhausted"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let command =
+    "FAKE_PI_CONTEXT_ERROR_ALWAYS=1 FAKE_PI_COMPACT_FAIL=1 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  let assert error.ContextRecoveryExhausted(
+    recovery_method: "fresh_session",
+    context_artifact_ref: Some(context_ref),
+    result_artifact_ref: Some(result_ref),
+    final_error: error.PiContextWindowExhausted(
       provider: Some("openai-codex"),
       provider_code: Some("context_length_exceeded"),
       detail: "Your input exceeds the context window of this model. Please adjust your input and try again.",
-    ))
+    ),
+  ) = failure.reason
   let updates = drain_updates(update_subject, [])
-  let assert Some(_) = find_update(updates, "context_recovery_failed")
+  let assert Some(failed_update) =
+    find_update(updates, "context_recovery_failed")
+  let assert Some(failed_message) = failed_update.message
+  assert string.contains(failed_message, "attempted but exhausted")
+  assert string.contains(failed_message, "recovery_method=fresh_session")
+  assert string.contains(failed_message, "terminal_diagnostics=")
+  let assert Ok(context_contents) =
+    simplifile.read(root <> "/.scherzo-state/artifacts/" <> context_ref)
+  assert string.contains(context_contents, "\"recovery_exhausted\":true")
+  assert string.contains(context_contents, "\"budget_exhausted\":true")
+  assert string.contains(
+    context_contents,
+    "\"terminal_recovery_method\":\"fresh_session\"",
+  )
+  assert string.contains(context_contents, "\"final_failure\"")
+  assert string.contains(context_contents, "\"provider\":\"openai-codex\"")
+  assert string.contains(
+    context_contents,
+    "\"provider_code\":\"context_length_exceeded\"",
+  )
+  let assert Ok(result_contents) =
+    simplifile.read(root <> "/.scherzo-state/artifacts/" <> result_ref)
+  assert string.contains(result_contents, "\"outcome\":\"failed\"")
+  assert string.contains(result_contents, "\"recovery_exhausted\":true")
+  assert string.contains(
+    result_contents,
+    "\"recovery_method\":\"fresh_session\"",
+  )
+  assert string.contains(result_contents, "\"final_failure\"")
   let assert Ok(contents) = simplifile.read(transcript)
   assert occurrence_count(contents, "\"type\":\"prompt\"") == 2
 }

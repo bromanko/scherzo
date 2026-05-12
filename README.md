@@ -331,7 +331,7 @@ A workspace profile is trusted operator policy for preparing the directory where
 
 Workflows choose policy, not shell. A workflow DAG may select a profile with top-level `workspace_profile` and may require capability names with top-level `workspace_capabilities`, but it cannot define or override the driver command. Scherzo validates the required capabilities against the selected profile before dispatching the workflow. This keeps untrusted workflow YAML from smuggling in new workspace commands while still allowing portable workflows to ask for the operations they need.
 
-Command steps receive driver context through environment variables. `SCHERZO_WORKSPACE_DRIVER` is the configured driver command string, exposed verbatim. Because command steps run from the prepared workspace, a workflow that calls driver capabilities should either use a PATH or absolute driver command, or resolve a simple relative driver path against `SCHERZO_CONFIG_DIR` before invoking it. Installed-package users can configure the bundled artifact driver as `command: scherzo-workspace-noop`; source-tree checkouts and the checked `examples/scherzo.yaml` use config-relative script paths such as `../scripts/scherzo-workspace-noop`.
+Command steps receive driver context through environment variables. `SCHERZO_WORKSPACE_DRIVER` is the configured driver command string, exposed verbatim. Because command steps run from the prepared workspace, a workflow that calls driver capabilities should either use a PATH or absolute driver command, or resolve a simple relative driver path against `SCHERZO_CONFIG_DIR` before invoking it. Installed-package users can configure bundled drivers as `command: scherzo-workspace-noop` for artifact-only workspaces or `command: scherzo-workspace-jj` for the opinionated jj workspace driver; source-tree checkouts and the checked `examples/scherzo.yaml` use config-relative script paths such as `../scripts/scherzo-workspace-noop` and `../scripts/scherzo-workspace-jj`.
 
 Profiles may also configure profile-local driver environment with `driver.env`. Values are literal strings passed to driver discovery, lifecycle calls, workflow command steps, and agent subprocesses; `PATH` is a full replacement, not an append expression. `driver.env` is not a secret store. Scherzo only applies limited redaction for likely-sensitive keys in Scherzo-owned output, so operators should keep real secrets in their existing secret-management path rather than profile YAML.
 
@@ -346,7 +346,11 @@ workspace:
           SCHERZO_JJ_WORKSPACE_BASE: "@"
           SCHERZO_JJ_WORKSPACE_REMOTE: upstream
           SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
+          SCHERZO_JJ_WORKSPACE_FETCH_BASE: "false"
+          SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
 ```
+
+For the packaged jj driver, `SCHERZO_JJ_WORKSPACE_BASE=@` is the local/offline recipe for creating a root workspace from the current jj change and skipping network fetches. `SCHERZO_JJ_WORKSPACE_FETCH_BASE=false` skips driver-initiated base fetches while still requiring the selected base to exist locally. `SCHERZO_JJ_WORKSPACE_REMOTE=upstream` and `SCHERZO_JJ_WORKSPACE_BASE_BRANCH=trunk` choose a non-default base such as `trunk@upstream`; legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` still work when the jj-specific names are absent. Publication is intentionally separate: set `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=origin` when the base comes from `upstream` but `publish-change` should push to a fork remote such as `origin`. The `publish-change` capability uses `gh`, so packaged installs include `gh` on the wrapper path and source-tree users must provide it on `PATH` before publishing.
 
 - `SCHERZO_CONFIG_DIR`
 - `SCHERZO_WORKFLOW_ID`

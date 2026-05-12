@@ -227,8 +227,12 @@ pub fn fetch_failure_fails_root_workspace_creation_with_override_hint_test() {
   assert string.contains(artifact.stderr, "simulated fetch failure")
   assert string.contains(
     artifact.stderr,
-    "could not fetch publish base 'develop' from remote 'upstream'",
+    "could not fetch workspace base 'develop' from remote 'upstream'",
   )
-  assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_BASE")
+  assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_BASE=@")
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_JJ_WORKSPACE_FETCH_BASE=false",
+  )
   let assert Ok(False) = simplifile.is_directory(workspace_path <> "/.jj")
 }

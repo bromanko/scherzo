@@ -62,6 +62,12 @@ pub type AgentRunnerError {
   WorkflowHookFailed(HookError)
   ProbeFailed(PiRpcError)
   PiFailed(PiRpcError)
+  ContextRecoveryExhausted(
+    recovery_method: String,
+    context_artifact_ref: Option(String),
+    result_artifact_ref: Option(String),
+    final_error: PiRpcError,
+  )
   WorkflowCommandFailed(code: String, step_id: String, detail: String)
   StateRefreshFailed(TrackerError)
   OperatorAbort
@@ -192,6 +198,9 @@ pub fn agent_code(error: AgentRunnerError) -> String {
     ProbeFailed(_) -> "agent_probe_failed"
     PiFailed(PiContextWindowExhausted(..)) -> "pi_context_window_exhausted"
     PiFailed(_) -> "agent_pi_failed"
+    ContextRecoveryExhausted(final_error: PiContextWindowExhausted(..), ..) ->
+      "pi_context_window_exhausted"
+    ContextRecoveryExhausted(..) -> "context_recovery_exhausted"
     WorkflowCommandFailed(code: code, ..) -> code
     StateRefreshFailed(_) -> "agent_state_refresh_failed"
     OperatorAbort -> "agent_operator_abort"
@@ -209,6 +218,19 @@ pub fn agent_detail_suffix(error: AgentRunnerError) -> String {
       "\ntemplate render error: " <> message
     ProbeFailed(pi_error) -> "\n" <> pi_rpc_detail(pi_error)
     PiFailed(pi_error) -> "\n" <> pi_rpc_detail(pi_error)
+    ContextRecoveryExhausted(
+      recovery_method: recovery_method,
+      context_artifact_ref: context_artifact_ref,
+      result_artifact_ref: result_artifact_ref,
+      final_error: final_error,
+    ) ->
+      "\ncontext recovery attempted but exhausted (recovery_method: "
+      <> recovery_method
+      <> ")"
+      <> option_detail("context_artifact", context_artifact_ref)
+      <> option_detail("result_artifact", result_artifact_ref)
+      <> "\nfinal failure: "
+      <> pi_rpc_detail(final_error)
     WorkflowCommandFailed(detail: detail, ..) -> "\n" <> detail
     StateRefreshFailed(tracker_error) ->
       "\ntracker refresh error: " <> tracker_code(tracker_error)

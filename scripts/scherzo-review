@@ -3277,15 +3277,28 @@ def normalize_lane_result_command(args: argparse.Namespace) -> None:
         except ReviewError as exc:
             ledger_error = str(exc)
     if ledger_error is not None or ledger is None:
-        ledger = {
-            "schema_version": SCHEMA_VERSION,
-            "artifact_type": "review_evidence_ledger",
-            "lane_id": lane_id,
-            "verdicts": [],
-            "checks": [],
-            "execution_status": {"state": "failed", "summary": ledger_error or "missing evidence ledger"},
-            "remote_mutations": "none",
-        }
+        message = "evidence verification failed: " + (ledger_error or "missing evidence ledger")
+        lane_result = failed_native_lane_result(
+            lane_id=lane_id,
+            brief_path=brief_path,
+            output_dir=output_dir,
+            message=message,
+            metadata_path=metadata_path,
+        )
+        artifacts = lane_result.get("artifacts")
+        if isinstance(artifacts, list):
+            if draft_path.exists():
+                artifacts.append(artifact_ref_for(draft_path, "review_lane_draft"))
+            if ledger_path.exists():
+                artifacts.append(artifact_ref_for(ledger_path, "review_evidence_ledger"))
+        validate_review_lane_result(lane_result)
+        result_path = output_dir / f"review-lane-{lane_id}.v1.json"
+        write_json(result_path, lane_result)
+        print("REVIEW_LANE_NORMALIZE=ok")
+        print(f"REVIEW_LANE_RESULT_PATH={result_path}")
+        print("REVIEW_LANE_STATE=failed")
+        print(f"REVIEW_LANE_ERROR={message}")
+        return
     actions: list[dict[str, Any]] = []
     findings = [
         normalize_draft_finding(

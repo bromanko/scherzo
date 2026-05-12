@@ -27,7 +27,7 @@ This specification covers:
 - conformance expectations for artifact/no-op and VCS-backed drivers, and
 - compatibility rules for extending the contract.
 
-This specification does not prescribe one version-control backend, one publication host, or one sandboxing model. The bundled drivers currently covered by this contract are `scripts/scherzo-workspace-noop` and `scripts/scherzo-workspace-jj`.
+This specification does not prescribe one version-control backend, one publication host, or one sandboxing model. The bundled source-tree drivers currently covered by this contract are `scripts/scherzo-workspace-noop` and `scripts/scherzo-workspace-jj`; packaged Scherzo installs expose the same bundled drivers as `scherzo-workspace-noop` and `scherzo-workspace-jj` on `PATH`.
 
 ## 2. Glossary
 
@@ -492,7 +492,7 @@ An artifact/no-op driver is suitable for workflows that only need an empty works
 - report every regular file under the workspace root as a changed file except private driver markers and Scherzo scratch/diagnostic directories, and
 - reject `diff`, `baseline`, `refresh-base`, and `publish-change` with exit code 2.
 
-`scripts/scherzo-workspace-noop` is the bundled artifact/no-op driver. It reports present files with `status: "modified"` because it has no VCS baseline.
+`scripts/scherzo-workspace-noop` is the bundled artifact/no-op driver, and packaged installs expose the same command as `scherzo-workspace-noop`. It reports present files with `status: "modified"` because it has no VCS baseline.
 
 ### 12.2 VCS-backed profile
 
@@ -506,7 +506,7 @@ A VCS-backed driver is suitable for workflows that run in a source workspace and
 - keep changed-file and diff semantics stable enough for workflow validation, and
 - document which ignored files, generated files, caches, and backend metadata appear in `changed-files`.
 
-`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`. Its changed-file view is the jj current-change diff (`jj diff` without explicit revision arguments), enriched from `jj diff --summary` when status details are available; this preserves the normal prepared-parent baseline for single-parent changes while avoiding ambiguous `@-` revsets for merge-resolution workspaces.
+`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces, and packaged installs expose the same command as `scherzo-workspace-jj`. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change` from `describe --json`. Its changed-file view is the jj current-change diff (`jj diff` without explicit revision arguments), enriched from `jj diff --summary` when status details are available; this preserves the normal prepared-parent baseline for single-parent changes while avoiding ambiguous `@-` revsets for merge-resolution workspaces. Root workspace base selection is operator policy supplied through driver environment such as `SCHERZO_JJ_WORKSPACE_BASE`, `SCHERZO_JJ_WORKSPACE_REMOTE`, `SCHERZO_JJ_WORKSPACE_BASE_BRANCH`, and `SCHERZO_JJ_WORKSPACE_FETCH_BASE`; publication remote selection is separate through `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE` with legacy fallback through `SCHERZO_PR_REMOTE`.
 
 ## 13. Compatibility and versioning
 

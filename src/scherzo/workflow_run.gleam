@@ -2923,15 +2923,44 @@ fn agent_failure_artifact(
       <> detail
     False -> detail
   }
-  step_artifact.from_command_result(
-    step_id,
-    1,
-    "",
-    stderr,
-    False,
-    secrets,
-    limits,
+  let artifact =
+    step_artifact.from_command_result(
+      step_id,
+      1,
+      "",
+      stderr,
+      False,
+      secrets,
+      limits,
+    )
+  step_artifact.StepArtifact(
+    ..artifact,
+    summary_text: artifact.summary_text
+      <> context_recovery_summary_suffix(failure.reason),
   )
+}
+
+fn context_recovery_summary_suffix(reason: error.AgentRunnerError) -> String {
+  case reason {
+    error.ContextRecoveryExhausted(
+      recovery_method: recovery_method,
+      context_artifact_ref: context_artifact_ref,
+      result_artifact_ref: result_artifact_ref,
+      ..,
+    ) ->
+      " context_recovery=failed recovery_exhausted=true recovery_method="
+      <> recovery_method
+      <> summary_ref("context_artifact", context_artifact_ref)
+      <> summary_ref("result_artifact", result_artifact_ref)
+    _ -> ""
+  }
+}
+
+fn summary_ref(label: String, ref: Option(String)) -> String {
+  case ref {
+    Some(ref) -> " " <> label <> "=" <> ref
+    None -> ""
+  }
 }
 
 fn is_recovery_resume_validation_failure(

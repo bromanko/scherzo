@@ -59,8 +59,34 @@ fn write_fake_jj(path: String) -> Nil {
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> \"$SCHERZO_FAKE_JJ_LOG\"\n"
         <> "if [ \"$1\" = --repository ]; then shift 2; fi\n"
-        <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = log ]; then echo commit; exit 0; fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_FETCH_FAIL:-}\" = 1 ]; then echo 'simulated fetch failure' >&2; exit 1; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = remote ] && [ \"$3\" = list ]; then\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_JJ_REMOTES+x}\" ]; then\n"
+        <> "    printf '%s\\n' \"$SCHERZO_FAKE_JJ_REMOTES\"\n"
+        <> "  else\n"
+        <> "    printf '%s\\n' 'origin https://github.com/example/repo.git' 'upstream https://github.com/example/upstream.git' 'fork https://github.com/example/fork.git'\n"
+        <> "  fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = log ]; then\n"
+        <> "  revision=\n"
+        <> "  while [ $# -gt 0 ]; do\n"
+        <> "    case \"$1\" in\n"
+        <> "      -r) revision=$2; shift 2 ;;\n"
+        <> "      *) shift ;;\n"
+        <> "    esac\n"
+        <> "  done\n"
+        <> "  case \"$revision\" in conflicts*) exit 0 ;; esac\n"
+        <> "  for missing in ${SCHERZO_FAKE_JJ_MISSING_REVISIONS:-}; do\n"
+        <> "    if [ \"$revision\" = \"$missing\" ]; then exit 1; fi\n"
+        <> "  done\n"
+        <> "  printf '%s\\n' \"${SCHERZO_FAKE_JJ_LOG_OUTPUT:-commit}\"\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "if [ \"$1\" = workspace ] && [ \"$2\" = add ]; then\n"
         <> "  target=\n"
         <> "  for arg in \"$@\"; do target=$arg; done\n"
@@ -82,10 +108,60 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  fi\n"
         <> "  exit 0\n"
         <> "fi\n"
+        <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = bookmark ] && [ \"$2\" = set ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = rebase ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = resolve ] && [ \"$2\" = --list ]; then exit 0; fi\n"
         <> "if [ \"$1\" = workspace ] && [ \"$2\" = forget ]; then exit 0; fi\n"
         <> "exit 1\n",
     )
   chmod_executable(path)
+}
+
+fn write_fake_gh(path: String, log: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf 'gh: %s\\n' \"$*\" >> "
+        <> shell_quote(log)
+        <> "\n"
+        <> "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then exit 1; fi\n"
+        <> "if [ \"$1\" = pr ] && [ \"$2\" = create ]; then echo https://github.com/example/repo/pull/1; exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  chmod_executable(path)
+}
+
+fn find_python3_path(dirs: List(String)) -> String {
+  case dirs {
+    [] -> "python3"
+    [dir, ..rest] -> {
+      let candidate = dir <> "/python3"
+      case simplifile.is_file(candidate) {
+        Ok(True) ->
+          case string.starts_with(candidate, "/usr/bin/") {
+            True -> find_python3_path(rest)
+            False -> candidate
+          }
+        _ -> find_python3_path(rest)
+      }
+    }
+  }
+}
+
+fn install_python3_wrapper(bin: String) -> Nil {
+  let search_path = case path.env("PATH") {
+    Some(value) -> value
+    None -> "/usr/bin:/bin"
+  }
+  let real_python = find_python3_path(string.split(search_path, on: ":"))
+  let assert Ok(Nil) =
+    simplifile.write(
+      bin <> "/python3",
+      "#!/bin/sh\nexec " <> shell_quote(real_python) <> " \"$@\"\n",
+    )
+  chmod_executable(bin <> "/python3")
 }
 
 fn setup_driver_fixture(dir: String) -> #(String, String, String, String) {
@@ -135,12 +211,43 @@ fn fake_env_without_workspace(
   |> list.append(extra)
 }
 
+fn fake_env_with_exact_path(
+  workspace: String,
+  bin: String,
+  log: String,
+  extra: List(#(String, String)),
+) -> List(#(String, String)) {
+  [
+    #("SCHERZO_WORKSPACE_PATH", workspace),
+    #("SCHERZO_FAKE_JJ_LOG", log),
+    #("PATH", bin),
+  ]
+  |> list.append(extra)
+}
+
+fn fake_env_without_workspace_exact_path(
+  bin: String,
+  log: String,
+  extra: List(#(String, String)),
+) -> List(#(String, String)) {
+  [#("SCHERZO_FAKE_JJ_LOG", log), #("PATH", bin)]
+  |> list.append(extra)
+}
+
 fn run_jj(
   step_id: String,
   args: String,
   env: List(#(String, String)),
 ) -> step_artifact.StepArtifact {
   run_jj_command(step_id, "sh ", args, env)
+}
+
+fn run_jj_with_exact_path(
+  step_id: String,
+  args: String,
+  env: List(#(String, String)),
+) -> step_artifact.StepArtifact {
+  run_jj_command(step_id, "/bin/sh ", args, env)
 }
 
 fn run_jj_without_inherited_workspace(
@@ -174,8 +281,13 @@ fn assert_exit(artifact: step_artifact.StepArtifact, code: Int) -> Nil {
   Nil
 }
 
-fn log_lines(log: String) -> List(String) {
+fn log_text(log: String) -> String {
   let assert Ok(contents) = simplifile.read(log)
+  contents
+}
+
+fn log_lines(log: String) -> List(String) {
+  let contents = log_text(log)
   case string.trim(contents) {
     "" -> []
     trimmed -> string.split(trimmed, on: "\n")
@@ -282,6 +394,310 @@ pub fn jj_driver_lifecycle_create_implements_root_workspace_creation_test() {
   assert string.contains(add_line, "--repository " <> repo <> " workspace add")
   assert string.contains(add_line, "--revision develop@upstream")
   assert simplifile.is_directory(workspace <> "/.jj") == Ok(True)
+}
+
+pub fn jj_driver_explicit_workspace_base_skips_fetch_test() {
+  let dir = "test/tmp/jj-workspace-driver-explicit-base"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+
+  let artifact =
+    run_jj(
+      "jj_driver_explicit_base",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_JJ_WORKSPACE_BASE", "@"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  let logged = log_text(log)
+  assert !string.contains(logged, " git fetch ")
+  assert string.contains(logged, "--revision @")
+}
+
+pub fn jj_driver_jj_specific_aliases_override_legacy_pr_names_test() {
+  let dir = "test/tmp/jj-workspace-driver-jj-aliases"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+
+  let artifact =
+    run_jj(
+      "jj_driver_jj_aliases",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+        #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "trunk"),
+        #("SCHERZO_PR_REMOTE", "origin"),
+        #("SCHERZO_PR_BASE", "main"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  let logged = log_text(log)
+  assert string.contains(logged, "git fetch --remote upstream --branch trunk")
+  assert string.contains(logged, "log -r trunk@upstream")
+  assert string.contains(logged, "--revision trunk@upstream")
+  assert !string.contains(logged, "--revision main@origin")
+}
+
+pub fn jj_driver_legacy_pr_base_names_still_work_test() {
+  let dir = "test/tmp/jj-workspace-driver-legacy-base"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+
+  let artifact =
+    run_jj(
+      "jj_driver_legacy_base",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_PR_REMOTE", "upstream"),
+        #("SCHERZO_PR_BASE", "develop"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  let logged = log_text(log)
+  assert string.contains(logged, "git fetch --remote upstream --branch develop")
+  assert string.contains(logged, "--revision develop@upstream")
+}
+
+pub fn jj_driver_fetch_base_false_skips_network_test() {
+  let dir = "test/tmp/jj-workspace-driver-fetch-false"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+
+  let artifact =
+    run_jj(
+      "jj_driver_fetch_false",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_JJ_WORKSPACE_FETCH_BASE", "false"),
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+        #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "trunk"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  let logged = log_text(log)
+  assert !string.contains(logged, " git fetch ")
+  assert string.contains(logged, "--revision trunk@upstream")
+}
+
+pub fn jj_driver_invalid_fetch_policy_exits_usage_error_test() {
+  let dir = "test/tmp/jj-workspace-driver-invalid-fetch"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+
+  let artifact =
+    run_jj(
+      "jj_driver_invalid_fetch",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_JJ_WORKSPACE_FETCH_BASE", "maybe"),
+      ]),
+    )
+
+  assert_exit(artifact, 2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_JJ_WORKSPACE_FETCH_BASE must be true or false",
+  )
+  assert !string.contains(log_text(log), "workspace add")
+}
+
+pub fn jj_driver_stale_explicit_legacy_base_fails_without_fallback_test() {
+  let dir = "test/tmp/jj-workspace-driver-stale-legacy-base"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+
+  let artifact =
+    run_jj(
+      "jj_driver_stale_legacy_base",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_PR_REMOTE", "upstream"),
+        #("SCHERZO_PR_BASE", "develop"),
+        #("SCHERZO_FAKE_JJ_MISSING_REVISIONS", "develop@upstream develop"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stderr, "develop")
+  assert string.contains(artifact.stderr, "upstream")
+  assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
+  assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_REMOTE")
+  let logged = log_text(log)
+  assert !string.contains(logged, "workspace add")
+  assert !string.contains(logged, "log -r main@origin")
+  assert !string.contains(logged, "log -r main ")
+  assert !string.contains(logged, "log -r @ ")
+}
+
+pub fn jj_driver_failed_default_fetch_explains_offline_configuration_test() {
+  let dir = "test/tmp/jj-workspace-driver-default-fetch-fails"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+
+  let artifact =
+    run_jj(
+      "jj_driver_default_fetch_fails",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_FAKE_JJ_FETCH_FAIL", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_BASE=@")
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_JJ_WORKSPACE_FETCH_BASE=false",
+  )
+  assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
+  assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_REMOTE")
+  assert !string.contains(log_text(log), "workspace add")
+}
+
+pub fn jj_driver_derived_workspace_uses_source_at_and_skips_base_fetch_test() {
+  let dir = "test/tmp/jj-workspace-driver-derived-workspace"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+  let source = absolute(dir <> "/source")
+  let assert Ok(Nil) = simplifile.create_directory_all(source <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_derived_workspace",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_SOURCE_WORKSPACE_PATH", source),
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+        #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "trunk"),
+        #("SCHERZO_FAKE_JJ_FETCH_FAIL", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  let logged = log_text(log)
+  assert !string.contains(logged, " git fetch ")
+  assert string.contains(logged, "--repository " <> source <> " workspace add")
+  assert string.contains(logged, "--revision @")
+}
+
+pub fn jj_driver_refresh_base_uses_jj_specific_aliases_test() {
+  let dir = "test/tmp/jj-workspace-driver-refresh-aliases"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_refresh_aliases",
+      "refresh-base --stage pre-validation --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+        #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "trunk"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(artifact.stdout, "\"stage\":\"pre-validation\"")
+  assert string.contains(artifact.stdout, "\"base_ref\":\"trunk\"")
+  assert string.contains(
+    artifact.stdout,
+    "\"base_revision\":\"trunk@upstream\"",
+  )
+  assert string.contains(artifact.stdout, "\"conflict_files\":[]")
+  assert string.contains(
+    log_text(log),
+    "git fetch --remote upstream --branch trunk",
+  )
+}
+
+pub fn jj_driver_publish_remote_is_separate_from_base_remote_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-remote"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_remote",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base trunk@upstream --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+        #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "trunk"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", ""),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  let logged = log_text(log)
+  assert string.contains(logged, "git remote list")
+  assert string.contains(logged, "git push --remote origin")
+  assert !string.contains(logged, "git push --remote upstream")
+}
+
+pub fn jj_driver_publish_remote_legacy_fallback_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-legacy-remote"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_legacy_remote",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base develop@fork --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_PR_REMOTE", "fork"),
+        #("SCHERZO_PR_REPO", ""),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(log_text(log), "git push --remote fork")
+}
+
+pub fn jj_driver_missing_gh_fails_only_publish_change_test() {
+  let dir = "test/tmp/jj-workspace-driver-missing-gh"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  install_python3_wrapper(bin)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+
+  let describe =
+    run_jj_with_exact_path(
+      "jj_driver_missing_gh_describe",
+      "describe --json",
+      fake_env_without_workspace_exact_path(bin, log, []),
+    )
+  assert_exit(describe, 0)
+  assert log_lines(log) == []
+
+  let publish =
+    run_jj_with_exact_path(
+      "jj_driver_missing_gh_publish",
+      "publish-change --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env_with_exact_path(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", ""),
+      ]),
+    )
+
+  assert_exit(publish, 1)
+  assert string.contains(
+    publish.stdout,
+    "\"failure_code\":\"command_not_found\"",
+  )
 }
 
 pub fn jj_driver_lifecycle_is_self_contained_test() {
@@ -512,6 +928,17 @@ pub fn jj_driver_lifecycle_remove_rejects_unsafe_targets_test() {
     )
   assert_exit(outside_run_root, 2)
   assert string.contains(outside_run_root.stderr, "outside SCHERZO_RUN_ROOT")
+
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root)
+  let run_root_itself =
+    run_jj(
+      "jj_driver_remove_run_root_itself",
+      "lifecycle remove",
+      fake_env(run_root, bin, log, [#("SCHERZO_RUN_ROOT", run_root)]),
+    )
+  assert_exit(run_root_itself, 2)
+  assert string.contains(run_root_itself.stderr, "outside SCHERZO_RUN_ROOT")
+  assert simplifile.is_directory(run_root) == Ok(True)
   assert log_lines(log) == []
 }
 

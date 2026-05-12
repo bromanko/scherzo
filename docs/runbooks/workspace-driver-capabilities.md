@@ -52,6 +52,24 @@ workspace:
         timeout_ms: 60000
 ```
 
+The packaged jj driver uses the same installed-command shape and can carry base policy in trusted `driver.env`:
+
+```yaml
+workspace:
+  profiles:
+    isolated:
+      driver:
+        command: scherzo-workspace-jj
+        lifecycle: [create, before-step, after-step, remove]
+        timeout_ms: 60000
+        env:
+          SCHERZO_JJ_WORKSPACE_REMOTE: upstream
+          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
+          SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
+```
+
+For local/offline work use `SCHERZO_JJ_WORKSPACE_BASE=@`; for a repository that already has the selected base locally use `SCHERZO_JJ_WORKSPACE_FETCH_BASE=false`. `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` remain legacy compatibility names. In a fork/upstream recipe, `upstream` selects the base remote while `origin` selects the publication remote. `publish-change` requires `gh`; packaged `scherzo-workspace-jj` includes it on the wrapper path, while source-tree users must provide `gh` on `PATH`.
+
 Workflow requirements still belong in workflow YAML:
 
 ```yaml
@@ -68,11 +86,13 @@ scripts/scherzo-workspace-noop describe --json
 scripts/scherzo-workspace-jj describe --json
 ```
 
-After building or installing the package, check the packaged no-op driver by command name or from the build result:
+After building or installing the package, check the packaged drivers by command name or from the build result:
 
 ```sh
 scherzo-workspace-noop describe --json
+scherzo-workspace-jj describe --json
 result/bin/scherzo-workspace-noop describe --json
+result/bin/scherzo-workspace-jj describe --json
 ```
 
 The no-op driver should report `status`, `changed-files`, and `assert-only`. The jj driver should report `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. Neither command should require `SCHERZO_WORKSPACE_PATH` or a prepared workflow workspace.
@@ -83,6 +103,7 @@ Then rerun the relevant validation:
 LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
 LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config examples/scherzo.yaml
 direnv exec . env PATH="$PWD/result/bin:$PATH" LINEAR_API_KEY=dummy gleam run -- doctor --check workflow-config examples/scherzo-packaged-noop.yaml
+direnv exec . env PATH="$PWD/result/bin:$PATH" LINEAR_API_KEY=dummy gleam run -- doctor --check workflow-config examples/scherzo-packaged-jj.yaml
 direnv exec . gleam test
 ```
 

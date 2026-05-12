@@ -79,6 +79,26 @@ workspace:
         timeout_ms: 60000
 ```
 
+Packaged jj deployments can use the stable installed command name without copying `scripts/` from this repository. The checked example is `examples/scherzo-packaged-jj.yaml`:
+
+```yaml
+workspace:
+  root: .scherzo/workspaces
+  default_profile: isolated
+  profiles:
+    isolated:
+      driver:
+        command: scherzo-workspace-jj
+        lifecycle: [create, before-step, after-step, remove]
+        timeout_ms: 60000
+        env:
+          SCHERZO_JJ_WORKSPACE_REMOTE: upstream
+          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
+          SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
+```
+
+This fork/upstream recipe selects the base from `trunk@upstream` and publishes through `origin`. For local-only work, set `SCHERZO_JJ_WORKSPACE_BASE: "@"`; for an offline repository that already has the selected base locally, set `SCHERZO_JJ_WORKSPACE_FETCH_BASE: "false"`.
+
 Then make workflows choose the profile explicitly when they rely on it:
 
 ```yaml
@@ -178,10 +198,10 @@ Command steps and agent subprocesses run under this profile receive `SCHERZO_WOR
 
 ## Choosing capabilities
 
-Declare only workflow requirements that the workflow actually needs. Driver profiles no longer declare provided capabilities in YAML. The current checked drivers self-describe these public capability names from `describe --json`:
+Declare only workflow requirements that the workflow actually needs. Driver profiles no longer declare provided capabilities in YAML. The current checked and packaged drivers self-describe these public capability names from `describe --json`:
 
-- `scripts/scherzo-workspace-noop`: `status`, `changed-files`, and `assert-only`.
-- `scripts/scherzo-workspace-jj`: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`.
+- `scripts/scherzo-workspace-noop` and `scherzo-workspace-noop`: `status`, `changed-files`, and `assert-only`.
+- `scripts/scherzo-workspace-jj` and `scherzo-workspace-jj`: `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`.
 
 A workflow that invokes the selected driver for `assert-only --path research-findings.md` should declare `workspace_capabilities: [assert-only]`. A workflow that asks the driver for changed files should declare `workspace_capabilities: [changed-files]`. If a workflow declares a capability missing from the selected driver's `describe --json` response, Scherzo fails workflow-config loading before dispatch.
 
@@ -258,7 +278,13 @@ workspace:
           SCHERZO_JJ_WORKSPACE_BASE: "@"
           SCHERZO_JJ_WORKSPACE_REMOTE: upstream
           SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk
+          SCHERZO_JJ_WORKSPACE_FETCH_BASE: "false"
+          SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE: origin
 ```
+
+`SCHERZO_JJ_WORKSPACE_BASE` is the strongest base override and `SCHERZO_JJ_WORKSPACE_BASE=@` skips fetch for local/offline work. Without that explicit base, `SCHERZO_JJ_WORKSPACE_REMOTE` and `SCHERZO_JJ_WORKSPACE_BASE_BRANCH` choose the root-workspace base and default `refresh-base` target; `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` are legacy compatibility names used only when the jj-specific names are absent. `SCHERZO_JJ_WORKSPACE_FETCH_BASE=false` disables driver-initiated base fetches. Derived workspaces created with `from:` use the source workspace's `@` and skip root-base fetches because the source workspace already embodies the selected base policy.
+
+Publication is separate from base selection. In a fork/upstream setup, set `SCHERZO_JJ_WORKSPACE_REMOTE=upstream` and `SCHERZO_JJ_WORKSPACE_BASE_BRANCH=trunk` for the base, then set `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=origin` or another fork remote for `publish-change`. If `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE` is absent, publication falls back to `SCHERZO_PR_REMOTE` and then `origin`. The `publish-change` capability requires GitHub CLI `gh`; packaged `scherzo-workspace-jj` includes `gh` on its wrapper path, while source-tree usage requires `gh` on the process `PATH` before publishing.
 
 `driver.env` values are literal strings. Scherzo does not expand `$LINEAR_API_KEY` or append `$PATH`; a configured `PATH` is a full replacement for discovery, lifecycle, command-step, and agent-step subprocesses under that profile. `driver.env` is not a secret store. Scherzo performs limited redaction for likely-sensitive keys in Scherzo-owned diagnostics, but operators should not put durable secrets there. Keep a wrapper when it also supplies arguments, performs authentication, discovers tools dynamically, or enforces safety checks that are more than fixed environment variables.
 
@@ -270,6 +296,7 @@ Run validation from the repository root after changing config or workflows:
 LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
 LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config examples/scherzo.yaml
 direnv exec . env PATH="$PWD/result/bin:$PATH" LINEAR_API_KEY=dummy gleam run -- doctor --check workflow-config examples/scherzo-packaged-noop.yaml
+direnv exec . env PATH="$PWD/result/bin:$PATH" LINEAR_API_KEY=dummy gleam run -- doctor --check workflow-config examples/scherzo-packaged-jj.yaml
 direnv exec . gleam test
 ```
 
