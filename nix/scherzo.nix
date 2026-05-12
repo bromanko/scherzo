@@ -7,6 +7,9 @@
   cacert,
   coreutils,
   python3,
+  jujutsu,
+  gh,
+  direnv,
   makeWrapper,
   src,
   sourceRevision ? "unknown",
@@ -22,9 +25,16 @@ let
     erlang
     coreutils
   ];
-  driverRuntimePath = lib.makeBinPath [
+  noopDriverRuntimePath = lib.makeBinPath [
     python3
     coreutils
+  ];
+  jjDriverRuntimePath = lib.makeBinPath [
+    python3
+    coreutils
+    jujutsu
+    gh
+    direnv
   ];
   startRunnerPath = lib.makeBinPath [ coreutils ];
 
@@ -125,10 +135,12 @@ stdenvNoCC.mkDerivation {
     cp -R build/erlang-shipment/. "$out/lib/${pname}/"
     cp scripts/scherzo-start-runner "$out/libexec/${pname}/scherzo-start-runner"
     install -m755 scripts/scherzo-workspace-noop "$out/libexec/${pname}/scherzo-workspace-noop"
+    install -m755 scripts/scherzo-workspace-jj "$out/libexec/${pname}/scherzo-workspace-jj"
 
     patchShebangs "$out/lib/${pname}/entrypoint.sh"
     patchShebangs "$out/libexec/${pname}/scherzo-start-runner"
     patchShebangs "$out/libexec/${pname}/scherzo-workspace-noop"
+    patchShebangs "$out/libexec/${pname}/scherzo-workspace-jj"
     makeWrapper "$out/lib/${pname}/entrypoint.sh" "$out/bin/scherzo" \
       --add-flags run \
       --set-default SCHERZO_SOURCE_REVISION "${sourceRevision}" \
@@ -142,7 +154,9 @@ stdenvNoCC.mkDerivation {
       --add-flags "$out/bin/scherzo" \
       --prefix PATH : ${startRunnerPath}
     makeWrapper "$out/libexec/${pname}/scherzo-workspace-noop" "$out/bin/scherzo-workspace-noop" \
-      --prefix PATH : ${driverRuntimePath}
+      --prefix PATH : ${noopDriverRuntimePath}
+    makeWrapper "$out/libexec/${pname}/scherzo-workspace-jj" "$out/bin/scherzo-workspace-jj" \
+      --prefix PATH : ${jjDriverRuntimePath}
 
     runHook postInstall
   '';
@@ -207,6 +221,52 @@ stdenvNoCC.mkDerivation {
       SCHERZO_WORKSPACE_PATH="$noop_workspace" SCHERZO_RUN_ROOT="$noop_run_root" \
       "$out/bin/scherzo-workspace-noop" lifecycle remove
     test ! -e "$noop_workspace"
+
+    jj_no_path="__scherzo_no_path__"
+    jj_cmd="${jujutsu}/bin/jj"
+    jj_source="$TMPDIR/jj-source"
+    jj_run_root="$TMPDIR/jj-run"
+    jj_workspace="$jj_run_root/workspaces/main"
+    mkdir -p "$jj_source" "$jj_run_root/workspaces" "$TMPDIR/jj-install-check-home"
+    HOME="$TMPDIR/jj-install-check-home" "$jj_cmd" git init "$jj_source"
+
+    env -i PATH="$jj_no_path" HOME="$TMPDIR/jj-install-check-home" \
+      "$out/bin/scherzo-workspace-jj" describe --json > jj-describe
+    test "$(cat jj-describe)" = '{"version":1,"capabilities":["status","diff","changed-files","assert-only","baseline","refresh-base","publish-change"]}'
+
+    (
+      cd "$jj_source"
+      env -i PATH="$jj_no_path" HOME="$TMPDIR/jj-install-check-home" \
+        SCHERZO_REPO_ROOT="$jj_source" \
+        SCHERZO_WORKSPACE_PATH="$jj_workspace" \
+        SCHERZO_RUN_ROOT="$jj_run_root" \
+        SCHERZO_JJ_WORKSPACE_BASE=@ \
+        "$out/bin/scherzo-workspace-jj" lifecycle create
+    )
+
+    env -i PATH="$jj_no_path" HOME="$TMPDIR/jj-install-check-home" \
+      SCHERZO_WORKSPACE_PATH="$jj_workspace" \
+      SCHERZO_RUN_ROOT="$jj_run_root" \
+      "$out/bin/scherzo-workspace-jj" status --human > jj-status
+    test -s jj-status
+    grep -Eq "Working copy|The working copy is clean|No changes" jj-status
+
+    if env -i PATH="$jj_no_path" HOME="$TMPDIR/jj-install-check-home" \
+      SCHERZO_WORKSPACE_PATH="$jj_workspace" \
+      SCHERZO_RUN_ROOT="$jj_run_root" \
+      "$out/bin/scherzo-workspace-jj" assert-only --path ../unsafe > jj-unsafe.out 2> jj-unsafe.err; then
+      echo "expected unsafe path check to fail" >&2
+      exit 1
+    else
+      status=$?
+      test "$status" -eq 2
+    fi
+
+    env -i PATH="$jj_no_path" HOME="$TMPDIR/jj-install-check-home" \
+      SCHERZO_WORKSPACE_PATH="$jj_workspace" \
+      SCHERZO_RUN_ROOT="$jj_run_root" \
+      "$out/bin/scherzo-workspace-jj" lifecycle remove
+    test ! -e "$jj_workspace"
 
     runHook postInstallCheck
   '';
