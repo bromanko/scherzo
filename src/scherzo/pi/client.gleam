@@ -24,6 +24,14 @@ pub type Session {
   )
 }
 
+pub type RpcCommandFailure {
+  RpcCommandFailure(
+    error: error.PiRpcError,
+    skipped: List(protocol.RpcRecord),
+    response: Option(protocol.RpcRecord),
+  )
+}
+
 pub fn launch(
   command: String,
   cwd: String,
@@ -223,22 +231,49 @@ pub fn compact(
   custom_instructions: Option(String),
   read_timeout_ms: Int,
 ) -> Result(#(Session, List(protocol.RpcRecord)), error.PiRpcError) {
+  case compact_with_diagnostics(session, custom_instructions, read_timeout_ms) {
+    Ok(value) -> Ok(value)
+    Error(failure) -> Error(failure.error)
+  }
+}
+
+pub fn compact_with_diagnostics(
+  session: Session,
+  custom_instructions: Option(String),
+  read_timeout_ms: Int,
+) -> Result(#(Session, List(protocol.RpcRecord)), RpcCommandFailure) {
   let id = int_to_string(session.next_id)
-  use _ <- try_pi(
+  case
     port.send_line(
       session.process,
       protocol.encode_compact(id, custom_instructions),
     )
-    |> map_port_error,
-  )
-  use pair <- try_pi(
-    read_until_response_collect(session.process, id, read_timeout_ms, []),
-  )
-  let #(record, skipped) = pair
-  case record.success {
-    Some(True) ->
-      Ok(#(Session(..session, next_id: session.next_id + 1), skipped))
-    _ -> Error(classified_rejected_command("compact failed", record))
+    |> map_port_error
+  {
+    Error(err) ->
+      Error(RpcCommandFailure(error: err, skipped: [], response: None))
+    Ok(_) ->
+      case
+        read_until_response_collect_diagnostics(
+          session.process,
+          id,
+          read_timeout_ms,
+          [],
+        )
+      {
+        Error(failure) -> Error(failure)
+        Ok(#(record, skipped)) ->
+          case record.success {
+            Some(True) ->
+              Ok(#(Session(..session, next_id: session.next_id + 1), skipped))
+            _ ->
+              Error(RpcCommandFailure(
+                error: classified_rejected_command("compact failed", record),
+                skipped: skipped,
+                response: Some(record),
+              ))
+          }
+      }
   }
 }
 
@@ -468,6 +503,20 @@ fn read_until_response_collect(
   timeout_ms: Int,
   skipped: List(protocol.RpcRecord),
 ) -> Result(#(protocol.RpcRecord, List(protocol.RpcRecord)), error.PiRpcError) {
+  case
+    read_until_response_collect_diagnostics(process, id, timeout_ms, skipped)
+  {
+    Ok(pair) -> Ok(pair)
+    Error(failure) -> Error(failure.error)
+  }
+}
+
+fn read_until_response_collect_diagnostics(
+  process: port.Process,
+  id: String,
+  timeout_ms: Int,
+  skipped: List(protocol.RpcRecord),
+) -> Result(#(protocol.RpcRecord, List(protocol.RpcRecord)), RpcCommandFailure) {
   read_until_response_collect_until(
     process,
     id,
@@ -487,41 +536,81 @@ fn read_until_response_collect_until(
   skipped: List(protocol.RpcRecord),
   skipped_count: Int,
   skipped_bytes: Int,
-) -> Result(#(protocol.RpcRecord, List(protocol.RpcRecord)), error.PiRpcError) {
+) -> Result(#(protocol.RpcRecord, List(protocol.RpcRecord)), RpcCommandFailure) {
   let remaining_ms = deadline_ms - monotonic_ms()
   case remaining_ms <= 0 {
-    True -> Error(error.PiReadTimeout)
+    True -> read_failure(error.PiReadTimeout, skipped)
     False -> {
       let read_timeout_ms = min_int(timeout_ms, remaining_ms)
-      use line <- try_pi(
-        port.read_stdout_line(process, read_timeout_ms) |> map_port_error,
-      )
-      use record <- try_pi(protocol.decode_record(line))
-      case record.id == Some(id) && record.type_ == "response" {
-        True -> Ok(#(record, list.reverse(skipped)))
-        False -> {
-          let skipped_count = skipped_count + 1
-          let skipped_bytes = skipped_bytes + string.length(record.raw_json)
-          case
-            skipped_count > max_interleaved_response_records
-            || skipped_bytes > max_interleaved_response_bytes
-          {
-            True -> Error(error.PiProtocolError("too many interleaved records"))
-            False ->
-              read_until_response_collect_until(
-                process,
-                id,
-                timeout_ms,
-                deadline_ms,
-                [record, ..skipped],
-                skipped_count,
-                skipped_bytes,
-              )
+      case port.read_stdout_line(process, read_timeout_ms) |> map_port_error {
+        Error(err) -> read_failure(err, skipped)
+        Ok(line) ->
+          case protocol.decode_record(line) {
+            Error(err) -> read_failure(err, skipped)
+            Ok(record) ->
+              case record.id == Some(id) && record.type_ == "response" {
+                True -> Ok(#(record, list.reverse(skipped)))
+                False ->
+                  read_until_response_collect_after_skipped_record(
+                    process,
+                    id,
+                    timeout_ms,
+                    deadline_ms,
+                    skipped,
+                    skipped_count,
+                    skipped_bytes,
+                    record,
+                  )
+              }
           }
-        }
       }
     }
   }
+}
+
+fn read_until_response_collect_after_skipped_record(
+  process: port.Process,
+  id: String,
+  timeout_ms: Int,
+  deadline_ms: Int,
+  skipped: List(protocol.RpcRecord),
+  skipped_count: Int,
+  skipped_bytes: Int,
+  record: protocol.RpcRecord,
+) -> Result(#(protocol.RpcRecord, List(protocol.RpcRecord)), RpcCommandFailure) {
+  let skipped_count = skipped_count + 1
+  let skipped_bytes = skipped_bytes + string.length(record.raw_json)
+  case
+    skipped_count > max_interleaved_response_records
+    || skipped_bytes > max_interleaved_response_bytes
+  {
+    True ->
+      read_failure(error.PiProtocolError("too many interleaved records"), [
+        record,
+        ..skipped
+      ])
+    False ->
+      read_until_response_collect_until(
+        process,
+        id,
+        timeout_ms,
+        deadline_ms,
+        [record, ..skipped],
+        skipped_count,
+        skipped_bytes,
+      )
+  }
+}
+
+fn read_failure(
+  err: error.PiRpcError,
+  skipped: List(protocol.RpcRecord),
+) -> Result(a, RpcCommandFailure) {
+  Error(RpcCommandFailure(
+    error: err,
+    skipped: list.reverse(skipped),
+    response: None,
+  ))
 }
 
 fn skipped_record_bytes(records: List(protocol.RpcRecord)) -> Int {

@@ -161,6 +161,13 @@ while IFS= read -r line; do
       ;;
     compact)
       if [[ -n "${FAKE_PI_COMPACT_FAIL:-}" ]]; then
+        if [[ -n "${FAKE_PI_COMPACT_EVENTS_BEFORE_FAIL:-}" ]]; then
+          jq -cn '{type:"compaction_start",reason:"manual"}'
+          jq -cn '{type:"compaction_end",reason:"manual"}'
+        fi
+        if [[ -n "${FAKE_PI_COMPACT_NO_RESPONSE_AFTER_EVENTS:-}" ]]; then
+          while true; do sleep 60; done
+        fi
         jq -cn --arg id "$id" '{id:$id,type:"response",command:"compact",success:false,error:"compact failed"}'
       else
         jq -cn '{type:"compaction_start",reason:"manual"}'
