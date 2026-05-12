@@ -174,6 +174,41 @@ pub fn compact_failed_response_is_protocol_error_test() {
   let assert Error(error.PiProtocolError(_)) = result
 }
 
+pub fn compact_failure_diagnostics_preserve_interleaved_events_test() {
+  let cwd = "test/tmp/pi-rpc-compact-fail-diagnostics"
+  reset_dir(cwd)
+  let command =
+    "FAKE_PI_COMPACT_FAIL=1 FAKE_PI_COMPACT_EVENTS_BEFORE_FAIL=1 " <> fake_pi()
+  let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
+  let result = client.compact_with_diagnostics(session, None, 1000)
+  let _ = client.terminate(session)
+  let assert Error(client.RpcCommandFailure(
+    error: error.PiProtocolError(_),
+    skipped: skipped,
+    response: Some(response),
+  )) = result
+  assert list_types(skipped) == ["compaction_start", "compaction_end"]
+  assert response.command == Some("compact")
+  assert response.success == Some(False)
+}
+
+pub fn compact_timeout_diagnostics_preserve_interleaved_events_test() {
+  let cwd = "test/tmp/pi-rpc-compact-timeout-diagnostics"
+  reset_dir(cwd)
+  let command =
+    "FAKE_PI_COMPACT_FAIL=1 FAKE_PI_COMPACT_EVENTS_BEFORE_FAIL=1 FAKE_PI_COMPACT_NO_RESPONSE_AFTER_EVENTS=1 "
+    <> fake_pi()
+  let assert Ok(session) = client.launch(command, cwd, "name", False, 1000)
+  let result = client.compact_with_diagnostics(session, None, 50)
+  let _ = client.terminate(session)
+  let assert Error(client.RpcCommandFailure(
+    error: error.PiReadTimeout,
+    skipped: skipped,
+    response: None,
+  )) = result
+  assert list_types(skipped) == ["compaction_start", "compaction_end"]
+}
+
 pub fn send_abort_and_ui_response_helpers_test() {
   let cwd = "test/tmp/pi-rpc-command-helpers"
   reset_dir(cwd)

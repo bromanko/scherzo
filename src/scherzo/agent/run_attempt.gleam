@@ -862,7 +862,6 @@ fn recover_context_exhaustion(
       try_compacted_recovery(
         session,
         issue,
-        failed_prompt,
         turn,
         totals,
         result,
@@ -883,7 +882,6 @@ fn recover_context_exhaustion(
 fn try_compacted_recovery(
   session: client.Session,
   issue: tracker_issue.Issue,
-  failed_prompt: String,
   turn: Int,
   totals: session_tokens.TokenTotals,
   result: result_artifact.ResultArtifact,
@@ -902,7 +900,13 @@ fn try_compacted_recovery(
     "Compact prior context for Scherzo workflow step "
     <> attempt_context.step_id
     <> ". Preserve durable workspace state, completed edits, important artifact refs, and next actions."
-  case client.compact(session, Some(instructions), config.pi.read_timeout_ms) {
+  case
+    client.compact_with_diagnostics(
+      session,
+      Some(instructions),
+      config.pi.read_timeout_ms,
+    )
+  {
     Ok(#(session, skipped)) -> {
       emit_records(
         issue.id,
@@ -911,11 +915,15 @@ fn try_compacted_recovery(
         config_module.resolved_secrets(config),
         emit_update,
       )
-      let reasons = compaction_reasons(skipped)
+      let reasons = context_recovery_artifact.compaction_event_reasons(skipped)
+      let compaction_attempt =
+        context_recovery_artifact.compaction_succeeded(
+          reasons,
+          context_recovery_artifact.compaction_event_count(skipped),
+        )
       let prompt =
-        build_recovery_prompt(
+        context_recovery_artifact.build_recovery_prompt(
           issue,
-          failed_prompt,
           config,
           attempt_context,
           recovery_attempt,
@@ -951,13 +959,31 @@ fn try_compacted_recovery(
         artifacts,
         context_recovery_prompt.PiRpcCompact,
         reasons,
+        compaction_attempt,
       )
     }
-    Error(_) ->
+    Error(failure) -> {
+      emit_records(
+        issue.id,
+        failure.skipped,
+        turn,
+        config_module.resolved_secrets(config),
+        emit_update,
+      )
+      let reasons =
+        context_recovery_artifact.compaction_event_reasons(failure.skipped)
+      let compaction_attempt =
+        context_recovery_artifact.compaction_failed(
+          failure.error,
+          reasons,
+          context_recovery_artifact.compaction_event_count(failure.skipped),
+          failure.response,
+          config_module.resolved_secrets(config),
+          workspace_path,
+        )
       fresh_session_recovery(
         session,
         issue,
-        failed_prompt,
         turn,
         totals,
         result,
@@ -971,14 +997,15 @@ fn try_compacted_recovery(
         recovery_attempt,
         context,
         artifacts,
+        compaction_attempt,
       )
+    }
   }
 }
 
 fn fresh_session_recovery(
   failed_session: client.Session,
   issue: tracker_issue.Issue,
-  failed_prompt: String,
   turn: Int,
   totals: session_tokens.TokenTotals,
   result: result_artifact.ResultArtifact,
@@ -992,28 +1019,27 @@ fn fresh_session_recovery(
   recovery_attempt: Int,
   context: context_exhaustion.ContextExhaustion,
   artifacts: context_recovery_artifact.RecoveryArtifacts,
+  compaction_attempt: context_recovery_artifact.CompactionAttemptDiagnostic,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   emit_update(
     issue.id,
     lifecycle_update_with_message(
       pi_event.ContextRecoveryStarted,
-      Some(
-        "context window exhausted; retrying step "
-        <> attempt_context.step_id
-        <> " in a fresh compact session",
-      ),
+      Some(context_recovery_artifact.fresh_session_recovery_message(
+        attempt_context.step_id,
+        compaction_attempt,
+      )),
     ),
   )
   let _ = client.terminate(failed_session)
   let prompt =
-    build_recovery_prompt(
+    context_recovery_artifact.build_recovery_prompt(
       issue,
-      failed_prompt,
       config,
       attempt_context,
       recovery_attempt,
       context_recovery_prompt.FreshSession,
-      [],
+      compaction_attempt.event_reasons,
       artifacts,
     )
   let _ =
@@ -1035,13 +1061,23 @@ fn fresh_session_recovery(
     )
   {
     Error(err) -> {
+      let reason = error.PiFailed(err)
+      let _ =
+        context_recovery_artifact.write_result(
+          artifact_store.new(config.workspace.root),
+          attempt_context.run_id,
+          attempt_context.workflow_id,
+          attempt_context.step_id,
+          attempt_context.attempt_index,
+          "failed",
+          context_recovery_prompt.FreshSession,
+          context_failure_reason(reason),
+          compaction_attempt.event_reasons,
+          compaction_attempt,
+          Some(context_recovery_artifact.failure_diagnostic(reason)),
+        )
       let _ = workspace.after_run(workspace_path, config.hooks)
-      Error(worker_failure_with(
-        error.PiFailed(err),
-        Some(workspace_path),
-        totals,
-        None,
-      ))
+      Error(worker_failure_with(reason, Some(workspace_path), totals, None))
     }
     Ok(session) -> {
       emit_update(issue.id, pi_session_started_update(session.session_id))
@@ -1063,7 +1099,8 @@ fn fresh_session_recovery(
         context,
         artifacts,
         context_recovery_prompt.FreshSession,
-        [],
+        compaction_attempt.event_reasons,
+        compaction_attempt,
       )
     }
   }
@@ -1088,6 +1125,7 @@ fn run_recovery_prompt(
   artifacts: context_recovery_artifact.RecoveryArtifacts,
   method: context_recovery_prompt.RecoveryMethod,
   compaction_event_reasons: List(String),
+  compaction_attempt: context_recovery_artifact.CompactionAttemptDiagnostic,
 ) -> Result(types.WorkerSuccess, types.WorkerFailure) {
   let outcome =
     loop_turns(
@@ -1130,6 +1168,7 @@ fn run_recovery_prompt(
           method,
           False,
           compaction_event_reasons,
+          compaction_attempt,
           None,
         )
       Ok(success)
@@ -1150,6 +1189,7 @@ fn run_recovery_prompt(
           method,
           recovery_exhausted,
           compaction_event_reasons,
+          compaction_attempt,
           Some(failure_diagnostic),
         )
       let result_ref = case result_write {
@@ -1261,51 +1301,6 @@ fn recovery_result_suffix(result_ref: Option(String)) -> String {
       " terminal_diagnostics="
       <> artifact_store.context_recovery_display_path(result_ref)
     None -> ""
-  }
-}
-
-fn build_recovery_prompt(
-  issue: tracker_issue.Issue,
-  failed_prompt: String,
-  config: config_types.EffectiveConfig,
-  attempt_context: workflow_attempt.StepAttemptContext,
-  recovery_attempt: Int,
-  method: context_recovery_prompt.RecoveryMethod,
-  compaction_event_reasons: List(String),
-  artifacts: context_recovery_artifact.RecoveryArtifacts,
-) -> String {
-  let _ = failed_prompt
-  context_recovery_prompt.build(context_recovery_prompt.RecoveryPromptInput(
-    workflow_id: attempt_context.workflow_id,
-    run_id: attempt_context.run_id,
-    step_id: attempt_context.step_id,
-    step_attempt_index: attempt_context.attempt_index,
-    issue_identifier: Some(issue.identifier),
-    issue_title: Some(issue.title),
-    recovery_attempt: recovery_attempt,
-    recovery_method: method,
-    compaction_event_reasons: compaction_event_reasons,
-    prompt_excerpt_ref: artifacts.prompt_excerpt_ref,
-    error_artifact_ref: artifacts.error_ref,
-    prompt_excerpt_display_path: artifacts.prompt_excerpt_display_path,
-    error_artifact_display_path: artifacts.error_display_path,
-    current_status: "Scherzo did not preload full status; run jj status --color=never before editing.",
-    original_prompt_excerpt: artifacts.prompt_excerpt,
-    max_chars: config.agent.context_recovery_prompt_char_limit,
-  ))
-}
-
-fn compaction_reasons(records: List(protocol.RpcRecord)) -> List(String) {
-  records
-  |> list.filter_map(fn(record) {
-    protocol.compaction_reason(record) |> option_to_result
-  })
-}
-
-fn option_to_result(value: Option(a)) -> Result(a, Nil) {
-  case value {
-    Some(value) -> Ok(value)
-    None -> Error(Nil)
   }
 }
 
