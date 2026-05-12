@@ -28,7 +28,7 @@ apply these steps:
 2. Ensure the configured driver implements `describe --json` and exits 0 with valid metadata.
 3. Rerun workflow-config validation or the test suite.
 
-A migrated profile should look like this:
+A migrated source-tree profile should look like this when the config is at the repository root:
 
 ```yaml
 workspace:
@@ -36,6 +36,18 @@ workspace:
     noop:
       driver:
         command: scripts/scherzo-workspace-noop
+        lifecycle: [create, before-step, after-step, remove]
+        timeout_ms: 60000
+```
+
+A packaged deployment should use the installed command name instead:
+
+```yaml
+workspace:
+  profiles:
+    noop:
+      driver:
+        command: scherzo-workspace-noop
         lifecycle: [create, before-step, after-step, remove]
         timeout_ms: 60000
 ```
@@ -49,11 +61,18 @@ workspace_capabilities: [assert-only]
 
 ## Manual checks
 
-From the repository root, check the bundled drivers directly:
+From the repository root, check the bundled source-tree drivers directly:
 
 ```sh
 scripts/scherzo-workspace-noop describe --json
 scripts/scherzo-workspace-jj describe --json
+```
+
+After building or installing the package, check the packaged no-op driver by command name or from the build result:
+
+```sh
+scherzo-workspace-noop describe --json
+result/bin/scherzo-workspace-noop describe --json
 ```
 
 The no-op driver should report `status`, `changed-files`, and `assert-only`. The jj driver should report `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-change`. Neither command should require `SCHERZO_WORKSPACE_PATH` or a prepared workflow workspace.
@@ -63,6 +82,7 @@ Then rerun the relevant validation:
 ```sh
 LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
 LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config examples/scherzo.yaml
+direnv exec . env PATH="$PWD/result/bin:$PATH" LINEAR_API_KEY=dummy gleam run -- doctor --check workflow-config examples/scherzo-packaged-noop.yaml
 direnv exec . gleam test
 ```
 

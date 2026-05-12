@@ -21,7 +21,19 @@ The workflow selects `workspace_profile: noop` and declares `workspace_capabilit
 
 Use a driver-backed profile so Scherzo can create, check, and remove the artifact workspace through the same trusted command that provides `assert-only`.
 
-A minimal artifact-only profile looks like this:
+A minimal packaged artifact-only profile looks like this:
+
+    workspace:
+      root: .scherzo/workspaces
+      default_profile: noop
+      profiles:
+        noop:
+          driver:
+            command: scherzo-workspace-noop
+            lifecycle: [create, before-step, after-step, remove]
+            timeout_ms: 60000
+
+A source-tree checkout can instead point at the checked script layout:
 
     workspace:
       root: .scherzo/workspaces
@@ -33,11 +45,11 @@ A minimal artifact-only profile looks like this:
             lifecycle: [create, before-step, after-step, remove]
             timeout_ms: 60000
 
-The `driver.command` value should name the trusted executable configured by the operator. If the config file is at the repository root, `scripts/scherzo-workspace-noop` works for the checked script layout; the checked-in `examples/scherzo.yaml` lives under `examples/` and therefore uses `../scripts/scherzo-workspace-noop`. In another repository, place the wrapper at the same relative path from the config file, install it on `PATH`, or configure an absolute trusted script path. The driver must self-describe `assert-only` from `describe --json`; do not add profile-local `driver.capabilities`. Command steps receive `SCHERZO_WORKSPACE_DRIVER` verbatim and run from the prepared workspace, so workflows that call driver capabilities should resolve simple relative driver paths against `SCHERZO_CONFIG_DIR`, as `examples/workflows/research.yaml` does. Do not put secret material in `driver.command`.
+The `driver.command` value should name the trusted executable configured by the operator. If Scherzo is installed as a package, use `command: scherzo-workspace-noop`. If the config file is at the repository root, `scripts/scherzo-workspace-noop` works for the checked script layout; the checked-in `examples/scherzo.yaml` lives under `examples/` and therefore uses `../scripts/scherzo-workspace-noop`. In another repository, place the wrapper at the same relative path from the config file, install it on `PATH`, or configure an absolute trusted script path. The driver must self-describe `assert-only` from `describe --json`; do not add profile-local `driver.capabilities`. Command steps receive `SCHERZO_WORKSPACE_DRIVER` verbatim and run from the prepared workspace, so workflows that call driver capabilities should resolve simple relative driver paths against `SCHERZO_CONFIG_DIR`, as `examples/workflows/research.yaml` does. Do not put secret material in `driver.command`.
 
 ## Driver behavior by workspace style
 
-For an empty artifact workspace, `scripts/scherzo-workspace-noop` treats every regular file under the workspace root as a produced artifact, except its private marker and Scherzo's `.scherzo` diagnostics directory. Ignored files, build caches, generated metadata, downloaded indexes, snapshots, and lockfile changes count as unexpected artifacts when they are regular files in the workspace. A successful research run should therefore leave only `research-findings.md`.
+For an empty artifact workspace, `scherzo-workspace-noop` in a package or `scripts/scherzo-workspace-noop` in a source-tree checkout treats every regular file under the workspace root as a produced artifact, except its private marker and Scherzo's `.scherzo` diagnostics directory. Ignored files, build caches, generated metadata, downloaded indexes, snapshots, and lockfile changes count as unexpected artifacts when they are regular files in the workspace. A successful research run should therefore leave only `research-findings.md`.
 
 For a copied repository workspace, use an adapter that records or knows the prepared baseline before the agent step. Its `assert-only` operation should compare the current workspace against that baseline and succeed only when the relative changed-file set is exactly `research-findings.md`. The adapter documentation should say whether ignored files and generated caches are counted. If it cannot state that rule clearly, do not use it for this workflow.
 

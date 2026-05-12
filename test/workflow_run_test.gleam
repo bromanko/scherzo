@@ -7,6 +7,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/pi_rpc
 import scherzo/agent/types as agent_types
+import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
@@ -224,6 +225,70 @@ fn fake_pi() -> String {
 
 fn shell_quote(value: String) -> String {
   "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
+}
+
+fn test_limits() -> config_types.ArtifactLimits {
+  config_types.ArtifactLimits(
+    command_stream_max_chars: 4000,
+    template_field_max_chars: 4000,
+    workflow_summary_max_chars: 4000,
+  )
+}
+
+fn absolute_path(value: String) -> String {
+  let assert Ok(abs) = path.absolute(value)
+  abs
+}
+
+fn chmod_executable(path: String) -> Nil {
+  let artifact =
+    command_step.run(
+      "chmod_executable",
+      "chmod +x " <> shell_quote(path),
+      ".",
+      5000,
+      [],
+      test_limits(),
+    )
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+}
+
+fn write_noop_path_shim(root: String, log_path: String) -> String {
+  let bin = root <> "/bin"
+  let target = bin <> "/scherzo-workspace-noop"
+  let source = absolute_path("scripts/scherzo-workspace-noop")
+  let log = absolute_path(log_path)
+  let assert Ok(Nil) = simplifile.create_directory_all(bin)
+  let assert Ok(Nil) =
+    simplifile.write(
+      target,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> "
+        <> shell_quote(log)
+        <> "\nexec "
+        <> shell_quote(source)
+        <> " \"$@\"\n",
+    )
+  chmod_executable(target)
+  absolute_path(bin)
+}
+
+fn path_with_prefix(prefix: String, original: Option(String)) -> String {
+  case original {
+    Some(value) -> prefix <> ":" <> value
+    None -> prefix
+  }
+}
+
+fn restore_path(original: Option(String)) -> Nil {
+  case original {
+    Some(value) -> {
+      let assert Ok(Nil) = setenv("PATH", value)
+      Nil
+    }
+    None -> unsetenv("PATH")
+  }
 }
 
 fn deps(
@@ -825,6 +890,96 @@ pub fn command_step_receives_discovered_workspace_driver_context_test() {
   assert receive_event(subject) == "prepare:run:main:"
   assert receive_event(subject)
     == "driver_env:noop|status changed-files assert-only"
+}
+
+pub fn packaged_noop_command_name_discovers_and_runs_driver_lifecycle_test() {
+  let root = "test/tmp/workflow-run-packaged-noop-driver"
+  reset_dir(root)
+  let bin = write_noop_path_shim(root, root <> "/driver.log")
+  let original_path = path.env("PATH")
+  let assert Ok(Nil) = setenv("PATH", path_with_prefix(bin, original_path))
+
+  let base = orchestrator()
+  let profile =
+    config_types.WorkspaceHookProfile(
+      name: "noop",
+      hooks: None,
+      driver: Some(config_types.WorkspaceDriverConfig(
+        command: "scherzo-workspace-noop",
+        lifecycle: [
+          config_types.LifecycleCreate,
+          config_types.LifecycleBeforeStep,
+          config_types.LifecycleAfterStep,
+          config_types.LifecycleRemove,
+        ],
+        capabilities: [],
+        timeout_ms: 5000,
+      )),
+      source: config_types.ConfiguredWorkspaceDriver,
+    )
+  let orchestrator =
+    config_types.OrchestratorConfig(
+      ..base,
+      config_dir: root,
+      effective: config_types.EffectiveConfig(
+        ..base.effective,
+        workspace: config_types.WorkspaceConfig(root: root <> "/workspaces"),
+      ),
+      workspace_profiles: config_types.WorkspaceHookProfiles(
+        default_profile: "noop",
+        profiles: dict.from_list([#("noop", profile)]),
+      ),
+    )
+  let discovery_result =
+    workspace_driver_discovery.enrich_orchestrator(orchestrator)
+  let run_result = case discovery_result {
+    Ok(orchestrator) -> {
+      let assert Ok(dag) =
+        workflow_dag.parse(
+          "version: 1\nid: implementation\nworkspace_profile: noop\nworkspace_capabilities: [assert-only]\nsteps:\n  - id: collect_findings\n    kind: command\n    run: |\n      set -eu\n      printf 'findings\\n' > research-findings.md\n      driver=${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required}\n      \"$driver\" assert-only --path research-findings.md\n    workspace: main\n",
+        )
+      case
+        workflow_run.execute(
+          issue(),
+          dag,
+          orchestrator,
+          empty_tracker(),
+          [],
+          "run-1",
+          workflow_run.default_dependencies(),
+        )
+      {
+        Ok(_) -> Ok(Nil)
+        Error(failure) -> Error(failure.reason)
+      }
+    }
+    Error(error) -> Error(workspace_driver_discovery.error_message(error))
+  }
+  restore_path(original_path)
+
+  let assert Ok(enriched) = discovery_result
+  let assert Ok(enriched_profile) =
+    dict.get(enriched.workspace_profiles.profiles, "noop")
+  let assert Some(driver) = enriched_profile.driver
+  assert driver.command == "scherzo-workspace-noop"
+  assert driver.capabilities
+    == [
+      config_types.WorkspaceStatus,
+      config_types.WorkspaceChangedFiles,
+      config_types.WorkspaceAssertOnly,
+    ]
+  let assert Ok(Nil) = run_result
+  let assert Ok(log) = simplifile.read(root <> "/driver.log")
+  assert string.contains(log, "describe --json")
+  assert string.contains(log, "lifecycle create")
+  assert string.contains(log, "lifecycle before-step")
+  assert string.contains(log, "assert-only --path research-findings.md")
+  assert string.contains(log, "lifecycle after-step")
+  assert string.contains(log, "lifecycle remove")
+  assert simplifile.is_directory(
+      root <> "/workspaces/implementation/ABC-123/run-1",
+    )
+    == Ok(False)
 }
 
 pub fn default_agent_step_receives_workspace_driver_environment_test() {
@@ -2967,3 +3122,9 @@ fn release_command_by_id(starts: List(CommandStart), step_id: String) -> Nil {
       }
   }
 }
+
+@external(erlang, "scherzo_test_ffi", "setenv")
+fn setenv(name: String, value: String) -> Result(Nil, Nil)
+
+@external(erlang, "scherzo_test_ffi", "unsetenv")
+fn unsetenv(name: String) -> Nil

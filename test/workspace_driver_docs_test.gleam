@@ -35,6 +35,15 @@ fn assert_not_contains(
   }
 }
 
+fn assert_no_local_absolute_path_prefixes(
+  path: String,
+  contents: String,
+) -> Nil {
+  assert_not_contains(path, contents, "/Users/")
+  assert_not_contains(path, contents, "/home/")
+  assert_not_contains(path, contents, "C:\\Users\\")
+}
+
 pub fn readme_documents_workspace_driver_model_test() {
   let path = "README.md"
   let readme = read_file(path)
@@ -47,6 +56,7 @@ pub fn readme_documents_workspace_driver_model_test() {
   assert_contains(path, readme, "legacy workspace.hooks")
   assert_contains(path, readme, "docs/runbooks/workspace-driver-migration.md")
   assert_contains(path, readme, "docs/specs/WORKSPACE_DRIVER_SPEC.md")
+  assert_contains(path, readme, "command: scherzo-workspace-noop")
 }
 
 pub fn workspace_driver_spec_is_normative_contract_test() {
@@ -103,6 +113,60 @@ pub fn examples_use_driver_profiles_test() {
   assert_not_contains(path, example, "capabilities:")
   assert_not_contains(path, example, "    isolated:\n      hooks:")
   assert_not_contains(path, example, "    noop:\n      hooks:")
+  assert_no_local_absolute_path_prefixes(path, example)
+}
+
+pub fn packaged_noop_example_uses_installed_command_test() {
+  let path = "examples/scherzo-packaged-noop.yaml"
+  let example = read_file(path)
+
+  assert_contains(path, example, "default_profile: noop")
+  assert_contains(path, example, "command: scherzo-workspace-noop")
+  assert_contains(
+    path,
+    example,
+    "lifecycle: [create, before-step, after-step, remove]",
+  )
+  assert_contains(path, example, "research: workflows/research.yaml")
+  assert_not_contains(path, example, "../scripts/scherzo-workspace-noop")
+  assert_not_contains(path, example, "scripts/scherzo-workspace-noop")
+  assert_no_local_absolute_path_prefixes(path, example)
+}
+
+pub fn packaged_and_source_tree_noop_docs_are_distinct_test() {
+  let migration_path = "docs/runbooks/workspace-driver-migration.md"
+  let migration = read_file(migration_path)
+  let portable_path = "docs/runbooks/portable-research-workflow.md"
+  let portable = read_file(portable_path)
+  let capabilities_path = "docs/runbooks/workspace-driver-capabilities.md"
+  let capabilities = read_file(capabilities_path)
+
+  assert_contains(migration_path, migration, "command: scherzo-workspace-noop")
+  assert_contains(
+    migration_path,
+    migration,
+    "command: ../scripts/scherzo-workspace-noop",
+  )
+  assert_contains(
+    migration_path,
+    migration,
+    "examples/scherzo-packaged-noop.yaml",
+  )
+  assert_contains(portable_path, portable, "command: scherzo-workspace-noop")
+  assert_contains(portable_path, portable, "../scripts/scherzo-workspace-noop")
+  assert_contains(
+    capabilities_path,
+    capabilities,
+    "command: scherzo-workspace-noop",
+  )
+  assert_contains(
+    capabilities_path,
+    capabilities,
+    "result/bin/scherzo-workspace-noop describe --json",
+  )
+  assert_no_local_absolute_path_prefixes(migration_path, migration)
+  assert_no_local_absolute_path_prefixes(portable_path, portable)
+  assert_no_local_absolute_path_prefixes(capabilities_path, capabilities)
 }
 
 pub fn research_workflow_resolves_relative_driver_test() {
