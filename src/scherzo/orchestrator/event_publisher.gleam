@@ -157,7 +157,9 @@ pub fn kind_for_update(
     pi_event.AgentStart
     | pi_event.TurnStart
     | pi_event.TurnEnd
-    | pi_event.AgentEnd -> session_event.Pi
+    | pi_event.AgentEnd
+    | pi_event.AutoRetryStart
+    | pi_event.AutoRetryEnd -> session_event.Pi
     pi_event.UnknownPiEvent(_) ->
       case update.raw_json {
         Some(_) -> session_event.PiRaw

@@ -18,6 +18,8 @@ pub type PiEvent {
   TurnStart
   TurnEnd
   AgentEnd
+  AutoRetryStart
+  AutoRetryEnd
   OperatorPromptSent
   OperatorPromptQueued
   OperatorPromptDropped
@@ -49,6 +51,8 @@ pub fn to_string(event: PiEvent) -> String {
     TurnStart -> "turn_start"
     TurnEnd -> "turn_end"
     AgentEnd -> "agent_end"
+    AutoRetryStart -> "auto_retry_start"
+    AutoRetryEnd -> "auto_retry_end"
     OperatorPromptSent -> "operator_prompt_sent"
     OperatorPromptQueued -> "operator_prompt_queued"
     OperatorPromptDropped -> "operator_prompt_dropped"
@@ -81,6 +85,8 @@ pub fn from_string(name: String) -> PiEvent {
     "turn_start" -> TurnStart
     "turn_end" -> TurnEnd
     "agent_end" -> AgentEnd
+    "auto_retry_start" -> AutoRetryStart
+    "auto_retry_end" -> AutoRetryEnd
     "operator_prompt_sent" -> OperatorPromptSent
     "operator_prompt_queued" -> OperatorPromptQueued
     "operator_prompt_dropped" -> OperatorPromptDropped
