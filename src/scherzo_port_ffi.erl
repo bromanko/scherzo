@@ -19,6 +19,8 @@
 -define(TERM_GRACE_MS, 300).
 -define(KILL_GRACE_MS, 700).
 -define(CHILD_PID_WAIT_MS, 200).
+-define(LAUNCH_READY_WAIT_MS, 200).
+-define(START_POLL_MS, 5).
 -define(POLL_MS, 25).
 
 start(Command, Cwd) ->
@@ -96,7 +98,9 @@ start_shell(Cmd, Dir, Env) ->
                     {cd, Dir},
                     {env, Env}
                 ]),
-                {ok, {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir}}
+                Process = {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir},
+                wait_for_launch_ready(Port, ChildPidPath),
+                {ok, Process}
             catch
                 Class:CatchReason ->
                     _ = cleanup_private_temp_dir(TmpDir),
@@ -117,7 +121,9 @@ start_argv_checked(Exe, ArgList, Dir, Env) ->
                     {cd, Dir},
                     {env, Env}
                 ]),
-                {ok, {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir}}
+                Process = {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir},
+                wait_for_launch_ready(Port, ChildPidPath),
+                {ok, Process}
             catch
                 Class:CatchReason ->
                     _ = cleanup_private_temp_dir(TmpDir),
@@ -143,7 +149,9 @@ start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes) ->
                             {cd, Dir},
                             {env, Env}
                         ]),
-                        {ok, {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir}}
+                        Process = {scherzo_process, Port, ErrPath, port_os_pid(Port), ChildPidPath, TmpDir},
+                        wait_for_launch_ready(Port, ChildPidPath),
+                        {ok, Process}
                     catch
                         Class:CatchReason ->
                             _ = cleanup_private_temp_dir(TmpDir),
@@ -611,6 +619,32 @@ read_child_pid_until(Path, Deadline) ->
             end
     end.
 
+%% `open_port/2` can return before the fork helper's child has consumed
+%% the final launch ack and exec'd the Bash wrapper. Very short test timeouts
+%% can then close the port quickly enough for OTP to print
+%% `erl_child_setup: failed with error 32` to the VM stderr. The wrapper writes
+%% its child pid immediately after exec, so this best-effort wait keeps early
+%% terminate/timeout paths from racing that launch handshake.
+wait_for_launch_ready(Port, ChildPidPath) ->
+    Deadline = now_ms() + ?LAUNCH_READY_WAIT_MS,
+    wait_for_launch_ready_until(Port, ChildPidPath, Deadline).
+
+wait_for_launch_ready_until(Port, ChildPidPath, Deadline) ->
+    case read_child_pid(ChildPidPath) of
+        {ok, _Pid} -> ok;
+        none ->
+            case erlang:port_info(Port) of
+                undefined -> ok;
+                _ ->
+                    case now_ms() >= Deadline of
+                        true -> ok;
+                        false ->
+                            sleep_until_next_start_poll(Deadline),
+                            wait_for_launch_ready_until(Port, ChildPidPath, Deadline)
+                    end
+            end
+    end.
+
 read_child_pid(undefined) -> none;
 read_child_pid(Path) ->
     case file:read_file(Path) of
@@ -627,6 +661,13 @@ sleep_until_next_poll(Deadline) ->
     Remaining = remaining_ms(Deadline),
     case Remaining > 0 of
         true -> timer:sleep(min_int(?POLL_MS, Remaining));
+        false -> ok
+    end.
+
+sleep_until_next_start_poll(Deadline) ->
+    Remaining = remaining_ms(Deadline),
+    case Remaining > 0 of
+        true -> timer:sleep(min_int(?START_POLL_MS, Remaining));
         false -> ok
     end.
 

@@ -58,6 +58,40 @@ pub fn port_start_with_env_applies_environment_test() {
   let _ = port.terminate(process)
 }
 
+fn assert_launch_wrapper_records_child_pid(process: port.Process) -> Nil {
+  let assert Ok(temp_dir) = port.temp_dir_for_test(process)
+  let assert Ok(child_pid) = simplifile.read(temp_dir <> "/child.pid")
+  let _ = port.terminate(process)
+
+  assert string.trim(child_pid) != ""
+}
+
+pub fn port_start_waits_until_launch_wrapper_records_child_pid_test() {
+  let cwd = "test/tmp/port-start-ready"
+  reset_dir(cwd)
+
+  let assert Ok(process) = port.start("sleep 60", cwd)
+  assert_launch_wrapper_records_child_pid(process)
+}
+
+pub fn port_start_argv_waits_until_launch_wrapper_records_child_pid_test() {
+  let cwd = "test/tmp/port-start-argv-ready"
+  reset_dir(cwd)
+
+  let assert Ok(process) =
+    port.start_argv("/bin/sh", ["-c", "sleep 60"], cwd, [])
+  assert_launch_wrapper_records_child_pid(process)
+}
+
+pub fn port_start_argv_with_input_waits_until_launch_wrapper_records_child_pid_test() {
+  let cwd = "test/tmp/port-start-argv-input-ready"
+  reset_dir(cwd)
+
+  let assert Ok(process) =
+    port.start_argv_with_input("/bin/sh", ["-c", "sleep 60"], cwd, [], "")
+  assert_launch_wrapper_records_child_pid(process)
+}
+
 pub fn port_terminate_exits_child_test() {
   let cwd = "test/tmp/port-terminate"
   reset_dir(cwd)
