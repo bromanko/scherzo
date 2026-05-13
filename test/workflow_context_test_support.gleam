@@ -1,0 +1,38 @@
+import gleam/list
+
+pub fn without_workflow_context(command: String) -> String {
+  let prefix =
+    workflow_context_keys()
+    |> list.fold("env", fn(prefix, key) { prefix <> " -u " <> key })
+
+  prefix <> " " <> command
+}
+
+fn workflow_context_keys() -> List(String) {
+  [
+    "SCHERZO_ATTEMPT_INDEX",
+    "SCHERZO_ATTEMPT_KEY",
+    "SCHERZO_CONFIG_DIR",
+    "SCHERZO_HOOK_IDEMPOTENCY_KEY",
+    "SCHERZO_ISSUE_ID",
+    "SCHERZO_ISSUE_IDENTIFIER",
+    "SCHERZO_REPO_ROOT",
+    "SCHERZO_RUN_ATTEMPT",
+    "SCHERZO_RUN_ID",
+    "SCHERZO_RUN_KIND",
+    "SCHERZO_RUN_ROOT",
+    "SCHERZO_SCHEDULED_JOB_ID",
+    "SCHERZO_SCHEDULE_DUE_AT",
+    "SCHERZO_SCHEDULE_STARTED_AT",
+    "SCHERZO_SOURCE_WORKSPACE_NAME",
+    "SCHERZO_SOURCE_WORKSPACE_PATH",
+    "SCHERZO_STEP_ID",
+    "SCHERZO_WORKFLOW_ID",
+    "SCHERZO_WORKSPACE_CAPABILITIES",
+    "SCHERZO_WORKSPACE_DRIVER",
+    "SCHERZO_WORKSPACE_NAME",
+    "SCHERZO_WORKSPACE_PATH",
+    "SCHERZO_WORKSPACE_PROFILE",
+    "SCHERZO_WORKSPACE_ROOT",
+  ]
+}

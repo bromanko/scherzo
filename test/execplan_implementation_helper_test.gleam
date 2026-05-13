@@ -5,6 +5,7 @@ import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
+import workflow_context_test_support
 
 fn limits() -> config_types.ArtifactLimits {
   config_types.ArtifactLimits(
@@ -23,7 +24,9 @@ fn reset_dir(path: String) -> Nil {
 fn run_helper(command: String) -> step_artifact.StepArtifact {
   command_step.run(
     "helper",
-    "scripts/scherzo-implementation " <> command,
+    workflow_context_test_support.without_workflow_context(
+      "scripts/scherzo-implementation " <> command,
+    ),
     ".",
     5000,
     [],
@@ -32,7 +35,14 @@ fn run_helper(command: String) -> step_artifact.StepArtifact {
 }
 
 fn run_helper_in(cwd: String, command: String) -> step_artifact.StepArtifact {
-  command_step.run("helper", command, cwd, 10_000, [], limits())
+  command_step.run(
+    "helper",
+    workflow_context_test_support.without_workflow_context(command),
+    cwd,
+    10_000,
+    [],
+    limits(),
+  )
 }
 
 fn chmod_executable(path: String) -> Nil {
