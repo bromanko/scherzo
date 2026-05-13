@@ -26,7 +26,7 @@ const repoRelativePathPattern = "^(?!/)(?!.*(^|/)\\.\\.(/|$))(?![A-Za-z]:[\\\\/]
 const repoRelativePathSchema = Type.String({
 	minLength: 1,
 	pattern: repoRelativePathPattern,
-	description: "Repository- or run-root-relative path. Do not use $SCHERZO_RUN_ROOT, /Users/..., a drive letter path, or .. segments.",
+	description: "Repository- or run-root-relative path. Do not use $SCHERZO_RUN_ROOT, /Users/..., /tmp/..., a drive-letter path, or .. segments.",
 });
 
 const artifactRefSchema = Type.Object({
@@ -319,10 +319,11 @@ export const submitReviewLaneDraftTool = defineTool({
 	promptGuidelines: [
 		"Use submit_review_lane_draft exactly once as the final action for native Scherzo review lanes.",
 		"Do not print review_lane_draft as final assistant JSON; pass the object as submit_review_lane_draft arguments instead.",
-		"Use repository- or run-root-relative paths in submit_review_lane_draft, for example artifacts/review/prepare_review/diff.patch; never use $SCHERZO_RUN_ROOT, /Users/..., drive-letter paths, or .. segments.",
+		"Use repository- or run-root-relative paths in submit_review_lane_draft, for example artifacts/review/prepare_review/diff.patch; never use $SCHERZO_RUN_ROOT, /Users/..., /tmp/..., drive-letter paths, or .. segments.",
 		"For submit_review_lane_draft review_notes.category, use one of: correctness, maintainability, security, performance, testing, workflow, documentation, artifact_contract, other. Use testing for the test-quality lane, not test-quality.",
 		"For submit_review_lane_draft evidence_requests[].target, use only test_name, fixture_id, artifact_path, changed_file_path, or static_scan_rule; do not include command, suggested_test_file, or suggested_test_name.",
 		"Do not call sibling tools in the same tool-call batch as submit_review_lane_draft.",
+		"For input_refs[].path, use run-root-relative paths such as artifacts/review/prepare_review/diff.patch; never use $SCHERZO_RUN_ROOT or absolute local paths such as /Users/... or /tmp/...",
 	],
 	parameters: submitReviewLaneDraftParameters,
 	async execute(_toolCallId, params) {

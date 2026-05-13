@@ -1749,10 +1749,15 @@ def validate_list_field(value: dict[str, Any], field: str) -> list[Any]:
 
 def path_is_unsafe(path: str) -> bool:
     candidate = Path(path)
+    env_placeholder = re.match(
+        r"^\$(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)([\\/]|$)",
+        path,
+    )
     return (
         candidate.is_absolute()
         or ".." in candidate.parts
         or path.startswith("<absolute-local-path>")
+        or bool(env_placeholder)
         or bool(re.match(r"^[A-Za-z]:[\\\\/]", path))
     )
 
@@ -1761,7 +1766,10 @@ def validate_repo_relative_path(path: Any, *, field: str) -> None:
     if not isinstance(path, str) or not path:
         raise ReviewError(f"{field} must be a non-empty string")
     if path_is_unsafe(path):
-        raise ReviewError(f"{field} must be repository-relative and must not escape the repository")
+        raise ReviewError(
+            f"{field} must be a literal repository- or run-root-relative path "
+            "without absolute paths, parent traversals, or environment-variable placeholders"
+        )
 
 
 def validate_locations(value: dict[str, Any], field: str) -> None:
@@ -2645,6 +2653,178 @@ def safe_load_review_lane_draft_or_error(path: Path) -> tuple[dict[str, Any] | N
         return None, str(exc)
 
 
+def resolve_native_agent_step_metadata_path(
+    *,
+    metadata_path: Path,
+    lane_id: str,
+    draft_path: Path,
+) -> Path:
+    """Resolve native lane step metadata across structured-vs-step artifact paths.
+
+    Structured-output payloads are retained under the plain step id directory
+    because workflow shell steps need stable paths such as
+    `lane_correctness/attempt-1/structured/correctness_draft.json`. Step
+    attempt artifacts include a hash suffix in their directory name, for example
+    `lane_correctness-<hash>/attempt-1.json`. Workflows pass the stable-looking
+    metadata path first; when it is absent, recover the hashed attempt artifact
+    beside the structured-output directory so downstream diagnostics can report
+    the original structured-output validation failure instead of only a missing
+    draft file.
+    """
+    if metadata_path.exists():
+        return metadata_path
+    step_id = native_lane_step_id(lane_id)
+    attempt_name = metadata_path.name or "attempt-1.json"
+    candidate_bases: list[Path] = []
+    try:
+        candidate_bases.append(metadata_path.parent.parent)
+    except IndexError:
+        pass
+    try:
+        candidate_bases.append(draft_path.parents[3])
+    except IndexError:
+        pass
+    seen: set[Path] = set()
+    for base in candidate_bases:
+        if base in seen:
+            continue
+        seen.add(base)
+        if not base.exists() or not base.is_dir():
+            continue
+        try:
+            step_dirs = sorted(base.iterdir(), key=lambda path: path.name)
+        except OSError:
+            continue
+        for step_dir in step_dirs:
+            if not step_dir.is_dir() or not step_dir.name.startswith(step_id + "-"):
+                continue
+            candidate = step_dir / attempt_name
+            if candidate.is_file():
+                return candidate
+    return metadata_path
+
+
+def inferred_native_agent_step_metadata_path(
+    *,
+    lane_id: str,
+    draft_path: Path,
+) -> Path | None:
+    try:
+        attempt_dir = draft_path.parents[1]
+        artifact_dir = draft_path.parents[3]
+    except IndexError:
+        return None
+    metadata_path = artifact_dir / native_lane_step_id(lane_id) / f"{attempt_dir.name}.json"
+    return resolve_native_agent_step_metadata_path(
+        metadata_path=metadata_path,
+        lane_id=lane_id,
+        draft_path=draft_path,
+    )
+
+
+def load_metadata_object(metadata_path: Path) -> dict[str, Any] | None:
+    if not metadata_path.exists() or not metadata_path.is_file():
+        return None
+    try:
+        metadata = load_json(metadata_path)
+    except Exception:
+        return None
+    return metadata if isinstance(metadata, dict) else None
+
+
+def native_structured_output(metadata_path: Path) -> dict[str, Any] | None:
+    metadata = load_metadata_object(metadata_path)
+    if metadata is None:
+        return None
+    structured = metadata.get("structured_output")
+    if isinstance(structured, dict):
+        return structured
+    structured_status = metadata.get("structured_output_status")
+    failure_code = metadata.get("failure_code")
+    if isinstance(structured_status, str) and structured_status:
+        fallback: dict[str, Any] = {"status": structured_status}
+        if isinstance(failure_code, str) and failure_code:
+            fallback["failure"] = {"code": failure_code}
+        summary = metadata.get("summary")
+        if isinstance(summary, str) and summary:
+            fallback["error"] = summary
+        return fallback
+    return None
+
+
+def structured_output_failure_summary(metadata_path: Path | None) -> str | None:
+    if metadata_path is None:
+        return None
+    structured = native_structured_output(metadata_path)
+    if not structured:
+        return None
+    status = str(structured.get("status") or "unknown")
+    failure = structured.get("failure")
+    failure_obj = failure if isinstance(failure, dict) else {}
+    retry = structured.get("retry")
+    retry_obj = retry if isinstance(retry, dict) else {}
+    retry_outcome = retry_obj.get("outcome")
+    should_report = status in {"error", "absent", "failed", "failure"} or retry_outcome == "failed"
+    if not should_report:
+        return None
+    parts: list[str] = [f"structured_output_status={status}"]
+    artifact_name = structured.get("artifact_name")
+    if isinstance(artifact_name, str) and artifact_name:
+        parts.append(f"artifact_name={artifact_name}")
+    code = failure_obj.get("code")
+    if isinstance(code, str) and code:
+        parts.append(f"failure_code={code}")
+    validator_name = failure_obj.get("validator_name")
+    if isinstance(validator_name, str) and validator_name:
+        parts.append(f"validator={validator_name}")
+    validator_type = failure_obj.get("validator_type")
+    if isinstance(validator_type, str) and validator_type:
+        parts.append(f"validator_type={validator_type}")
+    error_text = structured.get("error") or failure_obj.get("diagnostic_summary")
+    if isinstance(error_text, str) and error_text:
+        parts.append("error=" + truncate_summary(error_text, 500))
+    if isinstance(retry_outcome, str) and retry_outcome:
+        parts.append(f"retry_outcome={retry_outcome}")
+    retry_attempts = retry_obj.get("attempts")
+    if isinstance(retry_attempts, int):
+        parts.append(f"retry_attempts={retry_attempts}")
+    diagnostics = retry_obj.get("diagnostics")
+    if isinstance(diagnostics, list) and diagnostics:
+        compact_diagnostics: list[str] = []
+        for diagnostic in diagnostics[-3:]:
+            if not isinstance(diagnostic, dict):
+                continue
+            attempt = diagnostic.get("attempt")
+            diagnostic_code = diagnostic.get("failure_code")
+            message = diagnostic.get("message")
+            label = f"attempt {attempt}" if isinstance(attempt, int) else "attempt ?"
+            if isinstance(diagnostic_code, str) and diagnostic_code:
+                label += f" {diagnostic_code}"
+            if isinstance(message, str) and message:
+                label += ": " + truncate_summary(message, 240)
+            compact_diagnostics.append(label)
+        if compact_diagnostics:
+            parts.append("retry_diagnostics=" + " | ".join(compact_diagnostics))
+    return "; ".join(parts)
+
+
+def review_lane_draft_unavailable_message(
+    *,
+    draft_error: str | None,
+    metadata_path: Path | None,
+) -> str:
+    fallback = draft_error or "missing ReviewLaneDraft"
+    structured_summary = structured_output_failure_summary(metadata_path)
+    if not structured_summary:
+        return fallback
+    return (
+        "ReviewLaneDraft unavailable because native lane structured-output validation failed: "
+        + structured_summary
+        + "; draft_artifact_error="
+        + fallback
+    )
+
+
 def diff_source_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if args.diff_file:
         diff, source = source_from_diff_file(Path(args.diff_file))
@@ -3039,11 +3219,33 @@ def verify_evidence_command(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     draft_path = Path(args.draft)
-    draft = load_review_lane_draft(draft_path)
-    validate_review_lane_draft(draft)
     lane_id = args.lane
     if lane_id not in SPECIALIST_LANES:
         raise ReviewError(f"unknown lane: {lane_id}")
+    metadata_arg = str(getattr(args, "agent_step_metadata", "") or "")
+    metadata_path = (
+        resolve_native_agent_step_metadata_path(
+            metadata_path=Path(metadata_arg),
+            lane_id=lane_id,
+            draft_path=draft_path,
+        )
+        if metadata_arg
+        else inferred_native_agent_step_metadata_path(
+            lane_id=lane_id,
+            draft_path=draft_path,
+        )
+    )
+    draft, draft_error = safe_load_review_lane_draft_or_error(draft_path)
+    if draft_error is None and draft is not None:
+        try:
+            validate_review_lane_draft(draft)
+        except ReviewError as exc:
+            draft_error = str(exc)
+    if draft_error is not None or draft is None:
+        raise ReviewError(review_lane_draft_unavailable_message(
+            draft_error=draft_error,
+            metadata_path=metadata_path,
+        ))
     draft_findings = draft.get("draft_findings", []) if isinstance(draft.get("draft_findings"), list) else []
     draft_finding_ids = {
         str(finding.get("draft_finding_id"))
@@ -3199,15 +3401,7 @@ def metadata_artifact_refs(metadata_path: Path, output_dir: Path) -> list[dict[s
 
 
 def native_structured_output_retry_info(metadata_path: Path) -> dict[str, Any] | None:
-    if not metadata_path.exists() or not metadata_path.is_file():
-        return None
-    try:
-        metadata = load_json(metadata_path)
-    except Exception:
-        return None
-    if not isinstance(metadata, dict):
-        return None
-    structured = metadata.get("structured_output")
+    structured = native_structured_output(metadata_path)
     if not isinstance(structured, dict):
         return None
     retry = structured.get("retry")
@@ -3317,7 +3511,11 @@ def normalize_lane_result_command(args: argparse.Namespace) -> None:
         raise ReviewError(f"unknown lane: {lane_id}")
     draft_path = Path(args.draft)
     ledger_path = Path(args.evidence_ledger)
-    metadata_path = Path(args.agent_step_metadata)
+    metadata_path = resolve_native_agent_step_metadata_path(
+        metadata_path=Path(args.agent_step_metadata),
+        lane_id=lane_id,
+        draft_path=draft_path,
+    )
     brief_path = Path(args.brief)
     started_at = now_utc()
     ensure_agent_step_metadata_from_args(
@@ -3334,11 +3532,15 @@ def normalize_lane_result_command(args: argparse.Namespace) -> None:
         except ReviewError as exc:
             draft_error = str(exc)
     if draft_error is not None or draft is None:
+        message = review_lane_draft_unavailable_message(
+            draft_error=draft_error,
+            metadata_path=metadata_path,
+        )
         lane_result = failed_native_lane_result(
             lane_id=lane_id,
             brief_path=brief_path,
             output_dir=output_dir,
-            message=draft_error or "missing ReviewLaneDraft",
+            message=message,
             metadata_path=metadata_path,
         )
         validate_review_lane_result(lane_result)
@@ -7168,6 +7370,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_evidence.add_argument("--changed-files", required=True, help="Changed-files artifact path.")
     verify_evidence.add_argument("--validation-status", required=True, help="Validation-status artifact path.")
     verify_evidence.add_argument("--context-manifest", required=True, help="Context-manifest artifact path.")
+    verify_evidence.add_argument("--agent-step-metadata", default="", help="Optional native lane step artifact path used to preserve structured-output failure diagnostics when the draft is absent.")
     verify_evidence.add_argument("--output-dir", required=True, help="Directory for evidence-ledger artifacts.")
     verify_evidence.set_defaults(func=verify_evidence_command)
 

@@ -74,8 +74,12 @@
     "reject_sibling_tool_calls": true
   },
   "script_owned_deep_validation": [
+    "input_refs artifact reference semantics, including repository- or run-root-relative paths such as artifacts/review/prepare_review/diff.patch and rejection of absolute local paths",
+    "draft finding severity and category policy",
     "finding location line-range semantics",
+    "finding location path portability",
     "finding category policy beyond JSON type checks",
+    "evidence request target path portability",
     "finding-to-evidence linkage",
     "duplicate ids",
     "blocking correctness evidence policy",

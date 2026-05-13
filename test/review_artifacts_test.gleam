@@ -1119,6 +1119,43 @@ fn write_metadata(path: String) -> Nil {
   Nil
 }
 
+fn write_structured_output_error_metadata(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "{\n"
+        <> "  \"step_id\": \"lane_correctness\",\n"
+        <> "  \"status\": \"failure\",\n"
+        <> "  \"failure_code\": \"structured_output_json_schema_rejected\",\n"
+        <> "  \"structured_output\": {\n"
+        <> "    \"status\": \"error\",\n"
+        <> "    \"artifact_name\": \"correctness_draft\",\n"
+        <> "    \"format\": \"json\",\n"
+        <> "    \"error\": \"JSON Schema rejected payload at /input_refs/0/path: absolute paths are not allowed\",\n"
+        <> "    \"failure\": {\n"
+        <> "      \"code\": \"structured_output_json_schema_rejected\",\n"
+        <> "      \"retryable\": true,\n"
+        <> "      \"validator_name\": \"review_lane_draft_schema\",\n"
+        <> "      \"validator_type\": \"json_schema\",\n"
+        <> "      \"diagnostic_summary\": \"instance_path=/input_refs/0/path schema_path=not/anyOf\"\n"
+        <> "    },\n"
+        <> "    \"retry\": {\n"
+        <> "      \"max_retries\": 1,\n"
+        <> "      \"attempts\": 2,\n"
+        <> "      \"outcome\": \"failed\",\n"
+        <> "      \"diagnostics\": [{\n"
+        <> "        \"attempt\": 1,\n"
+        <> "        \"status\": \"validator_failure\",\n"
+        <> "        \"failure_code\": \"structured_output_json_schema_rejected\",\n"
+        <> "        \"message\": \"input_refs[0].path used /Users/example/run instead of artifacts/review/prepare_review/diff.patch\"\n"
+        <> "      }]\n"
+        <> "    }\n"
+        <> "  }\n"
+        <> "}\n",
+    )
+  Nil
+}
+
 fn write_wrong_finding_ledger(path: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
@@ -1144,6 +1181,7 @@ pub fn review_lane_draft_path_safety_validation_test() {
   let absolute_path = "/tmp/scherzo-review-absolute-path-fixture.gleam"
   let absolute_draft = dir <> "/absolute.json"
   let parent_draft = dir <> "/parent.json"
+  let env_input_ref_draft = dir <> "/env-input-ref.json"
   let remote_draft = dir <> "/remote.json"
   let assert Ok(Nil) =
     simplifile.write(
@@ -1155,6 +1193,14 @@ pub fn review_lane_draft_path_safety_validation_test() {
       parent_draft,
       review_lane_draft_json("../secret.txt", "none"),
     )
+  let env_input_ref_contents =
+    review_lane_draft_json("src/example.gleam", "none")
+    |> string.replace(
+      each: "\"path\": \"review-brief.v1.json\"",
+      with: "\"path\": \"$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json\"",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(env_input_ref_draft, env_input_ref_contents)
   let assert Ok(Nil) =
     simplifile.write(
       remote_draft,
@@ -1170,6 +1216,15 @@ pub fn review_lane_draft_path_safety_validation_test() {
     run_command("scripts/scherzo-review validate --artifact " <> parent_draft)
   assert parent.status == step_artifact.StepFailed
   assert parent.exit_code == Some(1)
+
+  let env_input_ref =
+    run_command(
+      "scripts/scherzo-review validate --artifact " <> env_input_ref_draft,
+    )
+  assert env_input_ref.status == step_artifact.StepFailed
+  assert env_input_ref.exit_code == Some(1)
+  assert string.contains(env_input_ref.stderr, "input_refs[0].path")
+  assert string.contains(env_input_ref.stderr, "environment-variable")
 
   let remote =
     run_command("scripts/scherzo-review validate --artifact " <> remote_draft)
@@ -1384,6 +1439,83 @@ pub fn missing_evidence_ledger_produces_failed_lane_result_test() {
   assert string.contains(result, "\"state\": \"failed\"")
   assert string.contains(result, "evidence verification failed")
   assert string.contains(result, "missing-ledger.json")
+}
+
+pub fn missing_draft_verify_evidence_reports_structured_output_root_cause_test() {
+  let dir = "test/tmp/native-missing-draft-root-cause-verify"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let artifact_dir = dir <> "/artifact-runs/run-1"
+  let draft_path =
+    artifact_dir
+    <> "/lane_correctness/attempt-1/structured/correctness_draft.json"
+  let metadata_dir = artifact_dir <> "/lane_correctness-abc123def456"
+  let metadata_path = metadata_dir <> "/attempt-1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) = simplifile.create_directory_all(metadata_dir)
+  write_structured_output_error_metadata(metadata_path)
+
+  let verify =
+    run_command(
+      "scripts/scherzo-review verify-evidence --lane correctness --draft "
+      <> draft_path
+      <> " --brief "
+      <> dir
+      <> "/review-brief.v1.json --diff-file "
+      <> dir
+      <> "/diff.patch --changed-files "
+      <> dir
+      <> "/changed-files.v1.json --validation-status "
+      <> dir
+      <> "/validation-status.v1.json --context-manifest "
+      <> dir
+      <> "/context-manifest.v1.json --output-dir "
+      <> lane_dir,
+    )
+
+  assert verify.status == step_artifact.StepFailed
+  assert verify.exit_code == Some(1)
+  assert_contains(verify.stderr, "structured_output_json_schema_rejected")
+  assert_contains(verify.stderr, "review_lane_draft_schema")
+  assert_contains(verify.stderr, "input_refs[0].path")
+  assert_contains(verify.stderr, "draft_artifact_error")
+}
+
+pub fn missing_draft_normalize_preserves_structured_output_root_cause_test() {
+  let dir = "test/tmp/native-missing-draft-root-cause-normalize"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let artifact_dir = dir <> "/artifact-runs/run-1"
+  let draft_path =
+    artifact_dir
+    <> "/lane_correctness/attempt-1/structured/correctness_draft.json"
+  let metadata_dir = artifact_dir <> "/lane_correctness-abc123def456"
+  let metadata_path = metadata_dir <> "/attempt-1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) = simplifile.create_directory_all(metadata_dir)
+  write_structured_output_error_metadata(metadata_path)
+
+  let normalized =
+    run_command(
+      "scripts/scherzo-review normalize-lane-result --lane correctness --draft "
+      <> draft_path
+      <> " --evidence-ledger "
+      <> dir
+      <> "/missing-ledger.json --agent-step-metadata "
+      <> artifact_dir
+      <> "/lane_correctness/attempt-1.json --brief "
+      <> dir
+      <> "/review-brief.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert normalized.status == step_artifact.StepSucceeded
+  assert string.contains(normalized.stdout, "REVIEW_LANE_STATE=failed")
+  let assert Ok(result) =
+    simplifile.read(lane_dir <> "/review-lane-correctness.v1.json")
+  assert_contains(result, "structured_output_json_schema_rejected")
+  assert_contains(result, "review_lane_draft_schema")
+  assert_contains(result, "input_refs[0].path")
+  assert_contains(result, "draft_artifact_error")
 }
 
 pub fn missing_or_malformed_draft_produces_failed_lane_result_test() {
