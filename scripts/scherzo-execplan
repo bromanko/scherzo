@@ -12,14 +12,16 @@ Usage:
   scherzo-execplan create-implementation-issue --plan PLAN --pr-url URL [--branch BRANCH] [--source-issue ISSUE]
 
 Run from the Scherzo jj workspace root. The workflow must leave exactly one
-changed ExecPlan HTML artifact under docs/plans/. validate and create-pr treat
-that docs/plans/*.html file as the primary retained plan artifact and print
-PRIMARY_PLAN_ARTIFACT and PLAN_HTML_PATH pointing at it. create-pr validates,
-pushes a jj bookmark to origin, opens a ready GitHub PR against main, and writes
-a durable publish context artifact. create-implementation-issue creates or finds
-the follow-up Linear issue that will run workflow:execplan-implementation after
-the plan PR is merged, using the publish context or explicit inputs instead of
-the current jj diff.
+changed ExecPlan Markdown artifact under docs/plans/. validate and create-pr
+treat that docs/plans/*.md file as the primary retained plan artifact and print
+PRIMARY_PLAN_ARTIFACT, PLAN_MARKDOWN_PATH, and PLAN_PATH pointing at it. HTML is
+a derived viewer artifact only; this authoring workflow does not print an
+authoritative PLAN_HTML_PATH. create-pr validates, pushes a jj bookmark to
+origin, opens a ready GitHub PR against main, and writes a durable publish
+context artifact. create-implementation-issue creates or finds the follow-up
+Linear issue that will run workflow:execplan-implementation after the plan PR is
+merged, using the publish context or explicit inputs instead of the current jj
+diff.
 EOF
 }
 
@@ -38,7 +40,7 @@ plan_stem() {
 print_primary_plan_artifact() {
   plan=$1
   echo "PRIMARY_PLAN_ARTIFACT=$plan"
-  echo "PLAN_HTML_PATH=$plan"
+  echo "PLAN_MARKDOWN_PATH=$plan"
 }
 
 require_command() {
@@ -112,9 +114,9 @@ find_plan_path() {
   records=$(changed_file_records_tsv | sed '/^[[:space:]]*$/d')
   [ -n "$records" ] || fail "no changed files found"
 
-  plan_files=$(printf '%s\n' "$records" | awk -F '\t' '$2 ~ "^docs/plans/[^/]+\\.html$" { print $2 }')
+  plan_files=$(printf '%s\n' "$records" | awk -F '\t' '$2 ~ "^docs/plans/[^/]+\\.md$" { print $2 }')
   plan_count=$(printf '%s\n' "$plan_files" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
-  [ "$plan_count" = "1" ] || fail "expected exactly one changed docs/plans/*.html file, found $plan_count"
+  [ "$plan_count" = "1" ] || fail "expected exactly one changed docs/plans/*.md file, found $plan_count"
 
   plan=$(printf '%s\n' "$plan_files" | sed -n '1p')
   [ -f "$plan" ] || fail "plan file does not exist: $plan"
@@ -130,52 +132,99 @@ find_plan_path() {
 validate_plan() {
   plan=$1
 
-  printf '%s\n' "$plan" | grep -Eq '^docs/plans/[^/]+\.html$' || \
-    fail "invalid ExecPlan artifact path: $plan; expected docs/plans/<file>.html"
+  printf '%s\n' "$plan" | grep -Eq '^docs/plans/[^/]+\.md$' || \
+    fail "invalid ExecPlan artifact path: $plan; expected docs/plans/<file>.md"
 
   python3 - "$plan" <<'PY'
-import html
 import re
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 
+
 def fail(message: str) -> None:
     print(f"scherzo-execplan: {message}", file=sys.stderr)
     sys.exit(1)
+
 
 try:
     text = path.read_text(encoding="utf-8")
 except OSError as exc:
     fail(f"could not read plan artifact: {exc}")
 
-if not re.search(r"<!doctype\s+html", text, flags=re.IGNORECASE):
-    fail("plan artifact must be a complete HTML document starting with <!doctype html>")
-if not re.search(r"<html\b", text, flags=re.IGNORECASE):
-    fail("plan artifact must contain an <html> root")
-if not re.search(r"<h1\b[^>]*\bcommentable\b[^>]*data-comment-id=", text, flags=re.IGNORECASE | re.DOTALL):
-    fail("plan artifact must contain a commentable <h1> with data-comment-id")
-if "carbon-shell" not in text or "toc-panel" not in text:
-    fail("plan artifact must use the Carbon structured shell with sidebar navigation")
-if "commentable" not in text or "data-comment-id=" not in text:
-    fail("plan artifact must include commentable DOM metadata")
-if "comment-hint" in text or "Stable DOM targets" in text:
-    fail("plan artifact must not include visible comment UI hints or target-count messaging")
+if re.search(r"<!doctype\s+html|<html\b", text, flags=re.IGNORECASE):
+    fail("plan artifact must be Markdown source, not generated HTML")
 if re.search(r"/Users/|/home/|/private/|/var/folders/", text):
     fail("plan contains absolute local paths; use repository-relative paths only")
 
-body_without_code = re.sub(r"<script\b.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-body_without_code = re.sub(r"<style\b.*?</style>", " ", body_without_code, flags=re.IGNORECASE | re.DOTALL)
-visible = html.unescape(re.sub(r"<[^>]+>", " ", body_without_code))
-visible = re.sub(r"\s+", " ", visible)
+heading_re = re.compile(r"^(#{1,6})[ \t]+(.+?)\s*#*\s*$")
+headings: list[dict[str, object]] = []
+in_fence = False
+fence_marker = ""
+lines = text.splitlines()
 
-if not re.search(r"\bProgress\b", visible):
-    fail("missing required section: Progress")
-if "Open Questions and Clarifications Needed" not in visible:
+for index, line in enumerate(lines):
+    fence_match = re.match(r"^\s*(```+|~~~+)", line)
+    if fence_match:
+        marker = fence_match.group(1)[:3]
+        if not in_fence:
+            in_fence = True
+            fence_marker = marker
+        elif marker == fence_marker:
+            in_fence = False
+            fence_marker = ""
+        continue
+    if in_fence:
+        continue
+    match = heading_re.match(line)
+    if match:
+        title = re.sub(r"\s+", " ", match.group(2)).strip()
+        title = re.sub(r"\s+#*$", "", title).strip()
+        if title:
+            headings.append({"level": len(match.group(1)), "title": title, "line": index})
+
+first_content = next((line for line in lines if line.strip()), "")
+if not re.match(r"^#\s+\S", first_content):
+    fail("plan Markdown must start with a level-1 title")
+
+h1s = [heading for heading in headings if heading["level"] == 1]
+if len(h1s) != 1:
+    fail(f"plan Markdown must contain exactly one level-1 title, found {len(h1s)}")
+
+
+def section_body(title: str) -> str | None:
+    for heading_index, heading in enumerate(headings):
+        if heading["title"] != title:
+            continue
+        start = int(heading["line"]) + 1
+        end = len(lines)
+        level = int(heading["level"])
+        for later in headings[heading_index + 1 :]:
+            if int(later["level"]) <= level:
+                end = int(later["line"])
+                break
+        return "\n".join(lines[start:end])
+    return None
+
+
+titles = {str(heading["title"]) for heading in headings}
+required_living_sections = [
+    "Progress",
+    "Surprises & Discoveries",
+    "Decision Log",
+    "Outcomes & Retrospective",
+]
+for heading in required_living_sections:
+    if heading not in titles:
+        fail(f"missing required living-document section: {heading}")
+
+if "Open Questions and Clarifications Needed" not in titles:
     fail("missing required section: Open Questions and Clarifications Needed")
-if not re.search(r"<input\b[^>]*type=[\"']checkbox[\"']|checklist-item", text, flags=re.IGNORECASE):
-    fail("Progress must contain at least one checklist item")
+
+progress = section_body("Progress") or ""
+if not re.search(r"(?m)^\s*[-*+]\s+\[[ xX]\]\s+\S", progress):
+    fail("Progress must contain at least one Markdown checklist item")
 
 expected = [
     "Purpose / Big Picture",
@@ -199,7 +248,7 @@ expected = [
     "Interfaces and Dependencies",
 ]
 for heading in expected:
-    if heading not in visible:
+    if heading not in titles:
         print(f"scherzo-execplan: warning: missing expected section: {heading}", file=sys.stderr)
 PY
 }
@@ -325,6 +374,13 @@ import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
+for line in text.splitlines():
+    match = re.match(r"^#\s+(.+?)\s*#*\s*$", line)
+    if match:
+        value = re.sub(r"\s+", " ", match.group(1)).strip()
+        if value:
+            print(value)
+            raise SystemExit(0)
 for pattern in [r"<h1\b[^>]*>(.*?)</h1>", r"<title\b[^>]*>(.*?)</title>"]:
     match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
     if match:
@@ -513,7 +569,7 @@ create_pr_command() {
   title_file=tmp/execplan-pr-title.txt
   printf '%s\n' "$pr_title" >"$title_file"
   cat >"$body_file" <<EOF_BODY
-Adds a Carbon HTML ExecPlan artifact generated from a Linear \`workflow:execplan\` ticket.
+Adds a Markdown ExecPlan source document generated from a Linear \`workflow:execplan\` ticket.
 
 Plan artifact: \`$plan\`
 
