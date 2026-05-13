@@ -3,6 +3,8 @@
 This ExecPlan is a living document. The sections Progress, Surprises & Discoveries,
 Decision Log, and Outcomes & Retrospective must be kept up to date as work proceeds.
 
+> Historical note (LIV-250): this plan predates the production cutover. References to command-lane implementation review, `SCHERZO_STAGED_REVIEW_AGENT_BACKEND`, or `scripts/scherzo-review run-lane` describe migration-era behavior only and are not current production implementation-review guidance. Current `implementation` and `execplan-implementation` workflows use native Scherzo `kind: agent` review lanes with `submit_review_lane_draft` structured outputs.
+
 ## Purpose / Big Picture
 
 Scherzo operators need the staged review workflow to run as a normal Scherzo workflow, not as a Python script that launches an external agent backend. After this change, an operator can run a native Scherzo review workflow through the Scherzo workflow runner, see four ordinary `kind: agent` review lanes produce structured draft artifacts, see command steps independently verify or downgrade each lane's evidence claims, and receive a final review artifact that is safe to publish or inspect. The result is observable through retained JSON artifacts, raw-output artifacts for failed lanes, a preflight manifest, a dry-run publish manifest, and normal repository validation gates.

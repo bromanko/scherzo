@@ -1,10 +1,11 @@
 """Agent-lane harness for scripts/scherzo-review.
 
 The executable entrypoint stays in ``scripts/scherzo-review`` so existing
-operator commands remain stable. This module contains the backend-independent
-pieces used by agent-backed lanes: input bundle retention, fixture and external
+manual validation commands remain stable. This module contains the helper pieces
+used by legacy script-level lanes: input bundle retention, fixture and external
 backend execution, response normalization helpers, harness-owned evidence, and
-cutover-readiness checks.
+cutover-readiness checks. Production implementation review uses native Scherzo
+agent lane steps instead of these backends.
 """
 
 from __future__ import annotations
