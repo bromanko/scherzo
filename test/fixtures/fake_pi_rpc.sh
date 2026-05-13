@@ -224,6 +224,32 @@ while IFS= read -r line; do
       fi
       jq -cn '{type:"agent_start"}'
       jq -cn '{type:"turn_start"}'
+      if [[ -n "${FAKE_PI_AUTO_RETRY_SUCCESS:-}" ]]; then
+        jq -cn '{type:"message_update",delta:"first attempt"}'
+        jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"first attempt failed"}]}}'
+        jq -cn '{type:"auto_retry_start",attempt:1,maxAttempts:3,delayMs:1,errorMessage:"WebSocket error"}'
+        jq -cn '{type:"turn_start"}'
+        jq -cn '{type:"message_update",delta:"POPULATED"}'
+        jq -cn '{type:"turn_end",message:{role:"assistant",content:[{type:"text",text:"POPULATED"}]}}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",messages:[{role:"assistant",content:"done after retry"}],turns:($turns|tonumber)}'
+        jq -cn '{type:"auto_retry_end",success:true,attempt:1}'
+        continue
+      fi
+      if [[ -n "${FAKE_PI_AUTO_RETRY_EXHAUSTED:-}" ]]; then
+        jq -cn '{type:"message_update",delta:"first attempt"}'
+        jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"first attempt failed"}]}}'
+        jq -cn '{type:"auto_retry_start",attempt:1,maxAttempts:2,delayMs:1,errorMessage:"WebSocket error"}'
+        jq -cn '{type:"turn_start"}'
+        jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: ECONNRESET",message:{role:"assistant",content:[{type:"text",text:"retry failed"}]}}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",turns:($turns|tonumber)}'
+        jq -cn '{type:"auto_retry_end",success:false,attempt:2,finalError:"provider_transport_failure"}'
+        continue
+      fi
+      if [[ -n "${FAKE_PI_RETRYABLE_ERROR_NO_RETRY_EVENT:-}" ]]; then
+        jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"provider failed"}]}}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",turns:($turns|tonumber)}'
+        continue
+      fi
       if [[ -n "${FAKE_PI_MESSAGE_SECRET:-}" ]]; then
         fake_pi_text="POPULATED ${FAKE_PI_MESSAGE_SECRET}"
         jq -cn --arg secret "$FAKE_PI_MESSAGE_SECRET" '{type:"message_update",delta:("POPULATED " + $secret),authorization:$secret,nested:{token:$secret}}'
@@ -262,7 +288,7 @@ while IFS= read -r line; do
         sleep "$(awk "BEGIN { print ${FAKE_PI_STALL_AFTER_PROMPT} / 1000 }")"
       fi
       if [[ -n "${FAKE_PI_STOP_REASON_ERROR:-}" ]]; then
-        jq -cn --arg text "$fake_pi_text" '{type:"turn_end",stopReason:"error",errorMessage:"terminated",message:{role:"assistant",content:[{type:"text",text:$text}]}}'
+        jq -cn --arg text "$fake_pi_text" '{type:"turn_end",stopReason:"error",errorMessage:"semantic model error",message:{role:"assistant",content:[{type:"text",text:$text}]}}'
       else
         jq -cn --arg text "$fake_pi_text" '{type:"turn_end",message:{role:"assistant",content:[{type:"text",text:$text}]}}'
       fi

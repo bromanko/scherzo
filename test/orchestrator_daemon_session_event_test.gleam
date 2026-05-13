@@ -329,6 +329,94 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
   hub.stop(hub_subject)
 }
 
+pub fn daemon_keeps_successful_pi_auto_retry_events_in_one_yaml_step_session_test() {
+  let #(workflow_path, root) =
+    write_workflow("test/tmp/daemon-auto-retry-success")
+  let candidate = issue("auto-retry-ok", "ABC-RETRYOK", "Todo")
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
+  let deps =
+    dependencies(
+      client_with(candidate),
+      log_subject,
+      hub_subject,
+      fn(issue, _, _, _, _, emit_update, _, _) {
+        emit_update(issue.id, update("auto_retry_start", None))
+        emit_update(issue.id, update("auto_retry_end", None))
+        let assert Ok(#(_, expected_workspace)) =
+          workspace.workspace_path(root, issue.identifier)
+        Ok(success(
+          tracker_issue.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+          expected_workspace,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "worker_exited", 20)
+  let step_session_id =
+    "workflow-step-ABC-RETRYOK-42-1-implement-a1-f9bb818d8483"
+  let assert Ok(step_summary) =
+    wait_for_session(hub_subject, step_session_id, 20)
+  assert step_summary.status == event.Exited(reason.Normal)
+  let assert Ok(step_page) =
+    hub.events_after(hub_subject, step_session_id, 0, 20, 1000)
+  assert event_names(step_page.events)
+    == ["step_started", "auto_retry_start", "auto_retry_end"]
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn daemon_records_exhausted_pi_auto_retry_events_in_failed_yaml_step_session_test() {
+  let #(workflow_path, root) = write_workflow("test/tmp/daemon-auto-retry-fail")
+  let candidate = issue("auto-retry-fail", "ABC-RETRYFAIL", "Todo")
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
+  let deps =
+    dependencies(
+      client_with(candidate),
+      log_subject,
+      hub_subject,
+      fn(issue, _, _, _, _, emit_update, _, _) {
+        emit_update(issue.id, update("auto_retry_start", None))
+        emit_update(issue.id, update("auto_retry_end", None))
+        let assert Ok(#(_, expected_workspace)) =
+          workspace.workspace_path(root, issue.identifier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError(
+            "provider_transport_failure: WebSocket error",
+          )),
+          workspace_path: Some(expected_workspace),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(log_subject, "retry_scheduled", 20)
+  let step_session_id =
+    "workflow-step-ABC-RETRYFAIL-42-1-implement-a1-f9bb818d8483"
+  let assert Ok(step_summary) =
+    wait_for_session(hub_subject, step_session_id, 20)
+  assert step_summary.status == event.Exited(reason.Failed)
+  let assert Ok(step_page) =
+    hub.events_after(hub_subject, step_session_id, 0, 20, 1000)
+  assert event_names(step_page.events)
+    == ["step_started", "auto_retry_start", "auto_retry_end"]
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn daemon_classifies_tool_fields_as_tool_events_test() {
   let #(workflow_path, root) = write_workflow("test/tmp/daemon-tool-events")
   let candidate = issue("tool-id", "ABC-TOOL", "Todo")
