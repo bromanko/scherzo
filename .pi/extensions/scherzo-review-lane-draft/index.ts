@@ -3,7 +3,9 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Type, type Static } from "typebox";
 
 export const SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME = "submit_review_lane_draft";
-export const REVIEW_LANE_DRAFT_WORKFLOW_IDS = ["review-native", "review-native-contract-spike"] as const;
+export const REVIEW_LANE_DRAFT_WORKFLOW_IDS = ["implementation", "review-native", "review-native-contract-spike"] as const;
+const nativeReviewLaneStepIds = ["lane_correctness", "lane_test_quality", "lane_idioms_maintainability", "lane_security_performance"] as const;
+const contractSpikeStepIds = ["valid_lane", "malformed_lane", "failed_lane"] as const;
 const allowedLaneIds = ["correctness", "test-quality", "idioms-maintainability", "security-performance"] as const;
 
 const artifactRefSchema = Type.Object({
@@ -52,8 +54,26 @@ const evidenceRequestSchema = Type.Object({
 	target: Type.Object({}, { additionalProperties: true, description: "Evidence target object, optionally including artifact_path or changed_file_path." }),
 }, { additionalProperties: true });
 
-export function shouldRegisterReviewLaneDraftTool(workflowId = process.env.SCHERZO_WORKFLOW_ID || ""): boolean {
-	return REVIEW_LANE_DRAFT_WORKFLOW_IDS.includes(workflowId as typeof REVIEW_LANE_DRAFT_WORKFLOW_IDS[number]);
+function allowedStepIdsForWorkflow(workflowId: string): readonly string[] {
+	switch (workflowId) {
+		case "implementation":
+		case "review-native":
+			return nativeReviewLaneStepIds;
+		case "review-native-contract-spike":
+			return contractSpikeStepIds;
+		default:
+			return [];
+	}
+}
+
+export function shouldRegisterReviewLaneDraftTool(
+	workflowId = process.env.SCHERZO_WORKFLOW_ID || "",
+	stepId = process.env.SCHERZO_STEP_ID || "",
+): boolean {
+	if (!REVIEW_LANE_DRAFT_WORKFLOW_IDS.includes(workflowId as typeof REVIEW_LANE_DRAFT_WORKFLOW_IDS[number])) {
+		return false;
+	}
+	return allowedStepIdsForWorkflow(workflowId).includes(stepId);
 }
 
 export const submitReviewLaneDraftParameters = Type.Object({
@@ -127,8 +147,11 @@ export const submitReviewLaneDraftTool = defineTool({
 
 export default function scherzoReviewLaneDraftExtension(pi: ExtensionAPI) {
 	const workflowId = process.env.SCHERZO_WORKFLOW_ID || "";
-	const enabledForWorkflow = shouldRegisterReviewLaneDraftTool(workflowId);
-	if (enabledForWorkflow) {
+	const stepId = process.env.SCHERZO_STEP_ID || "";
+	const workflowInScope = REVIEW_LANE_DRAFT_WORKFLOW_IDS.includes(workflowId as typeof REVIEW_LANE_DRAFT_WORKFLOW_IDS[number]);
+	const stepInScope = allowedStepIdsForWorkflow(workflowId).includes(stepId);
+	const enabledForStep = shouldRegisterReviewLaneDraftTool(workflowId, stepId);
+	if (enabledForStep) {
 		pi.registerTool(submitReviewLaneDraftTool);
 	}
 
@@ -138,19 +161,26 @@ export default function scherzoReviewLaneDraftExtension(pi: ExtensionAPI) {
 			const activeToolNames = new Set(pi.getActiveTools());
 			const tool = pi.getAllTools().find((candidate) => candidate.name === SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME);
 			const active = activeToolNames.has(SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME);
-			const status = active ? "active" : enabledForWorkflow ? "inactive" : "disabled_workflow_scope";
+			const status = active
+				? "active"
+				: enabledForStep
+					? "inactive"
+					: workflowInScope && !stepInScope
+						? "disabled_step_scope"
+						: "disabled_workflow_scope";
 			console.log(`REVIEW_LANE_DRAFT_TOOL_ADVERTISED=${JSON.stringify({
 				status,
 				tool_name: SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME,
 				workflow_id: workflowId || null,
+				step_id: stepId || null,
 				source: tool?.sourceInfo?.source || null,
 				path: tool?.sourceInfo?.path || null,
 			})}`);
-			if (enabledForWorkflow && !active) {
-				throw new Error("submit_review_lane_draft was registered for this workflow scope but is not active");
+			if (enabledForStep && !active) {
+				throw new Error("submit_review_lane_draft was registered for this native review lane step but is not active");
 			}
-			if (!enabledForWorkflow && active) {
-				throw new Error("submit_review_lane_draft is active outside review-native workflow scopes");
+			if (!enabledForStep && active) {
+				throw new Error("submit_review_lane_draft is active outside native review lane step scope");
 			}
 		},
 	});

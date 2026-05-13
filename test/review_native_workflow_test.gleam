@@ -41,6 +41,37 @@ fn assert_review_tool_source(spec: workflow_dag.StructuredOutputSpec) -> Nil {
     )
 }
 
+fn assert_lane_workspace_from_main(
+  dag: workflow_dag.WorkflowDag,
+  step_id: String,
+  workspace_name: String,
+) -> Nil {
+  let assert Ok(step) = workflow_dag.step_by_id(dag, step_id)
+  assert step.workspace
+    == workflow_dag.WorkspaceRef(name: workspace_name, from: Some("main"))
+}
+
+fn assert_native_review_lane_workspaces_are_isolated(
+  dag: workflow_dag.WorkflowDag,
+) -> Nil {
+  assert_lane_workspace_from_main(dag, "lane_correctness", "review-correctness")
+  assert_lane_workspace_from_main(
+    dag,
+    "lane_test_quality",
+    "review-test-quality",
+  )
+  assert_lane_workspace_from_main(
+    dag,
+    "lane_idioms_maintainability",
+    "review-idioms-maintainability",
+  )
+  assert_lane_workspace_from_main(
+    dag,
+    "lane_security_performance",
+    "review-security-performance",
+  )
+}
+
 fn assert_contains(contents: String, expected: String) -> Nil {
   case string.contains(contents, expected) {
     True -> Nil
@@ -113,6 +144,20 @@ pub fn review_native_lane_steps_use_submit_review_lane_draft_tool_source_test() 
   assert_review_tool_source(lane_spec(dag, "lane_security_performance"))
 }
 
+pub fn review_native_lane_steps_use_isolated_derived_workspaces_test() {
+  assert_native_review_lane_workspaces_are_isolated(review_native_dag())
+}
+
+pub fn review_lane_draft_tool_is_enabled_for_implementation_lane_steps_test() {
+  let assert Ok(extension) =
+    simplifile.read(".pi/extensions/scherzo-review-lane-draft/index.ts")
+
+  assert_contains(extension, "\"implementation\"")
+  assert_contains(extension, "SCHERZO_STEP_ID")
+  assert_contains(extension, "lane_correctness")
+  assert_contains(extension, "review-native-contract-spike")
+}
+
 pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
   let dag = implementation_dag()
 
@@ -120,6 +165,7 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
   assert_review_tool_source(lane_spec(dag, "lane_test_quality"))
   assert_review_tool_source(lane_spec(dag, "lane_idioms_maintainability"))
   assert_review_tool_source(lane_spec(dag, "lane_security_performance"))
+  assert_native_review_lane_workspaces_are_isolated(dag)
 
   let assert Ok(cutover_step) =
     workflow_dag.step_by_id(dag, "assert_native_review_cutover")

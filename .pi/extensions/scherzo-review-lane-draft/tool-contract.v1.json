@@ -17,6 +17,25 @@
     "self_check",
     "remote_mutations"
   ],
+  "allowed_workflow_step_scopes": {
+    "implementation": [
+      "lane_correctness",
+      "lane_test_quality",
+      "lane_idioms_maintainability",
+      "lane_security_performance"
+    ],
+    "review-native": [
+      "lane_correctness",
+      "lane_test_quality",
+      "lane_idioms_maintainability",
+      "lane_security_performance"
+    ],
+    "review-native-contract-spike": [
+      "valid_lane",
+      "malformed_lane",
+      "failed_lane"
+    ]
+  },
   "allowed_lane_ids": [
     "correctness",
     "test-quality",

@@ -46,7 +46,7 @@ steps:
   - id: assert_clean_before_lanes
     kind: command
     depends_on: [prepare_review]
-    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt"'
+    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj log -r @ --no-graph -T commit_id --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes-status.txt"'
     workspace: main
 
   - id: lane_correctness
@@ -54,7 +54,9 @@ steps:
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-correctness.md
     on_failure: continue
-    workspace: main
+    workspace:
+      name: review-correctness
+      from: main
     structured_output:
       format: json
       artifact_name: correctness_draft
@@ -95,7 +97,9 @@ steps:
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-test-quality.md
     on_failure: continue
-    workspace: main
+    workspace:
+      name: review-test-quality
+      from: main
     structured_output:
       format: json
       artifact_name: test_quality_draft
@@ -136,7 +140,9 @@ steps:
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-idioms-maintainability.md
     on_failure: continue
-    workspace: main
+    workspace:
+      name: review-idioms-maintainability
+      from: main
     structured_output:
       format: json
       artifact_name: idioms_maintainability_draft
@@ -177,7 +183,9 @@ steps:
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-security-performance.md
     on_failure: continue
-    workspace: main
+    workspace:
+      name: review-security-performance
+      from: main
     structured_output:
       format: json
       artifact_name: security_performance_draft
@@ -216,7 +224,7 @@ steps:
   - id: assert_clean_after_lanes
     kind: command
     depends_on: [lane_correctness, lane_test_quality, lane_idioms_maintainability, lane_security_performance]
-    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt"; cmp -s "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" || { printf "native review lane workspace mutation detected; see %s and %s\n" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" >&2; exit 1; }'
+    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj log -r @ --no-graph -T commit_id --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes-status.txt"; cmp -s "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" || { printf "native review lane mutated the main workspace; commit ids differ; see %s, %s, %s, and %s\n" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes-status.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes-status.txt" >&2; exit 1; }'
     workspace: main
 
   - id: verify_correctness_evidence
