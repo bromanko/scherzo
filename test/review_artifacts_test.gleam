@@ -1262,6 +1262,45 @@ pub fn generic_gleam_test_does_not_verify_arbitrary_correctness_claim_test() {
   assert string.contains(result, "\"blocking\": false")
 }
 
+pub fn verify_evidence_relativizes_absolute_draft_path_test() {
+  let dir = "test/tmp/native-absolute-draft-path"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let draft_path = dir <> "/draft.v1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      draft_path,
+      review_lane_draft_json("src/example.gleam", "none"),
+    )
+  let assert Ok(cwd) = simplifile.current_directory()
+  let absolute_draft_path = cwd <> "/" <> draft_path
+
+  let verify =
+    run_command(
+      "scripts/scherzo-review verify-evidence --lane correctness --draft "
+      <> absolute_draft_path
+      <> " --brief "
+      <> dir
+      <> "/review-brief.v1.json --diff-file "
+      <> dir
+      <> "/diff.patch --changed-files "
+      <> dir
+      <> "/changed-files.v1.json --validation-status "
+      <> dir
+      <> "/validation-status.v1.json --context-manifest "
+      <> dir
+      <> "/context-manifest.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert verify.status == step_artifact.StepSucceeded
+  assert verify.exit_code == Some(0)
+  let assert Ok(ledger) =
+    simplifile.read(lane_dir <> "/evidence-ledger.v1.json")
+  assert_not_contains(ledger, cwd)
+  assert_contains(ledger, "\"path\": \"" <> draft_path <> "\"")
+}
+
 pub fn correctness_blocker_downgraded_without_verified_reproduction_test() {
   let dir = "test/tmp/native-correctness-downgrade"
   reset_dir(dir)

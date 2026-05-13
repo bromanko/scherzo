@@ -2801,13 +2801,44 @@ def prepare_native_command(args: argparse.Namespace) -> None:
     print("REVIEW_NATIVE_PREPARE_SUMMARY=" + json.dumps(summary, sort_keys=True))
 
 
-def artifact_ref_for(path: Path, artifact_type: str, *, base_dir: Path | None = None) -> dict[str, Any]:
-    display_path = path
+def artifact_ref_display_path(path: Path, *, base_dir: Path | None = None) -> Path:
+    """Return a non-absolute path suitable for serialized artifact refs when possible.
+
+    Native review steps may pass retained Scherzo artifact paths as absolute local
+    paths even though the artifact contract requires serialized refs to be
+    repository-relative and non-escaping.  Prefer a caller-supplied output base
+    for lane-local artifacts, then fall back to SCHERZO_REPO_ROOT, the checkout
+    containing this script, and the current working directory. If the resolved
+    path is outside every known safe base, return the resolved absolute path so
+    existing validation fails closed rather than hiding an unsafe reference.
+    """
+    candidate_bases: list[Path] = []
     if base_dir is not None:
+        candidate_bases.append(base_dir)
+    repo_root = os.environ.get("SCHERZO_REPO_ROOT")
+    if repo_root:
+        candidate_bases.append(Path(repo_root))
+    try:
+        candidate_bases.append(Path(__file__).resolve(strict=False).parent.parent)
+    except OSError:
+        pass
+    candidate_bases.append(Path.cwd())
+
+    try:
+        resolved_path = path.resolve(strict=False)
+    except OSError:
+        resolved_path = path
+
+    for base in candidate_bases:
         try:
-            display_path = path.relative_to(base_dir)
-        except ValueError:
-            display_path = path
+            return resolved_path.relative_to(base.resolve(strict=False))
+        except (OSError, ValueError):
+            continue
+    return resolved_path
+
+
+def artifact_ref_for(path: Path, artifact_type: str, *, base_dir: Path | None = None) -> dict[str, Any]:
+    display_path = artifact_ref_display_path(path, base_dir=base_dir)
     return {
         "artifact_type": artifact_type,
         "path": display_path.as_posix(),
