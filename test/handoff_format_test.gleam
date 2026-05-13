@@ -73,6 +73,37 @@ pub fn claim_comment_is_friendly_and_exact_test() {
     == "🛠️ Scherzo claimed this issue\n\n| Field | Value |\n| --- | --- |\n| Issue | `LIV-38` |\n| Run | `LIV-38--576460151305-2` |\n| Status | `claimed` |\n\n## Summary\nScherzo is starting work on `LIV-38`.\n\n## Next action\nNo action is needed right now. Scherzo will post another update when the run finishes, fails, or parks."
 }
 
+pub fn linear_handoff_comment_formatting_is_characterized_test() {
+  let claim = handoff_format.claim_comment("LIV-266", "run-1", [])
+  assert string.contains(claim, "🛠️ Scherzo claimed this issue")
+  assert string.contains(claim, "| Issue | `LIV-266` |")
+  assert string.contains(claim, "| Run | `run-1` |")
+
+  let success_body =
+    handoff_format.success_comment(
+      issue(),
+      success(result(Some("Implemented the fix."), False, "agent_end_messages")),
+      "run-2",
+      options(True, None),
+      [],
+    )
+  assert string.contains(success_body, "✅ Scherzo completed the run")
+  assert string.contains(success_body, "## What Scherzo did")
+  assert string.contains(success_body, "## Token usage")
+
+  let park =
+    handoff_format.park_comment(
+      "LIV-266",
+      "operator hold",
+      Some("explicit_unpark_only"),
+      Some("run-3"),
+      [],
+    )
+  assert string.contains(park, "⏸️ Scherzo parked this issue")
+  assert string.contains(park, "| Reason | operator hold |")
+  assert string.contains(park, "| Run | `run-3` |")
+}
+
 pub fn success_comment_includes_result_and_token_table_test() {
   let body =
     handoff_format.success_comment(

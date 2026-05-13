@@ -257,6 +257,92 @@ pub fn scheduled_failure_reporter_dedupes_by_reserved_labels_test() {
   assert receive_call(calls) == "move"
 }
 
+pub fn linear_scheduled_failure_dedupes_one_visible_issue_per_job_test() {
+  let calls = process.new_subject()
+  let first_request =
+    reporter.FailureReportRequest(
+      ..base_request(),
+      job_id: "nightly",
+      workflow_id: "nightly",
+      run_id: "schedule-nightly-1",
+      dedupe_key: reporter.dedupe_key("nightly"),
+      configured_labels: ["job:nightly"],
+      previous_issue_id: None,
+    )
+  let second_request =
+    reporter.FailureReportRequest(..first_request, run_id: "schedule-nightly-2")
+  let first_backend =
+    reporter.Backend(
+      ensure_label: fn(name) { Ok("id:" <> name) },
+      find_open_issue_by_id: fn(_) { Ok(None) },
+      find_open_issues_by_labels: fn(labels) {
+        assert labels == ["scherzo:scheduled", "scherzo:scheduled-job:nightly"]
+        process.send(calls, Call("find:first"))
+        Ok([])
+      },
+      create_issue: fn(title, body, state, label_ids) {
+        assert title == "Scherzo scheduled job failed: nightly"
+        assert state == "Triage"
+        assert list.contains(label_ids, "id:scherzo:scheduled")
+        assert list.contains(label_ids, "id:scherzo:scheduled-job:nightly")
+        assert list.contains(label_ids, "id:job:nightly")
+        assert string.contains(
+          body,
+          "<!-- scherzo-dedupe: scheduled-job:nightly -->",
+        )
+        process.send(calls, Call("create:lin-nightly"))
+        Ok("lin-nightly")
+      },
+      comment_issue: fn(_, _) {
+        process.send(calls, Call("comment:first"))
+        Ok(Nil)
+      },
+      move_issue_to_state: fn(_, _) {
+        process.send(calls, Call("move:first"))
+        Ok(Nil)
+      },
+    )
+  let second_backend =
+    reporter.Backend(
+      ensure_label: fn(name) { Ok("id:" <> name) },
+      find_open_issue_by_id: fn(_) { Ok(None) },
+      find_open_issues_by_labels: fn(labels) {
+        assert labels == ["scherzo:scheduled", "scherzo:scheduled-job:nightly"]
+        process.send(calls, Call("find:second"))
+        Ok([reporter.ExistingFailureIssue(id: "lin-nightly", updated_at_ms: 2)])
+      },
+      create_issue: fn(_, _, _, _) {
+        process.send(calls, Call("create:second"))
+        Ok("lin-duplicate")
+      },
+      comment_issue: fn(issue_id, body) {
+        assert issue_id == "lin-nightly"
+        assert string.contains(body, "Current failure issue ID: lin-nightly")
+        assert string.contains(body, "Run ID: schedule-nightly-2")
+        process.send(calls, Call("comment:lin-nightly"))
+        Ok(Nil)
+      },
+      move_issue_to_state: fn(issue_id, state) {
+        assert issue_id == "lin-nightly"
+        assert state == "Triage"
+        process.send(calls, Call("move:lin-nightly"))
+        Ok(Nil)
+      },
+    )
+
+  assert reporter.report_with_backend(first_request, first_backend)
+    == Ok(reporter.FailureReportCreated("lin-nightly"))
+  assert receive_call(calls) == "find:first"
+  assert receive_call(calls) == "create:lin-nightly"
+
+  assert reporter.report_with_backend(second_request, second_backend)
+    == Ok(reporter.FailureReportUpdated("lin-nightly"))
+  assert receive_call(calls) == "find:second"
+  assert receive_call(calls) == "comment:lin-nightly"
+  assert receive_call(calls) == "move:lin-nightly"
+  test_async.assert_no_extra_message_within(calls, 50)
+}
+
 pub fn scheduled_failure_reporter_real_search_uses_open_reserved_label_filters_test() {
   let calls = process.new_subject()
   let client =

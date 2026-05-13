@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import legacy_ledger_fixtures
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
 import scherzo/state/artifact_store
@@ -352,6 +353,51 @@ fn finished_a_running_b(root: String) -> FinishedAndRunningCase {
     finalized: finalize_resume(scenario, folded, agent_dag()),
     artifact: artifact,
   )
+}
+
+pub fn old_workflow_checkpoint_records_recover_active_candidate_test() {
+  let workflow_started =
+    decode_checkpoint_record(legacy_ledger_fixtures.workflow_run_started_v2(
+      "old-1",
+      1,
+    ))
+  let pi_session_recorded =
+    decode_checkpoint_record(
+      legacy_ledger_fixtures.step_attempt_pi_session_recorded_v2("old-step", 2),
+    )
+  let folded = projection.fold([workflow_started, pi_session_recorded])
+
+  let assert [
+    recovery.WorkflowRecoveryCandidate(
+      run_id: "run-1",
+      workflow_id: "execplan",
+      workflow_fingerprint: "wf-old",
+      issue_id: "issue-1",
+      issue_identifier: "LIV-266",
+      issue_fingerprint: "fp-old",
+      observed_updated_at_ms: 10,
+      run_root: "test/tmp/run-root",
+      attempts: [
+        projection.StepAttemptRunning(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          step_id: "step-1",
+          attempt_index: 1,
+          workspace_name: "main",
+          workspace_path: "test/tmp/run-root/workspaces/main",
+          pi_session_id: Some("pi-session-1"),
+          pi_session_file: Some("state/sessions/run-1/step-1.json"),
+          pi_session_fact_count: 1,
+          ..,
+        ),
+      ],
+    ),
+  ] = recovery.workflow_candidates(folded)
+}
+
+fn decode_checkpoint_record(line: String) -> record.LedgerRecord {
+  let assert Ok(decoded) = record.decode_string(line)
+  decoded
 }
 
 pub fn workflow_recovery_restores_finished_artifacts_test() {
