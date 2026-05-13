@@ -382,7 +382,7 @@ def fetch_pr(candidate: dict[str, Any], expected_repo: str) -> dict[str, Any]:
     plan_paths = [p for p in plan_paths if p]
     if len(plan_paths) != 1:
         fail(
-            "expected the PR to contain exactly one docs/plans/*.html or legacy docs/plans/*.md file, found "
+            "expected the PR to contain exactly one docs/plans/*.md or legacy docs/plans/*.html file, found "
             f"{len(plan_paths)}"
         )
 

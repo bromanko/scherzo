@@ -23,6 +23,13 @@ fn run_in(cwd: String, command: String) -> step_artifact.StepArtifact {
   command_step.run("execplan_html", command, cwd, 10_000, [], limits())
 }
 
+fn chmod_executable(path: String) -> Nil {
+  let artifact =
+    command_step.run("chmod", "chmod +x " <> path, ".", 5000, [], limits())
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+}
+
 fn write_plan(path: String, body: String) -> Nil {
   let assert Ok(Nil) = simplifile.create_directory_all(path_dir(path))
   let assert Ok(Nil) = simplifile.write(path, body)
@@ -59,6 +66,23 @@ fn render_plan(dir: String, markdown: String) -> String {
   html
 }
 
+fn minimal_markdown_plan(progress: String, extra: String) -> String {
+  "# Minimal ExecPlan\n\n"
+  <> "## Progress\n\n"
+  <> progress
+  <> "\n## Surprises & Discoveries\n\n"
+  <> "None yet.\n\n"
+  <> "## Decision Log\n\n"
+  <> "- Decision: Keep the fixture small.\n"
+  <> "  Rationale: The validator only needs structural coverage.\n"
+  <> "  Date: 2026-05-13\n\n"
+  <> "## Outcomes & Retrospective\n\n"
+  <> "Pending completion.\n\n"
+  <> "## Open Questions and Clarifications Needed\n\n"
+  <> "None.\n"
+  <> extra
+}
+
 fn representative_plan(open_questions: String) -> String {
   "# Sample ExecPlan\n\n"
   <> "Intro paragraph for review.\n\n"
@@ -71,6 +95,9 @@ fn representative_plan(open_questions: String) -> String {
   <> "## Scope Boundaries\n\n"
   <> "In scope: Generate a single HTML file.\n\n"
   <> "Out of scope: Build the inline commenting UI.\n\n"
+  <> "## Surprises & Discoveries\n\n"
+  <> "- Observation: No surprises yet.\n"
+  <> "  Evidence: This is a draft plan fixture.\n\n"
   <> "## Concrete Steps\n\n"
   <> "1. Run the focused renderer command:\n\n"
   <> "   ```sh\n"
@@ -81,6 +108,8 @@ fn representative_plan(open_questions: String) -> String {
   <> "## Progress\n\n"
   <> "- [x] Drafted the renderer.\n"
   <> "- [ ] Review the artifact.\n\n"
+  <> "## Outcomes & Retrospective\n\n"
+  <> "Pending completion.\n\n"
   <> "## Open Questions and Clarifications Needed\n\n"
   <> open_questions
 }
@@ -257,36 +286,8 @@ pub fn renderer_uses_deterministic_unique_heading_ids_test() {
   assert string.contains(first_html, "id=\"sec-repeat-2\"")
 }
 
-pub fn execplan_validate_uses_checked_in_html_as_primary_plan_artifact_test() {
-  let dir = "test/tmp/execplan-html-validate-primary"
-  let html = render_plan(dir, representative_plan("None.\n"))
-  assert string.contains(
-    html,
-    "Plan artifact: <code>docs/plans/sample.html</code>",
-  )
-
-  let artifact =
-    run_in(
-      dir,
-      "../../../scripts/scherzo-execplan validate docs/plans/sample.html",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(
-    artifact.stdout,
-    "PRIMARY_PLAN_ARTIFACT=docs/plans/sample.html",
-  )
-  assert string.contains(
-    artifact.stdout,
-    "PLAN_HTML_PATH=docs/plans/sample.html",
-  )
-  assert string.contains(artifact.stdout, "PLAN_PATH=docs/plans/sample.html")
-  assert !string.contains(artifact.stdout, "PLAN_MARKDOWN_PATH")
-}
-
-pub fn execplan_validate_rejects_markdown_plan_artifact_test() {
-  let dir = "test/tmp/execplan-html-validate-rejects-markdown"
+pub fn execplan_validate_uses_checked_in_markdown_as_primary_plan_artifact_test() {
+  let dir = "test/tmp/execplan-markdown-validate-primary"
   reset_dir(dir)
   write_plan(dir <> "/docs/plans/sample.md", representative_plan("None.\n"))
 
@@ -296,8 +297,135 @@ pub fn execplan_validate_rejects_markdown_plan_artifact_test() {
       "../../../scripts/scherzo-execplan validate docs/plans/sample.md",
     )
 
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "PRIMARY_PLAN_ARTIFACT=docs/plans/sample.md",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_MARKDOWN_PATH=docs/plans/sample.md",
+  )
+  assert string.contains(artifact.stdout, "PLAN_PATH=docs/plans/sample.md")
+  assert !string.contains(artifact.stdout, "PLAN_HTML_PATH")
+}
+
+pub fn execplan_validate_rejects_incomplete_markdown_structure_test() {
+  let dir = "test/tmp/execplan-markdown-validate-structure"
+  reset_dir(dir)
+  write_plan(
+    dir <> "/docs/plans/sample.md",
+    "## Missing Title\n\n"
+      <> "## Progress\n\n- [x] Done.\n\n"
+      <> "## Surprises & Discoveries\n\nNone.\n\n"
+      <> "## Decision Log\n\nNone.\n\n"
+      <> "## Outcomes & Retrospective\n\nPending.\n\n"
+      <> "## Open Questions and Clarifications Needed\n\nNone.\n",
+  )
+  let missing_title =
+    run_in(
+      dir,
+      "../../../scripts/scherzo-execplan validate docs/plans/sample.md",
+    )
+  assert missing_title.status == step_artifact.StepFailed
+  assert string.contains(
+    missing_title.stderr,
+    "plan Markdown must start with a level-1 title",
+  )
+
+  write_plan(
+    dir <> "/docs/plans/sample.md",
+    minimal_markdown_plan("Progress exists but no checklist.\n", ""),
+  )
+  let missing_checklist =
+    run_in(
+      dir,
+      "../../../scripts/scherzo-execplan validate docs/plans/sample.md",
+    )
+  assert missing_checklist.status == step_artifact.StepFailed
+  assert string.contains(
+    missing_checklist.stderr,
+    "Progress must contain at least one Markdown checklist item",
+  )
+
+  write_plan(
+    dir <> "/docs/plans/sample.md",
+    "# Missing Living Section\n\n"
+      <> "## Progress\n\n- [x] Done.\n\n"
+      <> "## Decision Log\n\nNone.\n\n"
+      <> "## Outcomes & Retrospective\n\nPending.\n\n"
+      <> "## Open Questions and Clarifications Needed\n\nNone.\n",
+  )
+  let missing_living_section =
+    run_in(
+      dir,
+      "../../../scripts/scherzo-execplan validate docs/plans/sample.md",
+    )
+  assert missing_living_section.status == step_artifact.StepFailed
+  assert string.contains(
+    missing_living_section.stderr,
+    "missing required living-document section: Surprises & Discoveries",
+  )
+
+  write_plan(
+    dir <> "/docs/plans/sample.md",
+    minimal_markdown_plan(
+      "- [x] Done.\n",
+      "\nDo not use /Users/example in plans.\n",
+    ),
+  )
+  let local_absolute_path =
+    run_in(
+      dir,
+      "../../../scripts/scherzo-execplan validate docs/plans/sample.md",
+    )
+  assert local_absolute_path.status == step_artifact.StepFailed
+  assert string.contains(local_absolute_path.stderr, "absolute local paths")
+}
+
+pub fn execplan_validate_rejects_html_plan_artifact_test() {
+  let dir = "test/tmp/execplan-markdown-validate-rejects-html"
+  reset_dir(dir)
+  write_plan(dir <> "/docs/plans/sample.html", old_html_plan())
+
+  let artifact =
+    run_in(
+      dir,
+      "../../../scripts/scherzo-execplan validate docs/plans/sample.html",
+    )
+
   assert artifact.status == step_artifact.StepFailed
-  assert string.contains(artifact.stderr, "expected docs/plans/<file>.html")
+  assert string.contains(artifact.stderr, "expected docs/plans/<file>.md")
+}
+
+pub fn execplan_validate_rejects_html_only_new_plan_change_test() {
+  let dir = "test/tmp/execplan-markdown-validate-rejects-html-change"
+  reset_dir(dir)
+  write_plan(dir <> "/docs/plans/sample.html", old_html_plan())
+  write_plan(
+    dir <> "/bin/workspace-driver",
+    "#!/bin/sh\n"
+      <> "if [ \"$1\" = changed-files ] && [ \"$2\" = --json ]; then\n"
+      <> "  printf '%s\\n' '{\"version\":1,\"files\":[{\"path\":\"docs/plans/sample.html\",\"status\":\"added\"}]}'\n"
+      <> "  exit 0\n"
+      <> "fi\n"
+      <> "echo unexpected workspace-driver invocation >&2\n"
+      <> "exit 1\n",
+  )
+  chmod_executable(dir <> "/bin/workspace-driver")
+
+  let artifact =
+    run_in(
+      dir,
+      "SCHERZO_WORKSPACE_DRIVER=./bin/workspace-driver ../../../scripts/scherzo-execplan validate",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(
+    artifact.stderr,
+    "expected exactly one changed docs/plans/*.md file, found 0",
+  )
 }
 
 pub fn extract_md_recovers_readable_markdown_from_html_test() {

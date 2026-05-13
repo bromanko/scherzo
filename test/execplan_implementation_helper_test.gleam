@@ -144,6 +144,24 @@ pub fn extract_plan_accepts_html_plan_paths_test() {
   )
 }
 
+pub fn extract_plan_error_messages_prefer_markdown_and_allow_legacy_html_test() {
+  let dir = "test/tmp/execplan-helper-extract-error-copy"
+  reset_dir(dir)
+  let text_path = dir <> "/issue.txt"
+  let assert Ok(Nil) =
+    simplifile.write(text_path, "Plan path: `not-a-plan.txt`\n")
+
+  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(artifact.stderr, "docs/plans/example.md")
+  assert string.contains(artifact.stderr, "legacy `docs/plans/example.html`")
+  assert !string.contains(
+    artifact.stderr,
+    "Plan path: `docs/plans/example.html`.",
+  )
+}
+
 pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
   let dir = "test/tmp/implementation-helper-plan-brief"
   reset_dir(dir)
@@ -1242,8 +1260,8 @@ pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) =
     simplifile.write(
-      dir <> "/docs/plans/example.html",
-      html_execplan("Example ExecPlan"),
+      dir <> "/docs/plans/example.md",
+      execplan_markdown_with_title("Example ExecPlan"),
     )
   write_fake_execplan_jj(dir <> "/bin/jj")
   write_fake_gh(dir <> "/bin/gh")
@@ -1259,6 +1277,11 @@ pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "Publish base normalization")
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_MARKDOWN_PATH=docs/plans/example.md",
+  )
+  assert !string.contains(artifact.stdout, "PLAN_HTML_PATH")
   assert string.contains(artifact.stdout, "PUBLISH_BASE=main@origin")
   assert string.contains(
     artifact.stdout,
@@ -1270,7 +1293,7 @@ pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
   )
   let assert Ok(context) =
     simplifile.read(dir <> "/tmp/scherzo-execplan-publish-context.json")
-  assert string.contains(context, "\"plan_path\": \"docs/plans/example.html\"")
+  assert string.contains(context, "\"plan_path\": \"docs/plans/example.md\"")
   assert string.contains(
     context,
     "\"branch\": \"scherzo/execplan/example-execchange\"",
@@ -1299,8 +1322,8 @@ pub fn create_implementation_issue_uses_publish_context_after_empty_diff_test() 
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) =
     simplifile.write(
-      dir <> "/docs/plans/example.html",
-      html_execplan("Example ExecPlan"),
+      dir <> "/docs/plans/example.md",
+      execplan_markdown_with_title("Example ExecPlan"),
     )
   write_source_issue(dir)
   write_created_issue(dir)
@@ -1324,7 +1347,7 @@ pub fn create_implementation_issue_uses_publish_context_after_empty_diff_test() 
   assert publish.exit_code == Some(0)
   let assert Ok(context) =
     simplifile.read(dir <> "/tmp/scherzo-execplan-publish-context.json")
-  assert string.contains(context, "\"plan_path\": \"docs/plans/example.html\"")
+  assert string.contains(context, "\"plan_path\": \"docs/plans/example.md\"")
   assert string.contains(
     context,
     "\"pr_url\": \"https://github.com/example/repo/pull/123\"",
@@ -1342,7 +1365,7 @@ pub fn create_implementation_issue_uses_publish_context_after_empty_diff_test() 
   assert followup.status == step_artifact.StepSucceeded
   assert followup.exit_code == Some(0)
   assert string.contains(followup.stdout, "IMPLEMENTATION_ISSUE_STATUS=created")
-  assert string.contains(followup.stdout, "PLAN_PATH=docs/plans/example.html")
+  assert string.contains(followup.stdout, "PLAN_PATH=docs/plans/example.md")
   assert string.contains(
     followup.stdout,
     "PR_URL=https://github.com/example/repo/pull/123",
@@ -1387,7 +1410,7 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue --plan docs/plans/LIV-123-example.html --pr-url https://github.com/example/repo/pull/123 --branch scherzo/execplan/liv-123-example-execchange",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue --plan docs/plans/LIV-123-example.md --pr-url https://github.com/example/repo/pull/123 --branch scherzo/execplan/liv-123-example-execchange",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -1397,7 +1420,7 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
   assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE_STATE=Backlog")
   assert string.contains(
     artifact.stdout,
-    "PLAN_PATH=docs/plans/LIV-123-example.html",
+    "PLAN_PATH=docs/plans/LIV-123-example.md",
   )
   assert string.contains(
     artifact.stdout,
@@ -1414,7 +1437,7 @@ pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
     "ARG=--label\nARG=workflow:execplan-implementation",
   )
   assert string.contains(linear_log, "ARG=--parent\nARG=LIV-123")
-  assert string.contains(linear_log, "docs/plans/LIV-123-example.html")
+  assert string.contains(linear_log, "docs/plans/LIV-123-example.md")
   assert string.contains(linear_log, "ARG=issue\nARG=link")
   assert string.contains(linear_log, "ARG=ExecPlan PR")
 }
@@ -1431,7 +1454,7 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
   write_fake_execplan_handoff_gh(dir <> "/bin/gh")
   write_fake_execplan_handoff_linear(
     dir <> "/bin/linear",
-    "{\"nodes\":[{\"identifier\":\"LIV-200\",\"url\":\"https://linear.example/LIV-200\",\"title\":\"Implement: Add queued plan\",\"description\":\"Plan path: `docs/plans/LIV-123-example.html`\",\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan-implementation\"}]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
+    "{\"nodes\":[{\"identifier\":\"LIV-200\",\"url\":\"https://linear.example/LIV-200\",\"title\":\"Implement: Add queued plan\",\"description\":\"Plan path: `docs/plans/LIV-123-example.md`\",\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan-implementation\"}]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
   )
   chmod_executable(dir <> "/bin/jj")
   chmod_executable(dir <> "/bin/gh")
@@ -1440,7 +1463,7 @@ pub fn create_implementation_issue_reuses_existing_ticket_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue --plan docs/plans/LIV-123-example.html --pr-url https://github.com/example/repo/pull/123 --branch scherzo/execplan/liv-123-example-execchange",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue --plan docs/plans/LIV-123-example.md --pr-url https://github.com/example/repo/pull/123 --branch scherzo/execplan/liv-123-example-execchange",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -2162,8 +2185,20 @@ fn write_publish_fixture_metadata(dir: String) -> Nil {
 }
 
 fn execplan_markdown() -> String {
-  "# Example ExecPlan\n\n"
+  execplan_markdown_with_title("Example ExecPlan")
+}
+
+fn execplan_markdown_with_title(title: String) -> String {
+  "# "
+  <> title
+  <> "\n\n"
   <> "## Progress\n\n- [x] Drafted.\n\n"
+  <> "## Surprises & Discoveries\n\nNone yet.\n\n"
+  <> "## Decision Log\n\n"
+  <> "- Decision: Keep the fixture small.\n"
+  <> "  Rationale: The tests only need a structurally valid plan.\n"
+  <> "  Date: 2026-05-13\n\n"
+  <> "## Outcomes & Retrospective\n\nPending completion.\n\n"
   <> "## Scope Boundaries\n\nIn scope: Brief generation.\n\n"
   <> "## Milestones\n\nGenerate a brief.\n\n"
   <> "## Concrete Steps\n\n1. Run the helper.\n\n"
@@ -2189,8 +2224,8 @@ fn html_execplan(title: String) -> String {
 fn write_followup_plan(dir: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
-      dir <> "/docs/plans/LIV-123-example.html",
-      html_execplan("Add queued plan"),
+      dir <> "/docs/plans/LIV-123-example.md",
+      execplan_markdown_with_title("Add queued plan"),
     )
   Nil
 }
@@ -2233,7 +2268,7 @@ fn write_fake_execplan_handoff_jj(path: String) -> Nil {
         <> "printf '%s\\n' \"$*\" >> jj.log\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then echo 'origin https://github.com/example/repo.git'; exit 0; fi\n"
         <> "if [ \"$1\" = diff ]; then\n"
-        <> "  case \" $* \" in *\" --summary \"*) echo 'A docs/plans/LIV-123-example.html';; *) echo 'docs/plans/LIV-123-example.html';; esac\n"
+        <> "  case \" $* \" in *\" --summary \"*) echo 'A docs/plans/LIV-123-example.md';; *) echo 'docs/plans/LIV-123-example.md';; esac\n"
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = log ]; then\n"
@@ -2341,7 +2376,7 @@ fn write_fake_execplan_jj(path: String) -> Nil {
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
         <> "if [ \"$1\" = diff ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_EXECPLAN_EMPTY_DIFF:-}\" = 1 ]; then exit 0; fi\n"
-        <> "  case \" $* \" in *\" --summary \"*) echo 'A docs/plans/example.html';; *) echo 'docs/plans/example.html';; esac\n"
+        <> "  case \" $* \" in *\" --summary \"*) echo 'A docs/plans/example.md';; *) echo 'docs/plans/example.md';; esac\n"
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = rebase ]; then exit 0; fi\n"

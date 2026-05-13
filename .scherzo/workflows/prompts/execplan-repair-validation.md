@@ -22,10 +22,10 @@ Workflow contract:
 - You are already inside the same dedicated workflow workspace prepared by Scherzo as the draft plan. Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
 - This step exists only to repair mechanical ExecPlan validation failures from `scripts/scherzo-execplan validate`.
 - If `Initial draft validation status` is `success`, do not edit anything. Finish immediately with a concise no-op response.
-- If validation failed, locate the single changed HTML plan artifact under `docs/plans/` using the validation output above or `$SCHERZO_WORKSPACE_DRIVER changed-files --json`.
+- If validation failed, locate the single changed Markdown plan artifact under `docs/plans/` using the validation output above or `$SCHERZO_WORKSPACE_DRIVER changed-files --json`.
 - Make the smallest edits needed for the validator to pass. Do not broaden scope, rewrite the plan, or add new design content beyond what is required to satisfy validation.
-- Revise only the `docs/plans/*.html` plan artifact. Do not create a tracked Markdown plan file, and do not edit source code, tests, config, workflow files, prompt files, existing docs, or temporary review files.
-- Preserve the ExecPlan as a living document and keep all required sections intact inside the HTML artifact. If an ignored `tmp/execplan-source.md` draft exists, you may update it and rerender the HTML, but the only tracked plan artifact must remain `docs/plans/*.html`.
+- Revise only the `docs/plans/*.md` plan artifact. Do not create a tracked HTML artifact, and do not edit source code, tests, config, workflow files, prompt files, existing docs, or temporary review files.
+- Preserve the ExecPlan as a living document and keep all required sections intact in the Markdown source file. The only tracked plan artifact must remain `docs/plans/*.md`.
 - Use repository-relative paths only. Do not write absolute local paths, even as examples or negative test data. Do not include literal prefixes such as `/Users/`, `/home/`, `/private/`, or `/var/folders/`; use placeholders like `<absolute-local-path>` when discussing forbidden path shapes.
 - If the validation error cannot be fixed safely in one bounded pass, leave the plan unchanged and explain the blocker in your final response.
 
