@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
@@ -842,17 +843,24 @@ pub fn heuristic_preflight_is_not_cutover_ready_test() {
   )
 }
 
-pub fn implementation_workflow_native_cutover_removes_legacy_backend_default_test() {
-  let assert Ok(workflow) =
-    simplifile.read(".scherzo/workflows/implementation.yaml")
-  assert_contains(workflow, "submit_review_lane_draft")
-  assert_contains(workflow, "prepare-native")
-  assert_contains(workflow, "refuses fixture/scenario/heuristic")
-  assert_not_contains(workflow, "--agent-backend")
-  assert_not_contains(
-    workflow,
-    "SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic",
-  )
+pub fn implementation_workflows_native_cutover_removes_legacy_backend_default_test() {
+  let workflow_paths = [
+    ".scherzo/workflows/implementation.yaml",
+    ".scherzo/workflows/execplan-implementation.yaml",
+  ]
+
+  list.each(workflow_paths, fn(path) {
+    let assert Ok(workflow) = simplifile.read(path)
+    assert_contains(workflow, "submit_review_lane_draft")
+    assert_contains(workflow, "prepare-native")
+    assert_contains(workflow, "refuses fixture/scenario/heuristic")
+    assert_not_contains(workflow, "run-lane --lane")
+    assert_not_contains(workflow, "--agent-backend")
+    assert_not_contains(
+      workflow,
+      "SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic",
+    )
+  })
 }
 
 pub fn review_preflight_runs_full_dry_run_suite_test() {

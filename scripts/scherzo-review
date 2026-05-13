@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Review artifact helpers for Scherzo dogfood workflows.
 
-This script is intentionally outside the Scherzo runtime. It provides a
-no-side-effect entrypoint for the staged code-review workflow: inspect a PR or
-local diff, generate a structured ReviewBrief artifact, run specialist lanes,
-synthesize their findings, write a final review artifact, and execute an E2E
-preflight suite using local fixtures.
+This script is intentionally outside the Scherzo runtime. It provides
+no-side-effect helpers for staged code-review artifacts: inspect a PR or local
+diff, generate a structured ReviewBrief artifact, run manual legacy specialist
+lanes for validation fixtures, synthesize findings, write a final review
+artifact, and execute local preflight/smoke suites. Production implementation
+workflows use native Scherzo agent lane steps, not script-level lane backends.
 """
 
 from __future__ import annotations
@@ -6942,7 +6943,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_lane = subparsers.add_parser(
         "run-lane",
-        help="Run one specialist review lane against a ReviewBrief and diff source.",
+        help="Run one specialist review lane manually (legacy helper; not production implementation review).",
+        description="Manual legacy specialist-lane helper for local artifact validation and fixtures. Production implementation workflows use native Scherzo kind: agent lane steps with submit_review_lane_draft structured output instead of this command-lane backend path.",
     )
     run_lane.add_argument(
         "--lane",
@@ -6984,7 +6986,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-backend",
         choices=sorted(agent_lane_harness.AGENT_BACKENDS),
         default="heuristic",
-        help="Lane backend to use: heuristic keeps the deterministic path; fixture exercises the local harness; external is legacy rollback only and is not the production native review path.",
+        help="Manual-only backend to use: heuristic keeps the deterministic path; fixture exercises the local harness; external is legacy rollback only. None of these backends is the production implementation-review path.",
     )
     run_lane.set_defaults(func=run_lane_command)
 
@@ -7029,7 +7031,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-backend",
         choices=sorted(agent_lane_harness.AGENT_BACKENDS),
         default="heuristic",
-        help="Backend to pass to internal run-lane invocations.",
+        help="Manual preflight backend for legacy run-lane validation; not a production implementation-review routing mechanism.",
     )
     preflight.set_defaults(func=preflight_command)
 
