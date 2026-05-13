@@ -2298,26 +2298,60 @@ def extension_contract_validate_fixture(contract: dict[str, Any], fixture: dict[
     return errors
 
 
+def json_schema_validate_review_lane_draft_fixture(fixture: dict[str, Any]) -> list[str]:
+    proc = subprocess.run(
+        [
+            "scripts/scherzo-json-schema-validate",
+            "--schema",
+            "docs/schemas/review-lane-draft.v1.schema.json",
+            "--draft",
+            "2020-12",
+        ],
+        input=json.dumps(fixture, separators=(",", ":")) + "\n",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode == 0:
+        return []
+    try:
+        diagnostic = json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        message = (proc.stderr or proc.stdout or f"json schema helper exited {proc.returncode}").strip()
+        return [message]
+    if not isinstance(diagnostic, dict):
+        return [f"json schema helper returned non-object diagnostic: {diagnostic!r}"]
+    instance_path = str(diagnostic.get("instance_path") or "")
+    message = str(diagnostic.get("message") or diagnostic.get("code") or "json schema rejected payload")
+    if instance_path:
+        return [f"{instance_path}: {message}"]
+    return [message]
+
+
 def script_deep_validate_fixture(fixture: dict[str, Any]) -> list[str]:
+    errors = json_schema_validate_review_lane_draft_fixture(fixture)
     try:
         validate_review_lane_draft(fixture)
-        return []
     except ReviewError as exc:
-        return [str(exc)]
+        errors.append(str(exc))
+    return errors
 
 
 def resolve_pi_package_dir() -> Path:
     candidates: list[Path] = []
     pi_bin = shutil.which("pi")
+    package_names = ["@mariozechner/pi-coding-agent", "@earendil-works/pi-coding-agent"]
     if pi_bin:
         pi_root = Path(pi_bin).resolve().parent.parent
-        candidates.append(pi_root / "lib/node_modules/@mariozechner/pi-coding-agent")
+        for package_name in package_names:
+            candidates.append(pi_root / "lib/node_modules" / package_name)
     for root in [Path.cwd(), *Path.cwd().parents]:
-        candidates.append(root / "node_modules/@mariozechner/pi-coding-agent")
+        for package_name in package_names:
+            candidates.append(root / "node_modules" / package_name)
     for candidate in candidates:
         if (candidate / "package.json").exists():
             return candidate
-    raise ReviewError("could not locate @mariozechner/pi-coding-agent package for extension runtime smoke")
+    raise ReviewError("could not locate pi-coding-agent package for extension runtime smoke")
 
 
 def symlink_or_copy(src: Path, dst: Path) -> None:
@@ -2337,11 +2371,17 @@ def prepare_extension_node_runtime(extension_dir: Path, runtime_dir: Path) -> No
     runtime_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(extension_dir / "index.ts", runtime_dir / "index.ts")
     node_modules = runtime_dir / "node_modules"
-    scoped = node_modules / "@mariozechner"
-    scoped.mkdir(parents=True, exist_ok=True)
-    symlink_or_copy(package_dir, scoped / "pi-coding-agent")
     dependency_root = package_dir / "node_modules"
-    symlink_or_copy(dependency_root / "@mariozechner/pi-ai", scoped / "pi-ai")
+    for scope in ["@mariozechner", "@earendil-works"]:
+        scoped = node_modules / scope
+        scoped.mkdir(parents=True, exist_ok=True)
+        symlink_or_copy(package_dir, scoped / "pi-coding-agent")
+    for source_scope in ["@mariozechner", "@earendil-works"]:
+        source = dependency_root / source_scope / "pi-ai"
+        if source.exists():
+            for target_scope in ["@mariozechner", "@earendil-works"]:
+                symlink_or_copy(source, node_modules / target_scope / "pi-ai")
+            break
     symlink_or_copy(dependency_root / "typebox", node_modules / "typebox")
 
 
@@ -2409,10 +2449,14 @@ console.log(JSON.stringify({
     return value if isinstance(value, dict) else {"status": "rejected", "errors": ["runtime output was not an object"]}
 
 
-def pi_advertisement_probe(workflow_id: str) -> dict[str, Any]:
+def pi_advertisement_probe(workflow_id: str, step_id: str | None = None) -> dict[str, Any]:
     require_command("pi")
     env = os.environ.copy()
     env["SCHERZO_WORKFLOW_ID"] = workflow_id
+    if step_id:
+        env["SCHERZO_STEP_ID"] = step_id
+    else:
+        env.pop("SCHERZO_STEP_ID", None)
     rpc_request = json.dumps({
         "id": "review-lane-draft-tool-info",
         "type": "prompt",
@@ -2464,7 +2508,7 @@ def pi_advertisement_probe(workflow_id: str) -> dict[str, Any]:
 def run_pi_advertisement_check(extension_dir: Path) -> dict[str, Any]:
     if not (extension_dir / "index.ts").exists():
         raise ReviewError(f"extension index.ts does not exist: {extension_dir / 'index.ts'}")
-    active = pi_advertisement_probe("review-native-contract-spike")
+    active = pi_advertisement_probe("review-native-contract-spike", "valid_lane")
     inactive = pi_advertisement_probe("unrelated-workflow")
     active_payload = active["payload"]
     inactive_payload = inactive["payload"]
@@ -2484,9 +2528,9 @@ def run_pi_advertisement_check(extension_dir: Path) -> dict[str, Any]:
 def extension_fixture_expected(name: str) -> str:
     if name.startswith("valid-"):
         return "valid"
-    if name == "absolute-path.arguments.json":
-        return "invalid_deep_validation"
-    return "invalid_shallow"
+    if name in {"missing-lane.arguments.json", "wrong-artifact-type.arguments.json"}:
+        return "invalid_contract"
+    return "invalid_runtime"
 
 
 def extension_schema_smoke_command(args: argparse.Namespace) -> None:
@@ -2528,10 +2572,10 @@ def extension_schema_smoke_command(args: argparse.Namespace) -> None:
         deep_status = "passed" if not deep_errors else "rejected"
         if expected == "valid":
             ok = contract_status == "passed" and runtime_status == "passed" and deep_status == "passed"
-        elif expected == "invalid_deep_validation":
-            ok = contract_status == "passed" and runtime_status == "passed" and deep_status == "rejected"
-        else:
+        elif expected == "invalid_contract":
             ok = contract_status == "rejected" and runtime_status == "rejected" and deep_status == "rejected"
+        else:
+            ok = contract_status == "passed" and runtime_status == "rejected" and deep_status == "rejected"
         if not ok:
             failures.append(
                 f"{fixture_path.name}: expected {expected}, got contract={contract_status} runtime={runtime_status} script={deep_status}"
@@ -2550,8 +2594,8 @@ def extension_schema_smoke_command(args: argparse.Namespace) -> None:
             "REVIEW_EXTENSION_SCHEMA_SMOKE "
             f"fixture={fixture_path.name} extension_runtime={runtime_status} script={deep_status}"
         )
-    if valid_count != 4 or invalid_count != 3:
-        failures.append(f"expected 4 valid and 3 invalid fixtures, got valid={valid_count} invalid={invalid_count}")
+    if valid_count != 4 or invalid_count != 5:
+        failures.append(f"expected 4 valid and 5 invalid fixtures, got valid={valid_count} invalid={invalid_count}")
     manifest = {
         "$schema": CONTRACT_SCHEMA_REF,
         "schema_version": SCHEMA_VERSION,

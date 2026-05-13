@@ -147,10 +147,10 @@ fn validator_retry_instruction(
     True ->
       "\nReview-lane draft nested contract reminders:\n"
       <> "- `artifact_type` must be exactly `review_lane_draft` and `remote_mutations` must be exactly `none`.\n"
-      <> "- Every `input_refs` item must be an object with non-empty `artifact_type` and repository- or run-root-relative `path`.\n"
-      <> "- Every `draft_findings` item must include non-empty `draft_finding_id`, `title`, `claim`, and `severity`, boolean `proposed_blocking`, list `locations`, and list `evidence_request_ids`.\n"
-      <> "- Every `review_notes` item must include non-empty `id`, `kind`, `category`, `severity`, `summary`, `details`, `suggested_action`, and list `locations`.\n"
-      <> "- Every `evidence_requests` item must include non-empty `request_id`, `draft_finding_id`, `evidence_key`, `claim`, and `expected_observation`, plus object `target` (`target.changed_file_path` or `target.artifact_path` when applicable).\n"
+      <> "- Every `input_refs` item must have a relative `path` such as `artifacts/review/prepare_review/diff.patch` or `artifacts/review/prepare_review/review-brief.v1.json`; never use `$SCHERZO_RUN_ROOT`, the current working directory, `/Users/...`, drive-letter paths, or `..` segments.\n"
+      <> "- Every `draft_findings` item must include non-empty `draft_finding_id`, `title`, `claim`, and `severity`, boolean `proposed_blocking`, list `locations`, and list `evidence_request_ids`. Finding locations must also use repository-relative paths.\n"
+      <> "- Every `review_notes` item must include non-empty `id`, `kind`, `category`, `severity`, `summary`, `details`, `suggested_action`, and list `locations`; category must be one of `correctness`, `maintainability`, `security`, `performance`, `testing`, `workflow`, `documentation`, `artifact_contract`, or `other` (use `testing`, not `test-quality`).\n"
+      <> "- Every `evidence_requests` item must include non-empty `request_id`, `draft_finding_id`, `evidence_key`, `claim`, and `expected_observation`, plus object `target`; target may contain only `test_name`, `fixture_id`, `artifact_path`, `changed_file_path`, or `static_scan_rule` (do not include `command`, `suggested_test_file`, or `suggested_test_name`).\n"
     False -> ""
   }
 }
@@ -159,9 +159,13 @@ fn is_review_lane_draft_validator(
   validator: workflow_dag.StructuredOutputValidator,
 ) -> Bool {
   case validator {
-    workflow_dag.CommandValidator(name: name, ..) ->
-      name == "review_lane_draft_compat" || name == "review_lane_draft"
-    workflow_dag.JsonSchemaValidator(..) -> False
+    workflow_dag.CommandValidator(name: name, argv: argv, ..) ->
+      name == "review_lane_draft_compat"
+      || name == "review_lane_draft"
+      || name == "review_lane_semantics"
+      || list.any(argv, fn(arg) { arg == "review_lane_draft" })
+    workflow_dag.JsonSchemaValidator(path: path, ..) ->
+      string.contains(path, "review-lane-draft")
   }
 }
 

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "artifact_type": "review_lane_draft",
+  "generated_at_utc": "2026-05-11T00:00:00Z",
+  "producer": {
+    "name": "native-scherzo-agent",
+    "version": "1",
+    "mode": "extension-schema-smoke"
+  },
+  "lane": {
+    "id": "test-quality",
+    "name": "Test-quality reviewer",
+    "category": "testing",
+    "version": "1"
+  },
+  "input_refs": [],
+  "draft_findings": [
+    {
+      "draft_finding_id": "finding-invalid-target",
+      "title": "Invalid evidence target fixture",
+      "claim": "Evidence target includes obsolete suggested test fields.",
+      "severity": "low",
+      "proposed_blocking": false,
+      "locations": [],
+      "evidence_request_ids": ["evidence-invalid-target"]
+    }
+  ],
+  "review_notes": [],
+  "evidence_requests": [
+    {
+      "request_id": "evidence-invalid-target",
+      "draft_finding_id": "finding-invalid-target",
+      "evidence_key": "target-shape",
+      "claim": "The extension should reject unrecognized target keys before terminating.",
+      "expected_observation": "Only canonical target keys are accepted.",
+      "target": {
+        "suggested_test_file": "test/example_test.gleam",
+        "suggested_test_name": "example_test"
+      }
+    }
+  ],
+  "self_check": {
+    "checked_no_remote_mutations": true,
+    "notes": "Invalid runtime/schema fixture."
+  },
+  "remote_mutations": "none"
+}

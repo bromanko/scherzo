@@ -3,7 +3,7 @@
   "artifact_type": "pi_extension_tool_contract",
   "tool_name": "submit_review_lane_draft",
   "label": "Submit Review Lane Draft",
-  "description": "Submit the final review_lane_draft object for a native Scherzo review lane. This tool performs no file, network, Linear, git, or remote mutations.",
+  "description": "Submit the final review_lane_draft object for a native Scherzo review lane. This tool performs no file, network, Linear, git, or remote mutations and rejects common schema-invalid paths, categories, severities, and evidence targets before terminating.",
   "top_level_required": [
     "schema_version",
     "artifact_type",
@@ -19,6 +19,12 @@
   ],
   "allowed_workflow_step_scopes": {
     "implementation": [
+      "lane_correctness",
+      "lane_test_quality",
+      "lane_idioms_maintainability",
+      "lane_security_performance"
+    ],
+    "execplan-implementation": [
       "lane_correctness",
       "lane_test_quality",
       "lane_idioms_maintainability",
@@ -42,19 +48,37 @@
     "idioms-maintainability",
     "security-performance"
   ],
+  "allowed_review_note_categories": [
+    "correctness",
+    "maintainability",
+    "security",
+    "performance",
+    "testing",
+    "workflow",
+    "documentation",
+    "artifact_contract",
+    "other"
+  ],
+  "allowed_evidence_target_keys": [
+    "test_name",
+    "fixture_id",
+    "artifact_path",
+    "changed_file_path",
+    "static_scan_rule"
+  ],
   "defense_in_depth_rules": {
     "schema_version": 1,
     "artifact_type": "review_lane_draft",
-    "remote_mutations": "none"
+    "remote_mutations": "none",
+    "paths_must_be_relative": true,
+    "reject_sibling_tool_calls": true
   },
   "script_owned_deep_validation": [
-    "input_refs artifact reference semantics",
-    "draft finding severity and category policy",
-    "finding location path portability",
-    "evidence request target path portability",
+    "finding location line-range semantics",
+    "finding category policy beyond JSON type checks",
     "finding-to-evidence linkage",
     "duplicate ids",
-    "review_notes content policy",
+    "blocking correctness evidence policy",
     "final synthesis readiness"
   ]
 }
