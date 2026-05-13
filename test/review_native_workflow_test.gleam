@@ -218,6 +218,25 @@ pub fn review_native_lane_steps_use_json_schema_plus_semantic_validator_test() {
   ))
 }
 
+pub fn native_review_prompts_and_tool_guidance_use_relative_input_ref_examples_test() {
+  let prompt_paths = [
+    ".scherzo/workflows/prompts/review-native-correctness.md",
+    ".scherzo/workflows/prompts/review-native-test-quality.md",
+    ".scherzo/workflows/prompts/review-native-idioms-maintainability.md",
+    ".scherzo/workflows/prompts/review-native-security-performance.md",
+  ]
+  list.each(prompt_paths, fn(path) {
+    let assert Ok(prompt) = simplifile.read(path)
+    assert_contains(prompt, "artifacts/review/prepare_review/diff.patch")
+    assert_contains(prompt, "never `$SCHERZO_RUN_ROOT/...` or `/Users/...`")
+  })
+
+  let assert Ok(extension) =
+    simplifile.read(".pi/extensions/scherzo-review-lane-draft/index.ts")
+  assert_contains(extension, "artifacts/review/prepare_review/diff.patch")
+  assert_contains(extension, "never use $SCHERZO_RUN_ROOT")
+}
+
 pub fn review_lane_draft_tool_is_enabled_for_implementation_lane_steps_test() {
   let assert Ok(extension) =
     simplifile.read(".pi/extensions/scherzo-review-lane-draft/index.ts")

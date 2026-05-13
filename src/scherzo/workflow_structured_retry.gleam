@@ -147,7 +147,7 @@ fn validator_retry_instruction(
     True ->
       "\nReview-lane draft nested contract reminders:\n"
       <> "- `artifact_type` must be exactly `review_lane_draft` and `remote_mutations` must be exactly `none`.\n"
-      <> "- Every `input_refs` item must be an object with non-empty `artifact_type` and repository- or run-root-relative `path`.\n"
+      <> "- Every `input_refs` item must be an object with non-empty `artifact_type` and repository- or run-root-relative `path`, for example `artifacts/review/prepare_review/diff.patch`; never use `$SCHERZO_RUN_ROOT/...`, `/Users/...`, `/tmp/...`, or drive-letter absolute paths.\n"
       <> "- Every `draft_findings` item must include non-empty `draft_finding_id`, `title`, `claim`, and `severity`, boolean `proposed_blocking`, list `locations`, and list `evidence_request_ids`.\n"
       <> "- Every `review_notes` item must include non-empty `id`, `kind`, `category`, `severity`, `summary`, `details`, `suggested_action`, and list `locations`.\n"
       <> "- Every `evidence_requests` item must include non-empty `request_id`, `draft_finding_id`, `evidence_key`, `claim`, and `expected_observation`, plus object `target` (`target.changed_file_path` or `target.artifact_path` when applicable).\n"

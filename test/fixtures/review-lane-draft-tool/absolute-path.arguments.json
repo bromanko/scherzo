@@ -13,7 +13,12 @@
     "category": "correctness",
     "version": "1"
   },
-  "input_refs": [],
+  "input_refs": [
+    {
+      "artifact_type": "diff",
+      "path": "/absolute-local-path/artifacts/review/prepare_review/diff.patch"
+    }
+  ],
   "draft_findings": [
     {
       "draft_finding_id": "finding-absolute-path",
