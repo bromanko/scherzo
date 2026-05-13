@@ -2808,22 +2808,25 @@ def artifact_ref_display_path(path: Path, *, base_dir: Path | None = None) -> Pa
     Native review steps may pass retained Scherzo artifact paths as absolute local
     paths even though the artifact contract requires serialized refs to be
     repository-relative and non-escaping.  Prefer a caller-supplied output base
-    for lane-local artifacts, then fall back to SCHERZO_REPO_ROOT, the checkout
-    containing this script, and the current working directory. If the resolved
-    path is outside every known safe base, return the resolved absolute path so
-    existing validation fails closed rather than hiding an unsafe reference.
+    for lane-local artifacts, then fall back to the checkout containing this
+    script, the current working directory, and SCHERZO_REPO_ROOT. Prefer the
+    script checkout before SCHERZO_REPO_ROOT so tests and nested workflow
+    workspaces that live under a larger Scherzo checkout do not serialize paths
+    relative to the outer checkout. If the resolved path is outside every known
+    safe base, return the resolved absolute path so existing validation fails
+    closed rather than hiding an unsafe reference.
     """
     candidate_bases: list[Path] = []
     if base_dir is not None:
         candidate_bases.append(base_dir)
-    repo_root = os.environ.get("SCHERZO_REPO_ROOT")
-    if repo_root:
-        candidate_bases.append(Path(repo_root))
     try:
         candidate_bases.append(Path(__file__).resolve(strict=False).parent.parent)
     except OSError:
         pass
     candidate_bases.append(Path.cwd())
+    repo_root = os.environ.get("SCHERZO_REPO_ROOT")
+    if repo_root:
+        candidate_bases.append(Path(repo_root))
 
     try:
         resolved_path = path.resolve(strict=False)

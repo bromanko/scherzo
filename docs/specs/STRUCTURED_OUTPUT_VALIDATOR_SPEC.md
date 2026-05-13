@@ -234,15 +234,15 @@ JSON Schema validators provide declarative structural validation for admitted JS
 
 **SOV-JS-002:** Version 1 MUST support JSON Schema draft 2020-12. Scherzo MUST reject unsupported drafts as non-retryable configuration failures.
 
-**SOV-JS-003:** Schema paths MUST be repository-relative, non-empty, and confined to the repository. Scherzo MUST reject absolute paths and traversal outside the repository before validation.
+**SOV-JS-003:** Schema paths MUST be repository-relative, non-empty, and confined to the repository. Scherzo MUST reject absolute paths and traversal outside the repository before validation. Scherzo MUST also resolve the repository root and schema path to canonical paths at runtime and reject repository-relative symlinks whose target resolves outside the repository.
 
-**SOV-JS-004:** A missing, unreadable, invalid-JSON, or invalid-schema schema file MUST be a non-retryable configuration failure.
+**SOV-JS-004:** A missing, unreadable, invalid-JSON, invalid-schema, symlink-escaped, or unsupported-draft schema file MUST be a non-retryable configuration failure.
 
 **SOV-JS-005:** A payload that is valid JSON but does not satisfy the schema MUST be a retryable payload rejection when retry budget remains.
 
 **SOV-JS-006:** JSON Schema diagnostics MUST identify the validator name, schema path, and a concise instance path when available. They MUST NOT include the full payload.
 
-**SOV-JS-007:** The implementation MAY use an internal helper process for JSON Schema validation. That helper is Scherzo-owned infrastructure and is not the same mechanism as a workflow-declared command validator.
+**SOV-JS-007:** The implementation MAY use an internal helper process for JSON Schema validation. That helper is Scherzo-owned infrastructure and is not the same mechanism as a workflow-declared command validator. Source-checkout runs MAY fall back to Scherzo's checked-in helper, but installed Scherzo MUST provide its own packaged helper and dependency runtime; workflow repositories MUST NOT be required to provide Scherzo's helper script for `type: json_schema` validation.
 
 ## 9. Validator failure and retry behavior
 
@@ -268,7 +268,7 @@ JSON Schema validators provide declarative structural validation for admitted JS
 
 **SOV-ART-003:** Persisted structured artifact payloads MUST be redacted JSON values.
 
-**SOV-ART-004:** New structured artifacts SHOULD include validation metadata sufficient to understand why the payload was accepted: baseline schema type, baseline required keys, validator names, validator types, validator status, schema path and content hash for JSON Schema validators, command argv digest, timeout, working-directory mode, and command env keys.
+**SOV-ART-004:** New structured artifacts SHOULD include validation metadata sufficient to understand why the payload was accepted: source type, optional source tool name, baseline schema type, baseline required keys, validator names, validator types, validator status, schema path and content hash for JSON Schema validators, command argv digest, timeout, working-directory mode, and command env keys.
 
 **SOV-ART-005:** Structured artifact metadata MUST NOT persist command validator stdout or stderr on success and MUST NOT persist command env values in cleartext.
 

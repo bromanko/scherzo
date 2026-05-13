@@ -20,8 +20,24 @@ pub fn home_dir() -> Result(String, Nil) {
 pub fn env(name: String) -> Option(String) {
   case getenv(name) {
     Ok(value) -> Some(value)
-    Error(_) -> None
+    Error(Nil) -> None
   }
+}
+
+pub fn set_env(name: String, value: String) -> Result(Nil, Nil) {
+  putenv(name, value)
+}
+
+pub fn unset_env(name: String) -> Result(Nil, Nil) {
+  unsetenv(name)
+}
+
+pub fn realpath(path: String) -> Result(String, Nil) {
+  ffi_realpath(path)
+}
+
+pub fn symlink(target: String, link_name: String) -> Result(Nil, Nil) {
+  ffi_symlink(target, link_name)
 }
 
 pub fn contains(root: String, path: String) -> Bool {
@@ -44,6 +60,12 @@ fn trim_trailing_slash(path: String) -> String {
 @external(erlang, "scherzo_config_ffi", "getenv")
 fn getenv(name: String) -> Result(String, Nil)
 
+@external(erlang, "scherzo_config_ffi", "putenv")
+fn putenv(name: String, value: String) -> Result(Nil, Nil)
+
+@external(erlang, "scherzo_config_ffi", "unsetenv")
+fn unsetenv(name: String) -> Result(Nil, Nil)
+
 @external(erlang, "scherzo_config_ffi", "home")
 fn home() -> Result(String, Nil)
 
@@ -55,3 +77,9 @@ fn ffi_dirname(path: String) -> Result(String, Nil)
 
 @external(erlang, "scherzo_config_ffi", "absname")
 fn absname(path: String) -> Result(String, Nil)
+
+@external(erlang, "scherzo_config_ffi", "realpath")
+fn ffi_realpath(path: String) -> Result(String, Nil)
+
+@external(erlang, "scherzo_config_ffi", "symlink")
+fn ffi_symlink(target: String, link_name: String) -> Result(Nil, Nil)

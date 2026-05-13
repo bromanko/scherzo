@@ -2,7 +2,7 @@ import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
-import gleam/option.{None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/hash
@@ -33,6 +33,8 @@ pub type StructuredOutputArtifact {
     attempt_index: Int,
     artifact_name: String,
     format: String,
+    source_type: String,
+    source_tool_name: Option(String),
     schema_required_keys: List(String),
     validation: structured_output_metadata.ValidationMetadata,
     payload: json_value.JsonValue,
@@ -144,6 +146,8 @@ pub fn write_structured_output_artifact(
       attempt_index: attempt_index,
       artifact_name: artifact_name,
       format: format,
+      source_type: validation.source_type,
+      source_tool_name: validation.source_tool_name,
       schema_required_keys: schema_required_keys,
       validation: validation,
       payload: payload,
@@ -358,6 +362,13 @@ fn structured_output_to_string(artifact: StructuredOutputArtifact) -> String {
   structured_output_to_json(artifact) |> json.to_string
 }
 
+fn option_string_to_json(value: Option(String)) -> json.Json {
+  case value {
+    Some(value) -> json.string(value)
+    None -> json.null()
+  }
+}
+
 fn structured_output_to_json(artifact: StructuredOutputArtifact) -> json.Json {
   json.object([
     #("schema_version", json.int(1)),
@@ -368,6 +379,8 @@ fn structured_output_to_json(artifact: StructuredOutputArtifact) -> json.Json {
     #("attempt_index", json.int(artifact.attempt_index)),
     #("artifact_name", json.string(artifact.artifact_name)),
     #("format", json.string(artifact.format)),
+    #("source_type", json.string(artifact.source_type)),
+    #("source_tool_name", option_string_to_json(artifact.source_tool_name)),
     #(
       "schema",
       json.object([
@@ -416,6 +429,16 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputArtifact) {
           use attempt_index <- decode.field("attempt_index", decode.int)
           use artifact_name <- decode.field("artifact_name", decode.string)
           use format <- decode.field("format", decode.string)
+          use source_type <- decode.optional_field(
+            "source_type",
+            "final_response",
+            decode.string,
+          )
+          use source_tool_name <- decode.optional_field(
+            "source_tool_name",
+            None,
+            decode.optional(decode.string),
+          )
           use schema_required_keys <- decode.optional_field(
             "schema",
             [],
@@ -439,6 +462,8 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputArtifact) {
             attempt_index: attempt_index,
             artifact_name: artifact_name,
             format: format,
+            source_type: source_type,
+            source_tool_name: source_tool_name,
             schema_required_keys: structured_output_metadata.required_keys(
               validation,
             ),
@@ -464,6 +489,8 @@ fn empty_structured_output_artifact() -> StructuredOutputArtifact {
     attempt_index: 0,
     artifact_name: "",
     format: "",
+    source_type: "final_response",
+    source_tool_name: None,
     schema_required_keys: [],
     validation: structured_output_metadata.baseline_only([]),
     payload: json_value.JNull,

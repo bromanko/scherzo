@@ -158,8 +158,11 @@ fn validator_retry_instruction(
 fn is_review_lane_draft_validator(
   validator: workflow_dag.StructuredOutputValidator,
 ) -> Bool {
-  workflow_dag.structured_output_validator_name(validator)
-  == "review_lane_draft"
+  case validator {
+    workflow_dag.CommandValidator(name: name, ..) ->
+      name == "review_lane_draft_compat" || name == "review_lane_draft"
+    workflow_dag.JsonSchemaValidator(..) -> False
+  }
 }
 
 fn source_retry_instruction(spec: workflow_dag.StructuredOutputSpec) -> String {
