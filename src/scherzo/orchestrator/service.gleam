@@ -1457,15 +1457,7 @@ fn run_pi_probe_orchestrator(
           case probe_result {
             Ok(Nil) ->
               case cleanup_result {
-                Ok(Nil) -> {
-                  log_stderr_best_effort(
-                    "info",
-                    "pi_probe_ok",
-                    [#("workspace_path", prepared.path)],
-                    secrets,
-                  )
-                  Ok(Nil)
-                }
+                Ok(Nil) -> Ok(Nil)
                 Error(err) ->
                   Error(StartupError(
                     error.workspace_code(err),

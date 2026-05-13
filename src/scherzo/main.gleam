@@ -263,6 +263,7 @@ fn finish_successful_run(mode: RunMode) -> Nil {
     // client or SSL supervisors started during polling, cannot keep the
     // scherzo-start process-group wrapper alive after daemon_shutdown_complete.
     Daemon -> halt(0)
+    PiProbe -> io.println_error(log.info("pi_probe_ok", []))
     _ -> Nil
   }
 }

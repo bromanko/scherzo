@@ -19,7 +19,7 @@
 -define(TERM_GRACE_MS, 300).
 -define(KILL_GRACE_MS, 700).
 -define(CHILD_PID_WAIT_MS, 200).
--define(LAUNCH_READY_WAIT_MS, 200).
+-define(LAUNCH_READY_WAIT_MS, 1000).
 -define(START_POLL_MS, 5).
 -define(POLL_MS, 25).
 
