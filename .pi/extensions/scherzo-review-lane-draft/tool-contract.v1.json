@@ -48,7 +48,7 @@
     "remote_mutations": "none"
   },
   "script_owned_deep_validation": [
-    "input_refs artifact reference semantics",
+    "input_refs artifact reference semantics, including repository- or run-root-relative paths such as artifacts/review/prepare_review/diff.patch and rejection of absolute local paths",
     "draft finding severity and category policy",
     "finding location path portability",
     "evidence request target path portability",

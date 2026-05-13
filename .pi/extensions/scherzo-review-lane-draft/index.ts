@@ -10,7 +10,7 @@ const allowedLaneIds = ["correctness", "test-quality", "idioms-maintainability",
 
 const artifactRefSchema = Type.Object({
 	artifact_type: Type.String({ description: "Non-empty retained artifact type, for example review_brief, diff, changed_files, validation_status, or context_manifest." }),
-	path: Type.String({ description: "Repository- or run-root-relative path to the retained input artifact." }),
+	path: Type.String({ description: "Repository- or run-root-relative path to the retained input artifact, for example artifacts/review/prepare_review/diff.patch; never use $SCHERZO_RUN_ROOT, /Users/..., /tmp/..., or drive-letter absolute paths." }),
 	sha256: Type.Optional(Type.String()),
 }, { additionalProperties: true });
 
@@ -126,6 +126,7 @@ export const submitReviewLaneDraftTool = defineTool({
 		"Use submit_review_lane_draft exactly once as the final action for native Scherzo review lanes.",
 		"Do not print review_lane_draft as final assistant JSON; pass the object as submit_review_lane_draft arguments instead.",
 		"Do not call sibling tools in the same tool-call batch as submit_review_lane_draft.",
+		"For input_refs[].path, use run-root-relative paths such as artifacts/review/prepare_review/diff.patch; never use $SCHERZO_RUN_ROOT or absolute local paths such as /Users/... or /tmp/...",
 	],
 	parameters: submitReviewLaneDraftParameters,
 	async execute(_toolCallId, params) {

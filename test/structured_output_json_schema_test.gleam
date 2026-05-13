@@ -167,6 +167,52 @@ pub fn json_schema_rejects_invalid_payload_with_instance_path_test() {
   assert string.contains(error.diagnostic_summary, "instance_path=/findings")
 }
 
+pub fn review_lane_draft_schema_rejects_absolute_input_ref_paths_test() {
+  let validator =
+    schema_validator("docs/schemas/review-lane-draft.v1.schema.json")
+  let assert Error(error) =
+    structured_output_json_schema.run_json_schema_validator(
+      validator,
+      payload(
+        "test/fixtures/review-lane-draft-tool/absolute-path.arguments.json",
+      ),
+      context(validator),
+      [],
+    )
+
+  assert error.code == "structured_output_json_schema_rejected"
+  assert error.retryable
+  assert string.contains(error.diagnostic_summary, "/input_refs/0/path")
+}
+
+pub fn review_lane_draft_schema_rejects_env_placeholder_input_ref_paths_test() {
+  let validator =
+    schema_validator("docs/schemas/review-lane-draft.v1.schema.json")
+  let assert Ok(contents) =
+    simplifile.read(
+      "test/fixtures/review-lane-draft-tool/absolute-path.arguments.json",
+    )
+  let env_placeholder_contents =
+    contents
+    |> string.replace(
+      each: "/absolute-local-path/artifacts/review/prepare_review/diff.patch",
+      with: "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch",
+    )
+  let assert Ok(env_placeholder_payload) =
+    json_value.parse(env_placeholder_contents)
+  let assert Error(error) =
+    structured_output_json_schema.run_json_schema_validator(
+      validator,
+      env_placeholder_payload,
+      context(validator),
+      [],
+    )
+
+  assert error.code == "structured_output_json_schema_rejected"
+  assert error.retryable
+  assert string.contains(error.diagnostic_summary, "/input_refs/0/path")
+}
+
 pub fn json_schema_missing_file_is_non_retryable_config_error_test() {
   let validator =
     schema_validator("test/fixtures/structured_output/missing.schema.json")
