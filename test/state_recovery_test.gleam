@@ -2,6 +2,7 @@ import birl
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import legacy_ledger_fixtures
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
 import scherzo/orchestrator/state as orchestrator_state
@@ -520,6 +521,145 @@ pub fn linear_command_ack_outbox_is_replayed_test() {
     ),
   ] = plan.outbox_to_replay
   assert plan.records_to_append == []
+}
+
+pub fn old_workflow_and_linear_command_ledger_records_remain_recoverable_test() {
+  let workflow_started =
+    decode_ledger_record(legacy_ledger_fixtures.workflow_run_started_v2(
+      "old-1",
+      1,
+    ))
+  let workflow_finished =
+    decode_ledger_record(legacy_ledger_fixtures.workflow_run_finished_v2(
+      "old-2",
+      3,
+    ))
+  let step_session_recorded =
+    decode_ledger_record(
+      legacy_ledger_fixtures.step_attempt_pi_session_recorded_v2("old-step", 4),
+    )
+  let command_seen =
+    decode_ledger_record(legacy_ledger_fixtures.linear_command_seen_v2(
+      "cmd-old-1",
+      5,
+    ))
+  let command_started =
+    decode_ledger_record(legacy_ledger_fixtures.linear_command_started_v2(
+      "cmd-old-2",
+      6,
+    ))
+  let command_completed =
+    decode_ledger_record(legacy_ledger_fixtures.linear_command_completed_v2(
+      "cmd-old-3",
+      7,
+      "ok",
+      "Retry queued",
+    ))
+  let command_acked =
+    decode_ledger_record(legacy_ledger_fixtures.linear_command_acked_v2(
+      "cmd-old-4",
+      8,
+    ))
+
+  assert workflow_started.body
+    == record.WorkflowRunStarted(
+      run_id: "run-1",
+      workflow_id: "execplan",
+      workflow_fingerprint: "wf-old",
+      issue_id: "issue-1",
+      issue_identifier: "LIV-266",
+      issue_fingerprint: "fp-old",
+      observed_updated_at_ms: 10,
+      run_root: "test/tmp/run-root",
+    )
+  assert workflow_finished.body
+    == record.WorkflowRunFinished(
+      run_id: "run-1",
+      workflow_id: "execplan",
+      issue_id: "issue-1",
+      outcome: "success",
+      token_total: 10,
+      turns: 2,
+    )
+  assert step_session_recorded.body
+    == record.StepAttemptPiSessionRecorded(
+      run_id: "run-1",
+      issue_id: "issue-1",
+      issue_identifier: "LIV-266",
+      workflow_id: "execplan",
+      workflow_fingerprint: "wf-old",
+      step_id: "step-1",
+      workspace_name: "main",
+      attempt_index: 1,
+      workspace_path: "test/tmp/run-root/workspaces/main",
+      session_id: "pi-session-1",
+      session_file: "state/sessions/run-1/step-1.json",
+    )
+  assert command_seen.body
+    == record.LinearCommandSeen(
+      comment_id: "comment-1",
+      issue_id: "issue-1",
+      author_id: "user-1",
+      command_name: "retry",
+      excerpt: "/scherzo retry",
+    )
+  assert command_started.body
+    == record.LinearCommandStarted(
+      comment_id: "comment-1",
+      issue_id: "issue-1",
+      command_name: "retry",
+    )
+  assert command_completed.body
+    == record.LinearCommandCompleted(
+      comment_id: "comment-1",
+      issue_id: "issue-1",
+      status: "ok",
+      message_excerpt: "Retry queued",
+    )
+  assert command_acked.body
+    == record.LinearCommandAcked(comment_id: "comment-1", issue_id: "issue-1")
+
+  let folded =
+    projection.fold([
+      workflow_started,
+      workflow_finished,
+      step_session_recorded,
+      command_seen,
+      command_started,
+      command_completed,
+      command_acked,
+    ])
+  let assert Ok(workflow_status) = dict.get(folded.workflow_runs, "run-1")
+  assert workflow_status
+    == projection.WorkflowRunFinished(
+      workflow_id: "execplan",
+      issue_id: "issue-1",
+      outcome: "success",
+      token_total: 10,
+      turns: 2,
+      finished_at_ms: 3,
+      run_root: "test/tmp/run-root",
+    )
+  let assert Ok(command_receipt) =
+    dict.get(folded.command_receipts, "comment-1")
+  assert command_receipt
+    == projection.CommandReceiptCompleted(
+      issue_id: "issue-1",
+      author_id: "user-1",
+      command_name: "retry",
+      excerpt: "/scherzo retry",
+      result_status: "ok",
+      message_excerpt: "Retry queued",
+      seen_at_ms: 5,
+      started_at_ms: 6,
+      completed_at_ms: 7,
+      acked_at_ms: Some(8),
+    )
+}
+
+fn decode_ledger_record(line: String) -> record.LedgerRecord {
+  let assert Ok(decoded) = record.decode_string(line)
+  decoded
 }
 
 fn config() -> config_types.EffectiveConfig {

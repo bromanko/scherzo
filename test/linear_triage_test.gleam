@@ -169,6 +169,34 @@ pub fn state_only_and_comment_then_state_reports_test() {
   assert string.contains(update_body, "issueUpdate")
 }
 
+pub fn linear_invalid_workflow_report_behavior_is_characterized_test() {
+  let observed = process.new_subject()
+  let client =
+    linear_triage.triage_client(
+      tracker_config(),
+      contract_config(True, Some("state-needs-workflow")),
+      success_transport(observed),
+    )
+
+  assert client.report_invalid_workflow(
+      issue(),
+      workflow_policy.MissingWorkflowLabel,
+    )
+    == Ok(linear_triage.InvalidWorkflowReportCommentAndState)
+  let assert Ok(comment_body) = process.receive(observed, within: 1000)
+  let assert Ok(update_body) = process.receive(observed, within: 1000)
+  assert string.contains(comment_body, "commentCreate")
+  assert string.contains(comment_body, "\"issueId\":\"issue-id\"")
+  assert string.contains(comment_body, "🏷️ Scherzo needs one workflow label")
+  assert string.contains(comment_body, "| Issue | `ABC-1` |")
+  assert string.contains(comment_body, "| Problem | `missing_workflow_label` |")
+  assert !string.contains(comment_body, "description must not appear")
+  assert string.contains(update_body, "issueUpdate")
+  assert string.contains(update_body, "\"issueId\":\"issue-id\"")
+  assert string.contains(update_body, "state-needs-workflow")
+  test_async.assert_no_extra_message_within(observed, 50)
+}
+
 pub fn state_failure_after_comment_returns_error_test() {
   let observed = process.new_subject()
   let client =

@@ -263,19 +263,27 @@ type LinearServerMessage {
     List(String),
     process.Subject(Result(List(linear.LinearComment), error.TrackerError)),
   )
-  PostAck(String, process.Subject(Result(Nil, error.TrackerError)))
+  PostAck(String, String, process.Subject(Result(Nil, error.TrackerError)))
 }
 
 fn start_linear_server(
   fetch_subject: process.Subject(List(String)),
   ack_subject: process.Subject(String),
+  ack_target_subject: process.Subject(String),
 ) -> process.Subject(LinearServerMessage) {
   let ready = process.new_subject()
   let _pid =
     process.spawn_unlinked(fn() {
       let subject = process.new_subject()
       process.send(ready, subject)
-      linear_server_loop(subject, fetch_subject, ack_subject, [], [])
+      linear_server_loop(
+        subject,
+        fetch_subject,
+        ack_subject,
+        ack_target_subject,
+        [],
+        [],
+      )
     })
   let assert Ok(subject) = process.receive(ready, within: 1000)
   subject
@@ -285,6 +293,7 @@ fn linear_server_loop(
   subject: process.Subject(LinearServerMessage),
   fetch_subject: process.Subject(List(String)),
   ack_subject: process.Subject(String),
+  ack_target_subject: process.Subject(String),
   queued_batches: List(List(linear.LinearComment)),
   queued_ack_results: List(Result(Nil, error.TrackerError)),
 ) -> Nil {
@@ -294,6 +303,7 @@ fn linear_server_loop(
         subject,
         fetch_subject,
         ack_subject,
+        ack_target_subject,
         list.append(queued_batches, [comments]),
         queued_ack_results,
       )
@@ -302,6 +312,7 @@ fn linear_server_loop(
         subject,
         fetch_subject,
         ack_subject,
+        ack_target_subject,
         queued_batches,
         results,
       )
@@ -313,18 +324,21 @@ fn linear_server_loop(
         subject,
         fetch_subject,
         ack_subject,
+        ack_target_subject,
         queued_batches,
         queued_ack_results,
       )
     }
-    Ok(PostAck(body, reply)) -> {
+    Ok(PostAck(issue_id, body, reply)) -> {
       process.send(ack_subject, body)
+      process.send(ack_target_subject, issue_id)
       let #(result, queued_ack_results) = pop_ack_result(queued_ack_results)
       process.send(reply, result)
       linear_server_loop(
         subject,
         fetch_subject,
         ack_subject,
+        ack_target_subject,
         queued_batches,
         queued_ack_results,
       )
@@ -373,9 +387,9 @@ fn linear_client(
         Error(_) -> Ok([])
       }
     },
-    post_ack: fn(_issue_id, body) {
+    post_ack: fn(issue_id, body) {
       let reply = process.new_subject()
-      process.send(server, PostAck(body, reply))
+      process.send(server, PostAck(issue_id, body, reply))
       case process.receive(reply, within: 1000) {
         Ok(result) -> result
         Error(_) -> Ok(Nil)
@@ -390,6 +404,7 @@ type LinearCommandHarness {
     log_subject: process.Subject(String),
     fetch_subject: process.Subject(List(String)),
     ack_subject: process.Subject(String),
+    ack_target_subject: process.Subject(String),
     linear_server: process.Subject(LinearServerMessage),
     deps: daemon.RuntimeDependencies,
   )
@@ -401,7 +416,9 @@ fn linear_command_harness(workflow_dir: String) -> LinearCommandHarness {
   let log_subject = process.new_subject()
   let fetch_subject = process.new_subject()
   let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
+  let ack_target_subject = process.new_subject()
+  let linear_server =
+    start_linear_server(fetch_subject, ack_subject, ack_target_subject)
   let deps =
     dependencies(
       tracker_with(candidate),
@@ -414,6 +431,7 @@ fn linear_command_harness(workflow_dir: String) -> LinearCommandHarness {
     log_subject: log_subject,
     fetch_subject: fetch_subject,
     ack_subject: ack_subject,
+    ack_target_subject: ack_target_subject,
     linear_server: linear_server,
     deps: deps,
   )
@@ -428,7 +446,9 @@ fn prompt_linear_command_harness(
   let worker_barrier = test_async.new_barrier()
   let fetch_subject = process.new_subject()
   let ack_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
+  let ack_target_subject = process.new_subject()
+  let linear_server =
+    start_linear_server(fetch_subject, ack_subject, ack_target_subject)
   let deps =
     dependencies(
       tracker_with(candidate),
@@ -442,6 +462,7 @@ fn prompt_linear_command_harness(
       log_subject: log_subject,
       fetch_subject: fetch_subject,
       ack_subject: ack_subject,
+      ack_target_subject: ack_target_subject,
       linear_server: linear_server,
       deps: deps,
     ),
@@ -694,8 +715,10 @@ pub fn park_command_suppresses_invalid_workflow_triage_test() {
   let log_subject = process.new_subject()
   let fetch_subject = process.new_subject()
   let ack_subject = process.new_subject()
+  let ack_target_subject = process.new_subject()
   let triage_subject = process.new_subject()
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
+  let linear_server =
+    start_linear_server(fetch_subject, ack_subject, ack_target_subject)
   let deps =
     daemon.RuntimeDependencies(
       ..dependencies(
@@ -775,8 +798,10 @@ pub fn linear_abort_ack_updated_at_does_not_redispatch_test() {
   let worker_barrier = test_async.new_barrier()
   let fetch_subject = process.new_subject()
   let ack_subject = process.new_subject()
+  let ack_target_subject = process.new_subject()
   let tracker_server = start_tracker_server(candidate)
-  let linear_server = start_linear_server(fetch_subject, ack_subject)
+  let linear_server =
+    start_linear_server(fetch_subject, ack_subject, ack_target_subject)
   let deps =
     dependencies(
       dynamic_tracker(tracker_server),
@@ -1004,6 +1029,66 @@ pub fn startup_ack_outbox_replay_suppresses_duplicate_receipt_ack_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn linear_command_ack_outbox_survives_recovery_test() {
+  let workflow_dir = "test/tmp/daemon-linear-outbox-ack-recovery"
+  let workspace_root = effective_workspace_root(workflow_dir)
+  let harness = linear_command_harness(workflow_dir)
+  append_ledger_bodies_for_root(workspace_root, [
+    record.LinearCommandSeen(
+      comment_id: "comment-1",
+      issue_id: "issue-1",
+      author_id: "user-1",
+      command_name: "retry",
+      excerpt: "/scherzo retry",
+    ),
+    record.LinearCommandStarted(
+      comment_id: "comment-1",
+      issue_id: "issue-1",
+      command_name: "retry",
+    ),
+    record.LinearCommandCompleted(
+      comment_id: "comment-1",
+      issue_id: "issue-1",
+      status: "applied",
+      message_excerpt: "Retry queued",
+    ),
+    record.OutboxPendingV2(
+      outbox_id: "comment-1",
+      issue_id: "issue-1",
+      outbox_kind: "linear_command_ack",
+      dedupe_key: "linear_command_ack:comment-1",
+      payload_json: "{\"type\":\"linear_command_ack\",\"body\":\"Retry queued\"}",
+    ),
+  ])
+  let assert Ok(started) =
+    daemon.start(Some(harness.workflow_path), harness.deps)
+
+  let assert Ok(startup_ack) =
+    process.receive(harness.ack_subject, within: 1000)
+  let assert Ok(startup_ack_target) =
+    process.receive(harness.ack_target_subject, within: 1000)
+  assert startup_ack == "Retry queued"
+  assert startup_ack_target == "issue-1"
+  assert wait_for_command_record_kinds(
+    workspace_root,
+    "comment-1",
+    ["seen", "started", "completed", "acked"],
+    20,
+  )
+  assert wait_for_outbox_completed(workspace_root, "comment-1", 20)
+
+  process.send(
+    harness.linear_server,
+    SetNext([linear_comment("comment-1", "issue-1", "/scherzo retry")]),
+  )
+  process.send(started.data, daemon.PollTick(1))
+  expect_linear_fetch(harness, ["issue-1"])
+  test_async.assert_no_extra_message_within(harness.ack_subject, 200)
+  test_async.assert_no_extra_message_within(harness.ack_target_subject, 50)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn started_uncompleted_command_gets_unknown_ack_without_reapplying_test() {
   let workflow_dir = "test/tmp/daemon-linear-started-uncompleted"
   let workspace_root = effective_workspace_root(workflow_dir)
@@ -1177,6 +1262,39 @@ fn wait_for_command_record_kinds(
         }
       }
   }
+}
+
+fn wait_for_outbox_completed(
+  workspace_root: String,
+  outbox_id: String,
+  attempts: Int,
+) -> Bool {
+  case attempts <= 0 {
+    True -> False
+    False ->
+      case
+        outbox_completed(replay_records_for_root(workspace_root), outbox_id)
+      {
+        True -> True
+        False -> {
+          process.sleep(50)
+          wait_for_outbox_completed(workspace_root, outbox_id, attempts - 1)
+        }
+      }
+  }
+}
+
+fn outbox_completed(
+  records: List(record.LedgerRecord),
+  outbox_id: String,
+) -> Bool {
+  list.any(records, fn(ledger_record) {
+    case ledger_record.body {
+      record.OutboxCompleted(outbox_id: completed_outbox_id, ..) ->
+        completed_outbox_id == outbox_id
+      _ -> False
+    }
+  })
 }
 
 fn wait_for_parked(

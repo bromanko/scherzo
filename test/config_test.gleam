@@ -193,6 +193,23 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured_explicit.tracker.api_key == Some("other-secret")
 }
 
+pub fn flat_linear_tracker_config_aliases_still_parse_test() {
+  let front =
+    "tracker:\n  kind: linear\n  endpoint: https://api.linear.app/graphql\n  api_key: \"$LINEAR_API_KEY\"\n  project_slug: example-project\n  active_states: [Todo, In Progress]\n  dispatch_states: [Todo]\n  terminal_states: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.tracker.kind == tracker_kind.LinearTracker
+  assert configured.tracker.endpoint == "https://api.linear.app/graphql"
+  assert configured.tracker.api_key == Some("linearkey")
+  assert configured.tracker.project_slug == Some("example-project")
+  assert issue_state.to_strings(configured.tracker.active_states)
+    == ["Todo", "In Progress"]
+  assert issue_state.to_strings(configured.tracker.dispatch_states) == ["Todo"]
+  assert issue_state.to_strings(configured.tracker.terminal_states)
+    == ["Done", "Canceled"]
+}
+
 fn workspace_driver_env_front(env_body: String) -> String {
   minimal_front()
   <> "workspace:\n  root: test/tmp/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step]\n        timeout_ms: 60000\n"

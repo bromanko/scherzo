@@ -55,9 +55,9 @@ A sixth risk is a migration that becomes too large to review safely. Counter it 
 - [x] (2026-05-13 00:00Z) Created this ExecPlan draft from the current repository, the current DAG-era workflow code, the scheduled failure reporter, the tracker modules, and the LIV-263 research findings.
 - [x] (2026-05-13 00:00Z) Incorporated adversarial review findings by making the adapter API prescriptive, specifying recovery record shapes and fixture tests, splitting the work into stop/go gates, adding concrete startup validation messages, and rewriting the implementation path around file-scoped TDD steps.
 - [x] (2026-05-13 20:53Z) Clarified that this plan is the canonical implementation plan for the core architecture work and mapped the existing Linear child issues to implementation slices instead of additional ExecPlan-writing tasks.
-- [ ] Before implementation, confirm the workspace is clean with `$SCHERZO_WORKSPACE_DRIVER status --human` and record any unrelated changes here.
-- [ ] Milestone 0: add Linear characterization tests in `test/config_test.gleam`, `test/template_test.gleam`, `test/scheduled_failure_reporter_test.gleam`, `test/orchestrator_daemon_linear_command_test.gleam`, `test/state_recovery_test.gleam`, and `test/recovery_workflow_checkpoint_test.gleam`.
-- [ ] Milestone 0: run `direnv exec . gleam test` and commit the characterization safety net.
+- [x] (2026-05-13 21:44Z) Confirmed the workspace was clean with `$SCHERZO_WORKSPACE_DRIVER status --human`; the working copy had no changes before implementation.
+- [x] (2026-05-13 21:58Z) Milestone 0 added Linear characterization tests in `test/config_test.gleam`, `test/template_test.gleam`, `test/scheduled_failure_reporter_test.gleam`, `test/orchestrator_daemon_linear_command_test.gleam`, `test/state_recovery_test.gleam`, `test/recovery_workflow_checkpoint_test.gleam`, `test/handoff_format_test.gleam`, and `test/linear_triage_test.gleam`.
+- [x] (2026-05-13 21:58Z) Milestone 0 validation passed with `direnv exec . gleam test` reporting 1299 passed and no failures. No commit was created because the Scherzo workflow contract for this workspace forbids agent commits; the publish step will handle integration.
 - [ ] Milestone 1: add `test/task_test.gleam`, `src/scherzo/task.gleam`, `test/tracker_adapter_test.gleam`, and `src/scherzo/tracker/adapter.gleam`.
 - [ ] Milestone 1: run format and tests, then commit the task-domain and adapter-contract types.
 - [ ] Milestone 2: add Linear adapter wrapper tests, `src/scherzo/tracker/linear_adapter.gleam`, a fake adapter under `test/support/`, and fake adapter dispatch tests.
@@ -79,6 +79,10 @@ A sixth risk is a migration that becomes too large to review safely. Counter it 
   Evidence: `src/scherzo/scheduled_failure_reporter.gleam` defines `Backend` operations such as `create_issue`, `comment_issue`, and `move_issue_to_state`, and its config path is `on_failure.linear` through `ScheduledLinearFailureConfig`.
 - Observation: The review found that the first draft was directionally sound but unsafe to implement because adapter signatures, durable migration shapes, validation messages, and file-scoped test steps were underspecified.
   Evidence: `tmp/execplan-review.md` returned verdict `REVISE` with blocking findings for adapter API specificity, recovery compatibility, concrete steps, and test assertions.
+- Observation: Current template rendering exposes `issue.labels` as a list for loops, but direct interpolation of `{{ issue.labels }}` renders an empty string.
+  Evidence: `issue_template_variables_are_characterized_test` in `test/template_test.gleam` asserts the direct list slot is empty while `{% for label in issue.labels %}` renders `workflow:execplan;kind:feature;`.
+- Observation: Current flat tracker config environment references use `$LINEAR_API_KEY`; the brace form `${LINEAR_API_KEY}` is not the existing parser convention.
+  Evidence: `flat_linear_tracker_config_aliases_still_parse_test` in `test/config_test.gleam` uses the existing `$LINEAR_API_KEY` form and `direnv exec . gleam test` passed with 1299 tests.
 
 ## Decision Log
 
@@ -106,7 +110,7 @@ A sixth risk is a migration that becomes too large to review safely. Counter it 
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Milestone 0 is complete. The repository now has a compatibility safety net for the current Linear behavior before adapter migration begins: flat Linear config parsing, issue template variables, scheduled failure dedupe, command acknowledgement replay, handoff formatting, invalid-workflow reporting, and old ledger/checkpoint recovery all have explicit characterization coverage. The only deviations from the written step examples are documented in Surprises & Discoveries: list-valued `issue.labels` renders through loops, not direct interpolation, and current env references use `$VAR` syntax.
 
 ## Context and Orientation
 

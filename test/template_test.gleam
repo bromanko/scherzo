@@ -43,6 +43,30 @@ pub fn renders_labels_through_loop_test() {
   assert rendered == "[bug][tests]"
 }
 
+pub fn issue_template_variables_are_characterized_test() {
+  let issue =
+    tracker_issue.Issue(
+      ..issue(),
+      id: "issue-1",
+      identifier: "LIV-266",
+      title: "Refresh architecture",
+      priority: Some(2),
+      state: issue_state.from_string_unchecked("Todo"),
+      branch_name: Some("liv-266-refresh"),
+      url: Some("https://linear.app/living-systems/issue/LIV-266"),
+      labels: ["workflow:execplan", "kind:feature"],
+    )
+  let assert Ok(rendered) =
+    template.render(
+      "{{ issue.id }}|{{ issue.identifier }}|{{ issue.title }}|{{ issue.branch_name }}|{{ issue.url }}|{{ issue.state }}|{{ issue.priority }}|{{ issue.labels }}|{% for label in issue.labels %}{{ label }};{% endfor %}",
+      issue,
+      None,
+    )
+
+  assert rendered
+    == "issue-1|LIV-266|Refresh architecture|liv-266-refresh|https://linear.app/living-systems/issue/LIV-266|Todo|2||workflow:execplan;kind:feature;"
+}
+
 pub fn attempt_renders_empty_first_run_and_integer_on_retry_test() {
   let assert Ok(first) = template.render("Attempt={{ attempt }}", issue(), None)
   assert first == "Attempt="
