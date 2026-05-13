@@ -2,20 +2,34 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, Some}
-import gleam/string
 import scherzo/agent/worker_command
-import scherzo/domain
 import scherzo/session/reason as session_reason
+import scherzo/tracker/issue as tracker_issue
 
 pub type WorkerHandle {
   WorkerHandle(
     issue_id: String,
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     run_id: String,
     pid: process.Pid,
     monitor: process.Monitor,
     workspace_path: String,
     session_id: String,
+    command_subject: Option(process.Subject(worker_command.Command)),
+  )
+}
+
+pub type ScheduledWorkerHandle {
+  ScheduledWorkerHandle(
+    job_id: String,
+    workflow_id: String,
+    due_at_ms: Int,
+    run_id: String,
+    pid: process.Pid,
+    monitor: process.Monitor,
+    run_root: String,
+    session_id: String,
+    attempt: Int,
     command_subject: Option(process.Subject(worker_command.Command)),
   )
 }
@@ -28,6 +42,12 @@ pub type StepCommandSubjectLookupError {
 pub type DownResolution {
   WorkerDown(registry: Registry, issue_id: String, handle: WorkerHandle)
   WorkerDownStale(registry: Registry, issue_id: String)
+  ScheduledWorkerDown(
+    registry: Registry,
+    run_id: String,
+    handle: ScheduledWorkerHandle,
+  )
+  ScheduledWorkerDownStale(registry: Registry, run_id: String)
   StepCommandDown(registry: Registry, session_id: String)
   UnknownDown(registry: Registry)
 }
@@ -37,6 +57,9 @@ pub opaque type Registry {
     workers: Dict(String, WorkerHandle),
     worker_monitors: Dict(process.Monitor, String),
     issue_sessions: Dict(String, String),
+    scheduled_workers: Dict(String, ScheduledWorkerHandle),
+    scheduled_worker_monitors: Dict(process.Monitor, String),
+    scheduled_sessions: Dict(String, String),
     step_command_subjects: Dict(String, process.Subject(worker_command.Command)),
     step_command_monitors: Dict(process.Monitor, String),
     step_command_subject_monitors: Dict(String, process.Monitor),
@@ -51,6 +74,9 @@ pub fn new() -> Registry {
     workers: dict.new(),
     worker_monitors: dict.new(),
     issue_sessions: dict.new(),
+    scheduled_workers: dict.new(),
+    scheduled_worker_monitors: dict.new(),
+    scheduled_sessions: dict.new(),
     step_command_subjects: dict.new(),
     step_command_monitors: dict.new(),
     step_command_subject_monitors: dict.new(),
@@ -70,6 +96,10 @@ pub fn reserve_session_sequence(registry: Registry) -> #(Registry, Int) {
   )
 }
 
+pub fn next_session_sequence(registry: Registry) -> Int {
+  registry.next_session_sequence
+}
+
 pub fn register_worker(registry: Registry, handle: WorkerHandle) -> Registry {
   Registry(
     ..registry,
@@ -82,6 +112,30 @@ pub fn register_worker(registry: Registry, handle: WorkerHandle) -> Registry {
     issue_sessions: dict.insert(
       registry.issue_sessions,
       handle.issue_id,
+      handle.session_id,
+    ),
+  )
+}
+
+pub fn register_scheduled_worker(
+  registry: Registry,
+  handle: ScheduledWorkerHandle,
+) -> Registry {
+  Registry(
+    ..registry,
+    scheduled_workers: dict.insert(
+      registry.scheduled_workers,
+      handle.run_id,
+      handle,
+    ),
+    scheduled_worker_monitors: dict.insert(
+      registry.scheduled_worker_monitors,
+      handle.monitor,
+      handle.run_id,
+    ),
+    scheduled_sessions: dict.insert(
+      registry.scheduled_sessions,
+      handle.run_id,
       handle.session_id,
     ),
   )
@@ -111,6 +165,28 @@ pub fn register_worker_command_subject(
   }
 }
 
+pub fn register_scheduled_worker_command_subject(
+  registry: Registry,
+  run_id: String,
+  command_subject: process.Subject(worker_command.Command),
+) -> Registry {
+  case dict.get(registry.scheduled_workers, run_id) {
+    Error(_) -> registry
+    Ok(handle) ->
+      Registry(
+        ..registry,
+        scheduled_workers: dict.insert(
+          registry.scheduled_workers,
+          run_id,
+          ScheduledWorkerHandle(
+            ..handle,
+            command_subject: Some(command_subject),
+          ),
+        ),
+      )
+  }
+}
+
 pub fn worker_for_session(
   registry: Registry,
   session_id: String,
@@ -131,6 +207,23 @@ pub fn worker_for_run(
   |> first_worker
 }
 
+pub fn scheduled_worker_for_session(
+  registry: Registry,
+  session_id: String,
+) -> Result(ScheduledWorkerHandle, Nil) {
+  registry.scheduled_workers
+  |> dict.values
+  |> list.filter(fn(handle) { handle.session_id == session_id })
+  |> first_scheduled_worker
+}
+
+pub fn scheduled_worker_for_run(
+  registry: Registry,
+  run_id: String,
+) -> Result(ScheduledWorkerHandle, Nil) {
+  dict.get(registry.scheduled_workers, run_id)
+}
+
 pub fn worker_for_issue(
   registry: Registry,
   issue_id: String,
@@ -142,11 +235,17 @@ pub fn worker_handles(registry: Registry) -> List(WorkerHandle) {
   dict.values(registry.workers)
 }
 
+pub fn scheduled_worker_handles(
+  registry: Registry,
+) -> List(ScheduledWorkerHandle) {
+  dict.values(registry.scheduled_workers)
+}
+
 pub fn worker_issue_ids(registry: Registry) -> List(String) {
   dict.keys(registry.workers)
 }
 
-pub fn worker_issues(registry: Registry) -> List(domain.Issue) {
+pub fn worker_issues(registry: Registry) -> List(tracker_issue.Issue) {
   registry.workers |> dict.values |> list.map(fn(handle) { handle.issue })
 }
 
@@ -190,6 +289,40 @@ pub fn remove_worker_handle(
     workers: dict.delete(registry.workers, handle.issue_id),
     worker_monitors: dict.delete(registry.worker_monitors, handle.monitor),
     issue_sessions: dict.delete(registry.issue_sessions, handle.issue_id),
+  )
+}
+
+pub fn remove_scheduled_worker(
+  registry: Registry,
+  run_id: String,
+) -> #(Registry, Result(ScheduledWorkerHandle, Nil)) {
+  case dict.get(registry.scheduled_workers, run_id) {
+    Error(_) -> #(
+      Registry(
+        ..registry,
+        scheduled_sessions: dict.delete(registry.scheduled_sessions, run_id),
+      ),
+      Error(Nil),
+    )
+    Ok(handle) -> #(
+      remove_scheduled_worker_handle(registry, handle),
+      Ok(handle),
+    )
+  }
+}
+
+pub fn remove_scheduled_worker_handle(
+  registry: Registry,
+  handle: ScheduledWorkerHandle,
+) -> Registry {
+  Registry(
+    ..registry,
+    scheduled_workers: dict.delete(registry.scheduled_workers, handle.run_id),
+    scheduled_worker_monitors: dict.delete(
+      registry.scheduled_worker_monitors,
+      handle.monitor,
+    ),
+    scheduled_sessions: dict.delete(registry.scheduled_sessions, handle.run_id),
   )
 }
 
@@ -334,7 +467,7 @@ pub fn clear_yaml_step_command_routes_for_run(
   registry.step_command_subjects
   |> dict.keys
   |> list.filter(fn(session_id) {
-    string.starts_with(session_id, run_id <> "-")
+    dict.get(registry.yaml_step_runs, session_id) == Ok(run_id)
   })
   |> list.fold(registry, fn(acc, session_id) {
     clear_yaml_step_command_route(acc, session_id)
@@ -366,7 +499,7 @@ pub fn step_command_subject_for_run(
   |> dict.to_list
   |> list.filter(fn(entry) {
     let #(session_id, _) = entry
-    string.starts_with(session_id, run_id <> "-")
+    dict.get(registry.yaml_step_runs, session_id) == Ok(run_id)
   })
   |> single_step_command_subject
 }
@@ -391,13 +524,40 @@ pub fn resolve_down(
           )
       }
     Error(_) ->
-      case dict.get(registry.step_command_monitors, monitor) {
-        Error(_) -> UnknownDown(registry)
-        Ok(session_id) ->
-          StepCommandDown(
-            delete_step_command_route(registry, session_id, monitor),
-            session_id,
-          )
+      case dict.get(registry.scheduled_worker_monitors, monitor) {
+        Ok(run_id) ->
+          case dict.get(registry.scheduled_workers, run_id) {
+            Ok(handle) ->
+              ScheduledWorkerDown(
+                remove_scheduled_worker_handle(registry, handle),
+                run_id,
+                handle,
+              )
+            Error(_) ->
+              ScheduledWorkerDownStale(
+                Registry(
+                  ..registry,
+                  scheduled_worker_monitors: dict.delete(
+                    registry.scheduled_worker_monitors,
+                    monitor,
+                  ),
+                  scheduled_sessions: dict.delete(
+                    registry.scheduled_sessions,
+                    run_id,
+                  ),
+                ),
+                run_id,
+              )
+          }
+        Error(_) ->
+          case dict.get(registry.step_command_monitors, monitor) {
+            Error(_) -> UnknownDown(registry)
+            Ok(session_id) ->
+              StepCommandDown(
+                delete_step_command_route(registry, session_id, monitor),
+                session_id,
+              )
+          }
       }
   }
 }
@@ -406,13 +566,19 @@ pub fn remove_all(registry: Registry) -> Registry {
   dict.each(registry.worker_monitors, fn(monitor, _) {
     process.demonitor_process(monitor)
   })
+  dict.each(registry.scheduled_worker_monitors, fn(monitor, _) {
+    process.demonitor_process(monitor)
+  })
   dict.each(registry.step_command_subject_monitors, fn(_, monitor) {
     process.demonitor_process(monitor)
   })
   Registry(..new(), next_session_sequence: registry.next_session_sequence)
 }
 
-fn delete_yaml_step_session(registry: Registry, session_id: String) -> Registry {
+fn delete_yaml_step_session(
+  registry: Registry,
+  session_id: String,
+) -> Registry {
   Registry(
     ..registry,
     yaml_step_runs: dict.delete(registry.yaml_step_runs, session_id),
@@ -439,6 +605,15 @@ fn delete_step_command_route(
 }
 
 fn first_worker(handles: List(WorkerHandle)) -> Result(WorkerHandle, Nil) {
+  case handles {
+    [handle, ..] -> Ok(handle)
+    [] -> Error(Nil)
+  }
+}
+
+fn first_scheduled_worker(
+  handles: List(ScheduledWorkerHandle),
+) -> Result(ScheduledWorkerHandle, Nil) {
   case handles {
     [handle, ..] -> Ok(handle)
     [] -> Error(Nil)

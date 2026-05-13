@@ -1,5 +1,6 @@
 import gleam/dict.{type Dict}
 import gleam/list
+import gleam/result
 import scherzo/step_artifact
 import scherzo/workflow_dag
 
@@ -27,14 +28,30 @@ pub type WorkflowOutcome {
 
 pub fn init(dag: workflow_dag.WorkflowDag) -> SchedulerState {
   SchedulerState(
-    statuses: dag.steps
-      |> list.map(fn(step) { #(step.id, Pending) })
-      |> dict.from_list,
-    failure_policies: dag.steps
-      |> list.map(fn(step) { #(step.id, step.on_failure) })
-      |> dict.from_list,
+    statuses: fresh_statuses(dag),
+    failure_policies: failure_policies(dag),
     cancelling: False,
   )
+}
+
+pub fn init_with_statuses(
+  dag: workflow_dag.WorkflowDag,
+  recovered: Dict(String, StepRuntime),
+) -> Result(SchedulerState, String) {
+  use _ <- result.try(validate_recovered_step_ids(dag, recovered))
+  use _ <- result.try(validate_recovered_statuses(recovered))
+  let statuses =
+    recovered
+    |> dict.to_list
+    |> list.fold(fresh_statuses(dag), fn(statuses, entry) {
+      let #(step_id, status) = entry
+      dict.insert(statuses, step_id, status)
+    })
+  Ok(SchedulerState(
+    statuses: statuses,
+    failure_policies: failure_policies(dag),
+    cancelling: False,
+  ))
 }
 
 pub fn ready_steps(
@@ -111,6 +128,58 @@ pub fn status_of(
   step_id: String,
 ) -> Result(StepRuntime, Nil) {
   dict.get(state.statuses, step_id)
+}
+
+fn fresh_statuses(dag: workflow_dag.WorkflowDag) -> Dict(String, StepRuntime) {
+  dag.steps
+  |> list.map(fn(step) { #(step.id, Pending) })
+  |> dict.from_list
+}
+
+fn failure_policies(
+  dag: workflow_dag.WorkflowDag,
+) -> Dict(String, workflow_dag.FailurePolicy) {
+  dag.steps
+  |> list.map(fn(step) { #(step.id, step.on_failure) })
+  |> dict.from_list
+}
+
+fn validate_recovered_step_ids(
+  dag: workflow_dag.WorkflowDag,
+  recovered: Dict(String, StepRuntime),
+) -> Result(Nil, String) {
+  let dag_step_ids = list.map(dag.steps, fn(step) { step.id })
+  validate_recovered_step_ids_loop(dict.keys(recovered), dag_step_ids)
+}
+
+fn validate_recovered_step_ids_loop(
+  recovered_step_ids: List(String),
+  dag_step_ids: List(String),
+) -> Result(Nil, String) {
+  case recovered_step_ids {
+    [] -> Ok(Nil)
+    [step_id, ..rest] ->
+      case list.contains(dag_step_ids, step_id) {
+        True -> validate_recovered_step_ids_loop(rest, dag_step_ids)
+        False -> Error("unknown_recovered_step:" <> step_id)
+      }
+  }
+}
+
+fn validate_recovered_statuses(
+  recovered: Dict(String, StepRuntime),
+) -> Result(Nil, String) {
+  validate_recovered_statuses_loop(dict.to_list(recovered))
+}
+
+fn validate_recovered_statuses_loop(
+  recovered: List(#(String, StepRuntime)),
+) -> Result(Nil, String) {
+  case recovered {
+    [] -> Ok(Nil)
+    [#(step_id, Running), ..] -> Error("running_recovered_step:" <> step_id)
+    [_, ..rest] -> validate_recovered_statuses_loop(rest)
+  }
 }
 
 fn select_ready(

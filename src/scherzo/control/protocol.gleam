@@ -6,10 +6,11 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/pi_event
 import scherzo/control/command
-import scherzo/domain
 import scherzo/session/event
 import scherzo/session/json as session_json
 import scherzo/session/reason as session_reason
+import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub const version = 1
 
@@ -46,6 +47,7 @@ pub type Request {
     request_id: String,
     response: command.UiResponse,
   )
+  RunScheduleNow(id: String, token: String, job_id: String)
 }
 
 pub type ErrorBody {
@@ -81,6 +83,7 @@ type RequestFields {
     request_id: Option(String),
     cancel: Option(Bool),
     value: Option(String),
+    job_id: Option(String),
   )
 }
 
@@ -101,6 +104,7 @@ pub fn request_id(request: Request) -> String {
     StopAfterCurrentTurn(id, _, _) -> id
     PromptSession(id, _, _, _) -> id
     RespondUi(id, _, _, _, _) -> id
+    RunScheduleNow(id, _, _) -> id
   }
 }
 
@@ -121,6 +125,7 @@ pub fn request_token(request: Request) -> String {
     StopAfterCurrentTurn(_, token, _) -> token
     PromptSession(_, token, _, _) -> token
     RespondUi(_, token, _, _, _) -> token
+    RunScheduleNow(_, token, _) -> token
   }
 }
 
@@ -206,10 +211,18 @@ pub fn request_to_json(request: Request) -> json.Json {
         base_request_entries(id, token, "respond_ui"),
       )
       |> json.object
+    RunScheduleNow(id, token, job_id) ->
+      [
+        #("job_id", json.string(job_id)),
+        ..base_request_entries(id, token, "schedule_run_now")
+      ]
+      |> json.object
   }
 }
 
-fn issue_ref_entries(issue_ref: command.IssueRef) -> List(#(String, json.Json)) {
+fn issue_ref_entries(
+  issue_ref: command.IssueRef,
+) -> List(#(String, json.Json)) {
   case issue_ref {
     command.IssueId(id) -> [#("issue_id", json.string(id))]
     command.IssueIdentifier(identifier) -> [
@@ -356,6 +369,11 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
           ))
         Error(err), _, _ | _, Error(err), _ | _, _, Error(err) -> Error(err)
       }
+    "schedule_run_now" | "run_schedule_now" ->
+      case required_job_id(fields) {
+        Ok(job_id) -> Ok(RunScheduleNow(fields.id, fields.token, job_id))
+        Error(err) -> Error(err)
+      }
     other ->
       Error(RequestError(
         fields.id,
@@ -436,6 +454,19 @@ fn required_request_id(fields: RequestFields) -> Result(String, RequestError) {
   }
 }
 
+fn required_job_id(fields: RequestFields) -> Result(String, RequestError) {
+  case fields.job_id {
+    Some(job_id) -> {
+      let job_id = string.trim(job_id)
+      case job_id == "" {
+        True -> invalid(fields.id, "job_id must not be empty")
+        False -> Ok(job_id)
+      }
+    }
+    None -> invalid(fields.id, "missing job_id")
+  }
+}
+
 fn required_ui_response(
   fields: RequestFields,
 ) -> Result(command.UiResponse, RequestError) {
@@ -509,6 +540,11 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.string),
   )
+  use job_id <- decode.optional_field(
+    "job_id",
+    None,
+    decode.optional(decode.string),
+  )
   decode.success(RequestFields(
     version: version,
     id: id,
@@ -524,6 +560,7 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     request_id: request_id,
     cancel: cancel,
     value: value,
+    job_id: job_id,
   ))
 }
 
@@ -591,9 +628,13 @@ pub fn ping_data() -> json.Json {
   json.object([#("pong", json.bool(True))])
 }
 
-pub fn list_sessions_data(sessions: List(event.SessionSummary)) -> json.Json {
+pub fn list_sessions_data(snapshot: event.SessionList) -> json.Json {
   json.object([
-    #("sessions", json.array(sessions, of: session_json.summary_to_json)),
+    #(
+      "sessions",
+      json.array(snapshot.sessions, of: session_json.summary_to_json),
+    ),
+    #("now_ms", json.int(snapshot.now_ms)),
   ])
 }
 
@@ -647,6 +688,7 @@ pub fn command_request(
       PromptSession(id, token, session_id, message)
     command.RespondUi(session_id, request_id, response) ->
       RespondUi(id, token, session_id, request_id, response)
+    command.RunScheduleNow(job_id) -> RunScheduleNow(id, token, job_id)
   }
 }
 
@@ -668,6 +710,7 @@ pub fn request_operator_command(
       Some(command.PromptSession(session_id, message))
     RespondUi(_, _, session_id, request_id, response) ->
       Some(command.RespondUi(session_id, request_id, response))
+    RunScheduleNow(_, _, job_id) -> Some(command.RunScheduleNow(job_id))
     Ping(_, _)
     | ListSessions(_, _)
     | GetSession(_, _, _)
@@ -713,10 +756,16 @@ pub fn decode_ping_response(line: String) -> Result(Nil, ErrorBody) {
 pub fn decode_list_sessions_response(
   line: String,
 ) -> Result(List(event.SessionSummary), ErrorBody) {
-  decode_response_result(
-    line,
-    decode.at(["sessions"], decode.list(of: session_summary_decoder())),
-  )
+  case decode_list_sessions_snapshot_response(line) {
+    Ok(snapshot) -> Ok(snapshot.sessions)
+    Error(error) -> Error(error)
+  }
+}
+
+pub fn decode_list_sessions_snapshot_response(
+  line: String,
+) -> Result(event.SessionList, ErrorBody) {
+  decode_response_result(line, session_list_decoder())
 }
 
 pub fn decode_get_session_response(
@@ -829,8 +878,47 @@ fn command_result_decoder() -> decode.Decoder(command.CommandResult) {
   ))
 }
 
+fn session_list_decoder() -> decode.Decoder(event.SessionList) {
+  use sessions <- decode.field(
+    "sessions",
+    decode.list(of: session_summary_decoder()),
+  )
+  use now_ms <- decode.optional_field(
+    "now_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  let snapshot_now_ms = case now_ms {
+    Some(value) -> value
+    None -> fallback_list_now_ms(sessions)
+  }
+  decode.success(event.SessionList(sessions: sessions, now_ms: snapshot_now_ms))
+}
+
+fn fallback_list_now_ms(sessions: List(event.SessionSummary)) -> Int {
+  case sessions {
+    [] -> 0
+    [first, ..rest] ->
+      list.fold(rest, first.last_event_at_ms, fn(latest, summary) {
+        case summary.last_event_at_ms > latest {
+          True -> summary.last_event_at_ms
+          False -> latest
+        }
+      })
+  }
+}
+
 fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
   use session_id <- decode.field("session_id", decode.string)
+  use maybe_display_name <- decode.optional_field(
+    "display_name",
+    None,
+    decode.optional(decode.string),
+  )
+  let display_name = case maybe_display_name {
+    Some(value) -> value
+    None -> session_id
+  }
   use issue_id <- decode.field("issue_id", decode.string)
   use issue_identifier <- decode.field("issue_identifier", decode.string)
   use issue_title <- decode.optional_field("issue_title", "", decode.string)
@@ -846,7 +934,45 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
     None,
     decode.optional(decode.string),
   )
+  use recovery <- decode.optional_field(
+    "recovery",
+    None,
+    decode.optional(recovery_info_decoder()),
+  )
   use current_turn <- decode.field("current_turn", decode.int)
+  use current_turn_status_name <- decode.optional_field(
+    "current_turn_status",
+    None,
+    decode.optional(decode.string),
+  )
+  use current_turn_started_at_ms <- decode.optional_field(
+    "current_turn_started_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use last_turn_finished_at_ms <- decode.optional_field(
+    "last_turn_finished_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use last_turn_duration_ms <- decode.optional_field(
+    "last_turn_duration_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use last_turn_token_delta <- decode.optional_field(
+    "last_turn_token_delta",
+    session_tokens.zero_token_totals(),
+    token_totals_decoder(),
+  )
+  use last_turn_reason_name <- decode.optional_field(
+    "last_turn_reason",
+    None,
+    decode.optional(decode.string),
+  )
+  let current_turn_status =
+    turn_status_from_optional_string(current_turn_status_name)
+  let last_turn_reason = turn_reason_from_optional_string(last_turn_reason_name)
   use started_at_ms <- decode.field("started_at_ms", decode.int)
   use last_event_at_ms <- decode.field("last_event_at_ms", decode.int)
   use token_totals <- decode.field("tokens", token_totals_decoder())
@@ -854,13 +980,21 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
     Ok(status) ->
       decode.success(event.SessionSummary(
         session_id: session_id,
+        display_name: display_name,
         issue_id: issue_id,
         issue_identifier: issue_identifier,
         issue_title: issue_title,
         workspace_path: workspace_path,
         pi_session_id: pi_session_id,
         status: status,
+        recovery: recovery,
         current_turn: current_turn,
+        current_turn_status: current_turn_status,
+        current_turn_started_at_ms: current_turn_started_at_ms,
+        last_turn_finished_at_ms: last_turn_finished_at_ms,
+        last_turn_duration_ms: last_turn_duration_ms,
+        last_turn_token_delta: last_turn_token_delta,
+        last_turn_reason: last_turn_reason,
         started_at_ms: started_at_ms,
         last_event_at_ms: last_event_at_ms,
         token_totals: token_totals,
@@ -869,19 +1003,154 @@ fn session_summary_decoder() -> decode.Decoder(event.SessionSummary) {
       decode.failure(
         event.SessionSummary(
           session_id: session_id,
+          display_name: display_name,
           issue_id: issue_id,
           issue_identifier: issue_identifier,
           issue_title: issue_title,
           workspace_path: workspace_path,
           pi_session_id: pi_session_id,
           status: event.Exited(session_reason.Failed),
+          recovery: recovery,
           current_turn: current_turn,
+          current_turn_status: current_turn_status,
+          current_turn_started_at_ms: current_turn_started_at_ms,
+          last_turn_finished_at_ms: last_turn_finished_at_ms,
+          last_turn_duration_ms: last_turn_duration_ms,
+          last_turn_token_delta: last_turn_token_delta,
+          last_turn_reason: last_turn_reason,
           started_at_ms: started_at_ms,
           last_event_at_ms: last_event_at_ms,
           token_totals: token_totals,
         ),
         expected: "SessionSummary",
       )
+  }
+}
+
+fn recovery_info_decoder() -> decode.Decoder(event.RecoveryInfo) {
+  use status_name <- decode.field("status", decode.string)
+  use source <- decode.optional_field("source", "unknown", decode.string)
+  use message <- decode.optional_field(
+    "message",
+    None,
+    decode.optional(decode.string),
+  )
+  use safe_actions <- decode.optional_field(
+    "safe_actions",
+    [],
+    decode.list(of: recovery_action_decoder()),
+  )
+  use workflow_run_id <- decode.optional_field(
+    "workflow_run_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use workflow_step_id <- decode.optional_field(
+    "workflow_step_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use current_pi_session_id <- decode.optional_field(
+    "current_pi_session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use previous_pi_session_id <- decode.optional_field(
+    "previous_pi_session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use park_reason <- decode.optional_field(
+    "park_reason",
+    None,
+    decode.optional(decode.string),
+  )
+  use park_release_policy <- decode.optional_field(
+    "park_release_policy",
+    None,
+    decode.optional(decode.string),
+  )
+  use parked_at_ms <- decode.optional_field(
+    "parked_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use drift_kind <- decode.optional_field(
+    "drift_kind",
+    None,
+    decode.optional(decode.string),
+  )
+  use retention_until_ms <- decode.optional_field(
+    "retention_until_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use cleanup_eligible_at_ms <- decode.optional_field(
+    "cleanup_eligible_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use cleanup_phase <- decode.optional_field(
+    "cleanup_phase",
+    None,
+    decode.optional(cleanup_phase_decoder()),
+  )
+  case event.recovery_status_from_string(status_name) {
+    Some(status) ->
+      decode.success(event.RecoveryInfo(
+        status: status,
+        source: source,
+        message: message,
+        safe_actions: safe_actions,
+        workflow_run_id: workflow_run_id,
+        workflow_step_id: workflow_step_id,
+        current_pi_session_id: current_pi_session_id,
+        previous_pi_session_id: previous_pi_session_id,
+        park_reason: park_reason,
+        park_release_policy: park_release_policy,
+        parked_at_ms: parked_at_ms,
+        drift_kind: drift_kind,
+        retention_until_ms: retention_until_ms,
+        cleanup_eligible_at_ms: cleanup_eligible_at_ms,
+        cleanup_phase: cleanup_phase,
+      ))
+    None ->
+      decode.failure(
+        event.RecoveryInfo(
+          status: event.Recovered,
+          source: source,
+          message: message,
+          safe_actions: safe_actions,
+          workflow_run_id: workflow_run_id,
+          workflow_step_id: workflow_step_id,
+          current_pi_session_id: current_pi_session_id,
+          previous_pi_session_id: previous_pi_session_id,
+          park_reason: park_reason,
+          park_release_policy: park_release_policy,
+          parked_at_ms: parked_at_ms,
+          drift_kind: drift_kind,
+          retention_until_ms: retention_until_ms,
+          cleanup_eligible_at_ms: cleanup_eligible_at_ms,
+          cleanup_phase: cleanup_phase,
+        ),
+        expected: "RecoveryInfo",
+      )
+  }
+}
+
+fn recovery_action_decoder() -> decode.Decoder(event.RecoveryAction) {
+  use value <- decode.then(decode.string)
+  case event.recovery_action_from_string(value) {
+    Some(action) -> decode.success(action)
+    None -> decode.failure(event.Inspect, expected: "RecoveryAction")
+  }
+}
+
+fn cleanup_phase_decoder() -> decode.Decoder(event.CleanupPhase) {
+  use value <- decode.then(decode.string)
+  case event.cleanup_phase_from_string(value) {
+    Some(phase) -> decode.success(phase)
+    None -> decode.failure(event.Retained, expected: "CleanupPhase")
   }
 }
 
@@ -930,6 +1199,11 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
     None,
     decode.optional(decode.string),
   )
+  use recovery <- decode.optional_field(
+    "recovery",
+    None,
+    decode.optional(recovery_info_decoder()),
+  )
   use request_id <- decode.optional_field(
     "request_id",
     None,
@@ -962,29 +1236,89 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
   )
   use tokens <- decode.optional_field(
     "tokens",
-    domain.zero_token_totals(),
+    session_tokens.zero_token_totals(),
     token_totals_decoder(),
+  )
+  use turn_status_name <- decode.optional_field(
+    "turn_status",
+    None,
+    decode.optional(decode.string),
+  )
+  use turn_started_at_ms <- decode.optional_field(
+    "turn_started_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use turn_finished_at_ms <- decode.optional_field(
+    "turn_finished_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use turn_duration_ms <- decode.optional_field(
+    "turn_duration_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use token_delta <- decode.optional_field(
+    "token_delta",
+    session_tokens.zero_token_totals(),
+    token_totals_decoder(),
+  )
+  use reason_name <- decode.optional_field(
+    "reason",
+    None,
+    decode.optional(decode.string),
   )
   use raw_json <- decode.optional_field(
     "raw_json",
     None,
     decode.optional(redacted_raw_json_decoder()),
   )
-  decode.success(event.EventPayload(
-    kind: kind,
-    name: event_name_decoder(kind, name_string),
-    turn: turn,
-    pi_type: pi_type,
-    message: message,
-    request_id: request_id,
-    method: method,
-    tool_name: tool_name,
-    tool_input: tool_input,
-    tool_output: tool_output,
-    tool_status: tool_status,
-    tokens: tokens,
-    raw_json: raw_json,
-  ))
+  let payload =
+    event.EventPayload(
+      kind: kind,
+      name: event_name_decoder(kind, name_string),
+      turn: turn,
+      pi_type: pi_type,
+      message: message,
+      recovery: recovery,
+      request_id: request_id,
+      method: method,
+      tool_name: tool_name,
+      tool_input: tool_input,
+      tool_output: tool_output,
+      tool_status: tool_status,
+      tokens: tokens,
+      turn_status: turn_status_from_optional_string(turn_status_name),
+      turn_started_at_ms: turn_started_at_ms,
+      turn_finished_at_ms: turn_finished_at_ms,
+      turn_duration_ms: turn_duration_ms,
+      token_delta: token_delta,
+      reason: turn_reason_from_optional_string(reason_name),
+      raw_json: raw_json,
+    )
+  decode.success(sanitize_decoded_turn_payload(payload))
+}
+
+fn sanitize_decoded_turn_payload(
+  payload: event.EventPayload,
+) -> event.EventPayload {
+  case payload.kind {
+    event.Turn ->
+      event.EventPayload(
+        ..payload,
+        pi_type: None,
+        message: None,
+        request_id: None,
+        method: None,
+        tool_name: None,
+        tool_input: None,
+        tool_output: None,
+        tool_status: None,
+        raw_json: None,
+      )
+    _ -> payload
+  }
 }
 
 fn event_name_decoder(
@@ -997,17 +1331,22 @@ fn event_name_decoder(
         Some(name) -> event.LifecycleName(name)
         None -> event.PiName(pi_event.UnknownPiEvent(name_string))
       }
+    event.Turn ->
+      case turn_telemetry.event_name_from_string(name_string) {
+        Some(name) -> event.TurnName(name)
+        None -> event.TurnName(turn_telemetry.EventUnknown(name_string))
+      }
     _ -> event.PiName(pi_event.from_string(name_string))
   }
 }
 
-fn token_totals_decoder() -> decode.Decoder(domain.TokenTotals) {
+fn token_totals_decoder() -> decode.Decoder(session_tokens.TokenTotals) {
   use input <- decode.optional_field("input", 0, decode.int)
   use output <- decode.optional_field("output", 0, decode.int)
   use cache_read <- decode.optional_field("cache_read", 0, decode.int)
   use cache_write <- decode.optional_field("cache_write", 0, decode.int)
   use total <- decode.optional_field("total", 0, decode.int)
-  decode.success(domain.TokenTotals(
+  decode.success(session_tokens.TokenTotals(
     input: input,
     output: output,
     cache_read: cache_read,
@@ -1038,7 +1377,26 @@ fn kind_from_string(name: String) -> event.EventKind {
     "token_stats" -> event.TokenStats
     "error" -> event.Error
     "pi_raw" -> event.PiRaw
+    "turn" -> event.Turn
     _ -> event.PiRaw
+  }
+}
+
+fn turn_status_from_optional_string(
+  value: Option(String),
+) -> Option(turn_telemetry.TurnStatus) {
+  case value {
+    Some(value) -> turn_telemetry.status_from_string(value)
+    None -> None
+  }
+}
+
+fn turn_reason_from_optional_string(
+  value: Option(String),
+) -> Option(turn_telemetry.TurnReason) {
+  case value {
+    Some(value) -> turn_telemetry.reason_from_string(value)
+    None -> None
   }
 }
 

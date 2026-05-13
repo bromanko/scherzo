@@ -1,5 +1,7 @@
 # Hardening 04: Resume interrupted work from persisted pi sessions
 
+> Superseded: Do not implement this plan as written. Current Scherzo workflows are YAML DAGs with multiple steps, workspaces, artifacts, and pi sessions per issue run. Use `docs/plans/workflow-resumption-umbrella.md` and the forthcoming workflow-resumption child plans instead. This file is retained as historical context for pi session continuation only.
+
 This ExecPlan is a living document. The sections Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective must be kept up to date as work proceeds.
 
 ## Purpose / Big Picture

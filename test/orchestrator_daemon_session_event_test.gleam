@@ -3,23 +3,40 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
-import scherzo/agent/runner
+import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/path
+import scherzo/result_artifact
+import scherzo/scheduled_failure_reporter
 import scherzo/session/event
 import scherzo/session/hub
+import scherzo/session/name as session_name
 import scherzo/session/reason
+import scherzo/session/tokens as session_tokens
+import scherzo/state/ledger
+import scherzo/state/record
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_attempt
 import scherzo/workflow_run
 import scherzo/workspace
 import simplifile
+import test_async
+
+fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
+  case mode {
+    workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.StructuredOutputRetryPrompt(prompt) -> prompt
+    workflow_attempt.RecoveryPrompt(prompt) -> prompt
+  }
+}
 
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
@@ -27,8 +44,8 @@ fn reset_dir(dir: String) -> Nil {
   Nil
 }
 
-fn issue(id: String, identifier: String, state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: "Title " <> identifier,
@@ -39,6 +56,7 @@ fn issue(id: String, identifier: String, state: String) -> domain.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
   )
@@ -51,6 +69,7 @@ tracker:
   api_key: test-key
   project_slug: TEST
   active_states: [Todo]
+  dispatch_states: [Todo]
   terminal_states: [Done]
 workspace:
   root: " <> root <> "
@@ -106,12 +125,15 @@ steps:
   #(config_path, root)
 }
 
-fn success(final: domain.Issue, workspace_path: String) -> runner.WorkerSuccess {
-  runner.WorkerSuccess(
+fn success(
+  final: tracker_issue.Issue,
+  workspace_path: String,
+) -> agent_types.WorkerSuccess {
+  agent_types.WorkerSuccess(
     final_issue: Some(final),
-    final_classification: runner.FinalTerminal,
+    final_classification: agent_types.FinalTerminal,
     workspace_path: workspace_path,
-    tokens: domain.TokenTotals(
+    tokens: session_tokens.TokenTotals(
       input: 1,
       output: 2,
       cache_read: 0,
@@ -119,16 +141,12 @@ fn success(final: domain.Issue, workspace_path: String) -> runner.WorkerSuccess 
       total: 3,
     ),
     turns: 1,
-    result: domain.ResultArtifact(
-      final_response: None,
-      truncated: False,
-      source: "none",
-    ),
+    result: result_artifact.from_final_response(None, False, "none"),
   )
 }
 
-fn update(name: String, message: Option(String)) -> runner.PiUpdate {
-  runner.PiUpdate(
+fn update(name: String, message: Option(String)) -> agent_types.RunnerUpdate {
+  agent_types.RunnerPiUpdate(agent_types.PiUpdate(
     event: pi_event.from_string(name),
     message: message,
     raw_json: None,
@@ -136,59 +154,52 @@ fn update(name: String, message: Option(String)) -> runner.PiUpdate {
     request_id: None,
     method: None,
     pi_session_id: None,
-    tokens: domain.zero_token_totals(),
+    tokens: session_tokens.zero_token_totals(),
     tool_name: None,
     tool_input: None,
     tool_output: None,
     tool_status: None,
-  )
+  ))
 }
 
-fn client_with(candidate: domain.Issue) -> tracker.Client {
+fn client_with(candidate: tracker_issue.Issue) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([candidate]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
-    fetch_issue_states_by_ids: fn(_) {
-      Ok([
-        domain.Issue(
-          ..candidate,
-          state: issue_state.from_string_unchecked("Done"),
-        ),
-      ])
-    },
+    fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
   )
 }
 
 fn workflow_deps_from_agent(
   agent_runner: fn(
-    domain.Issue,
+    tracker_issue.Issue,
     Option(Int),
     String,
-    domain.EffectiveConfig,
+    config_types.EffectiveConfig,
     tracker.Client,
-    fn(String, runner.PiUpdate) -> Nil,
+    fn(String, agent_types.RunnerUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) ->
-    Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> workflow_run.Dependencies {
   workflow_run.Dependencies(
     ..workflow_run.default_dependencies(),
     agent_step: fn(
       issue,
-      _step_id,
-      prompt,
+      _context,
+      prompt_mode,
+      _attempt_context,
       effective,
       tracker_client,
-      _workspace_path,
       emit_update,
       command_ready,
+      _record_pi_session,
     ) {
       let command_subject = process.new_subject()
       agent_runner(
         issue,
         None,
-        prompt,
+        prompt_text(prompt_mode),
         effective,
         tracker_client,
         fn(_, update) { emit_update(update) },
@@ -204,22 +215,24 @@ fn dependencies(
   log_subject: process.Subject(String),
   hub_subject: process.Subject(hub.Message),
   agent_runner: fn(
-    domain.Issue,
+    tracker_issue.Issue,
     Option(Int),
     String,
-    domain.EffectiveConfig,
+    config_types.EffectiveConfig,
     tracker.Client,
-    fn(String, runner.PiUpdate) -> Nil,
+    fn(String, agent_types.RunnerUpdate) -> Nil,
     process.Subject(worker_command.Command),
     fn() -> Nil,
-  ) ->
-    Result(runner.WorkerSuccess, runner.WorkerFailure),
+  ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     make_tracker: fn(_) { client },
     make_handoff: fn(_, _) { handoff.disabled_client() },
     make_linear_commands: fn(_) { disabled_linear_commands() },
     make_triage: fn(_, _) { linear_triage.disabled_client() },
+    make_scheduled_failure_reporter: fn(_) {
+      scheduled_failure_reporter.disabled_client()
+    },
     workflow_run_dependencies: workflow_deps_from_agent(agent_runner),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, logged_event, _, _) {
@@ -257,7 +270,7 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -274,9 +287,24 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
   let assert Ok(#(_, expected_workspace)) =
     workspace.workspace_path(root, "ABC-123")
   assert summary.issue_identifier == "ABC-123"
+  assert summary.display_name
+    == session_name.generate("ABC-123", "ABC-123-42-1")
   assert summary.workspace_path == expected_workspace
   assert summary.status == event.Exited(reason.Normal)
   assert summary.token_totals.total == 3
+
+  let assert Ok(step_summary) =
+    wait_for_session(
+      hub_subject,
+      "workflow-step-ABC-123-42-1-implement-a1-f9bb818d8483",
+      20,
+    )
+  assert step_summary.display_name
+    == session_name.generate(
+      "ABC-123",
+      "workflow-step-ABC-123-42-1-implement-a1-f9bb818d8483",
+    )
+  assert step_summary.display_name != summary.display_name
 
   let assert Ok(page) =
     hub.events_after(hub_subject, "ABC-123-42-1", 0, 20, 1000)
@@ -285,7 +313,13 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
   assert event_cursors(page.events) == [1, 2, 5]
 
   let assert Ok(step_page) =
-    hub.events_after(hub_subject, "ABC-123-42-1-implement", 0, 20, 1000)
+    hub.events_after(
+      hub_subject,
+      "workflow-step-ABC-123-42-1-implement-a1-f9bb818d8483",
+      0,
+      20,
+      1000,
+    )
   assert event_names(step_page.events) == ["step_started", "message_update"]
   let assert Some(message_event) =
     find_event(step_page.events, "message_update")
@@ -308,7 +342,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
       fn(issue, _, _, _, _, emit_update, _, _) {
         emit_update(
           issue.id,
-          runner.PiUpdate(
+          agent_types.RunnerPiUpdate(agent_types.PiUpdate(
             event: pi_event.Message,
             message: None,
             raw_json: None,
@@ -316,17 +350,17 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
             request_id: None,
             method: None,
             pi_session_id: None,
-            tokens: domain.zero_token_totals(),
+            tokens: session_tokens.zero_token_totals(),
             tool_name: Some("bash"),
             tool_input: Some("gleam test"),
             tool_output: None,
             tool_status: None,
-          ),
+          )),
         )
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -340,7 +374,13 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
 
   assert wait_for_log(log_subject, "worker_exited", 20)
   let assert Ok(page) =
-    hub.events_after(hub_subject, "ABC-TOOL-42-1-implement", 0, 20, 1000)
+    hub.events_after(
+      hub_subject,
+      "workflow-step-ABC-TOOL-42-1-implement-a1-f9bb818d8483",
+      0,
+      20,
+      1000,
+    )
   let assert Some(tool_event) = find_event(page.events, "message")
   assert tool_event.payload.kind == event.Tool
   assert tool_event.payload.tool_name == Some("bash")
@@ -355,6 +395,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
     write_workflow("test/tmp/daemon-live-session-event")
   let candidate = issue("issue-id", "ABC-123", "Todo")
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(20, fn() { 100 })
   let deps =
     dependencies(
@@ -363,11 +404,11 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
       hub_subject,
       fn(issue, _, _, _, _, emit_update, _, _) {
         emit_update(issue.id, update("message_update", Some("hello")))
-        process.sleep(800)
+        test_async.block_until_released(worker_barrier)
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -382,7 +423,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
   let assert Ok(page_before_exit) =
     wait_for_event_name(
       hub_subject,
-      "ABC-123-42-1-implement",
+      "workflow-step-ABC-123-42-1-implement-a1-f9bb818d8483",
       "message_update",
       20,
     )
@@ -399,6 +440,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
     "worker_exited",
   )
 
+  test_async.release_barrier(worker_barrier)
   assert wait_for_log(log_subject, "worker_exited", 30)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -407,14 +449,22 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
 pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
   let #(workflow_path, root) = write_workflow("test/tmp/daemon-retry-sessions")
   let first = issue("retry-id", "ABC-RETRY", "Todo")
-  let second = domain.Issue(..first, title: "retry succeeds")
+  let second = tracker_issue.Issue(..first, title: "retry succeeds")
   let log_subject = process.new_subject()
+  let refresh_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
   let client =
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([first]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([second]) },
+      fetch_issue_states_by_ids: fn(_) {
+        let reply = process.new_subject()
+        process.send(refresh_subject, reply)
+        case process.receive(reply, within: 1000) {
+          Ok(issue) -> Ok([issue])
+          Error(_) -> Error(error.LinearApiRequest("refresh timeout"))
+        }
+      },
     )
   let deps =
     dependencies(
@@ -426,15 +476,15 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
           workspace.workspace_path(root, issue.identifier)
         case issue.title == "retry succeeds" {
           False ->
-            Error(runner.WorkerFailure(
+            Error(agent_types.WorkerFailure(
               reason: error.PiFailed(error.PiProtocolError("boom")),
               workspace_path: Some(expected_workspace),
-              tokens: domain.zero_token_totals(),
+              tokens: session_tokens.zero_token_totals(),
               final_issue: None,
             ))
           True ->
             Ok(success(
-              domain.Issue(
+              tracker_issue.Issue(
                 ..issue,
                 state: issue_state.from_string_unchecked("Done"),
               ),
@@ -446,6 +496,9 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
+  let assert Ok(initial_refresh) =
+    process.receive(refresh_subject, within: 1000)
+  process.send(initial_refresh, first)
   assert wait_for_log(log_subject, "retry_scheduled", 20)
 
   let assert Ok(failed_summary) =
@@ -456,6 +509,8 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
   assert !list.contains(event_names(failed_page.events), "retry_scheduled")
 
   process.send(started.data, daemon.RetryTick("retry-id", 1))
+  let assert Ok(retry_refresh) = process.receive(refresh_subject, within: 1000)
+  process.send(retry_refresh, second)
   assert wait_for_log(log_subject, "worker_exited", 20)
 
   let assert Ok(succeeded_summary) =
@@ -465,6 +520,77 @@ pub fn daemon_retry_uses_unique_session_ids_with_same_clock_test() {
     hub.events_after(hub_subject, "ABC-RETRY-42-1", 0, 20, 1000)
   let assert Ok(_) =
     hub.events_after(hub_subject, "ABC-RETRY-42-2", 0, 20, 1000)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn daemon_startup_recovery_attaches_interrupted_metadata_to_retry_session_test() {
+  let #(workflow_path, root) =
+    write_workflow("test/tmp/daemon-startup-recovery-session")
+  let recovered = issue("recovered-id", "ABC-REC", "Todo")
+  let assert Ok(#(_, known_workspace)) =
+    workspace.workspace_path(root, recovered.identifier)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "old-run-started",
+          1000,
+          record.RunStarted(
+            run_id: "old-run",
+            issue_id: recovered.id,
+            issue_identifier: recovered.identifier,
+            workspace_path: known_workspace,
+          ),
+        ),
+      ],
+      False,
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([recovered]) },
+    )
+  let deps =
+    dependencies(
+      client,
+      log_subject,
+      hub_subject,
+      fn(issue, _, _, _, _, _, _, _) {
+        Ok(success(
+          tracker_issue.Issue(
+            ..issue,
+            state: issue_state.from_string_unchecked("Done"),
+          ),
+          known_workspace,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  process.send(started.data, daemon.RetryTick("recovered-id", 1))
+  assert wait_for_log(log_subject, "worker_exited", 20)
+
+  let assert Ok(summary) = wait_for_session(hub_subject, "ABC-REC-42-1", 20)
+  let assert Some(recovery) = summary.recovery
+  assert recovery.status == event.Interrupted
+  assert recovery.source == "projection.run_running"
+  assert recovery.workflow_run_id == Some("old-run")
+  assert summary.status == event.Exited(reason.Normal)
+
+  let assert Ok(page) =
+    hub.events_after(hub_subject, "ABC-REC-42-1", 0, 20, 1000)
+  let assert Some(recovery_event) =
+    find_event(page.events, "recovery_interrupted")
+  let assert Some(event_recovery) = recovery_event.payload.recovery
+  assert event_recovery.status == event.Interrupted
+  assert event_recovery.workflow_run_id == Some("old-run")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -485,7 +611,7 @@ pub fn daemon_success_continuation_does_not_publish_retry_to_exited_session_test
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Todo"),
           ),
@@ -523,10 +649,10 @@ pub fn daemon_worker_down_does_not_publish_retry_to_exited_session_test() {
         let assert Ok(#(_, expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
         process.kill(process.self())
-        Error(runner.WorkerFailure(
+        Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("worker_down")),
           workspace_path: Some(expected_workspace),
-          tokens: domain.zero_token_totals(),
+          tokens: session_tokens.zero_token_totals(),
           final_issue: None,
         ))
       },
@@ -552,14 +678,26 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
     write_workflow("test/tmp/daemon-stop-session-cleanup")
   let candidate = issue("stop-id", "ABC-STOP", "Todo")
   let terminal =
-    domain.Issue(..candidate, state: issue_state.from_string_unchecked("Done"))
+    tracker_issue.Issue(
+      ..candidate,
+      state: issue_state.from_string_unchecked("Done"),
+    )
   let log_subject = process.new_subject()
+  let refresh_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 100 })
   let client =
     tracker.Client(
       fetch_candidate_issues: fn() { Ok([candidate]) },
       fetch_issues_by_states: fn(_) { Ok([]) },
-      fetch_issue_states_by_ids: fn(_) { Ok([terminal]) },
+      fetch_issue_states_by_ids: fn(_) {
+        let reply = process.new_subject()
+        process.send(refresh_subject, reply)
+        case process.receive(reply, within: 1000) {
+          Ok(issue) -> Ok([issue])
+          Error(_) -> Error(error.LinearApiRequest("refresh timeout"))
+        }
+      },
     )
   let deps =
     dependencies(
@@ -569,9 +707,9 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
       fn(issue, _, _, _, _, _, _, _) {
         let assert Ok(#(_, _expected_workspace)) =
           workspace.workspace_path(root, issue.identifier)
-        process.sleep(2000)
+        test_async.block_until_released(worker_barrier)
         Ok(success(
-          domain.Issue(
+          tracker_issue.Issue(
             ..issue,
             state: issue_state.from_string_unchecked("Done"),
           ),
@@ -582,8 +720,14 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
+  let assert Ok(initial_refresh) =
+    process.receive(refresh_subject, within: 1000)
+  process.send(initial_refresh, candidate)
   assert wait_for_log(log_subject, "dispatch_started", 20)
   process.send(started.data, daemon.PollTick(2))
+  let assert Ok(running_refresh) =
+    process.receive(refresh_subject, within: 1000)
+  process.send(running_refresh, terminal)
   assert wait_for_log(log_subject, "worker_stop_requested", 20)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-STOP-42-1", 20)
@@ -593,6 +737,7 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
   assert list.contains(event_names(page.events), "stop_requested")
   assert !list.contains(event_names(page.events), "retry_scheduled")
 
+  test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -608,10 +753,10 @@ pub fn daemon_start_fails_when_event_hub_start_fails_test() {
         log_subject,
         process.new_subject(),
         fn(_, _, _, _, _, _, _, _) {
-          Error(runner.WorkerFailure(
+          Error(agent_types.WorkerFailure(
             reason: error.PiFailed(error.PiProtocolError("not used")),
             workspace_path: None,
-            tokens: domain.zero_token_totals(),
+            tokens: session_tokens.zero_token_totals(),
             final_issue: None,
           ))
         },

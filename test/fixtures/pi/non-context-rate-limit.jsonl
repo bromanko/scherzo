@@ -1,0 +1,1 @@
+{"type":"message_end","message":{"role":"assistant","provider":"openai","stopReason":"error","content":[],"errorMessage":"OpenAI error: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"message\":\"Please slow down\"}}"}}

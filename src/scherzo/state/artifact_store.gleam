@@ -1,0 +1,623 @@
+import gleam/bit_array
+import gleam/dynamic/decode
+import gleam/int
+import gleam/json
+import gleam/option.{None}
+import gleam/result
+import gleam/string
+import scherzo/hash
+import scherzo/json_value
+import scherzo/path
+import scherzo/step_artifact
+import scherzo/structured_output_metadata
+import scherzo/workflow_identity
+import simplifile
+
+pub type Store {
+  Store(workspace_root: String)
+}
+
+pub type ArtifactRef {
+  ArtifactRef(ref: String, sha256: String, bytes: Int)
+}
+
+pub type StructuredArtifactRef {
+  StructuredArtifactRef(ref: String, path: String, sha256: String, bytes: Int)
+}
+
+pub type StructuredOutputArtifact {
+  StructuredOutputArtifact(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    artifact_name: String,
+    format: String,
+    schema_required_keys: List(String),
+    validation: structured_output_metadata.ValidationMetadata,
+    payload: json_value.JsonValue,
+  )
+}
+
+pub type ArtifactWriteError {
+  InvalidPath(reason: String)
+  OpenTempFailed(reason: String)
+  WriteTempFailed(reason: String)
+  SyncTempFailed(reason: String)
+  CloseTempFailed(reason: String)
+  RenameFailed(reason: String)
+  SyncParentFailed(reason: String)
+  CleanupTempFailed(reason: String)
+  UnexpectedFfiFailure(function: String, detail: String)
+}
+
+pub type ArtifactError {
+  ArtifactIo(String)
+  ArtifactWriteFailed(ArtifactWriteError)
+  MissingStepArtifact(String)
+  CorruptStepArtifact(String)
+  InvalidArtifactRef(String)
+  DecodeArtifactFailed(String)
+  DirectorySyncUnsupported(String)
+}
+
+type StoredArtifact {
+  StoredArtifact(
+    run_id: String,
+    workflow_id: String,
+    step_id: String,
+    attempt_index: Int,
+    artifact: step_artifact.StepArtifact,
+  )
+}
+
+pub fn new(workspace_root: String) -> Store {
+  Store(workspace_root: workspace_root)
+}
+
+pub fn write_step_artifact(
+  store: Store,
+  run_id: String,
+  workflow_id: String,
+  step_id: String,
+  attempt_index: Int,
+  artifact: step_artifact.StepArtifact,
+) -> Result(ArtifactRef, ArtifactError) {
+  let ref = artifact_ref(run_id, step_id, attempt_index)
+  use final_path <- result.try(resolve_ref_for_write(store, ref))
+  use Nil <- result.try(ensure_parent(final_path))
+  let bytes =
+    stored_to_string(StoredArtifact(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      artifact: artifact,
+    ))
+  use Nil <- result.try(
+    write_atomic(final_path, bytes)
+    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
+  )
+  use final <- result.try(
+    simplifile.read(final_path)
+    |> result.replace_error(MissingStepArtifact(ref)),
+  )
+  let sha = hash.sha256_hex(final)
+  case final == bytes {
+    True ->
+      Ok(ArtifactRef(
+        ref: ref,
+        sha256: sha,
+        bytes: bit_array.byte_size(bit_array.from_string(final)),
+      ))
+    False -> Error(CorruptStepArtifact(ref))
+  }
+}
+
+pub fn write_structured_output_artifact(
+  store: Store,
+  run_id: String,
+  workflow_id: String,
+  step_id: String,
+  attempt_index: Int,
+  artifact_name: String,
+  format: String,
+  schema_required_keys: List(String),
+  validation: structured_output_metadata.ValidationMetadata,
+  payload_json: String,
+) -> Result(StructuredArtifactRef, ArtifactError) {
+  let ref =
+    structured_output_artifact_ref(
+      run_id,
+      step_id,
+      attempt_index,
+      artifact_name,
+    )
+  use final_path <- result.try(resolve_ref_for_write(store, ref))
+  use Nil <- result.try(ensure_parent(final_path))
+  use payload <- result.try(parse_structured_payload_json(payload_json))
+  let bytes =
+    structured_output_to_string(StructuredOutputArtifact(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      step_id: step_id,
+      attempt_index: attempt_index,
+      artifact_name: artifact_name,
+      format: format,
+      schema_required_keys: schema_required_keys,
+      validation: validation,
+      payload: payload,
+    ))
+  use Nil <- result.try(
+    write_atomic(final_path, bytes)
+    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
+  )
+  use final <- result.try(
+    simplifile.read(final_path)
+    |> result.replace_error(MissingStepArtifact(ref)),
+  )
+  let sha = hash.sha256_hex(final)
+  case final == bytes {
+    True ->
+      Ok(StructuredArtifactRef(
+        ref: ref,
+        path: final_path,
+        sha256: sha,
+        bytes: bit_array.byte_size(bit_array.from_string(final)),
+      ))
+    False -> Error(CorruptStepArtifact(ref))
+  }
+}
+
+fn parse_structured_payload_json(
+  payload_json: String,
+) -> Result(json_value.JsonValue, ArtifactError) {
+  case json_value.parse(payload_json) {
+    Ok(payload) -> Ok(payload)
+    Error(Nil) -> Error(DecodeArtifactFailed("invalid_payload_json"))
+  }
+}
+
+pub fn read_structured_output_artifact(
+  store: Store,
+  ref: String,
+  expected_sha256: String,
+) -> Result(StructuredOutputArtifact, ArtifactError) {
+  use contents <- result.try(read_artifact_contents(store, ref))
+  let actual_sha = hash.sha256_hex(contents)
+  case actual_sha == expected_sha256 {
+    False -> Error(CorruptStepArtifact(ref))
+    True -> decode_structured_output_contents(contents)
+  }
+}
+
+pub fn read_step_artifact(
+  store: Store,
+  ref: String,
+  expected_sha256: String,
+) -> Result(step_artifact.StepArtifact, ArtifactError) {
+  use contents <- result.try(read_step_artifact_contents(store, ref))
+  let actual_sha = hash.sha256_hex(contents)
+  case actual_sha == expected_sha256 {
+    False -> Error(CorruptStepArtifact(ref))
+    True -> decode_step_artifact_contents(contents)
+  }
+}
+
+pub fn read_step_artifact_unverified(
+  store: Store,
+  ref: String,
+) -> Result(step_artifact.StepArtifact, ArtifactError) {
+  use contents <- result.try(read_step_artifact_contents(store, ref))
+  decode_step_artifact_contents(contents)
+}
+
+fn read_step_artifact_contents(
+  store: Store,
+  ref: String,
+) -> Result(String, ArtifactError) {
+  read_artifact_contents(store, ref)
+}
+
+fn read_artifact_contents(
+  store: Store,
+  ref: String,
+) -> Result(String, ArtifactError) {
+  use final_path <- result.try(resolve_ref_for_read(store, ref))
+  simplifile.read(final_path)
+  |> result.map_error(fn(error) {
+    case error {
+      simplifile.Enoent -> MissingStepArtifact(ref)
+      _ -> ArtifactIo("read artifact: " <> simplifile.describe_error(error))
+    }
+  })
+}
+
+fn decode_step_artifact_contents(
+  contents: String,
+) -> Result(step_artifact.StepArtifact, ArtifactError) {
+  case decode_stored_string(contents) {
+    Ok(stored) -> Ok(stored.artifact)
+    Error(reason) -> Error(DecodeArtifactFailed(reason))
+  }
+}
+
+pub fn artifact_ref(
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/"
+  <> workflow_identity.step_component(step_id)
+  <> "/attempt-"
+  <> int.to_string(attempt_index)
+  <> ".json"
+}
+
+pub fn structured_output_artifact_ref(
+  run_id: String,
+  step_id: String,
+  attempt_index: Int,
+  artifact_name: String,
+) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/"
+  <> workflow_identity.safe_component(step_id, "step")
+  <> "/attempt-"
+  <> int.to_string(attempt_index)
+  <> "/structured/"
+  <> workflow_identity.safe_component(artifact_name, "artifact")
+  <> ".json"
+}
+
+pub fn context_recovery_artifact_ref(
+  run_id: String,
+  step_id: String,
+  step_attempt_index: Int,
+  artifact_name: String,
+) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/"
+  <> workflow_identity.step_component(step_id)
+  <> "/attempt-"
+  <> int.to_string(step_attempt_index)
+  <> "/context-recovery/"
+  <> workflow_identity.safe_component(artifact_name, "artifact")
+}
+
+pub fn context_recovery_display_path(ref: String) -> String {
+  ".scherzo-state/artifacts/" <> ref
+}
+
+pub fn write_context_recovery_artifact(
+  store: Store,
+  run_id: String,
+  _workflow_id: String,
+  step_id: String,
+  step_attempt_index: Int,
+  artifact_name: String,
+  contents: String,
+) -> Result(StructuredArtifactRef, ArtifactError) {
+  let ref =
+    context_recovery_artifact_ref(
+      run_id,
+      step_id,
+      step_attempt_index,
+      artifact_name,
+    )
+  use final_path <- result.try(resolve_ref_for_write(store, ref))
+  use Nil <- result.try(ensure_parent(final_path))
+  use Nil <- result.try(
+    write_atomic(final_path, contents)
+    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
+  )
+  use final <- result.try(
+    simplifile.read(final_path)
+    |> result.replace_error(MissingStepArtifact(ref)),
+  )
+  let sha = hash.sha256_hex(final)
+  case final == contents {
+    True ->
+      Ok(StructuredArtifactRef(
+        ref: ref,
+        path: final_path,
+        sha256: sha,
+        bytes: bit_array.byte_size(bit_array.from_string(final)),
+      ))
+    False -> Error(CorruptStepArtifact(ref))
+  }
+}
+
+pub fn read_artifact_unverified(
+  store: Store,
+  ref: String,
+) -> Result(String, ArtifactError) {
+  read_artifact_contents(store, ref)
+}
+
+fn stored_to_string(stored: StoredArtifact) -> String {
+  stored_to_json(stored) |> json.to_string
+}
+
+fn stored_to_json(stored: StoredArtifact) -> json.Json {
+  json.object([
+    #("schema_version", json.int(2)),
+    #("run_id", json.string(stored.run_id)),
+    #("workflow_id", json.string(stored.workflow_id)),
+    #("step_id", json.string(stored.step_id)),
+    #("attempt_index", json.int(stored.attempt_index)),
+    #("artifact", step_artifact.to_json(stored.artifact)),
+  ])
+}
+
+fn structured_output_to_string(artifact: StructuredOutputArtifact) -> String {
+  structured_output_to_json(artifact) |> json.to_string
+}
+
+fn structured_output_to_json(artifact: StructuredOutputArtifact) -> json.Json {
+  json.object([
+    #("schema_version", json.int(1)),
+    #("artifact_type", json.string("structured_output")),
+    #("run_id", json.string(artifact.run_id)),
+    #("workflow_id", json.string(artifact.workflow_id)),
+    #("step_id", json.string(artifact.step_id)),
+    #("attempt_index", json.int(artifact.attempt_index)),
+    #("artifact_name", json.string(artifact.artifact_name)),
+    #("format", json.string(artifact.format)),
+    #(
+      "schema",
+      json.object([
+        #("type", json.string("object")),
+        #(
+          "required",
+          json.array(artifact.schema_required_keys, of: json.string),
+        ),
+      ]),
+    ),
+    #("validation", structured_output_metadata.to_json(artifact.validation)),
+    #("payload", json_value.to_json(artifact.payload)),
+  ])
+}
+
+fn decode_structured_output_contents(
+  contents: String,
+) -> Result(StructuredOutputArtifact, ArtifactError) {
+  case json.parse(contents, structured_output_decoder()) {
+    Ok(artifact) -> Ok(artifact)
+    Error(_) ->
+      Error(DecodeArtifactFailed("invalid_structured_output_artifact"))
+  }
+}
+
+fn structured_output_decoder() -> decode.Decoder(StructuredOutputArtifact) {
+  use schema_version <- decode.field("schema_version", decode.int)
+  case schema_version == 1 {
+    False ->
+      decode.failure(
+        empty_structured_output_artifact(),
+        expected: "StructuredOutputArtifact",
+      )
+    True -> {
+      use artifact_type <- decode.field("artifact_type", decode.string)
+      case artifact_type == "structured_output" {
+        False ->
+          decode.failure(
+            empty_structured_output_artifact(),
+            expected: "structured_output artifact_type",
+          )
+        True -> {
+          use run_id <- decode.field("run_id", decode.string)
+          use workflow_id <- decode.field("workflow_id", decode.string)
+          use step_id <- decode.field("step_id", decode.string)
+          use attempt_index <- decode.field("attempt_index", decode.int)
+          use artifact_name <- decode.field("artifact_name", decode.string)
+          use format <- decode.field("format", decode.string)
+          use schema_required_keys <- decode.optional_field(
+            "schema",
+            [],
+            structured_output_schema_required_decoder(),
+          )
+          use legacy_required_keys <- decode.optional_field(
+            "schema_required_keys",
+            schema_required_keys,
+            decode.list(decode.string),
+          )
+          use validation <- decode.optional_field(
+            "validation",
+            structured_output_metadata.baseline_only(legacy_required_keys),
+            structured_output_metadata.decoder(),
+          )
+          use payload <- decode.field("payload", json_value.decoder())
+          decode.success(StructuredOutputArtifact(
+            run_id: run_id,
+            workflow_id: workflow_id,
+            step_id: step_id,
+            attempt_index: attempt_index,
+            artifact_name: artifact_name,
+            format: format,
+            schema_required_keys: structured_output_metadata.required_keys(
+              validation,
+            ),
+            validation: validation,
+            payload: payload,
+          ))
+        }
+      }
+    }
+  }
+}
+
+fn structured_output_schema_required_decoder() -> decode.Decoder(List(String)) {
+  use required_keys <- decode.field("required", decode.list(decode.string))
+  decode.success(required_keys)
+}
+
+fn empty_structured_output_artifact() -> StructuredOutputArtifact {
+  StructuredOutputArtifact(
+    run_id: "",
+    workflow_id: "",
+    step_id: "",
+    attempt_index: 0,
+    artifact_name: "",
+    format: "",
+    schema_required_keys: [],
+    validation: structured_output_metadata.baseline_only([]),
+    payload: json_value.JNull,
+  )
+}
+
+fn decode_stored_string(contents: String) -> Result(StoredArtifact, String) {
+  case json.parse(contents, stored_decoder()) {
+    Ok(stored) -> Ok(stored)
+    Error(_) -> Error("invalid_stored_step_artifact")
+  }
+}
+
+fn stored_decoder() -> decode.Decoder(StoredArtifact) {
+  use schema_version <- decode.field("schema_version", decode.int)
+  case schema_version == 2 {
+    False ->
+      decode.failure(
+        StoredArtifact("", "", "", 0, empty_artifact()),
+        expected: "StoredArtifact",
+      )
+    True -> {
+      use run_id <- decode.field("run_id", decode.string)
+      use workflow_id <- decode.field("workflow_id", decode.string)
+      use step_id <- decode.field("step_id", decode.string)
+      use attempt_index <- decode.field("attempt_index", decode.int)
+      use artifact <- decode.field("artifact", step_artifact.decoder())
+      decode.success(StoredArtifact(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        artifact,
+      ))
+    }
+  }
+}
+
+fn empty_artifact() -> step_artifact.StepArtifact {
+  step_artifact.StepArtifact(
+    step_id: "",
+    status: step_artifact.StepFailed,
+    final_response: None,
+    exit_code: None,
+    command: None,
+    duration_ms: None,
+    diagnostic_path: None,
+    failure_code: None,
+    stdout: "",
+    stderr: "",
+    timed_out: False,
+    final_response_truncated: False,
+    stdout_truncated: False,
+    stderr_truncated: False,
+    summary_text: "",
+    structured_output: None,
+  )
+}
+
+fn resolve_ref_for_write(
+  store: Store,
+  ref: String,
+) -> Result(String, ArtifactError) {
+  use Nil <- result.try(validate_ref(ref))
+  let root = artifact_root(store)
+  Ok(path.join(root, ref))
+}
+
+fn resolve_ref_for_read(
+  store: Store,
+  ref: String,
+) -> Result(String, ArtifactError) {
+  use Nil <- result.try(validate_ref(ref))
+  Ok(path.join(artifact_root(store), ref))
+}
+
+fn artifact_root(store: Store) -> String {
+  path.join(path.join(store.workspace_root, ".scherzo-state"), "artifacts")
+}
+
+fn validate_ref(ref: String) -> Result(Nil, ArtifactError) {
+  let trimmed = string.trim(ref)
+  case
+    trimmed == ""
+    || string.starts_with(trimmed, "/")
+    || has_parent_segment(trimmed)
+  {
+    True -> Error(InvalidArtifactRef(ref))
+    False -> Ok(Nil)
+  }
+}
+
+fn has_parent_segment(value: String) -> Bool {
+  value == ".."
+  || string.starts_with(value, "../")
+  || string.ends_with(value, "/..")
+  || string.contains(value, "/../")
+}
+
+fn ensure_parent(final_path: String) -> Result(Nil, ArtifactError) {
+  let dir = path.dirname(final_path) |> result.unwrap(final_path)
+  simplifile.create_directory_all(dir)
+  |> result.map_error(fn(error) {
+    ArtifactIo(
+      "create artifact directory: " <> simplifile.describe_error(error),
+    )
+  })
+}
+
+pub fn write_atomic(
+  final_path: String,
+  contents: String,
+) -> Result(Nil, ArtifactWriteError) {
+  ffi_write_atomic(final_path, contents)
+  |> result.map_error(fn(error) { raw_write_error("write_atomic", error) })
+}
+
+pub fn artifact_write_error_to_string(error: ArtifactWriteError) -> String {
+  case error {
+    InvalidPath(reason) -> "invalid artifact path: " <> reason
+    OpenTempFailed(reason) -> "open temporary artifact failed: " <> reason
+    WriteTempFailed(reason) -> "write temporary artifact failed: " <> reason
+    SyncTempFailed(reason) -> "sync temporary artifact failed: " <> reason
+    CloseTempFailed(reason) -> "close temporary artifact failed: " <> reason
+    RenameFailed(reason) -> "rename artifact failed: " <> reason
+    SyncParentFailed(reason) -> "sync artifact parent failed: " <> reason
+    CleanupTempFailed(reason) -> "cleanup temporary artifact failed: " <> reason
+    UnexpectedFfiFailure(function, detail) ->
+      function <> " failed unexpectedly: " <> detail
+  }
+}
+
+fn raw_write_error(function: String, error: String) -> ArtifactWriteError {
+  let #(tag, detail) = split_tag(error)
+  case tag {
+    "invalid_path" -> InvalidPath(detail)
+    "open_temp" -> OpenTempFailed(detail)
+    "write_temp" -> WriteTempFailed(detail)
+    "sync_temp" -> SyncTempFailed(detail)
+    "close_temp" -> CloseTempFailed(detail)
+    "rename" -> RenameFailed(detail)
+    "sync_parent" -> SyncParentFailed(detail)
+    "cleanup_temp" -> CleanupTempFailed(detail)
+    "unexpected_ffi_failure" -> UnexpectedFfiFailure(function, detail)
+    _ -> UnexpectedFfiFailure(function, error)
+  }
+}
+
+fn split_tag(error: String) -> #(String, String) {
+  case string.split_once(error, on: ":") {
+    Ok(#(tag, detail)) -> #(tag, detail)
+    Error(Nil) -> #(error, "")
+  }
+}
+
+@external(erlang, "scherzo_artifact_store_ffi", "write_atomic")
+fn ffi_write_atomic(final_path: String, contents: String) -> Result(Nil, String)

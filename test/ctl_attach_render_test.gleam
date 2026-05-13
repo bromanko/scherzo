@@ -2,11 +2,12 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/ctl
-import scherzo/domain
 import scherzo/session/event
+import scherzo/session/tokens as session_tokens
 import scherzo/terminal/style
 
 type OutMsg {
@@ -32,16 +33,24 @@ fn write_control_file(path: String) -> Nil {
 fn summary() -> event.SessionSummary {
   event.SessionSummary(
     session_id: "session-1",
+    display_name: "session-1",
     issue_id: "issue-1",
     issue_identifier: "ABC-1",
     issue_title: "Attach renderer",
     workspace_path: "/tmp/workspace",
     pi_session_id: None,
     status: event.Running,
+    recovery: None,
     current_turn: 1,
+    current_turn_status: None,
+    current_turn_started_at_ms: None,
+    last_turn_finished_at_ms: None,
+    last_turn_duration_ms: None,
+    last_turn_token_delta: session_tokens.zero_token_totals(),
+    last_turn_reason: None,
     started_at_ms: 1,
     last_event_at_ms: 10,
-    token_totals: domain.zero_token_totals(),
+    token_totals: session_tokens.zero_token_totals(),
   )
 }
 
@@ -113,6 +122,9 @@ fn deps(
   stream_events: List(event.SessionEvent),
 ) -> ctl.ControlClient {
   ctl.ControlClient(
+    list_sessions: fn(_) {
+      Ok(event.SessionList(sessions: [summary()], now_ms: 0))
+    },
     get_session: fn(_, _) { Ok(Some(summary())) },
     get_events: fn(_, _, cursor, _) {
       Ok(event.EventPage(
@@ -129,6 +141,9 @@ fn deps(
         Nil
       })
       Ok(Nil)
+    },
+    apply_command: fn(_, operator_command) {
+      Ok(command.applied(operator_command, None))
     },
     raw_request: fn(_, request) { Ok(protocol.request_to_string(request)) },
   )
@@ -280,6 +295,9 @@ pub fn attach_raw_and_json_follow_skip_replayed_duplicates_test() {
 pub fn events_pretty_uses_paginated_replay_helper_test() {
   let deps =
     ctl.ControlClient(
+      list_sessions: fn(_) {
+        Ok(event.SessionList(sessions: [summary()], now_ms: 0))
+      },
       get_session: fn(_, _) { Ok(Some(summary())) },
       get_events: fn(_, _, cursor, _) {
         case cursor {
@@ -304,6 +322,9 @@ pub fn events_pretty_uses_paginated_replay_helper_test() {
         }
       },
       stream_events: fn(_, _, _, _) { Ok(Nil) },
+      apply_command: fn(_, operator_command) {
+        Ok(command.applied(operator_command, None))
+      },
       raw_request: fn(_, request) { Ok(protocol.request_to_string(request)) },
     )
 

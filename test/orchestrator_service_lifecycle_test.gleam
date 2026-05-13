@@ -13,6 +13,7 @@ import scherzo/session/hub
 import scherzo/signal
 import scherzo/tracker
 import simplifile
+import test_async
 
 fn reset_dir(dir: String) -> Nil {
   let _ = simplifile.delete(dir)
@@ -27,6 +28,7 @@ tracker:
   api_key: test-key
   project_slug: TEST
   active_states: [Todo]
+  dispatch_states: [Todo]
   terminal_states: [Done]
 workspace:
   root: " <> root <> "
@@ -113,7 +115,7 @@ fn no_control_dependencies(
 fn lifecycle_dependencies(
   daemon_dependencies: daemon.RuntimeDependencies,
   install_stop_source: fn(process.Subject(lifecycle.StopReason)) ->
-    Result(signal.Installation, String),
+    Result(signal.Installation, signal.SignalError),
   shutdown_timeout_ms: Int,
   log_subject: process.Subject(String),
 ) -> service.DaemonLifecycleDependencies {
@@ -131,7 +133,7 @@ fn fake_install(
   ready: process.Subject(process.Subject(lifecycle.StopReason)),
   cleanup_subject: process.Subject(String),
 ) -> fn(process.Subject(lifecycle.StopReason)) ->
-  Result(signal.Installation, String) {
+  Result(signal.Installation, signal.SignalError) {
   fn(stop_subject) {
     process.send(ready, stop_subject)
     Ok(signal.Installation(
@@ -149,7 +151,7 @@ pub fn start_daemon_releases_lock_when_signal_install_fails_test() {
   let deps =
     lifecycle_dependencies(
       no_control_dependencies(log_subject),
-      fn(_) { Error("boom") },
+      fn(_) { Error(signal.InstallFailed("boom")) },
       1000,
       log_subject,
     )
@@ -189,7 +191,7 @@ pub fn start_daemon_cleans_signal_and_releases_lock_when_daemon_start_fails_test
   let assert Error(_) =
     service.start_daemon_with_lifecycle(Some(workflow_path), deps)
   assert process.receive(cleanup_subject, within: 1000) == Ok("cleanup")
-  assert process.receive(cleanup_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cleanup_subject, 50)
   let assert Ok(lock) = instance_lock.acquire(root)
   instance_lock.release(lock)
 }
@@ -227,7 +229,7 @@ pub fn graceful_service_stop_removes_control_file_and_releases_lock_test() {
 
   let assert Ok(Ok(Nil)) = process.receive(result_subject, within: 5000)
   assert process.receive(cleanup_subject, within: 1000) == Ok("cleanup")
-  assert process.receive(cleanup_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cleanup_subject, 50)
   assert wait_for_log(log_subject, "daemon_shutdown", 20)
   assert wait_for_log(log_subject, "daemon_shutdown_complete", 20)
   assert simplifile.is_file(control_path) != Ok(True)
@@ -263,7 +265,7 @@ pub fn daemon_shutdown_timeout_returns_error_and_releases_lock_test() {
   let assert Ok(Error(err)) = process.receive(result_subject, within: 5000)
   assert err.code == "daemon_shutdown_timeout"
   assert process.receive(cleanup_subject, within: 1000) == Ok("cleanup")
-  assert process.receive(cleanup_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(cleanup_subject, 50)
   assert wait_for_log(log_subject, "daemon_shutdown_timeout", 20)
   let assert Ok(lock) = instance_lock.acquire(root)
   instance_lock.release(lock)

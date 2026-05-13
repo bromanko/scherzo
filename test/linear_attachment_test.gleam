@@ -4,7 +4,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_attachment
@@ -12,14 +12,16 @@ import scherzo/linear_body_data
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import simplifile
+import test_async
 
-fn tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+fn tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
     active_states: issue_state.list_from_strings(["Todo"]),
+    dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }
@@ -143,8 +145,8 @@ pub fn native_dedupe_skips_upload_when_file_already_present_test() {
     )
   let assert Ok(fetch_request) = process.receive(graphql_subject, within: 100)
   assert string.contains(fetch_request.body, "ScherzoCommentFetch")
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
-  assert process.receive(upload_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
+  test_async.assert_no_extra_message_within(upload_subject, 20)
 }
 
 pub fn fallback_dedupe_skips_upload_when_link_already_present_test() {
@@ -167,8 +169,8 @@ pub fn fallback_dedupe_skips_upload_when_link_already_present_test() {
     )
   let assert Ok(fetch_request) = process.receive(graphql_subject, within: 100)
   assert string.contains(fetch_request.body, "ScherzoCommentFetch")
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
-  assert process.receive(upload_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
+  test_async.assert_no_extra_message_within(upload_subject, 20)
 }
 
 pub fn fallback_updates_body_when_body_data_is_invalid_test() {
@@ -217,8 +219,8 @@ pub fn invalid_body_data_without_fallback_fails_before_upload_test() {
     )
   let assert Ok(fetch_request) = process.receive(graphql_subject, within: 100)
   assert string.contains(fetch_request.body, "ScherzoCommentFetch")
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
-  assert process.receive(upload_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
+  test_async.assert_no_extra_message_within(upload_subject, 20)
 }
 
 pub fn upload_status_failure_stops_before_comment_update_test() {
@@ -239,7 +241,7 @@ pub fn upload_status_failure_stops_before_comment_update_test() {
   let assert Ok(_) = process.receive(upload_subject, within: 100)
   assert string.contains(fetch_request.body, "ScherzoCommentFetch")
   assert string.contains(file_upload_request.body, "ScherzoFileUpload")
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
 }
 
 pub fn oversize_in_memory_attachment_fails_before_graphql_test() {
@@ -255,8 +257,8 @@ pub fn oversize_in_memory_attachment_fails_before_graphql_test() {
       options(True, False),
       deps(graphql_subject, upload_subject, 204, "hello", empty_body_data()),
     )
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
-  assert process.receive(upload_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
+  test_async.assert_no_extra_message_within(upload_subject, 20)
 }
 
 pub fn invalid_asset_url_fails_before_upload_test() {
@@ -305,8 +307,8 @@ pub fn invalid_asset_url_fails_before_upload_test() {
     process.receive(graphql_subject, within: 100)
   assert string.contains(fetch_request.body, "ScherzoCommentFetch")
   assert string.contains(file_upload_request.body, "ScherzoFileUpload")
-  assert process.receive(upload_subject, within: 20) == Error(Nil)
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(upload_subject, 20)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
 }
 
 pub fn attach_markdown_file_rejects_non_markdown_extension_before_graphql_test() {
@@ -320,8 +322,8 @@ pub fn attach_markdown_file_rejects_non_markdown_extension_before_graphql_test()
       options(True, False),
       deps(graphql_subject, upload_subject, 204, "hello", empty_body_data()),
     )
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
-  assert process.receive(upload_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
+  test_async.assert_no_extra_message_within(upload_subject, 20)
 }
 
 pub fn attach_markdown_file_rejects_oversize_file_before_graphql_test() {
@@ -344,8 +346,8 @@ pub fn attach_markdown_file_rejects_oversize_file_before_graphql_test() {
       options(True, False),
       deps(graphql_subject, upload_subject, 204, "hello", empty_body_data()),
     )
-  assert process.receive(graphql_subject, within: 20) == Error(Nil)
-  assert process.receive(upload_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message_within(graphql_subject, 20)
+  test_async.assert_no_extra_message_within(upload_subject, 20)
 }
 
 pub fn attach_markdown_file_uses_utf8_byte_size_test() {
@@ -491,7 +493,10 @@ fn file_upload_response_with_asset_url(asset_url: String) -> String {
   )
 }
 
-fn header_value(headers: List(#(String, String)), key: String) -> Option(String) {
+fn header_value(
+  headers: List(#(String, String)),
+  key: String,
+) -> Option(String) {
   case list.key_find(headers, key) {
     Ok(value) -> Some(value)
     Error(_) -> None

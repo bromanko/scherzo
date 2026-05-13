@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+set -e
+
+script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+. "$script_dir/scherzo-agent-common.sh"
+
+prepare_agent_env
+require_live_identity
+require_github_identity
+require_github_repo_access
+require_github_pr_create_permission
+require_linear_identity
+require_ssh_identity
+
+if [ "$LINEAR_API_KEY" != "$SCHERZO_AGENT_LINEAR_API_KEY" ]; then
+  fail "LINEAR_API_KEY was not derived from SCHERZO_AGENT_LINEAR_API_KEY"
+fi
+
+echo "Scherzo agent identity checks passed for GitHub login $SCHERZO_AGENT_GITHUB_LOGIN and repo $SCHERZO_PR_REPO"
+echo "Linear key source=SCHERZO_AGENT_LINEAR_API_KEY"
+echo "SCHERZO_PR_REMOTE=$SCHERZO_PR_REMOTE"
+echo "remote url=$(require_agent_remote)"
+show_identities
+
+exec "$script_dir/scherzo-start" .scherzo/scherzo.yaml

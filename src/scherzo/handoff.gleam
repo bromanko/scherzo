@@ -1,22 +1,34 @@
 import gleam/bit_array
-import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/order.{Gt, Lt}
 import gleam/string
-import scherzo/agent/runner
-import scherzo/domain
+import scherzo/agent/types as agent_types
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/handoff_format
 import scherzo/linear
 import scherzo/linear_attachment
+import scherzo/result_artifact
+import scherzo/tracker/issue as tracker_issue
+
+pub type ParkReport {
+  ParkReport(
+    issue_id: String,
+    issue_identifier: String,
+    reason: String,
+    release_policy: Option(String),
+    run_id: Option(String),
+  )
+}
 
 pub type Client {
   Client(
-    claim_issue: fn(domain.Issue, String) -> Result(Nil, error.TrackerError),
-    report_success: fn(domain.Issue, runner.WorkerSuccess, String) ->
+    claim_issue: fn(tracker_issue.Issue, String) ->
       Result(Nil, error.TrackerError),
-    report_failure: fn(domain.Issue, runner.WorkerFailure, String) ->
+    report_success: fn(tracker_issue.Issue, agent_types.WorkerSuccess, String) ->
       Result(Nil, error.TrackerError),
+    report_failure: fn(tracker_issue.Issue, agent_types.WorkerFailure, String) ->
+      Result(Nil, error.TrackerError),
+    report_park: fn(ParkReport) -> Result(Nil, error.TrackerError),
   )
 }
 
@@ -25,12 +37,13 @@ pub fn disabled_client() -> Client {
     claim_issue: fn(_, _) { Ok(Nil) },
     report_success: fn(_, _, _) { Ok(Nil) },
     report_failure: fn(_, _, _) { Ok(Nil) },
+    report_park: fn(_) { Ok(Nil) },
   )
 }
 
 pub fn linear_client(
-  tracker_config: domain.TrackerConfig,
-  handoff_config: domain.HandoffConfig,
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
   transport: linear.Transport,
 ) -> Client {
   linear_client_with_attachment_dependencies(
@@ -41,8 +54,8 @@ pub fn linear_client(
 }
 
 pub fn linear_client_with_attachment_dependencies(
-  tracker_config: domain.TrackerConfig,
-  handoff_config: domain.HandoffConfig,
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
   dependencies: linear_attachment.Dependencies,
 ) -> Client {
   case handoff_config.enabled {
@@ -78,15 +91,23 @@ pub fn linear_client_with_attachment_dependencies(
             run_id,
           )
         },
+        report_park: fn(report) {
+          report_park(
+            tracker_config,
+            handoff_config,
+            dependencies.graphql_transport,
+            report,
+          )
+        },
       )
   }
 }
 
 fn claim_issue(
-  tracker_config: domain.TrackerConfig,
-  handoff_config: domain.HandoffConfig,
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
   transport: linear.Transport,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   run_id: String,
 ) -> Result(Nil, error.TrackerError) {
   use _ <- try_tracker(run_comment(
@@ -94,7 +115,11 @@ fn claim_issue(
     tracker_config,
     transport,
     issue.id,
-    "Scherzo claimed " <> issue.identifier <> " for run " <> run_id <> ".",
+    handoff_format.claim_comment(
+      issue.identifier,
+      run_id,
+      tracker_secrets(tracker_config),
+    ),
   ))
   run_state_update(
     tracker_config,
@@ -105,13 +130,21 @@ fn claim_issue(
 }
 
 fn report_success(
-  tracker_config: domain.TrackerConfig,
-  handoff_config: domain.HandoffConfig,
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
   dependencies: linear_attachment.Dependencies,
-  issue: domain.Issue,
-  success: runner.WorkerSuccess,
+  issue: tracker_issue.Issue,
+  success: agent_types.WorkerSuccess,
   run_id: String,
 ) -> Result(Nil, error.TrackerError) {
+  let attachment_filename =
+    success_attachment_filename(handoff_config, issue, success, run_id)
+  let options =
+    handoff_format.SuccessCommentOptions(
+      include_result: handoff_config.include_result_on_success,
+      attachment_filename: attachment_filename,
+    )
+  let secrets = tracker_secrets(tracker_config)
   case handoff_config.attach_result_on_success {
     False -> {
       use _ <- try_tracker(run_comment(
@@ -119,13 +152,7 @@ fn report_success(
         tracker_config,
         dependencies.graphql_transport,
         issue.id,
-        handoff_format.success_comment(
-          issue,
-          success,
-          run_id,
-          handoff_config.include_result_on_success,
-          tracker_secrets(tracker_config),
-        ),
+        handoff_format.success_comment(issue, success, run_id, options, secrets),
       ))
       run_state_update(
         tracker_config,
@@ -141,8 +168,8 @@ fn report_success(
         issue,
         success,
         run_id,
-        handoff_config.include_result_on_success,
-        tracker_secrets(tracker_config),
+        options,
+        secrets,
       ))
       use _ <- try_tracker(maybe_attach_success_result(
         tracker_config,
@@ -152,6 +179,7 @@ fn report_success(
         success,
         run_id,
         comment.id,
+        attachment_filename,
       ))
       run_state_update(
         tracker_config,
@@ -164,11 +192,11 @@ fn report_success(
 }
 
 fn report_failure(
-  tracker_config: domain.TrackerConfig,
-  handoff_config: domain.HandoffConfig,
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
   transport: linear.Transport,
-  issue: domain.Issue,
-  failure: runner.WorkerFailure,
+  issue: tracker_issue.Issue,
+  failure: agent_types.WorkerFailure,
   run_id: String,
 ) -> Result(Nil, error.TrackerError) {
   use _ <- try_tracker(run_comment(
@@ -176,13 +204,12 @@ fn report_failure(
     tracker_config,
     transport,
     issue.id,
-    "Scherzo failed run "
-      <> run_id
-      <> " for "
-      <> issue.identifier
-      <> " with error "
-      <> error.agent_code(failure.reason)
-      <> ".",
+    handoff_format.failure_comment(
+      issue,
+      failure,
+      run_id,
+      tracker_secrets(tracker_config),
+    ),
   ))
   run_state_update(
     tracker_config,
@@ -192,38 +219,67 @@ fn report_failure(
   )
 }
 
-fn create_success_comment(
-  tracker_config: domain.TrackerConfig,
+fn report_park(
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
   transport: linear.Transport,
-  issue: domain.Issue,
-  success: runner.WorkerSuccess,
+  report: ParkReport,
+) -> Result(Nil, error.TrackerError) {
+  run_comment(
+    handoff_config.comment_on_park,
+    tracker_config,
+    transport,
+    report.issue_id,
+    handoff_format.park_comment(
+      report.issue_identifier,
+      report.reason,
+      report.release_policy,
+      report.run_id,
+      tracker_secrets(tracker_config),
+    ),
+  )
+}
+
+fn create_success_comment(
+  tracker_config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  issue: tracker_issue.Issue,
+  success: agent_types.WorkerSuccess,
   run_id: String,
-  include_result: Bool,
+  options: handoff_format.SuccessCommentOptions,
   secrets: List(String),
 ) -> Result(linear.LinearCommentDocument, error.TrackerError) {
   use request <- try_tracker(linear.build_comment_create_request(
     tracker_config,
     issue.id,
-    handoff_format.success_comment(
-      issue,
-      success,
-      run_id,
-      include_result,
-      secrets,
-    ),
+    handoff_format.success_comment(issue, success, run_id, options, secrets),
   ))
   use response <- try_tracker(transport(request))
   linear.parse_comment_create_response(response)
 }
 
+fn success_attachment_filename(
+  handoff_config: config_types.HandoffConfig,
+  issue: tracker_issue.Issue,
+  success: agent_types.WorkerSuccess,
+  run_id: String,
+) -> Option(String) {
+  case handoff_config.attach_result_on_success, success.result.final_response {
+    True, Some(_) ->
+      Some(handoff_format.success_result_filename(issue.identifier, run_id))
+    _, _ -> None
+  }
+}
+
 fn maybe_attach_success_result(
-  tracker_config: domain.TrackerConfig,
-  handoff_config: domain.HandoffConfig,
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
   dependencies: linear_attachment.Dependencies,
-  issue: domain.Issue,
-  success: runner.WorkerSuccess,
+  issue: tracker_issue.Issue,
+  success: agent_types.WorkerSuccess,
   run_id: String,
   comment_id: String,
+  attachment_filename: Option(String),
 ) -> Result(Nil, error.TrackerError) {
   let attachment_success =
     limit_success_result_for_attachment(
@@ -231,6 +287,7 @@ fn maybe_attach_success_result(
       handoff_config.result_max_chars,
     )
   case
+    attachment_filename,
     handoff_format.success_result_attachment_markdown(
       issue,
       attachment_success,
@@ -238,8 +295,9 @@ fn maybe_attach_success_result(
       tracker_secrets(tracker_config),
     )
   {
-    None -> Ok(Nil)
-    Some(markdown) -> {
+    _, None -> Ok(Nil)
+    None, Some(_) -> Ok(Nil)
+    Some(filename), Some(markdown) -> {
       let body = bit_array.from_string(markdown)
       use _ <- try_tracker(
         linear_attachment.validate_attachment_size(bit_array.byte_size(body)),
@@ -247,7 +305,7 @@ fn maybe_attach_success_result(
       use _ <- try_tracker(linear_attachment.attach_markdown_to_comment(
         tracker_config,
         comment_id,
-        handoff_result_filename(issue.identifier, run_id),
+        filename,
         body,
         linear_attachment.AttachOptions(
           fallback_to_markdown_link: handoff_config.attachment_fallback_to_markdown_link,
@@ -261,18 +319,18 @@ fn maybe_attach_success_result(
 }
 
 fn limit_success_result_for_attachment(
-  success: runner.WorkerSuccess,
+  success: agent_types.WorkerSuccess,
   max_chars: Int,
-) -> runner.WorkerSuccess {
+) -> agent_types.WorkerSuccess {
   case success.result.final_response {
     None -> success
     Some(text) ->
       case string.length(text) > max_chars {
         False -> success
         True ->
-          runner.WorkerSuccess(
+          agent_types.WorkerSuccess(
             ..success,
-            result: domain.ResultArtifact(
+            result: result_artifact.ResultArtifact(
               ..success.result,
               final_response: Some(string.slice(
                 from: text,
@@ -286,88 +344,9 @@ fn limit_success_result_for_attachment(
   }
 }
 
-fn handoff_result_filename(issue_identifier: String, run_id: String) -> String {
-  let base =
-    safe_filename_component(issue_identifier)
-    <> "-"
-    <> safe_filename_component(run_id)
-    |> collapse_repeated_hyphens
-    |> trim_hyphens
-  let base = case base == "" {
-    True -> "scherzo-result"
-    False -> base
-  }
-  base <> "-result.md"
-}
-
-fn safe_filename_component(value: String) -> String {
-  value
-  |> string.lowercase
-  |> string.to_graphemes
-  |> list.map(fn(ch) {
-    case is_filename_char(ch) {
-      True -> ch
-      False -> "-"
-    }
-  })
-  |> string.join(with: "")
-}
-
-fn is_filename_char(ch: String) -> Bool {
-  is_between(ch, "a", "z")
-  || is_between(ch, "0", "9")
-  || ch == "."
-  || ch == "_"
-  || ch == "-"
-}
-
-fn is_between(value: String, low: String, high: String) -> Bool {
-  string.compare(value, low) != Lt && string.compare(value, high) != Gt
-}
-
-fn collapse_repeated_hyphens(value: String) -> String {
-  value
-  |> string.to_graphemes
-  |> collapse_hyphen_graphemes(False, [])
-  |> string.join(with: "")
-}
-
-fn collapse_hyphen_graphemes(
-  graphemes: List(String),
-  previous_was_hyphen: Bool,
-  acc: List(String),
-) -> List(String) {
-  case graphemes {
-    [] -> list.reverse(acc)
-    ["-", ..rest] ->
-      case previous_was_hyphen {
-        True -> collapse_hyphen_graphemes(rest, True, acc)
-        False -> collapse_hyphen_graphemes(rest, True, ["-", ..acc])
-      }
-    [ch, ..rest] -> collapse_hyphen_graphemes(rest, False, [ch, ..acc])
-  }
-}
-
-fn trim_hyphens(value: String) -> String {
-  value
-  |> string.to_graphemes
-  |> drop_leading_hyphens
-  |> list.reverse
-  |> drop_leading_hyphens
-  |> list.reverse
-  |> string.join(with: "")
-}
-
-fn drop_leading_hyphens(values: List(String)) -> List(String) {
-  case values {
-    ["-", ..rest] -> drop_leading_hyphens(rest)
-    _ -> values
-  }
-}
-
 fn run_comment(
   enabled: Bool,
-  tracker_config: domain.TrackerConfig,
+  tracker_config: config_types.TrackerConfig,
   transport: linear.Transport,
   issue_id: String,
   body: String,
@@ -387,7 +366,7 @@ fn run_comment(
 }
 
 fn run_state_update(
-  tracker_config: domain.TrackerConfig,
+  tracker_config: config_types.TrackerConfig,
   transport: linear.Transport,
   issue_id: String,
   state_id: Option(String),
@@ -406,7 +385,7 @@ fn run_state_update(
   }
 }
 
-fn tracker_secrets(tracker_config: domain.TrackerConfig) -> List(String) {
+fn tracker_secrets(tracker_config: config_types.TrackerConfig) -> List(String) {
   case tracker_config.api_key {
     Some(value) -> [value]
     None -> []

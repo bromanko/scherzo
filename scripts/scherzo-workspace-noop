@@ -1,0 +1,218 @@
+#!/bin/sh
+exec python3 - "$@" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import sys
+
+MARKER = ".scherzo-workspace-driver-noop"
+USAGE = """Usage:
+  scherzo-workspace-noop describe --json
+  scherzo-workspace-noop lifecycle <create|before-step|after-step|remove>
+  scherzo-workspace-noop status --human
+  scherzo-workspace-noop changed-files --json
+  scherzo-workspace-noop assert-only --path <relative-file>
+"""
+
+WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def usage_error(message: str | None = None) -> None:
+    if message:
+        print(f"scherzo-workspace-noop: {message}", file=sys.stderr)
+    print(USAGE, file=sys.stderr, end="")
+    raise SystemExit(2)
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-workspace-noop: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def safe_resolve(raw: str) -> Path:
+    try:
+        return Path(raw).resolve(strict=False)
+    except OSError as exc:
+        usage_error(f"could not resolve workspace path: {exc}")
+
+
+def explicit_lifecycle_root() -> Path:
+    raw = os.environ.get("SCHERZO_WORKSPACE_PATH")
+    if raw is None or raw == "":
+        usage_error("SCHERZO_WORKSPACE_PATH is required for lifecycle commands")
+    root = safe_resolve(raw)
+    if root.parent == root:
+        usage_error("refusing filesystem root as workspace path")
+    return root
+
+
+def capability_root() -> Path:
+    raw = os.environ.get("SCHERZO_WORKSPACE_PATH")
+    if raw:
+        return safe_resolve(raw)
+    try:
+        return Path.cwd().resolve(strict=False)
+    except OSError as exc:
+        fail(f"could not resolve current workspace: {exc}")
+
+
+def contained_by(child: Path, parent: Path) -> bool:
+    try:
+        child_text = str(child.resolve(strict=False))
+        parent_text = str(parent.resolve(strict=False))
+        return child_text != parent_text and os.path.commonpath([child_text, parent_text]) == parent_text
+    except (OSError, ValueError):
+        return False
+
+
+def validate_relative_path(value: str) -> str:
+    if value == "":
+        usage_error("assert-only path must not be empty")
+    if value == ".":
+        usage_error("assert-only path must name a file, not .")
+    if Path(value).is_absolute() or WINDOWS_ABSOLUTE_RE.match(value):
+        usage_error("assert-only path must be relative to the workspace root")
+    segments = value.replace("\\", "/").split("/")
+    if any(segment == ".." for segment in segments):
+        usage_error("assert-only path must not contain .. segments")
+    return value
+
+
+def parse_path_argument(args: list[str]) -> str:
+    if len(args) != 2 or args[0] != "--path":
+        usage_error("assert-only requires --path <relative-file>")
+    return validate_relative_path(args[1])
+
+
+def regular_files(root: Path) -> list[str]:
+    if not root.is_dir():
+        fail("workspace directory does not exist")
+    files: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name != ".scherzo"]
+        base = Path(dirpath)
+        for name in filenames:
+            full = base / name
+            try:
+                relative = full.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if relative == MARKER:
+                continue
+            try:
+                mode = os.stat(full, follow_symlinks=False).st_mode
+            except OSError:
+                continue
+            if stat.S_ISREG(mode):
+                files.add(relative)
+    return sorted(files)
+
+
+def changed_file_records(paths: list[str]) -> list[dict[str, str]]:
+    return [{"path": path, "status": "modified"} for path in paths]
+
+
+def print_changed_files_json(paths: list[str]) -> None:
+    payload = {"version": 1, "files": changed_file_records(paths)}
+    print(json.dumps(payload, separators=(",", ":")))
+
+
+def describe_json() -> None:
+    payload = {"version": 1, "capabilities": ["status", "changed-files", "assert-only"]}
+    print(json.dumps(payload, separators=(",", ":")))
+
+
+def lifecycle(args: list[str]) -> None:
+    if len(args) != 1:
+        usage_error("lifecycle requires one operation")
+    operation = args[0]
+    root = explicit_lifecycle_root()
+
+    if operation == "create":
+        root.mkdir(parents=True, exist_ok=True)
+        (root / MARKER).write_text("created by scherzo-workspace-noop\n")
+        return
+
+    if operation in {"before-step", "after-step"}:
+        if not root.is_dir():
+            fail("workspace directory does not exist")
+        return
+
+    if operation == "remove":
+        run_root_raw = os.environ.get("SCHERZO_RUN_ROOT")
+        if run_root_raw:
+            run_root = safe_resolve(run_root_raw)
+            if not contained_by(root, run_root):
+                usage_error("refusing to remove workspace outside SCHERZO_RUN_ROOT")
+        if not (root / MARKER).is_file():
+            usage_error("refusing to remove workspace without no-op driver marker")
+        shutil.rmtree(root)
+        return
+
+    usage_error(f"unsupported lifecycle operation: {operation}")
+
+
+def status_human(root: Path) -> None:
+    files = regular_files(root)
+    if not files:
+        print("No files")
+        return
+    print("Files:")
+    for path in files:
+        print(path)
+
+
+def assert_only(root: Path, target: str) -> None:
+    files = regular_files(root)
+    if files == [target]:
+        return
+    actual = ", ".join(files) if files else "none"
+    print(
+        f"scherzo-workspace-noop: expected only {target}; actual changed files: {actual}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+def main(argv: list[str]) -> None:
+    if not argv:
+        usage_error()
+    command, rest = argv[0], argv[1:]
+    if command == "describe":
+        if rest != ["--json"]:
+            usage_error("describe requires --json")
+        describe_json()
+        return
+
+    if command == "lifecycle":
+        lifecycle(rest)
+        return
+
+    if command == "status":
+        if rest != ["--human"]:
+            usage_error("status requires --human")
+        status_human(capability_root())
+        return
+
+    if command == "changed-files":
+        if rest != ["--json"]:
+            usage_error("changed-files requires --json")
+        print_changed_files_json(regular_files(capability_root()))
+        return
+
+    if command == "assert-only":
+        target = parse_path_argument(rest)
+        assert_only(capability_root(), target)
+        return
+
+    usage_error(f"unsupported command: {command}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+PY

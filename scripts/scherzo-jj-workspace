@@ -1,12 +1,11 @@
 #!/bin/sh
-# Shared jj workspace hook helpers for checked-in Scherzo workflows.
+# Deprecated compatibility wrapper for legacy Scherzo jj workspace hooks.
 #
-# Scherzo runs hooks with cwd set to the per-issue workspace path. This script
-# is intentionally invoked from the coordinating repository root, for example:
-#
-#   sh "$repo_root/scripts/scherzo-jj-workspace" after-create research
-#
-# The target workspace path is always the hook cwd.
+# The authoritative jj workspace driver is scripts/scherzo-workspace-jj. Keep
+# this wrapper only for older local hook snippets that still call the historical
+# after-create/before-run/before-remove verbs. Follow-up: delete this wrapper once
+# downstream hook snippets have migrated. New config and workflows must call
+# scripts/scherzo-workspace-jj lifecycle <operation> directly.
 
 set -eu
 
@@ -14,14 +13,11 @@ usage() {
   cat >&2 <<'EOF'
 Usage: scherzo-jj-workspace <after-create|before-run|before-remove> <workflow-name>
 
-Run from a Scherzo hook cwd. SCHERZO_REPO_ROOT may point at the coordinating
-jj repository; otherwise the script infers it from .scherzo/workspaces layout.
+Deprecated compatibility wrapper. Use:
+  scherzo-workspace-jj lifecycle create
+  scherzo-workspace-jj lifecycle before-step
+  scherzo-workspace-jj lifecycle remove
 EOF
-}
-
-fail() {
-  echo "scherzo-jj-workspace: $*" >&2
-  exit 1
 }
 
 if [ "$#" -ne 2 ]; then
@@ -29,110 +25,25 @@ if [ "$#" -ne 2 ]; then
   exit 2
 fi
 
-command=$1
-workflow_name=$2
-workspace_path=$(pwd -P)
+case "$0" in
+  */*) wrapper_script=$0 ;;
+  *) wrapper_script=$(command -v "$0" 2>/dev/null || printf '%s\n' "$0") ;;
+esac
+wrapper_dir=$(CDPATH= cd "$(dirname "$wrapper_script")" && pwd -P)
+driver=$wrapper_dir/scherzo-workspace-jj
 
-sanitize_key() {
-  printf '%s' "$1" \
-    | tr -c 'A-Za-z0-9_.-' '-' \
-    | sed 's/^-*//; s/-*$//; s/--*/-/g'
-}
-
-issue_key=$(sanitize_key "${SCHERZO_ISSUE_IDENTIFIER:-issue}")
-run_key=$(sanitize_key "${SCHERZO_RUN_ID:-run}" | cut -c 1-12)
-logical_workspace_key=$(sanitize_key "${SCHERZO_WORKSPACE_NAME:-$(basename "$workspace_path")}")
-
-[ -n "$issue_key" ] || issue_key=issue
-[ -n "$run_key" ] || run_key=run
-[ -n "$logical_workspace_key" ] || logical_workspace_key=workspace
-
-workspace_key="${issue_key}-${run_key}-${logical_workspace_key}"
-workspace_name="scherzo-${workflow_name}-${workspace_key}"
-
-infer_repo_root() {
-  if [ -n "${SCHERZO_REPO_ROOT:-}" ]; then
-    (cd "$SCHERZO_REPO_ROOT" && pwd -P)
-    return
-  fi
-
-  # Expected checked-in convention:
-  #   <repo>/.scherzo/workspaces/<workflow-name>/<issue-key>
-  (cd "$workspace_path/../../../.." && pwd -P)
-}
-
-repo_root=$(infer_repo_root)
-
-require_jj_repo_root() {
-  test -d "$repo_root/.jj" || fail "repo root is not a jj repository: $repo_root"
-}
-
-current_change_id() {
-  jj log -r @ --no-graph -T 'change_id'
-}
-
-workspace_row_for_change() {
-  change=$1
-  jj workspace list --color=never -T 'name ++ ":" ++ self.target().change_id() ++ "\n"' \
-    | awk -F: -v change="$change" '$2 == change { print $0; exit }'
-}
-
-verify_current_workspace() {
-  test -e .jj || fail "workspace is missing .jj: $workspace_path"
-  test "$(jj root)" = "$workspace_path" || fail "jj root does not match workspace path"
-
-  change=$(current_change_id)
-  row=$(workspace_row_for_change "$change")
-  test "$row" = "${workspace_name}:${change}" || \
-    fail "expected workspace ${workspace_name} for change ${change}, got: ${row:-<none>}"
-
-  jj status --color=never
-}
-
-case "$command" in
-  after-create)
-    require_jj_repo_root
-    if [ -d .jj ]; then
-      verify_current_workspace
-      exit 0
-    fi
-    if [ -n "${SCHERZO_SOURCE_WORKSPACE_PATH:-}" ]; then
-      test -d "$SCHERZO_SOURCE_WORKSPACE_PATH/.jj" || \
-        fail "source workspace is missing .jj: $SCHERZO_SOURCE_WORKSPACE_PATH"
-      jj --repository "$SCHERZO_SOURCE_WORKSPACE_PATH" workspace add \
-        --name "$workspace_name" \
-        --revision @ \
-        --message "Scherzo ${workflow_name} workspace for ${workspace_key}" \
-        --sparse-patterns full \
-        "$workspace_path"
-    else
-      jj --repository "$repo_root" workspace add \
-        --name "$workspace_name" \
-        --revision @ \
-        --message "Scherzo ${workflow_name} workspace for ${workspace_key}" \
-        --sparse-patterns full \
-        "$workspace_path"
-    fi
-    verify_current_workspace
-    ;;
-
-  before-run)
-    verify_current_workspace
-    ;;
-
-  before-remove)
-    if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then
-      change=$(current_change_id)
-      row=$(workspace_row_for_change "$change")
-      name=${row%%:*}
-      if [ -n "$name" ]; then
-        jj workspace forget "$name"
-      fi
-    fi
-    ;;
-
+case "$1" in
+  after-create) lifecycle_operation=create ;;
+  before-run) lifecycle_operation=before-step ;;
+  before-remove) lifecycle_operation=remove ;;
   *)
     usage
     exit 2
     ;;
 esac
+
+SCHERZO_WORKFLOW_ID=$2
+export SCHERZO_WORKFLOW_ID
+
+echo "scherzo-jj-workspace: deprecated; use scherzo-workspace-jj lifecycle $lifecycle_operation" >&2
+exec "$driver" lifecycle "$lifecycle_operation"

@@ -1,0 +1,20 @@
+version: 1
+id: implementation
+description: Two-step implementation workflow fixture
+max_parallel_steps: 2
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/implement.md
+    workspace: main
+    model: github-copilot/gpt-5.1-codex
+    thinking: high
+  - id: test
+    kind: command
+    depends_on: [implement]
+    run: direnv exec . gleam test
+    timeout_ms: 120000
+    workspace:
+      name: test-workspace
+      from: main
+    on_failure: continue

@@ -3,12 +3,13 @@ import gleam/dict
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 
-fn enforcing_config() -> domain.LinearContractConfig {
-  domain.LinearContractConfig(
+fn enforcing_config() -> config_types.LinearContractConfig {
+  config_types.LinearContractConfig(
     ..config.default_linear_contract_config(),
     workflow_label_prefix: "workflow:",
     workflow_labels: ["bugfix", "research", "docs"],
@@ -16,8 +17,8 @@ fn enforcing_config() -> domain.LinearContractConfig {
   )
 }
 
-fn issue_with_labels(labels: List(String)) -> domain.Issue {
-  domain.Issue(
+fn issue_with_labels(labels: List(String)) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-1",
     title: "Title",
@@ -28,6 +29,7 @@ fn issue_with_labels(labels: List(String)) -> domain.Issue {
     url: None,
     labels: labels,
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(1)),
   )
@@ -99,7 +101,7 @@ pub fn normalization_and_prefix_boundary_test() {
 
 pub fn disabled_policy_and_label_fingerprints_test() {
   let disabled =
-    domain.LinearContractConfig(
+    config_types.LinearContractConfig(
       ..enforcing_config(),
       enforce_issue_workflow_labels: False,
     )
@@ -107,7 +109,7 @@ pub fn disabled_policy_and_label_fingerprints_test() {
     == workflow_policy.WorkflowPolicyDisabled
 
   let none_updated =
-    domain.Issue(..issue_with_labels(["B", "a"]), updated_at: None)
+    tracker_issue.Issue(..issue_with_labels(["B", "a"]), updated_at: None)
   assert workflow_policy.observed_labels_fingerprint(none_updated)
     == workflow_policy.observed_labels_fingerprint(
       issue_with_labels([" a ", "b"]),
@@ -122,13 +124,14 @@ pub fn allowed_label_names_and_message_test() {
       workflow_policy.UnknownWorkflowLabel("workflow:surprise"),
       enforcing_config(),
     )
-  assert string.contains(body, "unknown workflow label")
+  assert string.contains(body, "🏷️ Scherzo needs an allowed workflow label")
+  assert string.contains(body, "| Problem | `unknown_workflow_label` |")
   assert string.contains(body, "workflow:bugfix")
   assert string.contains(body, "workflow:surprise")
   assert string.contains(body, "configured ready state")
 
   let custom_ready =
-    domain.LinearContractConfig(
+    config_types.LinearContractConfig(
       ..enforcing_config(),
       required_states: dict.from_list([#("ready", "Ready for Robots")]),
     )
@@ -137,10 +140,6 @@ pub fn allowed_label_names_and_message_test() {
       workflow_policy.MissingWorkflowLabel,
       custom_ready,
     )
-  assert string.contains(custom_body, "Ready for Robots")
+  assert string.contains(custom_body, "`Ready for Robots`")
   assert !string.contains(custom_body, "Ready for Agent")
-}
-
-pub fn config_record_update_keeps_dict_import_live_test() {
-  assert dict.size(enforcing_config().required_states) == 0
 }

@@ -1,8 +1,14 @@
+import gleam/int
+import gleam/option.{type Option, None, Some}
+
 pub type ConfigError {
   UnsupportedTrackerKind(String)
   MissingTrackerApiKey
   MissingTrackerProjectSlug
   InvalidConfig(String)
+  InvalidScheduledJobOverlap(String)
+  ScheduledJobCatchUpUnsupported(String)
+  ScheduledJobUnsupportedInputs(String)
   DispatchValidationFailed(String)
 }
 
@@ -42,14 +48,27 @@ pub type PiRpcError {
   PiStallTimeout
   PiExited(Int)
   PiProtocolError(String)
+  PiContextWindowExhausted(
+    provider: Option(String),
+    provider_code: Option(String),
+    detail: String,
+  )
 }
 
 pub type AgentRunnerError {
   PromptFailed(TemplateError)
   WorkspaceFailed(WorkspaceError)
   HookFailedError(HookError)
+  WorkflowHookFailed(HookError)
   ProbeFailed(PiRpcError)
   PiFailed(PiRpcError)
+  ContextRecoveryExhausted(
+    recovery_method: String,
+    context_artifact_ref: Option(String),
+    result_artifact_ref: Option(String),
+    final_error: PiRpcError,
+  )
+  WorkflowCommandFailed(code: String, step_id: String, detail: String)
   StateRefreshFailed(TrackerError)
   OperatorAbort
   OperatorStopAfterCurrentTurn
@@ -101,7 +120,23 @@ pub fn config_code(error: ConfigError) -> String {
     MissingTrackerApiKey -> "missing_tracker_api_key"
     MissingTrackerProjectSlug -> "missing_tracker_project_slug"
     InvalidConfig(_) -> "invalid_config"
+    InvalidScheduledJobOverlap(_) -> "invalid_scheduled_job_overlap"
+    ScheduledJobCatchUpUnsupported(_) -> "scheduled_job_catch_up_unsupported"
+    ScheduledJobUnsupportedInputs(_) -> "scheduled_job_unsupported_inputs"
     DispatchValidationFailed(_) -> "dispatch_validation_failed"
+  }
+}
+
+pub fn config_message(error: ConfigError) -> String {
+  case error {
+    UnsupportedTrackerKind(kind) -> "unsupported tracker kind: " <> kind
+    MissingTrackerApiKey -> "tracker.api_key or LINEAR_API_KEY is required"
+    MissingTrackerProjectSlug -> "tracker.project_slug is required"
+    InvalidConfig(message) -> message
+    InvalidScheduledJobOverlap(message) -> message
+    ScheduledJobCatchUpUnsupported(message) -> message
+    ScheduledJobUnsupportedInputs(message) -> message
+    DispatchValidationFailed(message) -> message
   }
 }
 
@@ -150,6 +185,7 @@ pub fn pi_rpc_code(error: PiRpcError) -> String {
     PiStallTimeout -> "pi_stall_timeout"
     PiExited(_) -> "pi_exited"
     PiProtocolError(_) -> "pi_protocol_error"
+    PiContextWindowExhausted(..) -> "pi_context_window_exhausted"
   }
 }
 
@@ -158,11 +194,76 @@ pub fn agent_code(error: AgentRunnerError) -> String {
     PromptFailed(_) -> "agent_prompt_failed"
     WorkspaceFailed(_) -> "agent_workspace_failed"
     HookFailedError(_) -> "agent_hook_failed"
+    WorkflowHookFailed(_) -> "workflow_hook_failed"
     ProbeFailed(_) -> "agent_probe_failed"
+    PiFailed(PiContextWindowExhausted(..)) -> "pi_context_window_exhausted"
     PiFailed(_) -> "agent_pi_failed"
+    ContextRecoveryExhausted(final_error: PiContextWindowExhausted(..), ..) ->
+      "pi_context_window_exhausted"
+    ContextRecoveryExhausted(..) -> "context_recovery_exhausted"
+    WorkflowCommandFailed(code: code, ..) -> code
     StateRefreshFailed(_) -> "agent_state_refresh_failed"
     OperatorAbort -> "agent_operator_abort"
     OperatorStopAfterCurrentTurn -> "agent_operator_stop_after_current_turn"
+  }
+}
+
+pub fn agent_artifact_detail(error: AgentRunnerError) -> String {
+  "agent step failed:" <> agent_code(error) <> agent_detail_suffix(error)
+}
+
+pub fn agent_detail_suffix(error: AgentRunnerError) -> String {
+  case error {
+    PromptFailed(TemplateRenderError(message)) ->
+      "\ntemplate render error: " <> message
+    ProbeFailed(pi_error) -> "\n" <> pi_rpc_detail(pi_error)
+    PiFailed(pi_error) -> "\n" <> pi_rpc_detail(pi_error)
+    ContextRecoveryExhausted(
+      recovery_method: recovery_method,
+      context_artifact_ref: context_artifact_ref,
+      result_artifact_ref: result_artifact_ref,
+      final_error: final_error,
+    ) ->
+      "\ncontext recovery attempted but exhausted (recovery_method: "
+      <> recovery_method
+      <> ")"
+      <> option_detail("context_artifact", context_artifact_ref)
+      <> option_detail("result_artifact", result_artifact_ref)
+      <> "\nfinal failure: "
+      <> pi_rpc_detail(final_error)
+    WorkflowCommandFailed(detail: detail, ..) -> "\n" <> detail
+    StateRefreshFailed(tracker_error) ->
+      "\ntracker refresh error: " <> tracker_code(tracker_error)
+    OperatorAbort -> "\noperator requested abort"
+    OperatorStopAfterCurrentTurn ->
+      "\noperator requested stop after current turn"
+    WorkspaceFailed(_) | HookFailedError(_) | WorkflowHookFailed(_) -> ""
+  }
+}
+
+pub fn pi_rpc_detail(error: PiRpcError) -> String {
+  case error {
+    PiLaunchFailed(message) -> "pi launch failed: " <> message
+    PiMalformedJson(line) -> "pi emitted malformed JSON: " <> line
+    PiReadTimeout -> "timed out waiting for pi RPC response"
+    PiTurnTimeout -> "pi turn timeout elapsed before agent_end"
+    PiStallTimeout -> "pi stall timeout elapsed without output"
+    PiExited(status) ->
+      "pi process exited with status " <> int.to_string(status)
+    PiProtocolError(message) -> "pi protocol error: " <> message
+    PiContextWindowExhausted(provider, provider_code, detail) ->
+      "pi context window exhausted"
+      <> option_detail("provider", provider)
+      <> option_detail("code", provider_code)
+      <> ": "
+      <> detail
+  }
+}
+
+fn option_detail(label: String, value: Option(String)) -> String {
+  case value {
+    Some(text) -> " (" <> label <> ": " <> text <> ")"
+    None -> ""
   }
 }
 

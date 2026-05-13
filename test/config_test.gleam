@@ -2,7 +2,7 @@ import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
@@ -25,7 +25,19 @@ fn definition(front: String) -> yay.Node {
 }
 
 fn minimal_front() -> String {
-  "tracker:\n  kind: linear\n  project_slug: TEST\nhooks:\n  before_run: test -d .git\n"
+  "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
+}
+
+fn tracker_validation_front(tracker_fields: String) -> String {
+  "tracker:\n  kind: linear\n  project_slug: TEST\n"
+  <> tracker_fields
+  <> "hooks:\n  before_run: test -d .git\n"
+}
+
+fn invalid_config_message(front: String) -> String {
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  message
 }
 
 pub fn default_values_test() {
@@ -34,6 +46,7 @@ pub fn default_values_test() {
   assert tracker.kind == tracker_kind.LinearTracker
   assert issue_state.to_strings(tracker.active_states)
     == ["Todo", "In Progress"]
+  assert issue_state.to_strings(tracker.dispatch_states) == ["Todo"]
   assert issue_state.to_strings(tracker.terminal_states)
     == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
 
@@ -43,6 +56,8 @@ pub fn default_values_test() {
   assert agent.max_retry_backoff_ms == 300_000
   assert agent.max_retry_attempts == 5
   assert agent.max_sessions_per_issue == 3
+  assert agent.context_recovery_max_attempts == 1
+  assert agent.context_recovery_prompt_char_limit == 40_000
 
   let pi = config.default_pi_config()
   assert pi.command == "pi --mode rpc --no-session"
@@ -50,9 +65,72 @@ pub fn default_values_test() {
   assert pi.read_timeout_ms == 5000
   assert pi.stall_timeout_ms == 300_000
   assert pi.auto_retry == True
-  assert pi.ui_request_policy == domain.Cancel
+  assert pi.ui_request_policy == config_types.Cancel
   assert pi.ui_request_timeout_ms == 300_000
   assert pi.compatibility_probe == True
+}
+
+pub fn missing_dispatch_states_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(message, "tracker.dispatch_states")
+  assert string.contains(message, "required")
+  assert string.contains(message, "dispatch_states: [Todo]")
+}
+
+pub fn wrong_type_dispatch_states_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  dispatch_states: Todo\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(
+    message,
+    "tracker.dispatch_states must be a string list",
+  )
+}
+
+pub fn non_string_dispatch_states_entry_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  dispatch_states: [Todo, 123]\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(
+    message,
+    "tracker.dispatch_states entries must be strings",
+  )
+}
+
+pub fn empty_dispatch_states_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  dispatch_states: []\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(message, "must contain at least one state")
+}
+
+pub fn dispatch_states_outside_active_states_fails_test() {
+  let message =
+    invalid_config_message(tracker_validation_front(
+      "  active_states: [Todo]\n  dispatch_states: [In Progress]\n  terminal_states: [Done]\n",
+    ))
+  assert string.contains(message, "tracker.dispatch_states")
+  assert string.contains(message, "subset")
+  assert string.contains(message, "tracker.active_states")
+  assert string.contains(message, "In Progress")
+}
+
+pub fn dispatch_states_normalized_subset_canonicalizes_test() {
+  let assert Ok(configured) =
+    config.resolve_with_env(
+      definition(tracker_validation_front(
+        "  active_states: [Todo, In Progress]\n  dispatch_states: [\" todo \"]\n  terminal_states: [Done]\n",
+      )),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert issue_state.to_strings(configured.tracker.dispatch_states) == ["Todo"]
 }
 
 pub fn tracker_validation_and_env_resolution_test() {
@@ -99,7 +177,7 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured.tracker.api_key == Some("linearkey")
 
   let env_project =
-    "tracker:\n  kind: linear\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  kind: linear\n  project_slug: \"$LINEAR_PROJECT_SLUG\"\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(configured_env_project) =
     config.resolve_with_env(
       definition(env_project),
@@ -109,10 +187,87 @@ pub fn tracker_validation_and_env_resolution_test() {
   assert configured_env_project.tracker.project_slug == Some("ENV-PROJECT")
 
   let explicit =
-    "tracker:\n  kind: linear\n  project_slug: TEST\n  api_key: \"$OTHER_VAR\"\nhooks:\n  before_run: test -d .git\n"
+    "tracker:\n  kind: linear\n  project_slug: TEST\n  api_key: \"$OTHER_VAR\"\n  dispatch_states: [Todo]\nhooks:\n  before_run: test -d .git\n"
   let assert Ok(configured_explicit) =
     config.resolve_with_env(definition(explicit), "test/tmp/scherzo.yaml", env)
   assert configured_explicit.tracker.api_key == Some("other-secret")
+}
+
+fn workspace_driver_env_front(env_body: String) -> String {
+  minimal_front()
+  <> "workspace:\n  root: test/tmp/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step]\n        timeout_ms: 60000\n"
+  <> env_body
+}
+
+fn workspace_driver_env_error(env_body: String) -> String {
+  let assert Error(error.InvalidConfig(message)) =
+    config.resolve_orchestrator_root(
+      definition(workspace_driver_env_front(env_body)),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  message
+}
+
+pub fn workspace_driver_env_parses_literal_sorted_values_test() {
+  let front =
+    workspace_driver_env_front(
+      "        env:\n          SCHERZO_JJ_WORKSPACE_REMOTE: upstream\n          SCHERZO_JJ_WORKSPACE_BASE: \"@\"\n          SCHERZO_JJ_WORKSPACE_BASE_BRANCH: trunk\n          PATH: /profile/bin:/usr/bin\n          EMPTY_VALUE: \"\"\n          LITERAL_REF: \"$LINEAR_API_KEY\"\n",
+    )
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      definition(front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let assert Ok(profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "isolated")
+  let assert Some(driver) = profile.driver
+  assert driver.env
+    == [
+      #("EMPTY_VALUE", ""),
+      #("LITERAL_REF", "$LINEAR_API_KEY"),
+      #("PATH", "/profile/bin:/usr/bin"),
+      #("SCHERZO_JJ_WORKSPACE_BASE", "@"),
+      #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "trunk"),
+      #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+    ]
+}
+
+pub fn workspace_driver_env_defaults_empty_when_absent_test() {
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      definition(workspace_driver_env_front("")),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let assert Ok(profile) =
+    dict.get(orchestrator.workspace_profiles.profiles, "isolated")
+  let assert Some(driver) = profile.driver
+  assert driver.env == []
+}
+
+pub fn workspace_driver_env_rejects_invalid_shapes_test() {
+  assert workspace_driver_env_error("        env: [A=B]\n")
+    == "workspace.profiles.isolated.driver.env must be a map"
+  assert workspace_driver_env_error("        env:\n          123: value\n")
+    == "workspace.profiles.isolated.driver.env keys must be strings"
+  assert workspace_driver_env_error("        env:\n          1BAD: value\n")
+    == "workspace.profiles.isolated.driver.env.1BAD has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*"
+  assert workspace_driver_env_error("        env:\n          BAD-NAME: value\n")
+    == "workspace.profiles.isolated.driver.env.BAD-NAME has invalid environment variable name; expected [A-Za-z_][A-Za-z0-9_]*"
+  assert workspace_driver_env_error(
+      "        env:\n          SCHERZO_WORKSPACE_DRIVER: value\n",
+    )
+    == "workspace.profiles.isolated.driver.env.SCHERZO_WORKSPACE_DRIVER is reserved by Scherzo and cannot be configured in driver.env"
+  assert workspace_driver_env_error("        env:\n          GOOD: 123\n")
+    == "workspace.profiles.isolated.driver.env.GOOD must be a string"
+  assert workspace_driver_env_error("        env:\n          GOOD:\n")
+    == "workspace.profiles.isolated.driver.env.GOOD must be a string"
+  assert workspace_driver_env_error(
+      "        env:\n          SCHERZO_JJ_WORKSPACE_BASE: one\n          SCHERZO_JJ_WORKSPACE_BASE: two\n",
+    )
+    == "workspace.profiles.isolated.driver.env has duplicate key: SCHERZO_JJ_WORKSPACE_BASE"
 }
 
 pub fn path_resolution_and_env_indirection_test() {
@@ -153,7 +308,9 @@ pub fn path_resolution_and_env_indirection_test() {
 pub fn hooks_and_agent_limit_validation_test() {
   let assert Ok(no_hooks) =
     config.resolve_with_env(
-      definition("tracker:\n  kind: linear\n  project_slug: TEST\n"),
+      definition(
+        "tracker:\n  kind: linear\n  project_slug: TEST\n  dispatch_states: [Todo]\n",
+      ),
       "test/tmp/scherzo.yaml",
       env,
     )
@@ -197,6 +354,32 @@ pub fn hooks_and_agent_limit_validation_test() {
     )
 }
 
+pub fn context_recovery_agent_config_validation_test() {
+  let disabled_front =
+    minimal_front()
+    <> "agent:\n  context_recovery_max_attempts: 0\n  context_recovery_prompt_char_limit: 1234\n"
+  let assert Ok(disabled) =
+    config.resolve_with_env(
+      definition(disabled_front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert disabled.agent.context_recovery_max_attempts == 0
+  assert disabled.agent.context_recovery_prompt_char_limit == 1234
+
+  let negative_attempts =
+    invalid_config_message(
+      minimal_front() <> "agent:\n  context_recovery_max_attempts: -1\n",
+    )
+  assert string.contains(negative_attempts, "context_recovery_max_attempts")
+
+  let nonpositive_limit =
+    invalid_config_message(
+      minimal_front() <> "agent:\n  context_recovery_prompt_char_limit: 0\n",
+    )
+  assert string.contains(nonpositive_limit, "agent limits must be positive")
+}
+
 pub fn pi_validation_and_unknown_keys_ignored_test() {
   let front =
     minimal_front()
@@ -215,7 +398,8 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert configured_operator_policy.pi.ui_request_policy == domain.Operator
+  assert configured_operator_policy.pi.ui_request_policy
+    == config_types.Operator
   assert configured_operator_policy.pi.ui_request_timeout_ms == 1234
 
   let cancel_policy =
@@ -226,7 +410,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert configured_cancel_policy.pi.ui_request_policy == domain.Cancel
+  assert configured_cancel_policy.pi.ui_request_policy == config_types.Cancel
 
   let explicit_timeout =
     minimal_front() <> "pi:\n  ui_request_timeout_ms: 1234\n"
@@ -245,7 +429,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert configured_fail_policy.pi.ui_request_policy == domain.Fail
+  assert configured_fail_policy.pi.ui_request_policy == config_types.Fail
 
   let ignore_policy = minimal_front() <> "pi:\n  ui_request_policy: ignore\n"
   let assert Ok(configured_ignore_policy) =
@@ -254,7 +438,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert configured_ignore_policy.pi.ui_request_policy == domain.Ignore
+  assert configured_ignore_policy.pi.ui_request_policy == config_types.Ignore
 
   let invalid_policy = minimal_front() <> "pi:\n  ui_request_policy: surprise\n"
   let assert Error(error.InvalidConfig(_)) =
@@ -286,6 +470,7 @@ pub fn handoff_defaults_and_parsing_test() {
     )
   assert defaulted.handoff.enabled == False
   assert defaulted.handoff.comment_on_claim == False
+  assert defaulted.handoff.comment_on_park == False
   assert defaulted.handoff.attach_result_on_success == False
   assert defaulted.handoff.attachment_fallback_to_markdown_link == True
 
@@ -300,10 +485,11 @@ pub fn handoff_defaults_and_parsing_test() {
   assert enabled.handoff.comment_on_claim == True
   assert enabled.handoff.comment_on_success == True
   assert enabled.handoff.comment_on_failure == True
+  assert enabled.handoff.comment_on_park == True
 
   let with_states =
     minimal_front()
-    <> "handoff:\n  enabled: true\n  comment_on_failure: false\n  claim_state_id: state-claim\n  success_state_id: state-success\n  failure_state_id: state-fail\n  attach_result_on_success: true\n  attachment_fallback_to_markdown_link: false\n"
+    <> "handoff:\n  enabled: true\n  comment_on_failure: false\n  comment_on_park: false\n  claim_state_id: state-claim\n  success_state_id: state-success\n  failure_state_id: state-fail\n  attach_result_on_success: true\n  attachment_fallback_to_markdown_link: false\n"
   let assert Ok(parsed) =
     config.resolve_with_env(
       definition(with_states),
@@ -311,6 +497,7 @@ pub fn handoff_defaults_and_parsing_test() {
       env,
     )
   assert parsed.handoff.comment_on_failure == False
+  assert parsed.handoff.comment_on_park == False
   assert parsed.handoff.claim_state_id == Some("state-claim")
   assert parsed.handoff.success_state_id == Some("state-success")
   assert parsed.handoff.failure_state_id == Some("state-fail")
@@ -533,6 +720,92 @@ pub fn linear_contract_rejects_invalid_values_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
+}
+
+pub fn scheduled_jobs_parse_defaults_and_linear_failure_config_test() {
+  let front =
+    minimal_front()
+    <> "routing:\n  workflows:\n    pr-conflict-repair: workflows/pr-conflict-repair.yaml\n"
+    <> "scheduled_jobs:\n  - id: pr-conflict-repair\n    workflow: pr-conflict-repair\n    every: 15m\n    on_failure:\n      linear:\n        enabled: true\n        state: Triage\n        labels:\n          - job:pr-conflict-repair\n"
+  let assert Ok(orchestrator) =
+    config.resolve_orchestrator_root(
+      definition(front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let assert [job] = orchestrator.scheduled_jobs
+  assert job.id == "pr-conflict-repair"
+  assert job.workflow == "pr-conflict-repair"
+  assert job.enabled == True
+  assert job.every_ms == 900_000
+  assert job.overlap == config_types.SkipOverlap
+  assert job.catch_up == False
+  let config_types.ScheduledFailureConfig(linear: linear) = job.on_failure
+  assert linear.enabled == True
+  assert linear.state == Some("Triage")
+  assert linear.labels == ["job:pr-conflict-repair"]
+  assert linear.dedupe == config_types.OpenIssuePerJob
+}
+
+pub fn scheduled_jobs_reject_invalid_duration_and_unsupported_modes_test() {
+  let base =
+    minimal_front()
+    <> "routing:\n  workflows:\n    repair: workflows/repair.yaml\n"
+
+  let invalid_duration =
+    base
+    <> "scheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 500ms\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_orchestrator_root(
+      definition(invalid_duration),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+
+  let catch_up =
+    base
+    <> "scheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n    catch_up: true\n"
+  let assert Error(error.ScheduledJobCatchUpUnsupported(_)) =
+    config.resolve_orchestrator_root(
+      definition(catch_up),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+
+  let overlap =
+    base
+    <> "scheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n    overlap: queue\n"
+  let assert Error(error.InvalidScheduledJobOverlap(_)) =
+    config.resolve_orchestrator_root(
+      definition(overlap),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+}
+
+pub fn scheduled_jobs_reject_unknown_workflow_and_payload_fields_test() {
+  let unknown_workflow =
+    minimal_front()
+    <> "routing:\n  workflows:\n    repair: workflows/repair.yaml\n"
+    <> "scheduled_jobs:\n  - id: nightly\n    workflow: missing\n    every: 15m\n"
+  let assert Error(error.InvalidConfig(_)) =
+    config.resolve_orchestrator_root(
+      definition(unknown_workflow),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+
+  let payload =
+    minimal_front()
+    <> "routing:\n  workflows:\n    repair: workflows/repair.yaml\n"
+    <> "scheduled_jobs:\n  - id: repair\n    workflow: repair\n    every: 15m\n    vars:\n      key: value\n"
+  let assert Error(error.ScheduledJobUnsupportedInputs(message)) =
+    config.resolve_orchestrator_root(
+      definition(payload),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  assert string.contains(message, "intentionally deferred")
 }
 
 pub fn reload_state_preserves_last_good_and_blocks_dispatch_test() {

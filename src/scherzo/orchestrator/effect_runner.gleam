@@ -1,14 +1,22 @@
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None}
 import gleam/otp/actor
-import scherzo/agent/runner
-import scherzo/domain
+import scherzo/agent/types as agent_types
+import scherzo/config/types as config_types
+import scherzo/control/command
 import scherzo/error
 import scherzo/handoff
 import scherzo/linear
 import scherzo/linear_triage
+import scherzo/orchestrator/effects/interpreter as transition_interpreter
+import scherzo/orchestrator/state as orchestrator_state
+import scherzo/orchestrator/transition_runner
+import scherzo/orchestrator/transition_types
+import scherzo/scheduled_failure_reporter
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
 pub type Effect {
@@ -16,33 +24,39 @@ pub type Effect {
   FetchLinearCommands(
     generation: Int,
     issue_ids: List(String),
-    candidates: List(domain.Issue),
+    candidates: List(tracker_issue.Issue),
     dispatch_after: Bool,
     client: linear.CommandClient,
     limit_per_issue: Int,
   )
   RefreshRunning(generation: Int, ids: List(String), client: tracker.Client)
   RefreshRetry(issue_id: String, generation: Int, client: tracker.Client)
+  ValidateDispatchClaim(
+    issue_id: String,
+    generation: Int,
+    client: tracker.Client,
+  )
   ClaimIssue(
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     workspace_path: String,
     run_id: String,
     client: handoff.Client,
   )
   ReportSuccess(
     issue_id: String,
-    issue: domain.Issue,
-    success: runner.WorkerSuccess,
+    issue: tracker_issue.Issue,
+    success: agent_types.WorkerSuccess,
     run_id: String,
     client: handoff.Client,
   )
   ReportFailure(
     issue_id: String,
-    issue: domain.Issue,
-    failure: runner.WorkerFailure,
+    issue: tracker_issue.Issue,
+    failure: agent_types.WorkerFailure,
     run_id: String,
     client: handoff.Client,
   )
+  ReportPark(report: handoff.ParkReport, client: handoff.Client)
   PostLinearCommandAck(
     issue_id: String,
     source_comment_id: String,
@@ -50,38 +64,62 @@ pub type Effect {
     client: linear.CommandClient,
   )
   ReportInvalidWorkflow(
-    issue: domain.Issue,
+    issue: tracker_issue.Issue,
     violation: workflow_policy.IssueWorkflowViolation,
     violation_fingerprint: String,
     reporting_policy_fingerprint: String,
     client: linear_triage.TriageClient,
   )
+  ReportScheduledFailure(
+    generation: Int,
+    request: scheduled_failure_reporter.FailureReportRequest,
+    client: scheduled_failure_reporter.Client,
+  )
   CleanupWorkspace(
     root: String,
     workspace_path: String,
-    hooks: domain.HooksConfig,
-    cleanup: fn(String, String, domain.HooksConfig) ->
+    hooks: config_types.HooksConfig,
+    cleanup: fn(String, String, config_types.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
   )
 }
 
+pub type DispatchClaimValidationError {
+  DispatchValidationTrackerError(error.TrackerError)
+  DispatchValidationMissingIssue
+  DispatchValidationDuplicateIssue
+  DispatchValidationIdMismatch(expected: String, actual: String)
+}
+
 pub type EffectResult {
-  CandidateFetchFinished(Int, Result(List(domain.Issue), error.TrackerError))
+  CandidateFetchFinished(
+    Int,
+    Result(List(tracker_issue.Issue), error.TrackerError),
+  )
   LinearCommandFetchFinished(
     Int,
-    List(domain.Issue),
+    List(tracker_issue.Issue),
     Bool,
     Result(List(linear.LinearComment), error.TrackerError),
   )
-  RunningRefreshFinished(Int, Result(List(domain.Issue), error.TrackerError))
+  RunningRefreshFinished(
+    Int,
+    Result(List(tracker_issue.Issue), error.TrackerError),
+  )
   RetryRefreshFinished(
     String,
     Int,
-    Result(List(domain.Issue), error.TrackerError),
+    Result(List(tracker_issue.Issue), error.TrackerError),
+  )
+  DispatchClaimValidationFinished(
+    issue_id: String,
+    generation: Int,
+    result: Result(tracker_issue.Issue, DispatchClaimValidationError),
   )
   HandoffClaimFinished(String, String, Result(Nil, error.TrackerError))
   HandoffSuccessFinished(String, String, Result(Nil, error.TrackerError))
   HandoffFailureFinished(String, String, Result(Nil, error.TrackerError))
+  HandoffParkFinished(String, Result(Nil, error.TrackerError))
   LinearCommandAckFinished(String, String, Result(Nil, error.TrackerError))
   InvalidWorkflowReportFinished(
     issue_id: String,
@@ -92,12 +130,108 @@ pub type EffectResult {
       error.TrackerError,
     ),
   )
+  ScheduledFailureReportFinished(
+    generation: Int,
+    request: scheduled_failure_reporter.FailureReportRequest,
+    result: Result(
+      scheduled_failure_reporter.FailureReportOutcome,
+      error.TrackerError,
+    ),
+  )
   CleanupFinished(String, Result(Nil, error.WorkspaceError))
 }
 
 pub type Completion {
   Finished(id: Int, result: EffectResult)
   Crashed(id: Int, effect: Effect, reason: String)
+}
+
+const transition_runner_message_limit = 32
+
+pub fn reply_snapshot(
+  runtime: orchestrator_state.RuntimeState,
+  reply: process.Subject(orchestrator_state.RuntimeState),
+) -> Nil {
+  let transition_state =
+    transition_types.State(
+      runtime: runtime,
+      workers: transition_types.new_worker_directory(),
+      pending_claims: dict.new(),
+      pending_dispatch_validations: dict.new(),
+      next_dispatch_validation_generation: 1,
+      next_session_sequence: 1,
+      pending_linear_command_acks: dict.new(),
+      in_flight_linear_command_acks: dict.new(),
+    )
+  let shell =
+    transition_interpreter.new_production_shell_state(
+      data: Nil,
+      append_ledger: fn(data, _) { #(data, Ok(Nil)) },
+      now_ms: fn(_) { 0 },
+      log_effect: fn(data, _, _, _) { data },
+      start_worker: fn(data, _) { #(data, Ok(Nil)) },
+      reply_snapshot: fn(data, snapshot) {
+        process.send(reply, snapshot)
+        data
+      },
+      mark_poll_in_flight: fn(data, _) { data },
+      schedule_next_poll: fn(data) { data },
+      fetch_candidates: fn(data, _) { data },
+      fetch_linear_commands: fn(data, _, _, _, _) { data },
+      begin_dispatch_validation: fn(data, _, _) { data },
+      reserve_session_sequence: fn(data, _) { data },
+      claim_issue: fn(data, _, _, _) { data },
+      report_invalid_workflow: fn(data, _, _, _, _) { data },
+      remove_retry_timer: fn(data, _) { data },
+      finish_retry_refresh: fn(data, _) { data },
+      defer_retry_timer: fn(data, _, _, _) { data },
+      begin_retry_refresh: fn(data, _, _) { data },
+      schedule_retry_timer: fn(data, _, _, _, _) { data },
+      schedule_recovered_retry_timer: fn(data, _, _, _) { data },
+      cancel_retry_timer: fn(data, _, _, _) { data },
+      release_claim: fn(data, _) { data },
+      clear_recovery: fn(data, _) { data },
+      worker_start_failed: fn(data, _, _) { data },
+      remove_worker: fn(data, _, _) { data },
+      publish_worker_exited: fn(data, _) { data },
+      report_worker_success: fn(data, _, _) { data },
+      report_worker_failure: fn(data, _, _) { data },
+      cleanup_workspace: fn(data, _) { data },
+      park_issue: fn(data, _, _) { data },
+      replay_linear_command_ack: fn(data, _, _, _) { data },
+      report_park: fn(data, _) { data },
+      stop_worker: fn(data, _, _) { data },
+      stop_worker_after_issue_refresh: fn(data, _, _) { data },
+      register_yaml_step_started: fn(data, _, _) { data },
+      finish_yaml_step_route: fn(data, _) { data },
+      finish_yaml_step_session: fn(data, _, _) { data },
+      finish_yaml_step_sessions_for_run: fn(data, _, _) { data },
+      clear_yaml_step_routes_for_run: fn(data, _) { data },
+      mark_yaml_run_stopping: fn(data, _, _) { data },
+      shutdown_runtime: fn(data, _) { data },
+      set_operator_paused: fn(data, _) { data },
+      apply_operator_command: fn(data, request) {
+        #(
+          data,
+          command.rejected(
+            request.operator_command,
+            "operator_command_unhandled",
+            None,
+          ),
+        )
+      },
+      finish_operator_command: fn(data, _, _) { #(data, []) },
+      post_linear_command_ack: fn(data, _, _, _) { data },
+      report_park_effect: fn(data, _, _, _, _, _) { data },
+    )
+  let transition_runner.RunResult(exhausted: _, ..) =
+    transition_runner.run(
+      state: transition_state,
+      shell: shell,
+      messages: [transition_types.SnapshotRequested],
+      max_messages: transition_runner_message_limit,
+    )
+  Nil
 }
 
 pub type Dependencies {
@@ -207,16 +341,22 @@ pub fn effect_kind(effect: Effect) -> String {
     FetchLinearCommands(_, _, _, _, _, _) -> "fetch_linear_commands"
     RefreshRunning(_, _, _) -> "refresh_running"
     RefreshRetry(_, _, _) -> "refresh_retry"
+    ValidateDispatchClaim(_, _, _) -> "validate_dispatch_claim"
     ClaimIssue(_, _, _, _) -> "claim_issue"
     ReportSuccess(_, _, _, _, _) -> "report_success"
     ReportFailure(_, _, _, _, _) -> "report_failure"
+    ReportPark(_, _) -> "report_park"
     PostLinearCommandAck(_, _, _, _) -> "post_linear_command_ack"
     ReportInvalidWorkflow(_, _, _, _, _) -> "report_invalid_workflow"
+    ReportScheduledFailure(_, _, _) -> "report_scheduled_failure"
     CleanupWorkspace(_, _, _, _) -> "cleanup_workspace"
   }
 }
 
-fn handle_message(state: State, message: Message) -> actor.Next(State, Message) {
+fn handle_message(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
   case message {
     Enqueue(effect) -> actor.continue(enqueue_effect(state, effect))
     WorkerFinished(id, result) ->
@@ -357,6 +497,26 @@ fn shutdown_in_flight(state: State) -> Nil {
   })
 }
 
+fn normalize_dispatch_claim_validation(
+  expected_issue_id: String,
+  result: Result(List(tracker_issue.Issue), error.TrackerError),
+) -> Result(tracker_issue.Issue, DispatchClaimValidationError) {
+  case result {
+    Error(err) -> Error(DispatchValidationTrackerError(err))
+    Ok([]) -> Error(DispatchValidationMissingIssue)
+    Ok([issue]) ->
+      case issue.id == expected_issue_id {
+        True -> Ok(issue)
+        False ->
+          Error(DispatchValidationIdMismatch(
+            expected: expected_issue_id,
+            actual: issue.id,
+          ))
+      }
+    Ok([_, ..]) -> Error(DispatchValidationDuplicateIssue)
+  }
+}
+
 fn run_side_effect(effect: Effect) -> EffectResult {
   case effect {
     FetchCandidates(generation, client) ->
@@ -383,6 +543,15 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         generation,
         client.fetch_issue_states_by_ids([issue_id]),
       )
+    ValidateDispatchClaim(issue_id, generation, client) ->
+      DispatchClaimValidationFinished(
+        issue_id: issue_id,
+        generation: generation,
+        result: normalize_dispatch_claim_validation(
+          issue_id,
+          client.fetch_issue_states_by_ids([issue_id]),
+        ),
+      )
     ClaimIssue(issue, _workspace_path, run_id, client) ->
       HandoffClaimFinished(issue.id, run_id, client.claim_issue(issue, run_id))
     ReportSuccess(issue_id, issue, success, run_id, client) ->
@@ -397,6 +566,8 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         run_id,
         client.report_failure(issue, failure, run_id),
       )
+    ReportPark(report, client) ->
+      HandoffParkFinished(report.issue_id, client.report_park(report))
     PostLinearCommandAck(issue_id, source_comment_id, body, client) ->
       LinearCommandAckFinished(
         issue_id,
@@ -415,6 +586,12 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         violation_fingerprint,
         reporting_policy_fingerprint,
         client.report_invalid_workflow(issue, violation),
+      )
+    ReportScheduledFailure(generation, request, client) ->
+      ScheduledFailureReportFinished(
+        generation,
+        request,
+        client.report_failure(request),
       )
     CleanupWorkspace(root, workspace_path, hooks, cleanup) ->
       CleanupFinished(workspace_path, cleanup(root, workspace_path, hooks))

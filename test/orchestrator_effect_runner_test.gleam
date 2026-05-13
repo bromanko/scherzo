@@ -1,10 +1,11 @@
 import gleam/erlang/process
 import gleam/option.{None}
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/orchestrator/effect_runner
+import support/expected_crash
 
-fn hooks() -> domain.HooksConfig {
-  domain.HooksConfig(
+fn hooks() -> config_types.HooksConfig {
+  config_types.HooksConfig(
     after_create: None,
     before_run: None,
     after_run: None,
@@ -56,6 +57,11 @@ pub fn effect_runner_runs_successful_effect_once_test() {
 }
 
 pub fn effect_runner_reports_crash_and_drains_queue_test() {
+  use <- expected_crash.suppressing([
+    "test/orchestrator_effect_runner_test.gleam",
+    "effect_runner_reports_crash_and_drains_queue_test",
+    "boom",
+  ])
   let completions = process.new_subject()
   let started = process.new_subject()
   let runner = start_runner(completions)

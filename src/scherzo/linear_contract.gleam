@@ -1,8 +1,9 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order.{type Order}
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/tracker/state as issue_state
 
 pub type RemoteBoard {
@@ -68,7 +69,7 @@ type LabelRequirement {
 }
 
 pub fn check(
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   remote: RemoteBoard,
 ) -> List(ContractDiagnostic) {
   []
@@ -111,19 +112,24 @@ pub fn format_report(diagnostics: List(ContractDiagnostic)) -> String {
 }
 
 fn state_requirements(
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
 ) -> List(StateRequirement) {
   let tracker_states =
-    list.append(
+    [
       state_requirements_from_list(
         effective.tracker.active_states,
         "tracker.active_states",
       ),
       state_requirements_from_list(
+        effective.tracker.dispatch_states,
+        "tracker.dispatch_states",
+      ),
+      state_requirements_from_list(
         effective.tracker.terminal_states,
         "tracker.terminal_states",
       ),
-    )
+    ]
+    |> list.flatten
   case effective.linear_contract.enabled {
     False -> tracker_states
     True -> list.append(tracker_states, contract_required_states(effective))
@@ -142,7 +148,7 @@ fn state_requirements_from_list(
 }
 
 fn contract_required_states(
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
 ) -> List(StateRequirement) {
   effective.linear_contract.required_states
   |> dict.to_list
@@ -158,7 +164,7 @@ fn contract_required_states(
 }
 
 fn label_requirements(
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
 ) -> List(LabelRequirement) {
   let workflow_requirements = case
     effective.linear_contract.enabled
@@ -175,7 +181,7 @@ fn label_requirements(
 }
 
 fn workflow_label_requirements(
-  contract: domain.LinearContractConfig,
+  contract: config_types.LinearContractConfig,
 ) -> List(LabelRequirement) {
   contract.workflow_labels
   |> list.map(fn(suffix) {
@@ -188,7 +194,7 @@ fn workflow_label_requirements(
 }
 
 fn support_label_requirements(
-  contract: domain.LinearContractConfig,
+  contract: config_types.LinearContractConfig,
 ) -> List(LabelRequirement) {
   contract.support_labels
   |> list.map(fn(name) {
@@ -282,7 +288,7 @@ fn append_missing_labels(
 
 fn append_handoff_diagnostics(
   acc: List(ContractDiagnostic),
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   remote: RemoteBoard,
 ) -> List(ContractDiagnostic) {
   case effective.handoff.enabled {
@@ -314,7 +320,7 @@ fn append_handoff_field(
   acc: List(ContractDiagnostic),
   field: String,
   maybe_id: Option(String),
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   remote: RemoteBoard,
 ) -> List(ContractDiagnostic) {
   case maybe_id {
@@ -351,7 +357,7 @@ fn append_single_team_handoff_diagnostic(
   acc: List(ContractDiagnostic),
   field: String,
   id: String,
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   teams: List(RemoteTeam),
 ) -> List(ContractDiagnostic) {
   case teams {
@@ -370,7 +376,7 @@ fn append_handoff_name_mismatch(
   acc: List(ContractDiagnostic),
   field: String,
   id: String,
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   team: RemoteTeam,
   state: RemoteState,
 ) -> List(ContractDiagnostic) {
@@ -398,7 +404,7 @@ fn append_handoff_name_mismatch(
 
 fn append_invalid_workflow_state_diagnostics(
   acc: List(ContractDiagnostic),
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   remote: RemoteBoard,
 ) -> List(ContractDiagnostic) {
   case effective.linear_contract.invalid_workflow_state_id {
@@ -432,7 +438,7 @@ fn append_invalid_workflow_state_diagnostics(
 fn append_single_team_invalid_workflow_state_diagnostic(
   acc: List(ContractDiagnostic),
   id: String,
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   teams: List(RemoteTeam),
 ) -> List(ContractDiagnostic) {
   case teams {
@@ -456,7 +462,7 @@ fn append_single_team_invalid_workflow_state_diagnostic(
 fn append_invalid_workflow_state_name_mismatch(
   acc: List(ContractDiagnostic),
   id: String,
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   team: RemoteTeam,
   state: RemoteState,
 ) -> List(ContractDiagnostic) {
@@ -515,7 +521,7 @@ fn team_keys(teams: List(RemoteTeam)) -> List(String) {
   |> list.sort(by: string.compare)
 }
 
-fn compare_string_pairs(a: #(String, String), b: #(String, String)) {
+fn compare_string_pairs(a: #(String, String), b: #(String, String)) -> Order {
   let #(a_key, _) = a
   let #(b_key, _) = b
   string.compare(a_key, b_key)

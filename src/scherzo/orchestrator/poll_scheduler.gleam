@@ -27,6 +27,10 @@ pub fn result_is_stale(state: State(timer), generation: Int) -> Bool {
   generation != state.generation || state.in_flight != Some(generation)
 }
 
+pub fn mark_in_flight(state: State(timer), generation: Int) -> State(timer) {
+  State(..state, in_flight: Some(generation))
+}
+
 pub fn schedule_next(
   state: State(timer),
   schedule: fn(Int) -> timer,
@@ -44,7 +48,10 @@ pub fn schedule_next(
   )
 }
 
-pub fn cancel_all(state: State(timer), cancel: fn(timer) -> Nil) -> State(timer) {
+pub fn cancel_all(
+  state: State(timer),
+  cancel: fn(timer) -> Nil,
+) -> State(timer) {
   case state.timer {
     Some(timer) -> cancel(timer)
     None -> Nil

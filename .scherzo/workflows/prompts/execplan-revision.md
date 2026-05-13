@@ -19,14 +19,15 @@ Preparation output:
 
 Workflow contract:
 
-- This workflow revises an existing ExecPlan Markdown file on an existing GitHub PR branch.
-- You are already inside a dedicated jj workspace that has been rebased onto the latest published PR head by `scripts/scherzo-execplan-revision prepare`.
-- Do not create, forget, finish, switch, push, bookmark, commit, or otherwise manage jj workspaces or branches. Later deterministic command steps validate, describe, bookmark, push, and acknowledge.
+- This workflow revises an existing ExecPlan artifact on an existing GitHub PR branch. New plans are Markdown source files under `docs/plans/*.md`; legacy PRs may still contain Carbon HTML plans.
+- You are already inside a dedicated workflow workspace prepared by Scherzo that has been rebased onto the latest published PR head by `scripts/scherzo-execplan-revision prepare`.
+- Do not create, forget, finish, switch, push, bookmark, commit, or otherwise manage workflow workspaces or branches. Later deterministic command steps validate and publish through the configured workspace driver, then acknowledge feedback.
 - Do not use `gh` to post comments. The final command step posts one top-level PR acknowledgement from your summary.
 - Read `tmp/execplan-revision-pr.json` for PR metadata.
 - Read `tmp/execplan-revision-feedback.md` for normalized GitHub PR feedback. It includes top-level PR comments, review summaries, and inline review comments.
+- Read `.pi/skills/exec-plan/SKILL.md` from this repository and use its living-document and portability rules when revising.
 - Read the target plan path printed as `PLAN_PATH=<path>` above.
-- Edit only that ExecPlan file. Do not edit source code, tests, config, workflow files, or any other docs.
+- Edit only that ExecPlan file, preserving its current file format. Edit Markdown plans directly; for legacy HTML plans, do not convert the checked-in PR artifact to Markdown. Do not edit source code, tests, config, workflow files, or any other docs.
 - If no trusted/actionable feedback requires a plan change, leave the plan unchanged and still write the required summary file.
 - Use repository-relative paths only. Do not introduce absolute local paths.
 
@@ -53,11 +54,12 @@ Revision process:
 
 1. Read `tmp/execplan-revision-pr.json`.
 2. Read `tmp/execplan-revision-feedback.md`.
-3. Read the ExecPlan at the printed `PLAN_PATH`.
-4. Apply focused plan edits for current, trusted, actionable feedback.
-5. Preserve the ExecPlan as a self-contained living document. Update `## Decision Log`, `## Risks and Countermeasures`, `## Concrete Steps`, `## Testing and Falsifiability`, or `## Open Questions and Clarifications Needed` when those are the right places for review feedback.
-6. Ensure `## Open Questions and Clarifications Needed` remains present; write `None.` only if there are truly no open questions.
-7. Write `tmp/execplan-revision-summary.md` with this exact structure:
+3. Read `.pi/skills/exec-plan/SKILL.md`.
+4. Read the ExecPlan at the printed `PLAN_PATH`. If it is Markdown, edit `PLAN_PATH` directly. If it is legacy HTML, prefer `scripts/scherzo-execplan-html extract-md "$PLAN_PATH" > tmp/execplan-revision-source.md`, review and edit that temporary Markdown, then render it back to the same plan path with `python3 scripts/scherzo-execplan-html render tmp/execplan-revision-source.md "$PLAN_PATH" "$PLAN_PATH"`. Validate with `scripts/scherzo-execplan-revision validate` when practical. Direct HTML edits are only a fallback when extraction fails and the edit is small and safe.
+5. Apply focused plan edits for current, trusted, actionable feedback while preserving the artifact format.
+6. Preserve the ExecPlan as a self-contained living document. Update `## Decision Log`, `## Risks and Countermeasures`, `## Concrete Steps`, `## Testing and Falsifiability`, or `## Open Questions and Clarifications Needed` when those are the right places for review feedback.
+7. Ensure `## Open Questions and Clarifications Needed` remains present; write `None.` only if there are truly no open questions.
+8. Write `tmp/execplan-revision-summary.md` with this exact structure:
 
 ```markdown
 # ExecPlan revision summary

@@ -5,11 +5,23 @@ set -eu
 
 usage() {
   cat >&2 <<'EOF'
-Usage: scherzo-execplan <validate|create-pr>
+Usage:
+  scherzo-execplan validate [PLAN]
+  scherzo-execplan create-pr [--publish-context FILE]
+  scherzo-execplan create-implementation-issue [--publish-context FILE]
+  scherzo-execplan create-implementation-issue --plan PLAN --pr-url URL [--branch BRANCH] [--source-issue ISSUE]
 
 Run from the Scherzo jj workspace root. The workflow must leave exactly one
-changed ExecPlan file under docs/plans/. create-pr validates, pushes a jj
-bookmark to origin, and opens a ready GitHub PR against main.
+changed ExecPlan Markdown artifact under docs/plans/. validate and create-pr
+treat that docs/plans/*.md file as the primary retained plan artifact and print
+PRIMARY_PLAN_ARTIFACT, PLAN_MARKDOWN_PATH, and PLAN_PATH pointing at it. HTML is
+a derived viewer artifact only; this authoring workflow does not print an
+authoritative PLAN_HTML_PATH. create-pr validates, pushes a jj bookmark to
+origin, opens a ready GitHub PR against main, and writes a durable publish
+context artifact. create-implementation-issue creates or finds the follow-up
+Linear issue that will run workflow:execplan-implementation after the plan PR is
+merged, using the publish context or explicit inputs instead of the current jj
+diff.
 EOF
 }
 
@@ -18,8 +30,25 @@ fail() {
   exit 1
 }
 
+plan_stem() {
+  base=$(basename "$1")
+  base=${base%.html}
+  base=${base%.md}
+  printf '%s\n' "$base"
+}
+
+print_primary_plan_artifact() {
+  plan=$1
+  echo "PRIMARY_PLAN_ARTIFACT=$plan"
+  echo "PLAN_MARKDOWN_PATH=$plan"
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+default_publish_context_path() {
+  printf '%s\n' "${SCHERZO_EXECPLAN_PUBLISH_CONTEXT:-tmp/scherzo-execplan-publish-context.json}"
 }
 
 sanitize_ref_part() {
@@ -29,85 +58,215 @@ sanitize_ref_part() {
     | sed 's/^-*//; s/-*$//; s/--*/-/g'
 }
 
+workspace_driver_available() {
+  [ -n "${SCHERZO_WORKSPACE_DRIVER:-}" ]
+}
+
 changed_files() {
   jj diff --from @- --to @ --name-only --color=never
 }
 
-find_plan_path() {
-  files=$(changed_files | sed '/^[[:space:]]*$/d')
-  [ -n "$files" ] || fail "no changed files found"
+changed_file_records_tsv() {
+  if workspace_driver_available; then
+    driver_json=$("$SCHERZO_WORKSPACE_DRIVER" changed-files --json) || fail "workspace driver changed-files failed"
+    printf '%s' "$driver_json" | python3 -c '
+import json, sys
+data_text = sys.stdin.read()
+try:
+    data = json.loads(data_text)
+except Exception as exc:
+    print(f"scherzo-execplan: workspace driver changed-files returned malformed JSON: {exc}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("files"), list):
+    print("scherzo-execplan: workspace driver changed-files JSON must contain version=1 and a files list", file=sys.stderr)
+    sys.exit(1)
+for item in data["files"]:
+    if not isinstance(item, dict):
+        print("scherzo-execplan: workspace driver changed-files entries must be objects", file=sys.stderr)
+        sys.exit(1)
+    path = item.get("path")
+    status = item.get("status")
+    if not isinstance(path, str) or not path or status not in {"added", "modified", "deleted", "renamed", "conflicted"}:
+        print("scherzo-execplan: workspace driver changed-files entry has invalid path or status", file=sys.stderr)
+        sys.exit(1)
+    print(f"{status}\t{path}")
+'
+    return
+  fi
 
-  plan_files=$(printf '%s\n' "$files" | grep -E '^docs/plans/[^/]+\.md$' || true)
+  files=$(changed_files | sed '/^[[:space:]]*$/d')
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    status=$(jj diff --summary --from @- --to @ --color=never -- "$file" | awk '{ print $1; exit }')
+    case "$status" in
+      A) status=added ;;
+      D) status=deleted ;;
+      R*) status=renamed ;;
+      *) status=modified ;;
+    esac
+    printf '%s\t%s\n' "$status" "$file"
+  done <<EOF_FILES
+$files
+EOF_FILES
+}
+
+find_plan_path() {
+  records=$(changed_file_records_tsv | sed '/^[[:space:]]*$/d')
+  [ -n "$records" ] || fail "no changed files found"
+
+  plan_files=$(printf '%s\n' "$records" | awk -F '\t' '$2 ~ "^docs/plans/[^/]+\\.md$" { print $2 }')
   plan_count=$(printf '%s\n' "$plan_files" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
   [ "$plan_count" = "1" ] || fail "expected exactly one changed docs/plans/*.md file, found $plan_count"
 
   plan=$(printf '%s\n' "$plan_files" | sed -n '1p')
   [ -f "$plan" ] || fail "plan file does not exist: $plan"
-  plan_status=$(jj diff --summary --from @- --to @ --color=never -- "$plan" | awk '{ print $1; exit }')
-  [ "$plan_status" = "A" ] || fail "plan file must be newly added, got status ${plan_status:-unknown}: $plan"
+  plan_status=$(printf '%s\n' "$records" | awk -F '\t' -v plan="$plan" '$2 == plan { print $1; exit }')
+  [ "$plan_status" = "added" ] || fail "plan file must be newly added, got status ${plan_status:-unknown}: $plan"
 
-  while IFS= read -r file; do
-    [ -n "$file" ] || continue
-    [ "$file" = "$plan" ] || fail "unexpected changed file: $file; workflow:execplan PRs may only change $plan"
-  done <<EOF_FILES
-$files
-EOF_FILES
+  unexpected=$(printf '%s\n' "$records" | awk -F '\t' -v plan="$plan" '$2 != "" && $2 != plan { print $2; exit }')
+  [ -z "$unexpected" ] || fail "unexpected changed file: $unexpected; workflow:execplan PRs may only change $plan"
 
   printf '%s\n' "$plan"
-}
-
-require_heading() {
-  plan=$1
-  heading=$2
-  grep -Fx "## $heading" "$plan" >/dev/null 2>&1 || fail "missing required heading: ## $heading"
-}
-
-warn_heading() {
-  plan=$1
-  heading=$2
-  if ! grep -Fx "## $heading" "$plan" >/dev/null 2>&1; then
-    echo "scherzo-execplan: warning: missing expected heading: ## $heading" >&2
-  fi
 }
 
 validate_plan() {
   plan=$1
 
-  grep -Eq '^# .+' "$plan" || fail "plan must start with a level-1 title"
+  printf '%s\n' "$plan" | grep -Eq '^docs/plans/[^/]+\.md$' || \
+    fail "invalid ExecPlan artifact path: $plan; expected docs/plans/<file>.md"
 
-  warn_heading "$plan" "Purpose / Big Picture"
-  warn_heading "$plan" "Problem Framing and Constraints"
-  warn_heading "$plan" "Strategy Overview"
-  warn_heading "$plan" "Alternatives Considered"
-  warn_heading "$plan" "Risks and Countermeasures"
-  require_heading "$plan" "Progress"
-  warn_heading "$plan" "Surprises & Discoveries"
-  warn_heading "$plan" "Decision Log"
-  warn_heading "$plan" "Outcomes & Retrospective"
-  warn_heading "$plan" "Context and Orientation"
-  warn_heading "$plan" "Preconditions and Verified Facts"
-  warn_heading "$plan" "Scope Boundaries"
-  warn_heading "$plan" "Milestones"
-  warn_heading "$plan" "Plan of Work"
-  warn_heading "$plan" "Concrete Steps"
-  warn_heading "$plan" "Testing and Falsifiability"
-  warn_heading "$plan" "Validation and Acceptance"
-  warn_heading "$plan" "Rollout, Recovery, and Idempotence"
-  warn_heading "$plan" "Artifacts and Notes"
-  warn_heading "$plan" "Interfaces and Dependencies"
-  require_heading "$plan" "Open Questions and Clarifications Needed"
+  python3 - "$plan" <<'PY'
+import re
+import sys
+from pathlib import Path
 
-  grep -Eq '^- \[[ xX]\] ' "$plan" || fail "Progress must contain at least one checklist item"
+path = Path(sys.argv[1])
 
-  if grep -nE '/Users/|/home/|/private/|/var/folders/' "$plan" >&2; then
-    fail "plan contains absolute local paths; use repository-relative paths only"
-  fi
+
+def fail(message: str) -> None:
+    print(f"scherzo-execplan: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+try:
+    text = path.read_text(encoding="utf-8")
+except OSError as exc:
+    fail(f"could not read plan artifact: {exc}")
+
+if re.search(r"<!doctype\s+html|<html\b", text, flags=re.IGNORECASE):
+    fail("plan artifact must be Markdown source, not generated HTML")
+if re.search(r"/Users/|/home/|/private/|/var/folders/", text):
+    fail("plan contains absolute local paths; use repository-relative paths only")
+
+heading_re = re.compile(r"^(#{1,6})[ \t]+(.+?)\s*#*\s*$")
+headings: list[dict[str, object]] = []
+in_fence = False
+fence_marker = ""
+lines = text.splitlines()
+
+for index, line in enumerate(lines):
+    fence_match = re.match(r"^\s*(```+|~~~+)", line)
+    if fence_match:
+        marker = fence_match.group(1)[:3]
+        if not in_fence:
+            in_fence = True
+            fence_marker = marker
+        elif marker == fence_marker:
+            in_fence = False
+            fence_marker = ""
+        continue
+    if in_fence:
+        continue
+    match = heading_re.match(line)
+    if match:
+        title = re.sub(r"\s+", " ", match.group(2)).strip()
+        title = re.sub(r"\s+#*$", "", title).strip()
+        if title:
+            headings.append({"level": len(match.group(1)), "title": title, "line": index})
+
+first_content = next((line for line in lines if line.strip()), "")
+if not re.match(r"^#\s+\S", first_content):
+    fail("plan Markdown must start with a level-1 title")
+
+h1s = [heading for heading in headings if heading["level"] == 1]
+if len(h1s) != 1:
+    fail(f"plan Markdown must contain exactly one level-1 title, found {len(h1s)}")
+
+
+def section_body(title: str) -> str | None:
+    for heading_index, heading in enumerate(headings):
+        if heading["title"] != title:
+            continue
+        start = int(heading["line"]) + 1
+        end = len(lines)
+        level = int(heading["level"])
+        for later in headings[heading_index + 1 :]:
+            if int(later["level"]) <= level:
+                end = int(later["line"])
+                break
+        return "\n".join(lines[start:end])
+    return None
+
+
+titles = {str(heading["title"]) for heading in headings}
+required_living_sections = [
+    "Progress",
+    "Surprises & Discoveries",
+    "Decision Log",
+    "Outcomes & Retrospective",
+]
+for heading in required_living_sections:
+    if heading not in titles:
+        fail(f"missing required living-document section: {heading}")
+
+if "Open Questions and Clarifications Needed" not in titles:
+    fail("missing required section: Open Questions and Clarifications Needed")
+
+progress = section_body("Progress") or ""
+if not re.search(r"(?m)^\s*[-*+]\s+\[[ xX]\]\s+\S", progress):
+    fail("Progress must contain at least one Markdown checklist item")
+
+expected = [
+    "Purpose / Big Picture",
+    "Problem Framing and Constraints",
+    "Strategy Overview",
+    "Alternatives Considered",
+    "Risks and Countermeasures",
+    "Surprises & Discoveries",
+    "Decision Log",
+    "Outcomes & Retrospective",
+    "Context and Orientation",
+    "Preconditions and Verified Facts",
+    "Scope Boundaries",
+    "Milestones",
+    "Plan of Work",
+    "Concrete Steps",
+    "Testing and Falsifiability",
+    "Validation and Acceptance",
+    "Rollout, Recovery, and Idempotence",
+    "Artifacts and Notes",
+    "Interfaces and Dependencies",
+]
+for heading in expected:
+    if heading not in titles:
+        print(f"scherzo-execplan: warning: missing expected section: {heading}", file=sys.stderr)
+PY
 }
 
 validate_command() {
-  require_command jj
-  plan=$(find_plan_path)
+  if ! workspace_driver_available; then
+    require_command jj
+  fi
+  require_command python3
+  explicit_plan=${1:-}
+  if [ -n "$explicit_plan" ]; then
+    [ -f "$explicit_plan" ] || fail "plan file does not exist: $explicit_plan"
+    plan=$explicit_plan
+  else
+    plan=$(find_plan_path)
+  fi
   validate_plan "$plan"
+  print_primary_plan_artifact "$plan"
   echo "PLAN_PATH=$plan"
   echo "VALIDATION=ok"
 }
@@ -141,48 +300,345 @@ remote_url() {
   jj git remote list --color=never | awk -v remote="$remote" '$1 == remote { print $2; exit }'
 }
 
+revision_exists() {
+  revision=$1
+  jj log -r "$revision" --no-graph -T 'commit_id' --color=never >/dev/null 2>&1
+}
+
+revision_commit_ids() {
+  revision=$1
+  jj log -r "$revision" --no-graph -T 'commit_id ++ "\n"' --color=never | sed '/^[[:space:]]*$/d'
+}
+
+current_parent_commit_ids() {
+  revision_commit_ids @-
+}
+
+current_change_id_short() {
+  jj log -r @ --no-graph -T 'change_id.short()' --color=never | tr -d '[:space:]'
+}
+
+execplan_branch_name() {
+  plan=$1
+  slug=$(sanitize_ref_part "$(plan_stem "$plan")" | cut -c 1-60)
+  [ -n "$slug" ] || slug=plan
+  change_id=$(current_change_id_short)
+  [ -n "$change_id" ] || fail "could not determine jj change id"
+  printf '%s\n' "scherzo/execplan/${slug}-${change_id}"
+}
+
+maybe_source_issue_identifier() {
+  plan=$1
+
+  if [ -n "${SCHERZO_ISSUE_IDENTIFIER:-}" ]; then
+    printf '%s\n' "$SCHERZO_ISSUE_IDENTIFIER"
+    return
+  fi
+
+  stem=$(plan_stem "$plan")
+  issue=$(printf '%s\n' "$stem" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p')
+  if [ -n "$issue" ]; then
+    printf '%s\n' "$issue"
+    return
+  fi
+
+  cwd=$(pwd -P)
+  case "$cwd" in
+    */.scherzo/workspaces/*)
+      tail=${cwd#*/.scherzo/workspaces/}
+      rest=${tail#*/}
+      issue=${rest%%/*}
+      if [ -n "$issue" ] && [ "$issue" != "$rest" ]; then
+        printf '%s\n' "$issue"
+        return
+      fi
+      ;;
+  esac
+
+  return 0
+}
+
+infer_source_issue_identifier() {
+  plan=$1
+  issue=$(maybe_source_issue_identifier "$plan")
+  [ -n "$issue" ] || fail "could not infer source Linear issue identifier from cwd or plan filename: $plan"
+  printf '%s\n' "$issue"
+}
+
+plan_title() {
+  plan=$1
+  python3 - "$plan" <<'PY'
+import html
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+for line in text.splitlines():
+    match = re.match(r"^#\s+(.+?)\s*#*\s*$", line)
+    if match:
+        value = re.sub(r"\s+", " ", match.group(1)).strip()
+        if value:
+            print(value)
+            raise SystemExit(0)
+for pattern in [r"<h1\b[^>]*>(.*?)</h1>", r"<title\b[^>]*>(.*?)</title>"]:
+    match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+    if match:
+        value = re.sub(r"<[^>]+>", " ", match.group(1))
+        value = html.unescape(re.sub(r"\s+", " ", value)).strip()
+        value = re.sub(r"\s+[—-]\s+Scherzo ExecPlan.*$", "", value).strip()
+        if value:
+            print(value)
+            raise SystemExit(0)
+print("")
+PY
+}
+
+write_publish_context() {
+  context_path=$1
+  plan=$2
+  branch=$3
+  pr_url=$4
+  source_issue=$5
+  context_dir=$(dirname "$context_path")
+  mkdir -p "$context_dir"
+  python3 - "$context_path" "$plan" "$branch" "$pr_url" "$source_issue" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+context_path, plan_path, branch, pr_url, source_issue = sys.argv[1:6]
+path = pathlib.Path(context_path)
+data = {
+    "plan_path": plan_path,
+    "branch": branch,
+    "pr_url": pr_url,
+    "source_issue": source_issue,
+}
+tmp = path.with_name(path.name + ".tmp")
+tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.replace(tmp, path)
+PY
+}
+
+load_publish_context() {
+  context_path=$1
+  [ -f "$context_path" ] || fail "publish context file not found: $context_path"
+  python3 - "$context_path" <<'PY'
+import json
+import pathlib
+import sys
+from typing import Any
+
+context_path = sys.argv[1]
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-execplan: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+try:
+    data: Any = json.loads(pathlib.Path(context_path).read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    fail(f"could not read publish context {context_path}: {exc}")
+
+if not isinstance(data, dict):
+    fail(f"publish context {context_path} must contain a JSON object")
+
+for key in ["plan_path", "branch", "pr_url", "source_issue"]:
+    value = data.get(key, "")
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        fail(f"publish context field {key!r} must be a string")
+    if "\n" in value or "\r" in value:
+        fail(f"publish context field {key!r} must not contain newlines")
+    print(f"{key}={value}")
+PY
+}
+
+fetch_publish_base() {
+  base=$1
+  remote=$2
+  if ! output=$(jj git fetch --remote "$remote" --branch "$base" 2>&1); then
+    printf '%s\n' "$output" >&2
+    fail "could not fetch PR base $base from remote $remote; configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry"
+  fi
+  [ -z "$output" ] || printf '%s\n' "$output"
+}
+
+publish_base_revision() {
+  base=$1
+  remote=$2
+  remote_base="${base}@${remote}"
+  if revision_exists "$remote_base"; then
+    printf '%s\n' "$remote_base"
+  elif revision_exists "$base"; then
+    echo "scherzo-execplan: warning: remote publish base $remote_base was not found after fetch; falling back to local revision $base" >&2
+    printf '%s\n' "$base"
+  else
+    fail "could not find publish base revision $remote_base or $base"
+  fi
+}
+
+has_unresolved_conflicts() {
+  revision=$1
+  conflicts=$(jj log -r "conflicts() & ($revision)" --no-graph -T 'change_id.short()' --color=never 2>/dev/null || true)
+  [ -n "$conflicts" ]
+}
+
+normalize_publish_base() {
+  base_revision=$1
+  base_commit_ids=$(revision_commit_ids "$base_revision")
+  parent_commit_ids=$(current_parent_commit_ids)
+  base_count=$(printf '%s\n' "$base_commit_ids" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
+  if [ "$base_count" = "1" ] && [ "$parent_commit_ids" = "$base_commit_ids" ]; then
+    return 1
+  fi
+
+  echo "## Publish base normalization"
+  echo "Rebasing final ExecPlan change onto \`$base_revision\` before publishing so the PR branch does not push local workspace ancestors."
+  jj rebase -r @ -d "$base_revision" --color=never || \
+    fail "could not rebase the final ExecPlan change onto the PR base $base_revision; resolve the retained workspace manually, rerun validation, and publish again"
+  if has_unresolved_conflicts @; then
+    status=$(jj status --color=never 2>/dev/null || true)
+    fail "rebasing the final ExecPlan change onto the PR base left unresolved conflicts. Resolve the retained workspace manually, rerun validation, and publish again.${status:+\n$status}"
+  fi
+  return 0
+}
+
+empty_description_commits_to_push() {
+  remote=$1
+  revset='remote_bookmarks(remote='"$remote"')..@ & description(exact:"") & ~root()'
+  jj log -r "$revset" --no-graph \
+    -T 'change_id.short() ++ " " ++ commit_id.short() ++ " " ++ if(empty, "(empty) ", "") ++ if(description, description.first_line(), "(no description set)") ++ "\n"' \
+    --color=never
+}
+
+ensure_no_empty_descriptions_to_push() {
+  remote=$1
+  if ! undescribed=$(empty_description_commits_to_push "$remote" 2>&1); then
+    printf '%s\n' "$undescribed" >&2
+    fail "could not inspect commits that would be pushed to $remote"
+  fi
+  if [ -n "$undescribed" ]; then
+    echo "scherzo-execplan: refusing to push because these commits in the push range have empty descriptions:" >&2
+    printf '%s\n' "$undescribed" >&2
+    exit 1
+  fi
+}
+
 create_pr_command() {
-  require_command jj
-  require_command gh
+  require_command python3
+  if ! workspace_driver_available; then
+    require_command jj
+    require_command gh
+  fi
+
+  context_path=$(default_publish_context_path)
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --publish-context)
+        [ "$#" -gt 1 ] || fail "--publish-context requires a value"
+        context_path=$2
+        shift 2
+        ;;
+      *)
+        fail "unknown create-pr option: $1"
+        ;;
+    esac
+  done
 
   plan=$(find_plan_path)
   validate_plan "$plan"
 
   base=${SCHERZO_PR_BASE:-main}
   remote=${SCHERZO_PR_REMOTE:-origin}
+
+  title=$(plan_title "$plan")
+  [ -n "$title" ] || title="Add ExecPlan $(plan_stem "$plan")"
+  case "$title" in
+    ExecPlan:*|execplan:*) pr_title=$title ;;
+    *) pr_title="ExecPlan: $title" ;;
+  esac
+
+  mkdir -p tmp
+  body_file=tmp/execplan-pr-body.md
+  title_file=tmp/execplan-pr-title.txt
+  printf '%s\n' "$pr_title" >"$title_file"
+  cat >"$body_file" <<EOF_BODY
+Adds a Markdown ExecPlan source document generated from a Linear \`workflow:execplan\` ticket.
+
+Plan artifact: \`$plan\`
+
+This PR is ready for review. If the source ticket left unresolved design choices, they are recorded in the plan's \`Open Questions and Clarifications Needed\` section.
+EOF_BODY
+
+  if workspace_driver_available; then
+    driver_json=$("$SCHERZO_WORKSPACE_DRIVER" publish-change --kind execplan --title-file "$title_file" --body-file "$body_file" --branch-prefix scherzo/execplan --base "$base" --json) || fail "workspace driver publish-change failed"
+    driver_values=$(printf '%s' "$driver_json" | python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception as exc:
+    print(f"scherzo-execplan: workspace driver publish-change returned malformed JSON: {exc}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict) or data.get("version") != 1:
+    print("scherzo-execplan: workspace driver publish-change JSON must be an object with version=1", file=sys.stderr)
+    sys.exit(1)
+if data.get("status") not in {"published", "updated", "unchanged"}:
+    status = data.get("status")
+    print(f"scherzo-execplan: workspace driver publish-change returned status {status!r}", file=sys.stderr)
+    sys.exit(1)
+for key in ["url", "branch"]:
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        print(f"scherzo-execplan: workspace driver publish-change missing {key}", file=sys.stderr)
+        sys.exit(1)
+print("url=" + data["url"].strip())
+print("branch=" + data["branch"].strip())
+print("base_revision=" + str(data.get("base_revision") or data.get("base_ref") or ""))
+') || exit 1
+    pr_url=$(printf '%s\n' "$driver_values" | awk -F= '$1 == "url" { print substr($0, 5); exit }')
+    branch=$(printf '%s\n' "$driver_values" | awk -F= '$1 == "branch" { print substr($0, 8); exit }')
+    base_revision=$(printf '%s\n' "$driver_values" | awk -F= '$1 == "base_revision" { print substr($0, 15); exit }')
+    [ -n "$base_revision" ] || base_revision=$base
+    source_issue=$(maybe_source_issue_identifier "$plan")
+    write_publish_context "$context_path" "$plan" "$branch" "$pr_url" "$source_issue"
+    print_primary_plan_artifact "$plan"
+    echo "PLAN_PATH=$plan"
+    echo "BRANCH=$branch"
+    echo "PUBLISH_BASE=$base_revision"
+    echo "PR_URL=$pr_url"
+    echo "PUBLISH_CONTEXT=$context_path"
+    return
+  fi
+
   repo=${SCHERZO_PR_REPO:-}
   if [ -z "$repo" ]; then
     url=$(remote_url "$remote")
     [ -n "$url" ] || fail "could not find jj git remote: $remote"
     repo=$(owner_repo_from_url "$url") || fail "could not infer GitHub owner/repo from remote URL: $url"
   fi
+  fetch_publish_base "$base" "$remote"
+  base_revision=$(publish_base_revision "$base" "$remote")
+  if normalize_publish_base "$base_revision"; then
+    echo ""
+    echo "## Validation after publish-base normalization"
+    plan=$(find_plan_path)
+    validate_plan "$plan"
+  fi
 
-  title=$(sed -n 's/^# //p' "$plan" | sed -n '1p')
-  [ -n "$title" ] || title="Add ExecPlan $(basename "$plan" .md)"
-  case "$title" in
-    ExecPlan:*|execplan:*) pr_title=$title ;;
-    *) pr_title="ExecPlan: $title" ;;
-  esac
-
-  slug=$(sanitize_ref_part "$(basename "$plan" .md)" | cut -c 1-60)
+  slug=$(sanitize_ref_part "$(plan_stem "$plan")" | cut -c 1-60)
   [ -n "$slug" ] || slug=plan
-  change_id=$(jj log -r @ --no-graph -T 'change_id.short()' --color=never | tr -d '[:space:]')
-  [ -n "$change_id" ] || fail "could not determine jj change id"
-  branch="scherzo/execplan/${slug}-${change_id}"
+  branch=$(execplan_branch_name "$plan")
 
   jj describe -m "docs(plan): add execplan for $slug"
+  ensure_no_empty_descriptions_to_push "$remote"
   jj bookmark set "$branch" --revision @
-  jj git push --remote "$remote" --bookmark "$branch"
-
-  mkdir -p tmp
-  body_file=tmp/execplan-pr-body.md
-  cat >"$body_file" <<EOF_BODY
-Adds an ExecPlan generated from a Linear \`workflow:execplan\` ticket.
-
-Plan: \`$plan\`
-
-This PR is ready for review. If the source ticket left unresolved design choices, they are recorded in the plan's \`Open Questions and Clarifications Needed\` section.
-EOF_BODY
+  jj git push --remote "$remote" --bookmark "$branch" --allow-new
 
   if pr_url=$(gh pr view "$branch" --repo "$repo" --json url --jq .url 2>/dev/null); then
     :
@@ -195,18 +651,466 @@ EOF_BODY
       fi
     }
   fi
+  [ -n "$pr_url" ] || fail "ExecPlan PR URL was empty for branch $branch"
+
+  source_issue=$(maybe_source_issue_identifier "$plan")
+  write_publish_context "$context_path" "$plan" "$branch" "$pr_url" "$source_issue"
+  print_primary_plan_artifact "$plan"
 
   echo "PLAN_PATH=$plan"
   echo "BRANCH=$branch"
+  echo "PUBLISH_BASE=$base_revision"
   echo "PR_URL=$pr_url"
+  echo "PUBLISH_CONTEXT=$context_path"
+}
+
+create_implementation_issue_command() {
+  require_command linear
+  require_command python3
+
+  context_path=$(default_publish_context_path)
+  explicit_context=0
+  direct_inputs=0
+  plan=
+  branch=
+  pr_url=
+  source_issue=
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --publish-context)
+        [ "$#" -gt 1 ] || fail "--publish-context requires a value"
+        context_path=$2
+        explicit_context=1
+        shift 2
+        ;;
+      --plan)
+        [ "$#" -gt 1 ] || fail "--plan requires a value"
+        plan=$2
+        direct_inputs=1
+        shift 2
+        ;;
+      --pr-url)
+        [ "$#" -gt 1 ] || fail "--pr-url requires a value"
+        pr_url=$2
+        direct_inputs=1
+        shift 2
+        ;;
+      --branch)
+        [ "$#" -gt 1 ] || fail "--branch requires a value"
+        branch=$2
+        direct_inputs=1
+        shift 2
+        ;;
+      --source-issue)
+        [ "$#" -gt 1 ] || fail "--source-issue requires a value"
+        source_issue=$2
+        direct_inputs=1
+        shift 2
+        ;;
+      *)
+        fail "unknown create-implementation-issue option: $1"
+        ;;
+    esac
+  done
+
+  if [ "$explicit_context" = "1" ] || [ "$direct_inputs" = "0" ]; then
+    if [ -f "$context_path" ]; then
+      context_values=$(load_publish_context "$context_path")
+      while IFS='=' read -r key value; do
+        case "$key" in
+          plan_path) [ -n "$plan" ] || plan=$value ;;
+          branch) [ -n "$branch" ] || branch=$value ;;
+          pr_url) [ -n "$pr_url" ] || pr_url=$value ;;
+          source_issue) [ -n "$source_issue" ] || source_issue=$value ;;
+        esac
+      done <<EOF_CONTEXT
+$context_values
+EOF_CONTEXT
+    elif [ "$explicit_context" = "1" ]; then
+      fail "publish context file not found: $context_path"
+    fi
+  fi
+
+  [ -n "$plan" ] || fail "missing ExecPlan path; run create-pr first or pass --publish-context/--plan"
+  [ -f "$plan" ] || fail "plan file does not exist: $plan"
+  validate_plan "$plan"
+
+  if [ -z "$pr_url" ]; then
+    [ -n "$branch" ] || fail "missing ExecPlan PR URL; run create-pr first or pass --pr-url"
+    require_command jj
+    require_command gh
+    remote=${SCHERZO_PR_REMOTE:-origin}
+    repo=${SCHERZO_PR_REPO:-}
+    if [ -z "$repo" ]; then
+      url=$(remote_url "$remote")
+      [ -n "$url" ] || fail "could not find jj git remote: $remote"
+      repo=$(owner_repo_from_url "$url") || fail "could not infer GitHub owner/repo from remote URL: $url"
+    fi
+    pr_url=$(gh pr view "$branch" --repo "$repo" --json url --jq .url 2>/dev/null) || \
+      fail "could not find ExecPlan PR for branch $branch; pass --pr-url or rerun create-pr"
+  fi
+  [ -n "$pr_url" ] || fail "ExecPlan PR URL was empty"
+
+  if [ -z "$source_issue" ]; then
+    source_issue=$(infer_source_issue_identifier "$plan")
+  fi
+  implementation_state=${SCHERZO_EXECPLAN_IMPLEMENTATION_STATE:-Backlog}
+
+  python3 - "$plan" "$pr_url" "$source_issue" "$implementation_state" <<'PY'
+import html
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+from typing import Any
+
+plan_path, pr_url, source_identifier, implementation_state = sys.argv[1:5]
+workflow_label = os.environ.get(
+    "SCHERZO_EXECPLAN_IMPLEMENTATION_LABEL",
+    "workflow:execplan-implementation",
+).strip() or "workflow:execplan-implementation"
+support_labels = {"needs-workflow", "needs-clarification"}
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-execplan: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if check and proc.returncode != 0:
+        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        fail(f"command failed: {' '.join(args)}\n{details}")
+    return proc
+
+
+def load_json_from_command(args: list[str]) -> Any:
+    out = run(args).stdout.strip()
+    if not out:
+        fail(f"command produced empty JSON: {' '.join(args)}")
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError as exc:
+        fail(f"could not parse JSON from {' '.join(args)}: {exc}")
+
+
+def normalize_issue(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        if isinstance(value.get("issue"), dict):
+            return value["issue"]
+        if isinstance(value.get("data"), dict) and isinstance(value["data"].get("issue"), dict):
+            return value["data"]["issue"]
+        return value
+    fail("Linear issue payload was not an object")
+
+
+def label_names(issue: dict[str, Any]) -> list[str]:
+    labels = issue.get("labels") or []
+    if isinstance(labels, dict):
+        labels = labels.get("nodes") or []
+    names: list[str] = []
+    if isinstance(labels, list):
+        for label in labels:
+            if isinstance(label, dict):
+                name = label.get("name")
+            else:
+                name = str(label)
+            if name:
+                names.append(str(name))
+    return names
+
+
+def domain_labels_for_followup(issue: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for name in label_names(issue):
+        normalized = name.strip().lower()
+        if not normalized:
+            continue
+        if normalized.startswith("workflow:"):
+            continue
+        if normalized in support_labels:
+            continue
+        names.append(name.strip())
+    if workflow_label.lower() not in {name.lower() for name in names}:
+        names.append(workflow_label)
+    return names
+
+
+def first_heading(path: str) -> str:
+    try:
+        text = pathlib.Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"could not read plan title from {path}: {exc}")
+    for pattern in [r"<h1\b[^>]*>(.*?)</h1>", r"<title\b[^>]*>(.*?)</title>"]:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if match is not None:
+            title = re.sub(r"<[^>]+>", " ", match.group(1))
+            title = html.unescape(re.sub(r"\s+", " ", title)).strip()
+            title = re.sub(r"\s+[—-]\s+Scherzo ExecPlan.*$", "", title).strip()
+            if title:
+                return title
+    for line in text.splitlines():
+        if line.startswith("# "):
+            title = line.removeprefix("# ").strip()
+            if title:
+                return title
+    return f"ExecPlan {path}"
+
+
+def implementation_title(plan_title: str) -> str:
+    if plan_title.lower().startswith("implement"):
+        title = plan_title
+    else:
+        title = "Implement: " + plan_title
+    return title[:240]
+
+
+def nested_name(issue: dict[str, Any], key: str) -> str:
+    value = issue.get(key) or {}
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("key") or value.get("id") or "")
+    return ""
+
+
+def issue_labels_lower(issue: dict[str, Any]) -> set[str]:
+    return {name.lower() for name in label_names(issue)}
+
+
+def issue_contains_plan(issue: dict[str, Any]) -> bool:
+    text = "\n".join([
+        str(issue.get("title") or ""),
+        str(issue.get("description") or ""),
+    ])
+    return plan_path in text and workflow_label.lower() in issue_labels_lower(issue)
+
+
+def issue_nodes(payload: Any, command_name: str) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        nodes = payload.get("nodes")
+        if isinstance(nodes, list):
+            return nodes
+    fail(f"Linear {command_name} payload did not contain an issue list")
+
+
+def find_existing(team_key: str, project_name: str) -> dict[str, Any] | None:
+    args = [
+        "linear",
+        "issue",
+        "query",
+        "--team",
+        team_key,
+        "--search",
+        plan_path,
+        "--limit",
+        "250",
+        "--json",
+    ]
+    if project_name:
+        args.extend(["--project", project_name])
+    issues = issue_nodes(load_json_from_command(args), "issue query")
+    for issue in issues:
+        if isinstance(issue, dict) and issue_contains_plan(issue):
+            return issue
+    return None
+
+
+def readiness_note(state: str) -> str:
+    if state.strip().lower() in {"todo", "in progress"}:
+        return (
+            "This issue was created in an active Scherzo state, so it may dispatch "
+            "immediately. Use this only when the ExecPlan file already exists on "
+            "the workflow base branch."
+        )
+    return (
+        f"This issue was created in `{state}` so Scherzo will not dispatch it yet. "
+        f"After the ExecPlan PR is merged and `{plan_path}` exists on the workflow "
+        "base branch, move this issue to `Todo`."
+    )
+
+
+def source_line(issue: dict[str, Any]) -> str:
+    identifier = issue.get("identifier") or source_identifier
+    title = issue.get("title") or "Untitled"
+    url = issue.get("url") or ""
+    if url:
+        return f"[{identifier}: {title}]({url})"
+    return f"{identifier}: {title}"
+
+
+def render_description(source_issue: dict[str, Any]) -> str:
+    return "\n".join([
+        f"Implements the ExecPlan produced from {source_line(source_issue)}.",
+        "",
+        f"Plan path: `{plan_path}`",
+        f"ExecPlan PR: {pr_url}",
+        "Implementation workflow: `workflow:execplan-implementation`",
+        "",
+        "## Readiness",
+        "",
+        readiness_note(implementation_state),
+        "",
+        "## Operator handoff",
+        "",
+        "1. Review and merge the ExecPlan PR.",
+        f"2. Confirm `{plan_path}` exists on the workflow base branch.",
+        "3. Move this issue to `Todo` to let Scherzo implement the plan.",
+        "",
+    ])
+
+
+def issue_ref(issue: dict[str, Any]) -> str:
+    return str(issue.get("identifier") or issue.get("id") or "")
+
+
+def issue_url(issue: dict[str, Any]) -> str:
+    return str(issue.get("url") or "")
+
+
+def source_team_key(issue: dict[str, Any]) -> str:
+    team = issue.get("team") or {}
+    if isinstance(team, dict):
+        value = str(team.get("key") or team.get("name") or team.get("id") or "")
+        if value:
+            return value.upper()
+    identifier = str(issue.get("identifier") or source_identifier)
+    if "-" in identifier:
+        return identifier.split("-", 1)[0].upper()
+    fail(f"could not infer source issue team from {identifier!r}")
+
+
+def created_issue_from_output(output: str) -> dict[str, Any]:
+    urls = re.findall(r"https?://[^\s]+", output)
+    issue_url = ""
+    for url in reversed(urls):
+        if "/issue/" in url or re.search(r"\b[A-Za-z][A-Za-z0-9]*-[0-9]+\b", url):
+            issue_url = url.rstrip(".,;)")
+            break
+    if not issue_url:
+        fail("could not find created Linear issue URL in issue create output")
+    match = re.search(r"/issue/([A-Za-z][A-Za-z0-9]*-[0-9]+)(?:/|$)", issue_url)
+    if match is None:
+        match = re.search(r"\b([A-Za-z][A-Za-z0-9]*-[0-9]+)\b", issue_url)
+    if match is None:
+        fail(f"could not infer created issue identifier from URL: {issue_url}")
+    return {"identifier": match.group(1).upper(), "url": issue_url}
+
+
+source_issue = normalize_issue(load_json_from_command([
+    "linear",
+    "issue",
+    "view",
+    source_identifier,
+    "--json",
+]))
+team_key = source_team_key(source_issue)
+project_name = nested_name(source_issue, "project")
+priority = source_issue.get("priority")
+plan_title = first_heading(plan_path)
+title = implementation_title(plan_title)
+labels = domain_labels_for_followup(source_issue)
+description = render_description(source_issue)
+
+existing = find_existing(team_key, project_name)
+if existing is not None:
+    print("IMPLEMENTATION_ISSUE_STATUS=existing")
+    print(f"IMPLEMENTATION_ISSUE={issue_ref(existing)}")
+    if issue_url(existing):
+        print(f"IMPLEMENTATION_ISSUE_URL={issue_url(existing)}")
+    print(f"PLAN_PATH={plan_path}")
+    print(f"PR_URL={pr_url}")
+    sys.exit(0)
+
+description_file = ""
+try:
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        prefix="scherzo-execplan-implementation-",
+        suffix=".md",
+        delete=False,
+    ) as handle:
+        handle.write(description)
+        description_file = handle.name
+
+    create_args = [
+        "linear",
+        "issue",
+        "create",
+        "--team",
+        team_key,
+        "--title",
+        title,
+        "--description-file",
+        description_file,
+        "--state",
+        implementation_state,
+        "--no-interactive",
+    ]
+    for label in labels:
+        create_args.extend(["--label", label])
+    if project_name:
+        create_args.extend(["--project", project_name])
+    if priority is not None:
+        create_args.extend(["--priority", str(priority)])
+    if source_identifier:
+        create_args.extend(["--parent", source_identifier])
+    created = created_issue_from_output(run(create_args).stdout)
+finally:
+    if description_file:
+        try:
+            os.unlink(description_file)
+        except OSError:
+            pass
+
+created_ref = issue_ref(created)
+created_url = issue_url(created)
+
+if created_ref and pr_url:
+    attach = run([
+        "linear",
+        "issue",
+        "link",
+        created_ref,
+        pr_url,
+        "--title",
+        "ExecPlan PR",
+    ], check=False)
+    if attach.returncode != 0:
+        details = attach.stderr.strip() or attach.stdout.strip() or f"exit code {attach.returncode}"
+        print(
+            f"scherzo-execplan: warning: created issue but could not attach PR URL: {details}",
+            file=sys.stderr,
+        )
+
+print("IMPLEMENTATION_ISSUE_STATUS=created")
+print(f"IMPLEMENTATION_ISSUE={created_ref}")
+if created_url:
+    print(f"IMPLEMENTATION_ISSUE_URL={created_url}")
+print(f"IMPLEMENTATION_ISSUE_STATE={implementation_state}")
+print(f"PLAN_PATH={plan_path}")
+print(f"PR_URL={pr_url}")
+PY
 }
 
 case "${1:-}" in
   validate)
-    validate_command
+    shift
+    validate_command "${1:-}"
     ;;
   create-pr)
-    create_pr_command
+    shift
+    create_pr_command "$@"
+    ;;
+  create-implementation-issue)
+    shift
+    create_implementation_issue_command "$@"
     ;;
   -h|--help|help)
     usage

@@ -1,3 +1,4 @@
+import gleam/option.{Some}
 import gleam/string
 import scherzo/state/record
 
@@ -84,9 +85,107 @@ pub fn encodes_and_decodes_retry_and_park_records_test() {
   ))
 }
 
+pub fn encodes_and_decodes_recovery_records_test() {
+  assert_roundtrip(record.with_id(
+    "counter-1",
+    9000,
+    record.IssueCounterUpdated(
+      issue_id: "issue-1",
+      issue_identifier: "SCH-1",
+      failure_attempts: 2,
+      worker_sessions: 1,
+      observed_updated_at_ms: 8999,
+      source_run_id: Some("run-1"),
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "workspace-1",
+    9100,
+    record.KnownWorkspace(
+      issue_id: "issue-1",
+      issue_identifier: "SCH-1",
+      workspace_path: ".scherzo/workspaces/SCH-1",
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "park-v2-1",
+    9200,
+    record.IssueParkedV2(
+      issue_id: "issue-2",
+      issue_identifier: "SCH-2",
+      reason: "max_retry_attempts",
+      release_policy: "auto_unpark_on_issue_change",
+      issue_fingerprint: "fingerprint",
+      observed_updated_at_ms: 9199,
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "outbox-v2-1",
+    9300,
+    record.OutboxPendingV2(
+      outbox_id: "outbox-1",
+      issue_id: "issue-1",
+      outbox_kind: "linear_comment",
+      dedupe_key: "run-1:success",
+      payload_json: "{\"body\":\"ok\"}",
+    ),
+  ))
+}
+
+pub fn outbox_pending_v2_payload_is_redacted_and_bounded_test() {
+  let long = string.repeat("x", times: record.max_excerpt_chars + 20)
+  let unsafe =
+    record.with_id(
+      "outbox-secret",
+      9400,
+      record.OutboxPendingV2(
+        outbox_id: "outbox-secret",
+        issue_id: "issue-1",
+        outbox_kind: "linear_comment",
+        dedupe_key: "run-1:secret",
+        payload_json: "{\"body\":\"secret-value " <> long <> "\"}",
+      ),
+    )
+  let encoded =
+    unsafe
+    |> record.redact_excerpts(["secret-value"])
+    |> record.to_string
+
+  assert !string.contains(encoded, "secret-value")
+  assert string.contains(encoded, "[REDACTED]")
+  assert string.length(encoded) < record.max_excerpt_chars + 260
+}
+
+pub fn scheduled_failure_report_errors_are_redacted_test() {
+  let unsafe =
+    record.with_id(
+      "scheduled-report-secret",
+      9500,
+      record.ScheduledFailureReportFailed(
+        job_id: "repair",
+        workflow_id: "repair",
+        due_at_ms: 900_000,
+        run_id: "schedule-repair-20260505T120000Z",
+        attempt: 1,
+        dedupe_key: "scheduled-job:repair",
+        error_code: "linear_api_request",
+        error_message: "request failed with secret-value",
+        next_retry_at_ms: 20_000,
+        generation: 1,
+      ),
+    )
+  let encoded =
+    unsafe
+    |> record.redact_excerpts(["secret-value"])
+    |> record.to_string
+
+  assert !string.contains(encoded, "secret-value")
+  assert string.contains(encoded, "[REDACTED]")
+}
+
 pub fn retry_scheduled_requires_delay_ms_test() {
   let missing_delay_line =
-    "{\"schema_version\":1,\"record_id\":\"retry-missing-delay\",\"at_ms\":4000,\"kind\":\"retry_scheduled\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"generation\":2,\"reason\":\"backoff\"}"
+    "{\"schema_version\":2,\"record_id\":\"retry-missing-delay\",\"at_ms\":4000,\"kind\":\"retry_scheduled\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"generation\":2,\"reason\":\"backoff\"}"
 
   let assert Error(_) = record.decode_string(missing_delay_line)
 }
@@ -158,10 +257,169 @@ pub fn encodes_and_decodes_linear_command_records_test() {
   ))
 }
 
+pub fn encodes_and_decodes_scheduled_records_test() {
+  assert_roundtrip(record.with_id(
+    "scheduled-due-1",
+    10_000,
+    record.ScheduledJobDue(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      run_id: "schedule-repair-20260505T120000Z",
+      trigger: "automatic",
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-skipped-1",
+    10_001,
+    record.ScheduledJobSkipped(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 1_800_000,
+      run_id: "schedule-repair-20260505T121500Z",
+      reason: "overlap_running",
+      skipped_count: 2,
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-pending-1",
+    10_002,
+    record.ScheduledRunPending(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      run_id: "schedule-repair-20260505T120000Z",
+      trigger: "manual",
+      requested_at_ms: 10_002,
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-blocked-1",
+    10_003,
+    record.ScheduledRunPendingBlocked(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      run_id: "schedule-repair-20260505T120000Z",
+      reason: "waiting_for_global_slot",
+      observed_at_ms: 10_003,
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-cancelled-1",
+    10_004,
+    record.ScheduledRunPendingCancelled(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      run_id: "schedule-repair-20260505T120000Z",
+      reason: "job_disabled",
+      cancelled_at_ms: 10_004,
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-started-1",
+    10_005,
+    record.ScheduledRunStarted(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      started_at_ms: 10_005,
+      run_id: "schedule-repair-20260505T120000Z",
+      attempt: 1,
+      session_id: "session-1",
+      run_root: "workspaces/repair/scheduled/repair/run",
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-succeeded-1",
+    10_006,
+    record.ScheduledRunSucceeded(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      run_id: "schedule-repair-20260505T120000Z",
+      attempt: 1,
+      finished_at_ms: 10_006,
+      token_total: 42,
+      turns: 3,
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-failed-1",
+    10_007,
+    record.ScheduledRunFailed(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      run_id: "schedule-repair-20260505T120000Z",
+      attempt: 1,
+      finished_at_ms: 10_007,
+      reason: "workflow_step_failed",
+      retry_exhausted: False,
+      run_root: Some("workspaces/repair/scheduled/repair/run"),
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-retry-1",
+    10_008,
+    record.ScheduledRunRetryScheduled(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      run_id: "schedule-repair-20260505T120000Z",
+      next_attempt: 2,
+      delay_ms: 10_000,
+      generation: 1,
+      reason: "workflow_step_failed",
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-retry-cancelled-1",
+    10_009,
+    record.ScheduledRunRetryCancelled(
+      job_id: "repair",
+      run_id: "schedule-repair-20260505T120000Z",
+      generation: 1,
+      reason: "superseded",
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-reported-1",
+    10_010,
+    record.ScheduledFailureReported(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      run_id: "schedule-repair-20260505T120000Z",
+      attempt: 2,
+      dedupe_key: "scheduled-job:repair",
+      linear_issue_id: "issue-linear",
+      action: "created",
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "scheduled-report-failed-1",
+    10_011,
+    record.ScheduledFailureReportFailed(
+      job_id: "repair",
+      workflow_id: "repair",
+      due_at_ms: 900_000,
+      run_id: "schedule-repair-20260505T120000Z",
+      attempt: 2,
+      dedupe_key: "scheduled-job:repair",
+      error_code: "linear_api_request",
+      error_message: "network",
+      next_retry_at_ms: 20_000,
+      generation: 1,
+    ),
+  ))
+}
+
 pub fn unsupported_schema_version_is_rejected_test() {
   let line =
-    "{\"schema_version\":2,\"record_id\":\"future\",\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
-  let assert Error(record.UnsupportedVersion(2)) = record.decode_string(line)
+    "{\"schema_version\":3,\"record_id\":\"future\",\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
+  let assert Error(record.UnsupportedVersion(3)) = record.decode_string(line)
 }
 
 pub fn redacts_record_excerpts_test() {
@@ -192,25 +450,25 @@ pub fn malformed_json_is_rejected_test() {
 
 pub fn unknown_record_kind_is_rejected_test() {
   let line =
-    "{\"schema_version\":1,\"record_id\":\"unknown-1\",\"at_ms\":1,\"kind\":\"unknown\"}"
+    "{\"schema_version\":2,\"record_id\":\"unknown-1\",\"at_ms\":1,\"kind\":\"unknown\"}"
   let assert Error(record.UnknownKind("unknown")) = record.decode_string(line)
 }
 
 pub fn missing_required_body_field_is_rejected_test() {
   let line =
-    "{\"schema_version\":1,\"record_id\":\"run-started-missing\",\"at_ms\":1,\"kind\":\"run_started\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
+    "{\"schema_version\":2,\"record_id\":\"run-started-missing\",\"at_ms\":1,\"kind\":\"run_started\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
   let assert Error(record.InvalidRecord("missing run_id")) =
     record.decode_string(line)
 }
 
 pub fn invalid_top_level_record_shape_is_rejected_test() {
   let missing_record_id =
-    "{\"schema_version\":1,\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
+    "{\"schema_version\":2,\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
   let assert Error(record.InvalidRecord("invalid ledger record shape")) =
     record.decode_string(missing_record_id)
 
   let wrong_at_ms_type =
-    "{\"schema_version\":1,\"record_id\":\"bad-at\",\"at_ms\":\"soon\",\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
+    "{\"schema_version\":2,\"record_id\":\"bad-at\",\"at_ms\":\"soon\",\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
   let assert Error(record.InvalidRecord("invalid ledger record shape")) =
     record.decode_string(wrong_at_ms_type)
 }

@@ -1,5 +1,7 @@
 import gleam/option.{None, Some}
+import scherzo/config/types as config_types
 import scherzo/model_config
+import scherzo/structured_output_source
 import scherzo/workflow_dag
 
 fn parse_ok(source: String) -> workflow_dag.WorkflowDag {
@@ -19,6 +21,8 @@ fn minimal() -> String {
 pub fn parses_minimal_workflow_dag_test() {
   let dag = parse_ok(minimal())
   assert dag.id == "research"
+  assert dag.workspace_profile == None
+  assert dag.workspace_capabilities == []
   assert dag.max_parallel_steps == 1
   let assert [step] = dag.steps
   assert step.id == "main"
@@ -26,9 +30,221 @@ pub fn parses_minimal_workflow_dag_test() {
   assert step.workspace == workflow_dag.WorkspaceRef(name: "main", from: None)
   assert step.on_failure == workflow_dag.FailWorkflow
   assert step.model_settings == model_config.default_settings()
-  let assert workflow_dag.AgentStep(workflow_dag.PromptFile(
-    "prompts/research.md",
-  )) = step.kind
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptFile("prompts/research.md"),
+    None,
+  ) = step.kind
+}
+
+pub fn parses_agent_structured_output_defaults_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output: {}\n",
+    )
+  let assert [step] = dag.steps
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptFile("prompts/review.md"),
+    Some(spec),
+  ) = step.kind
+  assert spec.format == workflow_dag.StructuredJson
+  assert spec.artifact_name == "review_json"
+  assert spec.required == True
+  assert spec.source == structured_output_source.FinalResponseSource
+  assert spec.schema == workflow_dag.StructuredObjectSchema([])
+  assert spec.validators == []
+  assert spec.validation_retries == 1
+}
+
+pub fn parses_agent_structured_output_json_contract_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: json\n      artifact_name: review_result\n      required: true\n      validator: review_lane_draft\n      validation_retries: 0\n      schema:\n        type: object\n        required:\n          - summary\n          - findings\n",
+    )
+  let assert [step] = dag.steps
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptFile("prompts/review.md"),
+    Some(spec),
+  ) = step.kind
+  assert spec.format == workflow_dag.StructuredJson
+  assert spec.artifact_name == "review_result"
+  assert spec.required == True
+  assert spec.source == structured_output_source.FinalResponseSource
+  assert spec.schema
+    == workflow_dag.StructuredObjectSchema(["summary", "findings"])
+  assert spec.validators
+    == [
+      workflow_dag.CommandValidator(
+        name: "review_lane_draft_compat",
+        argv: [
+          "python3",
+          "scripts/scherzo-review",
+          "validate-structured-output",
+          "--validator",
+          "review_lane_draft",
+        ],
+        timeout_ms: 30_000,
+        working_directory: workflow_dag.ValidatorInRepository,
+        env: [],
+      ),
+    ]
+  assert spec.validation_retries == 0
+}
+
+pub fn parses_agent_structured_output_pi_tool_call_source_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: structured_review\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+    )
+  let assert [step] = dag.steps
+  let assert workflow_dag.AgentStep(_, Some(spec)) = step.kind
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: "submit_example_artifact",
+      require_single: True,
+      reject_sibling_tool_calls: True,
+    )
+}
+
+pub fn rejects_invalid_structured_output_source_contracts_test() {
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source: final_response\n",
+    )
+    == "structured_output_source_not_map"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: unknown\n",
+    )
+    == "unsupported_structured_output_source_type"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: final_response\n        tool_name: submit_example_artifact\n",
+    )
+    == "structured_output_source_conflicting_field"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n",
+    )
+    == "missing_structured_output_source_tool_name"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: bad tool\n",
+    )
+    == "invalid_structured_output_source_tool_name"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: false\n",
+    )
+    == "unsupported_structured_output_source_require_single"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        reject_sibling_tool_calls: false\n",
+    )
+    == "unsupported_structured_output_source_reject_sibling_tool_calls"
+}
+
+pub fn rejects_invalid_structured_output_contracts_test() {
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: command\n    run: echo ok\n    structured_output: {}\n",
+    )
+    == "structured_output_on_command_step"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: yaml\n",
+    )
+    == "unsupported_structured_output_format"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      artifact_name: bad-name\n",
+    )
+    == "invalid_structured_artifact_name"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        type: array\n",
+    )
+    == "unsupported_structured_output_schema_type"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        required: summary\n",
+    )
+    == "structured_output_schema_required_not_list"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        required:\n          - 123\n",
+    )
+    == "structured_output_schema_required_entry_not_string"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validator: unknown_contract\n",
+    )
+    == "unknown_structured_output_validator"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validator: 123\n",
+    )
+    == "structured_output_validator_not_string"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validation_retries: 2\n",
+    )
+    == "invalid_structured_output_validation_retries"
+  assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validation_retries: once\n",
+    )
+    == "structured_output_validation_retries_not_int"
+}
+
+pub fn parses_workspace_capabilities_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\nworkspace_capabilities: [assert-only, changed-files]\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
+    )
+  assert dag.workspace_capabilities
+    == [
+      config_types.WorkspaceAssertOnly,
+      config_types.WorkspaceChangedFiles,
+    ]
+}
+
+pub fn rejects_invalid_workspace_capabilities_test() {
+  assert error_code(
+      "version: 1\nid: research\nworkspace_capabilities: assert-only\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "workspace_capabilities_not_list"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_capabilities: [123]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "workspace_capabilities_entry_not_string"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_capabilities: [pull-request]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "unknown_workspace_capability"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_capabilities: [assert-only, assert-only]\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "duplicate_workspace_capability"
+}
+
+pub fn parses_top_level_workspace_profile_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\nworkspace_profile: noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
+    )
+  assert dag.workspace_profile == Some("noop")
+}
+
+pub fn rejects_invalid_workspace_profile_test() {
+  assert error_code(
+      "version: 1\nid: research\nworkspace_profile: 123\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "workspace_profile_not_string"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_profile: ../noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "invalid_workspace_profile"
+  assert error_code(
+      "version: 1\nid: research\nworkspace_profile: Noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: a.md\n",
+    )
+    == "invalid_workspace_profile"
+}
+
+pub fn rejects_step_level_workspace_profile_test() {
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace_profile: noop\n    prompt: a.md\n",
+    )
+    == "step_workspace_profile_not_supported"
+}
+
+pub fn rejects_step_level_workspace_capabilities_test() {
+  assert error_code(
+      "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    workspace_capabilities: [assert-only]\n    prompt: a.md\n",
+    )
+    == "step_workspace_capabilities_not_supported"
 }
 
 pub fn parses_optional_description_test() {

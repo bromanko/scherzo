@@ -1,11 +1,13 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/log
 
 pub type CheckName {
   WorkflowConfig
+  ScheduledJobs
   LinearContract
   LinearSmoke
   InstanceLock
@@ -55,6 +57,7 @@ pub type Options {
 pub fn default_checks() -> List(CheckName) {
   [
     WorkflowConfig,
+    ScheduledJobs,
     LinearContract,
     LinearSmoke,
     InstanceLock,
@@ -71,6 +74,7 @@ pub fn list_check_names() -> List(String) {
 pub fn check_name_to_string(check: CheckName) -> String {
   case check {
     WorkflowConfig -> "workflow-config"
+    ScheduledJobs -> "scheduled-jobs"
     LinearContract -> "linear-contract"
     LinearSmoke -> "linear-smoke"
     InstanceLock -> "instance-lock"
@@ -82,6 +86,7 @@ pub fn check_name_to_string(check: CheckName) -> String {
 pub fn parse_check_name(name: String) -> Result(CheckName, String) {
   case name {
     "workflow-config" -> Ok(WorkflowConfig)
+    "scheduled-jobs" -> Ok(ScheduledJobs)
     "linear-contract" -> Ok(LinearContract)
     "linear-smoke" -> Ok(LinearSmoke)
     "instance-lock" -> Ok(InstanceLock)
@@ -202,6 +207,15 @@ fn human_pass_body(result: CheckResult) -> String {
         <> plural(field_or(result.fields, "workflow_count", ""), "DAG", "DAGs")
         <> ".",
       ])
+    ScheduledJobs ->
+      indent([
+        "Scheduled job configuration is valid for the fixed-interval MVP.",
+        "Jobs: "
+          <> field_or(result.fields, "scheduled_job_count", "0")
+          <> ", enabled: "
+          <> field_or(result.fields, "enabled_job_count", "0")
+          <> ".",
+      ])
     LinearContract ->
       indent([
         "Project board matches configured states and labels.",
@@ -228,7 +242,7 @@ fn human_pass_body(result: CheckResult) -> String {
       indent(["Local instance lock can be acquired and released."])
     WorkspaceHooks ->
       indent([
-        "Scratch workspace was prepared and cleaned up.",
+        "Scratch workspace was prepared and cleaned up during the workspace driver migration transition.",
         "Hooks: " <> field_or(result.fields, "hooks", "none") <> ".",
       ])
     PiProbe -> indent(["pi RPC launched successfully and no prompt was sent."])
@@ -285,7 +299,10 @@ fn human_conclusion(report: Report) -> String {
   }
 }
 
-fn report_config_path(report: Report, requested_path: Option(String)) -> String {
+fn report_config_path(
+  report: Report,
+  requested_path: Option(String),
+) -> String {
   case find_result(report.results, WorkflowConfig) {
     Some(result) ->
       field_or(result.fields, "config_path", option_path(requested_path))
@@ -350,10 +367,11 @@ fn status_marker(status: CheckStatus) -> String {
 fn check_title(check: CheckName) -> String {
   case check {
     WorkflowConfig -> "Workflow config"
+    ScheduledJobs -> "Scheduled jobs"
     LinearContract -> "Linear contract"
     LinearSmoke -> "Linear smoke"
     InstanceLock -> "Instance lock"
-    WorkspaceHooks -> "Workspace hooks"
+    WorkspaceHooks -> "Workspace driver migration"
     PiProbe -> "Pi probe"
   }
 }
@@ -362,13 +380,16 @@ fn impact(check: CheckName) -> String {
   case check {
     WorkflowConfig ->
       "Scherzo cannot safely start because config, workflow DAGs, or prompt templates did not load."
+    ScheduledJobs ->
+      "Scheduled jobs may fail before dispatch, create noisy Linear triage issues, or reference Linear issue variables that do not exist for scheduled runs."
     LinearContract ->
       "Configured Linear states or labels may not match the target board."
     LinearSmoke ->
       "Scherzo may not be able to read candidate issues from Linear."
     InstanceLock ->
       "Another local Scherzo process may be active, or a stale lock may need operator cleanup."
-    WorkspaceHooks -> "Scherzo may not be able to prepare per-issue workspaces."
+    WorkspaceHooks ->
+      "Legacy hook-based workspace configuration still runs during this transition, but operators need migration guidance before future driver-backed profiles become dispatchable."
     PiProbe ->
       "Scherzo may not be able to launch pi RPC in prepared workspaces."
   }
@@ -380,6 +401,12 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- Confirm the YAML path is correct and ends in .yaml or .yml.",
       "- Confirm LINEAR_API_KEY and any referenced environment variables are set.",
       "- Confirm routed workflow DAG and prompt-template files exist.",
+    ]
+    ScheduledJobs -> [
+      "- Confirm scheduled_jobs entries reference existing workflows and use every: <n><ms|s|m|h> with at least 1000ms.",
+      "- Keep schedule-level input, vars, payload, catch_up: true, and non-skip overlap modes out of the MVP config.",
+      "- Replace issue.* references in scheduled workflows with scheduled_job.*, schedule.*, or run.* variables.",
+      "- When Linear reporting is enabled, configure a triage state and let Scherzo ensure reserved scheduled-job dedupe labels.",
     ]
     LinearContract -> [
       "- Confirm tracker.project_slug points to the expected Linear project.",
@@ -396,8 +423,9 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- If no process is active, remove the stale instance.lock file manually.",
     ]
     WorkspaceHooks -> [
-      "- Inspect workspace.hooks.create, before_step, and remove in the YAML config.",
-      "- Re-run this check after fixing hook commands or workspace permissions.",
+      "- Inspect any legacy workspace.hooks or workspace.profiles.<name>.hooks entries in the YAML config.",
+      "- Plan migration to workspace.profiles.<name>.driver after driver invocation support lands.",
+      "- Read docs/runbooks/workspace-driver-migration.md for before-and-after examples and rollout guidance.",
     ]
     PiProbe -> [
       "- Confirm pi is installed and the configured pi.command supports --mode rpc.",
@@ -471,18 +499,11 @@ fn parse_selected_checks(
   case raw {
     [] -> Ok(list.reverse(acc))
     [name, ..rest] -> {
-      use check <- result_try(parse_check_name(name))
+      use check <- result.try(parse_check_name(name))
       case contains_check(acc, check) {
         True -> parse_selected_checks(rest, acc)
         False -> parse_selected_checks(rest, [check, ..acc])
       }
     }
-  }
-}
-
-fn result_try(result: Result(a, e), next: fn(a) -> Result(b, e)) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
   }
 }

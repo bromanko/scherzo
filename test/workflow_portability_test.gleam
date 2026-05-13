@@ -1,0 +1,360 @@
+import gleam/list
+import gleam/string
+import simplifile
+
+fn read_file(path: String) -> String {
+  let assert Ok(contents) = simplifile.read(path)
+  contents
+}
+
+fn assert_contains(contents: String, expected: String) -> Nil {
+  case string.contains(contents, expected) {
+    True -> Nil
+    False -> {
+      let message = "expected text not found: " <> expected
+      panic as message
+    }
+  }
+}
+
+fn assert_not_contains(contents: String, unexpected: String) -> Nil {
+  case string.contains(contents, unexpected) {
+    False -> Nil
+    True -> {
+      let message = "unexpected text still present: " <> unexpected
+      panic as message
+    }
+  }
+}
+
+fn assert_not_contains_any(contents: String, unexpected_terms: List(String)) {
+  list.each(unexpected_terms, fn(term) { assert_not_contains(contents, term) })
+}
+
+fn local_pi_config_terms() -> List(String) {
+  [
+    "/Users/bromanko",
+    "Code/llm-agents",
+    "~/.pi",
+    "~/.config/pi",
+    "prompt-template setup",
+  ]
+}
+
+pub fn execplan_workflow_skills_are_repo_local_and_checked_in_test() {
+  let exec_plan_skill = read_file(".pi/skills/exec-plan/SKILL.md")
+  let exec_plan_review_skill = read_file(".pi/skills/exec-plan-review/SKILL.md")
+
+  assert_contains(exec_plan_skill, "\nname: exec-plan\n")
+  assert_contains(exec_plan_skill, "# Execution Plans")
+  assert_contains(exec_plan_review_skill, "\nname: exec-plan-review\n")
+  assert_contains(exec_plan_review_skill, "../exec-plan/SKILL.md")
+
+  let draft_prompt = read_file(".scherzo/workflows/prompts/execplan-draft.md")
+  let review_prompt = read_file(".scherzo/workflows/prompts/execplan-review.md")
+  let incorporate_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-incorporate-review.md")
+  let revision_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-revision.md")
+  let implementation_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-implementation-implement.md")
+
+  assert_contains(draft_prompt, ".pi/skills/exec-plan/SKILL.md")
+  assert_contains(revision_prompt, ".pi/skills/exec-plan/SKILL.md")
+  assert_contains(review_prompt, ".pi/skills/exec-plan-review/SKILL.md")
+  assert_contains(review_prompt, ".pi/skills/exec-plan/SKILL.md")
+  assert_contains(incorporate_prompt, ".pi/skills/exec-plan/SKILL.md")
+  assert_contains(incorporate_prompt, ".pi/skills/exec-plan-review/SKILL.md")
+  assert_contains(implementation_prompt, ".pi/skills/exec-plan/SKILL.md")
+
+  list.each(
+    [
+      draft_prompt,
+      revision_prompt,
+      review_prompt,
+      incorporate_prompt,
+      implementation_prompt,
+    ],
+    fn(prompt) { assert_not_contains_any(prompt, local_pi_config_terms()) },
+  )
+}
+
+pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test() {
+  let implementation_workflow =
+    read_file(".scherzo/workflows/implementation.yaml")
+  let execplan_implementation_workflow =
+    read_file(".scherzo/workflows/execplan-implementation.yaml")
+  let implementation_prompt =
+    read_file(".scherzo/workflows/prompts/code-review.md")
+  let execplan_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-implementation-review.md")
+
+  assert_contains(implementation_workflow, "lane_correctness")
+  assert_contains(implementation_workflow, "lane_test_quality")
+  assert_contains(implementation_workflow, "lane_idioms_maintainability")
+  assert_contains(implementation_workflow, "lane_security_performance")
+  assert_contains(implementation_workflow, "submit_review_lane_draft")
+  assert_contains(implementation_workflow, "prepare-native")
+  assert_contains(implementation_workflow, "synthesize_review")
+  assert_contains(implementation_workflow, "scripts/scherzo-review")
+
+  assert_contains(execplan_implementation_workflow, "lane_correctness")
+  assert_contains(execplan_implementation_workflow, "lane_test_quality")
+  assert_contains(
+    execplan_implementation_workflow,
+    "lane_idioms_maintainability",
+  )
+  assert_contains(execplan_implementation_workflow, "lane_security_performance")
+  assert_contains(execplan_implementation_workflow, "submit_review_lane_draft")
+  assert_contains(execplan_implementation_workflow, "prepare-native")
+  assert_contains(execplan_implementation_workflow, "synthesize_review")
+  assert_contains(execplan_implementation_workflow, "scripts/scherzo-review")
+  assert_not_contains(execplan_implementation_workflow, "run-lane --lane")
+
+  list.each([implementation_prompt, execplan_prompt], fn(prompt) {
+    assert_contains(prompt, "REVIEW_FINAL_ARTIFACT_PATH")
+    assert_contains(prompt, "scripts/scherzo-review")
+    assert_contains(prompt, "Do not invoke local pi slash commands")
+    assert_not_contains(prompt, "`/review")
+    assert_not_contains(prompt, ".pi/skills/gleam")
+    assert_not_contains(prompt, "gleam-review")
+  })
+
+  let assert Ok(False) = simplifile.is_directory(".pi/skills/gleam-review")
+  let assert Ok(False) = simplifile.is_directory(".pi/skills/gleam-code-review")
+  let assert Ok(False) = simplifile.is_directory(".pi/skills/gleam-test-review")
+  let assert Ok(False) =
+    simplifile.is_directory(".pi/skills/gleam-security-review")
+  let assert Ok(False) =
+    simplifile.is_directory(".pi/skills/gleam-performance-review")
+}
+
+pub fn implementation_like_workflows_use_workspace_driver_language_test() {
+  let workflow_expectations = [
+    #(
+      ".scherzo/workflows/implementation.yaml",
+      "workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+    ),
+    #(
+      ".scherzo/workflows/execplan.yaml",
+      "workspace_capabilities: [status, diff, changed-files, publish-change]",
+    ),
+    #(
+      ".scherzo/workflows/execplan-revision.yaml",
+      "workspace_capabilities: [status, diff, changed-files, refresh-base, publish-change]",
+    ),
+    #(
+      ".scherzo/workflows/execplan-implementation.yaml",
+      "workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]",
+    ),
+    #(
+      ".scherzo/workflows/merge-conflict-resolution.yaml",
+      "workspace_capabilities: [status, diff, changed-files, publish-change]",
+    ),
+  ]
+
+  list.each(workflow_expectations, fn(expectation) {
+    let #(path, capabilities) = expectation
+    let workflow = read_file(path)
+    assert_contains(workflow, "workspace_profile: dogfood-jj")
+    assert_contains(workflow, capabilities)
+    assert_not_contains(workflow, "--from @- --to @")
+  })
+
+  let prompt_paths = [
+    ".scherzo/workflows/prompts/implement.md",
+    ".scherzo/workflows/prompts/code-review.md",
+    ".scherzo/workflows/prompts/apply-feedback.md",
+    ".scherzo/workflows/prompts/repair-base-drift.md",
+    ".scherzo/workflows/prompts/execplan-draft.md",
+    ".scherzo/workflows/prompts/execplan-repair-validation.md",
+    ".scherzo/workflows/prompts/execplan-review.md",
+    ".scherzo/workflows/prompts/execplan-incorporate-review.md",
+    ".scherzo/workflows/prompts/execplan-revision.md",
+    ".scherzo/workflows/prompts/execplan-implementation-implement.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-review.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
+    ".scherzo/workflows/prompts/resolve-merge-conflicts.md",
+  ]
+
+  list.each(prompt_paths, fn(path) {
+    let prompt = read_file(path)
+    assert_not_contains_any(prompt, [
+      "dedicated jj workspace",
+      "jj status --color=never",
+      "jj diff --color=never",
+      "jj diff --from @-",
+      "manage jj workspaces",
+    ])
+  })
+}
+
+pub fn execplan_authoring_prompts_use_markdown_source_of_truth_test() {
+  let draft_prompt = read_file(".scherzo/workflows/prompts/execplan-draft.md")
+  let repair_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-repair-validation.md")
+  let review_prompt = read_file(".scherzo/workflows/prompts/execplan-review.md")
+  let incorporate_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-incorporate-review.md")
+
+  assert_contains(draft_prompt, "checked-in Markdown ExecPlan proposal")
+  assert_contains(
+    draft_prompt,
+    "docs/plans/{{ issue.identifier }}-<short-kebab-title>.md",
+  )
+  assert_contains(
+    draft_prompt,
+    "Do not create a tracked `docs/plans/*.html` file",
+  )
+  assert_contains(draft_prompt, "HTML is a derived viewer artifact only")
+  assert_contains(
+    draft_prompt,
+    "scripts/scherzo-execplan validate docs/plans/{{ issue.identifier }}-<short-kebab-title>.md",
+  )
+  assert_not_contains(
+    draft_prompt,
+    "final tracked artifact must be the `.html` file",
+  )
+  assert_not_contains(draft_prompt, "render tmp/execplan-source.md")
+
+  assert_contains(repair_prompt, "single changed Markdown plan artifact")
+  assert_contains(
+    repair_prompt,
+    "Revise only the `docs/plans/*.md` plan artifact",
+  )
+  assert_contains(
+    repair_prompt,
+    "The only tracked plan artifact must remain `docs/plans/*.md`",
+  )
+
+  assert_contains(review_prompt, "single changed Markdown plan artifact")
+  assert_contains(review_prompt, "Markdown plan content")
+  assert_not_contains(review_prompt, "PLAN_HTML_PATH")
+
+  assert_contains(incorporate_prompt, "Markdown plan artifact")
+  assert_contains(
+    incorporate_prompt,
+    "Revise only the `docs/plans/*.md` plan artifact",
+  )
+}
+
+pub fn execplan_prompts_use_bounded_plan_context_and_safe_html_edits_test() {
+  let implementation_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-implementation-implement.md")
+  let verifier_prompt =
+    read_file(
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    )
+  let revision_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-revision.md")
+  let apply_feedback_prompt =
+    read_file(
+      ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+    )
+  let apply_plan_completion_prompt =
+    read_file(
+      ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
+    )
+
+  assert_contains(
+    implementation_prompt,
+    "New ExecPlans are checked in as Markdown under `docs/plans/*.md`",
+  )
+  assert_contains(implementation_prompt, "PLAN_BRIEF_STATUS")
+  assert_contains(implementation_prompt, "PLAN_BRIEF_PATH")
+  assert_contains(implementation_prompt, "PLAN_INDEX_PATH")
+  assert_contains(
+    implementation_prompt,
+    "the generated brief plus named `section` reads are the required first pass",
+  )
+  assert_contains(
+    implementation_prompt,
+    "scripts/scherzo-execplan-html section",
+  )
+  assert_contains(
+    implementation_prompt,
+    "scripts/scherzo-implementation plan-brief --check",
+  )
+  assert_contains(
+    implementation_prompt,
+    "scripts/scherzo-implementation plan-brief --refresh-if-stale",
+  )
+  assert_contains(implementation_prompt, "full plan remains authoritative")
+  assert_contains(
+    implementation_prompt,
+    "For Markdown plans, edit `PLAN_PATH` directly",
+  )
+  assert_contains(implementation_prompt, "legacy HTML plans")
+  assert_contains(implementation_prompt, "extract-md")
+  assert_contains(implementation_prompt, "render tmp/current-execplan.md")
+
+  assert_contains(verifier_prompt, "PLAN_BRIEF_STATUS")
+  assert_contains(verifier_prompt, "PLAN_BRIEF_PATH")
+  assert_contains(verifier_prompt, "PLAN_INDEX_PATH")
+  assert_contains(
+    verifier_prompt,
+    "scripts/scherzo-implementation plan-brief --check",
+  )
+  assert_contains(
+    verifier_prompt,
+    "scripts/scherzo-implementation plan-brief --refresh-if-stale",
+  )
+  assert_contains(verifier_prompt, "scripts/scherzo-execplan-html section")
+  assert_contains(verifier_prompt, "full plan remains authoritative fallback")
+
+  assert_contains(
+    revision_prompt,
+    "New plans are Markdown source files under `docs/plans/*.md`",
+  )
+  assert_contains(
+    revision_prompt,
+    "If it is Markdown, edit `PLAN_PATH` directly",
+  )
+  assert_contains(revision_prompt, "extract-md")
+  assert_contains(revision_prompt, "tmp/execplan-revision-source.md")
+  assert_contains(revision_prompt, "render tmp/execplan-revision-source.md")
+  assert_contains(revision_prompt, "Direct HTML edits are only a fallback")
+
+  assert_contains(
+    apply_feedback_prompt,
+    "For Markdown plan living-document edits, edit `PLAN_PATH` directly",
+  )
+  assert_contains(
+    apply_feedback_prompt,
+    "legacy HTML plan living-document edits",
+  )
+  assert_contains(
+    apply_plan_completion_prompt,
+    "For Markdown plan living-document edits, edit `PLAN_PATH` directly",
+  )
+  assert_contains(
+    apply_plan_completion_prompt,
+    "legacy HTML plan living-document edits",
+  )
+}
+
+pub fn workflow_docs_explain_vendored_skill_update_and_validation_test() {
+  let docs = read_file(".scherzo/README.md")
+
+  assert_contains(docs, "## Vendored pi skills and portability")
+  assert_contains(docs, ".pi/skills/exec-plan/SKILL.md")
+  assert_contains(docs, ".pi/skills/exec-plan-review/SKILL.md")
+  assert_contains(docs, "copy the canonical skill content")
+  assert_contains(docs, "frontmatter `name:`")
+  assert_contains(docs, "workflow portability validation")
+  assert_contains(docs, "doctor --check workflow-config")
+  assert_contains(docs, "scripts/scherzo-review")
+  assert_contains(docs, "checked-in Markdown ExecPlan source file")
+  assert_contains(docs, "PLAN_MARKDOWN_PATH")
+  assert_contains(docs, "HTML previews are derived viewer artifacts")
+  assert_contains(docs, "legacy `.html` still accepted")
+  assert_not_contains(docs, "PLAN_HTML_PATH")
+  assert_contains(docs, "workspace.profiles.dogfood-jj")
+  assert_contains(docs, "workspace_profile: dogfood-jj")
+  assert_contains(docs, "do not add language-specific review skills")
+  assert_contains(docs, "LIV-115")
+}

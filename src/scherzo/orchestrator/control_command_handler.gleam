@@ -21,6 +21,12 @@ pub type Context(state) {
       #(state, command.CommandResult),
     unpark_issue: fn(state, command.OperatorCommand, command.IssueRef) ->
       #(state, command.CommandResult),
+    // Long-running daemon processes can construct this tuple from old code while
+    // this module is reloaded from newer code. Do not insert new fields before
+    // log_result; append new callbacks after it and update the compatibility
+    // shims at the bottom of this module.
+    run_schedule_now: fn(state, command.OperatorCommand, String) ->
+      #(state, command.CommandResult),
     abort_session: fn(state, command.OperatorCommand, String, Int) ->
       #(state, command.CommandResult),
     route_worker_command: fn(
@@ -31,10 +37,8 @@ pub type Context(state) {
       fn(
         process.Subject(worker_command.Command),
         process.Subject(worker_command.Reply),
-      ) ->
-        Nil,
-    ) ->
-      #(state, command.CommandResult),
+      ) -> Nil,
+    ) -> #(state, command.CommandResult),
     log_result: fn(state, command.CommandResult, List(log.Field)) -> Nil,
   )
 }
@@ -53,7 +57,7 @@ pub fn apply(
           operator_command,
           Some("dispatch paused; pending_claims=" <> int.to_string(pending)),
         )
-      context.log_result(state, result, [
+      log_context_result(context, state, result, [
         #("pending_claims", int.to_string(pending)),
       ])
       #(state, result)
@@ -61,7 +65,7 @@ pub fn apply(
     command.ResumeDispatch -> {
       let state = context.set_paused(context.state, False)
       let result = command.applied(operator_command, Some("dispatch resumed"))
-      context.log_result(state, result, [])
+      log_context_result(context, state, result, [])
       #(state, result)
     }
     command.ReloadWorkflow ->
@@ -110,7 +114,7 @@ pub fn apply(
               "prompt_too_large",
               Some("operator prompt is too large"),
             )
-          context.log_result(context.state, result, [])
+          log_context_result(context, context.state, result, [])
           #(context.state, result)
         }
         False ->
@@ -133,7 +137,7 @@ pub fn apply(
               "ui_response_too_large",
               Some("operator UI response value is too large"),
             )
-          context.log_result(context.state, result, [])
+          log_context_result(context, context.state, result, [])
           #(context.state, result)
         }
         False ->
@@ -150,6 +154,24 @@ pub fn apply(
             },
           )
       }
+    command.RunScheduleNow(job_id) ->
+      case ffi_supports_run_schedule_now(context) {
+        True ->
+          log_transition(
+            context,
+            context.run_schedule_now(context.state, operator_command, job_id),
+          )
+        False -> {
+          let result =
+            command.rejected(
+              operator_command,
+              "daemon_code_stale",
+              Some("restart the daemon before running schedules manually"),
+            )
+          log_context_result(context, context.state, result, [])
+          #(context.state, result)
+        }
+      }
   }
 }
 
@@ -158,8 +180,17 @@ fn log_transition(
   transition: #(state, command.CommandResult),
 ) -> #(state, command.CommandResult) {
   let #(state, result) = transition
-  context.log_result(state, result, [])
+  log_context_result(context, state, result, [])
   #(state, result)
+}
+
+fn log_context_result(
+  context: Context(state),
+  state: state,
+  result: command.CommandResult,
+  fields: List(log.Field),
+) -> Nil {
+  ffi_log_result(context, state, result, fields)
 }
 
 pub fn worker_command_timeout(timeout_ms: Int) -> Int {
@@ -209,3 +240,14 @@ fn min_int(a: Int, b: Int) -> Int {
     False -> b
   }
 }
+
+@external(erlang, "scherzo_control_command_handler_ffi", "log_result")
+fn ffi_log_result(
+  context: Context(state),
+  state: state,
+  result: command.CommandResult,
+  fields: List(log.Field),
+) -> Nil
+
+@external(erlang, "scherzo_control_command_handler_ffi", "supports_run_schedule_now")
+fn ffi_supports_run_schedule_now(context: Context(state)) -> Bool

@@ -2,14 +2,20 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
+import gleam/result
 import gleam/string
+import scherzo/config/types as config_types
 import scherzo/model_config
+import scherzo/structured_output_source
+import scherzo/workflow_dag_validator_parser
 import yay
 
 pub type WorkflowDag {
   WorkflowDag(
     id: String,
     description: Option(String),
+    workspace_profile: Option(String),
+    workspace_capabilities: List(config_types.WorkspaceCapability),
     max_parallel_steps: Int,
     steps: List(WorkflowStep),
   )
@@ -27,8 +33,45 @@ pub type WorkflowStep {
 }
 
 pub type StepKind {
-  AgentStep(prompt: PromptRef)
+  AgentStep(prompt: PromptRef, structured_output: Option(StructuredOutputSpec))
   CommandStep(run: String, timeout_ms: Option(Int))
+}
+
+pub type StructuredOutputFormat {
+  StructuredJson
+}
+
+pub type StructuredOutputSchema {
+  StructuredObjectSchema(required_keys: List(String))
+}
+
+pub type StructuredOutputValidator {
+  JsonSchemaValidator(name: String, path: String, draft: Option(String))
+  CommandValidator(
+    name: String,
+    argv: List(String),
+    timeout_ms: Int,
+    working_directory: ValidatorWorkingDirectory,
+    env: List(#(String, String)),
+  )
+}
+
+pub type ValidatorWorkingDirectory {
+  ValidatorInWorkspace
+  ValidatorInRepository
+  ValidatorInRunRoot
+}
+
+pub type StructuredOutputSpec {
+  StructuredOutputSpec(
+    artifact_name: String,
+    required: Bool,
+    source: structured_output_source.StructuredOutputSource,
+    format: StructuredOutputFormat,
+    schema: StructuredOutputSchema,
+    validators: List(StructuredOutputValidator),
+    validation_retries: Int,
+  )
 }
 
 pub type PromptRef {
@@ -60,15 +103,19 @@ pub fn parse(content: String) -> Result(WorkflowDag, DagError) {
 pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
   case root {
     yay.NodeMap(_) -> {
-      use _ <- result_try(require_version(root))
-      use id <- result_try(required_string(root, "id", "missing_workflow_id"))
-      use _ <- result_try(validate_workflow_id(id))
-      use max_parallel_steps <- result_try(read_max_parallel_steps(root))
-      use steps <- result_try(read_steps(root))
+      use _ <- result.try(require_version(root))
+      use id <- result.try(required_string(root, "id", "missing_workflow_id"))
+      use _ <- result.try(validate_workflow_id(id))
+      use workspace_profile <- result.try(read_workspace_profile(root))
+      use workspace_capabilities <- result.try(read_workspace_capabilities(root))
+      use max_parallel_steps <- result.try(read_max_parallel_steps(root))
+      use steps <- result.try(read_steps(root))
       let dag =
         WorkflowDag(
           id: id,
           description: optional_string(root, "description"),
+          workspace_profile: workspace_profile,
+          workspace_capabilities: workspace_capabilities,
           max_parallel_steps: max_parallel_steps,
           steps: steps,
         )
@@ -76,23 +123,6 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
     }
     _ -> Error(DagError("root_not_map", "workflow DAG must be a map"))
   }
-}
-
-pub fn inline_agent_step(prompt: String) -> WorkflowStep {
-  WorkflowStep(
-    id: "main",
-    kind: AgentStep(PromptInline(prompt)),
-    depends_on: [],
-    workspace: WorkspaceRef(name: "main", from: None),
-    on_failure: FailWorkflow,
-    model_settings: model_config.default_settings(),
-  )
-}
-
-pub fn legacy_inline(id: String, prompt: String) -> WorkflowDag {
-  WorkflowDag(id: id, description: None, max_parallel_steps: 1, steps: [
-    inline_agent_step(prompt),
-  ])
 }
 
 pub fn step_by_id(dag: WorkflowDag, id: String) -> Result(WorkflowStep, Nil) {
@@ -113,24 +143,67 @@ pub fn terminal_step(dag: WorkflowDag) -> Option(WorkflowStep) {
 
 pub fn prompt_file_path(step: WorkflowStep) -> Option(String) {
   case step.kind {
-    AgentStep(PromptFile(path)) -> Some(path)
+    AgentStep(PromptFile(path), _) -> Some(path)
     _ -> None
   }
 }
 
 pub fn with_prompt(step: WorkflowStep, prompt: PromptRef) -> WorkflowStep {
   case step.kind {
-    AgentStep(_) -> WorkflowStep(..step, kind: AgentStep(prompt))
+    AgentStep(_, structured_output) ->
+      WorkflowStep(..step, kind: AgentStep(prompt, structured_output))
     _ -> step
   }
 }
 
+pub fn structured_output_format_to_string(
+  format: StructuredOutputFormat,
+) -> String {
+  case format {
+    StructuredJson -> "json"
+  }
+}
+
+pub fn structured_output_validator_name(
+  validator: StructuredOutputValidator,
+) -> String {
+  case validator {
+    JsonSchemaValidator(name: name, ..) -> name
+    CommandValidator(name: name, ..) -> name
+  }
+}
+
+pub fn structured_output_validator_type_to_string(
+  validator: StructuredOutputValidator,
+) -> String {
+  case validator {
+    JsonSchemaValidator(..) -> "json_schema"
+    CommandValidator(..) -> "command"
+  }
+}
+
+pub fn structured_output_validator_to_string(
+  validator: StructuredOutputValidator,
+) -> String {
+  structured_output_validator_name(validator)
+}
+
+pub fn validator_working_directory_to_string(
+  working_directory: ValidatorWorkingDirectory,
+) -> String {
+  case working_directory {
+    ValidatorInWorkspace -> "workspace"
+    ValidatorInRepository -> "repository"
+    ValidatorInRunRoot -> "run_root"
+  }
+}
+
 fn validate(dag: WorkflowDag) -> Result(WorkflowDag, DagError) {
-  use _ <- result_try(validate_unique_step_ids(dag.steps))
-  use _ <- result_try(validate_dependencies_exist(dag.steps))
-  use _ <- result_try(validate_acyclic(dag.steps))
-  use _ <- result_try(validate_workspace_sources(dag.steps))
-  use _ <- result_try(validate_single_terminal_sink(dag.steps))
+  use _ <- result.try(validate_unique_step_ids(dag.steps))
+  use _ <- result.try(validate_dependencies_exist(dag.steps))
+  use _ <- result.try(validate_acyclic(dag.steps))
+  use _ <- result.try(validate_workspace_sources(dag.steps))
+  use _ <- result.try(validate_single_terminal_sink(dag.steps))
   Ok(dag)
 }
 
@@ -142,8 +215,80 @@ fn require_version(root: yay.Node) -> Result(Nil, DagError) {
   }
 }
 
+fn read_workspace_profile(root: yay.Node) -> Result(Option(String), DagError) {
+  case get_node(root, "workspace_profile") {
+    None -> Ok(None)
+    Some(yay.NodeStr(profile)) ->
+      case valid_workflow_or_workspace_id(profile) {
+        True -> Ok(Some(profile))
+        False ->
+          Error(DagError(
+            "invalid_workspace_profile",
+            "invalid workspace_profile: " <> profile,
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "workspace_profile_not_string",
+        "workspace_profile must be a string",
+      ))
+  }
+}
+
+fn read_workspace_capabilities(
+  root: yay.Node,
+) -> Result(List(config_types.WorkspaceCapability), DagError) {
+  case get_node(root, "workspace_capabilities") {
+    None -> Ok([])
+    Some(yay.NodeSeq(values)) ->
+      read_workspace_capability_values(values, [], [])
+    Some(_) ->
+      Error(DagError(
+        "workspace_capabilities_not_list",
+        "workspace_capabilities must be a list",
+      ))
+  }
+}
+
+fn read_workspace_capability_values(
+  values: List(yay.Node),
+  seen: List(config_types.WorkspaceCapability),
+  acc: List(config_types.WorkspaceCapability),
+) -> Result(List(config_types.WorkspaceCapability), DagError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeStr(value), ..rest] -> {
+      use capability <- result.try(
+        config_types.workspace_capability_from_string(value)
+        |> result.replace_error(DagError(
+          "unknown_workspace_capability",
+          "unknown workspace capability: " <> value,
+        )),
+      )
+      case list.contains(seen, capability) {
+        True ->
+          Error(DagError(
+            "duplicate_workspace_capability",
+            "duplicate workspace capability: "
+              <> config_types.workspace_capability_to_string(capability),
+          ))
+        False ->
+          read_workspace_capability_values(rest, [capability, ..seen], [
+            capability,
+            ..acc
+          ])
+      }
+    }
+    [_, ..] ->
+      Error(DagError(
+        "workspace_capabilities_entry_not_string",
+        "workspace_capabilities entries must be strings",
+      ))
+  }
+}
+
 fn read_max_parallel_steps(root: yay.Node) -> Result(Int, DagError) {
-  let value = optional_int(root, "max_parallel_steps") |> option_unwrap(1)
+  let value = optional_int(root, "max_parallel_steps") |> option.unwrap(1)
   case value >= 1 {
     True -> Ok(value)
     False ->
@@ -169,7 +314,7 @@ fn read_step_list(
   case values {
     [] -> Ok(list.reverse(acc))
     [value, ..rest] -> {
-      use step <- result_try(read_step(value))
+      use step <- result.try(read_step(value))
       read_step_list(rest, [step, ..acc])
     }
   }
@@ -178,13 +323,15 @@ fn read_step_list(
 fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
   case node {
     yay.NodeMap(_) -> {
-      use id <- result_try(required_string(node, "id", "missing_step_id"))
-      use _ <- result_try(validate_step_id(id))
-      use kind <- result_try(read_step_kind(node))
-      use depends_on <- result_try(read_depends_on(node))
-      use workspace <- result_try(read_workspace(node))
-      use on_failure <- result_try(read_failure_policy(node))
-      use model_settings <- result_try(read_model_settings(kind, node))
+      use _ <- result.try(reject_step_workspace_profile(node))
+      use _ <- result.try(reject_step_workspace_capabilities(node))
+      use id <- result.try(required_string(node, "id", "missing_step_id"))
+      use _ <- result.try(validate_step_id(id))
+      use kind <- result.try(read_step_kind(node, id))
+      use depends_on <- result.try(read_depends_on(node))
+      use workspace <- result.try(read_workspace(node))
+      use on_failure <- result.try(read_failure_policy(node))
+      use model_settings <- result.try(read_model_settings(kind, node))
       Ok(WorkflowStep(
         id: id,
         kind: kind,
@@ -198,42 +345,353 @@ fn read_step(node: yay.Node) -> Result(WorkflowStep, DagError) {
   }
 }
 
-fn read_step_kind(node: yay.Node) -> Result(StepKind, DagError) {
+fn reject_step_workspace_profile(node: yay.Node) -> Result(Nil, DagError) {
+  case get_node(node, "workspace_profile") {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(DagError(
+        "step_workspace_profile_not_supported",
+        "workspace_profile is only valid at workflow top level",
+      ))
+  }
+}
+
+fn reject_step_workspace_capabilities(node: yay.Node) -> Result(Nil, DagError) {
+  case get_node(node, "workspace_capabilities") {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(DagError(
+        "step_workspace_capabilities_not_supported",
+        "workspace_capabilities is only valid at workflow top level",
+      ))
+  }
+}
+
+fn read_step_kind(
+  node: yay.Node,
+  step_id: String,
+) -> Result(StepKind, DagError) {
   let kind = optional_string(node, "kind")
   case kind {
     Some(raw) -> {
       case string.trim(raw) |> string.lowercase {
         "agent" -> {
-          use prompt <- result_try(required_string(
+          use prompt <- result.try(required_string(
             node,
             "prompt",
             "missing_prompt",
           ))
-          Ok(AgentStep(PromptFile(prompt)))
+          use structured_output <- result.try(read_structured_output(
+            node,
+            step_id,
+          ))
+          Ok(AgentStep(PromptFile(prompt), structured_output))
         }
         "command" -> {
-          use run <- result_try(required_string(node, "run", "missing_run"))
+          use _ <- result.try(reject_command_structured_output(node))
+          use run <- result.try(required_string(node, "run", "missing_run"))
           Ok(CommandStep(run: run, timeout_ms: optional_int(node, "timeout_ms")))
         }
         other ->
           Error(DagError("unknown_step_kind", "unknown step kind: " <> other))
       }
     }
-    None -> infer_step_kind(node)
+    None -> infer_step_kind(node, step_id)
   }
 }
 
-fn infer_step_kind(node: yay.Node) -> Result(StepKind, DagError) {
+fn infer_step_kind(
+  node: yay.Node,
+  step_id: String,
+) -> Result(StepKind, DagError) {
   case optional_string(node, "prompt"), optional_string(node, "run") {
-    Some(prompt), None -> Ok(AgentStep(PromptFile(prompt)))
-    None, Some(run) ->
+    Some(prompt), None -> {
+      use structured_output <- result.try(read_structured_output(node, step_id))
+      Ok(AgentStep(PromptFile(prompt), structured_output))
+    }
+    None, Some(run) -> {
+      use _ <- result.try(reject_command_structured_output(node))
       Ok(CommandStep(run: run, timeout_ms: optional_int(node, "timeout_ms")))
+    }
     Some(_), Some(_) ->
       Error(DagError(
         "ambiguous_step_kind",
         "step cannot have both prompt and run without kind",
       ))
     None, None -> Error(DagError("missing_step_kind", "step kind is required"))
+  }
+}
+
+fn read_structured_output(
+  node: yay.Node,
+  step_id: String,
+) -> Result(Option(StructuredOutputSpec), DagError) {
+  case get_node(node, "structured_output") {
+    None -> Ok(None)
+    Some(structured_node) ->
+      case structured_node {
+        yay.NodeMap(_) -> {
+          use format <- result.try(read_structured_output_format(
+            structured_node,
+          ))
+          use artifact_name <- result.try(read_structured_artifact_name(
+            structured_node,
+            step_id,
+          ))
+          use required <- result.try(read_structured_required(structured_node))
+          use source <- result.try(read_structured_source(structured_node))
+          use schema <- result.try(read_structured_schema(structured_node))
+          use validators <- result.try(read_structured_validators(
+            structured_node,
+          ))
+          use validation_retries <- result.try(
+            read_structured_validation_retries(structured_node),
+          )
+          Ok(
+            Some(StructuredOutputSpec(
+              artifact_name: artifact_name,
+              required: required,
+              source: source,
+              format: format,
+              schema: schema,
+              validators: validators,
+              validation_retries: validation_retries,
+            )),
+          )
+        }
+        _ ->
+          Error(DagError(
+            "structured_output_not_map",
+            "structured_output must be a map",
+          ))
+      }
+  }
+}
+
+fn reject_command_structured_output(node: yay.Node) -> Result(Nil, DagError) {
+  case get_node(node, "structured_output") {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(DagError(
+        "structured_output_on_command_step",
+        "structured_output is only valid on agent steps",
+      ))
+  }
+}
+
+fn read_structured_output_format(
+  node: yay.Node,
+) -> Result(StructuredOutputFormat, DagError) {
+  case get_node(node, "format") {
+    None -> Ok(StructuredJson)
+    Some(yay.NodeStr(value)) ->
+      case string.trim(value) |> string.lowercase {
+        "json" -> Ok(StructuredJson)
+        _ ->
+          Error(DagError(
+            "unsupported_structured_output_format",
+            "structured_output.format must be json",
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "structured_output_format_not_string",
+        "structured_output.format must be a string",
+      ))
+  }
+}
+
+fn read_structured_artifact_name(
+  node: yay.Node,
+  step_id: String,
+) -> Result(String, DagError) {
+  let name_result = case get_node(node, "artifact_name") {
+    None -> Ok(step_id)
+    Some(yay.NodeStr(value)) -> Ok(value)
+    Some(_) ->
+      Error(DagError(
+        "structured_artifact_name_not_string",
+        "structured_output.artifact_name must be a string",
+      ))
+  }
+  use name <- result.try(name_result)
+  case valid_step_id(name) {
+    True -> Ok(name)
+    False ->
+      Error(DagError(
+        "invalid_structured_artifact_name",
+        "invalid structured_output.artifact_name: " <> name,
+      ))
+  }
+}
+
+fn read_structured_required(node: yay.Node) -> Result(Bool, DagError) {
+  case get_node(node, "required") {
+    None -> Ok(True)
+    Some(yay.NodeBool(value)) -> Ok(value)
+    Some(_) ->
+      Error(DagError(
+        "structured_output_required_not_bool",
+        "structured_output.required must be a boolean",
+      ))
+  }
+}
+
+fn read_structured_source(
+  node: yay.Node,
+) -> Result(structured_output_source.StructuredOutputSource, DagError) {
+  structured_output_source.parse(node)
+  |> result.map_error(fn(error) {
+    let structured_output_source.SourceError(code, message) = error
+    DagError(code, message)
+  })
+}
+
+fn read_structured_validators(
+  node: yay.Node,
+) -> Result(List(StructuredOutputValidator), DagError) {
+  workflow_dag_validator_parser.parse(node)
+  |> result.map(list.map(_, parsed_validator_to_runtime))
+  |> result.map_error(fn(error) {
+    let workflow_dag_validator_parser.ValidatorParseError(code, message) = error
+    DagError(code, message)
+  })
+}
+
+fn parsed_validator_to_runtime(
+  validator: workflow_dag_validator_parser.ParsedValidator,
+) -> StructuredOutputValidator {
+  case validator {
+    workflow_dag_validator_parser.ParsedJsonSchemaValidator(name, path, draft) ->
+      JsonSchemaValidator(name: name, path: path, draft: draft)
+    workflow_dag_validator_parser.ParsedCommandValidator(
+      name,
+      argv,
+      timeout_ms,
+      working_directory,
+      env,
+    ) ->
+      CommandValidator(
+        name: name,
+        argv: argv,
+        timeout_ms: timeout_ms,
+        working_directory: parsed_working_directory_to_runtime(
+          working_directory,
+        ),
+        env: env,
+      )
+  }
+}
+
+fn parsed_working_directory_to_runtime(
+  working_directory: workflow_dag_validator_parser.ParsedValidatorWorkingDirectory,
+) -> ValidatorWorkingDirectory {
+  case working_directory {
+    workflow_dag_validator_parser.ParsedValidatorInWorkspace ->
+      ValidatorInWorkspace
+    workflow_dag_validator_parser.ParsedValidatorInRepository ->
+      ValidatorInRepository
+    workflow_dag_validator_parser.ParsedValidatorInRunRoot -> ValidatorInRunRoot
+  }
+}
+
+fn read_structured_validation_retries(node: yay.Node) -> Result(Int, DagError) {
+  case get_node(node, "validation_retries") {
+    None -> Ok(1)
+    Some(yay.NodeInt(retries)) ->
+      case retries == 0 || retries == 1 {
+        True -> Ok(retries)
+        False ->
+          Error(DagError(
+            "invalid_structured_output_validation_retries",
+            "structured_output.validation_retries must be 0 or 1",
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "structured_output_validation_retries_not_int",
+        "structured_output.validation_retries must be an integer",
+      ))
+  }
+}
+
+fn read_structured_schema(
+  node: yay.Node,
+) -> Result(StructuredOutputSchema, DagError) {
+  case get_node(node, "schema") {
+    None -> Ok(StructuredObjectSchema([]))
+    Some(schema_node) ->
+      case schema_node {
+        yay.NodeMap(_) -> {
+          use _ <- result.try(read_structured_schema_type(schema_node))
+          use required_keys <- result.try(read_structured_schema_required(
+            schema_node,
+          ))
+          Ok(StructuredObjectSchema(required_keys))
+        }
+        _ ->
+          Error(DagError(
+            "structured_output_schema_not_map",
+            "structured_output.schema must be a map",
+          ))
+      }
+  }
+}
+
+fn read_structured_schema_type(node: yay.Node) -> Result(Nil, DagError) {
+  case get_node(node, "type") {
+    None -> Ok(Nil)
+    Some(yay.NodeStr(value)) ->
+      case string.trim(value) |> string.lowercase {
+        "object" -> Ok(Nil)
+        _ ->
+          Error(DagError(
+            "unsupported_structured_output_schema_type",
+            "structured_output.schema.type must be object",
+          ))
+      }
+    Some(_) ->
+      Error(DagError(
+        "structured_output_schema_type_not_string",
+        "structured_output.schema.type must be a string",
+      ))
+  }
+}
+
+fn read_structured_schema_required(
+  node: yay.Node,
+) -> Result(List(String), DagError) {
+  case get_node(node, "required") {
+    None -> Ok([])
+    Some(yay.NodeSeq(values)) -> read_required_key_list(values, [])
+    Some(_) ->
+      Error(DagError(
+        "structured_output_schema_required_not_list",
+        "structured_output.schema.required must be a list",
+      ))
+  }
+}
+
+fn read_required_key_list(
+  values: List(yay.Node),
+  acc: List(String),
+) -> Result(List(String), DagError) {
+  case values {
+    [] -> Ok(list.reverse(acc))
+    [yay.NodeStr(value), ..rest] ->
+      case valid_step_id(value) {
+        True -> read_required_key_list(rest, [value, ..acc])
+        False ->
+          Error(DagError(
+            "invalid_structured_output_required_key",
+            "invalid structured_output.schema.required key: " <> value,
+          ))
+      }
+    [_, ..] ->
+      Error(DagError(
+        "structured_output_schema_required_entry_not_string",
+        "structured_output.schema.required entries must be strings",
+      ))
   }
 }
 
@@ -250,19 +708,19 @@ fn read_workspace(node: yay.Node) -> Result(WorkspaceRef, DagError) {
   case get_node(node, "workspace") {
     None -> Ok(WorkspaceRef(name: "main", from: None))
     Some(yay.NodeStr(name)) -> {
-      use _ <- result_try(validate_workspace_name(name))
+      use _ <- result.try(validate_workspace_name(name))
       Ok(WorkspaceRef(name: name, from: None))
     }
     Some(workspace_node) ->
       case workspace_node {
         yay.NodeMap(_) -> {
-          use name <- result_try(required_string(
+          use name <- result.try(required_string(
             workspace_node,
             "name",
             "missing_workspace_name",
           ))
-          use _ <- result_try(validate_workspace_name(name))
-          use source <- result_try(read_workspace_source(workspace_node))
+          use _ <- result.try(validate_workspace_name(name))
+          use source <- result.try(read_workspace_source(workspace_node))
           Ok(WorkspaceRef(name: name, from: source))
         }
         _ ->
@@ -278,7 +736,7 @@ fn read_workspace_source(node: yay.Node) -> Result(Option(String), DagError) {
   case optional_string(node, "from") {
     None -> Ok(None)
     Some(source) -> {
-      use _ <- result_try(validate_workspace_name(source))
+      use _ <- result.try(validate_workspace_name(source))
       Ok(Some(source))
     }
   }
@@ -305,7 +763,7 @@ fn read_model_settings(
   node: yay.Node,
 ) -> Result(model_config.Settings, DagError) {
   case kind {
-    AgentStep(_) -> read_agent_model_settings(node)
+    AgentStep(_, _) -> read_agent_model_settings(node)
     CommandStep(_, _) -> reject_command_model_settings(node)
   }
 }
@@ -355,7 +813,9 @@ fn first_model_settings_field(node: yay.Node) -> Option(String) {
   }
 }
 
-fn validate_unique_step_ids(steps: List(WorkflowStep)) -> Result(Nil, DagError) {
+fn validate_unique_step_ids(
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
   validate_unique_step_ids_loop(steps, [])
 }
 
@@ -388,7 +848,7 @@ fn validate_dependencies_exist_loop(
   case steps {
     [] -> Ok(Nil)
     [step, ..rest] -> {
-      use _ <- result_try(validate_dependency_ids(step.depends_on, ids, step.id))
+      use _ <- result.try(validate_dependency_ids(step.depends_on, ids, step.id))
       validate_dependencies_exist_loop(rest, ids)
     }
   }
@@ -425,7 +885,7 @@ fn validate_acyclic_loop(
   case steps {
     [] -> Ok(Nil)
     [step, ..rest] -> {
-      use _ <- result_try(detect_cycle(step.id, by_id, []))
+      use _ <- result.try(detect_cycle(step.id, by_id, []))
       validate_acyclic_loop(rest, by_id)
     }
   }
@@ -455,7 +915,7 @@ fn detect_cycle_deps(
   case deps {
     [] -> Ok(Nil)
     [dep, ..rest] -> {
-      use _ <- result_try(detect_cycle(dep, by_id, path))
+      use _ <- result.try(detect_cycle(dep, by_id, path))
       detect_cycle_deps(rest, by_id, path)
     }
   }
@@ -690,19 +1150,5 @@ fn get_node(node: yay.Node, key: String) -> Option(yay.Node) {
         Error(_) -> None
       }
     _ -> None
-  }
-}
-
-fn option_unwrap(value: Option(a), default: a) -> a {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
-}
-
-fn result_try(result: Result(a, e), next: fn(a) -> Result(b, e)) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
   }
 }

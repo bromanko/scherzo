@@ -41,6 +41,8 @@ pub fn append_and_replay_records_test() {
     reason: "blocked",
     observed_updated_at_ms: 2900,
     parked_at_ms: 3000,
+    release_policy: "explicit_unpark_only",
+    issue_fingerprint: "",
   )) = dict.get(replayed.projection.parked_issues, "issue-2")
   let assert Ok(projection.CommandCompleted(
     issue_id: "issue-1",
@@ -73,7 +75,7 @@ pub fn replay_rejects_invalid_trailing_record_shape_test() {
   let assert Ok(Nil) =
     simplifile.write(
       path.current_path,
-      "{\"schema_version\":1,\"record_id\":\"bad\",\"at_ms\":1,\"kind\":\"run_started\"}\n",
+      "{\"schema_version\":2,\"record_id\":\"bad\",\"at_ms\":1,\"kind\":\"run_started\"}\n",
     )
 
   let assert Error(ledger.CorruptRecord(line: 1, reason: _)) =
@@ -125,10 +127,10 @@ pub fn replay_rejects_unsupported_schema_version_test() {
   let assert Ok(Nil) =
     simplifile.write(
       path.current_path,
-      "{\"schema_version\":2,\"record_id\":\"future\",\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}\n",
+      "{\"schema_version\":3,\"record_id\":\"future\",\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}\n",
     )
 
-  let assert Error(ledger.UnsupportedVersion(2)) = ledger.replay(path)
+  let assert Error(ledger.UnsupportedVersion(3)) = ledger.replay(path)
 }
 
 pub fn read_records_missing_current_returns_empty_test() {

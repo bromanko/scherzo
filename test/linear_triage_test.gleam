@@ -3,21 +3,24 @@ import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_triage
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
+import test_async
 
-fn tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+fn tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.test/graphql",
     api_key: Some("lin_api_secret"),
     project_slug: Some("TEST"),
     active_states: issue_state.list_from_strings(["Ready for Agent"]),
+    dispatch_states: issue_state.list_from_strings(["Ready for Agent"]),
     terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }
@@ -25,8 +28,8 @@ fn tracker_config() -> domain.TrackerConfig {
 fn contract_config(
   comment: Bool,
   state_id: Option(String),
-) -> domain.LinearContractConfig {
-  domain.LinearContractConfig(
+) -> config_types.LinearContractConfig {
+  config_types.LinearContractConfig(
     ..config.default_linear_contract_config(),
     workflow_labels: ["bugfix", "feature"],
     enforce_issue_workflow_labels: True,
@@ -35,8 +38,8 @@ fn contract_config(
   )
 }
 
-fn issue() -> domain.Issue {
-  domain.Issue(
+fn issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-1",
     title: "Needs workflow",
@@ -47,6 +50,7 @@ fn issue() -> domain.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(1)),
   )
@@ -101,7 +105,7 @@ pub fn noop_report_builds_no_mutation_test() {
       workflow_policy.MissingWorkflowLabel,
     )
     == Ok(linear_triage.InvalidWorkflowReportNoop)
-  assert process.receive(observed, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(observed, 50)
 }
 
 pub fn comment_report_builds_one_comment_test() {
@@ -119,10 +123,16 @@ pub fn comment_report_builds_one_comment_test() {
     == Ok(linear_triage.InvalidWorkflowReportComment)
   let assert Ok(comment_body) = process.receive(observed, within: 1000)
   assert string.contains(comment_body, "commentCreate")
+  assert string.contains(
+    comment_body,
+    "🏷️ Scherzo needs an allowed workflow label",
+  )
+  assert string.contains(comment_body, "| Issue | `ABC-1` |")
+  assert string.contains(comment_body, "| Problem | `unknown_workflow_label` |")
   assert string.contains(comment_body, "workflow:surprise")
   assert string.contains(comment_body, "workflow:bugfix")
   assert !string.contains(comment_body, "description must not appear")
-  assert process.receive(observed, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(observed, 50)
 }
 
 pub fn state_only_and_comment_then_state_reports_test() {

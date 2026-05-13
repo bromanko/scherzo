@@ -9,42 +9,39 @@ import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/server
-import scherzo/domain
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason
+import scherzo/session/tokens as session_tokens
 
 fn summary(session_id: String) -> event.SessionSummary {
   event.SessionSummary(
     session_id: session_id,
+    display_name: session_id,
     issue_id: "issue-1",
     issue_identifier: "ABC-1",
     issue_title: "Title ABC-1",
     workspace_path: "test/tmp/control-server/workspaces/ABC-1",
     pi_session_id: None,
     status: event.Running,
+    recovery: None,
     current_turn: 1,
+    current_turn_status: None,
+    current_turn_started_at_ms: None,
+    last_turn_finished_at_ms: None,
+    last_turn_duration_ms: None,
+    last_turn_token_delta: session_tokens.zero_token_totals(),
+    last_turn_reason: None,
     started_at_ms: 10,
     last_event_at_ms: 10,
-    token_totals: domain.zero_token_totals(),
+    token_totals: session_tokens.zero_token_totals(),
   )
 }
 
 fn payload(name: String) -> event.EventPayload {
-  event.EventPayload(
-    kind: event.Lifecycle,
-    name: event.PiName(pi_event.UnknownPiEvent(name)),
-    turn: None,
-    pi_type: None,
-    message: None,
-    request_id: None,
-    method: None,
-    tool_name: None,
-    tool_input: None,
-    tool_output: None,
-    tool_status: None,
-    tokens: domain.zero_token_totals(),
-    raw_json: None,
+  event.empty_payload(
+    event.Lifecycle,
+    event.PiName(pi_event.UnknownPiEvent(name)),
   )
 }
 
@@ -67,13 +64,27 @@ fn start_server_for_backend(
   token: String,
   command_timeout_ms: Int,
 ) -> #(server.Server, file.ControlFile) {
+  start_server_for_backend_with_event_timeout(
+    backend,
+    token,
+    500,
+    command_timeout_ms,
+  )
+}
+
+fn start_server_for_backend_with_event_timeout(
+  backend: server.Backend,
+  token: String,
+  event_timeout_ms: Int,
+  command_timeout_ms: Int,
+) -> #(server.Server, file.ControlFile) {
   let assert Ok(server_handle) =
     server.start(
       server.Settings(
         host: "127.0.0.1",
         port: 0,
         token: token,
-        event_timeout_ms: 500,
+        event_timeout_ms: event_timeout_ms,
         stream_poll_ms: 20,
         command_timeout_ms: command_timeout_ms,
       ),
@@ -101,6 +112,43 @@ fn backend_with_command(
       Ok(command.applied(operator_command, Some("done")))
     },
   )
+}
+
+fn slow_session_backend(sleep_ms: Int) -> server.Backend {
+  server.Backend(
+    list_sessions: fn(_) {
+      process.sleep(sleep_ms)
+      Ok(event.SessionList(sessions: [], now_ms: 100))
+    },
+    get_session: fn(_, _) {
+      process.sleep(sleep_ms)
+      Ok(None)
+    },
+    events_after: fn(_, cursor, _, _) {
+      process.sleep(sleep_ms)
+      Ok(event.EventPage(events: [], next_cursor: cursor, truncated: False))
+    },
+    apply_command: fn(operator_command, _) {
+      Ok(command.applied(operator_command, None))
+    },
+  )
+}
+
+fn event_hub_timeout_backend() -> server.Backend {
+  server.Backend(
+    list_sessions: fn(_) { Error(hub.ActorCallTimeout) },
+    get_session: fn(_, _) { Error(hub.ActorCallTimeout) },
+    events_after: fn(_, _, _, _) { Error(hub.ActorCallTimeout) },
+    apply_command: fn(operator_command, _) {
+      Ok(command.applied(operator_command, None))
+    },
+  )
+}
+
+fn assert_session_backend_timeout_message(message: String) -> Nil {
+  assert string.contains(message, "control server is reachable")
+  assert string.contains(message, "session backend")
+  assert string.contains(message, "configured timeout")
 }
 
 pub fn server_rejects_bad_token_test() {
@@ -180,12 +228,64 @@ pub fn server_times_out_slow_mutating_backend_test() {
   hub.stop(subject)
 }
 
+pub fn server_returns_structured_timeout_when_session_backend_does_not_reply_test() {
+  let #(server_handle, control_file) =
+    start_server_for_backend_with_event_timeout(
+      slow_session_backend(200),
+      "token",
+      20,
+      500,
+    )
+
+  assert client.ping(control_file) == Ok(Nil)
+  let assert Ok(raw) =
+    client.raw_request(control_file, protocol.ListSessions("list-timeout", ""))
+  assert string.contains(raw, "\"ok\":false")
+  assert string.contains(raw, "\"code\":\"session_backend_timeout\"")
+  assert string.contains(raw, "control server is reachable")
+
+  let assert Error(client.RequestFailed(list_code, list_message)) =
+    client.list_sessions_snapshot(control_file)
+  assert list_code == "session_backend_timeout"
+  assert_session_backend_timeout_message(list_message)
+
+  let assert Error(client.RequestFailed(session_code, session_message)) =
+    client.get_session(control_file, "session-timeout")
+  assert session_code == "session_backend_timeout"
+  assert_session_backend_timeout_message(session_message)
+
+  let assert Error(client.RequestFailed(events_code, events_message)) =
+    client.get_events(control_file, "session-timeout", 0, 10)
+  assert events_code == "session_backend_timeout"
+  assert_session_backend_timeout_message(events_message)
+
+  server.stop(server_handle)
+}
+
+pub fn server_returns_event_hub_timeout_code_for_actor_call_timeout_test() {
+  let #(server_handle, control_file) =
+    start_server_for_backend(event_hub_timeout_backend(), "token", 500)
+
+  let assert Error(client.RequestFailed(code, message)) =
+    client.list_sessions_snapshot(control_file)
+  assert code == "event_hub_timeout"
+  assert string.contains(message, "control server is reachable")
+  assert string.contains(message, "EventHub")
+  assert string.contains(message, "configured timeout")
+
+  server.stop(server_handle)
+}
+
 pub fn server_lists_sessions_with_good_token_test() {
   let subject = start_hub_with_session("session-list")
   let #(server_handle, control_file) = start_server_for_hub(subject, "token")
 
   let assert Ok(sessions) = client.list_sessions(control_file)
   assert list.map(sessions, fn(summary) { summary.session_id })
+    == ["session-list"]
+  let assert Ok(snapshot) = client.list_sessions_snapshot(control_file)
+  assert snapshot.now_ms == 100
+  assert list.map(snapshot.sessions, fn(summary) { summary.session_id })
     == ["session-list"]
   let assert Ok(response) =
     client.request(control_file, protocol.ListSessions("request-1", ""))

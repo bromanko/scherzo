@@ -3,10 +3,11 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/pi_event
-import scherzo/domain
 import scherzo/session/event
+import scherzo/session/tokens as session_tokens
 import scherzo/terminal/sanitize
 import scherzo/terminal/style
+import scherzo/turn_telemetry
 
 const default_max_body_lines = 40
 
@@ -95,28 +96,64 @@ pub fn render_header(
   summary: event.SessionSummary,
   options: RenderOptions,
 ) -> List(RenderChunk) {
+  list.flatten([
+    [
+      Line(style.heading(
+        options.color_mode,
+        sanitize.text(summary.issue_identifier <> " " <> summary.issue_title),
+      )),
+      Line(
+        style.meta_label(options.color_mode, "workspace:")
+        <> " "
+        <> sanitize.text(summary.workspace_path),
+      ),
+      Line(
+        style.meta_label(options.color_mode, "session:")
+        <> " "
+        <> sanitize.text(summary.display_name),
+      ),
+    ],
+    render_status_lines(summary, options),
+  ])
+}
+
+fn render_status_lines(
+  summary: event.SessionSummary,
+  options: RenderOptions,
+) -> List(RenderChunk) {
   [
-    Line(style.heading(
-      options.color_mode,
-      sanitize.text(summary.issue_identifier <> " " <> summary.issue_title),
-    )),
-    Line(
-      style.meta_label(options.color_mode, "workspace:")
-      <> " "
-      <> sanitize.text(summary.workspace_path),
-    ),
-    Line(
-      style.meta_label(options.color_mode, "session:")
-      <> " "
-      <> sanitize.text(summary.session_id),
-    ),
     Line(
       style.meta_label(options.color_mode, "status:")
       <> " "
       <> event.status_to_string(summary.status),
     ),
+    Line(
+      style.meta_label(options.color_mode, "turn:")
+      <> " "
+      <> summary_turn_line(summary),
+    ),
     Line(""),
   ]
+}
+
+fn summary_turn_line(summary: event.SessionSummary) -> String {
+  let base = "turn " <> int.to_string(summary.current_turn)
+  let with_status = case summary.current_turn_status {
+    Some(status) -> base <> " " <> turn_telemetry.status_to_string(status)
+    None -> base
+  }
+  let with_duration = case summary.last_turn_duration_ms {
+    Some(duration) -> with_status <> " " <> format_duration(duration)
+    None -> with_status
+  }
+  case summary.last_turn_token_delta.total > 0 {
+    True ->
+      with_duration
+      <> " +"
+      <> int.to_string(summary.last_turn_token_delta.total)
+      <> " tok"
+    False -> with_duration
+  }
 }
 
 pub fn render_truncation_warning(options: RenderOptions) -> List(RenderChunk) {
@@ -188,6 +225,7 @@ fn render_fresh_event(
         event.UiRequest -> render_ui_request(state, payload, options)
         event.UiResponse -> render_ui_response(state, payload, options)
         event.TokenStats -> render_tokens(state, payload, options)
+        event.Turn -> render_turn(state, payload, options)
         event.PiRaw -> render_pi_raw(state, payload, options)
         event.Error -> render_error_event(state, payload, options)
         event.Lifecycle | event.Pi ->
@@ -270,7 +308,7 @@ fn render_assistant(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  let delta = option_string(payload.message, "")
+  let delta = option.unwrap(payload.message, "")
   case delta == "" {
     True -> #(observe_pass(state, payload), [])
     False -> {
@@ -452,6 +490,77 @@ fn render_ui_response(
   )
 }
 
+fn render_turn(
+  state: RenderState,
+  payload: event.EventPayload,
+  options: RenderOptions,
+) -> #(RenderState, List(RenderChunk)) {
+  let #(state, close_chunks) = close_assistant(state, options.color_mode)
+  let #(state, tool_close_chunks) =
+    close_tool_with_gap(state, options.color_mode)
+  let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
+  #(
+    RenderState(..state, assistant_active: False, assistant_line_open: False),
+    list.flatten([
+      close_chunks,
+      tool_close_chunks,
+      heading_chunks,
+      [Line(style.dim(options.color_mode, turn_event_line(payload))), Line("")],
+    ]),
+  )
+}
+
+fn turn_event_line(payload: event.EventPayload) -> String {
+  let turn = case payload.turn {
+    Some(turn) -> int.to_string(turn)
+    None -> "?"
+  }
+  let status = case payload.turn_status {
+    Some(status) -> turn_telemetry.status_to_string(status)
+    None -> event.name_to_string(payload.name)
+  }
+  "turn "
+  <> turn
+  <> " "
+  <> status
+  <> turn_duration_suffix(payload.turn_duration_ms)
+  <> turn_token_delta_suffix(payload.token_delta.total)
+  <> turn_reason_suffix(payload.reason)
+}
+
+fn turn_duration_suffix(duration_ms: Option(Int)) -> String {
+  case duration_ms {
+    Some(duration_ms) -> " " <> format_duration(duration_ms)
+    None -> ""
+  }
+}
+
+fn turn_token_delta_suffix(total: Int) -> String {
+  case total > 0 {
+    True -> " +" <> int.to_string(total) <> " tok"
+    False -> ""
+  }
+}
+
+fn turn_reason_suffix(reason: Option(turn_telemetry.TurnReason)) -> String {
+  case reason {
+    Some(reason) -> " reason=" <> turn_telemetry.reason_to_string(reason)
+    None -> ""
+  }
+}
+
+fn format_duration(duration_ms: Int) -> String {
+  case duration_ms < 1000 {
+    True -> int.to_string(duration_ms) <> "ms"
+    False -> {
+      let tenths = duration_ms / 100
+      let whole = tenths / 10
+      let decimal = tenths - whole * 10
+      int.to_string(whole) <> "." <> int.to_string(decimal) <> "s"
+    }
+  }
+}
+
 fn render_tokens(
   state: RenderState,
   payload: event.EventPayload,
@@ -544,13 +653,17 @@ fn render_error_event(
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let message =
     safe_option_string(payload.message, event.name_to_string(payload.name))
+  let #(_, detail_chunks) =
+    tool_detail_chunks(None, payload, options.color_mode)
   #(
     RenderState(..state, assistant_active: False, assistant_line_open: False),
     list.flatten([
       close_chunks,
       tool_close_chunks,
       heading_chunks,
-      [Line(style.error(options.color_mode, "error: " <> message)), Line("")],
+      [Line(style.error(options.color_mode, "error: " <> message))],
+      detail_chunks,
+      [Line("")],
     ]),
   )
 }
@@ -595,7 +708,10 @@ fn ensure_pass_heading(
   }
 }
 
-fn observe_pass(state: RenderState, payload: event.EventPayload) -> RenderState {
+fn observe_pass(
+  state: RenderState,
+  payload: event.EventPayload,
+) -> RenderState {
   case payload.turn {
     Some(pass) -> observe_visible_pass(state, pass)
     None -> state
@@ -616,14 +732,20 @@ fn observe_visible_pass(state: RenderState, pass: Int) -> RenderState {
   }
 }
 
-fn visible_pass(state: RenderState, payload: event.EventPayload) -> Option(Int) {
+fn visible_pass(
+  state: RenderState,
+  payload: event.EventPayload,
+) -> Option(Int) {
   case payload.turn {
     Some(pass) -> Some(pass)
     None -> state.current_pass
   }
 }
 
-fn assistant_must_close(state: RenderState, payload: event.EventPayload) -> Bool {
+fn assistant_must_close(
+  state: RenderState,
+  payload: event.EventPayload,
+) -> Bool {
   case state.assistant_active, visible_pass(state, payload) {
     True, Some(pass) -> state.displayed_pass != Some(pass)
     _, _ -> False
@@ -932,17 +1054,10 @@ fn has_text(value: Option(String)) -> Bool {
 }
 
 fn safe_option_string(value: Option(String), default: String) -> String {
-  sanitize.text(option_string(value, default))
+  sanitize.text(option.unwrap(value, default))
 }
 
-fn option_string(value: Option(String), default: String) -> String {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
-}
-
-fn token_line(tokens: domain.TokenTotals, pass: Option(Int)) -> String {
+fn token_line(tokens: session_tokens.TokenTotals, pass: Option(Int)) -> String {
   let prefix = case pass {
     Some(pass) -> "Scherzo pass " <> int.to_string(pass) <> " tokens"
     None -> "tokens"
@@ -960,7 +1075,7 @@ fn token_line(tokens: domain.TokenTotals, pass: Option(Int)) -> String {
   <> int.to_string(tokens.total)
 }
 
-fn tokens_are_nonzero(tokens: domain.TokenTotals) -> Bool {
+fn tokens_are_nonzero(tokens: session_tokens.TokenTotals) -> Bool {
   tokens.input > 0
   || tokens.output > 0
   || tokens.cache_read > 0

@@ -1,21 +1,25 @@
 import birl
 import gleam/dict
 import gleam/option.{type Option, None, Some}
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/orchestrator/core
 import scherzo/orchestrator/reason
+import scherzo/orchestrator/state as orchestrator_state
+import scherzo/session/tokens as session_tokens
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
 
-fn config() -> domain.EffectiveConfig {
-  domain.EffectiveConfig(
-    tracker: domain.TrackerConfig(
+fn config() -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: config_types.TrackerConfig(
       kind: tracker_kind.LinearTracker,
       endpoint: "endpoint",
       api_key: Some("key"),
       project_slug: Some("PROJ"),
       active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+      dispatch_states: issue_state.list_from_strings(["Todo"]),
       terminal_states: issue_state.list_from_strings([
         "Done",
         "Closed",
@@ -24,41 +28,49 @@ fn config() -> domain.EffectiveConfig {
         "Duplicate",
       ]),
     ),
-    polling: domain.PollingConfig(interval_ms: 30_000),
-    workspace: domain.WorkspaceConfig(root: "test/tmp/workspaces"),
-    hooks: domain.HooksConfig(
+    polling: config_types.PollingConfig(interval_ms: 30_000),
+    workspace: config_types.WorkspaceConfig(root: "test/tmp/workspaces"),
+    hooks: config_types.HooksConfig(
       after_create: Some("true"),
       before_run: None,
       after_run: None,
       before_remove: None,
       timeout_ms: 1000,
     ),
-    agent: domain.AgentConfig(
+    agent: config_types.AgentConfig(
       max_concurrent_agents: 2,
       max_turns: 20,
       max_retry_backoff_ms: 40_000,
       max_retry_attempts: 3,
       max_sessions_per_issue: 2,
+      context_recovery_max_attempts: 1,
+      context_recovery_prompt_char_limit: 40_000,
       max_concurrent_agents_by_state: dict.from_list([
         #(issue_state.key_from_string("todo"), 1),
       ]),
     ),
-    pi: domain.PiConfig(
+    pi: config_types.PiConfig(
       command: "fake",
       turn_timeout_ms: 1000,
       read_timeout_ms: 1000,
       stall_timeout_ms: 1000,
       auto_retry: True,
-      ui_request_policy: domain.Cancel,
+      ui_request_policy: config_types.Cancel,
       ui_request_timeout_ms: 300_000,
       compatibility_probe: True,
       rate_limit_payload: None,
+      argv_command: None,
+      session_persistence: config_types.PiSessionPersistenceConfig(
+        enabled: False,
+        recovery_prompt: "",
+      ),
     ),
-    handoff: domain.HandoffConfig(
+    handoff: config_types.HandoffConfig(
       enabled: False,
       comment_on_claim: False,
       comment_on_success: False,
       comment_on_failure: False,
+      comment_on_park: False,
       claim_state_id: None,
       success_state_id: None,
       failure_state_id: None,
@@ -67,7 +79,7 @@ fn config() -> domain.EffectiveConfig {
       attachment_fallback_to_markdown_link: True,
       result_max_chars: 8000,
     ),
-    linear_contract: domain.LinearContractConfig(
+    linear_contract: config_types.LinearContractConfig(
       enabled: False,
       workflow_label_prefix: "workflow:",
       workflow_labels: [],
@@ -78,7 +90,7 @@ fn config() -> domain.EffectiveConfig {
       invalid_workflow_state_id: None,
       comment_on_invalid_workflow: False,
     ),
-    linear_commands: domain.LinearCommandConfig(
+    linear_commands: config_types.LinearCommandConfig(
       enabled: False,
       prefix: "/scherzo",
       authorized_user_ids: [],
@@ -90,10 +102,10 @@ fn config() -> domain.EffectiveConfig {
   )
 }
 
-fn enforcing_config() -> domain.EffectiveConfig {
-  domain.EffectiveConfig(
+fn enforcing_config() -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
     ..config(),
-    linear_contract: domain.LinearContractConfig(
+    linear_contract: config_types.LinearContractConfig(
       ..config().linear_contract,
       workflow_labels: ["bugfix", "research"],
       enforce_issue_workflow_labels: True,
@@ -106,8 +118,8 @@ fn issue(
   identifier: String,
   state: String,
   priority: Option(Int),
-) -> domain.Issue {
-  domain.Issue(
+) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: "Title " <> identifier,
@@ -118,25 +130,26 @@ fn issue(
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
   )
 }
 
-fn rich_issue() -> domain.Issue {
-  domain.Issue(
+fn rich_issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     ..issue("a", "ABC-1", "Todo", Some(1)),
     description: Some("Description"),
     branch_name: Some("abc-1-title"),
     url: Some("https://linear.app/example/ABC-1"),
     labels: ["bug", "backend"],
     blocked_by: [
-      domain.BlockerRef(
+      tracker_issue.BlockerRef(
         id: Some("block-1"),
         identifier: Some("ABC-0"),
         state: Some(issue_state.from_string_unchecked("Todo")),
       ),
-      domain.BlockerRef(
+      tracker_issue.BlockerRef(
         id: Some("block-2"),
         identifier: Some("ABC-00"),
         state: Some(issue_state.from_string_unchecked("In Progress")),
@@ -148,37 +161,39 @@ fn rich_issue() -> domain.Issue {
 }
 
 fn auto_parked_entry(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   reason: reason.ParkReason,
-) -> domain.ParkedEntry {
-  domain.ParkedEntry(
+) -> orchestrator_state.ParkedEntry {
+  orchestrator_state.ParkedEntry(
     issue_id: issue.id,
     identifier: issue.identifier,
     reason: reason,
-    release_policy: domain.AutoUnparkOnIssueChange(core.issue_fingerprint(issue)),
+    release_policy: orchestrator_state.AutoUnparkOnIssueChange(
+      core.issue_fingerprint(issue),
+    ),
     parked_at_ms: 0,
   )
 }
 
 fn explicit_parked_entry(
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
   reason: reason.ParkReason,
-) -> domain.ParkedEntry {
-  domain.ParkedEntry(
+) -> orchestrator_state.ParkedEntry {
+  orchestrator_state.ParkedEntry(
     issue_id: issue.id,
     identifier: issue.identifier,
     reason: reason,
-    release_policy: domain.ExplicitUnparkOnly,
+    release_policy: orchestrator_state.ExplicitUnparkOnly,
     parked_at_ms: 0,
   )
 }
 
 fn state_with_parked(
-  state: domain.RuntimeState,
-  issue: domain.Issue,
-  parked: domain.ParkedEntry,
-) -> domain.RuntimeState {
-  domain.RuntimeState(
+  state: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
+  parked: orchestrator_state.ParkedEntry,
+) -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
     ..state,
     parked: dict.insert(state.parked, issue.id, parked),
   )
@@ -187,7 +202,7 @@ fn state_with_parked(
 pub fn issue_fingerprint_ignores_timestamps_url_and_labels_test() {
   let base = rich_issue()
   let metadata_changed =
-    domain.Issue(
+    tracker_issue.Issue(
       ..base,
       url: Some("https://linear.app/example/ABC-1?metadata=changed"),
       labels: ["frontend", "needs-review"],
@@ -201,22 +216,22 @@ pub fn issue_fingerprint_ignores_timestamps_url_and_labels_test() {
 
 pub fn issue_fingerprint_changes_for_blockers_test() {
   let first =
-    domain.BlockerRef(
+    tracker_issue.BlockerRef(
       id: Some("block-1"),
       identifier: Some("ABC-0"),
       state: Some(issue_state.from_string_unchecked("Todo")),
     )
   let second =
-    domain.BlockerRef(
+    tracker_issue.BlockerRef(
       id: Some("block-2"),
       identifier: Some("ABC-00"),
       state: Some(issue_state.from_string_unchecked("In Progress")),
     )
-  let base = domain.Issue(..rich_issue(), blocked_by: [first, second])
-  let reordered = domain.Issue(..base, blocked_by: [second, first])
+  let base = tracker_issue.Issue(..rich_issue(), blocked_by: [first, second])
+  let reordered = tracker_issue.Issue(..base, blocked_by: [second, first])
   let blocker_changed =
-    domain.Issue(..base, blocked_by: [
-      domain.BlockerRef(
+    tracker_issue.Issue(..base, blocked_by: [
+      tracker_issue.BlockerRef(
         ..first,
         state: Some(issue_state.from_string_unchecked("Done")),
       ),
@@ -225,30 +240,42 @@ pub fn issue_fingerprint_changes_for_blockers_test() {
 
   assert core.issue_fingerprint(base) == core.issue_fingerprint(reordered)
   assert core.issue_fingerprint(base) != core.issue_fingerprint(blocker_changed)
+  assert core.issue_fingerprint(base)
+    != core.issue_fingerprint(
+      tracker_issue.Issue(..base, blocked_by_complete: False),
+    )
 }
 
 pub fn issue_fingerprint_changes_for_core_fields_test() {
   let base = rich_issue()
   let base_fingerprint = core.issue_fingerprint(base)
 
-  assert core.issue_fingerprint(domain.Issue(..base, id: "different-id"))
-    != base_fingerprint
-  assert core.issue_fingerprint(domain.Issue(..base, identifier: "ABC-2"))
-    != base_fingerprint
-  assert core.issue_fingerprint(domain.Issue(..base, title: "Different title"))
-    != base_fingerprint
-  assert core.issue_fingerprint(domain.Issue(..base, description: Some("New")))
-    != base_fingerprint
-  assert core.issue_fingerprint(domain.Issue(..base, priority: Some(2)))
+  assert core.issue_fingerprint(tracker_issue.Issue(..base, id: "different-id"))
     != base_fingerprint
   assert core.issue_fingerprint(
-      domain.Issue(
+      tracker_issue.Issue(..base, identifier: "ABC-2"),
+    )
+    != base_fingerprint
+  assert core.issue_fingerprint(
+      tracker_issue.Issue(..base, title: "Different title"),
+    )
+    != base_fingerprint
+  assert core.issue_fingerprint(
+      tracker_issue.Issue(..base, description: Some("New")),
+    )
+    != base_fingerprint
+  assert core.issue_fingerprint(tracker_issue.Issue(..base, priority: Some(2)))
+    != base_fingerprint
+  assert core.issue_fingerprint(
+      tracker_issue.Issue(
         ..base,
         state: issue_state.from_string_unchecked("In Progress"),
       ),
     )
     != base_fingerprint
-  assert core.issue_fingerprint(domain.Issue(..base, branch_name: Some("new")))
+  assert core.issue_fingerprint(
+      tracker_issue.Issue(..base, branch_name: Some("new")),
+    )
     != base_fingerprint
 }
 
@@ -259,11 +286,15 @@ pub fn candidate_sorting_and_eligibility_test() {
 
   let state = core.new_state(config())
   assert core.should_dispatch(state, config(), b)
-  assert !core.should_dispatch(state, config(), domain.Issue(..b, id: ""))
   assert !core.should_dispatch(
     state,
     config(),
-    domain.Issue(..b, state: issue_state.from_string_unchecked("Done")),
+    tracker_issue.Issue(..b, id: ""),
+  )
+  assert !core.should_dispatch(
+    state,
+    config(),
+    tracker_issue.Issue(..b, state: issue_state.from_string_unchecked("Done")),
   )
 }
 
@@ -273,18 +304,18 @@ pub fn workflow_policy_rejects_invalid_dispatch_test() {
   assert core.should_dispatch(
     state,
     enforcing_config(),
-    domain.Issue(..base, labels: ["workflow:bugfix"]),
+    tracker_issue.Issue(..base, labels: ["workflow:bugfix"]),
   )
   assert !core.should_dispatch(state, enforcing_config(), base)
   assert !core.should_dispatch(
     state,
     enforcing_config(),
-    domain.Issue(..base, labels: ["workflow:bugfix", "workflow:research"]),
+    tracker_issue.Issue(..base, labels: ["workflow:bugfix", "workflow:research"]),
   )
   assert !core.should_dispatch(
     state,
     enforcing_config(),
-    domain.Issue(..base, labels: ["workflow:unknown"]),
+    tracker_issue.Issue(..base, labels: ["workflow:unknown"]),
   )
   assert core.should_dispatch(state, config(), base)
 }
@@ -325,7 +356,8 @@ pub fn retry_policy_invalid_can_stop_retry_test() {
     core.stop_retry_for_policy_invalid(retry_state, "a")
   assert !dict.has_key(stopped.retry_attempts, "a")
   assert !dict.has_key(stopped.claimed, "a")
-  assert effects == [core.CancelRetry("a"), core.ReleaseClaim("a")]
+  assert effects
+    == [core.CancelRetry("a", 1, "policy_invalid"), core.ReleaseClaim("a")]
 }
 
 pub fn invalid_workflow_report_fingerprint_helpers_test() {
@@ -346,7 +378,7 @@ pub fn invalid_workflow_report_fingerprint_helpers_test() {
     enforcing_config().linear_contract,
   )
   let changed =
-    domain.Issue(..issue, labels: ["workflow:unknown"], updated_at: None)
+    tracker_issue.Issue(..issue, labels: ["workflow:unknown"], updated_at: None)
   assert !core.already_attempted_invalid_workflow(
     pending,
     changed,
@@ -354,7 +386,11 @@ pub fn invalid_workflow_report_fingerprint_helpers_test() {
     enforcing_config().linear_contract,
   )
   let unknown_issue =
-    domain.Issue(..issue, labels: ["workflow:surprise"], updated_at: None)
+    tracker_issue.Issue(
+      ..issue,
+      labels: ["workflow:surprise"],
+      updated_at: None,
+    )
   let unknown_violation =
     workflow_policy.UnknownWorkflowLabel("workflow:surprise")
   let unknown_pending =
@@ -367,13 +403,13 @@ pub fn invalid_workflow_report_fingerprint_helpers_test() {
     )
   assert !core.already_attempted_invalid_workflow(
     unknown_pending,
-    domain.Issue(..unknown_issue, labels: ["workflow:other"]),
+    tracker_issue.Issue(..unknown_issue, labels: ["workflow:other"]),
     workflow_policy.UnknownWorkflowLabel("workflow:other"),
     enforcing_config().linear_contract,
   )
 
   let changed_policy =
-    domain.LinearContractConfig(
+    config_types.LinearContractConfig(
       ..enforcing_config().linear_contract,
       comment_on_invalid_workflow: True,
     )
@@ -425,7 +461,10 @@ pub fn running_claimed_parked_and_slots_reject_dispatch_test() {
   assert !core.should_dispatch(running, config(), issue)
 
   let claimed =
-    domain.RuntimeState(..state, claimed: dict.from_list([#("a", "ABC-1")]))
+    orchestrator_state.RuntimeState(
+      ..state,
+      claimed: dict.from_list([#("a", "ABC-1")]),
+    )
   assert !core.should_dispatch(claimed, config(), issue)
 
   let parked =
@@ -437,9 +476,12 @@ pub fn running_claimed_parked_and_slots_reject_dispatch_test() {
   assert !core.should_dispatch(parked, config(), issue)
 
   let paused =
-    domain.EffectiveConfig(
+    config_types.EffectiveConfig(
       ..config(),
-      agent: domain.AgentConfig(..config().agent, max_concurrent_agents: 0),
+      agent: config_types.AgentConfig(
+        ..config().agent,
+        max_concurrent_agents: 0,
+      ),
     )
   assert !core.should_dispatch(state, paused, issue)
 }
@@ -452,7 +494,7 @@ pub fn per_state_slots_and_blockers_test() {
   assert !core.should_dispatch(state, config(), second)
 
   let blocker =
-    domain.BlockerRef(
+    tracker_issue.BlockerRef(
       id: Some("block"),
       identifier: Some("B-1"),
       state: Some(issue_state.from_string_unchecked("Todo")),
@@ -460,24 +502,178 @@ pub fn per_state_slots_and_blockers_test() {
   assert !core.should_dispatch(
     core.new_state(config()),
     config(),
-    domain.Issue(..second, blocked_by: [blocker]),
+    tracker_issue.Issue(..second, blocked_by: [blocker]),
   )
   let done_blocker =
-    domain.BlockerRef(
+    tracker_issue.BlockerRef(
       ..blocker,
       state: Some(issue_state.from_string_unchecked("Done")),
     )
   assert core.should_dispatch(
     core.new_state(config()),
     config(),
-    domain.Issue(..second, blocked_by: [done_blocker]),
+    tracker_issue.Issue(..second, blocked_by: [done_blocker]),
+  )
+}
+
+pub fn blocker_decision_applies_to_all_active_states_test() {
+  let base = issue("a", "ABC-1", "Todo", Some(1))
+  let todo_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-todo"),
+      identifier: Some("B-1"),
+      state: Some(issue_state.from_string_unchecked("Todo")),
+    )
+  let in_progress_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-progress"),
+      identifier: Some("B-2"),
+      state: Some(issue_state.from_string_unchecked("In Progress")),
+    )
+  let backlog_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-backlog"),
+      identifier: Some("B-3"),
+      state: Some(issue_state.from_string_unchecked("Backlog")),
+    )
+  let done_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-done"),
+      identifier: Some("B-4"),
+      state: Some(issue_state.from_string_unchecked("Done")),
+    )
+  let canceled_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-canceled"),
+      identifier: Some("B-5"),
+      state: Some(issue_state.from_string_unchecked("Canceled")),
+    )
+  let unknown_blocker =
+    tracker_issue.BlockerRef(
+      id: Some("block-unknown"),
+      identifier: Some("B-6"),
+      state: None,
+    )
+
+  assert core.blocker_decision(config(), base) == core.BlockersSatisfied
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [todo_blocker]),
+  )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [in_progress_blocker]),
+  )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [backlog_blocker]),
+  )
+  assert core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [done_blocker]),
+  )
+  assert core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [canceled_blocker]),
+  )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by: [unknown_blocker]),
+  )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    tracker_issue.Issue(..base, blocked_by_complete: False),
+  )
+
+  let in_progress_issue =
+    tracker_issue.Issue(
+      ..base,
+      state: issue_state.from_string_unchecked("In Progress"),
+      blocked_by: [todo_blocker],
+    )
+  assert !core.should_dispatch(
+    core.new_state(config()),
+    config(),
+    in_progress_issue,
+  )
+}
+
+pub fn blocked_dependency_report_cache_test() {
+  let issue =
+    tracker_issue.Issue(..issue("a", "ABC-1", "Todo", Some(1)), blocked_by: [
+      tracker_issue.BlockerRef(
+        id: Some("block"),
+        identifier: Some("B-1"),
+        state: Some(issue_state.from_string_unchecked("Todo")),
+      ),
+    ])
+  let decision = core.blocker_decision(config(), issue)
+  let state = core.new_state(config())
+  assert !core.already_reported_blocked_dependency(
+    state,
+    config(),
+    issue,
+    "candidate",
+    decision,
+  )
+  let marked =
+    core.mark_blocked_dependency_reported(
+      state,
+      config(),
+      issue,
+      "candidate",
+      decision,
+      100,
+    )
+  assert core.already_reported_blocked_dependency(
+    marked,
+    config(),
+    issue,
+    "candidate",
+    decision,
+  )
+  assert !core.already_reported_blocked_dependency(
+    marked,
+    config(),
+    tracker_issue.Issue(..issue, blocked_by_complete: False),
+    "candidate",
+    core.blocker_decision(
+      config(),
+      tracker_issue.Issue(..issue, blocked_by_complete: False),
+    ),
+  )
+  assert !core.already_reported_blocked_dependency(
+    marked,
+    config(),
+    issue,
+    "retry",
+    decision,
+  )
+  let cleared =
+    core.clear_blocked_dependency_report(marked, issue.id, "candidate")
+  assert !core.already_reported_blocked_dependency(
+    cleared,
+    config(),
+    issue,
+    "candidate",
+    decision,
   )
 }
 
 pub fn worker_success_terminal_cleans_and_releases_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let final =
-    domain.Issue(..issue, state: issue_state.from_string_unchecked("Done"))
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Done"),
+    )
   let state =
     core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
   let core.Transition(state: next, effects:) =
@@ -487,7 +683,7 @@ pub fn worker_success_terminal_cleans_and_releases_test() {
       "a",
       final,
       "/tmp/ws",
-      domain.zero_token_totals(),
+      session_tokens.zero_token_totals(),
       100,
     )
   assert dict.has_key(next.running, "a") == False
@@ -498,7 +694,7 @@ pub fn worker_success_terminal_cleans_and_releases_test() {
 pub fn workflow_success_active_state_completes_without_retry_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let tokens =
-    domain.TokenTotals(
+    session_tokens.TokenTotals(
       input: 1,
       output: 2,
       cache_read: 3,
@@ -538,12 +734,12 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
       "a",
       issue,
       "/tmp/ws",
-      domain.zero_token_totals(),
+      session_tokens.zero_token_totals(),
       100,
     )
   assert effects
     == [
-      core.CancelRetry("a"),
+      core.CancelRetry("a", 1, "reschedule_retry"),
       core.ScheduleRetry("a", 1000, 1, reason.RetryAfterContinuation),
     ]
 
@@ -555,13 +751,13 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
       "a",
       issue,
       "/tmp/ws",
-      domain.zero_token_totals(),
+      session_tokens.zero_token_totals(),
       200,
     )
   assert dict.has_key(parked.parked, "a")
   let assert Ok(parked_entry) = dict.get(parked.parked, "a")
   assert parked_entry.release_policy
-    == domain.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
+    == orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
   assert park_effects
     == [
       core.ParkIssue("a", reason.ParkMaxSessionsPerIssue),
@@ -569,10 +765,39 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
     ]
 }
 
+pub fn worker_success_in_progress_remains_lifecycle_active_test() {
+  let initial = issue("a", "ABC-1", "Todo", Some(1))
+  let final =
+    tracker_issue.Issue(
+      ..initial,
+      state: issue_state.from_string_unchecked("In Progress"),
+    )
+  let state =
+    core.apply_worker_start(core.new_state(config()), initial, "/tmp/ws")
+  let core.Transition(state: next, effects:) =
+    core.apply_worker_success_with_workspace_path(
+      state,
+      config(),
+      "a",
+      final,
+      "/tmp/ws",
+      session_tokens.zero_token_totals(),
+      100,
+    )
+
+  assert dict.has_key(next.completed, "a")
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "reschedule_retry"),
+      core.ScheduleRetry("a", 1000, 1, reason.RetryAfterContinuation),
+    ]
+}
+
 pub fn worker_failure_backoff_and_retry_cap_test() {
   assert core.backoff_delay(1, 40_000) == 10_000
   assert core.backoff_delay(2, 40_000) == 20_000
   assert core.backoff_delay(3, 40_000) == 40_000
+  assert core.backoff_delay(1000, 40_000) == 40_000
 
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let state =
@@ -581,22 +806,22 @@ pub fn worker_failure_backoff_and_retry_cap_test() {
     core.apply_worker_failure(state, config(), "a", issue, 100)
   assert effects1
     == [
-      core.CancelRetry("a"),
+      core.CancelRetry("a", 1, "reschedule_retry"),
       core.ScheduleRetry("a", 10_000, 1, reason.RetryAfterFailure),
     ]
   let state = core.apply_worker_start(one, issue, "/tmp/ws")
   let core.Transition(state: two, effects: _) =
     core.apply_worker_failure(state, config(), "a", issue, 200)
-  let latest = domain.Issue(..issue, title: "Latest failure title")
+  let latest = tracker_issue.Issue(..issue, title: "Latest failure title")
   let state = core.apply_worker_start(two, issue, "/tmp/ws")
   let core.Transition(state: parked, effects: effects3) =
     core.apply_worker_failure(state, config(), "a", latest, 300)
   assert dict.has_key(parked.parked, "a")
   let assert Ok(parked_entry) = dict.get(parked.parked, "a")
   assert parked_entry.release_policy
-    == domain.AutoUnparkOnIssueChange(core.issue_fingerprint(latest))
+    == orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(latest))
   assert parked_entry.release_policy
-    != domain.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
+    != orchestrator_state.AutoUnparkOnIssueChange(core.issue_fingerprint(issue))
   assert effects3
     == [
       core.ParkIssue("a", reason.ParkMaxRetryAttempts),
@@ -607,16 +832,16 @@ pub fn worker_failure_backoff_and_retry_cap_test() {
 pub fn worker_failure_uses_dispatched_issue_id_for_lifecycle_test() {
   let issue = issue("a", "ABC-1", "Todo", Some(1))
   let mismatched_final_issue =
-    domain.Issue(
+    tracker_issue.Issue(
       ..issue,
       id: "different-id",
       identifier: "ABC-999",
       title: "Different issue",
     )
   let retry_cap_config =
-    domain.EffectiveConfig(
+    config_types.EffectiveConfig(
       ..config(),
-      agent: domain.AgentConfig(..config().agent, max_retry_attempts: 1),
+      agent: config_types.AgentConfig(..config().agent, max_retry_attempts: 1),
     )
   let state =
     core.apply_worker_start(core.new_state(retry_cap_config), issue, "/tmp/ws")
@@ -648,11 +873,15 @@ pub fn retry_candidate_can_dispatch_self_claimed_issue_test() {
   let core.Transition(state: retry_state, effects: _) =
     core.apply_worker_failure(state, config(), "a", issue, 100)
 
-  let updated = domain.Issue(..issue, title: "Updated title")
+  let updated = tracker_issue.Issue(..issue, title: "Updated title")
   let core.Transition(state: next, effects: effects) =
     core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(updated)))
 
-  assert effects == [core.Dispatch(updated)]
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "retry_dispatch"),
+      core.Dispatch(updated),
+    ]
   assert !dict.has_key(next.retry_attempts, "a")
   assert dict.has_key(next.claimed, "a")
 }
@@ -668,15 +897,105 @@ pub fn continuation_retry_can_dispatch_self_claimed_issue_test() {
       "a",
       issue,
       "/tmp/ws",
-      domain.zero_token_totals(),
+      session_tokens.zero_token_totals(),
       100,
     )
 
   let core.Transition(state: next, effects: effects) =
     core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(issue)))
 
-  assert effects == [core.Dispatch(issue)]
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "retry_dispatch"),
+      core.Dispatch(issue),
+    ]
   assert !dict.has_key(next.retry_attempts, "a")
+  assert dict.has_key(next.claimed, "a")
+}
+
+pub fn retry_candidate_terminal_issue_clears_retry_without_no_slots_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let state =
+    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(state, config(), "a", issue, 100)
+  let done =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Done"),
+    )
+
+  let core.Transition(state: next, effects: effects) =
+    core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(done)))
+
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "retry_not_dispatchable"),
+      core.ReleaseClaim("a"),
+    ]
+  assert !dict.has_key(next.retry_attempts, "a")
+  assert !dict.has_key(next.claimed, "a")
+}
+
+pub fn retry_candidate_non_active_issue_clears_retry_without_no_slots_test() {
+  let issue = issue("a", "ABC-1", "Todo", Some(1))
+  let state =
+    core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(state, config(), "a", issue, 100)
+  let backlog =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Backlog"),
+    )
+
+  let core.Transition(state: next, effects: effects) =
+    core.handle_retry_candidate(retry_state, config(), "a", Ok(Some(backlog)))
+
+  assert effects
+    == [
+      core.CancelRetry("a", 1, "retry_not_dispatchable"),
+      core.ReleaseClaim("a"),
+    ]
+  assert !dict.has_key(next.retry_attempts, "a")
+  assert !dict.has_key(next.claimed, "a")
+}
+
+pub fn retry_candidate_without_slot_capacity_retries_no_slots_test() {
+  let retry_issue = issue("a", "ABC-1", "Todo", Some(1))
+  let running_issue = issue("b", "ABC-2", "In Progress", Some(2))
+  let one_slot_config =
+    config_types.EffectiveConfig(
+      ..config(),
+      agent: config_types.AgentConfig(
+        ..config().agent,
+        max_concurrent_agents: 1,
+      ),
+    )
+  let state =
+    core.apply_worker_start(
+      core.new_state(one_slot_config),
+      retry_issue,
+      "/tmp/a",
+    )
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(state, one_slot_config, "a", retry_issue, 100)
+  let full_state = core.apply_worker_start(retry_state, running_issue, "/tmp/b")
+
+  let core.Transition(state: next, effects: effects) =
+    core.handle_retry_candidate(
+      full_state,
+      one_slot_config,
+      "a",
+      Ok(Some(retry_issue)),
+    )
+
+  assert effects
+    == [
+      core.CancelRetry("a", 2, "reschedule_retry"),
+      core.ScheduleRetry("a", 20_000, 2, reason.RetryNoSlots),
+    ]
+  assert dict.has_key(next.retry_attempts, "a")
   assert dict.has_key(next.claimed, "a")
 }
 
@@ -691,14 +1010,45 @@ pub fn retry_timer_handling_test() {
   assert dict.has_key(kept.claimed, "a")
   assert poll_failed
     == [
-      core.CancelRetry("a"),
-      core.ScheduleRetry("a", 1000, 2, reason.RetryPollFailed),
+      core.CancelRetry("a", 2, "reschedule_retry"),
+      core.ScheduleRetry("a", 20_000, 2, reason.RetryPollFailed),
+    ]
+
+  let core.Transition(effects: poll_failed_again, state: kept_again) =
+    core.handle_retry_candidate(kept, config(), "a", Error("tracker"))
+  assert poll_failed_again
+    == [
+      core.CancelRetry("a", 3, "reschedule_retry"),
+      core.ScheduleRetry("a", 40_000, 3, reason.RetryPollFailed),
     ]
 
   let core.Transition(effects: absent, state: released) =
-    core.handle_retry_candidate(kept, config(), "a", Ok(None))
-  assert absent == [core.ReleaseClaim("a")]
+    core.handle_retry_candidate(kept_again, config(), "a", Ok(None))
+  assert absent
+    == [
+      core.CancelRetry("a", 3, "retry_issue_missing"),
+      core.ReleaseClaim("a"),
+    ]
   assert !dict.has_key(released.claimed, "a")
+}
+
+pub fn retry_candidate_without_slots_uses_backoff_test() {
+  let retry_issue = issue("a", "ABC-1", "Todo", Some(1))
+  let occupying_issue = issue("b", "ABC-2", "Todo", Some(2))
+  let state =
+    core.apply_worker_start(core.new_state(config()), retry_issue, "/tmp/a")
+  let core.Transition(state: retry_state, effects: _) =
+    core.apply_worker_failure(state, config(), "a", retry_issue, 100)
+  let occupied = core.apply_worker_start(retry_state, occupying_issue, "/tmp/b")
+
+  let core.Transition(state: _, effects: effects) =
+    core.handle_retry_candidate(occupied, config(), "a", Ok(Some(retry_issue)))
+
+  assert effects
+    == [
+      core.CancelRetry("a", 2, "reschedule_retry"),
+      core.ScheduleRetry("a", 20_000, 2, reason.RetryNoSlots),
+    ]
 }
 
 pub fn explicit_park_blocks_even_when_issue_changes_test() {
@@ -710,7 +1060,7 @@ pub fn explicit_park_blocks_even_when_issue_changes_test() {
       explicit_parked_entry(issue, reason.ParkOperator("operator_abort")),
     )
   let changed =
-    domain.Issue(
+    tracker_issue.Issue(
       ..issue,
       title: "Changed title",
       description: Some("Changed description"),
@@ -732,13 +1082,14 @@ pub fn auto_park_ignores_comment_and_non_core_changes_test() {
     )
 
   let timestamp_changed =
-    domain.Issue(..issue, updated_at: Some(birl.from_unix(200)))
+    tracker_issue.Issue(..issue, updated_at: Some(birl.from_unix(200)))
   assert_auto_park_blocks(state, timestamp_changed)
 
-  let url_changed = domain.Issue(..issue, url: Some("https://example.invalid"))
+  let url_changed =
+    tracker_issue.Issue(..issue, url: Some("https://example.invalid"))
   assert_auto_park_blocks(state, url_changed)
 
-  let labels_changed = domain.Issue(..issue, labels: ["new", "metadata"])
+  let labels_changed = tracker_issue.Issue(..issue, labels: ["new", "metadata"])
   assert_auto_park_blocks(state, labels_changed)
 }
 
@@ -751,13 +1102,13 @@ pub fn auto_park_clears_on_blocker_change_test() {
       auto_parked_entry(issue, reason.ParkMaxRetryAttempts),
     )
   let blockers_satisfied =
-    domain.Issue(..issue, blocked_by: [
-      domain.BlockerRef(
+    tracker_issue.Issue(..issue, blocked_by: [
+      tracker_issue.BlockerRef(
         id: Some("block-1"),
         identifier: Some("ABC-0"),
         state: Some(issue_state.from_string_unchecked("Done")),
       ),
-      domain.BlockerRef(
+      tracker_issue.BlockerRef(
         id: Some("block-2"),
         identifier: Some("ABC-00"),
         state: Some(issue_state.from_string_unchecked("Closed")),
@@ -770,8 +1121,8 @@ pub fn auto_park_clears_on_blocker_change_test() {
 }
 
 fn assert_auto_park_blocks(
-  state: domain.RuntimeState,
-  changed: domain.Issue,
+  state: orchestrator_state.RuntimeState,
+  changed: tracker_issue.Issue,
 ) -> Nil {
   let kept = core.unpark_if_issue_changed(state, changed)
   assert dict.has_key(kept.parked, changed.id)
@@ -781,16 +1132,19 @@ fn assert_auto_park_blocks(
 pub fn auto_park_clears_on_core_issue_change_test() {
   let issue = rich_issue()
   let state =
-    domain.RuntimeState(
+    orchestrator_state.RuntimeState(
       ..core.new_state(config()),
       claimed: dict.from_list([#(issue.id, issue.identifier)]),
       retry_attempts: dict.from_list([
-        #(issue.id, domain.RetryEntry(issue.id, 1000, 1)),
+        #(issue.id, orchestrator_state.RetryEntry(issue.id, 1000, 1)),
       ]),
       issue_counters: dict.from_list([
         #(
           issue.id,
-          domain.IssueCounter(failure_attempts: 1, worker_sessions: 1),
+          orchestrator_state.IssueCounter(
+            failure_attempts: 1,
+            worker_sessions: 1,
+          ),
         ),
       ]),
       parked: dict.from_list([
@@ -798,10 +1152,11 @@ pub fn auto_park_clears_on_core_issue_change_test() {
       ]),
     )
   let changed =
-    domain.Issue(
+    tracker_issue.Issue(
       ..issue,
       title: "New title",
       blocked_by: [],
+      blocked_by_complete: True,
       updated_at: Some(birl.from_unix(2)),
     )
 
@@ -818,7 +1173,10 @@ pub fn reconciliation_and_token_accounting_test() {
   let state =
     core.apply_worker_start(core.new_state(config()), issue, "/tmp/ws")
   let terminal =
-    domain.Issue(..issue, state: issue_state.from_string_unchecked("Done"))
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("Done"),
+    )
   let core.Transition(effects: effects, state: next) =
     core.reconcile_issue(state, config(), terminal)
   assert effects
@@ -830,14 +1188,14 @@ pub fn reconciliation_and_token_accounting_test() {
 
   let totals =
     core.add_tokens(
-      domain.TokenTotals(
+      session_tokens.TokenTotals(
         input: 1,
         output: 2,
         cache_read: 3,
         cache_write: 4,
         total: 10,
       ),
-      domain.TokenTotals(
+      session_tokens.TokenTotals(
         input: 2,
         output: 3,
         cache_read: 4,

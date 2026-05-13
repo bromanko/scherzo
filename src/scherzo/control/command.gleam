@@ -21,6 +21,7 @@ pub type OperatorCommand {
   StopAfterCurrentTurn(session_id: String)
   PromptSession(session_id: String, message: String)
   RespondUi(session_id: String, request_id: String, response: UiResponse)
+  RunScheduleNow(job_id: String)
 }
 
 pub type CommandStatus {
@@ -52,6 +53,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     StopAfterCurrentTurn(_) -> "stop_after_current_turn"
     PromptSession(_, _) -> "prompt"
     RespondUi(_, _, _) -> "respond_ui"
+    RunScheduleNow(_) -> "schedule_run_now"
   }
 }
 
@@ -64,6 +66,7 @@ pub fn command_target(command: OperatorCommand) -> Option(String) {
     | StopAfterCurrentTurn(session_id)
     | PromptSession(session_id, _)
     | RespondUi(session_id, _, _) -> Some(session_id)
+    RunScheduleNow(job_id) -> Some(job_id)
   }
 }
 
@@ -91,13 +94,16 @@ pub fn status_reason(status: CommandStatus) -> Option(String) {
   }
 }
 
-pub fn status_from_string(name: String, reason: Option(String)) -> CommandStatus {
+pub fn status_from_string(
+  name: String,
+  reason: Option(String),
+) -> CommandStatus {
   case name {
     "applied" -> Applied
     "queued" -> Queued
-    "rejected" -> Rejected(option_unwrap(reason, "rejected"))
+    "rejected" -> Rejected(option.unwrap(reason, "rejected"))
     "not_found" -> NotFound
-    "not_allowed" -> NotAllowed(option_unwrap(reason, "not_allowed"))
+    "not_allowed" -> NotAllowed(option.unwrap(reason, "not_allowed"))
     _ -> Rejected("unknown_status:" <> name)
   }
 }
@@ -150,11 +156,4 @@ pub fn not_allowed(
   message: Option(String),
 ) -> CommandResult {
   result_for(operator_command, NotAllowed(reason), message)
-}
-
-fn option_unwrap(value: Option(String), default: String) -> String {
-  case value {
-    Some(value) -> value
-    None -> default
-  }
 }

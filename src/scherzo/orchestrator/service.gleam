@@ -5,8 +5,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/probe
+import scherzo/config/types as config_types
 import scherzo/doctor
-import scherzo/domain
 import scherzo/error
 import scherzo/instance_lock
 import scherzo/lifecycle
@@ -17,10 +17,13 @@ import scherzo/log
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/reason as orchestrator_reason
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/runtime_bundle
+import scherzo/schedule_doctor
 import scherzo/signal
 import scherzo/smoke
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_run
@@ -33,9 +36,9 @@ pub type StartupError {
 
 pub type Dependencies {
   Dependencies(
-    tracker: fn(domain.TrackerConfig) -> tracker.Client,
+    tracker: fn(config_types.TrackerConfig) -> tracker.Client,
     workflow_run_dependencies: workflow_run.Dependencies,
-    cleanup: fn(String, String, domain.HooksConfig) ->
+    cleanup: fn(String, String, config_types.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
     logger: fn(String) -> Result(Nil, Nil),
     now_ms: fn() -> Int,
@@ -46,7 +49,7 @@ pub type DaemonLifecycleDependencies {
   DaemonLifecycleDependencies(
     daemon_dependencies: daemon.RuntimeDependencies,
     install_stop_source: fn(process.Subject(lifecycle.StopReason)) ->
-      Result(signal.Installation, String),
+      Result(signal.Installation, signal.SignalError),
     shutdown_timeout_ms: Int,
     lifecycle_logger: fn(String, String, List(log.Field)) -> Nil,
   )
@@ -54,7 +57,8 @@ pub type DaemonLifecycleDependencies {
 
 pub type ContractCheckDependencies {
   ContractCheckDependencies(
-    make_contract_client: fn(domain.TrackerConfig) -> linear.ContractClient,
+    make_contract_client: fn(config_types.TrackerConfig) ->
+      linear.ContractClient,
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
   )
@@ -68,22 +72,26 @@ pub type DoctorDependencies {
   DoctorDependencies(
     load_bundle: fn(Option(String)) ->
       Result(runtime_bundle.RuntimeBundle, runtime_bundle.BundleError),
-    make_linear_smoke_reader: fn(domain.TrackerConfig) ->
+    make_linear_smoke_reader: fn(config_types.TrackerConfig) ->
       smoke.LinearSmokeReader,
-    make_contract_client: fn(domain.TrackerConfig) -> linear.ContractClient,
+    make_contract_client: fn(config_types.TrackerConfig) ->
+      linear.ContractClient,
     acquire_lock: fn(String) -> Result(DoctorLock, instance_lock.LockError),
     prepare_step: fn(
-      domain.Issue,
+      tracker_issue.Issue,
       String,
       String,
       String,
       workflow_dag.WorkspaceRef,
-      domain.OrchestratorConfig,
+      config_types.OrchestratorConfig,
+      config_types.WorkspaceHookProfile,
       Dict(String, workspace_run.PreparedStepWorkspace),
-    ) ->
-      Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
-    cleanup_run: fn(String, domain.OrchestratorConfig) ->
-      Result(Nil, error.WorkspaceError),
+    ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError),
+    cleanup_run: fn(
+      String,
+      config_types.OrchestratorConfig,
+      config_types.WorkspaceHookProfile,
+    ) -> Result(Nil, error.WorkspaceError),
     pi_probe: fn(String, String, Int) -> Result(Nil, error.PiRpcError),
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
@@ -92,7 +100,11 @@ pub type DoctorDependencies {
 }
 
 pub type ServiceResult {
-  ServiceResult(logs: List(String), dispatched: Int, state: domain.RuntimeState)
+  ServiceResult(
+    logs: List(String),
+    dispatched: Int,
+    state: orchestrator_state.RuntimeState,
+  )
 }
 
 pub fn default_dependencies() -> Dependencies {
@@ -104,7 +116,7 @@ pub fn default_dependencies() -> Dependencies {
       io.println_error(line)
       Ok(Nil)
     },
-    now_ms: monotonic_ms,
+    now_ms: wall_clock_ms,
   )
 }
 
@@ -174,17 +186,16 @@ pub fn start_linear_smoke(
     smoke.linear_read_smoke(reader, effective.tracker.terminal_states)
     |> map_tracker_error,
   )
-  let _ =
-    log_stderr(
-      "info",
-      "linear_smoke_ok",
-      [
-        #("candidate_count", int_to_string(result.candidate_count)),
-        #("terminal_count", int_to_string(result.terminal_count)),
-        #("refreshed_count", int_to_string(result.refreshed_count)),
-      ],
-      secrets,
-    )
+  log_stderr_best_effort(
+    "info",
+    "linear_smoke_ok",
+    [
+      #("candidate_count", int_to_string(result.candidate_count)),
+      #("terminal_count", int_to_string(result.terminal_count)),
+      #("refreshed_count", int_to_string(result.refreshed_count)),
+    ],
+    secrets,
+  )
   Ok(Nil)
 }
 
@@ -222,13 +233,12 @@ pub fn start_linear_attach_comment_file(
     )
     |> map_attachment_tracker_error,
   )
-  let _ =
-    log_stderr(
-      "info",
-      "linear_comment_attachment_ok",
-      attachment_log_fields(outcome),
-      bundle.secrets,
-    )
+  log_stderr_best_effort(
+    "info",
+    "linear_comment_attachment_ok",
+    attachment_log_fields(outcome),
+    bundle.secrets,
+  )
   Ok(Nil)
 }
 
@@ -250,29 +260,27 @@ pub fn start_linear_contract_check_with_dependencies(
   let diagnostics = linear_contract.check(effective, remote)
   case linear_contract.is_ok(diagnostics) {
     True -> {
-      let _ =
-        dependencies.logger(
-          "info",
-          "linear_contract_ok",
-          [
-            #("project_slug", remote.project_slug),
-            #("project_id", remote.project_id),
-            #("team_count", int_to_string(list.length(remote.teams))),
-            #("state_count", int_to_string(total_state_count(remote.teams))),
-            #("label_count", int_to_string(total_label_count(remote))),
-          ],
-          secrets,
-        )
+      emit_best_effort_output(dependencies.logger(
+        "info",
+        "linear_contract_ok",
+        [
+          #("project_slug", remote.project_slug),
+          #("project_id", remote.project_id),
+          #("team_count", int_to_string(list.length(remote.teams))),
+          #("state_count", int_to_string(total_state_count(remote.teams))),
+          #("label_count", int_to_string(total_label_count(remote))),
+        ],
+        secrets,
+      ))
       Ok(Nil)
     }
     False -> {
-      let _ =
-        dependencies.logger(
-          "error",
-          "linear_contract_mismatch",
-          [#("diagnostic_count", int_to_string(list.length(diagnostics)))],
-          secrets,
-        )
+      emit_best_effort_output(dependencies.logger(
+        "error",
+        "linear_contract_mismatch",
+        [#("diagnostic_count", int_to_string(list.length(diagnostics)))],
+        secrets,
+      ))
       log_contract_diagnostics(diagnostics, dependencies, secrets)
       Error(StartupError(
         "linear_contract_mismatch",
@@ -293,8 +301,7 @@ pub fn start_doctor_with_dependencies(
   case options.list_checks {
     True -> {
       list.each(doctor.list_check_names(), fn(name) {
-        let _ = dependencies.list_writer(name)
-        Nil
+        emit_best_effort_output(dependencies.list_writer(name))
       })
       Ok(Nil)
     }
@@ -408,6 +415,7 @@ fn run_loaded_doctor_checks(
 ) -> doctor.Report {
   []
   |> maybe_workflow_config_result(selected, bundle)
+  |> maybe_scheduled_jobs_result(selected, bundle)
   |> maybe_linear_contract_result(selected, bundle, dependencies)
   |> maybe_linear_smoke_result(selected, bundle, dependencies)
   |> maybe_local_probe_results(selected, bundle, dependencies)
@@ -438,6 +446,90 @@ fn maybe_workflow_config_result(
         ),
       ])
   }
+}
+
+fn maybe_scheduled_jobs_result(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+  bundle: runtime_bundle.RuntimeBundle,
+) -> List(doctor.CheckResult) {
+  case doctor.contains_check(selected, doctor.ScheduledJobs) {
+    False -> results
+    True -> list.append(results, [run_scheduled_jobs_doctor_check(bundle)])
+  }
+}
+
+fn run_scheduled_jobs_doctor_check(
+  bundle: runtime_bundle.RuntimeBundle,
+) -> doctor.CheckResult {
+  let report = schedule_doctor.inspect_bundle(bundle, None)
+  let schedule_doctor.Report(_, diagnostics) = report
+  let severity = schedule_doctor.most_severe(diagnostics)
+  let problem_diagnostics =
+    schedule_doctor.failing_or_warning_diagnostics(diagnostics)
+  let #(code, message, extra_fields) = case severity, problem_diagnostics {
+    schedule_doctor.Pass, _ -> #(
+      "ok",
+      "scheduled job configuration is valid",
+      [],
+    )
+    schedule_doctor.Skip, _ -> #(
+      "scheduled_jobs_skipped",
+      "scheduled job diagnostics were skipped",
+      [],
+    )
+    _, [first, ..] -> #(first.code, first.message, [
+      #("first_diagnostic_name", first.name),
+      #("first_diagnostic_code", first.code),
+      #("first_diagnostic_message", first.message),
+    ])
+    _, [] -> #(
+      "scheduled_jobs_unknown",
+      "scheduled job diagnostics did not produce a detailed result",
+      [],
+    )
+  }
+  doctor.CheckResult(
+    check: doctor.ScheduledJobs,
+    status: schedule_severity_to_doctor_status(severity),
+    code: code,
+    message: message,
+    fields: list.append(
+      [
+        #(
+          "scheduled_job_count",
+          int_to_string(list.length(bundle.orchestrator.scheduled_jobs)),
+        ),
+        #(
+          "enabled_job_count",
+          int_to_string(enabled_scheduled_job_count(
+            bundle.orchestrator.scheduled_jobs,
+          )),
+        ),
+        #("diagnostic_count", int_to_string(list.length(diagnostics))),
+      ],
+      extra_fields,
+    ),
+  )
+}
+
+fn schedule_severity_to_doctor_status(
+  severity: schedule_doctor.Severity,
+) -> doctor.CheckStatus {
+  case severity {
+    schedule_doctor.Pass -> doctor.Pass
+    schedule_doctor.Warn -> doctor.Warn
+    schedule_doctor.Fail -> doctor.Fail
+    schedule_doctor.Skip -> doctor.Skip
+  }
+}
+
+fn enabled_scheduled_job_count(
+  jobs: List(config_types.ScheduledJobConfig),
+) -> Int {
+  jobs
+  |> list.filter(fn(job) { job.enabled })
+  |> list.length
 }
 
 fn maybe_linear_contract_result(
@@ -683,34 +775,88 @@ fn run_workspace_and_pi_checks(
   {
     False -> results
     True ->
-      case prepare_doctor_workspace(bundle, dependencies) {
-        Error(err) -> workspace_prepare_failure_results(results, selected, err)
-        Ok(prepared) -> {
-          let results =
-            maybe_workspace_hooks_pass(results, selected, bundle, prepared)
-          let results =
-            maybe_pi_probe_result(
-              results,
-              selected,
-              bundle,
-              dependencies,
-              prepared,
-            )
-          append_cleanup_warning_if_needed(
-            results,
-            selected,
-            bundle,
-            dependencies,
-            prepared,
-          )
-        }
+      case default_workspace_profile(bundle.orchestrator) {
+        Error(_) -> workspace_profile_unavailable_results(results, selected)
+        Ok(profile) ->
+          case prepare_doctor_workspace(bundle, dependencies, profile) {
+            Error(err) ->
+              workspace_prepare_failure_results(results, selected, err)
+            Ok(prepared) -> {
+              let results =
+                maybe_workspace_hooks_pass(
+                  results,
+                  selected,
+                  bundle,
+                  prepared,
+                  profile,
+                )
+              let results =
+                maybe_pi_probe_result(
+                  results,
+                  selected,
+                  bundle,
+                  dependencies,
+                  prepared,
+                )
+              append_cleanup_warning_if_needed(
+                results,
+                selected,
+                bundle,
+                dependencies,
+                prepared,
+                profile,
+              )
+            }
+          }
       }
+  }
+}
+
+fn default_workspace_profile(
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(config_types.WorkspaceHookProfile, Nil) {
+  dict.get(
+    orchestrator.workspace_profiles.profiles,
+    orchestrator.workspace_profiles.default_profile,
+  )
+}
+
+fn workspace_profile_unavailable_results(
+  results: List(doctor.CheckResult),
+  selected: List(doctor.CheckName),
+) -> List(doctor.CheckResult) {
+  let results = case doctor.contains_check(selected, doctor.WorkspaceHooks) {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.WorkspaceHooks,
+          status: doctor.Fail,
+          code: "workspace_profile_unavailable",
+          message: "default workspace profile unavailable",
+          fields: [],
+        ),
+      ])
+  }
+  case doctor.contains_check(selected, doctor.PiProbe) {
+    False -> results
+    True ->
+      list.append(results, [
+        doctor.CheckResult(
+          check: doctor.PiProbe,
+          status: doctor.Skip,
+          code: "workspace_profile_unavailable",
+          message: "doctor workspace was not prepared",
+          fields: [],
+        ),
+      ])
   }
 }
 
 fn prepare_doctor_workspace(
   bundle: runtime_bundle.RuntimeBundle,
   dependencies: DoctorDependencies,
+  profile: config_types.WorkspaceHookProfile,
 ) -> Result(workspace_run.PreparedStepWorkspace, workspace_run.PrepareError) {
   dependencies.prepare_step(
     doctor_issue(),
@@ -719,12 +865,13 @@ fn prepare_doctor_workspace(
     "doctor",
     workflow_dag.WorkspaceRef(name: "main", from: None),
     bundle.orchestrator,
+    profile,
     dict.new(),
   )
 }
 
-fn doctor_issue() -> domain.Issue {
-  domain.Issue(
+fn doctor_issue() -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "SCHERZO-DOCTOR",
     identifier: "SCHERZO-DOCTOR",
     title: "Scherzo doctor",
@@ -735,6 +882,7 @@ fn doctor_issue() -> domain.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: None,
     updated_at: None,
   )
@@ -796,30 +944,95 @@ fn maybe_workspace_hooks_pass(
   selected: List(doctor.CheckName),
   bundle: runtime_bundle.RuntimeBundle,
   prepared: workspace_run.PreparedStepWorkspace,
+  profile: config_types.WorkspaceHookProfile,
 ) -> List(doctor.CheckResult) {
   case doctor.contains_check(selected, doctor.WorkspaceHooks) {
     False -> results
-    True ->
+    True -> {
+      let legacy_migrations =
+        legacy_workspace_hook_migrations(bundle.orchestrator)
+      let #(status, code, message, legacy_fields) = case legacy_migrations {
+        [] -> #(
+          doctor.Pass,
+          "ok",
+          "workspace hooks prepared a scratch step workspace",
+          [],
+        )
+        [#(legacy_key, driver_key), ..] -> #(
+          doctor.Warn,
+          "legacy_workspace_hooks",
+          legacy_key
+            <> " is legacy workspace configuration; migrate to "
+            <> driver_key
+            <> " and read docs/runbooks/workspace-driver-migration.md",
+          [
+            #("legacy_key", legacy_key),
+            #("legacy_keys", legacy_migration_keys_to_string(legacy_migrations)),
+            #("driver_key", driver_key),
+          ],
+        )
+      }
       list.append(results, [
         doctor.CheckResult(
           check: doctor.WorkspaceHooks,
-          status: doctor.Pass,
-          code: "ok",
-          message: "workspace hooks prepared a scratch step workspace",
-          fields: [
-            #("workspace_path", prepared.path),
-            #("run_root", prepared.run_root),
-            #(
-              "hooks",
-              configured_workspace_hooks(bundle.orchestrator.dag_hooks),
-            ),
-          ],
+          status: status,
+          code: code,
+          message: message,
+          fields: list.append(
+            [
+              #("workspace_path", prepared.path),
+              #("run_root", prepared.run_root),
+              #(
+                "hooks",
+                configured_workspace_hooks(config_types.profile_hooks(profile)),
+              ),
+            ],
+            legacy_fields,
+          ),
         ),
       ])
+    }
   }
 }
 
-fn configured_workspace_hooks(hooks: domain.DagHooksConfig) -> String {
+fn legacy_workspace_hook_migrations(
+  orchestrator: config_types.OrchestratorConfig,
+) -> List(#(String, String)) {
+  orchestrator.workspace_profiles.profiles
+  |> dict.to_list
+  |> list.filter_map(fn(entry) {
+    let #(name, profile) = entry
+    case profile.source {
+      config_types.LegacyWorkspaceHooks ->
+        Ok(#("workspace.hooks", "workspace.profiles.<name>.driver"))
+      config_types.ConfiguredWorkspaceHooks ->
+        Ok(#(
+          "workspace.profiles." <> name <> ".hooks",
+          "workspace.profiles." <> name <> ".driver",
+        ))
+      config_types.ConfiguredWorkspaceDriver
+      | config_types.SyntheticDefaultWorkspace -> Error(Nil)
+    }
+  })
+  |> list.sort(by: fn(left, right) {
+    let #(left_key, _) = left
+    let #(right_key, _) = right
+    string.compare(left_key, right_key)
+  })
+}
+
+fn legacy_migration_keys_to_string(
+  migrations: List(#(String, String)),
+) -> String {
+  migrations
+  |> list.map(fn(migration) {
+    let #(legacy_key, _) = migration
+    legacy_key
+  })
+  |> string.join(with: ",")
+}
+
+fn configured_workspace_hooks(hooks: config_types.DagHooksConfig) -> String {
   []
   |> append_hook_name(hooks.create, "create")
   |> append_hook_name(hooks.before_step, "before_step")
@@ -899,8 +1112,11 @@ fn append_cleanup_warning_if_needed(
   bundle: runtime_bundle.RuntimeBundle,
   dependencies: DoctorDependencies,
   prepared: workspace_run.PreparedStepWorkspace,
+  profile: config_types.WorkspaceHookProfile,
 ) -> List(doctor.CheckResult) {
-  case dependencies.cleanup_run(prepared.run_root, bundle.orchestrator) {
+  case
+    dependencies.cleanup_run(prepared.run_root, bundle.orchestrator, profile)
+  {
     Ok(Nil) -> results
     Error(err) ->
       case doctor.contains_check(selected, doctor.WorkspaceHooks) {
@@ -930,11 +1146,10 @@ fn write_doctor_report(
   secrets: List(String),
 ) -> Nil {
   case options.output {
-    doctor.Human -> {
-      let _ =
-        dependencies.list_writer(doctor.human_report(report, options.path))
-      Nil
-    }
+    doctor.Human ->
+      emit_best_effort_output(
+        dependencies.list_writer(doctor.human_report(report, options.path)),
+      )
     doctor.Logfmt -> log_doctor_report(report, dependencies, secrets)
   }
 }
@@ -945,23 +1160,19 @@ fn log_doctor_report(
   secrets: List(String),
 ) -> Nil {
   list.each(report.results, fn(result) {
-    let _ =
-      dependencies.logger(
-        doctor_result_level(result),
-        doctor.result_event(result),
-        doctor.result_log_fields(result),
-        secrets,
-      )
-    Nil
-  })
-  let _ =
-    dependencies.logger(
-      "info",
-      "doctor_summary",
-      doctor.summary_log_fields(doctor.summary(report)),
+    emit_best_effort_output(dependencies.logger(
+      doctor_result_level(result),
+      doctor.result_event(result),
+      doctor.result_log_fields(result),
       secrets,
-    )
-  Nil
+    ))
+  })
+  emit_best_effort_output(dependencies.logger(
+    "info",
+    "doctor_summary",
+    doctor.summary_log_fields(doctor.summary(report)),
+    secrets,
+  ))
 }
 
 fn doctor_result_level(result: doctor.CheckResult) -> String {
@@ -973,7 +1184,9 @@ fn doctor_result_level(result: doctor.CheckResult) -> String {
   }
 }
 
-pub fn start_daemon(workflow_path: Option(String)) -> Result(Nil, StartupError) {
+pub fn start_daemon(
+  workflow_path: Option(String),
+) -> Result(Nil, StartupError) {
   start_daemon_with_lifecycle(
     workflow_path,
     DaemonLifecycleDependencies(
@@ -981,8 +1194,7 @@ pub fn start_daemon(workflow_path: Option(String)) -> Result(Nil, StartupError) 
       install_stop_source: signal.install,
       shutdown_timeout_ms: 10_000,
       lifecycle_logger: fn(level, event, fields) {
-        let _ = log_stderr(level, event, fields, [])
-        Nil
+        log_stderr_best_effort(level, event, fields, [])
       },
     ),
   )
@@ -995,9 +1207,9 @@ pub fn start_daemon_with_lifecycle(
   use lock <- try_startup(acquire_lock_for_workflow(workflow_path, True))
   let stop_subject = process.new_subject()
   case dependencies.install_stop_source(stop_subject) {
-    Error(message) -> {
+    Error(error) -> {
       instance_lock.release(lock)
-      Error(StartupError("signal_handler_failed", message))
+      Error(StartupError("signal_handler_failed", signal.error_message(error)))
     }
     Ok(installation) -> {
       dependencies.lifecycle_logger("info", "signal_handler_installed", [
@@ -1056,13 +1268,12 @@ fn log_contract_diagnostics(
   case diagnostics {
     [] -> Nil
     [diagnostic, ..rest] -> {
-      let _ =
-        dependencies.logger(
-          "error",
-          "linear_contract_diagnostic",
-          diagnostic_log_fields(diagnostic),
-          secrets,
-        )
+      emit_best_effort_output(dependencies.logger(
+        "error",
+        "linear_contract_diagnostic",
+        diagnostic_log_fields(diagnostic),
+        secrets,
+      ))
       log_contract_diagnostics(rest, dependencies, secrets)
     }
   }
@@ -1158,6 +1369,22 @@ pub fn log_stderr(
   Ok(Nil)
 }
 
+fn emit_best_effort_output(result: Result(Nil, Nil)) -> Nil {
+  case result {
+    Ok(Nil) -> Nil
+    Error(Nil) -> Nil
+  }
+}
+
+fn log_stderr_best_effort(
+  level: String,
+  event: String,
+  fields: List(log.Field),
+  secrets: List(String),
+) -> Nil {
+  emit_best_effort_output(log_stderr(level, event, fields, secrets))
+}
+
 fn acquire_lock_for_workflow(
   workflow_path: Option(String),
   _require_dispatch: Bool,
@@ -1176,11 +1403,11 @@ fn acquire_lock(
 }
 
 fn run_pi_probe_orchestrator(
-  orchestrator: domain.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
   secrets: List(String),
 ) -> Result(Nil, StartupError) {
   let issue =
-    domain.Issue(
+    tracker_issue.Issue(
       id: "SCHERZO-PROBE",
       identifier: "SCHERZO-PROBE",
       title: "Scherzo probe",
@@ -1191,47 +1418,80 @@ fn run_pi_probe_orchestrator(
       url: None,
       labels: [],
       blocked_by: [],
+      blocked_by_complete: True,
       created_at: None,
       updated_at: None,
     )
-  case
-    workspace_run.prepare_step(
-      issue,
-      "probe",
-      "probe",
-      "probe",
-      workflow_dag.WorkspaceRef(name: "main", from: None),
-      orchestrator,
-      dict.new(),
-    )
-  {
-    Error(workspace_run.WorkspaceFailure(err)) ->
-      Error(StartupError(error.workspace_code(err), "workspace error"))
-    Error(workspace_run.HookFailure(err)) ->
-      Error(StartupError(error.hook_code(err), "hook error"))
-    Ok(prepared) -> {
-      let probe_result =
-        probe.probe(
-          orchestrator.effective.pi.command,
-          prepared.path,
-          orchestrator.effective.pi.read_timeout_ms,
+  case default_workspace_profile(orchestrator) {
+    Error(_) ->
+      Error(StartupError(
+        "workspace_profile_unavailable",
+        "default workspace profile unavailable",
+      ))
+    Ok(profile) ->
+      case
+        workspace_run.prepare_step(
+          issue,
+          "probe",
+          "probe",
+          "probe",
+          workflow_dag.WorkspaceRef(name: "main", from: None),
+          orchestrator,
+          profile,
+          dict.new(),
         )
-      let _ = workspace_run.cleanup_run(prepared.run_root, orchestrator)
-      case probe_result {
-        Ok(Nil) -> {
-          let _ =
-            log_stderr(
-              "info",
-              "pi_probe_ok",
-              [#("workspace_path", prepared.path)],
-              secrets,
+      {
+        Error(workspace_run.WorkspaceFailure(err)) ->
+          Error(StartupError(error.workspace_code(err), "workspace error"))
+        Error(workspace_run.HookFailure(err)) ->
+          Error(StartupError(error.hook_code(err), "hook error"))
+        Ok(prepared) -> {
+          let probe_result =
+            probe.probe(
+              orchestrator.effective.pi.command,
+              prepared.path,
+              orchestrator.effective.pi.read_timeout_ms,
             )
-          Ok(Nil)
+          let cleanup_result =
+            workspace_run.cleanup_run(prepared.run_root, orchestrator, profile)
+          case probe_result {
+            Ok(Nil) ->
+              case cleanup_result {
+                Ok(Nil) -> {
+                  log_stderr_best_effort(
+                    "info",
+                    "pi_probe_ok",
+                    [#("workspace_path", prepared.path)],
+                    secrets,
+                  )
+                  Ok(Nil)
+                }
+                Error(err) ->
+                  Error(StartupError(
+                    error.workspace_code(err),
+                    "probe workspace cleanup error",
+                  ))
+              }
+            Error(err) -> {
+              case cleanup_result {
+                Ok(Nil) -> Nil
+                Error(cleanup_err) ->
+                  log_stderr_best_effort(
+                    "warn",
+                    "pi_probe_cleanup_failed",
+                    [
+                      #("run_root", prepared.run_root),
+                      #("workspace_path", prepared.path),
+                      #("error", error.workspace_code(cleanup_err)),
+                    ],
+                    secrets,
+                  )
+              }
+              Error(StartupError(error.pi_rpc_code(err), "pi probe error"))
+            }
+          }
         }
-        Error(err) ->
-          Error(StartupError(error.pi_rpc_code(err), "pi probe error"))
       }
-    }
   }
 }
 
@@ -1265,7 +1525,7 @@ fn run_once_loaded(
     ]),
   ]
   list.each(logs, fn(line) {
-    let _ = dependencies.logger(line)
+    emit_best_effort_output(dependencies.logger(line))
   })
   case effective.agent.max_concurrent_agents == 0 {
     True ->
@@ -1280,18 +1540,18 @@ fn run_once_loaded(
 
 fn run_tick(
   bundle: runtime_bundle.RuntimeBundle,
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   tracker_client: tracker.Client,
   dependencies: Dependencies,
   logs: List(String),
 ) -> Result(ServiceResult, StartupError) {
   let tick_log = log.info("tick_started", [])
-  let _ = dependencies.logger(tick_log)
+  emit_best_effort_output(dependencies.logger(tick_log))
   case tracker_client.fetch_candidate_issues() {
     Error(err) -> {
       let line =
         log.warn("candidate_fetch_failed", [#("error", error.tracker_code(err))])
-      let _ = dependencies.logger(line)
+      emit_best_effort_output(dependencies.logger(line))
       Ok(ServiceResult(
         logs: [line, tick_log, ..logs],
         dispatched: 0,
@@ -1303,7 +1563,7 @@ fn run_tick(
         log.info("candidates_fetched", [
           #("count", int_to_string(list.length(candidates))),
         ])
-      let _ = dependencies.logger(fetched)
+      emit_best_effort_output(dependencies.logger(fetched))
       dispatch_candidates(
         core.sort_candidates(candidates),
         bundle,
@@ -1318,9 +1578,9 @@ fn run_tick(
 }
 
 fn dispatch_candidates(
-  candidates: List(domain.Issue),
+  candidates: List(tracker_issue.Issue),
   bundle: runtime_bundle.RuntimeBundle,
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   tracker_client: tracker.Client,
   dependencies: Dependencies,
   logs: List(String),
@@ -1328,9 +1588,8 @@ fn dispatch_candidates(
 ) -> Result(ServiceResult, StartupError) {
   case candidates {
     [] -> Ok(ServiceResult(logs: logs, dispatched: dispatched, state: state))
-    [issue, ..rest] -> {
-      let state = core.unpark_if_issue_changed(state, issue)
-      case core.should_dispatch(state, bundle.effective, issue) {
+    [issue, ..rest] ->
+      case core.is_dispatch_state(bundle.effective, issue.state) {
         False ->
           dispatch_candidates(
             rest,
@@ -1341,52 +1600,232 @@ fn dispatch_candidates(
             logs,
             dispatched,
           )
-        True ->
-          case runtime_bundle.select_workflow(bundle, issue) {
-            Error(runtime_bundle.BundleError(code, _)) -> {
-              let skipped =
-                log.warn("workflow_route_failed", [
+        True -> {
+          let state = core.unpark_if_issue_changed(state, issue)
+          case core.blocker_decision(bundle.effective, issue) {
+            core.BlockedByDependency(_, _) -> {
+              let line =
+                log.warn("linear_dependency_blocked_candidate", [
                   #("issue_id", issue.id),
                   #("issue_identifier", issue.identifier),
-                  #("error", code),
                 ])
-              let _ = dependencies.logger(skipped)
+              emit_best_effort_output(dependencies.logger(line))
               dispatch_candidates(
                 rest,
                 bundle,
                 state,
                 tracker_client,
                 dependencies,
-                [skipped, ..logs],
+                [line, ..logs],
                 dispatched,
               )
             }
-            Ok(#(workflow_id, dag)) ->
-              dispatch_issue(
-                rest,
-                issue,
-                workflow_id,
-                dag,
-                bundle,
-                state,
-                tracker_client,
-                dependencies,
-                logs,
-                dispatched,
-              )
+            core.BlockersSatisfied ->
+              case core.should_dispatch(state, bundle.effective, issue) {
+                False ->
+                  dispatch_candidates(
+                    rest,
+                    bundle,
+                    state,
+                    tracker_client,
+                    dependencies,
+                    logs,
+                    dispatched,
+                  )
+                True ->
+                  case runtime_bundle.select_workflow(bundle, issue) {
+                    Error(runtime_bundle.BundleError(code, _)) -> {
+                      let skipped =
+                        log.warn("workflow_route_failed", [
+                          #("issue_id", issue.id),
+                          #("issue_identifier", issue.identifier),
+                          #("error", code),
+                        ])
+                      emit_best_effort_output(dependencies.logger(skipped))
+                      dispatch_candidates(
+                        rest,
+                        bundle,
+                        state,
+                        tracker_client,
+                        dependencies,
+                        [skipped, ..logs],
+                        dispatched,
+                      )
+                    }
+                    Ok(#(workflow_id, dag)) ->
+                      dispatch_issue(
+                        rest,
+                        issue,
+                        workflow_id,
+                        dag,
+                        bundle,
+                        state,
+                        tracker_client,
+                        dependencies,
+                        logs,
+                        dispatched,
+                      )
+                  }
+              }
           }
+        }
       }
-    }
+  }
+}
+
+fn validate_service_dispatch_issue(
+  tracker_client: tracker.Client,
+  issue_id: String,
+) -> Result(tracker_issue.Issue, String) {
+  case tracker_client.fetch_issue_states_by_ids([issue_id]) {
+    Error(err) -> Error("tracker_error:" <> error.tracker_code(err))
+    Ok([]) -> Error("missing_issue")
+    Ok([issue]) ->
+      case issue.id == issue_id {
+        True -> Ok(issue)
+        False -> Error("id_mismatch")
+      }
+    Ok([_, ..]) -> Error("duplicate_issue")
+  }
+}
+
+fn bool_string(value: Bool) -> String {
+  case value {
+    True -> "true"
+    False -> "false"
   }
 }
 
 fn dispatch_issue(
-  remaining: List(domain.Issue),
-  issue: domain.Issue,
+  remaining: List(tracker_issue.Issue),
+  issue: tracker_issue.Issue,
+  _workflow_id: String,
+  _dag: workflow_dag.WorkflowDag,
+  bundle: runtime_bundle.RuntimeBundle,
+  state: orchestrator_state.RuntimeState,
+  tracker_client: tracker.Client,
+  dependencies: Dependencies,
+  logs: List(String),
+  dispatched: Int,
+) -> Result(ServiceResult, StartupError) {
+  case validate_service_dispatch_issue(tracker_client, issue.id) {
+    Error(reason) -> {
+      let line =
+        log.warn("linear_dependency_claim_validation_failed", [
+          #("issue_id", issue.id),
+          #("reason", reason),
+        ])
+      emit_best_effort_output(dependencies.logger(line))
+      dispatch_candidates(
+        remaining,
+        bundle,
+        state,
+        tracker_client,
+        dependencies,
+        [line, ..logs],
+        dispatched,
+      )
+    }
+    Ok(refreshed_issue) ->
+      case core.is_dispatch_state(bundle.effective, refreshed_issue.state) {
+        False ->
+          dispatch_candidates(
+            remaining,
+            bundle,
+            state,
+            tracker_client,
+            dependencies,
+            logs,
+            dispatched,
+          )
+        True -> {
+          let state = core.unpark_if_issue_changed(state, refreshed_issue)
+          let decision =
+            core.blocker_decision(bundle.effective, refreshed_issue)
+          case decision {
+            core.BlockedByDependency(_, _) -> {
+              let line =
+                log.warn("linear_dependency_claim_validation_blocked", [
+                  #("issue_id", refreshed_issue.id),
+                  #("issue_identifier", refreshed_issue.identifier),
+                  #(
+                    "incomplete",
+                    bool_string(core.blocker_decision_incomplete(decision)),
+                  ),
+                ])
+              emit_best_effort_output(dependencies.logger(line))
+              dispatch_candidates(
+                remaining,
+                bundle,
+                state,
+                tracker_client,
+                dependencies,
+                [line, ..logs],
+                dispatched,
+              )
+            }
+            core.BlockersSatisfied ->
+              case
+                core.should_dispatch(state, bundle.effective, refreshed_issue)
+              {
+                False ->
+                  dispatch_candidates(
+                    remaining,
+                    bundle,
+                    state,
+                    tracker_client,
+                    dependencies,
+                    logs,
+                    dispatched,
+                  )
+                True ->
+                  case runtime_bundle.select_workflow(bundle, refreshed_issue) {
+                    Error(runtime_bundle.BundleError(code, _)) -> {
+                      let skipped =
+                        log.warn("workflow_route_failed", [
+                          #("issue_id", refreshed_issue.id),
+                          #("issue_identifier", refreshed_issue.identifier),
+                          #("error", code),
+                        ])
+                      emit_best_effort_output(dependencies.logger(skipped))
+                      dispatch_candidates(
+                        remaining,
+                        bundle,
+                        state,
+                        tracker_client,
+                        dependencies,
+                        [skipped, ..logs],
+                        dispatched,
+                      )
+                    }
+                    Ok(#(workflow_id, dag)) ->
+                      execute_dispatch_issue(
+                        remaining,
+                        refreshed_issue,
+                        workflow_id,
+                        dag,
+                        bundle,
+                        state,
+                        tracker_client,
+                        dependencies,
+                        logs,
+                        dispatched,
+                      )
+                  }
+              }
+          }
+        }
+      }
+  }
+}
+
+fn execute_dispatch_issue(
+  remaining: List(tracker_issue.Issue),
+  issue: tracker_issue.Issue,
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,
   bundle: runtime_bundle.RuntimeBundle,
-  state: domain.RuntimeState,
+  state: orchestrator_state.RuntimeState,
   tracker_client: tracker.Client,
   dependencies: Dependencies,
   logs: List(String),
@@ -1399,7 +1838,7 @@ fn dispatch_issue(
       #("issue_identifier", issue.identifier),
       #("workflow_id", workflow_id),
     ])
-  let _ = dependencies.logger(started)
+  emit_best_effort_output(dependencies.logger(started))
   let state = core.apply_worker_start(state, issue, "")
   let run_id = issue.identifier <> "-once"
   case
@@ -1425,8 +1864,8 @@ fn dispatch_issue(
         log.info("workspace_cleaned", [
           #("workspace_path", success.run_root),
         ])
-      let _ = dependencies.logger(exited)
-      let _ = dependencies.logger(cleaned)
+      emit_best_effort_output(dependencies.logger(exited))
+      emit_best_effort_output(dependencies.logger(cleaned))
       let final_issue = case success.worker_success.final_issue {
         Some(i) -> i
         None -> issue
@@ -1466,7 +1905,7 @@ fn dispatch_issue(
           #("reason", "failed"),
           #("error", failure.reason),
         ])
-      let _ = dependencies.logger(failed)
+      emit_best_effort_output(dependencies.logger(failed))
       let transition =
         core.apply_worker_failure(
           state,
@@ -1496,7 +1935,7 @@ fn dispatch_issue(
 
 fn interpret_effects(
   effects: List(core.Effect),
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   dependencies: Dependencies,
   logs: List(String),
 ) -> List(String) {
@@ -1504,7 +1943,7 @@ fn interpret_effects(
     [] -> logs
     [effect, ..rest] -> {
       let line = interpret_effect(effect, effective, dependencies)
-      let _ = dependencies.logger(line)
+      emit_best_effort_output(dependencies.logger(line))
       interpret_effects(rest, effective, dependencies, [line, ..logs])
     }
   }
@@ -1512,7 +1951,7 @@ fn interpret_effects(
 
 fn interpret_effect(
   effect: core.Effect,
-  effective: domain.EffectiveConfig,
+  effective: config_types.EffectiveConfig,
   dependencies: Dependencies,
 ) -> String {
   case effect {
@@ -1551,8 +1990,12 @@ fn interpret_effect(
         #("generation", int_to_string(generation)),
         #("reason", orchestrator_reason.retry_to_string(reason)),
       ])
-    core.CancelRetry(issue_id) ->
-      log.info("retry_cancelled", [#("issue_id", issue_id)])
+    core.CancelRetry(issue_id, generation, reason) ->
+      log.info("retry_cancelled", [
+        #("issue_id", issue_id),
+        #("generation", int_to_string(generation)),
+        #("reason", reason),
+      ])
     core.ReleaseClaim(issue_id) ->
       log.info("claim_released", [#("issue_id", issue_id)])
     core.StopWorker(issue_id, reason) ->
@@ -1640,8 +2083,8 @@ fn map_lock_error(
     Ok(value) -> Ok(value)
     Error(instance_lock.LockAlreadyHeld(message)) ->
       Error(StartupError("instance_lock_held", message))
-    Error(instance_lock.LockIo(message)) ->
-      Error(StartupError("instance_lock_io", message))
+    Error(error) ->
+      Error(StartupError("instance_lock_io", instance_lock.error_message(error)))
   }
 }
 
@@ -1668,5 +2111,5 @@ fn try_startup(
 @external(erlang, "erlang", "integer_to_binary")
 fn int_to_string(value: Int) -> String
 
-@external(erlang, "scherzo_time_ffi", "monotonic_ms")
-fn monotonic_ms() -> Int
+@external(erlang, "scherzo_time_ffi", "wall_clock_ms")
+fn wall_clock_ms() -> Int

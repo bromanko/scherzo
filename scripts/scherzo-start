@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+repo_root=$(CDPATH= cd "$script_dir/.." && pwd)
+cd "${SCHERZO_REPO_ROOT:-${DEVENV_ROOT:-$repo_root}}"
+
+exec "$script_dir/scherzo-start-runner" -- gleam run -- "$@"

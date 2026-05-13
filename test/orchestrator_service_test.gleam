@@ -3,19 +3,32 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/agent/runner
-import scherzo/domain
+import scherzo/agent/types as agent_types
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_contract
 import scherzo/orchestrator/service
 import scherzo/path
+import scherzo/result_artifact
+import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_attempt
+import scherzo/workflow_checkpoint
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
+import test_async
+
+fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
+  case mode {
+    workflow_attempt.OriginalPrompt(prompt) -> prompt
+    workflow_attempt.StructuredOutputRetryPrompt(prompt) -> prompt
+    workflow_attempt.RecoveryPrompt(prompt) -> prompt
+  }
+}
 
 pub type CapturedLog {
   CapturedLog(
@@ -37,8 +50,8 @@ fn fake_pi() -> String {
   abs
 }
 
-fn issue(state: String) -> domain.Issue {
-  domain.Issue(
+fn issue(state: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
     id: "issue-id",
     identifier: "ABC-123",
     title: "Fix tests",
@@ -49,6 +62,7 @@ fn issue(state: String) -> domain.Issue {
     url: None,
     labels: [],
     blocked_by: [],
+    blocked_by_complete: True,
     created_at: Some(birl.from_unix(0)),
     updated_at: Some(birl.from_unix(0)),
   )
@@ -63,7 +77,7 @@ fn yaml_config_with_max(
   max_concurrent: Int,
   extra: String,
 ) -> String {
-  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
+  "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: [Todo]\n  dispatch_states: [Todo]\n  terminal_states: [Done]\nworkspace:\n  root: "
   <> root
   <> "\n  hooks:\n    create: |\n      mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n    before_step: |\n      test -d \"$SCHERZO_WORKSPACE_PATH\"\n    after_step: |\n      true\n    remove: |\n      rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    timeout_ms: 60000\nrouting:\n  workflow_label_prefix: \"workflow:\"\n  require_exactly_one_workflow_label: true\n  workflows:\n    implementation: workflows/implementation.yaml\nagent:\n  max_concurrent_agents: "
   <> int_to_string(max_concurrent)
@@ -99,8 +113,10 @@ fn workflow_deps() -> workflow_run.Dependencies {
       workflow_id,
       run_id,
       _step_id,
+      attempt_index,
       workspace_ref,
       orchestrator,
+      profile,
       _known,
     ) {
       let run_root =
@@ -115,19 +131,51 @@ fn workflow_deps() -> workflow_run.Dependencies {
         workflow_id: workflow_id,
         run_id: run_id,
         run_root: run_root,
+        attempt_index: attempt_index,
         workspace_name: workspace_ref.name,
         path: run_root <> "/" <> workspace_ref.name,
         source_workspace_name: workspace_ref.from,
         source_workspace_path: None,
+        workspace_profile: profile.name,
       ))
     },
-    after_step: fn(_, _, _, _) { Nil },
-    cleanup_run: fn(_, _) { Ok(Nil) },
-    command_step: fn(step_id, _command, _workspace, _timeout, secrets, limits) {
+    prepare_recovered_step: fn(
+      _issue,
+      workflow_id,
+      run_id,
+      expected_run_root,
+      _step_id,
+      attempt_index,
+      workspace_ref,
+      _orchestrator,
+      profile,
+      _known,
+    ) {
+      Ok(workspace_run.PreparedStepWorkspace(
+        workflow_id: workflow_id,
+        run_id: run_id,
+        run_root: expected_run_root,
+        attempt_index: attempt_index,
+        workspace_name: workspace_ref.name,
+        path: expected_run_root <> "/" <> workspace_ref.name,
+        source_workspace_name: workspace_ref.from,
+        source_workspace_path: None,
+        workspace_profile: profile.name,
+      ))
+    },
+    after_step: fn(_, _, _, _, _) { Nil },
+    cleanup_run: fn(_, _, _) { Ok(Nil) },
+    command_step: fn(
+      context: workflow_run.StepContext,
+      _command,
+      _timeout,
+      secrets,
+      limits,
+    ) {
       step_artifact.from_command_result(
-        step_id,
+        context.step_id,
         0,
-        "stdout:" <> step_id,
+        "stdout:" <> context.step_id,
         "",
         False,
         secrets,
@@ -136,32 +184,36 @@ fn workflow_deps() -> workflow_run.Dependencies {
     },
     agent_step: fn(
       issue,
-      _step_id,
-      prompt,
+      context: workflow_run.StepContext,
+      prompt_mode,
+      _attempt_context,
       _effective,
       _tracker,
-      workspace_path,
       _emit_update,
       _command_ready,
+      _record_pi_session,
     ) {
-      Ok(runner.WorkerSuccess(
+      Ok(agent_types.WorkerSuccess(
         final_issue: Some(issue),
-        final_classification: runner.FinalTerminal,
-        workspace_path: workspace_path,
-        tokens: domain.zero_token_totals(),
+        final_classification: agent_types.FinalTerminal,
+        workspace_path: context.workspace_path,
+        tokens: session_tokens.zero_token_totals(),
         turns: 1,
-        result: domain.ResultArtifact(
-          final_response: Some(prompt),
-          truncated: False,
-          source: "test",
+        result: result_artifact.from_final_response(
+          Some(prompt_text(prompt_mode)),
+          False,
+          "test",
         ),
       ))
     },
+    checkpoint: workflow_checkpoint.noop_writer(),
   )
 }
 
 fn contract_config_text(root: String, active_state: String) -> String {
   "version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: TEST\n  active_states: ["
+  <> active_state
+  <> "]\n  dispatch_states: ["
   <> active_state
   <> "]\n  terminal_states: [Done]\nworkspace:\n  root: "
   <> root
@@ -362,7 +414,7 @@ pub fn linear_contract_check_mismatch_logs_diagnostics_and_fails_test() {
     fields: mismatch_fields,
     secrets: _,
   )) = process.receive(log_subject, within: 1000)
-  assert field_value(mismatch_fields, "diagnostic_count") == Some("1")
+  assert field_value(mismatch_fields, "diagnostic_count") == Some("2")
   let assert Ok(CapturedLog(
     level: "error",
     event: "linear_contract_diagnostic",
@@ -424,7 +476,7 @@ pub fn linear_contract_check_fetch_error_maps_to_startup_failure_test() {
       contract_deps(Error(error.LinearApiStatus(500)), log_subject),
     )
   assert err.code == "linear_api_status"
-  assert process.receive(log_subject, within: 50) == Error(Nil)
+  test_async.assert_no_extra_message_within(log_subject, 50)
 }
 
 pub fn yaml_once_runs_command_workflow_test() {
@@ -440,7 +492,7 @@ pub fn yaml_once_runs_command_workflow_test() {
       command_workflow_yaml("sh -c 'exit 1'"),
     )
   let candidate =
-    domain.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+    tracker_issue.Issue(..issue("Todo"), labels: ["workflow:implementation"])
   let assert Ok(result) =
     service.run_once_with_dependencies(
       Some(config_path),
@@ -509,6 +561,78 @@ pub fn yaml_linear_contract_check_uses_orchestrator_config_test() {
     process.receive(log_subject, within: 1000)
 }
 
+pub fn service_refresh_blocks_non_terminal_dependency_test() {
+  let root = "test/tmp/service-blocked-refresh/workspaces"
+  reset_dir("test/tmp/service-blocked-refresh")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      "test/tmp/service-blocked-refresh/workflows",
+    )
+  let workflow_path = "test/tmp/service-blocked-refresh/scherzo.yaml"
+  let assert Ok(Nil) = simplifile.write(workflow_path, yaml_config(root, ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-blocked-refresh/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
+  let candidate =
+    tracker_issue.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+  let blocked =
+    tracker_issue.Issue(..candidate, blocked_by: [
+      tracker_issue.BlockerRef(
+        id: Some("blocker-id"),
+        identifier: Some("ABC-0"),
+        state: Some(issue_state.from_string_unchecked("Todo")),
+      ),
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([blocked]) },
+    )
+  let assert Ok(result) =
+    service.run_once_with_dependencies(Some(workflow_path), deps(client))
+  assert result.dispatched == 0
+  assert contains_log(result.logs, "linear_dependency_claim_validation_blocked")
+}
+
+pub fn service_refresh_allows_terminal_dependency_test() {
+  let root = "test/tmp/service-terminal-refresh/workspaces"
+  reset_dir("test/tmp/service-terminal-refresh")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      "test/tmp/service-terminal-refresh/workflows",
+    )
+  let workflow_path = "test/tmp/service-terminal-refresh/scherzo.yaml"
+  let assert Ok(Nil) = simplifile.write(workflow_path, yaml_config(root, ""))
+  let assert Ok(Nil) =
+    simplifile.write(
+      "test/tmp/service-terminal-refresh/workflows/implementation.yaml",
+      command_workflow_yaml("printf ok"),
+    )
+  let candidate =
+    tracker_issue.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+  let refreshed =
+    tracker_issue.Issue(..candidate, blocked_by: [
+      tracker_issue.BlockerRef(
+        id: Some("blocker-id"),
+        identifier: Some("ABC-0"),
+        state: Some(issue_state.from_string_unchecked("Done")),
+      ),
+    ])
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([refreshed]) },
+    )
+  let assert Ok(result) =
+    service.run_once_with_dependencies(Some(workflow_path), deps(client))
+  assert result.dispatched == 1
+  assert contains_log(result.logs, "dispatch_started")
+}
+
 pub fn fake_end_to_end_service_dispatch_test() {
   let root = "test/tmp/service-integration/workspaces"
   reset_dir("test/tmp/service-integration")
@@ -522,7 +646,7 @@ pub fn fake_end_to_end_service_dispatch_test() {
       command_workflow_yaml("printf ok"),
     )
   let candidate =
-    domain.Issue(..issue("Todo"), labels: ["workflow:implementation"])
+    tracker_issue.Issue(..issue("Todo"), labels: ["workflow:implementation"])
   let assert Ok(result) =
     service.run_once_with_dependencies(
       Some(workflow_path),
@@ -544,13 +668,13 @@ fn empty_tracker() -> tracker.Client {
 }
 
 fn tracker_with_candidate(
-  candidate: domain.Issue,
-  final: domain.Issue,
+  candidate: tracker_issue.Issue,
+  _final: tracker_issue.Issue,
 ) -> tracker.Client {
   tracker.Client(
     fetch_candidate_issues: fn() { Ok([candidate]) },
     fetch_issues_by_states: fn(_) { Ok([]) },
-    fetch_issue_states_by_ids: fn(_) { Ok([final]) },
+    fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
   )
 }
 

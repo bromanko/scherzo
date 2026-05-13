@@ -5,8 +5,9 @@ import gleam/httpc
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_body_data
@@ -82,9 +83,7 @@ pub fn real_upload_transport(
     True -> {
       use request <- try_tracker(
         http_request.to(upload_request.url)
-        |> result_map_error(fn(_) {
-          error.LinearApiRequest("invalid upload URL")
-        }),
+        |> result.replace_error(error.LinearApiRequest("invalid upload URL")),
       )
       let request =
         request
@@ -106,7 +105,7 @@ pub fn real_upload_transport(
 }
 
 pub fn attach_markdown_to_comment(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   filename: String,
   body: BitArray,
@@ -151,7 +150,7 @@ pub fn attach_markdown_to_comment(
 }
 
 pub fn attach_markdown_file_to_comment(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   path: String,
   options: AttachOptions,
@@ -161,7 +160,7 @@ pub fn attach_markdown_file_to_comment(
   use filename <- try_tracker(validate_markdown_filename(filename))
   use info <- try_tracker(
     simplifile.file_info(path)
-    |> result_map_error(fn(err) {
+    |> result.map_error(fn(err) {
       error.LinearAttachmentError(
         "failed to stat attachment file "
         <> path
@@ -175,7 +174,7 @@ pub fn attach_markdown_file_to_comment(
       use _ <- try_tracker(validate_attachment_size(info.size))
       use bits <- try_tracker(
         simplifile.read_bits(path)
-        |> result_map_error(fn(err) {
+        |> result.map_error(fn(err) {
           error.LinearAttachmentError(
             "failed to read attachment file "
             <> path
@@ -215,7 +214,7 @@ type ModeDecision {
 }
 
 fn fetch_comment(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   dependencies: Dependencies,
 ) -> Result(linear.LinearCommentDocument, error.TrackerError) {
@@ -261,7 +260,7 @@ fn decide_attach_mode(
 }
 
 fn attach_native(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   filename: String,
   body: BitArray,
@@ -303,7 +302,7 @@ fn attach_native(
 }
 
 fn attach_fallback(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment: linear.LinearCommentDocument,
   filename: String,
   body: BitArray,
@@ -332,7 +331,7 @@ fn attach_fallback(
 }
 
 fn upload_markdown(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   filename: String,
   body: BitArray,
   size: Int,
@@ -458,13 +457,6 @@ fn try_tracker(
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)
-  }
-}
-
-fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(mapper(err))
   }
 }
 

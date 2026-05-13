@@ -1,0 +1,143 @@
+version: 1
+id: review-native-contract-spike
+description: Minimal native structured-output contract spike for review lane drafts, malformed output, failure continuation, and downstream metadata inspection.
+workspace_profile: dogfood-jj
+max_parallel_steps: 3
+steps:
+  - id: valid_lane
+    kind: agent
+    prompt: prompts/review-native-contract-valid.md
+    on_failure: continue
+    workspace: main
+    structured_output:
+      format: json
+      artifact_name: valid_draft
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: review_lane_draft_schema
+          type: json_schema
+          path: docs/schemas/review-lane-draft.v1.schema.json
+          draft: "2020-12"
+        - name: review_lane_semantics
+          type: command
+          argv:
+            - python3
+            - scripts/scherzo-review
+            - validate-structured-output
+            - --validator
+            - review_lane_draft
+          timeout_ms: 30000
+          working_directory: repository
+      schema:
+        type: object
+        required:
+          - schema_version
+          - artifact_type
+          - generated_at_utc
+          - producer
+          - lane
+          - input_refs
+          - draft_findings
+          - review_notes
+          - evidence_requests
+          - self_check
+          - remote_mutations
+
+  - id: malformed_lane
+    kind: agent
+    prompt: prompts/review-native-contract-malformed.md
+    on_failure: continue
+    workspace: main
+    structured_output:
+      format: json
+      artifact_name: malformed_draft
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: review_lane_draft_schema
+          type: json_schema
+          path: docs/schemas/review-lane-draft.v1.schema.json
+          draft: "2020-12"
+        - name: review_lane_semantics
+          type: command
+          argv:
+            - python3
+            - scripts/scherzo-review
+            - validate-structured-output
+            - --validator
+            - review_lane_draft
+          timeout_ms: 30000
+          working_directory: repository
+      schema:
+        type: object
+        required:
+          - schema_version
+          - artifact_type
+          - generated_at_utc
+          - producer
+          - lane
+          - input_refs
+          - draft_findings
+          - review_notes
+          - evidence_requests
+          - self_check
+          - remote_mutations
+
+  - id: failed_lane
+    kind: agent
+    prompt: prompts/review-native-contract-failed.md
+    on_failure: continue
+    workspace: main
+    structured_output:
+      format: json
+      artifact_name: failed_draft
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: review_lane_draft_schema
+          type: json_schema
+          path: docs/schemas/review-lane-draft.v1.schema.json
+          draft: "2020-12"
+        - name: review_lane_semantics
+          type: command
+          argv:
+            - python3
+            - scripts/scherzo-review
+            - validate-structured-output
+            - --validator
+            - review_lane_draft
+          timeout_ms: 30000
+          working_directory: repository
+      schema:
+        type: object
+        required:
+          - schema_version
+          - artifact_type
+          - generated_at_utc
+          - producer
+          - lane
+          - input_refs
+          - draft_findings
+          - review_notes
+          - evidence_requests
+          - self_check
+          - remote_mutations
+
+  - id: inspect_contract
+    kind: command
+    depends_on: [valid_lane, malformed_lane, failed_lane]
+    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review-native-contract"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; valid_path="$artifact_dir/valid_lane/attempt-1/structured/valid_draft.json"; malformed_step="$artifact_dir/malformed_lane/attempt-1.json"; failed_step="$artifact_dir/failed_lane/attempt-1.json"; test -f "$valid_path"; test -f "$malformed_step"; test -f "$failed_step"; printf "runner=direnv exec . gleam run -- workflow run .scherzo/workflows/review-native-contract-spike.yml --run-root %s --run-id %s --native-review-scenario contract-spike\nrun_id=%s\nworkflow_id=%s\nvalid_path=%s\nmalformed_step_artifact=%s\nfailed_step_artifact=%s\n" "$SCHERZO_RUN_ROOT" "$SCHERZO_RUN_ID" "$SCHERZO_RUN_ID" "$SCHERZO_WORKFLOW_ID" "$valid_path" "$malformed_step" "$failed_step" > "$SCHERZO_RUN_ROOT/artifacts/review-native-contract/contract-summary.txt"'
+    workspace: main

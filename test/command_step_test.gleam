@@ -1,13 +1,22 @@
 import gleam/option.{Some}
+import gleam/string
 import scherzo/command_step
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/step_artifact
 import simplifile
 
-fn limits() -> domain.ArtifactLimits {
-  domain.ArtifactLimits(
+fn limits() -> config_types.ArtifactLimits {
+  config_types.ArtifactLimits(
     command_stream_max_chars: 100,
     template_field_max_chars: 100,
+    workflow_summary_max_chars: 100,
+  )
+}
+
+fn diagnostic_limits() -> config_types.ArtifactLimits {
+  config_types.ArtifactLimits(
+    command_stream_max_chars: 100,
+    template_field_max_chars: 1000,
     workflow_summary_max_chars: 100,
   )
 }
@@ -54,6 +63,45 @@ pub fn command_step_captures_stderr_and_nonzero_exit_test() {
   assert artifact.stderr == "bad\n"
 }
 
+pub fn command_step_promotes_stable_failure_code_test() {
+  let dir = "test/tmp/command-step-failure-code"
+  reset_dir(dir)
+  let artifact =
+    command_step.run(
+      "publish_pr",
+      "echo SCHERZO_FAILURE_CODE=publish_rebase_conflict >&2; exit 1",
+      dir,
+      1000,
+      [],
+      limits(),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("publish_rebase_conflict")
+  let assert Some(summary) = step_artifact.command_failure_summary(artifact)
+  assert string.contains(summary, "failure_code=publish_rebase_conflict")
+  let assert Some(diagnostic_path) = artifact.diagnostic_path
+  let assert Ok(body) = simplifile.read(diagnostic_path)
+  assert string.contains(body, "failure_code: publish_rebase_conflict")
+}
+
+pub fn command_step_captures_final_stdout_line_without_newline_test() {
+  let dir = "test/tmp/command-step-no-final-newline"
+  reset_dir(dir)
+  let artifact =
+    command_step.run(
+      "test_step",
+      "printf 'no final newline'",
+      dir,
+      1000,
+      [],
+      limits(),
+    )
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert artifact.stdout == "no final newline"
+}
+
 pub fn command_step_timeout_returns_failed_artifact_test() {
   let dir = "test/tmp/command-step-timeout"
   reset_dir(dir)
@@ -61,6 +109,24 @@ pub fn command_step_timeout_returns_failed_artifact_test() {
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(124)
   assert artifact.timed_out == True
+}
+
+pub fn command_step_env_is_available_to_helpers_test() {
+  let dir = "test/tmp/command-step-env"
+  reset_dir(dir)
+  let artifact =
+    command_step.run_with_env(
+      "env_step",
+      "printf '%s|%s\n' \"$SCHERZO_RUN_ROOT\" \"$SCHERZO_STEP_ID\"",
+      dir,
+      1000,
+      [#("SCHERZO_RUN_ROOT", "run-root"), #("SCHERZO_STEP_ID", "env_step")],
+      [],
+      limits(),
+    )
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert artifact.stdout == "run-root|env_step\n"
 }
 
 pub fn command_step_redacts_fake_secret_test() {
@@ -95,4 +161,45 @@ pub fn command_step_caps_stdout_while_collecting_test() {
   assert artifact.stdout_truncated == True
   assert artifact.stdout
     == "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+}
+
+pub fn command_step_stdout_capture_preserves_pipeline_status_test() {
+  let dir = "test/tmp/command-step-pipeline-status"
+  reset_dir(dir)
+  let artifact =
+    command_step.run("pipeline", "false | true", dir, 1000, [], limits())
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+}
+
+pub fn failed_command_step_retains_full_diagnostic_artifact_test() {
+  let dir = "test/tmp/command-step-retained-diagnostics"
+  reset_dir(dir)
+  let stdout = string.repeat("o", times: 150)
+  let stderr = string.repeat("e", times: 150)
+  let command =
+    "printf '" <> stdout <> "\\n'; printf '" <> stderr <> "\\n' >&2; exit 7"
+  let artifact =
+    command_step.run("final_test", command, dir, 1000, [], diagnostic_limits())
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.command == Some(command)
+  assert artifact.exit_code == Some(7)
+  let assert Some(duration_ms) = artifact.duration_ms
+  assert duration_ms >= 0
+  assert artifact.stdout_truncated == True
+  assert artifact.stderr_truncated == True
+  let assert Some(diagnostic_path) = artifact.diagnostic_path
+  let assert Ok(body) = simplifile.read(diagnostic_path)
+  assert string.contains(body, "step_id: final_test")
+  assert string.contains(body, "exit_code: 7")
+  assert string.contains(body, "stdout_truncated_in_report: true")
+  assert string.contains(body, "stderr_truncated_in_report: true")
+  assert string.contains(body, stdout)
+  assert string.contains(body, stderr)
+  assert simplifile.is_file(
+      dir <> "/.scherzo/command-step-diagnostics/final_test.stdout.raw",
+    )
+    != Ok(True)
 }

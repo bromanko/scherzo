@@ -29,9 +29,42 @@ pub fn run_hook_with_env(
     script -> {
       case port.start_with_env(script, cwd, env) {
         Error(err) -> Error(error.HookIo(port_error_to_string(err)))
-        Ok(process) -> wait_for_hook(name, process, timeout_ms)
+        Ok(process) -> wait_for_hook(name, process, timeout_ms, [])
       }
     }
+  }
+}
+
+pub fn run_argv_with_env(
+  name: String,
+  executable: String,
+  args: List(String),
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+) -> Result(Nil, error.HookError) {
+  run_argv_with_env_redacting(name, executable, args, cwd, timeout_ms, env, [])
+}
+
+pub fn run_argv_with_env_redacting(
+  name: String,
+  executable: String,
+  args: List(String),
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+  secrets: List(String),
+) -> Result(Nil, error.HookError) {
+  case port.start_argv(executable, args, cwd, env) {
+    Error(err) ->
+      Error(
+        error.HookIo(log.redact(
+          "hook_error",
+          port_error_to_string(err),
+          secrets,
+        )),
+      )
+    Ok(process) -> wait_for_hook(name, process, timeout_ms, secrets)
   }
 }
 
@@ -62,25 +95,82 @@ pub fn run_best_effort_with_env(
   }
 }
 
+pub fn run_best_effort_argv_with_env(
+  name: String,
+  executable: String,
+  args: List(String),
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+) -> String {
+  run_best_effort_argv_with_env_redacting(
+    name,
+    executable,
+    args,
+    cwd,
+    timeout_ms,
+    env,
+    [],
+  )
+}
+
+pub fn run_best_effort_argv_with_env_redacting(
+  name: String,
+  executable: String,
+  args: List(String),
+  cwd: String,
+  timeout_ms: Int,
+  env: List(#(String, String)),
+  secrets: List(String),
+) -> String {
+  case
+    run_argv_with_env_redacting(
+      name,
+      executable,
+      args,
+      cwd,
+      timeout_ms,
+      env,
+      secrets,
+    )
+  {
+    Ok(Nil) -> log.info("hook_succeeded", [#("hook", name), #("cwd", cwd)])
+    Error(err) ->
+      log.warn("hook_failed", [
+        #("hook", name),
+        #("cwd", cwd),
+        #("error", hook_error_to_string(err)),
+      ])
+  }
+}
+
 fn wait_for_hook(
   name: String,
   process: port.Process,
   timeout_ms: Int,
+  secrets: List(String),
 ) -> Result(Nil, error.HookError) {
   case port.await_exit(process, timeout_ms) {
     Ok(0) -> Ok(Nil)
     Ok(status) -> {
-      let diagnostics =
-        port.read_diagnostics(process)
-        |> result_unwrap("")
-        |> log.truncate(4000)
+      let diagnostics = read_diagnostics_or_error(process)
+      let diagnostics = log.redact("hook_diagnostics", diagnostics, secrets)
+      let diagnostics = log.truncate(diagnostics, 4000)
       Error(error.HookFailed(name, status, diagnostics))
     }
-    Error(port.AwaitTimeout) -> {
+    Error(port.ReadTimeout) -> {
       let _ = port.terminate(process)
       Error(error.HookTimedOut(name))
     }
     Error(err) -> Error(error.HookIo(port_error_to_string(err)))
+  }
+}
+
+fn read_diagnostics_or_error(process: port.Process) -> String {
+  case port.read_diagnostics(process) {
+    Ok(diagnostics) -> diagnostics
+    Error(err) ->
+      "could not read hook diagnostics: " <> port_error_to_string(err)
   }
 }
 
@@ -94,25 +184,7 @@ fn hook_error_to_string(err: error.HookError) -> String {
 }
 
 fn port_error_to_string(err: port.PortError) -> String {
-  case err {
-    port.StartFailed(message) -> message
-    port.SendFailed(message) -> message
-    port.ReadTimeout -> "read timeout"
-    port.LineTooLong -> "line too long"
-    port.ProcessExited(status) -> "process exited " <> int_to_string(status)
-    port.PortClosed -> "port closed"
-    port.DiagnosticsFailed(message) -> message
-    port.TerminateFailed(message) -> message
-    port.AwaitTimeout -> "await timeout"
-    port.AwaitFailed(message) -> message
-  }
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
-  }
+  port.port_error_to_string(err)
 }
 
 @external(erlang, "erlang", "integer_to_binary")

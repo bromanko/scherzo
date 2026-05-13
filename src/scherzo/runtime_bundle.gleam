@@ -1,22 +1,32 @@
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/config
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
 import scherzo/path
+import scherzo/template
+import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
+import scherzo/workspace_driver_discovery
+import scherzo/workspace_profile
 import simplifile
 import yay
+
+pub type BundleDependency {
+  BundleDependency(path: String, contents: String)
+}
 
 pub type RuntimeBundle {
   RuntimeBundle(
     config_path: String,
     config_contents: String,
-    effective: domain.EffectiveConfig,
-    orchestrator: domain.OrchestratorConfig,
+    dependencies: List(BundleDependency),
+    effective: config_types.EffectiveConfig,
+    orchestrator: config_types.OrchestratorConfig,
     workflows: Dict(String, workflow_dag.WorkflowDag),
     secrets: List(String),
   )
@@ -28,7 +38,7 @@ pub type BundleError {
 
 pub fn select_workflow(
   bundle: RuntimeBundle,
-  issue: domain.Issue,
+  issue: tracker_issue.Issue,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
   select_routed_workflow(bundle.workflows, bundle.orchestrator.routing, issue)
 }
@@ -54,8 +64,8 @@ pub fn load_with_env(
 
 fn select_routed_workflow(
   workflows: Dict(String, workflow_dag.WorkflowDag),
-  routing: domain.RoutingConfig,
-  issue: domain.Issue,
+  routing: config_types.RoutingConfig,
+  issue: tracker_issue.Issue,
 ) -> Result(#(String, workflow_dag.WorkflowDag), BundleError) {
   let labels = workflow_labels(issue.labels, routing.workflow_label_prefix, [])
   case labels {
@@ -124,23 +134,43 @@ fn load_orchestrator(
   selected: String,
   env: config.Env,
 ) -> Result(RuntimeBundle, BundleError) {
-  use content <- result_try(read_file(selected, "missing_config_file"))
-  use root <- result_try(parse_yaml_root(content))
-  use orchestrator <- result_try(
+  use content <- result.try(read_file(selected, "missing_config_file"))
+  let config_dependency = BundleDependency(selected, content)
+  use root <- result.try(parse_yaml_root(content, selected))
+  use orchestrator <- result.try(
     config.resolve_orchestrator_root(root, selected, env)
     |> map_config_error,
   )
-  use workflows <- result_try(load_workflow_map(
-    dict.to_list(orchestrator.routing.workflows),
-    dict.new(),
+  use #(workflows, workflow_dependencies) <- result.try(
+    load_workflow_map(
+      dict.to_list(orchestrator.routing.workflows),
+      dict.new(),
+      [],
+    ),
+  )
+  use orchestrator <- result.try(
+    workspace_driver_discovery.enrich_orchestrator(orchestrator)
+    |> result.map_error(workspace_driver_discovery_error_to_bundle_error),
+  )
+  use _ <- result.try(validate_workspace_profiles(
+    orchestrator,
+    dict.to_list(workflows),
   ))
-  use _ <- result_try(validate_workflow_model_settings(
+  use _ <- result.try(validate_workflow_model_settings(
     orchestrator.model_settings,
     dict.to_list(workflows),
+  ))
+  use _ <- result.try(validate_scheduled_workflows(
+    orchestrator.scheduled_jobs,
+    workflows,
   ))
   Ok(RuntimeBundle(
     config_path: selected,
     config_contents: content,
+    dependencies: normalize_dependencies([
+      config_dependency,
+      ..workflow_dependencies
+    ]),
     effective: orchestrator.effective,
     orchestrator: orchestrator,
     workflows: workflows,
@@ -151,13 +181,22 @@ fn load_orchestrator(
 fn load_workflow_map(
   entries: List(#(String, String)),
   acc: Dict(String, workflow_dag.WorkflowDag),
-) -> Result(Dict(String, workflow_dag.WorkflowDag), BundleError) {
+  acc_dependencies: List(BundleDependency),
+) -> Result(
+  #(Dict(String, workflow_dag.WorkflowDag), List(BundleDependency)),
+  BundleError,
+) {
   case entries {
-    [] -> Ok(acc)
+    [] -> Ok(#(acc, acc_dependencies))
     [#(id, workflow_path), ..rest] -> {
-      use dag <- result_try(load_workflow_dag(workflow_path))
+      use #(dag, dependencies) <- result.try(load_workflow_dag(workflow_path))
       case dag.id == id {
-        True -> load_workflow_map(rest, dict.insert(acc, id, dag))
+        True ->
+          load_workflow_map(
+            rest,
+            dict.insert(acc, id, dag),
+            list.append(acc_dependencies, dependencies),
+          )
         False ->
           Error(BundleError(
             "workflow_id_mismatch",
@@ -168,46 +207,205 @@ fn load_workflow_map(
   }
 }
 
-fn load_workflow_dag(
+pub fn load_workflow_file(
   workflow_path: String,
 ) -> Result(workflow_dag.WorkflowDag, BundleError) {
-  use content <- result_try(read_file(workflow_path, "missing_workflow_file"))
-  use dag <- result_try(workflow_dag.parse(content) |> map_dag_error)
-  resolve_prompt_files(dag, workflow_path)
+  use #(dag, _) <- result.try(load_workflow_dag(workflow_path))
+  Ok(dag)
+}
+
+fn load_workflow_dag(
+  workflow_path: String,
+) -> Result(#(workflow_dag.WorkflowDag, List(BundleDependency)), BundleError) {
+  use content <- result.try(read_file(workflow_path, "missing_workflow_file"))
+  let workflow_dependency = BundleDependency(workflow_path, content)
+  use dag <- result.try(
+    workflow_dag.parse(content) |> map_dag_error(workflow_path),
+  )
+  use #(dag, prompt_dependencies) <- result.try(resolve_prompt_files(
+    dag,
+    workflow_path,
+  ))
+  Ok(#(dag, [workflow_dependency, ..prompt_dependencies]))
 }
 
 fn resolve_prompt_files(
   dag: workflow_dag.WorkflowDag,
   workflow_path: String,
-) -> Result(workflow_dag.WorkflowDag, BundleError) {
-  use steps <- result_try(resolve_step_prompts(dag.steps, workflow_path, []))
-  Ok(workflow_dag.WorkflowDag(..dag, steps: steps))
+) -> Result(#(workflow_dag.WorkflowDag, List(BundleDependency)), BundleError) {
+  use #(steps, dependencies) <- result.try(
+    resolve_step_prompts(dag.steps, workflow_path, [], []),
+  )
+  Ok(#(workflow_dag.WorkflowDag(..dag, steps: steps), dependencies))
 }
 
 fn resolve_step_prompts(
   steps: List(workflow_dag.WorkflowStep),
   workflow_path: String,
   acc: List(workflow_dag.WorkflowStep),
-) -> Result(List(workflow_dag.WorkflowStep), BundleError) {
+  acc_dependencies: List(BundleDependency),
+) -> Result(
+  #(List(workflow_dag.WorkflowStep), List(BundleDependency)),
+  BundleError,
+) {
   case steps {
-    [] -> Ok(list.reverse(acc))
+    [] -> Ok(#(list.reverse(acc), acc_dependencies))
     [step, ..rest] -> {
       case step.kind {
-        workflow_dag.AgentStep(workflow_dag.PromptFile(prompt_path)) -> {
-          use prompt <- result_try(read_relative_prompt(
+        workflow_dag.AgentStep(
+          workflow_dag.PromptFile(prompt_path),
+          structured_output,
+        ) -> {
+          use #(prompt, dependency) <- result.try(read_relative_prompt(
             prompt_path,
             workflow_path,
           ))
           let step =
             workflow_dag.WorkflowStep(
               ..step,
-              kind: workflow_dag.AgentStep(workflow_dag.PromptInline(prompt)),
+              kind: workflow_dag.AgentStep(
+                workflow_dag.PromptInline(prompt),
+                structured_output,
+              ),
             )
-          resolve_step_prompts(rest, workflow_path, [step, ..acc])
+          resolve_step_prompts(
+            rest,
+            workflow_path,
+            [step, ..acc],
+            list.append(acc_dependencies, [dependency]),
+          )
         }
-        _ -> resolve_step_prompts(rest, workflow_path, [step, ..acc])
+        _ ->
+          resolve_step_prompts(
+            rest,
+            workflow_path,
+            [step, ..acc],
+            acc_dependencies,
+          )
       }
     }
+  }
+}
+
+fn validate_workspace_profiles(
+  orchestrator: config_types.OrchestratorConfig,
+  workflows: List(#(String, workflow_dag.WorkflowDag)),
+) -> Result(Nil, BundleError) {
+  case workflows {
+    [] -> Ok(Nil)
+    [#(_, dag), ..rest] -> {
+      use _ <- result.try(
+        workspace_profile.resolve(dag, orchestrator)
+        |> result.map_error(workspace_profile_error_to_bundle_error),
+      )
+      validate_workspace_profiles(orchestrator, rest)
+    }
+  }
+}
+
+fn workspace_driver_discovery_error_to_bundle_error(
+  err: workspace_driver_discovery.DiscoveryError,
+) -> BundleError {
+  BundleError(
+    workspace_driver_discovery.error_code(err),
+    workspace_driver_discovery.error_message(err),
+  )
+}
+
+fn workspace_profile_error_to_bundle_error(
+  err: workspace_profile.ProfileResolutionError,
+) -> BundleError {
+  BundleError(
+    workspace_profile.error_code(err),
+    workspace_profile.error_message(err),
+  )
+}
+
+fn validate_scheduled_workflows(
+  jobs: List(config_types.ScheduledJobConfig),
+  workflows: Dict(String, workflow_dag.WorkflowDag),
+) -> Result(Nil, BundleError) {
+  case jobs {
+    [] -> Ok(Nil)
+    [job, ..rest] ->
+      case job.enabled {
+        False -> validate_scheduled_workflows(rest, workflows)
+        True ->
+          case dict.get(workflows, job.workflow) {
+            Error(_) ->
+              Error(BundleError(
+                "scheduled_workflow_missing",
+                "scheduled job "
+                  <> job.id
+                  <> " references missing workflow "
+                  <> job.workflow,
+              ))
+            Ok(dag) -> {
+              use _ <- result.try(validate_scheduled_workflow(job, dag))
+              validate_scheduled_workflows(rest, workflows)
+            }
+          }
+      }
+  }
+}
+
+fn validate_scheduled_workflow(
+  job: config_types.ScheduledJobConfig,
+  dag: workflow_dag.WorkflowDag,
+) -> Result(Nil, BundleError) {
+  validate_scheduled_steps(job, dag.id, dag.steps)
+}
+
+fn validate_scheduled_steps(
+  job: config_types.ScheduledJobConfig,
+  workflow_id: String,
+  steps: List(workflow_dag.WorkflowStep),
+) -> Result(Nil, BundleError) {
+  case steps {
+    [] -> Ok(Nil)
+    [step, ..rest] -> {
+      use _ <- result.try(validate_scheduled_step(job, workflow_id, step))
+      validate_scheduled_steps(job, workflow_id, rest)
+    }
+  }
+}
+
+fn validate_scheduled_step(
+  job: config_types.ScheduledJobConfig,
+  workflow_id: String,
+  step: workflow_dag.WorkflowStep,
+) -> Result(Nil, BundleError) {
+  let source = case step.kind {
+    workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), _) -> prompt
+    workflow_dag.AgentStep(workflow_dag.PromptFile(path), _) -> path
+    workflow_dag.CommandStep(run, _) -> run
+  }
+  case first_issue_reference(template.referenced_variables(source)) {
+    None -> Ok(Nil)
+    Some(variable) ->
+      Error(BundleError(
+        "scheduled_workflow_requires_issue_context",
+        "scheduled job "
+          <> job.id
+          <> " workflow "
+          <> workflow_id
+          <> " step "
+          <> step.id
+          <> " references issue variable "
+          <> variable
+          <> "; scheduled workflows must use scheduled_job.*, schedule.*, or run.* variables",
+      ))
+  }
+}
+
+fn first_issue_reference(variables: List(String)) -> Option(String) {
+  case variables {
+    [] -> None
+    [variable, ..rest] ->
+      case variable == "issue" || string.starts_with(variable, "issue.") {
+        True -> Some(variable)
+        False -> first_issue_reference(rest)
+      }
   }
 }
 
@@ -215,7 +413,7 @@ fn validate_workflow_model_settings(
   defaults: model_config.Settings,
   workflows: List(#(String, workflow_dag.WorkflowDag)),
 ) -> Result(Nil, BundleError) {
-  use _ <- result_try(
+  use _ <- result.try(
     model_config.validate_resolved(defaults, "pi") |> map_model_error,
   )
   validate_workflow_model_entries(workflows, defaults)
@@ -228,7 +426,7 @@ fn validate_workflow_model_entries(
   case workflows {
     [] -> Ok(Nil)
     [#(id, dag), ..rest] -> {
-      use _ <- result_try(validate_step_model_settings(id, dag.steps, defaults))
+      use _ <- result.try(validate_step_model_settings(id, dag.steps, defaults))
       validate_workflow_model_entries(rest, defaults)
     }
   }
@@ -243,9 +441,9 @@ fn validate_step_model_settings(
     [] -> Ok(Nil)
     [step, ..rest] -> {
       case step.kind {
-        workflow_dag.AgentStep(_) -> {
+        workflow_dag.AgentStep(_, _) -> {
           let resolved = model_config.resolve(defaults, step.model_settings)
-          use _ <- result_try(
+          use _ <- result.try(
             model_config.validate_resolved(
               resolved,
               "workflow " <> workflow_id <> " step " <> step.id,
@@ -264,24 +462,50 @@ fn validate_step_model_settings(
 fn read_relative_prompt(
   prompt_path: String,
   workflow_path: String,
-) -> Result(String, BundleError) {
+) -> Result(#(String, BundleDependency), BundleError) {
   case validate_relative_path(prompt_path, "invalid_prompt_path") {
-    Error(err) -> Error(err)
+    Error(BundleError(code, message)) ->
+      Error(BundleError(code, message <> " in workflow " <> workflow_path))
     Ok(Nil) -> {
-      let workflow_dir = path.dirname(workflow_path) |> result_unwrap(".")
-      let full_path =
-        path.join(workflow_dir, string.trim(prompt_path))
-        |> path.absolute
-        |> result_unwrap(path.join(workflow_dir, string.trim(prompt_path)))
-      let workflow_dir_abs =
-        path.absolute(workflow_dir) |> result_unwrap(workflow_dir)
+      let prompt_path = string.trim(prompt_path)
+      use workflow_dir <- result.try(
+        path.dirname(workflow_path)
+        |> result.replace_error(BundleError(
+          "invalid_prompt_path",
+          "could not resolve workflow directory for " <> workflow_path,
+        )),
+      )
+      let joined_path = path.join(workflow_dir, prompt_path)
+      use full_path <- result.try(
+        path.absolute(joined_path)
+        |> result.replace_error(BundleError(
+          "invalid_prompt_path",
+          "could not resolve prompt path "
+            <> prompt_path
+            <> " in workflow "
+            <> workflow_path,
+        )),
+      )
+      use workflow_dir_abs <- result.try(
+        path.absolute(workflow_dir)
+        |> result.replace_error(BundleError(
+          "invalid_prompt_path",
+          "could not resolve workflow directory for " <> workflow_path,
+        )),
+      )
       case path.contains(workflow_dir_abs, full_path) {
         False ->
           Error(BundleError(
             "invalid_prompt_path",
-            "prompt path escapes workflow directory: " <> prompt_path,
+            "prompt path escapes workflow directory: "
+              <> prompt_path
+              <> " in workflow "
+              <> workflow_path,
           ))
-        True -> read_file(full_path, "missing_prompt_file")
+        True -> {
+          use contents <- result.try(read_file(full_path, "missing_prompt_file"))
+          Ok(#(contents, BundleDependency(full_path, contents)))
+        }
       }
     }
   }
@@ -313,12 +537,37 @@ fn has_parent_segment(value: String) -> Bool {
   || string.contains(value, "/../")
 }
 
-fn parse_yaml_root(content: String) -> Result(yay.Node, BundleError) {
+fn normalize_dependencies(
+  dependencies: List(BundleDependency),
+) -> List(BundleDependency) {
+  dependencies
+  |> list.fold(dict.new(), fn(acc, dependency) {
+    dict.insert(acc, dependency.path, dependency.contents)
+  })
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(path, contents) = entry
+    BundleDependency(path, contents)
+  })
+  |> list.sort(by: fn(left, right) { string.compare(left.path, right.path) })
+}
+
+fn parse_yaml_root(
+  content: String,
+  config_path: String,
+) -> Result(yay.Node, BundleError) {
   case yay.parse_string(content) {
-    Error(_) -> Error(BundleError("yaml_parse_error", "YAML parse error"))
+    Error(_) ->
+      Error(BundleError(
+        "yaml_parse_error",
+        "config " <> config_path <> ": YAML parse error",
+      ))
     Ok([document]) -> Ok(yay.document_root(document))
     Ok(_) ->
-      Error(BundleError("multiple_documents", "expected one YAML document"))
+      Error(BundleError(
+        "multiple_documents",
+        "config " <> config_path <> ": expected one YAML document",
+      ))
   }
 }
 
@@ -372,17 +621,19 @@ fn map_config_error(
 ) -> Result(a, BundleError) {
   case result {
     Ok(value) -> Ok(value)
-    Error(err) -> Error(BundleError(error.config_code(err), "config error"))
+    Error(err) ->
+      Error(BundleError(error.config_code(err), error.config_message(err)))
   }
 }
 
 fn map_dag_error(
   result: Result(a, workflow_dag.DagError),
+  workflow_path: String,
 ) -> Result(a, BundleError) {
   case result {
     Ok(value) -> Ok(value)
     Error(workflow_dag.DagError(code, message)) ->
-      Error(BundleError(code, message))
+      Error(BundleError(code, "workflow " <> workflow_path <> ": " <> message))
   }
 }
 
@@ -401,18 +652,4 @@ fn map_model_error(
 
 fn real_env(name: String) -> Option(String) {
   path.env(name)
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
-  }
-}
-
-fn result_try(result: Result(a, e), next: fn(a) -> Result(b, e)) -> Result(b, e) {
-  case result {
-    Ok(value) -> next(value)
-    Error(err) -> Error(err)
-  }
 }

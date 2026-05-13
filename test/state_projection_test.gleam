@@ -1,4 +1,7 @@
 import gleam/dict
+import gleam/int
+import gleam/list
+import gleam/option.{None, Some}
 import scherzo/state/projection
 import scherzo/state/record
 
@@ -32,6 +35,8 @@ pub fn folding_records_produces_expected_projection_test() {
     reason: "blocked",
     observed_updated_at_ms: 3900,
     parked_at_ms: 4000,
+    release_policy: "explicit_unpark_only",
+    issue_fingerprint: "",
   )) = dict.get(folded.parked_issues, "issue-2")
   let assert Error(_) = dict.get(folded.parked_issues, "issue-3")
 
@@ -51,6 +56,415 @@ pub fn folding_records_produces_expected_projection_test() {
     error_code: "http_500",
     failed_at_ms: 6000,
   )) = dict.get(folded.outbox, "outbox-1")
+}
+
+pub fn projection_exposes_recovery_facts_test() {
+  let records = [
+    record.with_id(
+      "known-1",
+      1000,
+      record.KnownWorkspace(
+        issue_id: "issue-1",
+        issue_identifier: "SCH-1",
+        workspace_path: ".scherzo/workspaces/SCH-1",
+      ),
+    ),
+    record.with_id(
+      "run-started-1",
+      1100,
+      record.RunStarted(
+        run_id: "run-1",
+        issue_id: "issue-1",
+        issue_identifier: "SCH-1",
+        workspace_path: ".scherzo/workspaces/SCH-1",
+      ),
+    ),
+    record.with_id(
+      "run-finished-1",
+      1200,
+      record.RunFinished(
+        run_id: "run-1",
+        issue_id: "issue-1",
+        classification: "success",
+        token_total: 1,
+        turns: 1,
+      ),
+    ),
+    record.with_id(
+      "counter-1",
+      1300,
+      record.IssueCounterUpdated(
+        issue_id: "issue-1",
+        issue_identifier: "SCH-1",
+        failure_attempts: 2,
+        worker_sessions: 3,
+        observed_updated_at_ms: 1299,
+        source_run_id: Some("run-1"),
+      ),
+    ),
+    record.with_id(
+      "park-v2-1",
+      1400,
+      record.IssueParkedV2(
+        issue_id: "issue-2",
+        issue_identifier: "SCH-2",
+        reason: "max_retry_attempts",
+        release_policy: "auto_unpark_on_issue_change",
+        issue_fingerprint: "fingerprint",
+        observed_updated_at_ms: 1399,
+      ),
+    ),
+    record.with_id(
+      "retry-1",
+      1500,
+      record.RetryScheduled(
+        issue_id: "issue-1",
+        issue_identifier: "SCH-1",
+        delay_ms: 5000,
+        generation: 4,
+        reason: "failure",
+      ),
+    ),
+    record.with_id(
+      "outbox-v2-1",
+      1600,
+      record.OutboxPendingV2(
+        outbox_id: "outbox-1",
+        issue_id: "issue-1",
+        outbox_kind: "linear_comment",
+        dedupe_key: "run-1:success",
+        payload_json: "{\"body\":\"ok\"}",
+      ),
+    ),
+  ]
+  let folded = projection.fold(records)
+
+  let assert Ok(".scherzo/workspaces/SCH-1") =
+    projection.known_workspace_for_issue(folded, "issue-1")
+  assert projection.latest_counter(folded, "issue-1").failure_attempts == 2
+  assert projection.latest_counter(folded, "issue-1").worker_sessions == 3
+  assert projection.counter_has_source_run(folded, "issue-1", "run-1")
+
+  let assert Ok(projection.ParkedIssue(
+    issue_identifier: "SCH-2",
+    reason: "max_retry_attempts",
+    observed_updated_at_ms: 1399,
+    parked_at_ms: 1400,
+    release_policy: "auto_unpark_on_issue_change",
+    issue_fingerprint: "fingerprint",
+  )) = dict.get(folded.parked_issues, "issue-2")
+  let assert Ok(retry_status) = dict.get(folded.retries, "issue-1")
+  let assert Ok(6500) = projection.retry_due_at_ms(retry_status)
+  let assert Ok([
+    projection.OutboxReplay(
+      outbox_id: "outbox-1",
+      issue_id: "issue-1",
+      outbox_kind: "linear_comment",
+      dedupe_key: "run-1:success",
+      payload_json: "{\"body\":\"ok\"}",
+    ),
+  ]) = projection.pending_outbox_replays(folded)
+}
+
+pub fn known_issue_ids_omits_blank_issue_ids_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-workflow-finished",
+        1000,
+        record.WorkflowRunFinished(
+          run_id: "schedule-repair-20260505T120000Z",
+          workflow_id: "repair",
+          issue_id: "",
+          outcome: "completed",
+          token_total: 0,
+          turns: 0,
+        ),
+      ),
+      record.with_id(
+        "retry-real",
+        1001,
+        record.RetryScheduled(
+          issue_id: "issue-1",
+          issue_identifier: "SCH-1",
+          delay_ms: 5000,
+          generation: 1,
+          reason: "failure",
+        ),
+      ),
+    ])
+
+  let ids = projection.known_issue_ids(folded)
+  assert list.contains(ids, "") == False
+  assert list.contains(ids, "issue-1")
+}
+
+pub fn payload_less_pending_outbox_is_skipped_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "outbox-old",
+        1000,
+        record.OutboxPending(
+          outbox_id: "outbox-old",
+          issue_id: "issue-1",
+          outbox_kind: "linear_comment",
+          dedupe_key: "old",
+        ),
+      ),
+    ])
+
+  let assert Ok([]) = projection.pending_outbox_replays(folded)
+}
+
+pub fn pending_outbox_replays_are_chronological_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "outbox-a",
+        2000,
+        record.OutboxPendingV2(
+          outbox_id: "outbox-a",
+          issue_id: "issue-a",
+          outbox_kind: "linear_command_ack",
+          dedupe_key: "ack:a",
+          payload_json: "{\"type\":\"linear_command_ack\",\"body\":\"a\"}",
+        ),
+      ),
+      record.with_id(
+        "outbox-b",
+        1000,
+        record.OutboxPendingV2(
+          outbox_id: "outbox-b",
+          issue_id: "issue-b",
+          outbox_kind: "linear_command_ack",
+          dedupe_key: "ack:b",
+          payload_json: "{\"type\":\"linear_command_ack\",\"body\":\"b\"}",
+        ),
+      ),
+    ])
+
+  let assert Ok([
+    projection.OutboxReplay(outbox_id: "outbox-b", ..),
+    projection.OutboxReplay(outbox_id: "outbox-a", ..),
+  ]) = projection.pending_outbox_replays(folded)
+}
+
+pub fn scheduled_records_fold_into_status_test() {
+  let run_id = "schedule-repair-20260505T120000Z"
+  let folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-due",
+        1000,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          trigger: "automatic",
+        ),
+      ),
+      record.with_id(
+        "scheduled-pending",
+        1001,
+        record.ScheduledRunPending(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          trigger: "automatic",
+          requested_at_ms: 1001,
+        ),
+      ),
+      record.with_id(
+        "scheduled-blocked",
+        1002,
+        record.ScheduledRunPendingBlocked(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          reason: "waiting_for_global_slot",
+          observed_at_ms: 1002,
+        ),
+      ),
+      record.with_id(
+        "scheduled-skip",
+        1003,
+        record.ScheduledJobSkipped(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 1_800_000,
+          run_id: "schedule-repair-20260505T121500Z",
+          reason: "overlap_running",
+          skipped_count: 2,
+        ),
+      ),
+      record.with_id(
+        "scheduled-started",
+        1004,
+        record.ScheduledRunStarted(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          started_at_ms: 1004,
+          run_id: run_id,
+          attempt: 1,
+          session_id: "scheduled-session",
+          run_root: "workspaces/repair/scheduled/repair/" <> run_id,
+        ),
+      ),
+      record.with_id(
+        "scheduled-failed",
+        1005,
+        record.ScheduledRunFailed(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          attempt: 1,
+          finished_at_ms: 1005,
+          reason: "workflow_step_failed",
+          retry_exhausted: False,
+          run_root: Some("workspaces/repair/scheduled/repair/" <> run_id),
+        ),
+      ),
+      record.with_id(
+        "scheduled-retry",
+        1006,
+        record.ScheduledRunRetryScheduled(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          next_attempt: 2,
+          delay_ms: 10_000,
+          generation: 1,
+          reason: "workflow_step_failed",
+        ),
+      ),
+      record.with_id(
+        "scheduled-report-failed",
+        1007,
+        record.ScheduledFailureReportFailed(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          attempt: 2,
+          dedupe_key: "scheduled-job:repair",
+          error_code: "linear_api_request",
+          error_message: "network",
+          next_retry_at_ms: 20_000,
+          generation: 1,
+        ),
+      ),
+      record.with_id(
+        "scheduled-reported",
+        1008,
+        record.ScheduledFailureReported(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: run_id,
+          attempt: 2,
+          dedupe_key: "scheduled-job:repair",
+          linear_issue_id: "linear-issue",
+          action: "created",
+        ),
+      ),
+    ])
+
+  let assert Ok(status) = projection.scheduled_status_for(folded, "repair")
+  assert status.state == projection.ScheduledTerminalFailure
+  assert status.last_due_at_ms == Some(1_800_000)
+  assert status.last_failure_at_ms == Some(1005)
+  assert status.last_failure_reason == Some("workflow_step_failed")
+  assert status.retry_count == 1
+  assert status.skipped_overlap_count == 2
+  assert status.failure_issue_id == Some("linear-issue")
+  assert status.failure_dedupe_key == Some("scheduled-job:repair")
+  assert status.report_retry == None
+  assert status.recent_run_ids == ["schedule-repair-20260505T121500Z", run_id]
+  let assert Ok(decoded) =
+    projection.decode_string(projection.to_string(folded))
+  assert decoded == folded
+}
+
+pub fn scheduled_due_preserves_existing_history_test() {
+  let first_run = "schedule-repair-20260505T120000Z"
+  let second_run = "schedule-repair-20260505T121500Z"
+  let folded =
+    projection.fold([
+      record.with_id(
+        "scheduled-due-1",
+        1000,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: first_run,
+          trigger: "automatic",
+        ),
+      ),
+      record.with_id(
+        "scheduled-started-1",
+        1001,
+        record.ScheduledRunStarted(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          started_at_ms: 1001,
+          run_id: first_run,
+          attempt: 1,
+          session_id: "session-1",
+          run_root: "workspaces/repair/scheduled/repair/" <> first_run,
+        ),
+      ),
+      record.with_id(
+        "scheduled-succeeded-1",
+        1002,
+        record.ScheduledRunSucceeded(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 900_000,
+          run_id: first_run,
+          attempt: 1,
+          finished_at_ms: 1002,
+          token_total: 42,
+          turns: 3,
+        ),
+      ),
+      record.with_id(
+        "scheduled-due-2",
+        1003,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "repair",
+          due_at_ms: 1_800_000,
+          run_id: second_run,
+          trigger: "automatic",
+        ),
+      ),
+    ])
+
+  let assert Ok(status) = projection.scheduled_status_for(folded, "repair")
+  assert status.state == projection.ScheduledDuePending
+  assert status.last_success_at_ms == Some(1002)
+  assert status.last_success_run_id == Some(first_run)
+  assert status.last_due_at_ms == Some(1_800_000)
+  assert status.recent_run_ids == [second_run, first_run]
+}
+
+pub fn scheduled_recent_run_ids_are_capped_test() {
+  let folded = projection.fold(scheduled_due_records(30, []))
+
+  let assert Ok(status) = projection.scheduled_status_for(folded, "repair")
+  assert list.length(status.recent_run_ids) == 25
+  let assert Ok("run-30") = list.first(status.recent_run_ids)
+  let assert Ok("run-6") = list.last(status.recent_run_ids)
+  assert !list.contains(status.recent_run_ids, "run-5")
 }
 
 pub fn projection_snapshot_roundtrips_test() {
@@ -249,6 +663,194 @@ pub fn linear_command_status_transitions_replace_previous_status_test() {
   )) = dict.get(after_acked.commands, "comment-replace")
 }
 
+pub fn linear_command_receipt_projection_tracks_lifecycle_test() {
+  let records = [
+    record.with_id(
+      "receipt-1",
+      100,
+      record.LinearCommandSeen(
+        comment_id: "comment-receipt",
+        issue_id: "issue-command",
+        author_id: "user-1",
+        command_name: "park",
+        excerpt: "hold",
+      ),
+    ),
+    record.with_id(
+      "receipt-2",
+      200,
+      record.LinearCommandStarted(
+        comment_id: "comment-receipt",
+        issue_id: "issue-command",
+        command_name: "park",
+      ),
+    ),
+    record.with_id(
+      "receipt-3",
+      300,
+      record.LinearCommandCompleted(
+        comment_id: "comment-receipt",
+        issue_id: "issue-command",
+        status: "applied",
+        message_excerpt: "issue parked",
+      ),
+    ),
+  ]
+  let folded = projection.fold(records)
+
+  let assert projection.CommandReceiptCompleted(
+    issue_id: "issue-command",
+    author_id: "user-1",
+    command_name: "park",
+    excerpt: "hold",
+    result_status: "applied",
+    message_excerpt: "issue parked",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+    completed_at_ms: 300,
+    acked_at_ms: None,
+  ) = projection.command_receipt(folded, "comment-receipt")
+
+  let acked =
+    projection.apply(
+      folded,
+      record.with_id(
+        "receipt-4",
+        400,
+        record.LinearCommandAcked(
+          comment_id: "comment-receipt",
+          issue_id: "issue-command",
+        ),
+      ),
+    )
+  let assert projection.CommandReceiptCompleted(
+    issue_id: "issue-command",
+    author_id: "user-1",
+    command_name: "park",
+    excerpt: "hold",
+    result_status: "applied",
+    message_excerpt: "issue parked",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+    completed_at_ms: 300,
+    acked_at_ms: Some(400),
+  ) = projection.command_receipt(acked, "comment-receipt")
+}
+
+pub fn command_receipt_projection_does_not_reopen_completed_or_acked_receipts_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "receipt-monotonic-1",
+        100,
+        record.LinearCommandSeen(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          author_id: "user-1",
+          command_name: "park",
+          excerpt: "hold",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-2",
+        200,
+        record.LinearCommandStarted(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          command_name: "park",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-3",
+        300,
+        record.LinearCommandCompleted(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          status: "applied",
+          message_excerpt: "issue parked",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-4",
+        400,
+        record.LinearCommandAcked(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-5",
+        500,
+        record.LinearCommandSeen(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          author_id: "user-1",
+          command_name: "park",
+          excerpt: "duplicate",
+        ),
+      ),
+      record.with_id(
+        "receipt-monotonic-6",
+        600,
+        record.LinearCommandStarted(
+          comment_id: "comment-monotonic",
+          issue_id: "issue-command",
+          command_name: "park",
+        ),
+      ),
+    ])
+
+  let assert projection.CommandReceiptCompleted(
+    issue_id: "issue-command",
+    author_id: "user-1",
+    command_name: "park",
+    excerpt: "hold",
+    result_status: "applied",
+    message_excerpt: "issue parked",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+    completed_at_ms: 300,
+    acked_at_ms: Some(400),
+  ) = projection.command_receipt(folded, "comment-monotonic")
+}
+
+pub fn started_without_completed_receipt_survives_projection_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "receipt-started-1",
+        100,
+        record.LinearCommandSeen(
+          comment_id: "comment-started",
+          issue_id: "issue-command",
+          author_id: "user-1",
+          command_name: "retry",
+          excerpt: "",
+        ),
+      ),
+      record.with_id(
+        "receipt-started-2",
+        200,
+        record.LinearCommandStarted(
+          comment_id: "comment-started",
+          issue_id: "issue-command",
+          command_name: "retry",
+        ),
+      ),
+    ])
+
+  let assert projection.CommandReceiptStarted(
+    issue_id: "issue-command",
+    author_id: "user-1",
+    command_name: "retry",
+    excerpt: "",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+  ) = projection.command_receipt(folded, "comment-started")
+  let assert projection.CommandReceiptUnseen =
+    projection.command_receipt(folded, "missing-comment")
+}
+
 pub fn outbox_status_transitions_replace_previous_status_test() {
   let pending =
     record.with_id(
@@ -310,10 +912,10 @@ pub fn outbox_status_transitions_replace_previous_status_test() {
 pub fn projection_snapshot_decoder_rejects_invalid_snapshots_test() {
   assert_malformed_projection_snapshot("{")
   assert_malformed_projection_snapshot(
-    "{\"schema_version\":1,\"kind\":\"not_projection\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
+    "{\"schema_version\":2,\"kind\":\"not_projection\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
   )
   assert_malformed_projection_snapshot(
-    "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
+    "{\"schema_version\":3,\"kind\":\"projection_snapshot\",\"runs\":[],\"retries\":[],\"parked_issues\":[],\"commands\":[],\"outbox\":[]}",
   )
   assert_malformed_projection_snapshot(snapshot_json(
     runs: "[{\"run_id\":\"run-1\",\"status\":\"paused\"}]",
@@ -353,8 +955,7 @@ pub fn projection_snapshot_decoder_rejects_invalid_snapshots_test() {
 }
 
 fn assert_malformed_projection_snapshot(contents: String) -> Nil {
-  let assert Error("malformed projection snapshot") =
-    projection.decode_string(contents)
+  let assert Error(_) = projection.decode_string(contents)
   Nil
 }
 
@@ -365,7 +966,7 @@ fn snapshot_json(
   commands commands: String,
   outbox outbox: String,
 ) -> String {
-  "{\"schema_version\":1,\"kind\":\"projection_snapshot\",\"runs\":"
+  "{\"schema_version\":2,\"kind\":\"projection_snapshot\",\"runs\":"
   <> runs
   <> ",\"retries\":"
   <> retries
@@ -376,6 +977,30 @@ fn snapshot_json(
   <> ",\"outbox\":"
   <> outbox
   <> "}"
+}
+
+fn scheduled_due_records(
+  next_index: Int,
+  records: List(record.LedgerRecord),
+) -> List(record.LedgerRecord) {
+  case next_index {
+    0 -> records
+    index ->
+      scheduled_due_records(index - 1, [
+        record.with_id(
+          "scheduled-due-" <> int.to_string(index),
+          index,
+          record.ScheduledJobDue(
+            job_id: "repair",
+            workflow_id: "repair",
+            due_at_ms: index * 1000,
+            run_id: "run-" <> int.to_string(index),
+            trigger: "automatic",
+          ),
+        ),
+        ..records
+      ])
+  }
 }
 
 fn sample_records() -> List(record.LedgerRecord) {

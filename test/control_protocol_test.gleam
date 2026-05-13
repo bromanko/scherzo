@@ -1,11 +1,14 @@
+import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/pi_event
 import scherzo/control/command
 import scherzo/control/protocol
-import scherzo/domain
 import scherzo/session/event
 import scherzo/session/reason as session_reason
+import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub fn decode_ping_request_requires_token_test() {
   let assert Ok(protocol.Ping("1", "secret")) =
@@ -96,6 +99,7 @@ pub fn mutating_command_requests_roundtrip_to_operator_commands_test() {
     "11",
     command.RespondUi("session-1", "ui-2", command.UiValue("choice")),
   )
+  assert_command_roundtrip("12", command.RunScheduleNow("nightly-repair"))
 }
 
 pub fn mutating_command_aliases_decode_test() {
@@ -144,6 +148,11 @@ pub fn mutating_command_aliases_decode_test() {
     protocol.decode_request(
       "{\"version\":1,\"type\":\"prompt_session\",\"id\":\"8\",\"token\":\"secret\",\"session_id\":\"session-4\",\"message\":\"hello\"}",
     )
+
+  let assert Ok(protocol.RunScheduleNow(_, _, "nightly-repair")) =
+    protocol.decode_request(
+      "{\"version\":1,\"type\":\"run_schedule_now\",\"id\":\"9\",\"token\":\"secret\",\"job_id\":\"nightly-repair\"}",
+    )
 }
 
 pub fn invalid_mutating_commands_return_invalid_request_test() {
@@ -182,6 +191,12 @@ pub fn invalid_mutating_commands_return_invalid_request_test() {
   )
   assert_invalid_request(
     "{\"version\":1,\"type\":\"respond_ui\",\"id\":\"12\",\"token\":\"secret\",\"session_id\":\"session-1\",\"request_id\":\"ui-1\"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"schedule_run_now\",\"id\":\"13\",\"token\":\"secret\"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"schedule_run_now\",\"id\":\"14\",\"token\":\"secret\",\"job_id\":\"   \"}",
   )
 }
 
@@ -233,6 +248,8 @@ pub fn decode_events_response_accepts_missing_and_new_tool_fields_test() {
   assert old_event.payload.tool_input == None
   assert old_event.payload.tool_output == None
   assert old_event.payload.tool_status == None
+  assert old_event.payload.token_delta == session_tokens.zero_token_totals()
+  assert old_event.payload.turn_status == None
 
   let new_json =
     "{\"version\":1,\"id\":\"events-2\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":2,\"at_ms\":101,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"tool\",\"name\":\"tool_execution_end\",\"turn\":1,\"pi_type\":null,\"message\":null,\"request_id\":null,\"method\":null,\"tool_name\":\"bash\",\"tool_input\":\"gleam test\",\"tool_output\":\"ok\",\"tool_status\":\"success\",\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0},\"raw_json\":null}],\"next_cursor\":2,\"truncated\":false}}"
@@ -260,12 +277,140 @@ pub fn decode_events_response_uses_kind_when_decoding_event_name_test() {
     == event.LifecycleName(event.WorkerStarted)
 }
 
+pub fn decode_turn_event_response_with_token_delta_and_reason_test() {
+  let line =
+    "{\"version\":1,\"id\":\"events-turn\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":3,\"at_ms\":2500,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"turn\",\"name\":\"turn_finished\",\"turn\":1,\"turn_status\":\"finished\",\"turn_duration_ms\":1500,\"tokens\":{\"input\":10,\"output\":5,\"cache_read\":0,\"cache_write\":0,\"total\":15},\"token_delta\":{\"input\":10,\"output\":5,\"cache_read\":0,\"cache_write\":0,\"total\":15},\"reason\":\"operator_stop_after_current_turn\"}],\"next_cursor\":3,\"truncated\":false}}"
+
+  let assert Ok(page) = protocol.decode_get_events_response(line)
+  let assert [stored_event] = page.events
+  assert stored_event.payload.kind == event.Turn
+  assert stored_event.payload.name
+    == event.TurnName(turn_telemetry.EventFinished)
+  assert stored_event.payload.turn_status == Some(turn_telemetry.StatusFinished)
+  assert stored_event.payload.token_delta.total == 15
+  assert stored_event.payload.reason
+    == Some(turn_telemetry.ReasonOperatorStopAfterCurrentTurn)
+}
+
+pub fn decode_turn_event_rejects_free_form_secret_reason_test() {
+  let line =
+    "{\"version\":1,\"id\":\"events-turn\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":1,\"at_ms\":100,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"turn\",\"name\":\"turn_failed\",\"turn\":1,\"reason\":\"SECRET_PROMPT in reason\",\"message\":\"SECRET_PROMPT\",\"raw_json\":{\"value\":\"SECRET_PROMPT\",\"truncated\":false}}],\"next_cursor\":1,\"truncated\":false}}"
+
+  let assert Ok(page) = protocol.decode_get_events_response(line)
+  let assert [stored_event] = page.events
+  assert stored_event.payload.reason == None
+  assert stored_event.payload.message == None
+  assert stored_event.payload.raw_json == None
+  let encoded = protocol.event_page_data(page) |> json.to_string
+  assert !string.contains(encoded, "SECRET_PROMPT")
+}
+
+pub fn decode_unknown_future_turn_name_stays_turn_event_test() {
+  let line =
+    "{\"version\":1,\"id\":\"events-turn\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":1,\"at_ms\":100,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"turn\",\"name\":\"turn_paused\",\"turn\":1}],\"next_cursor\":1,\"truncated\":false}}"
+
+  let assert Ok(page) = protocol.decode_get_events_response(line)
+  let assert [stored_event] = page.events
+  assert stored_event.payload.kind == event.Turn
+  assert stored_event.payload.name
+    == event.TurnName(turn_telemetry.EventUnknown("turn_paused"))
+}
+
+pub fn session_summary_recovery_json_preserves_live_status_and_decodes_missing_test() {
+  let recovery =
+    event.RecoveryInfo(
+      status: event.Interrupted,
+      source: "projection.run_interrupted",
+      message: Some("daemon_restart"),
+      safe_actions: [event.Inspect, event.ViewEvents, event.Retry, event.Park],
+      workflow_run_id: Some("run-1"),
+      workflow_step_id: None,
+      current_pi_session_id: Some("pi-current"),
+      previous_pi_session_id: None,
+      park_reason: None,
+      park_release_policy: None,
+      parked_at_ms: None,
+      drift_kind: None,
+      retention_until_ms: None,
+      cleanup_eligible_at_ms: None,
+      cleanup_phase: None,
+    )
+  let summary =
+    event.SessionSummary(
+      session_id: "session-1",
+      display_name: "session-1",
+      issue_id: "issue-1",
+      issue_identifier: "SCH-1",
+      issue_title: "Fix",
+      workspace_path: "work",
+      pi_session_id: Some("pi-current"),
+      status: event.Running,
+      recovery: Some(recovery),
+      current_turn: 1,
+      current_turn_status: None,
+      current_turn_started_at_ms: None,
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
+      started_at_ms: 100,
+      last_event_at_ms: 200,
+      token_totals: session_tokens.zero_token_totals(),
+    )
+  let encoded =
+    protocol.success_response(
+      "sessions-1",
+      protocol.list_sessions_data(event.SessionList([summary], 250)),
+    )
+    |> protocol.response_to_string
+
+  assert string.contains(encoded, "\"status\":\"running\"")
+  assert string.contains(encoded, "\"recovery\":{")
+  assert string.contains(encoded, "\"status\":\"interrupted\"")
+  assert string.contains(encoded, "\"workflow_run_id\":\"run-1\"")
+
+  let assert Ok(snapshot) =
+    protocol.decode_list_sessions_snapshot_response(encoded)
+  let assert [decoded] = snapshot.sessions
+  assert decoded.status == event.Running
+  let assert Some(decoded_recovery) = decoded.recovery
+  assert decoded_recovery.status == event.Interrupted
+  assert decoded_recovery.workflow_run_id == Some("run-1")
+
+  let missing_recovery_json =
+    "{\"version\":1,\"id\":\"sessions-2\",\"ok\":true,\"data\":{\"sessions\":[{\"session_id\":\"session-2\",\"issue_id\":\"issue-2\",\"issue_identifier\":\"SCH-2\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"running\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
+  let assert Ok([missing]) =
+    protocol.decode_list_sessions_response(missing_recovery_json)
+  assert missing.recovery == None
+}
+
 pub fn decode_session_summary_maps_unknown_exit_reason_to_failed_test() {
   let line =
     "{\"version\":1,\"id\":\"sessions-1\",\"ok\":true,\"data\":{\"sessions\":[{\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"exited\",\"exit_reason\":\"legacy_cancelled\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
 
   let assert Ok([summary]) = protocol.decode_list_sessions_response(line)
+  assert summary.display_name == "session-1"
   assert summary.status == event.Exited(session_reason.Failed)
+  assert summary.current_turn_status == None
+  assert summary.current_turn_started_at_ms == None
+  assert summary.last_turn_token_delta == session_tokens.zero_token_totals()
+  assert summary.last_turn_reason == None
+  let assert Ok(snapshot) =
+    protocol.decode_list_sessions_snapshot_response(line)
+  assert snapshot.now_ms == 200
+}
+
+pub fn decode_list_sessions_snapshot_reads_server_now_ms_test() {
+  let line =
+    "{\"version\":1,\"id\":\"sessions-1\",\"ok\":true,\"data\":{\"now_ms\":250,\"sessions\":[{\"session_id\":\"session-1\",\"display_name\":\"LIV-43-fancy-narwhal-finger\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"issue_title\":\"Fix\",\"workspace_path\":\"work\",\"pi_session_id\":null,\"status\":\"running\",\"current_turn\":1,\"started_at_ms\":100,\"last_event_at_ms\":200,\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}]}}"
+
+  let assert Ok(snapshot) =
+    protocol.decode_list_sessions_snapshot_response(line)
+  assert snapshot.now_ms == 250
+  assert list.map(snapshot.sessions, fn(summary) { summary.session_id })
+    == ["session-1"]
+  assert list.map(snapshot.sessions, fn(summary) { summary.display_name })
+    == ["LIV-43-fancy-narwhal-finger"]
 }
 
 pub fn encode_events_response_contains_cursor_and_session_test() {
@@ -277,20 +422,9 @@ pub fn encode_events_response_contains_cursor_and_session_test() {
           at_ms: 100,
           session_id: "session-1",
           issue_id: "issue-1",
-          payload: event.EventPayload(
-            kind: event.Lifecycle,
-            name: event.LifecycleName(event.WorkerStarted),
-            turn: None,
-            pi_type: None,
-            message: None,
-            request_id: None,
-            method: None,
-            tool_name: None,
-            tool_input: None,
-            tool_output: None,
-            tool_status: None,
-            tokens: domain.zero_token_totals(),
-            raw_json: None,
+          payload: event.empty_payload(
+            event.Lifecycle,
+            event.LifecycleName(event.WorkerStarted),
           ),
         ),
       ],
@@ -312,4 +446,60 @@ pub fn encode_events_response_contains_cursor_and_session_test() {
   let assert Ok(decoded) = protocol.decode_get_events_response(encoded)
   assert decoded.next_cursor == 7
   assert decoded.truncated == False
+}
+
+pub fn lifecycle_event_response_carries_nullable_recovery_test() {
+  let recovery =
+    event.RecoveryInfo(
+      status: event.Interrupted,
+      source: "projection.run_interrupted",
+      message: Some("daemon_restart"),
+      safe_actions: [event.Inspect, event.ViewEvents, event.Retry, event.Park],
+      workflow_run_id: Some("run-1"),
+      workflow_step_id: None,
+      current_pi_session_id: None,
+      previous_pi_session_id: None,
+      park_reason: None,
+      park_release_policy: None,
+      parked_at_ms: None,
+      drift_kind: None,
+      retention_until_ms: None,
+      cleanup_eligible_at_ms: None,
+      cleanup_phase: None,
+    )
+  let page =
+    event.EventPage(
+      events: [
+        event.SessionEvent(
+          cursor: 8,
+          at_ms: 101,
+          session_id: "session-1",
+          issue_id: "issue-1",
+          payload: event.EventPayload(
+            ..event.empty_payload(
+              event.Lifecycle,
+              event.LifecycleName(event.RecoveryInterrupted),
+            ),
+            recovery: Some(recovery),
+            message: Some("daemon_restart"),
+          ),
+        ),
+      ],
+      next_cursor: 8,
+      truncated: False,
+    )
+
+  let encoded =
+    protocol.success_response("events-2", protocol.event_page_data(page))
+    |> protocol.response_to_string
+
+  assert string.contains(encoded, "\"name\":\"recovery_interrupted\"")
+  assert string.contains(encoded, "\"recovery\":{")
+  assert string.contains(encoded, "\"workflow_run_id\":\"run-1\"")
+
+  let assert Ok(decoded) = protocol.decode_get_events_response(encoded)
+  let assert [stored_event] = decoded.events
+  let assert Some(decoded_recovery) = stored_event.payload.recovery
+  assert decoded_recovery.status == event.Interrupted
+  assert decoded_recovery.workflow_run_id == Some("run-1")
 }

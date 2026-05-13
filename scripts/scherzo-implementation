@@ -1,0 +1,2705 @@
+#!/usr/bin/env python3
+"""Shared helpers for Scherzo implementation workflows.
+
+The checked-in dogfood workflows have two implementation contracts:
+
+* workflow:implementation implements directly from the Linear ticket context.
+* workflow:execplan-implementation implements a checked-in ExecPlan referenced by
+  the Linear issue.
+
+This helper keeps the common mechanics in one place: fetching source context,
+recording the starting jj parent, retaining failed run workspaces until a PR is
+published, detecting changed file languages across the full workflow history,
+running final validation, and publishing a GitHub PR.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+from typing import Any, Iterable
+
+TMP_DIR = Path("tmp")
+METADATA_PATH = TMP_DIR / "scherzo-implementation.json"
+CANONICAL_METADATA_RELATIVE_PATH = Path("state") / "implementation" / "metadata.json"
+ANALYSIS_PATH = TMP_DIR / "scherzo-implementation-analysis.json"
+PLAN_COMPLETION_CONTEXT_PATH = TMP_DIR / "scherzo-plan-completion-context.json"
+PLAN_COMPLETION_VERDICT_PATH = TMP_DIR / "scherzo-plan-completion-verdict.json"
+VALIDATION_PATH = TMP_DIR / "scherzo-implementation-validation.json"
+PUBLISH_PATH = TMP_DIR / "scherzo-implementation-publish.json"
+TICKET_BRIEF_PATH = TMP_DIR / "scherzo-implementation-brief.md"
+PLAN_BRIEF_PATH = TMP_DIR / "scherzo-execplan-brief.md"
+PLAN_INDEX_PATH = TMP_DIR / "scherzo-execplan-index.json"
+PR_BODY_PATH = TMP_DIR / "scherzo-implementation-pr-body.md"
+BASE_REFRESH_LATEST_PATH = TMP_DIR / "scherzo-implementation-refresh-base-latest.json"
+BASE_DRIFT_REPAIR_SUMMARY_PATH = TMP_DIR / "scherzo-implementation-base-drift-repair.md"
+BASE_DRIFT_REPAIR_FAILURE_PATH = TMP_DIR / "scherzo-implementation-base-drift-failure.md"
+RETENTION_MARKER = ".scherzo-keep-workspace"
+REFRESH_STAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
+PLAN_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])(docs/plans/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:html|md))(?![A-Za-z0-9_/-])"
+)
+PLAN_FIELD_RE = re.compile(
+    r"^\s*(?:(?:[-*+]|\d+\.)\s+)?(?:\*\*)?"
+    r"(?P<label>Plan(?:\s+path)?|Umbrella|Supersedes)"
+    r"(?:\*\*)?\s*:\s*(?:\*\*)?\s*(?P<value>.*)$",
+    re.IGNORECASE,
+)
+EXPLICIT_PLAN_FIELD_LABELS = {"plan", "plan path"}
+CONTEXTUAL_PLAN_FIELD_LABELS = {"umbrella", "supersedes"}
+COMMAND_DIAGNOSTIC_MAX_CHARS = 3500
+VALIDATION_RESULT_EXCERPT_MAX_CHARS = 4000
+VALIDATION_FAILURE_SUMMARY_MAX_CHARS = 2500
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def usage() -> None:
+    print(
+        """Usage: scherzo-implementation <prepare|refresh-base|analyze|plan-completion-context|gate-plan-completion|validate|publish|plan-brief|extract-plan|languages|ticket-brief>
+
+Run from a Scherzo jj workflow workspace root.
+
+prepare --source execplan
+              Fetch the Linear issue, prefer an explicit Plan/Plan path field,
+              otherwise find exactly one docs/plans/*.md or legacy
+              docs/plans/*.html path, record the starting jj parent, and mark
+              the run for retention until a PR is safely published.
+prepare --source ticket
+              Fetch the Linear issue, write a ticket-context brief under tmp/,
+              record the starting jj parent, and mark the run for retention
+              until a PR is safely published.
+analyze       Diff from the recorded starting parent to @, detect review-
+              relevant languages/files, and print review metadata.
+plan-completion-context
+              Write and print the current ExecPlan implementation patch
+              fingerprint that a plan-completion verifier must copy into its
+              verdict artifact.
+plan-brief [--check|--refresh-if-stale]
+              Regenerate, check, or refresh the derived ExecPlan brief and JSON
+              index recorded in tmp/scherzo-implementation.json.
+gate-plan-completion [--final]
+              Fail closed unless tmp/scherzo-plan-completion-verdict.json is
+              a fresh, well-formed passing verdict for the current ExecPlan
+              implementation patch.
+refresh-base --stage <stage>
+              Fetch SCHERZO_PR_REMOTE/SCHERZO_PR_BASE, rebase @ when needed,
+              and write structured base-refresh JSON under tmp/.
+validate      Run final direnv-backed SelfCI verification.
+publish       Describe the final jj change, push a bookmark, create/find a PR,
+              clear the retention marker, and print the PR URL.
+
+Test helpers:
+extract-plan <text-file> [repo-root]
+              Extract the implementation docs/plans/*.md or legacy
+              docs/plans/*.html path from text, preferring explicit Plan/Plan
+              path fields over contextual references. If repo-root is supplied,
+              the path must exist under that root.
+languages <file-list>
+              Detect review-relevant languages from a newline-separated list.
+ticket-brief <issue-json>
+              Render a ticket-context Markdown brief from a saved Linear issue
+              JSON object and print it to stdout.
+""",
+        file=sys.stderr,
+    )
+
+
+def fail(message: str, *, failure_code: str | None = None) -> None:
+    if failure_code:
+        print(f"SCHERZO_FAILURE_CODE={failure_code}", file=sys.stderr)
+    print(f"scherzo-implementation: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def diagnostic_excerpt(value: str, max_chars: int = COMMAND_DIAGNOSTIC_MAX_CHARS) -> str:
+    value = value.strip()
+    if len(value) <= max_chars:
+        return value
+    marker = "\n... truncated ...\n"
+    available = max(0, max_chars - len(marker))
+    omitted = len(value) - available
+    marker = f"\n... truncated {omitted} chars ...\n"
+    available = max(0, max_chars - len(marker))
+    head_chars = available // 2
+    tail_chars = available - head_chars
+    return value[:head_chars] + marker + value[-tail_chars:]
+
+
+def subprocess_failure_details(stdout: str, stderr: str, returncode: int) -> str:
+    parts = [f"exit_code: {returncode}"]
+    if stderr.strip():
+        parts.append("stderr:\n" + diagnostic_excerpt(stderr))
+    if stdout.strip():
+        parts.append("stdout:\n" + diagnostic_excerpt(stdout))
+    return "\n\n".join(parts)
+
+
+def run_proc(
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+
+
+def run(
+    args: list[str],
+    *,
+    check: bool = True,
+    failure_code: str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    proc = run_proc(args, env=env)
+    if check and proc.returncode != 0:
+        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
+        fail(f"command failed: {' '.join(args)}\n{details}", failure_code=failure_code)
+    return proc.stdout
+
+
+def print_process_output(proc: subprocess.CompletedProcess[str]) -> None:
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+
+
+def workspace_driver_command() -> str | None:
+    driver = os.environ.get("SCHERZO_WORKSPACE_DRIVER", "").strip()
+    return driver or None
+
+
+def workspace_driver_available() -> bool:
+    return workspace_driver_command() is not None
+
+
+def workspace_driver_missing(*, failure_code: str = "workspace_driver_unavailable") -> None:
+    fail(
+        "SCHERZO_WORKSPACE_DRIVER is required for this driver-backed workflow operation",
+        failure_code=failure_code,
+    )
+
+
+def run_workspace_driver_json(
+    args: list[str],
+    *,
+    check: bool = True,
+    failure_code: str = "workspace_driver_failed",
+) -> tuple[dict[str, Any], subprocess.CompletedProcess[str]]:
+    driver = workspace_driver_command()
+    if driver is None:
+        workspace_driver_missing(failure_code="workspace_driver_unavailable")
+    proc = run_proc([driver, *args])
+    try:
+        payload = json.loads(proc.stdout) if proc.stdout.strip() else None
+    except json.JSONDecodeError as exc:
+        fail(
+            "workspace driver returned malformed JSON for `"
+            + " ".join(args)
+            + f"`: {exc}",
+            failure_code=failure_code,
+        )
+    if not isinstance(payload, dict):
+        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
+        fail(
+            "workspace driver did not return a JSON object for `"
+            + " ".join(args)
+            + "`\n"
+            + details,
+            failure_code=failure_code,
+        )
+    if payload.get("version") != 1:
+        fail(
+            "workspace driver JSON for `"
+            + " ".join(args)
+            + "` must set version=1",
+            failure_code=failure_code,
+        )
+    if check and proc.returncode != 0:
+        message = str(payload.get("message") or "workspace driver command failed")
+        fail(
+            "workspace driver command failed: `"
+            + " ".join(args)
+            + "`\n"
+            + message,
+            failure_code=str(payload.get("failure_code") or failure_code),
+        )
+    return payload, proc
+
+
+def workspace_driver_changed_file_records() -> list[dict[str, str]]:
+    payload, _ = run_workspace_driver_json(
+        ["changed-files", "--json"],
+        failure_code="workspace_driver_changed_files_failed",
+    )
+    raw_files = payload.get("files")
+    records: list[dict[str, str]] = []
+    if isinstance(raw_files, list):
+        for item in raw_files:
+            if not isinstance(item, dict):
+                fail(
+                    "workspace driver changed-files JSON field 'files' must contain objects",
+                    failure_code="workspace_driver_changed_files_failed",
+                )
+            path = item.get("path")
+            status = item.get("status")
+            if not isinstance(path, str) or not path.strip():
+                fail(
+                    "workspace driver changed-files record is missing a non-empty path",
+                    failure_code="workspace_driver_changed_files_failed",
+                )
+            if status not in {"added", "modified", "deleted", "renamed", "conflicted"}:
+                fail(
+                    f"workspace driver changed-files record for {path!r} has invalid status {status!r}",
+                    failure_code="workspace_driver_changed_files_failed",
+                )
+            record = {"path": path.strip(), "status": str(status)}
+            old_path = item.get("old_path")
+            if isinstance(old_path, str) and old_path.strip():
+                record["old_path"] = old_path.strip()
+            records.append(record)
+    else:
+        fail(
+            "workspace driver changed-files JSON must contain a files list",
+            failure_code="workspace_driver_changed_files_failed",
+        )
+    return sorted(records, key=lambda record: record["path"])
+
+
+def workspace_driver_changed_files() -> list[str]:
+    return [record["path"] for record in workspace_driver_changed_file_records()]
+
+
+def workspace_driver_diff_text() -> str:
+    payload, _ = run_workspace_driver_json(
+        ["diff", "--json"],
+        failure_code="workspace_driver_diff_failed",
+    )
+    text = payload.get("text")
+    truncated = payload.get("truncated")
+    if not isinstance(text, str) or not isinstance(truncated, bool):
+        fail(
+            "workspace driver diff JSON must include text and truncated fields",
+            failure_code="workspace_driver_diff_failed",
+        )
+    return text
+
+
+def workspace_driver_baseline() -> dict[str, Any]:
+    payload, _ = run_workspace_driver_json(
+        ["baseline", "--json"],
+        failure_code="workspace_driver_baseline_failed",
+    )
+    for key in ["baseline_id", "workspace_revision_id", "change_id"]:
+        if not isinstance(payload.get(key), str) or not str(payload.get(key)).strip():
+            fail(
+                f"workspace driver baseline JSON missing non-empty {key}",
+                failure_code="workspace_driver_baseline_failed",
+            )
+    if not isinstance(payload.get("dirty"), bool):
+        fail(
+            "workspace driver baseline JSON missing boolean dirty",
+            failure_code="workspace_driver_baseline_failed",
+        )
+    return payload
+
+
+def run_and_print(
+    args: list[str],
+    *,
+    failure_code: str | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    print("$ " + " ".join(shell_display(arg) for arg in args), flush=True)
+    proc = subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    print_process_output(proc)
+    if proc.returncode != 0:
+        fail(
+            f"command failed with exit code {proc.returncode}: {' '.join(args)}",
+            failure_code=failure_code,
+        )
+
+
+def strip_ansi(value: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", value)
+
+
+def is_progress_noise_line(line: str) -> bool:
+    stripped = line.strip()
+    if len(stripped) < 120:
+        return False
+    dot_count = stripped.count(".")
+    return dot_count * 2 > len(stripped)
+
+
+def validation_failure_summary(stdout: str, stderr: str) -> str:
+    combined = "\n".join(part for part in [stdout, stderr] if part)
+    lines = [strip_ansi(line).rstrip() for line in combined.splitlines()]
+    interesting: set[int] = set()
+    for index, line in enumerate(lines):
+        lower = line.lower()
+        stripped_lower = lower.lstrip()
+        stripped = line.lstrip()
+        is_interesting = (
+            "❌ failed" in line
+            or "hash mismatch" in lower
+            or "fixed-output derivation" in lower
+            or stripped_lower.startswith("error:")
+            or stripped_lower.startswith("error ")
+            or stripped.startswith("Error:")
+            or "check command failed" in lower
+            or "failed with error" in lower
+            or stripped_lower.startswith("specified:")
+            or stripped_lower.startswith("got:")
+        )
+        if is_interesting:
+            for nearby in range(max(0, index - 1), min(len(lines), index + 4)):
+                interesting.add(nearby)
+
+    summary_lines: list[str] = []
+    for index in sorted(interesting):
+        line = lines[index].strip()
+        if (
+            line
+            and not is_progress_noise_line(line)
+            and (not summary_lines or summary_lines[-1] != line)
+        ):
+            summary_lines.append(line)
+        if len(summary_lines) >= 24:
+            break
+
+    if not summary_lines:
+        summary_lines = [line.strip() for line in lines if line.strip()][-24:]
+
+    return diagnostic_excerpt(
+        "\n".join(summary_lines), VALIDATION_FAILURE_SUMMARY_MAX_CHARS
+    )
+
+
+def shell_display(value: str) -> str:
+    if re.match(r"^[A-Za-z0-9_./:=+@-]+$", value):
+        return value
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def command_exists(name: str) -> bool:
+    proc = subprocess.run(
+        ["sh", "-c", f"command -v {name} >/dev/null 2>&1"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.returncode == 0
+
+
+def require_command(name: str) -> None:
+    if not command_exists(name):
+        fail(f"required command not found: {name}")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        fail(f"missing {path}; run prepare first")
+    return json.loads(path.read_text())
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def canonical_metadata_path() -> Path | None:
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if not run_root:
+        return None
+    return Path(run_root) / CANONICAL_METADATA_RELATIVE_PATH
+
+
+def metadata_missing_message(canonical_path: Path) -> str:
+    return (
+        "unrecoverable workflow-state loss: missing implementation metadata in "
+        f"canonical run state ({canonical_path}) and compatibility cache "
+        f"({METADATA_PATH}). Restore "
+        f"{CANONICAL_METADATA_RELATIVE_PATH} from retained run artifacts or "
+        "abort and restart from a clean baseline; do not rerun prepare after "
+        "implementation because that would overwrite the original workflow "
+        "source and base metadata."
+    )
+
+
+def print_metadata_backfill_diagnostic(canonical_path: Path) -> None:
+    print(
+        "scherzo-implementation: backfilled canonical implementation metadata "
+        f"from {METADATA_PATH} to {canonical_path} "
+        f"({CANONICAL_METADATA_RELATIVE_PATH})",
+        file=sys.stderr,
+    )
+
+
+def load_implementation_metadata() -> dict[str, Any]:
+    canonical_path = canonical_metadata_path()
+    if canonical_path is None:
+        return load_json(METADATA_PATH)
+
+    if canonical_path.exists():
+        try:
+            metadata = load_json(canonical_path)
+        except json.JSONDecodeError as exc:
+            fail(f"invalid canonical implementation metadata at {canonical_path}: {exc}")
+        write_json(METADATA_PATH, metadata)
+        return metadata
+
+    if METADATA_PATH.exists():
+        metadata = load_json(METADATA_PATH)
+        write_json(canonical_path, metadata)
+        print_metadata_backfill_diagnostic(canonical_path)
+        return metadata
+
+    fail(metadata_missing_message(canonical_path))
+
+
+def write_implementation_metadata(metadata: dict[str, Any]) -> None:
+    canonical_path = canonical_metadata_path()
+    if canonical_path is not None:
+        write_json(canonical_path, metadata)
+    write_json(METADATA_PATH, metadata)
+
+
+def infer_issue_identifier() -> str:
+    explicit = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
+    if explicit:
+        return explicit
+
+    cwd = str(Path.cwd())
+    marker = "/.scherzo/workspaces/"
+    if marker in cwd:
+        tail = cwd.split(marker, 1)[1]
+        parts = tail.split("/")
+        # .scherzo/workspaces/<workflow>/<issue>/<run>/<workspace>
+        if len(parts) >= 2 and parts[1]:
+            return parts[1]
+
+    fail(
+        "could not infer Linear issue identifier from cwd; set "
+        "SCHERZO_ISSUE_IDENTIFIER"
+    )
+
+
+def linear_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+    fixture_path = os.environ.get("SCHERZO_TEST_LINEAR_GRAPHQL_JSON", "").strip()
+    if fixture_path:
+        try:
+            response = json.loads(Path(fixture_path).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            fail(f"could not read SCHERZO_TEST_LINEAR_GRAPHQL_JSON fixture: {exc}")
+        if response.get("errors"):
+            fail(
+                "Linear GraphQL fixture returned errors:\n"
+                + diagnostic_excerpt(json.dumps(response["errors"], indent=2))
+            )
+        data = response.get("data")
+        if not isinstance(data, dict):
+            fail("SCHERZO_TEST_LINEAR_GRAPHQL_JSON fixture must contain a data object")
+        return data
+
+    token = os.environ.get("LINEAR_API_KEY", "").strip()
+    if not token:
+        fail("LINEAR_API_KEY is required to fetch Linear issue context")
+    payload = json.dumps({"query": query, "variables": variables}).encode()
+    req = urllib.request.Request(
+        "https://api.linear.app/graphql",
+        data=payload,
+        headers={"Content-Type": "application/json", "Authorization": token},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            response = json.loads(resp.read())
+    except Exception as exc:  # pragma: no cover - defensive CLI boundary
+        fail(f"Linear GraphQL request failed: {exc}")
+    if response.get("errors"):
+        fail(
+            "Linear GraphQL returned errors:\n"
+            + diagnostic_excerpt(json.dumps(response["errors"], indent=2))
+        )
+    return response["data"]
+
+
+def fetch_linear_issue(identifier: str) -> dict[str, Any]:
+    query = """
+    query($id: String!) {
+      issue(id: $id) {
+        identifier
+        title
+        description
+        url
+        comments(first: 100) {
+          nodes {
+            createdAt
+            body
+            user { name }
+          }
+        }
+      }
+    }
+    """
+    issue = linear_graphql(query, {"id": identifier}).get("issue")
+    if not issue:
+        fail(f"Linear issue not found: {identifier}")
+    return issue
+
+
+def fetch_linear_issue_context(identifier: str) -> dict[str, Any]:
+    query = """
+    query($id: String!) {
+      issue(id: $id) {
+        identifier
+        title
+        description
+        url
+        priority
+        state { name }
+        labels(first: 50) {
+          nodes { name }
+          pageInfo { hasNextPage }
+        }
+        comments(first: 100) {
+          nodes {
+            createdAt
+            body
+            user { name }
+          }
+          pageInfo { hasNextPage }
+        }
+      }
+    }
+    """
+    issue = linear_graphql(query, {"id": identifier}).get("issue")
+    if not issue:
+        fail(f"Linear issue not found: {identifier}")
+    return issue
+
+
+def issue_texts(issue: dict[str, Any]) -> list[tuple[str, str]]:
+    texts: list[tuple[str, str]] = [
+        ("title", issue.get("title") or ""),
+        ("description", issue.get("description") or ""),
+    ]
+    comments = issue.get("comments", {}).get("nodes", [])
+    comments = sorted(comments, key=lambda c: c.get("createdAt") or "", reverse=True)
+    for comment in comments:
+        source = "comment"
+        if comment.get("createdAt"):
+            source += f" {comment['createdAt']}"
+        texts.append((source, comment.get("body") or ""))
+    return texts
+
+
+def normalize_plan_field_label(label: str) -> str:
+    return re.sub(r"\s+", " ", label.strip().lower())
+
+
+def add_plan_candidate(found: dict[str, list[str]], plan_path: str, source: str) -> None:
+    sources = found.setdefault(plan_path, [])
+    if source not in sources:
+        sources.append(source)
+
+
+def plan_paths_in(text: str) -> list[str]:
+    return [match.group(1) for match in PLAN_RE.finditer(text or "")]
+
+
+def plan_candidate_lines(found: dict[str, list[str]]) -> str:
+    return "\n".join(
+        f"- `{path}` ({', '.join(sources)})" for path, sources in found.items()
+    )
+
+
+def fail_ambiguous_plan_paths(reason: str, found: dict[str, list[str]]) -> None:
+    fail(
+        reason
+        + "\nCandidates:\n"
+        + plan_candidate_lines(found)
+        + "\nSuggested fix: keep exactly one implementation ExecPlan in an "
+        "explicit `Plan:` or `Plan path:` field. Put contextual references in "
+        "fields such as `Umbrella:` or `Supersedes:`.",
+        failure_code="prepare_plan_ambiguous",
+    )
+
+
+def extract_plan_path_from_texts(texts: Iterable[tuple[str, str]]) -> str:
+    explicit: dict[str, list[str]] = {}
+    fallback: dict[str, list[str]] = {}
+    saw_explicit_field = False
+
+    for source, text in texts:
+        for line_number, line in enumerate((text or "").splitlines() or [""], start=1):
+            location = f"{source} line {line_number}"
+            field_match = PLAN_FIELD_RE.match(line)
+            if field_match:
+                label = normalize_plan_field_label(field_match.group("label"))
+                value = field_match.group("value")
+                if label in EXPLICIT_PLAN_FIELD_LABELS:
+                    saw_explicit_field = True
+                    for plan_path in plan_paths_in(value):
+                        add_plan_candidate(explicit, plan_path, location)
+                    continue
+                if label in CONTEXTUAL_PLAN_FIELD_LABELS:
+                    continue
+
+            for plan_path in plan_paths_in(line):
+                add_plan_candidate(fallback, plan_path, location)
+
+    if explicit:
+        if len(explicit) > 1:
+            fail_ambiguous_plan_paths(
+                "found multiple explicit ExecPlan fields while selecting the implementation plan.",
+                explicit,
+            )
+        return next(iter(explicit.keys()))
+
+    if saw_explicit_field:
+        fail(
+            "found an explicit `Plan:`/`Plan path:` field, but it did not contain "
+            "a valid ExecPlan path like `docs/plans/example.md` or legacy `docs/plans/example.html`. Suggested fix: "
+            "set exactly one explicit field, for example: "
+            "Plan path: `docs/plans/example.md`.",
+            failure_code="prepare_plan_ambiguous",
+        )
+
+    if not fallback:
+        fail(
+            "expected exactly one implementation ExecPlan path like "
+            "`docs/plans/example.md` or legacy `docs/plans/example.html`; found none. Contextual references in "
+            "`Umbrella:` and `Supersedes:` fields are ignored. Suggested fix: "
+            "add a field such as Plan path: `docs/plans/example.md` to the Linear issue.",
+            failure_code="prepare_plan_ambiguous",
+        )
+    if len(fallback) > 1:
+        fail_ambiguous_plan_paths(
+            "found multiple ExecPlan path candidates and no explicit `Plan:`/`Plan path:` field.",
+            fallback,
+        )
+    return next(iter(fallback.keys()))
+
+
+def validate_plan_path(plan_path: str, repo_root: Path) -> None:
+    if not PLAN_RE.fullmatch(plan_path):
+        fail(
+            f"invalid ExecPlan path: {plan_path}; expected docs/plans/<file>.md or legacy docs/plans/<file>.html",
+            failure_code="prepare_plan_ambiguous",
+        )
+    full_path = repo_root / plan_path
+    if not full_path.is_file():
+        fail(
+            f"ExecPlan file does not exist: {plan_path}",
+            failure_code="prepare_plan_ambiguous",
+        )
+
+
+def plan_source_sha256(plan_path: str) -> str:
+    try:
+        return hashlib.sha256(Path(plan_path).read_bytes()).hexdigest()
+    except OSError as exc:
+        fail(f"could not read ExecPlan file {plan_path}: {exc}")
+
+
+def execplan_html_helper_path() -> Path:
+    override = os.environ.get("SCHERZO_EXECPLAN_HTML_HELPER", "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent / "scherzo-execplan-html"
+
+
+def remove_plan_brief_artifacts() -> None:
+    for path in [PLAN_BRIEF_PATH, PLAN_INDEX_PATH]:
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def plan_brief_warning(value: str) -> str:
+    return re.sub(r"\s+", " ", diagnostic_excerpt(value, 900)).strip()
+
+
+def generate_plan_brief(plan_path: str) -> dict[str, str]:
+    helper = execplan_html_helper_path()
+    proc = run_proc([
+        sys.executable or "python3",
+        str(helper),
+        "brief",
+        plan_path,
+        str(PLAN_BRIEF_PATH),
+        str(PLAN_INDEX_PATH),
+    ])
+    if proc.returncode != 0:
+        remove_plan_brief_artifacts()
+        return {
+            "status": "unavailable",
+            "warning": "brief generation failed: "
+            + plan_brief_warning(subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)),
+        }
+    try:
+        index = json.loads(PLAN_INDEX_PATH.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        remove_plan_brief_artifacts()
+        return {
+            "status": "unavailable",
+            "warning": "brief generation failed: " + plan_brief_warning(str(exc)),
+        }
+    source_hash = str(index.get("source_sha256") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", source_hash):
+        remove_plan_brief_artifacts()
+        return {
+            "status": "unavailable",
+            "warning": "brief generation failed: JSON index missing lowercase source_sha256",
+        }
+    return {
+        "status": "ok",
+        "brief_path": str(PLAN_BRIEF_PATH),
+        "index_path": str(PLAN_INDEX_PATH),
+        "source_sha256": source_hash,
+    }
+
+
+def apply_plan_brief_result(metadata: dict[str, Any], result: dict[str, str]) -> None:
+    for key in [
+        "plan_brief_path",
+        "plan_index_path",
+        "plan_source_sha256",
+        "plan_brief_warning",
+    ]:
+        metadata.pop(key, None)
+    if result["status"] == "ok":
+        metadata["plan_brief_status"] = "ok"
+        metadata["plan_brief_path"] = result["brief_path"]
+        metadata["plan_index_path"] = result["index_path"]
+        metadata["plan_source_sha256"] = result["source_sha256"]
+    else:
+        metadata["plan_brief_status"] = "unavailable"
+        metadata["plan_brief_warning"] = result.get("warning", "brief generation failed")
+
+
+def print_plan_brief_result(result: dict[str, str]) -> None:
+    if result["status"] == "ok":
+        print("PLAN_BRIEF_STATUS=ok")
+        print(f"PLAN_BRIEF_PATH={result['brief_path']}")
+        print(f"PLAN_INDEX_PATH={result['index_path']}")
+        print(f"PLAN_SOURCE_SHA256={result['source_sha256']}")
+    else:
+        print("PLAN_BRIEF_STATUS=unavailable")
+        print(f"PLAN_BRIEF_WARNING={result.get('warning', 'brief generation failed')}")
+
+
+def current_base_change_id() -> str:
+    return run(["jj", "log", "-r", "@-", "--no-graph", "-T", "change_id", "--color=never"]).strip()
+
+
+def current_change_id_short() -> str:
+    return run(["jj", "log", "-r", "@", "--no-graph", "-T", "change_id.short()", "--color=never"]).strip()
+
+
+def changed_files_since(base_change_id: str) -> list[str]:
+    output = run([
+        "jj",
+        "diff",
+        "--from",
+        base_change_id,
+        "--to",
+        "@",
+        "--name-only",
+        "--color=never",
+    ])
+    return clean_lines(output)
+
+
+def revision_commit_ids(revision: str) -> list[str]:
+    output = run([
+        "jj",
+        "log",
+        "-r",
+        revision,
+        "--no-graph",
+        "-T",
+        "commit_id ++ \"\\n\"",
+        "--color=never",
+    ])
+    return clean_lines(output)
+
+
+def revision_commit_ids_if_exists(revision: str) -> list[str] | None:
+    proc = run_proc([
+        "jj",
+        "log",
+        "-r",
+        revision,
+        "--no-graph",
+        "-T",
+        "commit_id ++ \"\\n\"",
+        "--color=never",
+    ])
+    if proc.returncode == 0 and proc.stdout.strip():
+        return clean_lines(proc.stdout)
+    return None
+
+
+def current_parent_commit_ids() -> list[str]:
+    return revision_commit_ids("@-")
+
+
+def has_unresolved_conflicts(revision: str) -> bool:
+    proc = subprocess.run(
+        [
+            "jj",
+            "log",
+            "-r",
+            f"conflicts() & ({revision})",
+            "--no-graph",
+            "-T",
+            "change_id.short()",
+            "--color=never",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def command_display(args: list[str]) -> str:
+    return " ".join(args)
+
+
+def configured_publish_base() -> tuple[str, str]:
+    base = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
+    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    return base, remote
+
+
+def parse_refresh_base_args(args: list[str]) -> str:
+    if len(args) != 2 or args[0] != "--stage":
+        fail("refresh-base requires exactly: --stage <stage>")
+    stage = args[1].strip()
+    if stage in {"", ".", ".."} or "/" in stage or "\\" in stage:
+        fail(f"invalid refresh-base stage {args[1]!r}; stage must be a safe filename segment")
+    if not REFRESH_STAGE_RE.fullmatch(stage):
+        fail(
+            f"invalid refresh-base stage {args[1]!r}; expected "
+            "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        )
+    return stage
+
+
+def refresh_base_json_path(stage: str) -> Path:
+    # Re-parse the constructed stage to keep this helper safe when called directly.
+    safe_stage = parse_refresh_base_args(["--stage", stage])
+    return TMP_DIR / f"scherzo-implementation-refresh-base-{safe_stage}.json"
+
+
+def fetch_base_result(base: str, remote: str) -> tuple[list[str], subprocess.CompletedProcess[str]]:
+    args = ["jj", "git", "fetch", "--remote", remote, "--branch", base]
+    return args, run_proc(args)
+
+
+def resolve_base_revision(base: str, remote: str) -> tuple[str | None, list[str] | None, bool]:
+    remote_base = f"{base}@{remote}"
+    remote_commits = revision_commit_ids_if_exists(remote_base)
+    if remote_commits is not None:
+        return remote_base, remote_commits, False
+    local_commits = revision_commit_ids_if_exists(base)
+    if local_commits is not None:
+        print(
+            f"warning: remote publish base {remote_base!r} was not found after fetch; "
+            f"falling back to local revision {base!r}",
+            file=sys.stderr,
+        )
+        return base, local_commits, True
+    return None, None, False
+
+
+def normalize_conflict_file_path(value: str) -> str:
+    return JJ_CONFLICT_STATUS_RE.sub("", value.strip())
+
+
+def conflicted_files() -> list[str]:
+    proc = run_proc(["jj", "resolve", "--list", "--color=never"])
+    if proc.returncode == 0:
+        files: list[str] = []
+        seen: set[str] = set()
+        for line in proc.stdout.splitlines():
+            path = normalize_conflict_file_path(line)
+            if path and path not in seen:
+                files.append(path)
+                seen.add(path)
+        return sorted(files)
+    if "No conflicts found" in proc.stdout or "No conflicts found" in proc.stderr:
+        return []
+    return []
+
+
+def has_unresolved_conflicts_at_current_change() -> bool:
+    return has_unresolved_conflicts("@")
+
+
+def refresh_result(
+    *,
+    stage: str,
+    status: str,
+    repairable: bool,
+    remote: str,
+    base: str,
+    base_revision: str,
+    base_commit_before_fetch: str | None,
+    base_commit_after_fetch: str | None,
+    parent_commits_before: list[str],
+    parent_commits_after: list[str],
+    current_change_id: str,
+    rebased: bool,
+    has_unresolved_conflicts: bool,
+    conflicted: list[str],
+    message: str,
+    commands: list[str],
+    fetch_stdout: str = "",
+    fetch_stderr: str = "",
+    rebase_stdout: str = "",
+    rebase_stderr: str = "",
+    rebase_exit_code: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "stage": stage,
+        "status": status,
+        "repairable": repairable,
+        "remote": remote,
+        "base": base,
+        "base_revision": base_revision,
+        "base_commit_before_fetch": base_commit_before_fetch,
+        "base_commit_after_fetch": base_commit_after_fetch,
+        "parent_commits_before": parent_commits_before,
+        "parent_commits_after": parent_commits_after,
+        "current_change_id": current_change_id,
+        "rebased": rebased,
+        "has_unresolved_conflicts": has_unresolved_conflicts,
+        "conflicted_files": conflicted,
+        "metadata_base_change_id_updated": False,
+        "message": message,
+        "commands": commands,
+    }
+    if fetch_stdout.strip():
+        result["fetch_stdout"] = fetch_stdout
+    if fetch_stderr.strip():
+        result["fetch_stderr"] = fetch_stderr
+    if rebase_stdout.strip():
+        result["rebase_stdout"] = rebase_stdout
+    if rebase_stderr.strip():
+        result["rebase_stderr"] = rebase_stderr
+    if rebase_exit_code is not None:
+        result["rebase_exit_code"] = rebase_exit_code
+    return result
+
+
+def first_commit_id(commits: list[str] | None) -> str | None:
+    if commits:
+        return commits[0]
+    return None
+
+
+def refresh_base(stage: str) -> dict[str, Any]:
+    base, remote = configured_publish_base()
+    remote_base = f"{base}@{remote}"
+    commands: list[str] = []
+    base_commits_before_fetch = revision_commit_ids_if_exists(remote_base)
+    parent_commits_before = current_parent_commit_ids()
+    current_change_id = current_change_id_short()
+
+    fetch_args, fetch_proc = fetch_base_result(base, remote)
+    commands.append(command_display(fetch_args))
+    if fetch_proc.stdout:
+        print(fetch_proc.stdout, end="")
+    if fetch_proc.stderr:
+        print(fetch_proc.stderr, end="", file=sys.stderr)
+    if fetch_proc.returncode != 0:
+        return refresh_result(
+            stage=stage,
+            status="fetch_failed",
+            repairable=False,
+            remote=remote,
+            base=base,
+            base_revision=remote_base,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=None,
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=current_parent_commit_ids(),
+            current_change_id=current_change_id,
+            rebased=False,
+            has_unresolved_conflicts=has_unresolved_conflicts_at_current_change(),
+            conflicted=conflicted_files(),
+            message=(
+                f"could not fetch PR base {base!r} from remote {remote!r}; "
+                "fetch or configure SCHERZO_PR_REMOTE/SCHERZO_PR_BASE and retry"
+            ),
+            commands=commands,
+            fetch_stdout=fetch_proc.stdout,
+            fetch_stderr=fetch_proc.stderr,
+        )
+
+    base_revision, base_commits_after_fetch, _used_local_fallback = resolve_base_revision(base, remote)
+    if base_revision is None or base_commits_after_fetch is None:
+        return refresh_result(
+            stage=stage,
+            status="base_not_found",
+            repairable=False,
+            remote=remote,
+            base=base,
+            base_revision=remote_base,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=None,
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=current_parent_commit_ids(),
+            current_change_id=current_change_id,
+            rebased=False,
+            has_unresolved_conflicts=has_unresolved_conflicts_at_current_change(),
+            conflicted=conflicted_files(),
+            message=f"could not find publish base revision {remote_base!r} or {base!r}",
+            commands=commands,
+        )
+
+    existing_conflicts = has_unresolved_conflicts_at_current_change()
+    existing_conflicted_files = conflicted_files() if existing_conflicts else []
+    if existing_conflicts:
+        return refresh_result(
+            stage=stage,
+            status="conflicts",
+            repairable=True,
+            remote=remote,
+            base=base,
+            base_revision=base_revision,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=current_parent_commit_ids(),
+            current_change_id=current_change_id,
+            rebased=False,
+            has_unresolved_conflicts=True,
+            conflicted=existing_conflicted_files,
+            message="current change already has unresolved conflicts after fetching publish base",
+            commands=commands,
+        )
+
+    if len(base_commits_after_fetch) == 1 and parent_commits_before == base_commits_after_fetch:
+        return refresh_result(
+            stage=stage,
+            status="fresh",
+            repairable=False,
+            remote=remote,
+            base=base,
+            base_revision=base_revision,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=current_parent_commit_ids(),
+            current_change_id=current_change_id,
+            rebased=False,
+            has_unresolved_conflicts=False,
+            conflicted=[],
+            message="current parent already matches publish base",
+            commands=commands,
+        )
+
+    if stage == "publish":
+        print("## Publish base normalization")
+        print(
+            f"Rebasing final implementation change onto `{base_revision}` before "
+            "publishing so the PR branch does not push local workspace ancestors."
+        )
+    else:
+        print("## Refreshing implementation base")
+        print(f"Rebasing current implementation change onto `{base_revision}`.")
+
+    rebase_args = ["jj", "rebase", "-r", "@", "-d", base_revision, "--color=never"]
+    rebase_proc = run_proc(rebase_args)
+    commands.append(command_display(rebase_args))
+    if rebase_proc.stdout:
+        print(rebase_proc.stdout, end="")
+    if rebase_proc.stderr:
+        print(rebase_proc.stderr, end="", file=sys.stderr)
+
+    unresolved = has_unresolved_conflicts_at_current_change()
+    files = conflicted_files() if unresolved else []
+    parent_commits_after = current_parent_commit_ids()
+    if unresolved:
+        return refresh_result(
+            stage=stage,
+            status="conflicts",
+            repairable=True,
+            remote=remote,
+            base=base,
+            base_revision=base_revision,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=parent_commits_after,
+            current_change_id=current_change_id,
+            rebased=True,
+            has_unresolved_conflicts=True,
+            conflicted=files,
+            message="rebasing onto the publish base left unresolved conflicts"
+            if files
+            else "rebasing onto the publish base left unresolved conflicts; conflicted file list could not be determined",
+            commands=commands,
+            rebase_stdout=rebase_proc.stdout,
+            rebase_stderr=rebase_proc.stderr,
+            rebase_exit_code=rebase_proc.returncode,
+        )
+    if rebase_proc.returncode != 0:
+        return refresh_result(
+            stage=stage,
+            status="rebase_failed",
+            repairable=False,
+            remote=remote,
+            base=base,
+            base_revision=base_revision,
+            base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+            base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+            parent_commits_before=parent_commits_before,
+            parent_commits_after=parent_commits_after,
+            current_change_id=current_change_id,
+            rebased=True,
+            has_unresolved_conflicts=False,
+            conflicted=[],
+            message="could not rebase the implementation change onto the publish base",
+            commands=commands,
+            rebase_stdout=rebase_proc.stdout,
+            rebase_stderr=rebase_proc.stderr,
+            rebase_exit_code=rebase_proc.returncode,
+        )
+    return refresh_result(
+        stage=stage,
+        status="rebased_clean",
+        repairable=False,
+        remote=remote,
+        base=base,
+        base_revision=base_revision,
+        base_commit_before_fetch=first_commit_id(base_commits_before_fetch),
+        base_commit_after_fetch=first_commit_id(base_commits_after_fetch),
+        parent_commits_before=parent_commits_before,
+        parent_commits_after=parent_commits_after,
+        current_change_id=current_change_id,
+        rebased=True,
+        has_unresolved_conflicts=False,
+        conflicted=[],
+        message="rebased current change onto publish base without unresolved conflicts",
+        commands=commands,
+        rebase_stdout=rebase_proc.stdout,
+        rebase_stderr=rebase_proc.stderr,
+        rebase_exit_code=rebase_proc.returncode,
+    )
+
+
+def driver_refresh_result(stage: str) -> dict[str, Any]:
+    payload, proc = run_workspace_driver_json(
+        ["refresh-base", "--stage", stage, "--json"],
+        check=False,
+        failure_code="workspace_driver_refresh_base_failed",
+    )
+    status = str(payload.get("status") or "")
+    conflict_files = payload.get("conflict_files")
+    if not isinstance(conflict_files, list):
+        conflict_files = []
+    repairable = status == "conflicts"
+    result = {
+        "schema_version": 1,
+        "version": payload.get("version"),
+        "stage": payload.get("stage") or stage,
+        "status": status,
+        "repairable": repairable,
+        "remote": os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin",
+        "base": payload.get("base_ref") or os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main",
+        "base_revision": payload.get("base_revision") or payload.get("base_ref") or "",
+        "base_commit_before_fetch": None,
+        "base_commit_after_fetch": payload.get("base_revision") or "",
+        "parent_commits_before": [str(payload.get("before_revision") or "")],
+        "parent_commits_after": [str(payload.get("after_revision") or "")],
+        "current_change_id": str(payload.get("change_id") or payload.get("after_revision") or ""),
+        "rebased": status == "rebased_clean",
+        "has_unresolved_conflicts": status == "conflicts",
+        "conflicted_files": [str(item) for item in conflict_files if isinstance(item, str)],
+        "metadata_base_change_id_updated": False,
+        "message": str(payload.get("message") or status),
+        "commands": ["$SCHERZO_WORKSPACE_DRIVER refresh-base --stage " + stage + " --json"],
+    }
+    if proc.returncode != 0 and status not in {"conflicts", "fetch_failed", "base_not_found", "rebase_failed"}:
+        result["status"] = status or "rebase_failed"
+        result["repairable"] = False
+    return result
+
+
+def update_start_refresh_metadata(result: dict[str, Any]) -> None:
+    if result.get("stage") != "before-implementation":
+        return
+    if result.get("status") not in {"fresh", "rebased_clean"}:
+        return
+    metadata = load_implementation_metadata()
+    if workspace_driver_available():
+        refreshed_base_change_id = str(result.get("base_revision") or "").strip()
+        if not refreshed_base_change_id:
+            refreshed_base_change_id = str(result.get("parent_commits_after", [""])[0] or "")
+    else:
+        refreshed_base_change_id = current_base_change_id()
+    previous_base_change_id = metadata.get("base_change_id")
+    if previous_base_change_id != refreshed_base_change_id:
+        if "initial_base_change_id" not in metadata:
+            metadata["initial_base_change_id"] = previous_base_change_id
+        metadata["base_change_id"] = refreshed_base_change_id
+        write_implementation_metadata(metadata)
+        result["metadata_base_change_id_updated"] = True
+
+
+def write_refresh_base_result(result: dict[str, Any]) -> Path:
+    path = refresh_base_json_path(str(result["stage"]))
+    write_json(path, result)
+    write_json(BASE_REFRESH_LATEST_PATH, result)
+    print(f"REFRESH_BASE_STATUS={result['status']}")
+    print(f"REFRESH_BASE_REPAIRABLE={str(bool(result['repairable'])).lower()}")
+    print(f"REFRESH_BASE_REBASED={str(bool(result['rebased'])).lower()}")
+    print(f"REFRESH_BASE_BASE_REVISION={result['base_revision']}")
+    print(f"REFRESH_BASE_JSON={path}")
+    print("REFRESH_BASE_CONFLICTED_FILES:")
+    files = result.get("conflicted_files") or []
+    if files:
+        for file in files:
+            print(f"- {file}")
+    else:
+        print("- None")
+    return path
+
+
+def refresh_base_command(args: list[str]) -> None:
+    stage = parse_refresh_base_args(args)
+    if workspace_driver_available():
+        result = driver_refresh_result(stage)
+    else:
+        require_command("jj")
+        result = refresh_base(stage)
+    update_start_refresh_metadata(result)
+    write_refresh_base_result(result)
+    status = result["status"]
+    if status in {"fresh", "rebased_clean"}:
+        sys.exit(0)
+    if status == "conflicts":
+        sys.exit(20)
+    sys.exit(1)
+
+
+def append_base_drift_repair_summary(body: str) -> tuple[str, bool]:
+    if not BASE_DRIFT_REPAIR_SUMMARY_PATH.exists():
+        return body, False
+    summary = BASE_DRIFT_REPAIR_SUMMARY_PATH.read_text().strip()
+    section = "\n\n## Base drift repair\n\n"
+    if summary:
+        section += summary + "\n"
+    else:
+        section += f"See `{BASE_DRIFT_REPAIR_SUMMARY_PATH}`.\n"
+    return body.rstrip() + section, True
+
+
+def publish_blocked_after_refresh(result: dict[str, Any], *, failure_code: str) -> None:
+    print("PUBLISH_BLOCKED=true")
+    print("PUBLISH_BLOCKED_REASON=base drift after final validation")
+    message = str(result.get("message") or "base moved after final validation")
+    if result.get("status") == "conflicts":
+        files = result.get("conflicted_files") or []
+        if files:
+            message += "\nConflicted files:\n" + "\n".join(f"- {file}" for file in files)
+    fail(
+        "publish blocked because the PR base moved after the repair window. "
+        "Rerun the workflow or repair the retained workspace manually.\n" + message,
+        failure_code=failure_code,
+    )
+
+
+def empty_description_commits_to_push(remote: str) -> list[str]:
+    revset = f'remote_bookmarks(remote={remote})..@ & description(exact:"") & ~root()'
+    proc = subprocess.run(
+        [
+            "jj",
+            "log",
+            "-r",
+            revset,
+            "--no-graph",
+            "-T",
+            'change_id.short() ++ " " ++ commit_id.short() ++ " " ++ if(empty, "(empty) ", "") ++ if(description, description.first_line(), "(no description set)") ++ "\\n"',
+            "--color=never",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
+        fail(f"could not inspect commits that would be pushed to {remote!r}\n{details}")
+    return clean_lines(proc.stdout)
+
+
+def ensure_no_empty_descriptions_to_push(remote: str) -> None:
+    commits = empty_description_commits_to_push(remote)
+    if commits:
+        fail(
+            "refusing to push because these commits in the push range have empty descriptions:\n"
+            + "\n".join(commits)
+        )
+
+
+def clean_lines(value: str) -> list[str]:
+    return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def detect_languages(files: list[str]) -> tuple[list[str], list[str], list[str]]:
+    languages: list[str] = []
+    supported_files: list[str] = []
+    unsupported_files: list[str] = []
+    for file in files:
+        lower = file.lower()
+        if lower.endswith(".gleam"):
+            if "gleam" not in languages:
+                languages.append("gleam")
+            supported_files.append(file)
+        elif is_review_relevant(file):
+            unsupported_files.append(file)
+    return languages, supported_files, unsupported_files
+
+
+def is_review_relevant(file: str) -> bool:
+    lower = file.lower()
+    return any(
+        lower.endswith(ext)
+        for ext in [
+            ".erl",
+            ".hrl",
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".py",
+            ".rs",
+            ".go",
+            ".fs",
+            ".fsx",
+            ".elm",
+        ]
+    )
+
+
+def review_commands(_languages: list[str]) -> list[str]:
+    # Review is performed by repo-local staged `scripts/scherzo-review` lanes in
+    # the workflow DAG. Keep this compatibility field empty so prompts do not
+    # depend on a local pi `/review` command or language-specific local skills.
+    return []
+
+
+def run_root_for_current_workspace() -> Path:
+    explicit = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).resolve()
+
+    cwd = Path.cwd().resolve()
+    parts = cwd.parts
+    if len(parts) >= 3 and parts[-2] == "workspaces":
+        return cwd.parent.parent
+    return cwd.parent
+
+
+def retention_marker_path() -> Path:
+    return run_root_for_current_workspace() / RETENTION_MARKER
+
+
+def write_retention_marker(source_kind: str, source_ref: str) -> None:
+    marker = retention_marker_path()
+    marker.write_text(
+        "Scherzo retained this run because an implementation workflow "
+        "has not published a PR yet.\n"
+        f"Source kind: {source_kind}\n"
+        f"Source: {source_ref}\n"
+    )
+
+
+def clear_retention_marker() -> None:
+    marker = retention_marker_path()
+    if marker.exists():
+        marker.unlink()
+
+
+def sanitize_ref_part(value: str) -> str:
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9._-]+", "-", value)
+    value = re.sub(r"-+", "-", value).strip("-")
+    return value
+
+
+def owner_repo_from_url(url: str) -> str | None:
+    if url.startswith("https://github.com/"):
+        value = url.removeprefix("https://github.com/")
+    elif url.startswith("git@github.com:"):
+        value = url.removeprefix("git@github.com:")
+    elif url.startswith("ssh://git@github.com/"):
+        value = url.removeprefix("ssh://git@github.com/")
+    else:
+        return None
+    value = value.removesuffix(".git")
+    parts = value.split("/")
+    if len(parts) >= 2 and parts[0] and parts[1]:
+        return f"{parts[0]}/{parts[1]}"
+    return None
+
+
+def remote_url(remote: str) -> str | None:
+    output = run(["jj", "git", "remote", "list", "--color=never"])
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == remote:
+            return parts[1]
+    return None
+
+
+def default_repo(remote: str) -> str:
+    explicit = os.environ.get("SCHERZO_PR_REPO", "").strip()
+    if explicit:
+        return explicit
+    url = remote_url(remote)
+    if not url:
+        fail(f"could not find jj git remote: {remote}")
+    repo = owner_repo_from_url(url)
+    if not repo:
+        fail(f"could not infer GitHub owner/repo from remote URL: {url}")
+    return repo
+
+
+def plan_title(plan_path: str) -> str:
+    text = Path(plan_path).read_text(encoding="utf-8")
+    if plan_path.endswith(".html"):
+        for pattern in [r"<h1\b[^>]*>(.*?)</h1>", r"<title\b[^>]*>(.*?)</title>"]:
+            match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                title = re.sub(r"<[^>]+>", " ", match.group(1))
+                title = html.unescape(re.sub(r"\s+", " ", title)).strip()
+                title = re.sub(r"\s+[—-]\s+Scherzo ExecPlan.*$", "", title).strip()
+                if title:
+                    return title
+    for line in text.splitlines():
+        if line.startswith("# "):
+            return line.removeprefix("# ").strip()
+    return f"Implement {plan_path}"
+
+
+def label_names(issue: dict[str, Any]) -> list[str]:
+    labels = issue.get("labels", {}).get("nodes", [])
+    names = [label.get("name") or "" for label in labels]
+    return sorted([name for name in names if name])
+
+
+def comment_nodes(issue: dict[str, Any]) -> list[dict[str, Any]]:
+    comments = issue.get("comments", {}).get("nodes", [])
+    return sorted(comments, key=lambda c: c.get("createdAt") or "")
+
+
+def render_ticket_brief(issue: dict[str, Any]) -> str:
+    identifier = issue.get("identifier") or "unknown-issue"
+    title = issue.get("title") or "Untitled"
+    url = issue.get("url") or ""
+    state = (issue.get("state") or {}).get("name") or "Unknown"
+    priority = issue.get("priority")
+    description = issue.get("description") or "_No description provided._"
+    labels = label_names(issue)
+    comments = comment_nodes(issue)
+    labels_truncated = issue.get("labels", {}).get("pageInfo", {}).get("hasNextPage") is True
+    comments_truncated = issue.get("comments", {}).get("pageInfo", {}).get("hasNextPage") is True
+
+    lines = [
+        f"# Ticket context for {identifier}: {title}",
+        "",
+        "## Metadata",
+        "",
+        f"- Identifier: {identifier}",
+        f"- Title: {title}",
+        f"- URL: {url or 'None'}",
+        f"- State: {state}",
+        f"- Priority: {priority if priority is not None else 'None'}",
+        "- Labels: " + (", ".join(labels) if labels else "None"),
+        "",
+        "## Description",
+        "",
+        description,
+        "",
+        "## Comments",
+        "",
+    ]
+
+    if comments:
+        for index, comment in enumerate(comments, start=1):
+            created = comment.get("createdAt") or "unknown time"
+            user = (comment.get("user") or {}).get("name") or "unknown user"
+            body = comment.get("body") or ""
+            lines.extend([
+                f"### Comment {index} — {created} — {user}",
+                "",
+                body or "_No body._",
+                "",
+            ])
+    else:
+        lines.extend(["None.", ""])
+
+    if labels_truncated or comments_truncated:
+        lines.extend(["## Fetch notes", ""])
+        if labels_truncated:
+            lines.append("- Linear returned more than 50 labels; the label list above is truncated.")
+        if comments_truncated:
+            lines.append("- Linear returned more than 100 comments; the comment list above is truncated.")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_ticket_brief(issue: dict[str, Any]) -> Path:
+    TICKET_BRIEF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TICKET_BRIEF_PATH.write_text(render_ticket_brief(issue))
+    return TICKET_BRIEF_PATH
+
+
+def parse_prepare_source(args: list[str]) -> str:
+    if args == ["--source", "execplan"] or args == ["execplan"]:
+        return "execplan"
+    if args == ["--source", "ticket"] or args == ["ticket"]:
+        return "ticket"
+    usage()
+    sys.exit(2)
+
+
+def prepare_command(args: list[str]) -> None:
+    source_kind = parse_prepare_source(args)
+    issue_identifier = infer_issue_identifier()
+    # Create the retention marker before any fetch, extraction, or workspace inspection can
+    # fail so prepare-step diagnostics remain available for triage.
+    write_retention_marker(source_kind, issue_identifier)
+    if workspace_driver_available():
+        base_change_id = str(workspace_driver_baseline()["baseline_id"])
+    else:
+        require_command("jj")
+        base_change_id = current_base_change_id()
+
+    if source_kind == "execplan":
+        issue = fetch_linear_issue(issue_identifier)
+        plan_path = extract_plan_path_from_texts(issue_texts(issue))
+        validate_plan_path(plan_path, Path.cwd())
+        write_retention_marker(source_kind, plan_path)
+        metadata = {
+            "source_kind": source_kind,
+            "issue_identifier": issue.get("identifier") or issue_identifier,
+            "issue_title": issue.get("title") or "",
+            "issue_url": issue.get("url") or "",
+            "plan_path": plan_path,
+            "base_change_id": base_change_id,
+        }
+        brief_result = generate_plan_brief(plan_path)
+        apply_plan_brief_result(metadata, brief_result)
+        write_implementation_metadata(metadata)
+        print(f"SOURCE_KIND={source_kind}")
+        print(f"PLAN_PATH={plan_path}")
+        print_plan_brief_result(brief_result)
+    else:
+        issue = fetch_linear_issue_context(issue_identifier)
+        brief_path = write_ticket_brief(issue)
+        issue_ref = issue.get("identifier") or issue_identifier
+        write_retention_marker(source_kind, issue_ref)
+        metadata = {
+            "source_kind": source_kind,
+            "issue_identifier": issue_ref,
+            "issue_title": issue.get("title") or "",
+            "issue_url": issue.get("url") or "",
+            "brief_path": str(brief_path),
+            "base_change_id": base_change_id,
+        }
+        write_implementation_metadata(metadata)
+        print(f"SOURCE_KIND={source_kind}")
+        print(f"BRIEF_PATH={brief_path}")
+
+    print(f"BASE_CHANGE_ID={base_change_id}")
+    print(f"RETENTION_MARKER={retention_marker_path()}")
+    print("VALIDATION=ok")
+
+
+def require_plan_brief_metadata() -> tuple[dict[str, Any], str]:
+    metadata = load_implementation_metadata()
+    if metadata.get("source_kind") != "execplan":
+        fail(
+            "plan-brief only applies to execplan implementation workflows; "
+            f"found source_kind={metadata.get('source_kind')!r}"
+        )
+    plan_path = str(metadata.get("plan_path") or "").strip()
+    if not plan_path:
+        fail(f"missing plan_path in {METADATA_PATH}; run prepare --source execplan first")
+    validate_plan_path(plan_path, Path.cwd())
+    return metadata, plan_path
+
+
+def load_plan_index_hash(index_path: str) -> str | None:
+    try:
+        index = json.loads(Path(index_path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = str(index.get("source_sha256") or "").strip()
+    if re.fullmatch(r"[0-9a-f]{64}", value):
+        return value
+    return None
+
+
+def plan_brief_freshness(metadata: dict[str, Any], plan_path: str) -> str:
+    if metadata.get("plan_brief_status") != "ok":
+        return "unavailable"
+    brief_path = str(metadata.get("plan_brief_path") or "").strip()
+    index_path = str(metadata.get("plan_index_path") or "").strip()
+    metadata_hash = str(metadata.get("plan_source_sha256") or "").strip()
+    if not brief_path or not index_path or not Path(brief_path).is_file() or not Path(index_path).is_file():
+        return "unavailable"
+    index_hash = load_plan_index_hash(index_path)
+    if not index_hash or not re.fullmatch(r"[0-9a-f]{64}", metadata_hash):
+        return "unavailable"
+    current_hash = plan_source_sha256(plan_path)
+    if current_hash == metadata_hash == index_hash:
+        return "fresh"
+    return "stale"
+
+
+def plan_brief_command(args: list[str]) -> None:
+    if args != [] and args != ["--check"] and args != ["--refresh-if-stale"]:
+        usage()
+        sys.exit(2)
+    metadata, plan_path = require_plan_brief_metadata()
+    if args == ["--check"]:
+        status = plan_brief_freshness(metadata, plan_path)
+        print(f"PLAN_BRIEF_STATUS={status}")
+        if status == "fresh":
+            print(f"PLAN_BRIEF_PATH={metadata.get('plan_brief_path')}")
+            print(f"PLAN_INDEX_PATH={metadata.get('plan_index_path')}")
+            print(f"PLAN_SOURCE_SHA256={metadata.get('plan_source_sha256')}")
+            return
+        if status == "stale":
+            sys.exit(2)
+        sys.exit(1)
+    if args == ["--refresh-if-stale"]:
+        status = plan_brief_freshness(metadata, plan_path)
+        if status == "fresh":
+            print("PLAN_BRIEF_STATUS=fresh")
+            print(f"PLAN_BRIEF_PATH={metadata.get('plan_brief_path')}")
+            print(f"PLAN_INDEX_PATH={metadata.get('plan_index_path')}")
+            print(f"PLAN_SOURCE_SHA256={metadata.get('plan_source_sha256')}")
+            return
+    result = generate_plan_brief(plan_path)
+    apply_plan_brief_result(metadata, result)
+    write_implementation_metadata(metadata)
+    print_plan_brief_result(result)
+    if result["status"] != "ok":
+        sys.exit(1)
+
+
+def analyze_command() -> None:
+    metadata = load_implementation_metadata()
+    files = workspace_driver_changed_files() if workspace_driver_available() else changed_files_since(metadata["base_change_id"])
+    if not files:
+        fail("no changed files found since the workflow started")
+    languages, supported_files, unsupported_files = detect_languages(files)
+    commands = review_commands(languages)
+    analysis = {
+        "changed_files": files,
+        "languages": languages,
+        "supported_review_files": supported_files,
+        "unsupported_review_files": unsupported_files,
+        "review_commands": commands,
+    }
+    write_json(ANALYSIS_PATH, analysis)
+    print_list("CHANGED_FILES", files)
+    print("LANGUAGES=" + comma_join(languages))
+    print_list("SUPPORTED_REVIEW_FILES", supported_files)
+    print_list("UNSUPPORTED_REVIEW_FILES", unsupported_files)
+    print_list("REVIEW_COMMANDS", commands)
+
+
+def require_execplan_metadata(metadata: dict[str, Any]) -> tuple[str, str]:
+    source_kind = metadata.get("source_kind")
+    if source_kind != "execplan":
+        fail(
+            "plan-completion checks only apply to execplan implementation workflows; "
+            f"found source_kind={source_kind!r}",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    plan_path = str(metadata.get("plan_path") or "").strip()
+    if not plan_path:
+        fail(
+            f"missing plan_path in {METADATA_PATH}; run prepare --source execplan first",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    base_change_id = str(metadata.get("base_change_id") or "").strip()
+    if not base_change_id:
+        fail(
+            f"missing base_change_id in {METADATA_PATH}; run prepare first",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    return plan_path, base_change_id
+
+
+def changed_files_in_current_patch() -> list[str]:
+    if workspace_driver_available():
+        return workspace_driver_changed_files()
+    output = run([
+        "jj",
+        "diff",
+        "--from",
+        "@-",
+        "--to",
+        "@",
+        "--name-only",
+        "--color=never",
+    ])
+    return clean_lines(output)
+
+
+def current_patch_diff() -> str:
+    if workspace_driver_available():
+        return workspace_driver_diff_text()
+    return run(["jj", "diff", "--from", "@-", "--to", "@", "--color=never"])
+
+
+def sha256_json(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def plan_completion_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:
+    plan_path, base_change_id = require_execplan_metadata(metadata)
+    changed_files = changed_files_in_current_patch()
+    diff = current_patch_diff()
+    if workspace_driver_available():
+        baseline = workspace_driver_baseline()
+        verified_base_change_id = str(baseline["baseline_id"])
+        verified_change_id = str(baseline["change_id"])
+        verified_parent_commit_ids = [str(baseline["baseline_id"])]
+    else:
+        verified_base_change_id = base_change_id
+        verified_change_id = current_change_id_short()
+        verified_parent_commit_ids = current_parent_commit_ids()
+    fingerprint = sha256_json(
+        {
+            "schema_version": 1,
+            "changed_files": changed_files,
+            "diff": diff,
+        }
+    )
+    snapshot = {
+        "schema_version": 1,
+        "source_kind": "execplan",
+        "plan_path": plan_path,
+        "verified_base_change_id": verified_base_change_id,
+        "verified_change_id": verified_change_id,
+        "verified_parent_commit_ids": verified_parent_commit_ids,
+        "verified_diff_fingerprint": fingerprint,
+        "changed_files": changed_files,
+        "verdict_path": str(PLAN_COMPLETION_VERDICT_PATH),
+    }
+    for metadata_key, context_key in [
+        ("plan_brief_status", "plan_brief_status"),
+        ("plan_brief_path", "plan_brief_path"),
+        ("plan_index_path", "plan_index_path"),
+        ("plan_source_sha256", "plan_source_sha256"),
+    ]:
+        value = metadata.get(metadata_key)
+        if isinstance(value, str) and value.strip():
+            snapshot[context_key] = value.strip()
+    return snapshot
+
+
+def plan_completion_context_command(args: list[str]) -> None:
+    if args:
+        usage()
+        sys.exit(2)
+    if not workspace_driver_available():
+        require_command("jj")
+    metadata = load_implementation_metadata()
+    context = plan_completion_snapshot(metadata)
+    write_json(PLAN_COMPLETION_CONTEXT_PATH, context)
+    print(f"PLAN_COMPLETION_CONTEXT_PATH={PLAN_COMPLETION_CONTEXT_PATH}")
+    print(f"PLAN_COMPLETION_VERDICT_PATH={PLAN_COMPLETION_VERDICT_PATH}")
+    print(f"PLAN_COMPLETION_PLAN_PATH={context['plan_path']}")
+    print(f"PLAN_COMPLETION_BASE_CHANGE_ID={context['verified_base_change_id']}")
+    print(f"PLAN_COMPLETION_CHANGE_ID={context['verified_change_id']}")
+    print(
+        "PLAN_COMPLETION_DIFF_FINGERPRINT="
+        + str(context["verified_diff_fingerprint"])
+    )
+    if "plan_brief_status" in context:
+        print(f"PLAN_BRIEF_STATUS={context['plan_brief_status']}")
+    if "plan_brief_path" in context:
+        print(f"PLAN_BRIEF_PATH={context['plan_brief_path']}")
+    if "plan_index_path" in context:
+        print(f"PLAN_INDEX_PATH={context['plan_index_path']}")
+    if "plan_source_sha256" in context:
+        print(f"PLAN_SOURCE_SHA256={context['plan_source_sha256']}")
+    print_list("PLAN_COMPLETION_CHANGED_FILES", context["changed_files"])
+
+
+def fail_plan_completion_gate(message: str, *, failure_code: str) -> None:
+    print("PLAN_COMPLETION_GATE=failed")
+    fail(message, failure_code=failure_code)
+
+
+def string_list_field(value: dict[str, Any], key: str) -> list[str]:
+    field = value.get(key)
+    if not isinstance(field, list):
+        fail_plan_completion_gate(
+            f"{PLAN_COMPLETION_VERDICT_PATH} field {key!r} must be a list of strings",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    strings: list[str] = []
+    for item in field:
+        if not isinstance(item, str):
+            fail_plan_completion_gate(
+                f"{PLAN_COMPLETION_VERDICT_PATH} field {key!r} must be a list of strings",
+                failure_code="plan_completion_verdict_malformed",
+            )
+        strings.append(item)
+    return strings
+
+
+def required_string_field(value: dict[str, Any], key: str) -> str:
+    field = value.get(key)
+    if not isinstance(field, str) or not field.strip():
+        fail_plan_completion_gate(
+            f"{PLAN_COMPLETION_VERDICT_PATH} field {key!r} must be a non-empty string",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    return field.strip()
+
+
+def load_plan_completion_verdict() -> dict[str, Any]:
+    if not PLAN_COMPLETION_VERDICT_PATH.exists():
+        fail_plan_completion_gate(
+            f"missing {PLAN_COMPLETION_VERDICT_PATH}; the plan-completion verifier must write this artifact before review/publish",
+            failure_code="plan_completion_verdict_missing",
+        )
+    try:
+        verdict = json.loads(PLAN_COMPLETION_VERDICT_PATH.read_text())
+    except json.JSONDecodeError as exc:
+        fail_plan_completion_gate(
+            f"invalid JSON in {PLAN_COMPLETION_VERDICT_PATH}: {exc}",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    if not isinstance(verdict, dict):
+        fail_plan_completion_gate(
+            f"{PLAN_COMPLETION_VERDICT_PATH} must contain a JSON object",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    return verdict
+
+
+def validate_plan_completion_verdict_shape(verdict: dict[str, Any]) -> dict[str, Any]:
+    if verdict.get("schema_version") != 1:
+        fail_plan_completion_gate(
+            f"{PLAN_COMPLETION_VERDICT_PATH} must set schema_version to 1",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    raw_verdict = verdict.get("verdict")
+    if raw_verdict not in {"pass", "fail"}:
+        fail_plan_completion_gate(
+            f"{PLAN_COMPLETION_VERDICT_PATH} field 'verdict' must be 'pass' or 'fail'",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    blocking_findings = string_list_field(verdict, "blocking_findings")
+    evidence = string_list_field(verdict, "evidence")
+    checked_acceptance_criteria = string_list_field(
+        verdict,
+        "checked_acceptance_criteria",
+    )
+    plan_path = required_string_field(verdict, "plan_path")
+    verified_base_change_id = required_string_field(
+        verdict,
+        "verified_base_change_id",
+    )
+    verified_change_id = required_string_field(verdict, "verified_change_id")
+    verified_diff_fingerprint = required_string_field(
+        verdict,
+        "verified_diff_fingerprint",
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", verified_diff_fingerprint):
+        fail_plan_completion_gate(
+            "verified_diff_fingerprint must be a lowercase SHA-256 hex digest",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    changed_files = verdict.get("changed_files", [])
+    if changed_files != []:
+        string_list_field(verdict, "changed_files")
+    return {
+        "verdict": raw_verdict,
+        "blocking_findings": blocking_findings,
+        "evidence": evidence,
+        "checked_acceptance_criteria": checked_acceptance_criteria,
+        "plan_path": plan_path,
+        "verified_base_change_id": verified_base_change_id,
+        "verified_change_id": verified_change_id,
+        "verified_diff_fingerprint": verified_diff_fingerprint,
+    }
+
+
+def gate_plan_completion_command(args: list[str]) -> None:
+    if args != [] and args != ["--final"]:
+        usage()
+        sys.exit(2)
+    final_gate = args == ["--final"]
+    gate_label = "final plan-completion gate" if final_gate else "plan-completion gate"
+    metadata = load_implementation_metadata()
+    current_plan_path, _current_base_change_id = require_execplan_metadata(metadata)
+    verdict = validate_plan_completion_verdict_shape(load_plan_completion_verdict())
+    if not workspace_driver_available():
+        require_command("jj")
+    current = plan_completion_snapshot(metadata)
+
+    if verdict["plan_path"] != current_plan_path:
+        fail_plan_completion_gate(
+            f"{gate_label} found a stale verdict for plan {verdict['plan_path']!r}; current plan is {current_plan_path!r}",
+            failure_code="plan_completion_verdict_stale",
+        )
+    if verdict["verified_base_change_id"] != current["verified_base_change_id"]:
+        fail_plan_completion_gate(
+            f"{gate_label} found a stale verdict for base change {verdict['verified_base_change_id']!r}; current base is {current['verified_base_change_id']!r}",
+            failure_code="plan_completion_verdict_stale",
+        )
+    if verdict["verified_change_id"] != current["verified_change_id"]:
+        fail_plan_completion_gate(
+            f"{gate_label} found a stale verdict for change {verdict['verified_change_id']!r}; current change is {current['verified_change_id']!r}",
+            failure_code="plan_completion_verdict_stale",
+        )
+    if verdict["verified_diff_fingerprint"] != current["verified_diff_fingerprint"]:
+        fail_plan_completion_gate(
+            f"{gate_label} found a stale verdict fingerprint; rerun plan-completion verification after the latest implementation changes",
+            failure_code="plan_completion_verdict_stale",
+        )
+
+    print(f"PLAN_COMPLETION_GATE_MODE={'final' if final_gate else 'pre_review'}")
+    print(f"PLAN_COMPLETION_VERDICT={verdict['verdict']}")
+    print(f"PLAN_COMPLETION_VERDICT_PATH={PLAN_COMPLETION_VERDICT_PATH}")
+    if verdict["verdict"] != "pass":
+        print_list("PLAN_COMPLETION_BLOCKING_FINDINGS", verdict["blocking_findings"])
+        fail_plan_completion_gate(
+            "plan-completion verifier reported blocking findings; code review/publish is blocked until the ExecPlan's promised behavior is complete",
+            failure_code="plan_completion_failed",
+        )
+
+    print("PLAN_COMPLETION_GATE=passed")
+    print(
+        "PLAN_COMPLETION_DIFF_FINGERPRINT="
+        + str(current["verified_diff_fingerprint"])
+    )
+
+
+def print_list(label: str, values: list[str]) -> None:
+    print(label + ":")
+    if values:
+        for value in values:
+            print(f"- {value}")
+    else:
+        print("- None")
+
+
+def comma_join(values: list[str]) -> str:
+    return ",".join(values) if values else "none"
+
+
+def validation_env() -> dict[str, str]:
+    env = os.environ.copy()
+    # Validation runs the repository test suite, and some tests execute Scherzo
+    # helper scripts against fixture directories. Workflow-run-scoped settings
+    # must not leak into those nested helper invocations; otherwise fixtures can
+    # infer the outer Scherzo run's issue/run/workspace, use the outer workspace
+    # driver/base configuration, or publish against the outer workflow remote
+    # instead of their own temporary test context.
+    for key in [
+        "SCHERZO_CONFIG_DIR",
+        "SCHERZO_ISSUE_ID",
+        "SCHERZO_ISSUE_IDENTIFIER",
+        "SCHERZO_JJ_WORKSPACE_BASE",
+        "SCHERZO_JJ_WORKSPACE_BASE_BRANCH",
+        "SCHERZO_JJ_WORKSPACE_FETCH_BASE",
+        "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE",
+        "SCHERZO_JJ_WORKSPACE_REMOTE",
+        "SCHERZO_PR_BASE",
+        "SCHERZO_PR_REMOTE",
+        "SCHERZO_PR_REPO",
+        "SCHERZO_REPO_ROOT",
+        "SCHERZO_RUN_ID",
+        "SCHERZO_RUN_ROOT",
+        "SCHERZO_SOURCE_WORKSPACE_PATH",
+        "SCHERZO_WORKFLOW_ID",
+        "SCHERZO_WORKSPACE_CAPABILITIES",
+        "SCHERZO_WORKSPACE_DRIVER",
+        "SCHERZO_WORKSPACE_NAME",
+        "SCHERZO_WORKSPACE_PATH",
+        "SCHERZO_WORKSPACE_PROFILE",
+        "SCHERZO_WORKSPACE_ROOT",
+    ]:
+        env.pop(key, None)
+    return env
+
+
+def fallback_validation_base_revision() -> str:
+    base, remote = configured_publish_base()
+    return f"{base}@{remote}"
+
+
+def final_validation_base_revision(*, failure_code: str | None = None) -> str:
+    if not BASE_REFRESH_LATEST_PATH.exists():
+        return fallback_validation_base_revision()
+    try:
+        refresh = json.loads(BASE_REFRESH_LATEST_PATH.read_text())
+    except json.JSONDecodeError as exc:
+        fail(
+            f"invalid {BASE_REFRESH_LATEST_PATH}; cannot resolve SelfCI base revision: {exc}",
+            failure_code=failure_code,
+        )
+    base_revision = str(refresh.get("base_revision") or "").strip()
+    if base_revision:
+        return base_revision
+    return fallback_validation_base_revision()
+
+
+def selfci_validation_command(base_revision: str) -> list[str]:
+    return [
+        "direnv",
+        "exec",
+        ".",
+        "selfci",
+        "check",
+        "--base",
+        base_revision,
+        "--candidate",
+        "@",
+        "--print-output",
+    ]
+
+
+def validation_command_display(command: list[str]) -> str:
+    return " ".join(command)
+
+
+def write_validation_result(
+    *,
+    base_revision: str,
+    setup_commands: list[list[str]],
+    validation_command: list[str],
+    status: str,
+    exit_code: int | None = None,
+    stdout: str = "",
+    stderr: str = "",
+) -> None:
+    result: dict[str, Any] = {
+        "base_revision": base_revision,
+        "commands": [validation_command_display(validation_command)],
+        "setup_commands": [validation_command_display(c) for c in setup_commands],
+        "status": status,
+        "validator": "selfci",
+    }
+    if exit_code is not None:
+        result["exit_code"] = exit_code
+    if status != "passed":
+        result["failure_summary"] = validation_failure_summary(stdout, stderr)
+        result["stdout_excerpt"] = diagnostic_excerpt(
+            stdout, VALIDATION_RESULT_EXCERPT_MAX_CHARS
+        )
+        result["stderr_excerpt"] = diagnostic_excerpt(
+            stderr, VALIDATION_RESULT_EXCERPT_MAX_CHARS
+        )
+        result["diagnostic_note"] = (
+            "Full command output is retained in the workflow command-step diagnostics "
+            "for the failing validation step when Scherzo artifact retention is enabled."
+        )
+    write_json(VALIDATION_PATH, result)
+
+
+def previous_validation_failure_details() -> str:
+    if not VALIDATION_PATH.exists():
+        return (
+            f"No structured validation artifact was found at {VALIDATION_PATH}. "
+            "Inspect the earlier validate_after_refresh command-step diagnostics."
+        )
+    try:
+        validation = json.loads(VALIDATION_PATH.read_text())
+    except json.JSONDecodeError as exc:
+        return f"Structured validation artifact {VALIDATION_PATH} is invalid JSON: {exc}"
+
+    lines = ["Previous validation result:"]
+    status = str(validation.get("status") or "unknown")
+    lines.append(f"- status: {status}")
+    exit_code = validation.get("exit_code")
+    if exit_code is not None:
+        lines.append(f"- exit_code: {exit_code}")
+    base_revision = str(validation.get("base_revision") or "").strip()
+    if base_revision:
+        lines.append(f"- base_revision: {base_revision}")
+    commands = validation.get("commands")
+    if isinstance(commands, list) and commands:
+        lines.append("- command: " + str(commands[0]))
+    lines.append(f"- structured_validation_artifact: {VALIDATION_PATH}")
+    lines.append(
+        "- full_output_hint: inspect .scherzo/command-step-diagnostics/validate_after_refresh.txt in the retained workspace"
+    )
+    summary = str(validation.get("failure_summary") or "").strip()
+    if summary:
+        lines.append("\nFailure summary:\n" + summary)
+    return "\n".join(lines)
+
+
+def validate_command(*, failure_code: str | None = None) -> None:
+    if BASE_DRIFT_REPAIR_FAILURE_PATH.exists():
+        failure = BASE_DRIFT_REPAIR_FAILURE_PATH.read_text().strip()
+        previous_validation = previous_validation_failure_details()
+        fail(
+            f"base drift repair requested workflow failure via {BASE_DRIFT_REPAIR_FAILURE_PATH}:"
+            + ("\n" + failure if failure else "")
+            + "\n\n"
+            + previous_validation,
+            failure_code=failure_code,
+        )
+    if command_exists("jj") and has_unresolved_conflicts_at_current_change():
+        files = conflicted_files()
+        details = ""
+        if files:
+            details = "\nConflicted files:\n" + "\n".join(f"- {file}" for file in files)
+        else:
+            details = "\nConflicted file list could not be determined by `jj resolve --list`."
+        fail(
+            "jj reports unresolved conflicts in the current change; resolve base-drift "
+            "conflicts before validation." + details,
+            failure_code=failure_code,
+        )
+    require_command("direnv")
+    base_revision = final_validation_base_revision(failure_code=failure_code)
+    setup_commands = [["direnv", "allow", "."]]
+    validation_command = selfci_validation_command(base_revision)
+    env = validation_env()
+    for command in setup_commands:
+        run_and_print(command, failure_code=failure_code, env=env)
+    print("$ " + " ".join(shell_display(arg) for arg in validation_command), flush=True)
+    proc = run_proc(validation_command, env=env)
+    print_process_output(proc)
+    if proc.returncode != 0:
+        write_validation_result(
+            base_revision=base_revision,
+            setup_commands=setup_commands,
+            validation_command=validation_command,
+            status="failed",
+            exit_code=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+        print("FINAL_VALIDATION=failed")
+        print(f"VALIDATION_RESULT_PATH={VALIDATION_PATH}")
+        summary = validation_failure_summary(proc.stdout, proc.stderr)
+        fail(
+            f"command failed with exit code {proc.returncode}: {' '.join(validation_command)}"
+            f"\nStructured validation artifact: {VALIDATION_PATH}"
+            + ("\nFailure summary:\n" + summary if summary else ""),
+            failure_code=failure_code,
+        )
+    write_validation_result(
+        base_revision=base_revision,
+        setup_commands=setup_commands,
+        validation_command=validation_command,
+        status="passed",
+    )
+    print("FINAL_VALIDATION=passed")
+
+
+def ensure_validation_passed() -> None:
+    if not VALIDATION_PATH.exists():
+        fail(f"missing {VALIDATION_PATH}; run validate before publish")
+    validation = json.loads(VALIDATION_PATH.read_text())
+    if validation.get("status") != "passed":
+        fail("final validation did not pass; run validate before publish")
+
+
+def ticket_slug(metadata: dict[str, Any]) -> str:
+    identifier = sanitize_ref_part(metadata.get("issue_identifier") or "")
+    title = sanitize_ref_part(metadata.get("issue_title") or "")
+    value = "-".join(part for part in [identifier, title] if part)
+    return value[:60].strip("-") or "ticket"
+
+
+def execplan_implementation_slug(metadata: dict[str, Any]) -> str:
+    # Linear's GitHub integration is most reliable when the implementation
+    # issue key appears in the branch name. Avoid deriving execplan-
+    # implementation branches from the source plan filename because those
+    # filenames often contain the planning ticket key instead.
+    identifier = sanitize_ref_part(metadata.get("issue_identifier") or "")
+    title = sanitize_ref_part(metadata.get("issue_title") or "")
+    value = "-".join(part for part in [identifier, title] if part)
+    if value:
+        return value[:60].strip("-") or "execplan-implementation"
+    plan_path = metadata["plan_path"]
+    return sanitize_ref_part(Path(plan_path).stem)[:60] or "plan"
+
+
+def implementation_subject(title: str, fallback: str) -> str:
+    value = (title or fallback).strip()
+    for pattern in [r"(?i)^implement\s+plan\s*:\s*", r"(?i)^implement\s*:\s*"]:
+        stripped = re.sub(pattern, "", value, count=1).strip()
+        if stripped != value:
+            return stripped or value
+    return value or fallback
+
+
+def format_issue_line(issue_identifier: str, issue_title: str, issue_url: str) -> str:
+    if issue_identifier and issue_title and issue_url:
+        return f"Issue: [{issue_identifier}: {issue_title}]({issue_url})"
+    if issue_identifier and issue_title:
+        return f"Issue: {issue_identifier}: {issue_title}"
+    if issue_identifier:
+        return f"Issue: {issue_identifier}"
+    return "Issue: Linear issue"
+
+
+def current_validation_result() -> dict[str, Any]:
+    if not VALIDATION_PATH.exists():
+        fail(f"missing {VALIDATION_PATH}; run validate before publish")
+    return json.loads(VALIDATION_PATH.read_text())
+
+
+def validation_commands_from_result(validation: dict[str, Any]) -> list[str]:
+    commands = validation.get("commands")
+    if not isinstance(commands, list):
+        return []
+    return [str(command).strip() for command in commands if str(command).strip()]
+
+
+def validation_body_section() -> str:
+    validation = current_validation_result()
+    commands = validation_commands_from_result(validation)
+    is_selfci = validation.get("validator") == "selfci"
+    if is_selfci and not commands:
+        base_revision = str(
+            validation.get("base_revision") or fallback_validation_base_revision()
+        )
+        commands = [" ".join(selfci_validation_command(base_revision))]
+    label = (
+        "SelfCI validation completed before publication"
+        if is_selfci
+        else "Validation completed before publication"
+    )
+    if not commands:
+        return label + ".\n\n"
+    lines = [label + ":", ""]
+    lines.extend(f"- `{command}`" for command in commands)
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]:
+    plan_path = metadata["plan_path"]
+    issue_identifier = metadata.get("issue_identifier") or ""
+    issue_title = metadata.get("issue_title") or plan_title(plan_path)
+    issue_url = metadata.get("issue_url") or ""
+    slug = execplan_implementation_slug(metadata)
+    branch_prefix = "scherzo/execplan-implementation"
+    description = f"feat: implement {sanitize_ref_part(issue_identifier) or slug}"
+    subject = implementation_subject(issue_title, plan_title(plan_path))
+    pr_title = (
+        f"Implement {issue_identifier}: {subject}"
+        if issue_identifier
+        else subject if subject.lower().startswith("implement")
+        else "Implement: " + subject
+    )
+    body = (
+        "Implements a Linear issue through Scherzo's `workflow:execplan-implementation` dogfood workflow.\n\n"
+        f"{format_issue_line(issue_identifier, issue_title, issue_url)}\n\n"
+        f"Source ExecPlan: `{plan_path}`\n\n"
+        + validation_body_section()
+        + "This PR is ready for human acceptance.\n"
+    )
+    return branch_prefix, description, pr_title, body
+
+
+def ticket_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]:
+    slug = ticket_slug(metadata)
+    issue_identifier = metadata.get("issue_identifier") or "Linear issue"
+    issue_title = metadata.get("issue_title") or "Untitled"
+    issue_url = metadata.get("issue_url") or ""
+    branch_prefix = "scherzo/implementation"
+    description = f"feat: implement {sanitize_ref_part(issue_identifier) or slug}"
+    pr_title = f"Implement {issue_identifier}: {issue_title}"
+    linear_issue_line = format_issue_line(issue_identifier, issue_title, issue_url)
+    body = (
+        "Implements a Linear ticket through Scherzo's `workflow:implementation` dogfood workflow.\n\n"
+        f"{linear_issue_line}\n\n"
+        "Source: Linear ticket title, description, labels, and recent comments. No ExecPlan is required for this workflow.\n\n"
+        + validation_body_section()
+        + "This PR is ready for human acceptance.\n"
+    )
+    return branch_prefix, description, pr_title, body
+
+
+def publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    source_kind = metadata.get("source_kind")
+    if not source_kind:
+        fail(f"missing source_kind in {METADATA_PATH}; run prepare first")
+    if source_kind == "ticket":
+        branch_prefix, description, pr_title, body = ticket_publish_values(metadata)
+        slug = ticket_slug(metadata)
+    elif source_kind == "execplan":
+        branch_prefix, description, pr_title, body = execplan_publish_values(metadata)
+        slug = execplan_implementation_slug(metadata)
+    else:
+        fail(f"unknown source_kind in {METADATA_PATH}: {source_kind}")
+    return source_kind, branch_prefix, slug, description, pr_title, body
+
+
+def publish_command_legacy() -> None:
+    require_command("jj")
+    ensure_validation_passed()
+    metadata = load_implementation_metadata()
+
+    base, remote = configured_publish_base()
+    refresh = refresh_base("publish")
+    write_refresh_base_result(refresh)
+    refresh_status = str(refresh.get("status") or "")
+    if refresh_status == "conflicts":
+        publish_blocked_after_refresh(refresh, failure_code="publish_rebase_conflict")
+    if refresh_status == "rebase_failed":
+        publish_blocked_after_refresh(refresh, failure_code="publish_rebase_conflict")
+    if refresh_status in {"fetch_failed", "base_not_found"}:
+        publish_blocked_after_refresh(refresh, failure_code="base_refresh_conflict")
+
+    base_revision = str(refresh.get("base_revision") or f"{base}@{remote}")
+    if refresh_status == "rebased_clean":
+        print("")
+        print("## Revalidation after publish-base normalization")
+        try:
+            validate_command(failure_code="publish_revalidation_failed")
+            ensure_validation_passed()
+        except SystemExit:
+            print("PUBLISH_BLOCKED=true")
+            print("PUBLISH_BLOCKED_REASON=base drift after final validation")
+            raise
+
+    source_kind, branch_prefix, slug, description, pr_title, body = publish_values(metadata)
+
+    files = changed_files_since(base_revision)
+    if not files:
+        fail("refusing to publish because no changed files were found")
+
+    change_id = current_change_id_short()
+    if not change_id:
+        fail("could not determine current jj change id")
+    branch = f"{branch_prefix}/{slug}-{change_id}"
+
+    repo = default_repo(remote)
+    require_command("gh")
+    run(["jj", "describe", "-m", description])
+    ensure_no_empty_descriptions_to_push(remote)
+    run(["jj", "bookmark", "set", branch, "--revision", "@"])
+    run(["jj", "git", "push", "--remote", remote, "--bookmark", branch, "--allow-new"])
+
+    body, repair_summary_included = append_base_drift_repair_summary(body)
+    PR_BODY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PR_BODY_PATH.write_text(body)
+
+    pr_url = run(
+        ["gh", "pr", "view", branch, "--repo", repo, "--json", "url", "--jq", ".url"],
+        check=False,
+    ).strip()
+    if not pr_url:
+        pr_url = run([
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            repo,
+            "--base",
+            base,
+            "--head",
+            branch,
+            "--title",
+            pr_title,
+            "--body-file",
+            str(PR_BODY_PATH),
+        ]).strip()
+    if not pr_url:
+        fail(f"failed to create or locate PR for branch {branch}")
+
+    clear_retention_marker()
+    publish = {
+        "source_kind": source_kind,
+        "branch": branch,
+        "pr_url": pr_url,
+        "changed_files": files,
+        "publish_base_revision": base_revision,
+        "base_drift_repair_summary_included": repair_summary_included,
+    }
+    if repair_summary_included:
+        publish["base_drift_repair_summary_path"] = str(BASE_DRIFT_REPAIR_SUMMARY_PATH)
+    if source_kind == "execplan":
+        publish["plan_path"] = metadata["plan_path"]
+        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
+    else:
+        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
+    write_json(PUBLISH_PATH, publish)
+
+    print("## Summary")
+    if source_kind == "execplan":
+        print(f"Implemented `{metadata['plan_path']}` and published the result for human acceptance.")
+    else:
+        issue_identifier = metadata.get("issue_identifier") or "Linear issue"
+        issue_title = metadata.get("issue_title") or "Untitled"
+        print(f"Implemented Linear issue `{issue_identifier}: {issue_title}` and published the result for human acceptance.")
+    print("")
+    print("## Pull request")
+    print(f"PR_URL={pr_url}")
+    print(f"BRANCH={branch}")
+    print("")
+    print("## Validation")
+    validation = current_validation_result()
+    validation_commands = validation_commands_from_result(validation)
+    if validation.get("validator") == "selfci" and not validation_commands:
+        validation_commands = [" ".join(selfci_validation_command(base_revision))]
+    for command in validation_commands:
+        print(f"- `{command}`: passed")
+    print("")
+    print("## Changed files")
+    for file in files:
+        print(f"- `{file}`")
+
+
+def write_publish_metadata_files(pr_title: str, body: str) -> tuple[Path, Path, bool]:
+    body, repair_summary_included = append_base_drift_repair_summary(body)
+    title_path = TMP_DIR / "scherzo-implementation-pr-title.txt"
+    title_path.parent.mkdir(parents=True, exist_ok=True)
+    title_path.write_text(pr_title.strip() + "\n")
+    PR_BODY_PATH.write_text(body)
+    return title_path, PR_BODY_PATH, repair_summary_included
+
+
+def driver_publish_change(
+    *,
+    source_kind: str,
+    branch_prefix: str,
+    pr_title: str,
+    body: str,
+    base: str,
+) -> tuple[dict[str, Any], bool]:
+    title_path, body_path, repair_summary_included = write_publish_metadata_files(
+        pr_title,
+        body,
+    )
+    payload, _ = run_workspace_driver_json(
+        [
+            "publish-change",
+            "--kind",
+            "implementation",
+            "--title-file",
+            str(title_path),
+            "--body-file",
+            str(body_path),
+            "--branch-prefix",
+            branch_prefix,
+            "--base",
+            base,
+            "--json",
+        ],
+        failure_code="workspace_driver_publish_change_failed",
+    )
+    status = payload.get("status")
+    if status not in {"published", "updated", "unchanged"}:
+        fail(
+            f"workspace driver publish-change returned unsuccessful status {status!r}",
+            failure_code="workspace_driver_publish_change_failed",
+        )
+    if not isinstance(payload.get("url"), str) or not str(payload.get("url")).strip():
+        fail(
+            "workspace driver publish-change did not return a hosted review url",
+            failure_code="workspace_driver_publish_change_failed",
+        )
+    payload["source_kind"] = source_kind
+    return payload, repair_summary_included
+
+
+def publish_command() -> None:
+    if not workspace_driver_available():
+        publish_command_legacy()
+        return
+
+    ensure_validation_passed()
+    metadata = load_implementation_metadata()
+    base, _remote = configured_publish_base()
+    refresh = driver_refresh_result("publish")
+    write_refresh_base_result(refresh)
+    refresh_status = str(refresh.get("status") or "")
+    if refresh_status == "conflicts":
+        publish_blocked_after_refresh(refresh, failure_code="publish_rebase_conflict")
+    if refresh_status == "rebase_failed":
+        publish_blocked_after_refresh(refresh, failure_code="publish_rebase_conflict")
+    if refresh_status in {"fetch_failed", "base_not_found"}:
+        publish_blocked_after_refresh(refresh, failure_code="base_refresh_conflict")
+
+    base_revision = str(refresh.get("base_revision") or base)
+    if refresh_status == "rebased_clean":
+        print("")
+        print("## Revalidation after publish-base normalization")
+        try:
+            validate_command(failure_code="publish_revalidation_failed")
+            ensure_validation_passed()
+        except SystemExit:
+            print("PUBLISH_BLOCKED=true")
+            print("PUBLISH_BLOCKED_REASON=base drift after final validation")
+            raise
+
+    source_kind, branch_prefix, _slug, _description, pr_title, body = publish_values(metadata)
+    files = workspace_driver_changed_files()
+    if not files:
+        fail("refusing to publish because no changed files were found")
+
+    publish_payload, repair_summary_included = driver_publish_change(
+        source_kind=source_kind,
+        branch_prefix=branch_prefix,
+        pr_title=pr_title,
+        body=body,
+        base=base,
+    )
+    pr_url = str(publish_payload["url"])
+    branch = str(publish_payload.get("branch") or "")
+    clear_retention_marker()
+
+    publish = {
+        "source_kind": source_kind,
+        "branch": branch,
+        "pr_url": pr_url,
+        "changed_files": files,
+        "publish_base_revision": base_revision,
+        "base_drift_repair_summary_included": repair_summary_included,
+        "driver_status": publish_payload.get("status"),
+        "driver_change_id": publish_payload.get("change_id"),
+        "driver_head_revision": publish_payload.get("head_revision"),
+    }
+    if repair_summary_included:
+        publish["base_drift_repair_summary_path"] = str(BASE_DRIFT_REPAIR_SUMMARY_PATH)
+    if source_kind == "execplan":
+        publish["plan_path"] = metadata["plan_path"]
+        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
+    else:
+        publish["issue_identifier"] = metadata.get("issue_identifier") or ""
+    write_json(PUBLISH_PATH, publish)
+
+    print("## Summary")
+    if source_kind == "execplan":
+        print(f"Implemented `{metadata['plan_path']}` and published the result for human acceptance.")
+    else:
+        issue_identifier = metadata.get("issue_identifier") or "Linear issue"
+        issue_title = metadata.get("issue_title") or "Untitled"
+        print(f"Implemented Linear issue `{issue_identifier}: {issue_title}` and published the result for human acceptance.")
+    print("")
+    print("## Pull request")
+    print(f"PR_URL={pr_url}")
+    print(f"BRANCH={branch}")
+    print("")
+    print("## Validation")
+    validation = current_validation_result()
+    validation_commands = validation_commands_from_result(validation)
+    if validation.get("validator") == "selfci" and not validation_commands:
+        validation_commands = [" ".join(selfci_validation_command(base_revision))]
+    for command in validation_commands:
+        print(f"- `{command}`: passed")
+    print("")
+    print("## Changed files")
+    for file in files:
+        print(f"- `{file}`")
+
+
+def extract_plan_command(args: list[str]) -> None:
+    if len(args) not in {1, 2}:
+        usage()
+        sys.exit(2)
+    text_file = Path(args[0])
+    repo_root = Path(args[1]) if len(args) == 2 else None
+    path = extract_plan_path_from_texts([("text", text_file.read_text())])
+    if repo_root is not None:
+        validate_plan_path(path, repo_root)
+    print(f"PLAN_PATH={path}")
+
+
+def languages_command(args: list[str]) -> None:
+    if len(args) != 1:
+        usage()
+        sys.exit(2)
+    files = clean_lines(Path(args[0]).read_text())
+    languages, supported_files, unsupported_files = detect_languages(files)
+    print("LANGUAGES=" + comma_join(languages))
+    print_list("SUPPORTED_REVIEW_FILES", supported_files)
+    print_list("UNSUPPORTED_REVIEW_FILES", unsupported_files)
+    print_list("REVIEW_COMMANDS", review_commands(languages))
+
+
+def ticket_brief_command(args: list[str]) -> None:
+    if len(args) != 1:
+        usage()
+        sys.exit(2)
+    issue = json.loads(Path(args[0]).read_text())
+    print(render_ticket_brief(issue), end="")
+
+
+def main(argv: list[str]) -> None:
+    command = argv[1] if len(argv) > 1 else ""
+    args = argv[2:]
+    if command == "prepare":
+        prepare_command(args)
+    elif command == "refresh-base":
+        refresh_base_command(args)
+    elif command == "analyze" and not args:
+        analyze_command()
+    elif command == "plan-completion-context":
+        plan_completion_context_command(args)
+    elif command == "gate-plan-completion":
+        gate_plan_completion_command(args)
+    elif command == "validate" and not args:
+        validate_command()
+    elif command == "publish" and not args:
+        publish_command()
+    elif command == "plan-brief":
+        plan_brief_command(args)
+    elif command == "extract-plan":
+        extract_plan_command(args)
+    elif command == "languages":
+        languages_command(args)
+    elif command == "ticket-brief":
+        ticket_brief_command(args)
+    elif command in {"-h", "--help", "help"}:
+        usage()
+    else:
+        usage()
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

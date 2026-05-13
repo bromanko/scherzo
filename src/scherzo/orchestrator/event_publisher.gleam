@@ -1,15 +1,29 @@
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
-import scherzo/agent/runner
-import scherzo/domain
+import scherzo/agent/types as agent_types
 import scherzo/session/event as session_event
 import scherzo/session/hub
+import scherzo/session/tokens as session_tokens
+import scherzo/turn_telemetry
 
 pub fn worker_update(
   event_hub: process.Subject(hub.Message),
   session_id: String,
-  update: runner.PiUpdate,
+  update: agent_types.RunnerUpdate,
+) -> Nil {
+  case update {
+    agent_types.RunnerPiUpdate(update) ->
+      worker_pi_update(event_hub, session_id, update)
+    agent_types.RunnerTurnUpdate(update) ->
+      worker_turn_update(event_hub, session_id, update)
+  }
+}
+
+fn worker_pi_update(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  update: agent_types.PiUpdate,
 ) -> Nil {
   case status_for_update(update) {
     Some(status) -> hub.update_status(event_hub, session_id, status)
@@ -27,40 +41,60 @@ pub fn worker_update(
   hub.publish(event_hub, session_id, update_payload(update))
 }
 
+fn worker_turn_update(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  update: turn_telemetry.TurnLifecycleUpdate,
+) -> Nil {
+  case update.name {
+    turn_telemetry.EventStarted | turn_telemetry.EventFinished ->
+      hub.update_status(event_hub, session_id, session_event.Running)
+    _ -> Nil
+  }
+  hub.publish(event_hub, session_id, turn_update_payload(update))
+}
+
 pub fn lifecycle(
   event_hub: process.Subject(hub.Message),
   session_id: String,
   name: session_event.LifecycleEventName,
   message: Option(String),
 ) -> Nil {
-  hub.publish(
-    event_hub,
-    session_id,
-    session_event.EventPayload(
-      kind: session_event.Lifecycle,
-      name: session_event.LifecycleName(name),
-      turn: None,
-      pi_type: None,
-      message: message,
-      request_id: None,
-      method: None,
-      tool_name: None,
-      tool_input: None,
-      tool_output: None,
-      tool_status: None,
-      tokens: domain.zero_token_totals(),
-      raw_json: None,
-    ),
-  )
+  lifecycle_with_recovery(event_hub, session_id, name, message, None)
 }
 
-pub fn update_payload(update: runner.PiUpdate) -> session_event.EventPayload {
+pub fn lifecycle_with_recovery(
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  name: session_event.LifecycleEventName,
+  message: Option(String),
+  recovery: Option(session_event.RecoveryInfo),
+) -> Nil {
+  let payload =
+    session_event.EventPayload(
+      ..session_event.empty_payload(
+        session_event.Lifecycle,
+        session_event.LifecycleName(name),
+      ),
+      message: message,
+      recovery: recovery,
+      tokens: session_tokens.zero_token_totals(),
+    )
+  hub.publish(event_hub, session_id, payload)
+}
+
+pub fn update_payload(
+  update: agent_types.PiUpdate,
+) -> session_event.EventPayload {
   session_event.EventPayload(
-    kind: kind_for_update(update),
-    name: session_event.PiName(update.event),
+    ..session_event.empty_payload(
+      kind_for_update(update),
+      session_event.PiName(update.event),
+    ),
     turn: update.turn,
     pi_type: pi_type_for_update(update),
     message: update.message,
+    recovery: None,
     request_id: update.request_id,
     method: update.method,
     tool_name: update.tool_name,
@@ -72,10 +106,28 @@ pub fn update_payload(update: runner.PiUpdate) -> session_event.EventPayload {
   )
 }
 
-pub fn kind_for_update(update: runner.PiUpdate) -> session_event.EventKind {
+pub fn turn_update_payload(
+  update: turn_telemetry.TurnLifecycleUpdate,
+) -> session_event.EventPayload {
+  session_event.EventPayload(
+    ..session_event.empty_payload(
+      session_event.Turn,
+      session_event.TurnName(update.name),
+    ),
+    turn: Some(update.turn),
+    turn_status: turn_telemetry.status_for_event_name(update.name),
+    tokens: update.tokens,
+    reason: update.reason,
+  )
+}
+
+pub fn kind_for_update(
+  update: agent_types.PiUpdate,
+) -> session_event.EventKind {
   case update.event {
-    pi_event.ProbeStarted | pi_event.ProbeFinished | pi_event.PiSessionStarted ->
-      session_event.Lifecycle
+    pi_event.ProbeStarted
+    | pi_event.ProbeFinished
+    | pi_event.PiSessionStarted -> session_event.Lifecycle
     pi_event.TurnFinished -> session_event.TokenStats
     pi_event.MessageStart | pi_event.MessageUpdate | pi_event.MessageEnd ->
       session_event.AssistantMessage
@@ -115,7 +167,7 @@ pub fn kind_for_update(update: runner.PiUpdate) -> session_event.EventKind {
   }
 }
 
-pub fn pi_type_for_update(update: runner.PiUpdate) -> Option(String) {
+pub fn pi_type_for_update(update: agent_types.PiUpdate) -> Option(String) {
   case update.raw_json {
     Some(_) -> Some(pi_event.to_string(update.event))
     None -> None
@@ -123,7 +175,7 @@ pub fn pi_type_for_update(update: runner.PiUpdate) -> Option(String) {
 }
 
 pub fn status_for_update(
-  update: runner.PiUpdate,
+  update: agent_types.PiUpdate,
 ) -> Option(session_event.SessionStatus) {
   case update.event {
     pi_event.ProbeStarted | pi_event.ProbeFinished ->
@@ -151,7 +203,7 @@ pub fn is_blocking_ui_method(method: Option(String)) -> Bool {
   }
 }
 
-pub fn tokens_are_nonzero(tokens: domain.TokenTotals) -> Bool {
+pub fn tokens_are_nonzero(tokens: session_tokens.TokenTotals) -> Bool {
   tokens.input > 0
   || tokens.output > 0
   || tokens.cache_read > 0

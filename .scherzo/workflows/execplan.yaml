@@ -1,6 +1,8 @@
 version: 1
 id: execplan
-description: Turn a Linear ticket into a reviewed ExecPlan under docs/plans and open a ready PR for review.
+description: Turn a Linear ticket into a reviewed ExecPlan under docs/plans, open a ready PR for review, and create the follow-up implementation issue.
+workspace_profile: dogfood-jj
+workspace_capabilities: [status, diff, changed-files, publish-change]
 max_parallel_steps: 1
 steps:
   - id: draft_plan
@@ -13,10 +15,23 @@ steps:
     depends_on: [draft_plan]
     run: scripts/scherzo-execplan validate
     workspace: main
+    on_failure: continue
+
+  - id: repair_validation
+    kind: agent
+    depends_on: [validate_draft]
+    prompt: prompts/execplan-repair-validation.md
+    workspace: main
+
+  - id: validate_after_repair
+    kind: command
+    depends_on: [repair_validation]
+    run: scripts/scherzo-execplan validate
+    workspace: main
 
   - id: review_plan
     kind: agent
-    depends_on: [validate_draft]
+    depends_on: [validate_after_repair]
     prompt: prompts/execplan-review.md
     workspace: main
 
@@ -35,6 +50,13 @@ steps:
   - id: create_pr
     kind: command
     depends_on: [final_validate]
-    run: scripts/scherzo-execplan create-pr
+    run: scripts/scherzo-execplan create-pr --publish-context tmp/scherzo-execplan-publish-context.json
+    timeout_ms: 300000
+    workspace: main
+
+  - id: create_implementation_issue
+    kind: command
+    depends_on: [create_pr]
+    run: scripts/scherzo-execplan create-implementation-issue --publish-context tmp/scherzo-execplan-publish-context.json
     timeout_ms: 300000
     workspace: main

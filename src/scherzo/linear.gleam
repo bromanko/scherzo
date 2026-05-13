@@ -7,12 +7,15 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order.{type Order}
+import gleam/result
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear_body_data
 import scherzo/linear_contract
 import scherzo/tracker
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
 pub type Request {
@@ -85,7 +88,7 @@ pub type Transport =
   fn(Request) -> Result(Response, error.TrackerError)
 
 pub fn client(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
 ) -> tracker.Client {
   tracker.Client(
@@ -99,12 +102,12 @@ pub fn client(
   )
 }
 
-pub fn real_client(config: domain.TrackerConfig) -> tracker.Client {
+pub fn real_client(config: config_types.TrackerConfig) -> tracker.Client {
   client(config, http_transport)
 }
 
 pub fn command_client(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
 ) -> CommandClient {
   CommandClient(
@@ -115,12 +118,14 @@ pub fn command_client(
   )
 }
 
-pub fn real_command_client(config: domain.TrackerConfig) -> CommandClient {
+pub fn real_command_client(
+  config: config_types.TrackerConfig,
+) -> CommandClient {
   command_client(config, http_transport)
 }
 
 pub fn contract_client(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
 ) -> ContractClient {
   ContractClient(fetch_remote_contract: fn() {
@@ -128,14 +133,18 @@ pub fn contract_client(
   })
 }
 
-pub fn real_contract_client(config: domain.TrackerConfig) -> ContractClient {
+pub fn real_contract_client(
+  config: config_types.TrackerConfig,
+) -> ContractClient {
   contract_client(config, http_transport)
 }
 
-pub fn http_transport(request: Request) -> Result(Response, error.TrackerError) {
+pub fn http_transport(
+  request: Request,
+) -> Result(Response, error.TrackerError) {
   use http_req <- try_tracker(
     http_request.to(request.endpoint)
-    |> result_map_error(fn(_) { error.LinearApiRequest("invalid endpoint") }),
+    |> result.replace_error(error.LinearApiRequest("invalid endpoint")),
   )
   let http_req =
     http_req
@@ -173,24 +182,24 @@ fn set_headers(
 
 pub type Page {
   Page(
-    nodes: List(domain.Issue),
+    nodes: List(tracker_issue.Issue),
     has_next_page: Bool,
     end_cursor: Option(String),
   )
 }
 
 pub fn fetch_candidate_issues(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
-) -> Result(List(domain.Issue), error.TrackerError) {
-  fetch_pages(config, config.active_states, None, transport, [])
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
+  fetch_pages(config, config.dispatch_states, None, transport, [])
 }
 
 pub fn fetch_issues_by_states(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   states: List(issue_state.IssueState),
   transport: Transport,
-) -> Result(List(domain.Issue), error.TrackerError) {
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   case states {
     [] -> Ok([])
     _ -> fetch_pages(config, states, None, transport, [])
@@ -198,10 +207,10 @@ pub fn fetch_issues_by_states(
 }
 
 pub fn fetch_issue_states_by_ids(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   ids: List(String),
   transport: Transport,
-) -> Result(List(domain.Issue), error.TrackerError) {
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   case ids {
     [] -> Ok([])
     _ -> {
@@ -213,7 +222,7 @@ pub fn fetch_issue_states_by_ids(
 }
 
 pub fn fetch_remote_contract(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   transport: Transport,
 ) -> Result(linear_contract.RemoteBoard, error.TrackerError) {
   use request <- try_tracker(build_contract_request(config))
@@ -222,7 +231,7 @@ pub fn fetch_remote_contract(
 }
 
 pub fn fetch_issue_comments(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_ids: List(String),
   limit_per_issue: Int,
   transport: Transport,
@@ -243,7 +252,7 @@ pub fn fetch_issue_comments(
 }
 
 pub fn post_ack(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_id: String,
   body: String,
   transport: Transport,
@@ -257,17 +266,17 @@ pub fn post_ack(
   parse_mutation_response(response, "commentCreate")
 }
 
-fn compare_comments(a: LinearComment, b: LinearComment) {
+fn compare_comments(a: LinearComment, b: LinearComment) -> Order {
   int.compare(a.created_at_ms, b.created_at_ms)
 }
 
 fn fetch_pages(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   states: List(issue_state.IssueState),
   after: Option(String),
   transport: Transport,
-  acc: List(domain.Issue),
-) -> Result(List(domain.Issue), error.TrackerError) {
+  acc: List(tracker_issue.Issue),
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   use request <- try_tracker(build_candidate_request(config, states, after))
   use response <- try_tracker(transport(request))
   use page <- try_tracker(parse_page_response(response))
@@ -284,7 +293,7 @@ fn fetch_pages(
 }
 
 pub fn build_candidate_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   states: List(issue_state.IssueState),
   after: Option(String),
 ) -> Result(Request, error.TrackerError) {
@@ -299,7 +308,7 @@ pub fn build_candidate_request(
         json.object([
           #("projectSlug", json.string(project_slug)),
           #(
-            "activeStates",
+            "dispatchStates",
             json.array(issue_state.to_strings(states), of: json.string),
           ),
           #("after", json.nullable(after, of: json.string)),
@@ -311,7 +320,7 @@ pub fn build_candidate_request(
 }
 
 pub fn build_state_refresh_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   ids: List(String),
 ) -> Result(Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
@@ -326,7 +335,7 @@ pub fn build_state_refresh_request(
 }
 
 pub fn build_contract_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
 ) -> Result(Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
@@ -341,7 +350,7 @@ pub fn build_contract_request(
 }
 
 pub fn build_issue_comments_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_ids: List(String),
   limit_per_issue: Int,
 ) -> Result(Request, error.TrackerError) {
@@ -369,7 +378,7 @@ pub fn build_issue_comments_request(
 }
 
 pub fn build_comment_create_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_id: String,
   body: String,
 ) -> Result(Request, error.TrackerError) {
@@ -391,7 +400,7 @@ pub fn build_comment_create_request(
 }
 
 pub fn build_comment_fetch_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
 ) -> Result(Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
@@ -406,7 +415,7 @@ pub fn build_comment_fetch_request(
 }
 
 pub fn build_file_upload_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   filename: String,
   content_type: String,
   size: Int,
@@ -432,7 +441,7 @@ pub fn build_file_upload_request(
 }
 
 pub fn build_comment_update_body_data_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   body_data: json.Json,
 ) -> Result(Request, error.TrackerError) {
@@ -454,7 +463,7 @@ pub fn build_comment_update_body_data_request(
 }
 
 pub fn build_comment_update_body_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   comment_id: String,
   body: String,
 ) -> Result(Request, error.TrackerError) {
@@ -476,7 +485,7 @@ pub fn build_comment_update_body_request(
 }
 
 pub fn build_issue_update_state_request(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
   issue_id: String,
   state_id: String,
 ) -> Result(Request, error.TrackerError) {
@@ -510,11 +519,11 @@ fn graphql_request(endpoint: String, api_key: String, body: String) -> Request {
 }
 
 pub fn candidate_query() -> String {
-  "query CandidateIssues($projectSlug: String!, $activeStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $activeStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } } pageInfo { hasNextPage endCursor } } }"
+  "query CandidateIssues($projectSlug: String!, $dispatchStates: [String!], $after: String) { issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $dispatchStates } } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn state_refresh_query() -> String {
-  "query IssueStates($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } } pageInfo { hasNextPage endCursor } } }"
+  "query IssueStates($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { name } labels { nodes { name } } inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn issue_comments_query() -> String {
@@ -546,12 +555,12 @@ pub fn issue_update_state_mutation() -> String {
 }
 
 pub fn contract_query() -> String {
-  "query ScherzoLinearContract($projectSlug: String!) { projects(first: 2, filter: { slugId: { eq: $projectSlug } }) { nodes { id name slugId teams(first: 10) { nodes { id key name states(first: 50) { nodes { id name type } pageInfo { hasNextPage endCursor } } labels(first: 100) { nodes { id name } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } pageInfo { hasNextPage endCursor } } }"
+  "query ScherzoLinearContract($projectSlug: String!) { projects(first: 2, filter: { slugId: { eq: $projectSlug } }) { nodes { id name slugId teams(first: 10) { nodes { id key name states(first: 50) { nodes { id name type } pageInfo { hasNextPage endCursor } } labels(first: 140) { nodes { id name } pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor } } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } pageInfo { hasNextPage endCursor } } }"
 }
 
 pub fn parse_response(
   response: Response,
-) -> Result(List(domain.Issue), error.TrackerError) {
+) -> Result(List(tracker_issue.Issue), error.TrackerError) {
   use page <- try_tracker(parse_page_response(response))
   Ok(page.nodes)
 }
@@ -706,7 +715,9 @@ fn data_decoder() -> decode.Decoder(Page) {
   decode.success(page)
 }
 
-fn mutation_decoder(root_field: String) -> decode.Decoder(Result(Bool, String)) {
+fn mutation_decoder(
+  root_field: String,
+) -> decode.Decoder(Result(Bool, String)) {
   use errors <- decode.optional_field(
     "errors",
     [],
@@ -1228,7 +1239,7 @@ fn page_info_decoder() -> decode.Decoder(PageInfo) {
   decode.success(PageInfo(has_next_page: has_next_page, end_cursor: end_cursor))
 }
 
-fn issue_decoder() -> decode.Decoder(domain.Issue) {
+fn issue_decoder() -> decode.Decoder(tracker_issue.Issue) {
   use id <- decode.field("id", decode.string)
   use identifier <- decode.field("identifier", decode.string)
   use title <- decode.field("title", decode.string)
@@ -1260,8 +1271,11 @@ fn issue_decoder() -> decode.Decoder(domain.Issue) {
     decode.optional(decode.string),
   )
   use labels <- decode.optional_field("labels", [], labels_decoder())
-  use blockers <- decode.optional_field("relations", [], blockers_decoder())
-  decode.success(domain.Issue(
+  // Linear dependency direction matters: for candidate A, an incoming
+  // inverseRelations `blocks` relation points at blocker B. Outgoing
+  // `relations` means A blocks some other issue and is intentionally ignored.
+  use blocker_page <- decode.field("inverseRelations", blockers_decoder())
+  decode.success(tracker_issue.Issue(
     id: id,
     identifier: identifier,
     title: title,
@@ -1271,7 +1285,8 @@ fn issue_decoder() -> decode.Decoder(domain.Issue) {
     branch_name: branch_name,
     url: url,
     labels: list.map(labels, string.lowercase),
-    blocked_by: blockers,
+    blocked_by: blocker_page.blockers,
+    blocked_by_complete: blocker_page.complete,
     created_at: parse_optional_time(created_at),
     updated_at: parse_optional_time(updated_at),
   ))
@@ -1292,20 +1307,28 @@ fn label_decoder() -> decode.Decoder(String) {
   decode.success(name)
 }
 
-fn blockers_decoder() -> decode.Decoder(List(domain.BlockerRef)) {
+pub type BlockerPage {
+  BlockerPage(blockers: List(tracker_issue.BlockerRef), complete: Bool)
+}
+
+fn blockers_decoder() -> decode.Decoder(BlockerPage) {
   use nodes <- decode.field("nodes", decode.list(relation_decoder()))
-  decode.success(
+  use page_info <- decode.field("pageInfo", page_info_decoder())
+  let blockers =
     list.filter_map(nodes, fn(rel) {
       case rel {
         Relation("blocks", blocker) -> Ok(blocker)
         _ -> Error(Nil)
       }
-    }),
-  )
+    })
+  decode.success(BlockerPage(
+    blockers: blockers,
+    complete: !page_info.has_next_page,
+  ))
 }
 
 pub type Relation {
-  Relation(type_: String, blocker: domain.BlockerRef)
+  Relation(type_: String, blocker: tracker_issue.BlockerRef)
 }
 
 pub type RelatedIssue {
@@ -1318,10 +1341,10 @@ pub type RelatedIssue {
 
 fn relation_decoder() -> decode.Decoder(Relation) {
   use type_ <- decode.field("type", decode.string)
-  use related <- decode.field("relatedIssue", related_issue_decoder())
+  use related <- decode.field("issue", related_issue_decoder())
   decode.success(Relation(
     type_: type_,
-    blocker: domain.BlockerRef(
+    blocker: tracker_issue.BlockerRef(
       id: related.id,
       identifier: related.identifier,
       state: related.state,
@@ -1368,7 +1391,7 @@ fn require_https_endpoint(
 }
 
 fn require_api_key(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
 ) -> Result(String, error.TrackerError) {
   case config.api_key {
     Some(value) -> Ok(value)
@@ -1377,7 +1400,7 @@ fn require_api_key(
 }
 
 fn require_project_slug(
-  config: domain.TrackerConfig,
+  config: config_types.TrackerConfig,
 ) -> Result(String, error.TrackerError) {
   case config.project_slug {
     Some(value) -> Ok(value)
@@ -1392,12 +1415,5 @@ fn try_tracker(
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)
-  }
-}
-
-fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(mapper(err))
   }
 }

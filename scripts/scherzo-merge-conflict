@@ -1,0 +1,1260 @@
+#!/usr/bin/env python3
+"""Helpers for Scherzo's workflow:merge-conflict-resolution pipeline.
+
+This workflow is intentionally narrow: locate one same-repository GitHub PR or
+branch named by a manually-created Linear issue, create a merge commit from the
+latest target branch and base branch, let pi resolve only materialized conflicts,
+validate that non-conflicted files were not touched except for explicitly
+manifested mechanical fallout repairs, and fast-forward the target branch with
+the merge commit.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+TMP_DIR = Path("tmp")
+RUN_STATE_DIR = (
+    Path(os.environ["SCHERZO_RUN_ROOT"]).resolve() / "artifacts" / "merge-conflict"
+    if os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    else TMP_DIR
+)
+METADATA_PATH = RUN_STATE_DIR / "scherzo-merge-conflict.json"
+BRIEF_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-brief.md"
+RESOLUTION_SUMMARY_PATH = TMP_DIR / "scherzo-merge-conflict-resolution.md"
+FAILURE_PATH = TMP_DIR / "scherzo-merge-conflict-failure.md"
+MECHANICAL_EDITS_PATH = TMP_DIR / "scherzo-merge-conflict-mechanical-edits.json"
+VALIDATION_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-validation.json"
+PUBLISH_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-publish.json"
+PR_COMMENT_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-pr-comment.md"
+RETENTION_MARKER = ".scherzo-keep-workspace"
+CONFLICT_MARKER_RE = re.compile(r"^(<<<<<<<|>>>>>>>|%%%%%%%|\+{7}|\\{7})", re.MULTILINE)
+JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
+
+
+def usage() -> None:
+    print(
+        """Usage: scherzo-merge-conflict <prepare|validate|publish|extract-target>
+
+Run from a Scherzo jj workflow workspace root.
+
+prepare       Find exactly one PR or branch reference on the Linear issue,
+              fetch the latest target and base branches, create a local merge
+              commit, record the conflict set, and retain the run until publish.
+validate      Require conflicts to be resolved, ensure non-conflicted tracked
+              files are unchanged except for a manifest of mechanical fallout
+              repairs, require a resolution summary, and run project validation
+              when conflicts were resolved.
+publish       Fast-forward the target branch with the validated merge commit,
+              or no-op when prepare found no conflicts.
+
+Test helper:
+extract-target <text-file> [repo]
+              Extract one PR or branch target from a text fixture and print it.
+extract-target-issue <json-file> [repo]
+              Extract one PR or branch target from an issue JSON fixture and print it.
+""",
+        file=sys.stderr,
+    )
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-merge-conflict: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def run(args: list[str], *, check: bool = True) -> str:
+    proc = subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if check and proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        stdout = proc.stdout.strip()
+        details = stderr or stdout or f"exit code {proc.returncode}"
+        fail(f"command failed: {' '.join(args)}\n{details}")
+    return proc.stdout
+
+
+def run_proc(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def run_and_print(args: list[str], *, env: dict[str, str] | None = None) -> None:
+    print("$ " + " ".join(shell_display(arg) for arg in args), flush=True)
+    proc = subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+    if proc.returncode != 0:
+        fail(f"command failed with exit code {proc.returncode}: {' '.join(args)}")
+
+
+def shell_display(value: str) -> str:
+    if re.match(r"^[A-Za-z0-9_./:=+-]+$", value):
+        return value
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def require_command(name: str) -> None:
+    proc = subprocess.run(
+        ["sh", "-c", f"command -v {name} >/dev/null 2>&1"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0:
+        fail(f"required command not found: {name}")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        fail(f"missing {path}; run prepare first")
+    return json.loads(path.read_text())
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def workspace_driver_command() -> str | None:
+    value = os.environ.get("SCHERZO_WORKSPACE_DRIVER", "").strip()
+    return value or None
+
+
+def workspace_driver_available() -> bool:
+    return workspace_driver_command() is not None
+
+
+def run_workspace_driver_json(args: list[str]) -> dict[str, Any]:
+    driver = workspace_driver_command()
+    if driver is None:
+        fail("SCHERZO_WORKSPACE_DRIVER is required for this driver-backed workflow operation")
+    proc = subprocess.run(
+        [driver, *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        payload = json.loads(proc.stdout) if proc.stdout.strip() else None
+    except json.JSONDecodeError as exc:
+        fail(f"workspace driver returned malformed JSON for {' '.join(args)}: {exc}")
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        fail(f"workspace driver {' '.join(args)} must return a JSON object with version=1")
+    if proc.returncode != 0:
+        fail(str(payload.get("message") or "workspace driver command failed"))
+    return payload
+
+
+def infer_issue_identifier() -> str:
+    explicit = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
+    if explicit:
+        return explicit
+
+    cwd = str(Path.cwd())
+    marker = "/.scherzo/workspaces/"
+    if marker in cwd:
+        tail = cwd.split(marker, 1)[1]
+        parts = tail.split("/")
+        # .scherzo/workspaces/<workflow>/<issue>/<run>/<workspace>
+        if len(parts) >= 2 and parts[1]:
+            return parts[1]
+
+    fail(
+        "could not infer Linear issue identifier from cwd; set "
+        "SCHERZO_ISSUE_IDENTIFIER"
+    )
+
+
+def linear_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+    token = os.environ.get("LINEAR_API_KEY", "").strip()
+    if not token:
+        fail("LINEAR_API_KEY is required to locate the PR or branch reference")
+    payload = json.dumps({"query": query, "variables": variables}).encode()
+    req = urllib.request.Request(
+        "https://api.linear.app/graphql",
+        data=payload,
+        headers={"Content-Type": "application/json", "Authorization": token},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            response = json.loads(resp.read())
+    except Exception as exc:  # pragma: no cover - defensive CLI boundary
+        fail(f"Linear GraphQL request failed: {exc}")
+    if response.get("errors"):
+        fail("Linear GraphQL returned errors: " + json.dumps(response["errors"]))
+    return response["data"]
+
+
+def fetch_linear_issue(identifier: str) -> dict[str, Any]:
+    query = """
+    query($id: String!) {
+      issue(id: $id) {
+        identifier
+        title
+        description
+        url
+        comments(first: 100) {
+          nodes {
+            createdAt
+            body
+            user { name }
+          }
+        }
+      }
+    }
+    """
+    issue = linear_graphql(query, {"id": identifier}).get("issue")
+    if not issue:
+        fail(f"Linear issue not found: {identifier}")
+    return issue
+
+
+def issue_texts(issue: dict[str, Any]) -> list[tuple[str, str]]:
+    texts: list[tuple[str, str]] = [
+        ("title", issue.get("title") or ""),
+        ("description", issue.get("description") or ""),
+    ]
+    comments = issue.get("comments", {}).get("nodes", [])
+    comments = sorted(comments, key=lambda c: c.get("createdAt") or "", reverse=True)
+    for comment in comments:
+        source = "comment"
+        if comment.get("createdAt"):
+            source += f" {comment['createdAt']}"
+        texts.append((source, comment.get("body") or ""))
+    return texts
+
+
+def owner_repo_from_url(url: str) -> str | None:
+    if url.startswith("https://github.com/"):
+        value = url.removeprefix("https://github.com/")
+    elif url.startswith("git@github.com:"):
+        value = url.removeprefix("git@github.com:")
+    elif url.startswith("ssh://git@github.com/"):
+        value = url.removeprefix("ssh://git@github.com/")
+    else:
+        return None
+    value = value.removesuffix(".git")
+    parts = value.split("/")
+    if len(parts) >= 2 and parts[0] and parts[1]:
+        return f"{parts[0]}/{parts[1]}"
+    return None
+
+
+def remote_url(remote: str) -> str | None:
+    output = run(["jj", "git", "remote", "list", "--color=never"])
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == remote:
+            return parts[1]
+    return None
+
+
+def default_repo(remote: str) -> str:
+    explicit = os.environ.get("SCHERZO_PR_REPO", "").strip()
+    if explicit:
+        return explicit
+    url = remote_url(remote)
+    if not url:
+        fail(f"could not find jj git remote: {remote}")
+    repo = owner_repo_from_url(url)
+    if not repo:
+        fail(f"could not infer GitHub owner/repo from remote URL: {url}")
+    return repo
+
+
+def clean_branch_ref(value: str) -> str | None:
+    branch = value.strip().strip("`'\"<>()[]{}")
+    branch = re.sub(r"[.,;:]+$", "", branch)
+    if branch.startswith("refs/heads/"):
+        branch = branch.removeprefix("refs/heads/")
+    if not branch:
+        return None
+    if branch.startswith("-") or branch.startswith("/") or branch.endswith("/"):
+        return None
+    if ".." in branch or "@{" in branch or branch.endswith(".lock"):
+        return None
+    if re.search(r"[\s\\~^:?*\[\]\x00-\x1f\x7f]", branch):
+        return None
+    return branch
+
+
+def target_key(candidate: dict[str, Any]) -> tuple[str, str, str]:
+    kind = candidate["kind"]
+    if kind == "pr":
+        return ("pr", candidate["repo"].lower(), str(candidate["number"]))
+    return ("branch", candidate["repo"].lower(), candidate["branch"].lower())
+
+
+def add_candidate(
+    found: dict[tuple[str, str, str], dict[str, Any]],
+    candidate: dict[str, Any],
+    source: str,
+) -> None:
+    key = target_key(candidate)
+    entry = found.setdefault(key, candidate)
+    entry.setdefault("sources", []).append(source)
+
+
+def extract_target_candidates_from_texts(
+    texts: list[tuple[str, str]], default_repo_name: str
+) -> list[dict[str, Any]]:
+    found: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    pr_patterns = [
+        (
+            re.compile(
+                r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)",
+                re.IGNORECASE,
+            ),
+            "github-pr-url",
+        ),
+        (
+            re.compile(
+                r"(?<![\w./-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b"
+            ),
+            "owner-repo-pr-number",
+        ),
+        (
+            re.compile(r"\b(?:PR|pull request|pull)\s*#?\s*(\d+)\b", re.IGNORECASE),
+            "local-pr-number",
+        ),
+    ]
+
+    tree_url = re.compile(
+        r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/tree/([^\s`<>]+)",
+        re.IGNORECASE,
+    )
+    branch_line = re.compile(
+        r"(?im)^\s*(?:target\s+|head\s+)?branch\s*[:=]\s*(`[^`]+`|[^\s#]+)"
+    )
+    branch_backtick = re.compile(
+        r"(?i)\b(?:target\s+|head\s+)?branch\s+`([^`]+)`"
+    )
+
+    for source, text in texts:
+        if not text:
+            continue
+        for pattern, kind in pr_patterns:
+            for match in pattern.finditer(text):
+                if kind == "local-pr-number":
+                    candidate_repo = default_repo_name
+                    number = int(match.group(1))
+                else:
+                    candidate_repo = match.group(1)
+                    number = int(match.group(2))
+                add_candidate(
+                    found,
+                    {"kind": "pr", "repo": candidate_repo, "number": number},
+                    f"{kind} in {source}",
+                )
+
+        for match in tree_url.finditer(text):
+            branch = clean_branch_ref(match.group(2))
+            if branch:
+                add_candidate(
+                    found,
+                    {"kind": "branch", "repo": match.group(1), "branch": branch},
+                    f"github-branch-url in {source}",
+                )
+
+        for match in branch_line.finditer(text):
+            branch = clean_branch_ref(match.group(1))
+            if branch:
+                add_candidate(
+                    found,
+                    {"kind": "branch", "repo": default_repo_name, "branch": branch},
+                    f"explicit-branch-line in {source}",
+                )
+
+        for match in branch_backtick.finditer(text):
+            branch = clean_branch_ref(match.group(1))
+            if branch:
+                add_candidate(
+                    found,
+                    {"kind": "branch", "repo": default_repo_name, "branch": branch},
+                    f"explicit-branch-name in {source}",
+                )
+
+    return list(found.values())
+
+
+def extract_target_candidates(issue: dict[str, Any], repo: str) -> list[dict[str, Any]]:
+    return extract_target_candidates_from_texts(issue_texts(issue), repo)
+
+
+def candidate_has_primary_source(candidate: dict[str, Any]) -> bool:
+    """Return True when a target came from the issue title or description.
+
+    Scherzo appends operational comments containing historical diagnostics, and
+    those diagnostics can mention other PRs. Treat the editable issue fields as
+    authoritative when they identify exactly one target, while still allowing
+    comments to provide the target when title/description do not.
+    """
+    return any(
+        source.endswith(" in title") or source.endswith(" in description")
+        for source in candidate.get("sources", [])
+    )
+
+
+def choose_target_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    if not candidates:
+        fail(
+            "no GitHub PR or branch reference found on the Linear issue. Add one "
+            "unambiguous target such as 'Resolve conflicts for PR #51', "
+            "'bromanko/scherzo#51', a full GitHub PR URL, or a line like "
+            "'Branch: feature/conflicted-branch'."
+        )
+
+    primary_candidates = [
+        candidate for candidate in candidates if candidate_has_primary_source(candidate)
+    ]
+    eligible_candidates = primary_candidates or candidates
+    if len(eligible_candidates) > 1:
+        details = "; ".join(format_candidate(candidate) for candidate in eligible_candidates)
+        fail("multiple PR/branch targets found; please clarify exactly one. " + details)
+    return eligible_candidates[0]
+
+
+def format_candidate(candidate: dict[str, Any]) -> str:
+    sources = ", ".join(candidate.get("sources", []))
+    if candidate["kind"] == "pr":
+        return f"PR {candidate['repo']}#{candidate['number']} from {sources}"
+    return f"branch {candidate['repo']}:{candidate['branch']} from {sources}"
+
+
+def gh_json(args: list[str]) -> Any:
+    raw = run(args)
+    return json.loads(raw) if raw.strip() else None
+
+
+def fetch_pr(candidate: dict[str, Any], expected_repo: str) -> dict[str, Any]:
+    repo = candidate["repo"]
+    if repo.lower() != expected_repo.lower():
+        fail(
+            f"PR reference points at {repo}, but this workflow is configured for "
+            f"{expected_repo}. Set SCHERZO_PR_REPO to override intentionally."
+        )
+
+    fields = ",".join(
+        [
+            "number",
+            "url",
+            "state",
+            "title",
+            "baseRefName",
+            "headRefName",
+            "headRefOid",
+            "headRepository",
+            "headRepositoryOwner",
+            "isCrossRepository",
+            "maintainerCanModify",
+        ]
+    )
+    pr = gh_json(["gh", "pr", "view", str(candidate["number"]), "--repo", repo, "--json", fields])
+    if not pr:
+        fail(f"GitHub PR not found: {repo}#{candidate['number']}")
+    if pr.get("state") != "OPEN":
+        fail(f"GitHub PR must be OPEN, got {pr.get('state')}: {pr.get('url')}")
+    if pr.get("isCrossRepository"):
+        fail(
+            "cross-repository PRs are not supported by this workflow because it "
+            "must push a conflict-resolution merge commit to the target branch"
+        )
+    head_branch = pr.get("headRefName") or ""
+    base_branch = pr.get("baseRefName") or ""
+    if not head_branch or not base_branch:
+        fail("GitHub PR is missing headRefName or baseRefName")
+    if head_branch == base_branch:
+        fail(f"PR head branch and base branch are both {head_branch}; refusing")
+    pr["repo"] = repo
+    return pr
+
+
+def branch_target(candidate: dict[str, Any], expected_repo: str) -> dict[str, Any]:
+    repo = candidate["repo"]
+    if repo.lower() != expected_repo.lower():
+        fail(
+            f"branch reference points at {repo}, but this workflow is configured "
+            f"for {expected_repo}. Set SCHERZO_PR_REPO to override intentionally."
+        )
+    base_branch = os.environ.get("SCHERZO_PR_BASE", "main").strip() or "main"
+    head_branch = candidate["branch"]
+    if head_branch == base_branch:
+        fail(f"target branch and base branch are both {head_branch}; refusing")
+    return {
+        "kind": "branch",
+        "repo": repo,
+        "number": None,
+        "url": None,
+        "title": None,
+        "baseRefName": base_branch,
+        "headRefName": head_branch,
+    }
+
+
+def normalize_conflict_file_path(value: str) -> str:
+    return JJ_CONFLICT_STATUS_RE.sub("", value.strip())
+
+
+def normalize_conflicted_files(paths: list[Any]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in paths:
+        path = normalize_conflict_file_path(str(value))
+        if path and path not in seen:
+            normalized.append(path)
+            seen.add(path)
+    return normalized
+
+
+def conflict_files() -> list[str]:
+    proc = run_proc(["jj", "resolve", "--list", "--color=never"])
+    if proc.returncode == 0:
+        files = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            files.append(normalize_conflict_file_path(line))
+        return sorted(files)
+    if "No conflicts found" in proc.stderr or "No conflicts found" in proc.stdout:
+        return []
+    details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+    fail(f"could not list jj conflicts\n{details}")
+
+
+def current_commit(rev: str) -> str:
+    return run(["jj", "log", "-r", rev, "--no-graph", "-T", "commit_id", "--color=never"]).strip()
+
+
+def current_commit_short(rev: str) -> str:
+    return run(["jj", "log", "-r", rev, "--no-graph", "-T", "commit_id.short()", "--color=never"]).strip()
+
+
+def track_remote_bookmark(remote: str, branch: str) -> None:
+    run(["jj", "bookmark", "track", branch, f"--remote={remote}"])
+
+
+def tracked_files() -> list[str]:
+    output = run(["jj", "file", "list", "-r", "@", "--color=never"])
+    return sorted(line.strip() for line in output.splitlines() if line.strip())
+
+
+def file_fingerprint(path: str) -> dict[str, Any]:
+    p = Path(path)
+    if p.is_symlink():
+        return {"type": "symlink", "target": os.readlink(p)}
+    if p.is_file():
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        return {"type": "file", "sha256": digest, "size": p.stat().st_size}
+    if p.exists():
+        return {"type": "other"}
+    return {"type": "missing"}
+
+
+def tracked_file_fingerprints(exclude: set[str]) -> dict[str, dict[str, Any]]:
+    return {path: file_fingerprint(path) for path in tracked_files() if path not in exclude}
+
+
+def run_root_for_current_workspace() -> Path:
+    explicit = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).resolve()
+
+    cwd = Path.cwd().resolve()
+    parts = cwd.parts
+    # Current DAG workspaces live under:
+    #   <run-root>/workspaces/<logical-workspace>
+    if len(parts) >= 3 and parts[-2] == "workspaces":
+        return cwd.parent.parent
+    # Legacy step-attempt workspaces used:
+    #   <run-root>/workspaces/<logical-workspace>/steps/<step>/attempt-N
+    if (
+        len(parts) >= 5
+        and parts[-5] == "workspaces"
+        and parts[-3] == "steps"
+        and parts[-1].startswith("attempt-")
+    ):
+        return cwd.parents[4]
+    return cwd.parent
+
+
+def retention_marker_path() -> Path:
+    return run_root_for_current_workspace() / RETENTION_MARKER
+
+
+def write_retention_marker(target_label: str) -> None:
+    marker = retention_marker_path()
+    marker.write_text(
+        "Scherzo retained this run because a merge-conflict workflow has not "
+        "published or no-oped yet.\n"
+        f"Target: {target_label}\n"
+    )
+
+
+def clear_retention_marker() -> None:
+    marker = retention_marker_path()
+    if marker.exists():
+        marker.unlink()
+
+
+def render_brief(issue: dict[str, Any], metadata: dict[str, Any]) -> str:
+    conflicts = metadata.get("conflicted_files", [])
+    issue_identifier = issue.get("identifier") or metadata.get("linear_issue_identifier") or "unknown"
+    issue_title = issue.get("title") or "Untitled"
+    description = issue.get("description") or "_No description provided._"
+    comments = issue.get("comments", {}).get("nodes", [])
+    comments = sorted(comments, key=lambda c: c.get("createdAt") or "")
+
+    lines = [
+        f"# Merge conflict target for {issue_identifier}: {issue_title}",
+        "",
+        "## Target",
+        "",
+        f"- Kind: {metadata['target_kind']}",
+        f"- Repository: `{metadata['repo']}`",
+        f"- Remote: `{metadata['remote']}`",
+        f"- Branch to update: `{metadata['head_branch']}`",
+        f"- Base branch merged in: `{metadata['base_branch']}`",
+        f"- PR: {metadata.get('pr_url') or 'None'}",
+        f"- PR number: {metadata.get('pr_number') or 'None'}",
+        "",
+        "## Conflict policy",
+        "",
+        "Resolve only the files listed under Conflicted files by default. The validation "
+        "step compares every non-conflicted tracked file against its prepare-time hash. "
+        "It allows only explicitly manifested mechanical fallout edits that are required "
+        "to make the behavior-preserving merge compile or format.",
+        "",
+        "Parent/order note: the merge commit was created as `jj new "
+        f"{metadata['head_branch']}@{metadata['remote']} "
+        f"{metadata['base_branch']}@{metadata['remote']}`. Parent 1 is the target "
+        "branch and parent 2 is the base branch.",
+        "",
+        "## Conflicted files",
+        "",
+    ]
+    if conflicts:
+        for file in conflicts:
+            lines.append(f"- `{file}`")
+    else:
+        lines.append("None. The prepared merge had no materialized conflicts.")
+    lines.extend([
+        "",
+        "## Linear issue description",
+        "",
+        description,
+        "",
+        "## Recent Linear comments",
+        "",
+    ])
+    if comments:
+        for index, comment in enumerate(comments, start=1):
+            created = comment.get("createdAt") or "unknown time"
+            user = (comment.get("user") or {}).get("name") or "unknown user"
+            body = comment.get("body") or ""
+            lines.extend([
+                f"### Comment {index} — {created} — {user}",
+                "",
+                body or "_No body._",
+                "",
+            ])
+    else:
+        lines.extend(["None.", ""])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_brief(issue: dict[str, Any], metadata: dict[str, Any]) -> None:
+    BRIEF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BRIEF_PATH.write_text(render_brief(issue, metadata))
+
+
+def prepare_command() -> None:
+    require_command("jj")
+    require_command("gh")
+    require_command("python3")
+
+    remote = os.environ.get("SCHERZO_PR_REMOTE", "origin").strip() or "origin"
+    repo = default_repo(remote)
+    issue_identifier = infer_issue_identifier()
+    issue = fetch_linear_issue(issue_identifier)
+    candidate = choose_target_candidate(extract_target_candidates(issue, repo))
+
+    if candidate["kind"] == "pr":
+        target = fetch_pr(candidate, repo)
+        target_kind = "pr"
+        pr_number = target.get("number")
+        pr_url = target.get("url")
+        target_label = f"PR #{pr_number}"
+    else:
+        target = branch_target(candidate, repo)
+        target_kind = "branch"
+        pr_number = None
+        pr_url = None
+        target_label = f"branch {target['headRefName']}"
+
+    head_branch = target["headRefName"]
+    base_branch = target["baseRefName"]
+
+    run(["jj", "git", "fetch", "--remote", remote, "--branch", base_branch])
+    run(["jj", "git", "fetch", "--remote", remote, "--branch", head_branch])
+    head_revision = f"{head_branch}@{remote}"
+    base_revision = f"{base_branch}@{remote}"
+    head_commit = current_commit(head_revision)
+    base_commit = current_commit(base_revision)
+
+    run(["jj", "new", head_revision, base_revision])
+    run(["jj", "describe", "-m", f"chore: resolve merge conflicts for {target_label}"])
+
+    conflicts = conflict_files()
+    non_conflict_hashes = tracked_file_fingerprints(set(conflicts))
+    metadata = {
+        "linear_issue_identifier": issue.get("identifier") or issue_identifier,
+        "linear_issue_url": issue.get("url"),
+        "repo": repo,
+        "remote": remote,
+        "target_kind": target_kind,
+        "pr_number": pr_number,
+        "pr_url": pr_url,
+        "pr_title": target.get("title"),
+        "head_branch": head_branch,
+        "base_branch": base_branch,
+        "head_commit_at_prepare": head_commit,
+        "base_commit_at_prepare": base_commit,
+        "merge_change_commit_at_prepare": current_commit("@"),
+        "conflicted_files": conflicts,
+        "non_conflict_fingerprints": non_conflict_hashes,
+    }
+    write_json(METADATA_PATH, metadata)
+    write_brief(issue, metadata)
+    write_retention_marker(target_label)
+
+    print(f"TARGET_KIND={target_kind}")
+    if pr_number:
+        print(f"PR_NUMBER={pr_number}")
+        print(f"PR_URL={pr_url}")
+    print(f"REPO={repo}")
+    print(f"REMOTE={remote}")
+    print(f"HEAD_BRANCH={head_branch}")
+    print(f"BASE_BRANCH={base_branch}")
+    print(f"HEAD_COMMIT={head_commit}")
+    print(f"BASE_COMMIT={base_commit}")
+    print(f"CONFLICT_COUNT={len(conflicts)}")
+    print("CONFLICTED_FILES:")
+    if conflicts:
+        for file in conflicts:
+            print(f"- {file}")
+    else:
+        print("- None")
+    print(f"METADATA_PATH={METADATA_PATH}")
+    print(f"BRIEF_PATH={BRIEF_PATH}")
+    print(f"MECHANICAL_EDITS_PATH={MECHANICAL_EDITS_PATH}")
+    print(f"RETENTION_MARKER={retention_marker_path()}")
+
+
+def normalize_manifest_path(value: Any) -> str:
+    path = str(value or "").strip()
+    while path.startswith("./"):
+        path = path[2:]
+    if (
+        not path
+        or path in {".", ".."}
+        or path.startswith("/")
+        or path.startswith("../")
+        or "/../" in path
+        or path.endswith("/..")
+    ):
+        fail(f"invalid path in {MECHANICAL_EDITS_PATH}: {path or '<empty>'}")
+    return path
+
+
+def load_mechanical_non_conflict_edits(
+    modified: list[str], conflicted: set[str]
+) -> list[dict[str, str]]:
+    if not MECHANICAL_EDITS_PATH.exists():
+        fail(
+            "non-conflicted tracked files changed without mechanical fallout "
+            f"manifest {MECHANICAL_EDITS_PATH}\nmodified: " + ", ".join(modified)
+        )
+    try:
+        manifest = json.loads(MECHANICAL_EDITS_PATH.read_text())
+    except Exception as exc:
+        fail(f"could not read {MECHANICAL_EDITS_PATH} as JSON: {exc}")
+    if not isinstance(manifest, dict):
+        fail(f"{MECHANICAL_EDITS_PATH} must contain a JSON object")
+
+    raw_entries = manifest.get("non_conflicted_edits")
+    if raw_entries is None:
+        raw_entries = manifest.get("allowed_non_conflicted_edits")
+    if not isinstance(raw_entries, list):
+        fail(
+            f"{MECHANICAL_EDITS_PATH} must contain a non_conflicted_edits list"
+        )
+
+    modified_set = set(modified)
+    seen: set[str] = set()
+    entries: list[dict[str, str]] = []
+    for index, raw_entry in enumerate(raw_entries, start=1):
+        if not isinstance(raw_entry, dict):
+            fail(f"entry {index} in {MECHANICAL_EDITS_PATH} must be an object")
+        path = normalize_manifest_path(raw_entry.get("path"))
+        reason = str(raw_entry.get("reason") or "").strip()
+        if not reason:
+            fail(f"entry {index} in {MECHANICAL_EDITS_PATH} is missing reason")
+        if path in seen:
+            fail(f"duplicate path in {MECHANICAL_EDITS_PATH}: {path}")
+        seen.add(path)
+        if path in conflicted:
+            fail(
+                f"{MECHANICAL_EDITS_PATH} lists conflicted file {path}; "
+                "only non-conflicted fallout edits need a manifest"
+            )
+        if path not in modified_set:
+            fail(
+                f"{MECHANICAL_EDITS_PATH} lists {path}, but that "
+                "non-conflicted tracked file did not change"
+            )
+        entries.append({"path": path, "reason": reason})
+
+    unlisted = sorted(modified_set - seen)
+    if unlisted:
+        fail(
+            "non-conflicted tracked files changed without mechanical edit "
+            "manifest entries\nmodified: " + ", ".join(unlisted)
+        )
+    return entries
+
+
+def compare_non_conflict_fingerprints(
+    metadata: dict[str, Any]
+) -> list[dict[str, str]]:
+    conflicted = set(normalize_conflicted_files(metadata.get("conflicted_files", [])))
+    expected: dict[str, dict[str, Any]] = {
+        path: fingerprint
+        for path, fingerprint in metadata.get("non_conflict_fingerprints", {}).items()
+        if path not in conflicted
+    }
+    current = tracked_file_fingerprints(conflicted)
+
+    expected_paths = set(expected)
+    current_paths = set(current)
+    unexpected = sorted(current_paths - expected_paths)
+    missing = sorted(expected_paths - current_paths)
+    modified = sorted(path for path in expected_paths & current_paths if expected[path] != current[path])
+
+    if unexpected or missing:
+        lines = [
+            "non-conflicted tracked files changed; this workflow may not add "
+            "or remove non-conflicted tracked files",
+        ]
+        if modified:
+            lines.append("modified: " + ", ".join(modified))
+        if missing:
+            lines.append("removed: " + ", ".join(missing))
+        if unexpected:
+            lines.append("added: " + ", ".join(unexpected))
+        fail("\n".join(lines))
+    if modified:
+        return load_mechanical_non_conflict_edits(modified, conflicted)
+    return []
+
+
+def ensure_no_conflict_markers(conflicted_files: list[str]) -> None:
+    offenders: list[str] = []
+    for path in conflicted_files:
+        p = Path(path)
+        if p.is_file():
+            try:
+                text = p.read_text(errors="ignore")
+            except Exception:
+                continue
+            if CONFLICT_MARKER_RE.search(text):
+                offenders.append(path)
+    if offenders:
+        fail("conflict markers remain in resolved files: " + ", ".join(offenders))
+
+
+def require_resolution_summary(conflicted_files: list[str]) -> str:
+    if not conflicted_files:
+        return ""
+    if not RESOLUTION_SUMMARY_PATH.exists():
+        fail(
+            f"missing {RESOLUTION_SUMMARY_PATH}; the resolve_conflicts step must "
+            "write a concise summary of behavior-preserving conflict decisions"
+        )
+    summary = RESOLUTION_SUMMARY_PATH.read_text().strip()
+    if not summary:
+        fail(f"{RESOLUTION_SUMMARY_PATH} is empty")
+    return summary
+
+
+def validate_resolution_guard() -> tuple[str, list[dict[str, str]]]:
+    metadata = load_json(METADATA_PATH)
+    if FAILURE_PATH.exists():
+        details = FAILURE_PATH.read_text().strip()
+        fail(
+            "resolve_conflicts reported that behavior-preserving resolution was "
+            "not possible"
+            + (f":\n{details}" if details else "")
+        )
+
+    conflicted = normalize_conflicted_files(metadata.get("conflicted_files", []))
+    if conflicted != metadata.get("conflicted_files", []):
+        metadata["conflicted_files"] = conflicted
+        write_json(METADATA_PATH, metadata)
+    mechanical_edits = compare_non_conflict_fingerprints(metadata)
+    if mechanical_edits and not conflicted:
+        fail(
+            "mechanical fallout edits are only allowed when conflicted files "
+            "were resolved"
+        )
+
+    remaining = conflict_files()
+    if remaining:
+        fail("unresolved conflicts remain: " + ", ".join(remaining))
+    ensure_no_conflict_markers(conflicted)
+    require_resolution_summary(conflicted)
+
+    if conflicted:
+        return "resolved", mechanical_edits
+    return "no_conflicts", []
+
+
+def parse_validate_args(args: list[str]) -> bool:
+    if not args:
+        return False
+    if args == ["--skip-project-validation"]:
+        return True
+    usage()
+    sys.exit(2)
+
+
+def project_validation_skipped_by_env() -> bool:
+    return os.environ.get("SCHERZO_MERGE_CONFLICT_SKIP_PROJECT_VALIDATION", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def validation_env() -> dict[str, str]:
+    env = os.environ.copy()
+    # Project validation runs the repository test suite, and some tests execute
+    # Scherzo helper scripts against fixture directories. Workflow-run-scoped
+    # settings must not leak into those nested helper invocations; otherwise
+    # fixtures can infer the outer Scherzo run's issue/run/workspace, use the
+    # outer workspace driver/base configuration, or publish against the outer
+    # workflow remote instead of their own temporary test context.
+    for key in [
+        "SCHERZO_CONFIG_DIR",
+        "SCHERZO_ISSUE_ID",
+        "SCHERZO_ISSUE_IDENTIFIER",
+        "SCHERZO_JJ_WORKSPACE_BASE",
+        "SCHERZO_JJ_WORKSPACE_BASE_BRANCH",
+        "SCHERZO_JJ_WORKSPACE_FETCH_BASE",
+        "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE",
+        "SCHERZO_JJ_WORKSPACE_REMOTE",
+        "SCHERZO_PR_BASE",
+        "SCHERZO_PR_REMOTE",
+        "SCHERZO_PR_REPO",
+        "SCHERZO_REPO_ROOT",
+        "SCHERZO_RUN_ID",
+        "SCHERZO_RUN_ROOT",
+        "SCHERZO_SOURCE_WORKSPACE_PATH",
+        "SCHERZO_WORKFLOW_ID",
+        "SCHERZO_WORKSPACE_CAPABILITIES",
+        "SCHERZO_WORKSPACE_DRIVER",
+        "SCHERZO_WORKSPACE_NAME",
+        "SCHERZO_WORKSPACE_PATH",
+        "SCHERZO_WORKSPACE_PROFILE",
+        "SCHERZO_WORKSPACE_ROOT",
+    ]:
+        env.pop(key, None)
+    return env
+
+
+def run_project_validation() -> list[str]:
+    require_command("direnv")
+    commands = [
+        ["direnv", "allow", "."],
+        ["rm", "-rf", "test/tmp"],
+        ["direnv", "exec", ".", "gleam", "format", "--check", "src", "test"],
+        ["direnv", "exec", ".", "gleam", "test"],
+    ]
+    env = validation_env()
+    for command in commands:
+        run_and_print(command, env=env)
+    return [" ".join(command) for command in commands]
+
+
+def validate_command(args: list[str]) -> None:
+    skip_project_validation = parse_validate_args(args) or project_validation_skipped_by_env()
+    status, mechanical_edits = validate_resolution_guard()
+    commands: list[str] = []
+    if status == "resolved" and not skip_project_validation:
+        commands = run_project_validation()
+        project_validation = "passed"
+    elif status == "resolved":
+        project_validation = "skipped"
+    else:
+        project_validation = "not_needed"
+
+    write_json(
+        VALIDATION_PATH,
+        {
+            "status": "passed",
+            "resolution_status": status,
+            "project_validation": project_validation,
+            "commands": commands,
+            "mechanical_non_conflicted_edits": mechanical_edits,
+        },
+    )
+    print("VALIDATION=ok")
+    print(f"RESOLUTION_STATUS={status}")
+    print(f"PROJECT_VALIDATION={project_validation}")
+    print(f"MECHANICAL_NON_CONFLICTED_EDITS={len(mechanical_edits)}")
+
+
+def ensure_validation_passed() -> dict[str, Any]:
+    if not VALIDATION_PATH.exists():
+        fail(f"missing {VALIDATION_PATH}; run validate before publish")
+    validation = json.loads(VALIDATION_PATH.read_text())
+    if validation.get("status") != "passed":
+        fail("merge-conflict validation did not pass; run validate before publish")
+    validate_resolution_guard()
+    return validation
+
+
+def write_publish_pr_comment(metadata: dict[str, Any], validation: dict[str, Any], commit: str) -> bool:
+    pr_number = metadata.get("pr_number")
+    if not pr_number:
+        return False
+    if os.environ.get("SCHERZO_MERGE_CONFLICT_SKIP_PR_COMMENT", "").lower() in {"1", "true", "yes"}:
+        return False
+    summary = RESOLUTION_SUMMARY_PATH.read_text().strip() if RESOLUTION_SUMMARY_PATH.exists() else ""
+    mechanical_edits = validation.get("mechanical_non_conflicted_edits") or []
+    lines = [
+        f"Scherzo merge-conflict resolution complete for Linear `{metadata['linear_issue_identifier']}`.",
+        "",
+        f"PR: {metadata.get('pr_url')}",
+        f"Branch: `{metadata['head_branch']}`",
+        f"Base merged in: `{metadata['base_branch']}`",
+        f"Commit: `{commit}`",
+        f"Project validation: `{validation.get('project_validation')}`",
+        "",
+        "## Conflicted files resolved",
+        "",
+    ]
+    for path in metadata.get("conflicted_files", []):
+        lines.append(f"- `{path}`")
+    lines.extend(["", "## Mechanical non-conflicted edits", ""])
+    if mechanical_edits:
+        for edit in mechanical_edits:
+            path = edit.get("path", "unknown") if isinstance(edit, dict) else "unknown"
+            reason = edit.get("reason", "") if isinstance(edit, dict) else ""
+            lines.append(f"- `{path}`: {reason or 'mechanical fallout repair'}")
+    else:
+        lines.append("None.")
+    lines.extend(["", "## Resolution summary", "", summary or "None.", ""])
+    PR_COMMENT_PATH.write_text("\n".join(lines))
+    run(
+        [
+            "gh",
+            "pr",
+            "comment",
+            str(pr_number),
+            "--repo",
+            metadata["repo"],
+            "--body-file",
+            str(PR_COMMENT_PATH),
+        ]
+    )
+    return True
+
+
+def publish_command() -> None:
+    if not workspace_driver_available():
+        require_command("jj")
+    metadata = load_json(METADATA_PATH)
+    validation = ensure_validation_passed()
+
+    conflicted: list[str] = metadata.get("conflicted_files", [])
+    if not conflicted:
+        clear_retention_marker()
+        publish = {
+            "pushed": False,
+            "reason": "no_conflicts",
+            "branch": metadata["head_branch"],
+            "base_branch": metadata["base_branch"],
+            "pr_url": metadata.get("pr_url"),
+        }
+        write_json(PUBLISH_PATH, publish)
+        print("## Summary")
+        print("No merge conflicts were found after fetching the target and base branches; no branch changes were pushed.")
+        print("")
+        print("PUSHED=false")
+        print("REASON=no_conflicts")
+        print(f"BRANCH={metadata['head_branch']}")
+        if metadata.get("pr_url"):
+            print(f"PR_URL={metadata['pr_url']}")
+        return
+
+    remote = metadata["remote"]
+    head_branch = metadata["head_branch"]
+    base_branch = metadata["base_branch"]
+    target_label = f"PR #{metadata['pr_number']}" if metadata.get("pr_number") else f"branch {head_branch}"
+    if workspace_driver_available():
+        title_path = TMP_DIR / "scherzo-merge-conflict-pr-title.txt"
+        body_path = TMP_DIR / "scherzo-merge-conflict-pr-body.md"
+        title_path.parent.mkdir(parents=True, exist_ok=True)
+        title_path.write_text(f"chore: resolve merge conflicts for {target_label}\n")
+        body_path.write_text(RESOLUTION_SUMMARY_PATH.read_text() if RESOLUTION_SUMMARY_PATH.exists() else "Merge conflict resolution.\n")
+        driver_args = [
+            "publish-change",
+            "--kind",
+            "merge-conflict",
+            "--title-file",
+            str(title_path),
+            "--body-file",
+            str(body_path),
+            "--branch-prefix",
+            "scherzo/merge-conflict",
+            "--base",
+            base_branch,
+            "--target-branch",
+            head_branch,
+            "--allow-no-changes",
+            "false",
+            "--json",
+        ]
+        if metadata.get("pr_number"):
+            driver_args.extend(["--target-pr", str(metadata["pr_number"])])
+        payload = run_workspace_driver_json(driver_args)
+        commit = str(payload.get("head_revision") or payload.get("change_id") or "")
+    else:
+        require_command("gh")
+        run(["jj", "git", "fetch", "--remote", remote, "--branch", head_branch])
+        run(["jj", "git", "fetch", "--remote", remote, "--branch", base_branch])
+        remote_head = current_commit(f"{head_branch}@{remote}")
+        if remote_head != metadata["head_commit_at_prepare"]:
+            fail(
+                "target branch advanced after prepare; rerun the merge-conflict "
+                "workflow on the latest branch head before pushing"
+            )
+
+        run(["jj", "describe", "-m", f"chore: resolve merge conflicts for {target_label}"])
+        track_remote_bookmark(remote, head_branch)
+        run(["jj", "bookmark", "set", head_branch, "--revision", "@"])
+        run(["jj", "git", "push", "--remote", remote, "--bookmark", head_branch])
+        commit = current_commit_short("@")
+    commented = write_publish_pr_comment(metadata, validation, commit)
+    clear_retention_marker()
+
+    publish = {
+        "pushed": True,
+        "branch": head_branch,
+        "base_branch": base_branch,
+        "pr_url": metadata.get("pr_url"),
+        "commit": commit,
+        "conflicted_files": conflicted,
+        "mechanical_non_conflicted_edits": validation.get("mechanical_non_conflicted_edits") or [],
+        "project_validation": validation.get("project_validation"),
+        "commented": commented,
+    }
+    write_json(PUBLISH_PATH, publish)
+
+    print("## Summary")
+    print(f"Resolved merge conflicts on `{head_branch}` by merging `{base_branch}` and pushed the merge commit.")
+    print("")
+    print("PUSHED=true")
+    print(f"BRANCH={head_branch}")
+    print(f"BASE_BRANCH={base_branch}")
+    if metadata.get("pr_url"):
+        print(f"PR_URL={metadata['pr_url']}")
+    print(f"COMMIT={commit}")
+    print(f"COMMENTED={'true' if commented else 'false'}")
+    print(f"PROJECT_VALIDATION={validation.get('project_validation')}")
+    print(f"MECHANICAL_NON_CONFLICTED_EDITS={len(validation.get('mechanical_non_conflicted_edits') or [])}")
+    print("CONFLICTED_FILES:")
+    for path in conflicted:
+        print(f"- {path}")
+
+
+def print_target(target: dict[str, Any]) -> None:
+    print(f"TARGET_KIND={target['kind']}")
+    print(f"REPO={target['repo']}")
+    if target["kind"] == "pr":
+        print(f"PR_NUMBER={target['number']}")
+    else:
+        print(f"BRANCH={target['branch']}")
+
+
+def extract_target_command(args: list[str]) -> None:
+    if len(args) not in {1, 2}:
+        usage()
+        sys.exit(2)
+    text = Path(args[0]).read_text()
+    repo = args[1] if len(args) == 2 else "bromanko/scherzo"
+    issue = {"title": "", "description": text, "comments": {"nodes": []}}
+    target = choose_target_candidate(extract_target_candidates(issue, repo))
+    print_target(target)
+
+
+def extract_target_issue_command(args: list[str]) -> None:
+    if len(args) not in {1, 2}:
+        usage()
+        sys.exit(2)
+    issue = json.loads(Path(args[0]).read_text())
+    repo = args[1] if len(args) == 2 else "bromanko/scherzo"
+    target = choose_target_candidate(extract_target_candidates(issue, repo))
+    print_target(target)
+
+
+def main(argv: list[str]) -> int:
+    command = argv[1] if len(argv) > 1 else ""
+    args = argv[2:]
+    if command == "prepare" and not args:
+        prepare_command()
+    elif command == "validate":
+        validate_command(args)
+    elif command == "publish" and not args:
+        publish_command()
+    elif command == "extract-target":
+        extract_target_command(args)
+    elif command == "extract-target-issue":
+        extract_target_issue_command(args)
+    elif command in {"-h", "--help", "help"}:
+        usage()
+    else:
+        usage()
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

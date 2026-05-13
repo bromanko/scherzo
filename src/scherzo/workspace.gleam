@@ -1,8 +1,9 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
+import gleam/result
 import gleam/string
-import scherzo/domain
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/hooks
 import scherzo/path
@@ -36,9 +37,9 @@ pub fn workspace_path(
   identifier: String,
 ) -> Result(#(String, String), error.WorkspaceError) {
   use key <- try_workspace(sanitize(identifier))
-  let root_abs = path.absolute(root) |> result_unwrap(root)
+  let root_abs = path.absolute(root) |> result.unwrap(root)
   let joined = path.join(root_abs, key)
-  let workspace_abs = path.absolute(joined) |> result_unwrap(joined)
+  let workspace_abs = path.absolute(joined) |> result.unwrap(joined)
   case path.contains(root_abs, workspace_abs) {
     True -> Ok(#(key, workspace_abs))
     False -> Error(error.WorkspaceOutsideRoot(workspace_abs))
@@ -47,15 +48,15 @@ pub fn workspace_path(
 
 pub fn prepare(
   identifier: String,
-  workspace: domain.WorkspaceConfig,
-  hooks_config: domain.HooksConfig,
+  workspace: config_types.WorkspaceConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(PreparedWorkspace, PrepareError) {
   use key_and_path <- try_prepare_workspace(workspace_path(
     workspace.root,
     identifier,
   ))
   let #(key, workspace_path) = key_and_path
-  let root_abs = path.absolute(workspace.root) |> result_unwrap(workspace.root)
+  let root_abs = path.absolute(workspace.root) |> result.unwrap(workspace.root)
   let marker = population_marker(root_abs, key)
   let marker_exists = file_exists(marker)
 
@@ -79,7 +80,7 @@ fn run_after_create(
   key: String,
   root_abs: String,
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(PreparedWorkspace, PrepareError) {
   let marker = population_marker(root_abs, key)
   let _ = simplifile.create_directory_all(path.join(root_abs, ".scherzo-state"))
@@ -117,7 +118,7 @@ fn run_after_create(
 fn run_before_run(
   key: String,
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
   created: Bool,
   populated: Bool,
 ) -> Result(PreparedWorkspace, PrepareError) {
@@ -152,7 +153,7 @@ fn run_before_run(
 
 pub fn after_run(
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> String {
   case hooks_config.after_run {
     Some(script) ->
@@ -169,7 +170,7 @@ pub fn after_run(
 pub fn cleanup(
   workspace_root: String,
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   safe_cleanup(workspace_root, workspace_path, hooks_config)
 }
@@ -177,7 +178,7 @@ pub fn cleanup(
 pub fn cleanup_stored_path(
   workspace_root: String,
   stored_workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   safe_cleanup(workspace_root, stored_workspace_path, hooks_config)
 }
@@ -209,15 +210,15 @@ fn create_directory(
 fn safe_cleanup(
   workspace_root: String,
   workspace_path: String,
-  hooks_config: domain.HooksConfig,
+  hooks_config: config_types.HooksConfig,
 ) -> Result(Nil, error.WorkspaceError) {
   case string.trim(workspace_path) == "" {
     True -> Error(error.WorkspaceOutsideRoot(workspace_path))
     False -> {
       let root_abs =
-        path.absolute(workspace_root) |> result_unwrap(workspace_root)
+        path.absolute(workspace_root) |> result.unwrap(workspace_root)
       let target_abs =
-        path.absolute(workspace_path) |> result_unwrap(workspace_path)
+        path.absolute(workspace_path) |> result.unwrap(workspace_path)
       case path.contains(root_abs, target_abs) && target_abs != root_abs {
         False -> Error(error.WorkspaceOutsideRoot(target_abs))
         True -> {
@@ -235,7 +236,7 @@ fn safe_cleanup(
             None -> Nil
           }
           simplifile.delete(target_abs)
-          |> result_map_error(fn(_) { error.WorkspaceIo("delete failed") })
+          |> result.replace_error(error.WorkspaceIo("delete failed"))
         }
       }
     }
@@ -246,12 +247,12 @@ fn safe_delete(
   root_abs: String,
   target: String,
 ) -> Result(Nil, error.WorkspaceError) {
-  let target_abs = path.absolute(target) |> result_unwrap(target)
+  let target_abs = path.absolute(target) |> result.unwrap(target)
   case path.contains(root_abs, target_abs) {
     False -> Error(error.WorkspaceOutsideRoot(target_abs))
     True ->
       simplifile.delete(target_abs)
-      |> result_map_error(fn(_) { error.WorkspaceIo("delete failed") })
+      |> result.replace_error(error.WorkspaceIo("delete failed"))
   }
 }
 
@@ -291,20 +292,6 @@ fn is_allowed(grapheme: String) -> Bool {
 
 fn is_between(value: String, low: String, high: String) -> Bool {
   string.compare(value, low) != Lt && string.compare(value, high) != Gt
-}
-
-fn result_unwrap(result: Result(a, b), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(_) -> default
-  }
-}
-
-fn result_map_error(result: Result(a, e), mapper: fn(e) -> f) -> Result(a, f) {
-  case result {
-    Ok(value) -> Ok(value)
-    Error(err) -> Error(mapper(err))
-  }
 }
 
 fn try_workspace(

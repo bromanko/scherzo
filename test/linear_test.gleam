@@ -1,23 +1,37 @@
-import gleam/option.{None, Some}
+import gleam/dict
+import gleam/dynamic/decode
+import gleam/erlang/process
+import gleam/json
+import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/domain
+import scherzo/config
+import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
+import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import simplifile
+import yay
 
-fn tracker_config() -> domain.TrackerConfig {
-  domain.TrackerConfig(
+fn tracker_config() -> config_types.TrackerConfig {
+  config_types.TrackerConfig(
     kind: tracker_kind.LinearTracker,
     endpoint: "https://api.linear.app/graphql",
     api_key: Some("secret-key"),
     project_slug: Some("PROJ"),
     active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
+    dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings(["Done"]),
   )
 }
 
-fn response_page(identifier: String, has_next: String, cursor: String) -> String {
+fn response_page(
+  identifier: String,
+  has_next: String,
+  cursor: String,
+) -> String {
   "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\""
   <> identifier
   <> "-id\",\"identifier\":\""
@@ -26,17 +40,60 @@ fn response_page(identifier: String, has_next: String, cursor: String) -> String
   <> identifier
   <> "\",\"description\":\"Desc\",\"priority\":1,\"branchName\":\"branch\",\"url\":\"https://linear/"
   <> identifier
-  <> "\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[{\"name\":\"Bug\"}]},\"relations\":{\"nodes\":[{\"type\":\"blocks\",\"relatedIssue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Done\"}}}]}}],\"pageInfo\":{\"hasNextPage\":"
+  <> "\",\"createdAt\":\"2026-04-28T10:00:00Z\",\"updatedAt\":\"2026-04-28T11:00:00Z\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[{\"name\":\"Bug\"}]},\"inverseRelations\":{\"nodes\":[{\"type\":\"blocks\",\"issue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Done\"}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":"
   <> has_next
   <> ",\"endCursor\":"
   <> cursor
   <> "}}}}"
 }
 
+fn request_query(body: String) -> String {
+  let assert Ok(query) = json.parse(body, decode.at(["query"], decode.string))
+  query
+}
+
+fn string_variable(body: String, name: String) -> String {
+  let assert Ok(value) =
+    json.parse(body, decode.at(["variables", name], decode.string))
+  value
+}
+
+fn string_list_variable(body: String, name: String) -> List(String) {
+  let assert Ok(value) =
+    json.parse(
+      body,
+      decode.at(["variables", name], decode.list(of: decode.string)),
+    )
+  value
+}
+
+fn optional_string_variable(body: String, name: String) -> Option(String) {
+  let assert Ok(value) =
+    json.parse(
+      body,
+      decode.at(["variables", name], decode.optional(decode.string)),
+    )
+  value
+}
+
+fn variable_names(body: String) -> List(String) {
+  let assert Ok(variables) =
+    json.parse(
+      body,
+      decode.at(["variables"], decode.dict(decode.string, decode.dynamic)),
+    )
+  variables
+  |> dict.keys
+  |> list.sort(by: string.compare)
+}
+
 pub fn candidate_query_uses_project_slug_filter_test() {
   let assert Error(error.LinearApiRequest(_)) =
     linear.build_candidate_request(
-      domain.TrackerConfig(..tracker_config(), endpoint: "http://linear.test"),
+      config_types.TrackerConfig(
+        ..tracker_config(),
+        endpoint: "http://linear.test",
+      ),
       issue_state.list_from_strings(["Todo"]),
       Some("cursor"),
     )
@@ -46,10 +103,24 @@ pub fn candidate_query_uses_project_slug_filter_test() {
       issue_state.list_from_strings(["Todo"]),
       Some("cursor"),
     )
-  assert string.contains(request.body, "slugId")
-  assert string.contains(request.body, "projectSlug")
-  assert string.contains(request.body, "activeStates")
-  assert string.contains(request.body, "cursor")
+  let query = request_query(request.body)
+  assert variable_names(request.body)
+    == ["after", "dispatchStates", "projectSlug"]
+  assert string_variable(request.body, "projectSlug") == "PROJ"
+  assert string_list_variable(request.body, "dispatchStates") == ["Todo"]
+  assert optional_string_variable(request.body, "after") == Some("cursor")
+  assert string.contains(
+    query,
+    "query CandidateIssues($projectSlug: String!, $dispatchStates: [String!], $after: String)",
+  )
+  assert string.contains(
+    query,
+    "issues(first: 50, after: $after, filter: { project: { slugId: { eq: $projectSlug } }, state: { name: { in: $dispatchStates } } })",
+  )
+  assert string.contains(
+    query,
+    "inverseRelations(first: 100) { nodes { type issue { id identifier state { name } } } pageInfo { hasNextPage endCursor } }",
+  )
   assert request.headers
     == [
       #("Authorization", "secret-key"),
@@ -60,8 +131,11 @@ pub fn candidate_query_uses_project_slug_filter_test() {
 pub fn state_refresh_query_uses_graphql_id_list_test() {
   let assert Ok(request) =
     linear.build_state_refresh_request(tracker_config(), ["id1", "id2"])
-  assert string.contains(request.body, "[ID!]!")
-  assert string.contains(request.body, "id1")
+  let query = request_query(request.body)
+  assert variable_names(request.body) == ["ids"]
+  assert string_list_variable(request.body, "ids") == ["id1", "id2"]
+  assert string.contains(query, "query IssueStates($ids: [ID!]!)")
+  assert string.contains(query, "issues(filter: { id: { in: $ids } })")
   assert request.headers
     == [
       #("Authorization", "secret-key"),
@@ -79,10 +153,94 @@ pub fn normalizes_linear_payload_test() {
   let assert [issue] = page.nodes
   assert issue.identifier == "ABC-123"
   assert issue.labels == ["bug"]
+  assert issue.blocked_by_complete == True
   let assert [blocker] = issue.blocked_by
   assert blocker.identifier == Some("B-1")
   assert issue.created_at != None
   assert page.has_next_page == False
+}
+
+pub fn blocked_issue_fixture_decodes_incoming_inverse_relation_test() {
+  let assert Ok(body) =
+    simplifile.read(
+      "test/fixtures/linear/blocked_issue_candidate_response.json",
+    )
+  let assert Ok(page) =
+    linear.parse_page_response(linear.Response(status: 200, body: body))
+  let assert [issue] = page.nodes
+  assert issue.identifier == "A-1"
+  assert issue.blocked_by_complete == True
+  let assert [blocker] = issue.blocked_by
+  assert blocker.id == Some("B-id")
+  assert blocker.identifier == Some("B-1")
+  assert blocker.state == Some(issue_state.from_string_unchecked("In Progress"))
+}
+
+pub fn outgoing_blocks_relation_does_not_decode_as_blocker_test() {
+  let response =
+    linear.Response(
+      status: 200,
+      body: "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"ABC-123-id\",\"identifier\":\"ABC-123\",\"title\":\"Title ABC-123\",\"state\":{\"name\":\"Todo\"},\"relations\":{\"nodes\":[{\"type\":\"blocks\",\"relatedIssue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Backlog\"}}}]},\"inverseRelations\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}",
+    )
+  let assert Ok(page) = linear.parse_page_response(response)
+  let assert [issue] = page.nodes
+  assert issue.blocked_by == []
+}
+
+pub fn truncated_inverse_relation_page_decodes_incomplete_test() {
+  let body =
+    "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"ABC-123-id\",\"identifier\":\"ABC-123\",\"title\":\"Title ABC-123\",\"state\":{\"name\":\"Todo\"},\"labels\":{\"nodes\":[]},\"inverseRelations\":{\"nodes\":[{\"type\":\"blocks\",\"issue\":{\"id\":\"B-id\",\"identifier\":\"B-1\",\"state\":{\"name\":\"Done\"}}}],\"pageInfo\":{\"hasNextPage\":true,\"endCursor\":\"cursor\"}}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  let assert Ok(page) =
+    linear.parse_page_response(linear.Response(status: 200, body: body))
+  let assert [issue] = page.nodes
+  assert issue.blocked_by_complete == False
+}
+
+pub fn missing_inverse_relations_is_rejected_test() {
+  let body =
+    "{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"ABC-123-id\",\"identifier\":\"ABC-123\",\"title\":\"Title ABC-123\",\"state\":{\"name\":\"Todo\"}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}"
+  let assert Error(error.LinearUnknownPayload(_)) =
+    linear.parse_page_response(linear.Response(status: 200, body: body))
+}
+
+pub fn fetch_candidate_issues_uses_dispatch_states_test() {
+  let captured = process.new_subject()
+  let transport = fn(request: linear.Request) {
+    process.send(captured, request.body)
+    Ok(linear.Response(
+      status: 200,
+      body: response_page("ABC-1", "false", "null"),
+    ))
+  }
+
+  let assert Ok(_) = linear.fetch_candidate_issues(tracker_config(), transport)
+  let assert Ok(body) = process.receive(captured, within: 1000)
+  assert string_list_variable(body, "dispatchStates") == ["Todo"]
+}
+
+pub fn fetch_candidate_issues_uses_canonical_dispatch_state_names_test() {
+  let captured = process.new_subject()
+  let assert Ok([document]) =
+    yay.parse_string(
+      "tracker:\n  kind: linear\n  api_key: secret-key\n  project_slug: PROJ\n  active_states: [Todo]\n  dispatch_states: [\" todo \"]\n",
+    )
+  let assert Ok(effective) =
+    config.resolve_with_env(
+      yay.document_root(document),
+      "test/tmp/scherzo.yaml",
+      fn(_) { None },
+    )
+  let transport = fn(request: linear.Request) {
+    process.send(captured, request.body)
+    Ok(linear.Response(
+      status: 200,
+      body: response_page("ABC-1", "false", "null"),
+    ))
+  }
+
+  let assert Ok(_) = linear.fetch_candidate_issues(effective.tracker, transport)
+  let assert Ok(body) = process.receive(captured, within: 1000)
+  assert string_list_variable(body, "dispatchStates") == ["Todo"]
 }
 
 pub fn pagination_preserves_order_test() {
@@ -130,9 +288,18 @@ pub fn response_errors_are_mapped_test() {
 pub fn mutation_request_builders_and_response_parsing_test() {
   let assert Ok(comment) =
     linear.build_comment_create_request(tracker_config(), "issue-id", "hello")
-  assert string.contains(comment.body, "ScherzoCommentCreate")
-  assert string.contains(comment.body, "issue-id")
-  assert string.contains(comment.body, "hello")
+  let comment_query = request_query(comment.body)
+  assert variable_names(comment.body) == ["body", "issueId"]
+  assert string_variable(comment.body, "issueId") == "issue-id"
+  assert string_variable(comment.body, "body") == "hello"
+  assert string.contains(
+    comment_query,
+    "mutation ScherzoCommentCreate($issueId: String!, $body: String!)",
+  )
+  assert string.contains(
+    comment_query,
+    "commentCreate(input: { issueId: $issueId, body: $body })",
+  )
   assert comment.headers
     == [
       #("Authorization", "secret-key"),
@@ -145,8 +312,18 @@ pub fn mutation_request_builders_and_response_parsing_test() {
       "issue-id",
       "state-id",
     )
-  assert string.contains(update.body, "ScherzoIssueUpdateState")
-  assert string.contains(update.body, "state-id")
+  let update_query = request_query(update.body)
+  assert variable_names(update.body) == ["issueId", "stateId"]
+  assert string_variable(update.body, "issueId") == "issue-id"
+  assert string_variable(update.body, "stateId") == "state-id"
+  assert string.contains(
+    update_query,
+    "mutation ScherzoIssueUpdateState($issueId: String!, $stateId: String!)",
+  )
+  assert string.contains(
+    update_query,
+    "issueUpdate(id: $issueId, input: { stateId: $stateId })",
+  )
   assert update.headers
     == [
       #("Authorization", "secret-key"),
@@ -189,15 +366,30 @@ pub fn missing_end_cursor_is_error_test() {
 
 pub fn contract_request_uses_project_slug_and_read_only_query_test() {
   let assert Ok(request) = linear.build_contract_request(tracker_config())
-  assert string.contains(request.body, "ScherzoLinearContract")
-  assert string.contains(request.body, "projects(first: 2")
-  assert string.contains(request.body, "teams(first: 10")
-  assert string.contains(request.body, "states(first: 50")
-  assert string.contains(request.body, "labels(first: 100")
-  assert string.contains(request.body, "issueLabels(first: 100")
-  assert string.contains(request.body, "projectSlug")
-  assert string.contains(request.body, "PROJ")
-  assert !string.contains(request.body, "mutation")
+  let query = request_query(request.body)
+  assert variable_names(request.body) == ["projectSlug"]
+  assert string_variable(request.body, "projectSlug") == "PROJ"
+  assert string.contains(
+    query,
+    "query ScherzoLinearContract($projectSlug: String!)",
+  )
+  assert string.contains(
+    query,
+    "projects(first: 2, filter: { slugId: { eq: $projectSlug } })",
+  )
+  assert string.contains(
+    query,
+    "teams(first: 10) { nodes { id key name states(first: 50)",
+  )
+  assert string.contains(
+    query,
+    "labels(first: 140) { nodes { id name } pageInfo { hasNextPage endCursor } }",
+  )
+  assert string.contains(
+    query,
+    "issueLabels(first: 100, filter: { team: { null: true } })",
+  )
+  assert !string.contains(query, "mutation")
   assert request.headers
     == [
       #("Authorization", "secret-key"),
@@ -403,7 +595,7 @@ fn page_info(has_next: String) -> String {
   "{\"hasNextPage\":" <> has_next <> ",\"endCursor\":null}"
 }
 
-fn list_identifiers(issues: List(domain.Issue)) -> List(String) {
+fn list_identifiers(issues: List(tracker_issue.Issue)) -> List(String) {
   case issues {
     [] -> []
     [issue, ..rest] -> [issue.identifier, ..list_identifiers(rest)]

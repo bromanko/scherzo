@@ -1,8 +1,10 @@
 import gleam/erlang/process
 import gleam/int
+import gleam/io
 import gleam/option.{type Option, None, Some}
 import scherzo/control/command
 import scherzo/control/protocol
+import scherzo/log
 import scherzo/session/event
 import scherzo/session/hub
 
@@ -19,7 +21,7 @@ pub type Settings {
 
 pub type Backend {
   Backend(
-    list_sessions: fn(Int) -> Result(List(event.SessionSummary), hub.HubError),
+    list_sessions: fn(Int) -> Result(event.SessionList, hub.HubError),
     get_session: fn(String, Int) ->
       Result(Option(event.SessionSummary), hub.HubError),
     events_after: fn(String, Int, Int, Int) ->
@@ -54,7 +56,9 @@ pub fn default_settings(token: String) -> Settings {
 
 pub fn event_hub_store(subject: process.Subject(hub.Message)) -> Backend {
   Backend(
-    list_sessions: fn(timeout_ms) { hub.list_sessions(subject, timeout_ms) },
+    list_sessions: fn(timeout_ms) {
+      hub.list_sessions_snapshot(subject, timeout_ms)
+    },
     get_session: fn(session_id, timeout_ms) {
       hub.get_session(subject, session_id, timeout_ms)
     },
@@ -71,7 +75,10 @@ pub fn event_hub_store(subject: process.Subject(hub.Message)) -> Backend {
   )
 }
 
-pub fn start(settings: Settings, store: Backend) -> Result(Server, ServerError) {
+pub fn start(
+  settings: Settings,
+  store: Backend,
+) -> Result(Server, ServerError) {
   case ffi_listen(settings.host, settings.port) {
     Error(message) -> Error(ServerStartFailed(message))
     Ok(listener) -> {
@@ -99,10 +106,16 @@ fn accept_loop(listener: Listener, settings: Settings, store: Backend) -> Nil {
   drain_trapped_exits()
   case ffi_accept(listener) {
     Ok(socket) -> {
-      let _ = process.spawn(fn() { handle_connection(socket, settings, store) })
+      let _connection_pid =
+        process.spawn(fn() { handle_connection(socket, settings, store) })
       accept_loop(listener, settings, store)
     }
-    Error(_) -> Nil
+    Error(message) -> {
+      log_control_debug("control_accept_stopped", [
+        #("error", log.truncate(message, 200)),
+      ])
+      Nil
+    }
   }
 }
 
@@ -112,33 +125,37 @@ fn drain_trapped_exits() -> Nil {
     |> process.select_trapped_exits(fn(_) { Nil })
   case process.selector_receive(selector, within: 0) {
     Ok(Nil) -> drain_trapped_exits()
-    Error(_) -> Nil
+    Error(Nil) -> Nil
   }
 }
 
-fn handle_connection(socket: Socket, settings: Settings, store: Backend) -> Nil {
+fn handle_connection(
+  socket: Socket,
+  settings: Settings,
+  store: Backend,
+) -> Nil {
   case ffi_recv_line(socket, 5000) {
-    Error(_) -> close_socket(socket)
+    Error(message) -> {
+      log_control_debug("control_request_read_failed", [
+        #("error", log.truncate(message, 200)),
+      ])
+      close_socket(socket)
+    }
     Ok(line) ->
       case protocol.decode_request(line) {
-        Error(err) -> {
-          let _ = send_response(socket, protocol.request_error_response(err))
-          close_socket(socket)
-        }
+        Error(err) ->
+          send_response_then_close(socket, protocol.request_error_response(err))
         Ok(request) ->
           case protocol.request_token(request) == settings.token {
-            False -> {
-              let _ =
-                send_response(
-                  socket,
-                  protocol.error_response(
-                    protocol.request_id(request),
-                    "unauthorized",
-                    "invalid control token",
-                  ),
-                )
-              close_socket(socket)
-            }
+            False ->
+              send_response_then_close(
+                socket,
+                protocol.error_response(
+                  protocol.request_id(request),
+                  "unauthorized",
+                  "invalid control token",
+                ),
+              )
             True -> handle_authorized_request(socket, settings, store, request)
           }
       }
@@ -152,44 +169,48 @@ fn handle_authorized_request(
   request: protocol.Request,
 ) -> Nil {
   case request {
-    protocol.Ping(id, _) -> {
-      let _ =
-        send_response(
-          socket,
-          protocol.success_response(id, protocol.ping_data()),
-        )
-      close_socket(socket)
-    }
+    protocol.Ping(id, _) ->
+      send_response_then_close(
+        socket,
+        protocol.success_response(id, protocol.ping_data()),
+      )
     protocol.ListSessions(id, _) -> {
-      let response = case store.list_sessions(settings.event_timeout_ms) {
-        Ok(sessions) ->
-          protocol.success_response(id, protocol.list_sessions_data(sessions))
-        Error(err) -> error_for_hub(id, err)
+      let response = case
+        call_session_backend(store.list_sessions, settings.event_timeout_ms)
+      {
+        Ok(snapshot) ->
+          protocol.success_response(id, protocol.list_sessions_data(snapshot))
+        Error(err) -> error_for_session_backend(id, err)
       }
-      let _ = send_response(socket, response)
-      close_socket(socket)
+      send_response_then_close(socket, response)
     }
     protocol.GetSession(id, _, session_id) -> {
       let response = case
-        store.get_session(session_id, settings.event_timeout_ms)
+        call_session_backend(
+          fn(timeout_ms) { store.get_session(session_id, timeout_ms) },
+          settings.event_timeout_ms,
+        )
       {
         Ok(summary) ->
           protocol.success_response(id, protocol.session_data(summary))
-        Error(err) -> error_for_hub(id, err)
+        Error(err) -> error_for_session_backend(id, err)
       }
-      let _ = send_response(socket, response)
-      close_socket(socket)
+      send_response_then_close(socket, response)
     }
     protocol.GetEvents(id, _, session_id, after, limit) -> {
       let response = case
-        store.events_after(session_id, after, limit, settings.event_timeout_ms)
+        call_session_backend(
+          fn(timeout_ms) {
+            store.events_after(session_id, after, limit, timeout_ms)
+          },
+          settings.event_timeout_ms,
+        )
       {
         Ok(page) ->
           protocol.success_response(id, protocol.event_page_data(page))
-        Error(err) -> error_for_hub(id, err)
+        Error(err) -> error_for_session_backend(id, err)
       }
-      let _ = send_response(socket, response)
-      close_socket(socket)
+      send_response_then_close(socket, response)
     }
     protocol.StreamEvents(id, _, session_id, after) ->
       start_stream(socket, settings, store, id, session_id, after)
@@ -225,8 +246,37 @@ fn handle_command_request(
     None ->
       protocol.error_response(id, "invalid_request", "not a command request")
   }
-  let _ = send_response(socket, response)
-  close_socket(socket)
+  send_response_then_close(socket, response)
+}
+
+type SessionBackendError {
+  SessionBackendTimeout
+  SessionBackendHubError(hub.HubError)
+}
+
+fn call_session_backend(
+  operation: fn(Int) -> Result(a, hub.HubError),
+  timeout_ms: Int,
+) -> Result(a, SessionBackendError) {
+  let reply = process.new_subject()
+  let operation_timeout_ms = backend_operation_timeout(timeout_ms)
+  let _backend_pid =
+    process.spawn_unlinked(fn() {
+      let _reply_sent = process.send(reply, operation(operation_timeout_ms))
+      Nil
+    })
+  case process.receive(reply, within: timeout_ms) {
+    Ok(Ok(value)) -> Ok(value)
+    Ok(Error(err)) -> Error(SessionBackendHubError(err))
+    Error(Nil) -> Error(SessionBackendTimeout)
+  }
+}
+
+fn backend_operation_timeout(timeout_ms: Int) -> Int {
+  case timeout_ms > 25 {
+    True -> timeout_ms - 25
+    False -> max_int(timeout_ms / 2, 1)
+  }
 }
 
 fn call_command_backend(
@@ -235,9 +285,11 @@ fn call_command_backend(
   timeout_ms: Int,
 ) -> Result(command.CommandResult, Nil) {
   let reply = process.new_subject()
-  let _ =
+  let _backend_pid =
     process.spawn_unlinked(fn() {
-      process.send(reply, store.apply_command(operator_command, timeout_ms))
+      let _reply_sent =
+        process.send(reply, store.apply_command(operator_command, timeout_ms))
+      Nil
     })
   case process.receive(reply, within: timeout_ms) {
     Ok(Ok(result)) -> Ok(result)
@@ -265,25 +317,19 @@ fn start_stream(
         )
       {
         Ok(Nil) -> stream_loop(socket, settings, store, id, session_id, after)
-        Error(_) -> close_socket(socket)
+        Error(message) -> close_after_send_failure(socket, message)
       }
     }
-    Ok(None) -> {
-      let _ =
-        send_response(
-          socket,
-          protocol.error_response(
-            id,
-            "missing_session",
-            "session not found: " <> session_id,
-          ),
-        )
-      close_socket(socket)
-    }
-    Error(err) -> {
-      let _ = send_response(socket, error_for_hub(id, err))
-      close_socket(socket)
-    }
+    Ok(None) ->
+      send_response_then_close(
+        socket,
+        protocol.error_response(
+          id,
+          "missing_session",
+          "session not found: " <> session_id,
+        ),
+      )
+    Error(err) -> send_response_then_close(socket, error_for_hub(id, err))
   }
 }
 
@@ -296,13 +342,10 @@ fn stream_loop(
   cursor: Int,
 ) -> Nil {
   case store.events_after(session_id, cursor, 50, settings.event_timeout_ms) {
-    Error(err) -> {
-      let _ = send_response(socket, error_for_hub(id, err))
-      close_socket(socket)
-    }
+    Error(err) -> send_response_then_close(socket, error_for_hub(id, err))
     Ok(page) ->
       case send_stream_events(socket, id, page.events, cursor) {
-        Error(_) -> close_socket(socket)
+        Error(message) -> close_after_send_failure(socket, message)
         Ok(next_cursor) -> {
           case
             stream_should_close(
@@ -338,8 +381,25 @@ fn stream_should_close(
             event.Exited(_) -> True
             _ -> False
           }
-        _ -> True
+        Ok(None) -> True
+        Error(err) -> stream_should_close_after_hub_error(err)
       }
+  }
+}
+
+fn stream_should_close_after_hub_error(err: hub.HubError) -> Bool {
+  log_control_debug("control_stream_session_check_failed", [
+    #("error", hub_error_code(err)),
+  ])
+  True
+}
+
+fn hub_error_code(err: hub.HubError) -> String {
+  case err {
+    hub.SessionNotFound(_) -> "session_not_found"
+    hub.InvalidLimit(_) -> "invalid_limit"
+    hub.HubUnavailable -> "hub_unavailable"
+    hub.ActorCallTimeout -> "hub_timeout"
   }
 }
 
@@ -365,6 +425,21 @@ fn send_stream_events(
   }
 }
 
+fn error_for_session_backend(
+  id: String,
+  err: SessionBackendError,
+) -> protocol.Response {
+  case err {
+    SessionBackendTimeout ->
+      protocol.error_response(
+        id,
+        "session_backend_timeout",
+        session_backend_timeout_message(),
+      )
+    SessionBackendHubError(err) -> error_for_hub(id, err)
+  }
+}
+
 fn error_for_hub(id: String, err: hub.HubError) -> protocol.Response {
   case err {
     hub.SessionNotFound(session_id) ->
@@ -379,12 +454,33 @@ fn error_for_hub(id: String, err: hub.HubError) -> protocol.Response {
         "invalid_limit",
         "invalid event limit: " <> int.to_string(limit),
       )
-    hub.HubUnavailable | hub.ActorCallTimeout ->
+    hub.HubUnavailable ->
       protocol.error_response(
         id,
         "event_hub_unavailable",
         "event hub unavailable",
       )
+    hub.ActorCallTimeout ->
+      protocol.error_response(
+        id,
+        "event_hub_timeout",
+        event_hub_timeout_message(),
+      )
+  }
+}
+
+fn session_backend_timeout_message() -> String {
+  "control server is reachable, but the session backend did not answer within the configured timeout"
+}
+
+fn event_hub_timeout_message() -> String {
+  "control server is reachable, but the EventHub did not answer within the configured timeout"
+}
+
+fn max_int(a: Int, b: Int) -> Int {
+  case a > b {
+    True -> a
+    False -> b
   }
 }
 
@@ -393,6 +489,27 @@ fn send_response(
   response: protocol.Response,
 ) -> Result(Nil, String) {
   ffi_send_line(socket, protocol.response_to_string(response), 5000)
+}
+
+fn send_response_then_close(
+  socket: Socket,
+  response: protocol.Response,
+) -> Nil {
+  case send_response(socket, response) {
+    Ok(Nil) -> close_socket(socket)
+    Error(message) -> close_after_send_failure(socket, message)
+  }
+}
+
+fn close_after_send_failure(socket: Socket, message: String) -> Nil {
+  log_control_debug("control_response_send_failed", [
+    #("error", log.truncate(message, 200)),
+  ])
+  close_socket(socket)
+}
+
+fn log_control_debug(event: String, fields: List(log.Field)) -> Nil {
+  io.println_error(log.debug(event, fields))
 }
 
 fn close_socket(socket: Socket) -> Nil {
