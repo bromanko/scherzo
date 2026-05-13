@@ -58,7 +58,8 @@ A sixth risk is a migration that becomes too large to review safely. Counter it 
 - [x] (2026-05-13 21:44Z) Confirmed the workspace was clean with `$SCHERZO_WORKSPACE_DRIVER status --human`; the working copy had no changes before implementation.
 - [x] (2026-05-13 21:58Z) Milestone 0 added Linear characterization tests in `test/config_test.gleam`, `test/template_test.gleam`, `test/scheduled_failure_reporter_test.gleam`, `test/orchestrator_daemon_linear_command_test.gleam`, `test/state_recovery_test.gleam`, `test/recovery_workflow_checkpoint_test.gleam`, `test/handoff_format_test.gleam`, and `test/linear_triage_test.gleam`.
 - [x] (2026-05-13 21:58Z) Milestone 0 validation passed with `direnv exec . gleam test` reporting 1299 passed and no failures. No commit was created because the Scherzo workflow contract for this workspace forbids agent commits; the publish step will handle integration.
-- [ ] Milestone 1: add `test/task_test.gleam`, `src/scherzo/task.gleam`, `test/tracker_adapter_test.gleam`, and `src/scherzo/tracker/adapter.gleam`.
+- [x] (2026-05-13 22:31Z) LIV-268 added the task-domain half of Milestone 1: `test/task_test.gleam` and `src/scherzo/task.gleam`. Validation passed with `direnv exec . gleam format --check src test`, `direnv exec . gleam test` reporting 1306 passed and no failures, `direnv exec . gleam run -m glinter` reporting 0 errors, and `direnv exec . gleam run -m scherzo_lint` reporting 0 errors. No commit was created because the Scherzo workflow contract for this workspace forbids agent commits; the publish step will handle integration.
+- [ ] Milestone 1: add `test/tracker_adapter_test.gleam` and `src/scherzo/tracker/adapter.gleam`.
 - [ ] Milestone 1: run format and tests, then commit the task-domain and adapter-contract types.
 - [ ] Milestone 2: add Linear adapter wrapper tests, `src/scherzo/tracker/linear_adapter.gleam`, a fake adapter under `test/support/`, and fake adapter dispatch tests.
 - [ ] Milestone 2 stop/go gate: confirm production runtime behavior still uses the old Linear path except through additive wrapper tests, document remaining Linear-specific call sites, and commit.
@@ -107,10 +108,15 @@ A sixth risk is a migration that becomes too large to review safely. Counter it 
 - Decision: Use this ExecPlan as the single source of truth for the core task-system-agnostic implementation work, and use Linear child issues as implementation slices rather than as additional ExecPlan drafting tasks.
   Rationale: The plan already contains the architecture, milestones, stop/go gates, tests, and rollback guidance needed for the core work. Creating separate plans for the same slices would duplicate context and create drift. Jira and Trello remain separate future planning tasks because they are production backend adapters outside this plan's scope.
   Date: 2026-05-13
+- Decision: Convert legacy Linear `IssueState` values to `task.TaskState` with `category: Unknown` in `task.from_legacy_issue`.
+  Rationale: The existing `src/scherzo/tracker/state.gleam` model stores display text and a normalized key, but it does not expose a backend-neutral category such as ready, active, done, or canceled. Preserving the state name while marking the category unknown keeps the conversion honest and avoids inventing Linear workflow semantics that are not present in the legacy type.
+  Date: 2026-05-13
 
 ## Outcomes & Retrospective
 
 Milestone 0 is complete. The repository now has a compatibility safety net for the current Linear behavior before adapter migration begins: flat Linear config parsing, issue template variables, scheduled failure dedupe, command acknowledgement replay, handoff formatting, invalid-workflow reporting, and old ledger/checkpoint recovery all have explicit characterization coverage. The only deviations from the written step examples are documented in Surprises & Discoveries: list-valued `issue.labels` renders through loops, not direct interpolation, and current env references use `$VAR` syntax.
+
+LIV-268 completed the task-domain half of Milestone 1. `src/scherzo/task.gleam` now defines the backend-neutral task data model and pure Linear compatibility conversions, while the adapter capability contract remains for the next Milestone 1 implementation slice.
 
 ## Context and Orientation
 
