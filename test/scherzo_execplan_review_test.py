@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,8 @@ FIXTURE_HTML = "\n".join(
         "</body></html>",
     ]
 )
+FIXTURE_MARKDOWN = "# Example\n\nThis paragraph maps to line three.\n"
+MARKDOWN_PATCH = "@@ -0,0 +1,3 @@\n+# Example\n+\n+This paragraph maps to line three."
 
 
 class FakeGh:
@@ -257,6 +260,16 @@ class ExecPlanReviewTest(unittest.TestCase):
         self.assertTrue(interactive.no_open)
         self.assertEqual(interactive.port, 0)
 
+    def test_help_mentions_markdown_source_and_temporary_html_preview(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit) as raised:
+            review.parse_args(["--help"])
+        self.assertEqual(raised.exception.code, 0)
+        help_text = stdout.getvalue()
+        self.assertIn("Markdown is the source of truth", help_text)
+        self.assertIn("temporary HTML previews", help_text)
+        self.assertIn("Legacy HTML plan PRs remain supported", help_text)
+
     def test_session_paths_include_contract_and_submit_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             tmp = Path(directory)
@@ -284,6 +297,48 @@ class ExecPlanReviewTest(unittest.TestCase):
             invocations = fake.invocations()
             self.assertGreaterEqual(len(invocations), 3)
             self.assertTrue(all(item["kind"] == "read" for item in invocations))
+
+    def test_markdown_preview_mode_downloads_renders_and_reports_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            fake = FakeGh(
+                tmp,
+                plan_path="docs/plans/example.md",
+                content=FIXTURE_MARKDOWN,
+                files=[{"filename": "docs/plans/example.md", "status": "modified", "patch": MARKDOWN_PATCH}],
+            )
+            args = review.parse_args(["preview", "123", "--repo", "owner/repo", "--no-open", "--output-dir", str(tmp / "out")])
+            stdout = io.StringIO()
+            with fake.on_path(), contextlib.redirect_stdout(stdout):
+                result = review.preview_pr(args)
+            self.assertEqual(result, 0)
+            output = stdout.getvalue()
+            self.assertIn("PLAN_PR_PATH=docs/plans/example.md", output)
+            self.assertIn("PLAN_PREVIEW_KIND=rendered-markdown", output)
+            self.assertIn("PLAN_REMOTE_MUTATIONS=none", output)
+            source_path = Path(next(line.split("=", 1)[1] for line in output.splitlines() if line.startswith("PLAN_SOURCE_PATH=")))
+            preview_path = Path(next(line.split("=", 1)[1] for line in output.splitlines() if line.startswith("PLAN_PREVIEW_PATH=")))
+            self.assertEqual(source_path, (tmp / "out" / "owner__repo" / "pr-123" / "docs" / "plans" / "example.md").resolve())
+            self.assertEqual(preview_path.suffix, ".html")
+            self.assertTrue(str(preview_path).startswith(str((tmp / "out").resolve())))
+            self.assertTrue(preview_path.exists())
+            invocations = fake.invocations()
+            self.assertGreaterEqual(len(invocations), 3)
+            self.assertTrue(all(item["kind"] == "read" for item in invocations))
+
+    def test_markdown_renderer_emits_source_line_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.make_session(
+                Path(directory),
+                plan_path="docs/plans/example.md",
+                review_mode="preview",
+                source=FIXTURE_MARKDOWN,
+                patch=MARKDOWN_PATCH,
+            )
+            self.assertEqual(review.render_preview_html(session), "rendered-markdown")
+            rendered = session.preview_path.read_text(encoding="utf-8")
+            self.assertRegex(rendered, r'<h1\b[^>]*class="commentable[^"]*plan-heading"[^>]*data-source-line="1"')
+            self.assertRegex(rendered, r'<p\b[^>]*class="commentable[^"]*plan-paragraph"[^>]*data-source-line="3"')
 
     def test_contract_probe_payload_and_submit_runner_use_review_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -426,6 +481,98 @@ class ExecPlanReviewTest(unittest.TestCase):
             )
             self.assertEqual(len(submission.fallback_entries), 1)
             self.assertIn("Fallback body", submission.payload["body"])
+
+    def test_markdown_review_drafts_submit_against_markdown_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            session = self.make_session(
+                tmp,
+                plan_path="docs/plans/example.md",
+                source=FIXTURE_MARKDOWN,
+                patch=MARKDOWN_PATCH,
+            )
+            harness = ServerHarness(session)
+            try:
+                status, _headers, body = harness.request("/?token=test-token", token=False)
+                self.assertEqual(status, 200)
+                html_text = body.decode("utf-8")
+                match = re.search(r'<h1\b[^>]*data-comment-id="([^"]+)"[^>]*data-source-line="(\d+)"', html_text)
+                self.assertIsNotNone(match)
+                assert match is not None
+                comment_id, source_line = match.group(1), int(match.group(2))
+                status, _headers, _body = harness.request(
+                    "/api/drafts",
+                    method="POST",
+                    data={
+                        "data_comment_id": comment_id,
+                        "dom_tag": "h1",
+                        "dom_source_line": source_line,
+                        "text_excerpt": "Example",
+                        "body": "Please clarify the title.",
+                    },
+                )
+                self.assertEqual(status, 201)
+
+                drafts = review.load_drafts(session)
+                submission = review.build_review_submission(session, drafts, review.load_pr_file_record(session))
+                self.assertFalse(submission.summary_only)
+                self.assertEqual(
+                    submission.inline_comments[0],
+                    {
+                        "path": "docs/plans/example.md",
+                        "body": f"Please clarify the title.\n\nSelected block: {comment_id}",
+                        "side": "RIGHT",
+                        "line": 1,
+                    },
+                )
+            finally:
+                harness.close()
+
+    def test_markdown_missing_or_non_diff_source_line_uses_summary_fallback(self) -> None:
+        patch = "@@ -0,0 +1,1 @@\n+# Example"
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.make_session(
+                Path(directory),
+                plan_path="docs/plans/example.md",
+                source=FIXTURE_MARKDOWN,
+                patch=patch,
+            )
+            drafts = [
+                review.DraftComment("1", "missing-line", "h1", None, "Example", "Missing line", "now", "now"),
+                review.DraftComment("2", "zero-line", "h1", 0, "Example", "Zero line", "now", "now"),
+                review.DraftComment("3", "past-end", "p", 99, "Paragraph", "Past end", "now", "now"),
+                review.DraftComment("4", "not-in-diff", "p", 3, "Paragraph", "Not in diff", "now", "now"),
+            ]
+            submission = review.build_review_submission(session, drafts, review.load_pr_file_record(session))
+            self.assertTrue(submission.summary_only)
+            self.assertEqual(submission.inline_comments, [])
+            self.assertEqual(len(submission.fallback_entries), 4)
+            self.assertIsNone(drafts[0].source_line)
+            self.assertIsNone(drafts[1].source_line)
+            self.assertIsNone(drafts[2].source_line)
+            self.assertEqual(drafts[3].source_line, 3)
+            self.assertFalse(drafts[3].diff_eligible)
+
+    def test_legacy_html_mapping_ignores_markdown_dom_line_fallback(self) -> None:
+        patch = "@@ -0,0 +1,5 @@\n+<!doctype html>\n+<html><body>\n+<h1>Purpose</h1>\n+<p>Risk text</p>\n+</body></html>"
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.make_session(Path(directory), patch=patch)
+            drafts = [
+                review.DraftComment(
+                    "1",
+                    "heading-purpose",
+                    "h1",
+                    99,
+                    "Purpose",
+                    "Use the HTML source line.",
+                    "now",
+                    "now",
+                )
+            ]
+            submission = review.build_review_submission(session, drafts, review.load_pr_file_record(session))
+            self.assertFalse(submission.summary_only)
+            self.assertEqual(submission.inline_comments[0]["path"], "docs/plans/example.html")
+            self.assertEqual(submission.inline_comments[0]["line"], 3)
 
     def test_submit_review_uses_fake_gh_only_when_submit_is_called(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -573,26 +720,36 @@ class ExecPlanReviewTest(unittest.TestCase):
             finally:
                 harness.close()
 
-    def test_markdown_review_mode_remains_preview_only(self) -> None:
-        markdown = "# Example\n\nThis remains preview-only.\n"
+    def test_markdown_review_mode_serves_interactive_rendered_viewer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            tmp = Path(directory)
-            fake = FakeGh(
-                tmp,
+            session = self.make_session(
+                Path(directory),
                 plan_path="docs/plans/example.md",
-                content=markdown,
-                files=[{"filename": "docs/plans/example.md", "status": "modified", "patch": "@@ -0,0 +1,3 @@\n+# Example"}],
+                source=FIXTURE_MARKDOWN,
+                patch=MARKDOWN_PATCH,
             )
-            args = review.parse_args(["review", "123", "--repo", "owner/repo", "--no-open", "--output-dir", str(tmp / "out")])
-            stdout = io.StringIO()
-            with fake.on_path(), contextlib.redirect_stdout(stdout):
-                result = review.review_pr(args)
-            self.assertEqual(result, 0)
-            output = stdout.getvalue()
-            self.assertIn("PLAN_PREVIEW_KIND=rendered-markdown", output)
-            self.assertIn("PLAN_REMOTE_MUTATIONS=none", output)
-            self.assertNotIn("PLAN_REVIEW_MODE=interactive-html", output)
-            self.assertTrue(all(item["kind"] == "read" for item in fake.invocations()))
+            self.assertEqual(session.review_mode, "interactive-html")
+            harness = ServerHarness(session)
+            try:
+                status, _headers, _body = harness.request("/?token=test-token", token=False)
+                self.assertEqual(status, 200)
+
+                status, headers, body = harness.request("/", token=False)
+                self.assertEqual(status, 403)
+
+                status, headers, body = harness.request("/?token=test-token", token=False)
+                self.assertEqual(status, 200)
+                html_text = body.decode("utf-8")
+                self.assertIn("scherzo-review-drawer", html_text)
+                self.assertIn("Example", html_text)
+                self.assertIn("This paragraph maps to line three.", html_text)
+                self.assertRegex(html_text, r'<h1\b[^>]*data-comment-id="[^"]+"[^>]*data-source-line="1"')
+                self.assertRegex(html_text, r'<p\b[^>]*data-comment-id="[^"]+"[^>]*data-source-line="3"')
+                expected = review.preview_security_headers("test-nonce")
+                for key, value in expected.items():
+                    self.assertEqual(headers[key], value)
+            finally:
+                harness.close()
 
     def test_non_execplan_pr_fails_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

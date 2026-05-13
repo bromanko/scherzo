@@ -4,6 +4,10 @@ Scherzo's staged code-review workflow passes machine-readable artifacts between 
 
 The aggregate JSON Schema lives at [`docs/schemas/review-artifacts.v1.schema.json`](schemas/review-artifacts.v1.schema.json). Native structured-output review lanes also use the focused [`docs/schemas/review-lane-draft.v1.schema.json`](schemas/review-lane-draft.v1.schema.json) validator before their semantic consistency check. All artifacts use `schema_version: 1` and an `artifact_type` discriminator.
 
+## ExecPlan PR review previews
+
+ExecPlan PR review uses `docs/plans/*.md` as the source artifact for new plans. The local helper `scripts/scherzo-execplan-review` may render that Markdown into a temporary HTML viewer under `tmp/scherzo-execplan-review/` so reviewers can use the browser drawer, but that HTML is derived local state, not a checked-in or durable remote artifact. When inline submission is available, comments target the changed Markdown source path and Markdown source line; legacy `docs/plans/*.html` PRs remain supported as legacy source artifacts.
+
 ## Artifact types
 
 ### `ReviewBrief`

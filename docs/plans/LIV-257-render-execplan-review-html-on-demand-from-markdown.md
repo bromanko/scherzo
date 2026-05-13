@@ -53,12 +53,13 @@ A UX risk is confusing reviewers about which file is being reviewed. Countermeas
 - [x] (2026-05-13 00:00Z) Read the repository-local ExecPlan authoring guidance and inspected the current review helper, renderer, review tests, validation helper, ignored `tmp/` behavior, and relevant operator docs context.
 - [x] (2026-05-13 00:00Z) Drafted this Markdown ExecPlan source artifact for `LIV-257` without implementing code changes.
 - [x] (2026-05-13 00:00Z) Incorporated adversarial review feedback into this plan by requiring served-viewer source-line metadata tests, making deterministic fake-`gh` tests the required validation path, and assigning interactive preview regeneration ownership to `start_review_server`.
-- [ ] Confirm the Markdown renderer's emitted `data-source-line` values are suitable for Markdown review coordinates.
-- [ ] Make Markdown interactive review mode render and serve an injected temporary HTML viewer.
-- [ ] Map Markdown draft comments to Markdown source lines and keep legacy HTML mapping intact.
-- [ ] Add Python tests for Markdown preview, Markdown interactive serving, Markdown source-line submission, and legacy HTML compatibility.
-- [ ] Update CLI/operator docs text to explain Markdown source-of-truth and derived HTML preview behavior.
-- [ ] Run targeted Python validation and practical repo validation, then update this plan's living sections during implementation.
+- [x] (2026-05-13 20:27Z) Confirmed the Markdown renderer emits usable `data-source-line` values for headings and paragraphs in `test_markdown_renderer_emits_source_line_metadata`.
+- [x] (2026-05-13 20:27Z) Made Markdown interactive review mode render, sanitize, inject, and serve a temporary HTML viewer through the existing loopback server.
+- [x] (2026-05-13 20:27Z) Mapped Markdown draft comments from browser-observed `dom_source_line` to Markdown source lines while preserving legacy HTML `data-comment-id` source lookup.
+- [x] (2026-05-13 20:27Z) Added Python tests for Markdown preview, Markdown interactive serving, Markdown source-line submission, Markdown fallback behavior, help text, and legacy HTML compatibility.
+- [x] (2026-05-13 20:27Z) Updated CLI/operator docs text to explain Markdown source-of-truth and derived temporary HTML preview behavior.
+- [x] (2026-05-13 20:27Z) Ran targeted Python validation and practical repo validation; targeted Python checks passed, `glinter` and `scherzo_lint` completed with existing warnings and no errors, and the first `direnv exec . gleam test` failed in an existing path-relativization test unrelated to this Python-only change.
+- [x] (2026-05-13 22:05Z) Rebased the retained implementation workspace onto current `main`, reran validation, and confirmed `python3 -m unittest test/scherzo_execplan_review_test.py -v`, Python compilation, `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `glinter`, `scherzo_lint`, and ExecPlan validation pass.
 
 ## Surprises & Discoveries
 
@@ -76,6 +77,9 @@ A UX risk is confusing reviewers about which file is being reviewed. Countermeas
 
 - Observation: Temporary review artifacts are already placed under an ignored directory.
   Evidence: `scripts/scherzo_execplan_review.py` defines `DEFAULT_OUTPUT_DIR` as `tmp/scherzo-execplan-review`, and `.gitignore` ignores `tmp/`.
+
+- Observation: Practical `direnv exec . gleam test` validation initially failed in an unrelated review-artifact path relativization test when run from the retained Scherzo workspace before rebasing to current `main`.
+  Evidence: The command reported `1265 passed, 1 failures`; the failing test was `review_artifacts_test.verify_evidence_relativizes_absolute_draft_path_test`, expecting `"path": "test/tmp/native-absolute-draft-path/draft.v1.json"` while the retained ledger path contained `.scherzo/workspaces/execplan-implementation/.../workspaces/main/test/tmp/native-absolute-draft-path/draft.v1.json`. The targeted Python review tests still passed with `Ran 23 tests ... OK`. After rebasing onto current `main`, `direnv exec . gleam test` passed with `1291 passed, no failures`.
 
 ## Decision Log
 
@@ -107,9 +111,15 @@ A UX risk is confusing reviewers about which file is being reviewed. Countermeas
   Rationale: Old PRs and branches may still contain `docs/plans/*.html`; maintaining the existing path is cheaper and safer than forcing all in-flight review work to migrate at once.
   Date: 2026-05-13
 
+- Decision: Keep the existing `interactive-html` review mode string while deriving source behavior from `plan_path` helpers.
+  Rationale: The server still serves HTML in both source modes, so preserving the existing operator metadata avoids an unnecessary contract break. New helpers `is_markdown_plan`, `is_html_plan`, and `plan_source_kind` make Markdown-specific mapping explicit without renaming the mode.
+  Date: 2026-05-13
+
 ## Outcomes & Retrospective
 
-To be filled in as milestones complete. At completion, summarize whether Markdown-only PRs can be previewed and interactively reviewed, whether submitted inline comments target Markdown source lines, what legacy HTML compatibility remains, and which validation commands passed.
+Implemented the Markdown-on-demand review flow. Markdown-only ExecPlan PRs can still be previewed read-only, and the explicit `review` subcommand now serves a sanitized, injected temporary HTML viewer for Markdown sources. Browser-created drafts for Markdown use the rendered element's `data-source-line` to submit inline comments against the changed `docs/plans/*.md` source file when the line is present in the PR diff; invalid or non-diff Markdown coordinates fall back to the existing summary-confirmation path. Legacy `docs/plans/*.html` review remains compatible and continues to map by `data-comment-id` in the HTML source rather than by the browser DOM line.
+
+Targeted validation passed: `python3 -m unittest test/scherzo_execplan_review_test.py -v` ran 23 tests successfully, and `python3 -m py_compile scripts/scherzo-execplan-review scripts/scherzo_execplan_review.py test/scherzo_execplan_review_test.py` produced no output. After rebasing the retained workspace onto current `main`, practical repository validation also passed: `direnv exec . gleam format --check src test`, `direnv exec . gleam test` (`1291 passed, no failures`), `direnv exec . gleam run -m glinter` (`0 errors`, existing warnings), `direnv exec . gleam run -m scherzo_lint` (`0 errors`, existing warnings), and `scripts/scherzo-execplan validate docs/plans/LIV-257-render-execplan-review-html-on-demand-from-markdown.md`.
 
 ## Context and Orientation
 
