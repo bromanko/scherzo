@@ -34,6 +34,19 @@ agent:
   max_sessions_per_issue: 2
 pi:
   command: 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi"'
+  # Persistent launches use argv so Scherzo can safely append
+  # --session <recorded-session-file> during recovery. The wrapper keeps
+  # workflow-specific model selection and omits --no-session only when this
+  # dogfood config opts into persistence.
+  argv:
+    - /bin/sh
+    - "-c"
+    - 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi" "$@"'
+    - scherzo-pi
+  argv_env:
+    SCHERZO_PI_SESSION_PERSISTENCE: "1"
+  session_persistence:
+    enabled: true
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000

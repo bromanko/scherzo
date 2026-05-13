@@ -967,12 +967,22 @@ def validation_env() -> dict[str, str]:
     # Project validation runs the repository test suite, and some tests execute
     # Scherzo helper scripts against fixture directories. Workflow-run-scoped
     # settings must not leak into those nested helper invocations; otherwise
-    # fixtures can infer the outer Scherzo run's issue/run/workspace or use the
-    # outer workspace driver instead of their own temporary test context.
+    # fixtures can infer the outer Scherzo run's issue/run/workspace, use the
+    # outer workspace driver/base configuration, or publish against the outer
+    # workflow remote instead of their own temporary test context.
     for key in [
         "SCHERZO_CONFIG_DIR",
         "SCHERZO_ISSUE_ID",
         "SCHERZO_ISSUE_IDENTIFIER",
+        "SCHERZO_JJ_WORKSPACE_BASE",
+        "SCHERZO_JJ_WORKSPACE_BASE_BRANCH",
+        "SCHERZO_JJ_WORKSPACE_FETCH_BASE",
+        "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE",
+        "SCHERZO_JJ_WORKSPACE_REMOTE",
+        "SCHERZO_PR_BASE",
+        "SCHERZO_PR_REMOTE",
+        "SCHERZO_PR_REPO",
+        "SCHERZO_REPO_ROOT",
         "SCHERZO_RUN_ID",
         "SCHERZO_RUN_ROOT",
         "SCHERZO_SOURCE_WORKSPACE_PATH",

@@ -28,6 +28,7 @@ from typing import Any, Iterable
 
 TMP_DIR = Path("tmp")
 METADATA_PATH = TMP_DIR / "scherzo-implementation.json"
+CANONICAL_METADATA_RELATIVE_PATH = Path("state") / "implementation" / "metadata.json"
 ANALYSIS_PATH = TMP_DIR / "scherzo-implementation-analysis.json"
 PLAN_COMPLETION_CONTEXT_PATH = TMP_DIR / "scherzo-plan-completion-context.json"
 PLAN_COMPLETION_VERDICT_PATH = TMP_DIR / "scherzo-plan-completion-verdict.json"
@@ -425,6 +426,63 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def canonical_metadata_path() -> Path | None:
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if not run_root:
+        return None
+    return Path(run_root) / CANONICAL_METADATA_RELATIVE_PATH
+
+
+def metadata_missing_message(canonical_path: Path) -> str:
+    return (
+        "unrecoverable workflow-state loss: missing implementation metadata in "
+        f"canonical run state ({canonical_path}) and compatibility cache "
+        f"({METADATA_PATH}). Restore "
+        f"{CANONICAL_METADATA_RELATIVE_PATH} from retained run artifacts or "
+        "abort and restart from a clean baseline; do not rerun prepare after "
+        "implementation because that would overwrite the original workflow "
+        "source and base metadata."
+    )
+
+
+def print_metadata_backfill_diagnostic(canonical_path: Path) -> None:
+    print(
+        "scherzo-implementation: backfilled canonical implementation metadata "
+        f"from {METADATA_PATH} to {canonical_path} "
+        f"({CANONICAL_METADATA_RELATIVE_PATH})",
+        file=sys.stderr,
+    )
+
+
+def load_implementation_metadata() -> dict[str, Any]:
+    canonical_path = canonical_metadata_path()
+    if canonical_path is None:
+        return load_json(METADATA_PATH)
+
+    if canonical_path.exists():
+        try:
+            metadata = load_json(canonical_path)
+        except json.JSONDecodeError as exc:
+            fail(f"invalid canonical implementation metadata at {canonical_path}: {exc}")
+        write_json(METADATA_PATH, metadata)
+        return metadata
+
+    if METADATA_PATH.exists():
+        metadata = load_json(METADATA_PATH)
+        write_json(canonical_path, metadata)
+        print_metadata_backfill_diagnostic(canonical_path)
+        return metadata
+
+    fail(metadata_missing_message(canonical_path))
+
+
+def write_implementation_metadata(metadata: dict[str, Any]) -> None:
+    canonical_path = canonical_metadata_path()
+    if canonical_path is not None:
+        write_json(canonical_path, metadata)
+    write_json(METADATA_PATH, metadata)
+
+
 def infer_issue_identifier() -> str:
     explicit = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
     if explicit:
@@ -446,6 +504,22 @@ def infer_issue_identifier() -> str:
 
 
 def linear_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+    fixture_path = os.environ.get("SCHERZO_TEST_LINEAR_GRAPHQL_JSON", "").strip()
+    if fixture_path:
+        try:
+            response = json.loads(Path(fixture_path).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            fail(f"could not read SCHERZO_TEST_LINEAR_GRAPHQL_JSON fixture: {exc}")
+        if response.get("errors"):
+            fail(
+                "Linear GraphQL fixture returned errors:\n"
+                + diagnostic_excerpt(json.dumps(response["errors"], indent=2))
+            )
+        data = response.get("data")
+        if not isinstance(data, dict):
+            fail("SCHERZO_TEST_LINEAR_GRAPHQL_JSON fixture must contain a data object")
+        return data
+
     token = os.environ.get("LINEAR_API_KEY", "").strip()
     if not token:
         fail("LINEAR_API_KEY is required to fetch Linear issue context")
@@ -1185,7 +1259,7 @@ def update_start_refresh_metadata(result: dict[str, Any]) -> None:
         return
     if result.get("status") not in {"fresh", "rebased_clean"}:
         return
-    metadata = load_json(METADATA_PATH)
+    metadata = load_implementation_metadata()
     if workspace_driver_available():
         refreshed_base_change_id = str(result.get("base_revision") or "").strip()
         if not refreshed_base_change_id:
@@ -1197,7 +1271,7 @@ def update_start_refresh_metadata(result: dict[str, Any]) -> None:
         if "initial_base_change_id" not in metadata:
             metadata["initial_base_change_id"] = previous_base_change_id
         metadata["base_change_id"] = refreshed_base_change_id
-        write_json(METADATA_PATH, metadata)
+        write_implementation_metadata(metadata)
         result["metadata_base_change_id_updated"] = True
 
 
@@ -1547,7 +1621,7 @@ def prepare_command(args: list[str]) -> None:
         }
         brief_result = generate_plan_brief(plan_path)
         apply_plan_brief_result(metadata, brief_result)
-        write_json(METADATA_PATH, metadata)
+        write_implementation_metadata(metadata)
         print(f"SOURCE_KIND={source_kind}")
         print(f"PLAN_PATH={plan_path}")
         print_plan_brief_result(brief_result)
@@ -1564,7 +1638,7 @@ def prepare_command(args: list[str]) -> None:
             "brief_path": str(brief_path),
             "base_change_id": base_change_id,
         }
-        write_json(METADATA_PATH, metadata)
+        write_implementation_metadata(metadata)
         print(f"SOURCE_KIND={source_kind}")
         print(f"BRIEF_PATH={brief_path}")
 
@@ -1574,7 +1648,7 @@ def prepare_command(args: list[str]) -> None:
 
 
 def require_plan_brief_metadata() -> tuple[dict[str, Any], str]:
-    metadata = load_json(METADATA_PATH)
+    metadata = load_implementation_metadata()
     if metadata.get("source_kind") != "execplan":
         fail(
             "plan-brief only applies to execplan implementation workflows; "
@@ -1641,14 +1715,14 @@ def plan_brief_command(args: list[str]) -> None:
             return
     result = generate_plan_brief(plan_path)
     apply_plan_brief_result(metadata, result)
-    write_json(METADATA_PATH, metadata)
+    write_implementation_metadata(metadata)
     print_plan_brief_result(result)
     if result["status"] != "ok":
         sys.exit(1)
 
 
 def analyze_command() -> None:
-    metadata = load_json(METADATA_PATH)
+    metadata = load_implementation_metadata()
     files = workspace_driver_changed_files() if workspace_driver_available() else changed_files_since(metadata["base_change_id"])
     if not files:
         fail("no changed files found since the workflow started")
@@ -1768,7 +1842,7 @@ def plan_completion_context_command(args: list[str]) -> None:
         sys.exit(2)
     if not workspace_driver_available():
         require_command("jj")
-    metadata = load_json(METADATA_PATH)
+    metadata = load_implementation_metadata()
     context = plan_completion_snapshot(metadata)
     write_json(PLAN_COMPLETION_CONTEXT_PATH, context)
     print(f"PLAN_COMPLETION_CONTEXT_PATH={PLAN_COMPLETION_CONTEXT_PATH}")
@@ -1899,7 +1973,7 @@ def gate_plan_completion_command(args: list[str]) -> None:
         sys.exit(2)
     final_gate = args == ["--final"]
     gate_label = "final plan-completion gate" if final_gate else "plan-completion gate"
-    metadata = load_json(METADATA_PATH)
+    metadata = load_implementation_metadata()
     current_plan_path, _current_base_change_id = require_execplan_metadata(metadata)
     verdict = validate_plan_completion_verdict_shape(load_plan_completion_verdict())
     if not workspace_driver_available():
@@ -1962,12 +2036,22 @@ def validation_env() -> dict[str, str]:
     # Validation runs the repository test suite, and some tests execute Scherzo
     # helper scripts against fixture directories. Workflow-run-scoped settings
     # must not leak into those nested helper invocations; otherwise fixtures can
-    # infer the outer Scherzo run's issue/run/workspace instead of their own
-    # temporary test context.
+    # infer the outer Scherzo run's issue/run/workspace, use the outer workspace
+    # driver/base configuration, or publish against the outer workflow remote
+    # instead of their own temporary test context.
     for key in [
         "SCHERZO_CONFIG_DIR",
         "SCHERZO_ISSUE_ID",
         "SCHERZO_ISSUE_IDENTIFIER",
+        "SCHERZO_JJ_WORKSPACE_BASE",
+        "SCHERZO_JJ_WORKSPACE_BASE_BRANCH",
+        "SCHERZO_JJ_WORKSPACE_FETCH_BASE",
+        "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE",
+        "SCHERZO_JJ_WORKSPACE_REMOTE",
+        "SCHERZO_PR_BASE",
+        "SCHERZO_PR_REMOTE",
+        "SCHERZO_PR_REPO",
+        "SCHERZO_REPO_ROOT",
         "SCHERZO_RUN_ID",
         "SCHERZO_RUN_ROOT",
         "SCHERZO_SOURCE_WORKSPACE_PATH",
@@ -2296,7 +2380,7 @@ def publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str, str, s
 def publish_command_legacy() -> None:
     require_command("jj")
     ensure_validation_passed()
-    metadata = load_json(METADATA_PATH)
+    metadata = load_implementation_metadata()
 
     base, remote = configured_publish_base()
     refresh = refresh_base("publish")
@@ -2468,7 +2552,7 @@ def publish_command() -> None:
         return
 
     ensure_validation_passed()
-    metadata = load_json(METADATA_PATH)
+    metadata = load_implementation_metadata()
     base, _remote = configured_publish_base()
     refresh = driver_refresh_result("publish")
     write_refresh_base_result(refresh)

@@ -49,6 +49,45 @@ fn read_or_empty(path: String) -> String {
   }
 }
 
+fn metadata_cache_path(dir: String) -> String {
+  dir <> "/tmp/scherzo-implementation.json"
+}
+
+fn metadata_canonical_path(dir: String) -> String {
+  dir <> "/run-root/state/implementation/metadata.json"
+}
+
+fn run_root_env() -> String {
+  "SCHERZO_RUN_ROOT=\"$PWD/run-root\""
+}
+
+fn clean_workflow_env() -> String {
+  "env -u SCHERZO_WORKSPACE_DRIVER"
+  <> " -u SCHERZO_WORKSPACE_PROFILE"
+  <> " -u SCHERZO_WORKSPACE_CAPABILITIES"
+  <> " -u SCHERZO_WORKSPACE_ROOT"
+  <> " -u SCHERZO_WORKSPACE_PATH"
+  <> " -u SCHERZO_RUN_ROOT"
+}
+
+fn execplan_metadata(plan_path: String, base_change_id: String) -> String {
+  "{\n"
+  <> "  \"source_kind\": \"execplan\",\n"
+  <> "  \"plan_path\": \""
+  <> plan_path
+  <> "\",\n"
+  <> "  \"base_change_id\": \""
+  <> base_change_id
+  <> "\"\n"
+  <> "}\n"
+}
+
+fn write_linear_graphql_fixture(path: String, issue_json: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(path, "{\"data\":{\"issue\":" <> issue_json <> "}}\n")
+  Nil
+}
+
 pub fn extract_plan_requires_exactly_one_existing_plan_path_test() {
   let dir = "test/tmp/execplan-helper-extract"
   reset_dir(dir)
@@ -221,6 +260,296 @@ pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
   let assert Error(_) = simplifile.read(dir <> "/tmp/scherzo-execplan-brief.md")
   let assert Error(_) =
     simplifile.read(dir <> "/tmp/scherzo-execplan-index.json")
+}
+
+pub fn metadata_load_restores_tmp_cache_from_run_root_test() {
+  let dir = "test/tmp/implementation-helper-metadata-canonical-load"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/run-root/state/implementation")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/docs/plans/example.md", execplan_markdown())
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_canonical_path(dir),
+      execplan_metadata("docs/plans/example.md", "canonical-start"),
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      clean_workflow_env()
+        <> " "
+        <> run_root_env()
+        <> " ../../../scripts/scherzo-implementation plan-brief",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PLAN_BRIEF_STATUS=ok")
+  let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
+  let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
+  assert cache == canonical
+  assert string.contains(cache, "\"base_change_id\": \"canonical-start\"")
+  assert string.contains(cache, "\"plan_brief_status\": \"ok\"")
+}
+
+pub fn metadata_backfills_run_root_from_tmp_cache_with_diagnostic_test() {
+  let dir = "test/tmp/implementation-helper-metadata-backfill"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/docs/plans/example.md", execplan_markdown())
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_cache_path(dir),
+      execplan_metadata("docs/plans/example.md", "tmp-start"),
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      clean_workflow_env()
+        <> " "
+        <> run_root_env()
+        <> " ../../../scripts/scherzo-implementation plan-brief",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stderr,
+    "backfilled canonical implementation metadata",
+  )
+  assert string.contains(artifact.stderr, "state/implementation/metadata.json")
+  assert string.contains(artifact.stderr, "tmp/scherzo-implementation.json")
+  let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
+  let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
+  assert cache == canonical
+  assert string.contains(canonical, "\"base_change_id\": \"tmp-start\"")
+}
+
+pub fn analyze_uses_canonical_metadata_when_tmp_cache_is_deleted_test() {
+  let dir = "test/tmp/implementation-helper-analyze-canonical"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/run-root/state/implementation")
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_canonical_path(dir),
+      "{\n"
+        <> "  \"source_kind\": \"ticket\",\n"
+        <> "  \"base_change_id\": \"canonical-base\"\n"
+        <> "}\n",
+    )
+  write_fake_analyze_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      clean_workflow_env()
+        <> " "
+        <> run_root_env()
+        <> " PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation analyze",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "CHANGED_FILES:")
+  assert string.contains(artifact.stdout, "- src/example.gleam")
+  assert string.contains(artifact.stdout, "LANGUAGES=gleam")
+  let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
+  assert string.contains(cache, "\"base_change_id\": \"canonical-base\"")
+}
+
+pub fn refresh_base_updates_canonical_metadata_and_cache_test() {
+  let dir = "test/tmp/implementation-helper-refresh-canonical-start"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/run-root/state/implementation")
+  let metadata =
+    "{\"source_kind\":\"ticket\",\"base_change_id\":\"old-base\"}\n"
+  let assert Ok(Nil) = simplifile.write(metadata_cache_path(dir), metadata)
+  let assert Ok(Nil) = simplifile.write(metadata_canonical_path(dir), metadata)
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      clean_workflow_env()
+        <> " "
+        <> run_root_env()
+        <> " SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation refresh-base --stage before-implementation",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "REFRESH_BASE_STATUS=rebased_clean")
+  let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
+  let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
+  assert cache == canonical
+  assert string.contains(cache, "\"base_change_id\": \"refreshed-base-change\"")
+  assert string.contains(cache, "\"initial_base_change_id\": \"old-base\"")
+  let assert Ok(result_json) =
+    simplifile.read(
+      dir
+      <> "/tmp/scherzo-implementation-refresh-base-before-implementation.json",
+    )
+  assert string.contains(
+    result_json,
+    "\"metadata_base_change_id_updated\": true",
+  )
+}
+
+pub fn metadata_missing_from_run_root_and_tmp_is_unrecoverable_test() {
+  let dir = "test/tmp/implementation-helper-metadata-missing"
+  reset_dir(dir)
+
+  let artifact =
+    run_helper_in(
+      dir,
+      clean_workflow_env()
+        <> " "
+        <> run_root_env()
+        <> " ../../../scripts/scherzo-implementation analyze",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stderr, "unrecoverable workflow-state loss")
+  assert string.contains(artifact.stderr, "state/implementation/metadata.json")
+  assert string.contains(artifact.stderr, "tmp/scherzo-implementation.json")
+  assert string.contains(
+    artifact.stderr,
+    "do not rerun prepare after implementation",
+  )
+}
+
+pub fn prepare_execplan_writes_canonical_metadata_and_cache_test() {
+  let dir = "test/tmp/implementation-helper-prepare-execplan-canonical"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/docs/plans/example.md", execplan_markdown())
+  write_fake_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+  write_linear_graphql_fixture(
+    dir <> "/linear-execplan.json",
+    "{"
+      <> "\"identifier\":\"LIV-230\","
+      <> "\"title\":\"Implement durable metadata\","
+      <> "\"description\":\"Plan path: `docs/plans/example.md`\","
+      <> "\"url\":\"https://linear.example/LIV-230\","
+      <> "\"comments\":{\"nodes\":[]}}",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      clean_workflow_env()
+        <> " "
+        <> run_root_env()
+        <> " SCHERZO_ISSUE_IDENTIFIER=LIV-230 SCHERZO_TEST_LINEAR_GRAPHQL_JSON=linear-execplan.json PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation prepare --source execplan",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "SOURCE_KIND=execplan")
+  assert string.contains(artifact.stdout, "PLAN_PATH=docs/plans/example.md")
+  assert string.contains(artifact.stdout, "PLAN_BRIEF_STATUS=ok")
+  let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
+  let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
+  assert cache == canonical
+  assert string.contains(cache, "\"source_kind\": \"execplan\"")
+  assert string.contains(cache, "\"issue_identifier\": \"LIV-230\"")
+  assert string.contains(
+    cache,
+    "\"issue_title\": \"Implement durable metadata\"",
+  )
+  assert string.contains(
+    cache,
+    "\"issue_url\": \"https://linear.example/LIV-230\"",
+  )
+  assert string.contains(cache, "\"plan_path\": \"docs/plans/example.md\"")
+  assert string.contains(cache, "\"base_change_id\": \"localparentcommit\"")
+  assert string.contains(cache, "\"plan_brief_status\": \"ok\"")
+  assert string.contains(
+    cache,
+    "\"plan_brief_path\": \"tmp/scherzo-execplan-brief.md\"",
+  )
+  assert string.contains(
+    cache,
+    "\"plan_index_path\": \"tmp/scherzo-execplan-index.json\"",
+  )
+  assert string.contains(cache, "\"plan_source_sha256\":")
+}
+
+pub fn prepare_ticket_writes_canonical_metadata_and_cache_test() {
+  let dir = "test/tmp/implementation-helper-prepare-ticket-canonical"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
+  write_fake_jj(dir <> "/bin/jj")
+  chmod_executable(dir <> "/bin/jj")
+  write_linear_graphql_fixture(
+    dir <> "/linear-ticket.json",
+    "{"
+      <> "\"identifier\":\"LIV-254\","
+      <> "\"title\":\"Implement from ticket\","
+      <> "\"description\":\"Use the ticket body as implementation context.\","
+      <> "\"url\":\"https://linear.example/LIV-254\","
+      <> "\"priority\":2,"
+      <> "\"state\":{\"name\":\"Todo\"},"
+      <> "\"labels\":{\"nodes\":[{\"name\":\"workflow:implementation\"}],\"pageInfo\":{\"hasNextPage\":false}},"
+      <> "\"comments\":{\"nodes\":[{\"createdAt\":\"2026-05-12T00:00:00Z\",\"body\":\"Ready.\",\"user\":{\"name\":\"Ada\"}}],\"pageInfo\":{\"hasNextPage\":false}}}",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      clean_workflow_env()
+        <> " "
+        <> run_root_env()
+        <> " SCHERZO_ISSUE_IDENTIFIER=LIV-254 SCHERZO_TEST_LINEAR_GRAPHQL_JSON=linear-ticket.json PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation prepare --source ticket",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "SOURCE_KIND=ticket")
+  assert string.contains(
+    artifact.stdout,
+    "BRIEF_PATH=tmp/scherzo-implementation-brief.md",
+  )
+  let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
+  let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
+  assert cache == canonical
+  assert string.contains(cache, "\"source_kind\": \"ticket\"")
+  assert string.contains(cache, "\"issue_identifier\": \"LIV-254\"")
+  assert string.contains(cache, "\"issue_title\": \"Implement from ticket\"")
+  assert string.contains(
+    cache,
+    "\"issue_url\": \"https://linear.example/LIV-254\"",
+  )
+  assert string.contains(
+    cache,
+    "\"brief_path\": \"tmp/scherzo-implementation-brief.md\"",
+  )
+  assert string.contains(cache, "\"base_change_id\": \"localparentcommit\"")
+  let assert Ok(brief) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-brief.md")
+  assert string.contains(
+    brief,
+    "# Ticket context for LIV-254: Implement from ticket",
+  )
 }
 
 pub fn extract_plan_prefers_explicit_plan_field_over_liv59_context_references_test() {
@@ -575,7 +904,7 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_WORKSPACE_DRIVER=/outer/driver SCHERZO_WORKSPACE_PROFILE=dogfood-jj SCHERZO_WORKSPACE_CAPABILITIES=status,diff SCHERZO_WORKSPACE_ROOT=/outer/workspaces SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS=1 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
+      "SCHERZO_RUN_ROOT=/outer/run/root SCHERZO_WORKSPACE_DRIVER=/outer/driver SCHERZO_WORKSPACE_PROFILE=dogfood-jj SCHERZO_WORKSPACE_CAPABILITIES=status,diff SCHERZO_WORKSPACE_ROOT=/outer/workspaces SCHERZO_REPO_ROOT=/outer/repo SCHERZO_JJ_WORKSPACE_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE=scherzo-agent SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main SCHERZO_JJ_WORKSPACE_FETCH_BASE=true SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main SCHERZO_PR_REPO=example/repo SCHERZO_FAIL_IF_RUN_ROOT_LEAKS=1 SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS=1 SCHERZO_FAIL_IF_PUBLICATION_ENV_LEAKS=1 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-implementation validate",
     )
 
   assert artifact.status == step_artifact.StepSucceeded
@@ -2032,6 +2361,19 @@ fn write_fake_execplan_jj(path: String) -> Nil {
   Nil
 }
 
+fn write_fake_analyze_jj(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> jj.log\n"
+        <> "if [ \"$1\" = diff ]; then echo 'src/example.gleam'; exit 0; fi\n"
+        <> "if [ \"$1\" = log ]; then echo localchange; exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
 fn write_fake_jj(path: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
@@ -2142,6 +2484,7 @@ fn write_fake_direnv(path: String) -> Nil {
         <> "printf '%s\\n' \"$*\" >> direnv.log\n"
         <> "if [ \"${SCHERZO_FAIL_IF_RUN_ROOT_LEAKS:-}\" = 1 ] && [ -n \"${SCHERZO_RUN_ROOT:-}\" ]; then echo 'SCHERZO_RUN_ROOT leaked into validation' >&2; exit 1; fi\n"
         <> "if [ \"${SCHERZO_FAIL_IF_WORKSPACE_DRIVER_LEAKS:-}\" = 1 ] && { [ -n \"${SCHERZO_WORKSPACE_DRIVER:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_PROFILE:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_CAPABILITIES:-}\" ] || [ -n \"${SCHERZO_WORKSPACE_ROOT:-}\" ]; }; then echo 'SCHERZO_WORKSPACE driver context leaked into validation' >&2; exit 1; fi\n"
+        <> "if [ \"${SCHERZO_FAIL_IF_PUBLICATION_ENV_LEAKS:-}\" = 1 ] && env | grep -E '^(SCHERZO_JJ_WORKSPACE_BASE|SCHERZO_JJ_WORKSPACE_BASE_BRANCH|SCHERZO_JJ_WORKSPACE_FETCH_BASE|SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE|SCHERZO_JJ_WORKSPACE_REMOTE|SCHERZO_PR_BASE|SCHERZO_PR_REMOTE|SCHERZO_PR_REPO|SCHERZO_REPO_ROOT)=' >/dev/null; then echo 'SCHERZO publication environment leaked into validation' >&2; exit 1; fi\n"
         <> "case \"$*\" in\n"
         <> "  'exec . selfci check '*) if [ \"${SCHERZO_FAKE_DIRENV_SELFCI_FAIL:-}\" = 1 ] || [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ]; then echo 'simulated SelfCI validation failure' >&2; exit 1; fi;;\n"
         <> "  'exec . gleam test') if [ \"${SCHERZO_FAKE_DIRENV_TEST_FAIL:-}\" = 1 ]; then echo 'simulated validation failure' >&2; exit 1; fi;;\n"
