@@ -41,6 +41,8 @@ The checked-in workflow expects:
 
 ```sh
 export LINEAR_API_KEY=lin_api_...
+# Optional. Defaults to Scherzo in devenv; used by the repo-local linear wrapper when creating issues without --project.
+export LINEAR_DEFAULT_PROJECT=Scherzo
 # Optional. Defaults to openai-codex/gpt-5.5:xhigh for workflow:research.
 export SCHERZO_RESEARCH_PI_MODEL=openai-codex/gpt-5.5:xhigh
 # Optional. Defaults to openai-codex/gpt-5.5:xhigh for workflow:execplan, workflow:execplan-revision, and workflow:execplan-implementation.

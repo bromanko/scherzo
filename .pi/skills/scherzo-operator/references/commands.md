@@ -139,7 +139,7 @@ Do not use manual deletion as a substitute for inspecting recovery, checking `.s
 
 ## Linear CLI operations
 
-Use the repository `linear` wrapper through `direnv exec .` when Linear needs to be read or updated. The wrapper uses `LINEAR_API_KEY` and falls back to `SCHERZO_AGENT_LINEAR_API_KEY`; never print either token.
+Use the repository `linear` wrapper through `direnv exec .` when Linear needs to be read or updated. The wrapper uses `LINEAR_API_KEY`, falls back to `SCHERZO_AGENT_LINEAR_API_KEY`, and applies `LINEAR_DEFAULT_PROJECT` as the default `--project` for `linear issue create` when the command omits one; never print tokens.
 
 Read-only examples:
 
@@ -152,6 +152,7 @@ direnv exec . linear issue query --team LIV --json
 Linear mutations:
 
 ```sh
+direnv exec . linear issue create --team LIV --state Todo --label workflow:research --title "Research example" --description-file tmp/issue.md --no-interactive
 direnv exec . linear issue comment add LIV-104 --body-file tmp/operator-comment.md
 direnv exec . linear issue update LIV-104 --state "Triage"
 direnv exec . linear issue update LIV-104 --label needs-clarification
