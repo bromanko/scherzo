@@ -6,6 +6,7 @@ import scherzo/structured_output
 import scherzo/structured_output_source
 import scherzo/structured_output_validator
 import scherzo/workflow_dag
+import simplifile
 
 fn spec(required: Bool) -> workflow_dag.StructuredOutputSpec {
   workflow_dag.StructuredOutputSpec(
@@ -15,6 +16,31 @@ fn spec(required: Bool) -> workflow_dag.StructuredOutputSpec {
     format: workflow_dag.StructuredJson,
     schema: workflow_dag.StructuredObjectSchema(["summary", "findings"]),
     validators: [],
+    validation_retries: 1,
+  )
+}
+
+fn json_schema_review_spec(
+  source: structured_output_source.StructuredOutputSource,
+  required: Bool,
+  schema_path: String,
+) -> workflow_dag.StructuredOutputSpec {
+  workflow_dag.StructuredOutputSpec(
+    artifact_name: "review_lane_draft",
+    required: required,
+    source: source,
+    format: workflow_dag.StructuredJson,
+    schema: workflow_dag.StructuredObjectSchema([
+      "schema_version",
+      "artifact_type",
+    ]),
+    validators: [
+      workflow_dag.JsonSchemaValidator(
+        name: "review_lane_shape",
+        path: schema_path,
+        draft: Some("2020-12"),
+      ),
+    ],
     validation_retries: 1,
   )
 }
@@ -114,6 +140,46 @@ fn validate_tool_source(
   )
 }
 
+fn fixture_text(path: String) -> String {
+  let assert Ok(contents) = simplifile.read(path)
+  contents
+}
+
+fn json_schema_runner(
+  source: structured_output_source.StructuredOutputSource,
+) -> structured_output.ValidatorRunner {
+  structured_output.default_validator_runner(
+    structured_output.default_validator_context(
+      ".scherzo",
+      ".",
+      "test_workflow",
+      "test_run",
+      "review_json",
+      1,
+      ".",
+      "review_lane_draft",
+      "json",
+      source,
+    ),
+    [],
+  )
+}
+
+fn validate_json_schema_result(
+  spec: workflow_dag.StructuredOutputSpec,
+  result: result_artifact.ResultArtifact,
+) -> Result(
+  structured_output.StructuredOutputValidation,
+  structured_output.StructuredOutputError,
+) {
+  structured_output.validate_agent_result(
+    spec,
+    result,
+    [],
+    json_schema_runner(spec.source),
+  )
+}
+
 fn tool_call(
   name: String,
   arguments_json: Option(String),
@@ -199,6 +265,123 @@ pub fn pi_tool_call_source_accepts_matching_successful_object_arguments_test() {
   let assert Ok(json_value.JObject(entries)) = json_value.parse(payload)
   assert json_value.object_has_key(entries, "schema_version")
   assert json_value.object_has_key(entries, "artifact_type")
+}
+
+pub fn json_schema_validator_runs_for_final_response_source_test() {
+  let source = structured_output_source.FinalResponseSource
+  let spec =
+    json_schema_review_spec(
+      source,
+      True,
+      "test/fixtures/structured_output/review_lane_draft.schema.json",
+    )
+  let result =
+    result_artifact.from_final_response(
+      Some(fixture_text(
+        "test/fixtures/structured_output/review_lane_payload_valid.json",
+      )),
+      False,
+      "test",
+    )
+  let assert Ok(structured_output.StructuredOutputPresent(_)) =
+    validate_json_schema_result(spec, result)
+}
+
+pub fn json_schema_validator_runs_for_pi_tool_call_source_test() {
+  let source =
+    structured_output_source.PiToolCallSource(
+      tool_name: "submit_review_lane_draft",
+      require_single: True,
+      reject_sibling_tool_calls: True,
+    )
+  let spec =
+    json_schema_review_spec(
+      source,
+      True,
+      "test/fixtures/structured_output/review_lane_draft.schema.json",
+    )
+  let result =
+    result_artifact.from_final_response_with_tool_calls(
+      Some("{\"schema_version\":999,\"artifact_type\":\"ignored\"}"),
+      False,
+      "test",
+      [
+        tool_call(
+          "submit_review_lane_draft",
+          Some(fixture_text(
+            "test/fixtures/structured_output/review_lane_payload_valid.json",
+          )),
+          Some("success"),
+          1,
+        ),
+      ],
+    )
+  let assert Ok(structured_output.StructuredOutputPresent(_)) =
+    validate_json_schema_result(spec, result)
+}
+
+pub fn json_schema_mismatch_is_retryable_validator_failure_test() {
+  let source = structured_output_source.FinalResponseSource
+  let spec =
+    json_schema_review_spec(
+      source,
+      True,
+      "test/fixtures/structured_output/review_lane_draft.schema.json",
+    )
+  let result =
+    result_artifact.from_final_response(
+      Some(fixture_text(
+        "test/fixtures/structured_output/review_lane_payload_invalid.json",
+      )),
+      False,
+      "test",
+    )
+  let assert Error(error) = validate_json_schema_result(spec, result)
+
+  assert structured_output.error_code(error)
+    == "structured_output_json_schema_rejected"
+  assert structured_output.error_retryable(error)
+  assert structured_output.error_validator_type(error) == Some("json_schema")
+  assert structured_output.error_validator_name(error)
+    == Some("review_lane_shape")
+}
+
+pub fn json_schema_missing_schema_is_non_retryable_validator_failure_test() {
+  let source = structured_output_source.FinalResponseSource
+  let spec =
+    json_schema_review_spec(
+      source,
+      True,
+      "test/fixtures/structured_output/missing.schema.json",
+    )
+  let result =
+    result_artifact.from_final_response(
+      Some(fixture_text(
+        "test/fixtures/structured_output/review_lane_payload_valid.json",
+      )),
+      False,
+      "test",
+    )
+  let assert Error(error) = validate_json_schema_result(spec, result)
+
+  assert structured_output.error_code(error)
+    == "structured_output_json_schema_config_error"
+  assert !structured_output.error_retryable(error)
+  assert structured_output.error_validator_type(error) == Some("json_schema")
+}
+
+pub fn optional_absent_output_does_not_run_json_schema_validator_test() {
+  let source = structured_output_source.FinalResponseSource
+  let spec =
+    json_schema_review_spec(
+      source,
+      False,
+      "test/fixtures/structured_output/missing.schema.json",
+    )
+  let result = result_artifact.from_final_response(None, False, "test")
+
+  assert validate_json_schema_result(spec, result)
+    == Ok(structured_output.StructuredOutputAbsent)
 }
 
 pub fn pi_tool_call_source_rejects_missing_wrong_failed_bad_multiple_and_sibling_test() {

@@ -12,7 +12,9 @@ import scherzo/port
 import scherzo/structured_output_validator
 import scherzo/workflow_dag
 
-const helper_timeout_ms = 30_000
+const default_helper_timeout_ms = 30_000
+
+const helper_timeout_env = "SCHERZO_JSON_SCHEMA_HELPER_TIMEOUT_MS"
 
 type HelperDiagnostic {
   HelperDiagnostic(
@@ -84,22 +86,90 @@ fn validate_schema_declaration(
         False,
         secrets,
       ))
-    True ->
-      case valid_repository_relative_path(schema_path) {
-        True -> Ok(Nil)
-        False ->
+    True -> {
+      use Nil <- result.try(validate_schema_path_string(
+        context,
+        schema_path,
+        secrets,
+      ))
+      validate_schema_path_resolved(context, schema_path, secrets)
+    }
+  }
+}
+
+fn validate_schema_path_string(
+  context: structured_output_validator.ValidatorContext,
+  schema_path: String,
+  secrets: List(String),
+) -> Result(Nil, structured_output_validator.ValidatorFailure) {
+  case valid_repository_relative_path(schema_path) {
+    True -> Ok(Nil)
+    False ->
+      Error(failure(
+        context,
+        "structured_output_json_schema_config_error",
+        "schema path must be repository-relative and confined to the repository: "
+          <> schema_path,
+        False,
+        "",
+        False,
+        False,
+        secrets,
+      ))
+  }
+}
+
+fn validate_schema_path_resolved(
+  context: structured_output_validator.ValidatorContext,
+  schema_path: String,
+  secrets: List(String),
+) -> Result(Nil, structured_output_validator.ValidatorFailure) {
+  case path.realpath(context.repository_root) {
+    Error(Nil) ->
+      Error(failure(
+        context,
+        "structured_output_json_schema_config_error",
+        "could not resolve repository root for JSON Schema validation",
+        False,
+        "repository_root=" <> context.repository_root,
+        False,
+        False,
+        secrets,
+      ))
+    Ok(repository_root) -> {
+      let candidate = path.join(context.repository_root, schema_path)
+      case path.realpath(candidate) {
+        Error(Nil) ->
           Error(failure(
             context,
             "structured_output_json_schema_config_error",
-            "schema path must be repository-relative and confined to the repository: "
-              <> schema_path,
+            "schema file not found or could not be resolved: " <> schema_path,
             False,
-            "",
+            "schema_file=" <> schema_path,
             False,
             False,
             secrets,
           ))
+        Ok(resolved_schema_path) ->
+          case path.contains(repository_root, resolved_schema_path) {
+            True -> Ok(Nil)
+            False ->
+              Error(failure(
+                context,
+                "structured_output_json_schema_config_error",
+                "schema path resolves outside the repository: " <> schema_path,
+                False,
+                "schema_file="
+                  <> schema_path
+                  <> " resolved_schema_path="
+                  <> resolved_schema_path,
+                False,
+                False,
+                secrets,
+              ))
+          }
       }
+    }
   }
 }
 
@@ -113,16 +183,11 @@ fn run_helper(
   structured_output_validator.ValidatorPass,
   structured_output_validator.ValidatorFailure,
 ) {
+  let helper = helper_executable()
   case
     port.start_argv_with_input(
-      "python3",
-      [
-        "scripts/scherzo-json-schema-validate",
-        "--schema",
-        schema_path,
-        "--draft",
-        draft,
-      ],
+      helper,
+      ["--schema", schema_path, "--draft", draft],
       context.repository_root,
       allowlisted_parent_env(),
       payload_json,
@@ -132,7 +197,9 @@ fn run_helper(
       Error(failure(
         context,
         "structured_output_json_schema_config_error",
-        "could not start JSON Schema validator helper: "
+        "could not start JSON Schema validator helper `"
+          <> helper
+          <> "`: "
           <> port.port_error_to_string(error),
         False,
         "",
@@ -153,7 +220,8 @@ fn read_helper_result(
   structured_output_validator.ValidatorPass,
   structured_output_validator.ValidatorFailure,
 ) {
-  case port.read_stdout_line(process, helper_timeout_ms) {
+  let timeout_ms = helper_timeout()
+  case port.read_stdout_line(process, timeout_ms) {
     Ok(line) -> {
       let status = await_status(process)
       finish_helper_result(status, line, context, schema_path, secrets)
@@ -193,7 +261,7 @@ fn read_helper_result(
 }
 
 fn await_status(process: port.Process) -> Int {
-  case port.await_exit(process, helper_timeout_ms) {
+  case port.await_exit(process, helper_timeout()) {
     Ok(status) -> status
     Error(await_error) -> {
       let _reason = port.port_error_to_string(await_error)
@@ -321,6 +389,28 @@ fn read_stderr(process: port.Process) -> String {
   case port.read_diagnostics(process) {
     Ok(value) -> value
     Error(error) -> port.port_error_to_string(error)
+  }
+}
+
+fn helper_executable() -> String {
+  case path.env("SCHERZO_JSON_SCHEMA_HELPER") {
+    Some(value) -> value
+    None -> "scripts/scherzo-json-schema-validate"
+  }
+}
+
+fn helper_timeout() -> Int {
+  case path.env(helper_timeout_env) {
+    Some(raw) ->
+      case int.parse(raw) {
+        Ok(value) ->
+          case value > 0 {
+            True -> value
+            False -> default_helper_timeout_ms
+          }
+        Error(Nil) -> default_helper_timeout_ms
+      }
+    None -> default_helper_timeout_ms
   }
 }
 

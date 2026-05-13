@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/path
 import scherzo/structured_output_source
 import scherzo/workflow_dag
 
@@ -94,6 +95,7 @@ pub fn parses_validator_defaults_test() {
 }
 
 pub fn rejects_invalid_validator_declarations_test() {
+  let assert Ok(absolute_schema_path) = path.absolute("schema.json")
   let cases = [
     #(
       workflow_with_structured_output("      validators: command\n"),
@@ -113,6 +115,12 @@ pub fn rejects_invalid_validator_declarations_test() {
     ),
     #(
       workflow_with_structured_output(
+        "      validators:\n        - type: json_schema\n",
+      ),
+      "path",
+    ),
+    #(
+      workflow_with_structured_output(
         "      validators:\n        - type: json_schema\n          path: \"\"\n",
       ),
       "path",
@@ -122,6 +130,20 @@ pub fn rejects_invalid_validator_declarations_test() {
         "      validators:\n        - type: json_schema\n          path: ../schema.json\n",
       ),
       "path",
+    ),
+    #(
+      workflow_with_structured_output(
+        "      validators:\n        - type: json_schema\n          path: \""
+        <> absolute_schema_path
+        <> "\"\n",
+      ),
+      "path",
+    ),
+    #(
+      workflow_with_structured_output(
+        "      validators:\n        - type: json_schema\n          path: schemas/review_lane_draft.schema.json\n          draft: 2020\n",
+      ),
+      "draft",
     ),
     #(
       workflow_with_structured_output(

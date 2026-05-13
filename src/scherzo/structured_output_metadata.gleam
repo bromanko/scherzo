@@ -5,6 +5,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/hash
 import scherzo/path
+import scherzo/structured_output_source
 import scherzo/workflow_dag
 import simplifile
 
@@ -33,6 +34,8 @@ pub type ValidatorValidationMetadata {
 
 pub type ValidationMetadata {
   ValidationMetadata(
+    source_type: String,
+    source_tool_name: Option(String),
     baseline: BaselineValidationMetadata,
     validators: List(ValidatorValidationMetadata),
   )
@@ -44,6 +47,8 @@ pub type ValidatorSummary {
 
 pub fn baseline_only(required_keys: List(String)) -> ValidationMetadata {
   ValidationMetadata(
+    source_type: "final_response",
+    source_tool_name: None,
     baseline: BaselineValidationMetadata(
       schema_type: "object",
       required_keys: required_keys,
@@ -58,6 +63,8 @@ pub fn from_spec(
 ) -> ValidationMetadata {
   let workflow_dag.StructuredObjectSchema(required_keys) = spec.schema
   ValidationMetadata(
+    source_type: structured_output_source.type_to_string(spec.source),
+    source_tool_name: structured_output_source.tool_name(spec.source),
     baseline: BaselineValidationMetadata(
       schema_type: "object",
       required_keys: required_keys,
@@ -81,15 +88,32 @@ pub fn validator_summaries(
 
 pub fn to_json(metadata: ValidationMetadata) -> json.Json {
   json.object([
+    #("source_type", json.string(metadata.source_type)),
+    #("source_tool_name", option_string_to_json(metadata.source_tool_name)),
     #("baseline", baseline_to_json(metadata.baseline)),
     #("validators", json.array(metadata.validators, of: validator_to_json)),
   ])
 }
 
 pub fn decoder() -> decode.Decoder(ValidationMetadata) {
+  use source_type <- decode.optional_field(
+    "source_type",
+    "final_response",
+    decode.string,
+  )
+  use source_tool_name <- decode.optional_field(
+    "source_tool_name",
+    None,
+    decode.optional(decode.string),
+  )
   use baseline <- decode.field("baseline", baseline_decoder())
   use validators <- decode.field("validators", decode.list(validator_decoder()))
-  decode.success(ValidationMetadata(baseline: baseline, validators: validators))
+  decode.success(ValidationMetadata(
+    source_type: source_type,
+    source_tool_name: source_tool_name,
+    baseline: baseline,
+    validators: validators,
+  ))
 }
 
 pub fn summary_to_json(summary: ValidatorSummary) -> json.Json {
@@ -161,6 +185,13 @@ fn validator_summary(
       )
     CommandValidationMetadata(name: name, status: status, ..) ->
       ValidatorSummary(name: name, validator_type: "command", status: status)
+  }
+}
+
+fn option_string_to_json(value: Option(String)) -> json.Json {
+  case value {
+    Some(value) -> json.string(value)
+    None -> json.null()
   }
 }
 

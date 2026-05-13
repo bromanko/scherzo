@@ -486,6 +486,8 @@ structured_output:
       path: schemas/implementation_plan.schema.json
 ```
 
+JSON Schema validators are built into Scherzo. A workflow author declares only `name`, `type: json_schema`, a repository-relative `path`, and optional `draft: "2020-12"`; Scherzo runs local draft 2020-12 validation, rejects schema paths that are blank, absolute, parent-traversing, or symlink outside the repository, and records schema path, schema SHA-256, draft, validator summary, and source type in retained artifacts. A schema mismatch is treated as retryable agent output when the artifact is required. Missing schema files, invalid schemas, unsupported drafts, helper failures, and path escapes are non-retryable configuration errors.
+
 With `source.type: final_response`, the final assistant response must be exactly one JSON document. Do not wrap it in Markdown fences or add commentary. Your prompt should say that explicitly:
 
 ```md
@@ -534,7 +536,7 @@ Create the JSON Schema at the repository-relative path declared above:
 }
 ```
 
-For semantic checks that JSON Schema cannot express, add a command validator. Command validators receive the admitted JSON payload on stdin and accept or reject it by exit status.
+For semantic checks that JSON Schema cannot express, add a command validator after the JSON Schema validator. Command validators receive the admitted JSON payload on stdin and accept or reject it by exit status. If an older workflow uses a command validator only to run JSON Schema shape validation, migrate that shape check to `type: json_schema` and keep command validators only for repository-specific semantic checks.
 
 ```yaml
 validators:

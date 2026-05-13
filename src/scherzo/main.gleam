@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/ctl
 import scherzo/doctor
+import scherzo/json_schema_self_check
 import scherzo/local_workflow_run
 import scherzo/log
 import scherzo/orchestrator/service
@@ -21,6 +22,7 @@ pub type CliResult {
   Run(RunMode, Option(String))
   LinearAttachCommentFile(String, String, Option(String))
   WorkflowRun(local_workflow_run.Options)
+  JsonSchemaSelfCheck(String, String, String)
   Control(List(String))
   Doctor(doctor.Options)
   Version
@@ -37,6 +39,8 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
     ["--help"] | ["-h"] -> Ok(Help)
     ["--version"] -> Ok(Version)
     ["ctl", ..rest] -> Ok(Control(rest))
+    ["__json-schema-self-check", repository_root, schema_path, payload_path] ->
+      Ok(JsonSchemaSelfCheck(repository_root, schema_path, payload_path))
     ["workflow", "run", workflow_path, ..rest] ->
       parse_workflow_run_args(
         rest,
@@ -199,6 +203,21 @@ pub fn main() -> Nil {
             log.error("workflow_run_failed", [
               #("code", err.code),
               #("message", err.message),
+            ]),
+          )
+          halt(1)
+        }
+      }
+    Ok(JsonSchemaSelfCheck(repository_root, schema_path, payload_path)) ->
+      case
+        json_schema_self_check.run(repository_root, schema_path, payload_path)
+      {
+        Ok(Nil) -> io.println("json_schema_self_check=ok")
+        Error(json_schema_self_check.SelfCheckError(code, message)) -> {
+          io.println_error(
+            log.error("json_schema_self_check_failed", [
+              #("code", code),
+              #("message", message),
             ]),
           )
           halt(1)
