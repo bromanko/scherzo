@@ -48,6 +48,37 @@ fn assert_review_tool_source(spec: workflow_dag.StructuredOutputSpec) -> Nil {
     )
 }
 
+fn expected_review_lane_validators() -> List(
+  workflow_dag.StructuredOutputValidator,
+) {
+  [
+    workflow_dag.JsonSchemaValidator(
+      name: "review_lane_draft_schema",
+      path: "docs/schemas/review-lane-draft.v1.schema.json",
+      draft: Some("2020-12"),
+    ),
+    workflow_dag.CommandValidator(
+      name: "review_lane_semantics",
+      argv: [
+        "python3",
+        "scripts/scherzo-review",
+        "validate-structured-output",
+        "--validator",
+        "review_lane_draft",
+      ],
+      timeout_ms: 30_000,
+      working_directory: workflow_dag.ValidatorInRepository,
+      env: [],
+    ),
+  ]
+}
+
+fn assert_review_lane_validators(
+  spec: workflow_dag.StructuredOutputSpec,
+) -> Nil {
+  assert spec.validators == expected_review_lane_validators()
+}
+
 fn assert_lane_workspace_from_main(
   dag: workflow_dag.WorkflowDag,
   step_id: String,
@@ -153,6 +184,38 @@ pub fn review_native_lane_steps_use_submit_review_lane_draft_tool_source_test() 
 
 pub fn review_native_lane_steps_use_isolated_derived_workspaces_test() {
   assert_native_review_lane_workspaces_are_isolated(review_native_dag())
+}
+
+pub fn review_native_lane_steps_use_json_schema_plus_semantic_validator_test() {
+  let review_dag = review_native_dag()
+  assert_review_lane_validators(lane_spec(review_dag, "lane_correctness"))
+  assert_review_lane_validators(lane_spec(review_dag, "lane_test_quality"))
+  assert_review_lane_validators(lane_spec(
+    review_dag,
+    "lane_idioms_maintainability",
+  ))
+  assert_review_lane_validators(lane_spec(
+    review_dag,
+    "lane_security_performance",
+  ))
+
+  let implementation_workflow_dag = implementation_dag()
+  assert_review_lane_validators(lane_spec(
+    implementation_workflow_dag,
+    "lane_correctness",
+  ))
+  assert_review_lane_validators(lane_spec(
+    implementation_workflow_dag,
+    "lane_test_quality",
+  ))
+  assert_review_lane_validators(lane_spec(
+    implementation_workflow_dag,
+    "lane_idioms_maintainability",
+  ))
+  assert_review_lane_validators(lane_spec(
+    implementation_workflow_dag,
+    "lane_security_performance",
+  ))
 }
 
 pub fn review_lane_draft_tool_is_enabled_for_implementation_lane_steps_test() {

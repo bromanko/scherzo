@@ -67,7 +67,11 @@ steps:
         reject_sibling_tool_calls: true
       required: true
       validators:
-        - name: review_lane_draft
+        - name: review_lane_draft_schema
+          type: json_schema
+          path: docs/schemas/review-lane-draft.v1.schema.json
+          draft: "2020-12"
+        - name: review_lane_semantics
           type: command
           argv:
             - python3
@@ -110,7 +114,11 @@ steps:
         reject_sibling_tool_calls: true
       required: true
       validators:
-        - name: review_lane_draft
+        - name: review_lane_draft_schema
+          type: json_schema
+          path: docs/schemas/review-lane-draft.v1.schema.json
+          draft: "2020-12"
+        - name: review_lane_semantics
           type: command
           argv:
             - python3
@@ -153,7 +161,11 @@ steps:
         reject_sibling_tool_calls: true
       required: true
       validators:
-        - name: review_lane_draft
+        - name: review_lane_draft_schema
+          type: json_schema
+          path: docs/schemas/review-lane-draft.v1.schema.json
+          draft: "2020-12"
+        - name: review_lane_semantics
           type: command
           argv:
             - python3
@@ -196,7 +208,11 @@ steps:
         reject_sibling_tool_calls: true
       required: true
       validators:
-        - name: review_lane_draft
+        - name: review_lane_draft_schema
+          type: json_schema
+          path: docs/schemas/review-lane-draft.v1.schema.json
+          draft: "2020-12"
+        - name: review_lane_semantics
           type: command
           argv:
             - python3
