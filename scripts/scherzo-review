@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Review artifact helpers for Scherzo dogfood workflows.
 
-This script is intentionally outside the Scherzo runtime. It provides a
-no-side-effect entrypoint for the staged code-review workflow: inspect a PR or
-local diff, generate a structured ReviewBrief artifact, run specialist lanes,
-synthesize their findings, write a final review artifact, and execute an E2E
-preflight suite using local fixtures.
+This script is intentionally outside the Scherzo runtime. It provides
+no-side-effect helpers for staged code-review artifacts: inspect a PR or local
+diff, generate a structured ReviewBrief artifact, run manual legacy specialist
+lanes for validation fixtures, synthesize findings, write a final review
+artifact, and execute local preflight/smoke suites. Production implementation
+workflows use native Scherzo agent lane steps, not script-level lane backends.
 """
 
 from __future__ import annotations
@@ -2801,13 +2802,44 @@ def prepare_native_command(args: argparse.Namespace) -> None:
     print("REVIEW_NATIVE_PREPARE_SUMMARY=" + json.dumps(summary, sort_keys=True))
 
 
-def artifact_ref_for(path: Path, artifact_type: str, *, base_dir: Path | None = None) -> dict[str, Any]:
-    display_path = path
+def artifact_ref_display_path(path: Path, *, base_dir: Path | None = None) -> Path:
+    """Return a non-absolute path suitable for serialized artifact refs when possible.
+
+    Native review steps may pass retained Scherzo artifact paths as absolute local
+    paths even though the artifact contract requires serialized refs to be
+    repository-relative and non-escaping.  Prefer a caller-supplied output base
+    for lane-local artifacts, then fall back to SCHERZO_REPO_ROOT, the checkout
+    containing this script, and the current working directory. If the resolved
+    path is outside every known safe base, return the resolved absolute path so
+    existing validation fails closed rather than hiding an unsafe reference.
+    """
+    candidate_bases: list[Path] = []
     if base_dir is not None:
+        candidate_bases.append(base_dir)
+    repo_root = os.environ.get("SCHERZO_REPO_ROOT")
+    if repo_root:
+        candidate_bases.append(Path(repo_root))
+    try:
+        candidate_bases.append(Path(__file__).resolve(strict=False).parent.parent)
+    except OSError:
+        pass
+    candidate_bases.append(Path.cwd())
+
+    try:
+        resolved_path = path.resolve(strict=False)
+    except OSError:
+        resolved_path = path
+
+    for base in candidate_bases:
         try:
-            display_path = path.relative_to(base_dir)
-        except ValueError:
-            display_path = path
+            return resolved_path.relative_to(base.resolve(strict=False))
+        except (OSError, ValueError):
+            continue
+    return resolved_path
+
+
+def artifact_ref_for(path: Path, artifact_type: str, *, base_dir: Path | None = None) -> dict[str, Any]:
+    display_path = artifact_ref_display_path(path, base_dir=base_dir)
     return {
         "artifact_type": artifact_type,
         "path": display_path.as_posix(),
@@ -6911,7 +6943,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_lane = subparsers.add_parser(
         "run-lane",
-        help="Run one specialist review lane against a ReviewBrief and diff source.",
+        help="Run one specialist review lane manually (legacy helper; not production implementation review).",
+        description="Manual legacy specialist-lane helper for local artifact validation and fixtures. Production implementation workflows use native Scherzo kind: agent lane steps with submit_review_lane_draft structured output instead of this command-lane backend path.",
     )
     run_lane.add_argument(
         "--lane",
@@ -6953,7 +6986,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-backend",
         choices=sorted(agent_lane_harness.AGENT_BACKENDS),
         default="heuristic",
-        help="Lane backend to use: heuristic keeps the deterministic path; fixture exercises the local harness; external is legacy rollback only and is not the production native review path.",
+        help="Manual-only backend to use: heuristic keeps the deterministic path; fixture exercises the local harness; external is legacy rollback only. None of these backends is the production implementation-review path.",
     )
     run_lane.set_defaults(func=run_lane_command)
 
@@ -6998,7 +7031,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-backend",
         choices=sorted(agent_lane_harness.AGENT_BACKENDS),
         default="heuristic",
-        help="Backend to pass to internal run-lane invocations.",
+        help="Manual preflight backend for legacy run-lane validation; not a production implementation-review routing mechanism.",
     )
     preflight.set_defaults(func=preflight_command)
 

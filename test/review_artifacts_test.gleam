@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
@@ -842,17 +843,24 @@ pub fn heuristic_preflight_is_not_cutover_ready_test() {
   )
 }
 
-pub fn implementation_workflow_native_cutover_removes_legacy_backend_default_test() {
-  let assert Ok(workflow) =
-    simplifile.read(".scherzo/workflows/implementation.yaml")
-  assert_contains(workflow, "submit_review_lane_draft")
-  assert_contains(workflow, "prepare-native")
-  assert_contains(workflow, "refuses fixture/scenario/heuristic")
-  assert_not_contains(workflow, "--agent-backend")
-  assert_not_contains(
-    workflow,
-    "SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic",
-  )
+pub fn implementation_workflows_native_cutover_removes_legacy_backend_default_test() {
+  let workflow_paths = [
+    ".scherzo/workflows/implementation.yaml",
+    ".scherzo/workflows/execplan-implementation.yaml",
+  ]
+
+  list.each(workflow_paths, fn(path) {
+    let assert Ok(workflow) = simplifile.read(path)
+    assert_contains(workflow, "submit_review_lane_draft")
+    assert_contains(workflow, "prepare-native")
+    assert_contains(workflow, "refuses fixture/scenario/heuristic")
+    assert_not_contains(workflow, "run-lane --lane")
+    assert_not_contains(workflow, "--agent-backend")
+    assert_not_contains(
+      workflow,
+      "SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-heuristic",
+    )
+  })
 }
 
 pub fn review_preflight_runs_full_dry_run_suite_test() {
@@ -1260,6 +1268,45 @@ pub fn generic_gleam_test_does_not_verify_arbitrary_correctness_claim_test() {
     simplifile.read(lane_dir <> "/review-lane-correctness.v1.json")
   assert string.contains(result, "\"verified\": false")
   assert string.contains(result, "\"blocking\": false")
+}
+
+pub fn verify_evidence_relativizes_absolute_draft_path_test() {
+  let dir = "test/tmp/native-absolute-draft-path"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let draft_path = dir <> "/draft.v1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      draft_path,
+      review_lane_draft_json("src/example.gleam", "none"),
+    )
+  let assert Ok(cwd) = simplifile.current_directory()
+  let absolute_draft_path = cwd <> "/" <> draft_path
+
+  let verify =
+    run_command(
+      "scripts/scherzo-review verify-evidence --lane correctness --draft "
+      <> absolute_draft_path
+      <> " --brief "
+      <> dir
+      <> "/review-brief.v1.json --diff-file "
+      <> dir
+      <> "/diff.patch --changed-files "
+      <> dir
+      <> "/changed-files.v1.json --validation-status "
+      <> dir
+      <> "/validation-status.v1.json --context-manifest "
+      <> dir
+      <> "/context-manifest.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert verify.status == step_artifact.StepSucceeded
+  assert verify.exit_code == Some(0)
+  let assert Ok(ledger) =
+    simplifile.read(lane_dir <> "/evidence-ledger.v1.json")
+  assert_not_contains(ledger, cwd)
+  assert_contains(ledger, "\"path\": \"" <> draft_path <> "\"")
 }
 
 pub fn correctness_blocker_downgraded_without_verified_reproduction_test() {

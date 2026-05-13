@@ -2,6 +2,8 @@
 
 This ExecPlan is a living document. The sections Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective must be kept up to date as work proceeds.
 
+> Historical note (LIV-250): this plan predates the native staged-review cutover. References to `SCHERZO_STAGED_REVIEW_AGENT_BACKEND`, `scripts/scherzo-review run-lane`, heuristic, fixture, or external backend routing describe migration-era validation only and are not current production implementation-review guidance. Current `implementation` and `execplan-implementation` workflows use native Scherzo `kind: agent` review lanes with `submit_review_lane_draft` structured outputs.
+
 ## Purpose / Big Picture
 
 Scherzo's staged review workflow is intended to replace the normal review path for code changes. Operators need that replacement to catch real semantic bugs before the cutover, not merely to classify deterministic style signals. After this plan is implemented, the staged review lanes will be backed by specialist agents that inspect the actual diff and relevant repository context, produce schema-valid `ReviewLaneResult` artifacts, retain their evidence, and fail safely when an agent lane cannot complete.

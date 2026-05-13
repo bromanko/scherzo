@@ -98,18 +98,18 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
   assert_contains(implementation_workflow, "synthesize_review")
   assert_contains(implementation_workflow, "scripts/scherzo-review")
 
-  assert_contains(execplan_implementation_workflow, "correctness_review_lane")
-  assert_contains(execplan_implementation_workflow, "test_quality_review_lane")
+  assert_contains(execplan_implementation_workflow, "lane_correctness")
+  assert_contains(execplan_implementation_workflow, "lane_test_quality")
   assert_contains(
     execplan_implementation_workflow,
-    "idioms_maintainability_review_lane",
+    "lane_idioms_maintainability",
   )
-  assert_contains(
-    execplan_implementation_workflow,
-    "security_performance_review_lane",
-  )
+  assert_contains(execplan_implementation_workflow, "lane_security_performance")
+  assert_contains(execplan_implementation_workflow, "submit_review_lane_draft")
+  assert_contains(execplan_implementation_workflow, "prepare-native")
   assert_contains(execplan_implementation_workflow, "synthesize_review")
   assert_contains(execplan_implementation_workflow, "scripts/scherzo-review")
+  assert_not_contains(execplan_implementation_workflow, "run-lane --lane")
 
   list.each([implementation_prompt, execplan_prompt], fn(prompt) {
     assert_contains(prompt, "REVIEW_FINAL_ARTIFACT_PATH")
