@@ -2,7 +2,7 @@
 
 Scherzo's staged code-review workflow passes machine-readable artifacts between review steps. This contract is intentionally separate from the Scherzo daemon runtime: review artifacts are local workflow files for agents and operators to inspect, not durable daemon state and not Linear or GitHub comments.
 
-The JSON Schema lives at [`docs/schemas/review-artifacts.v1.schema.json`](schemas/review-artifacts.v1.schema.json). All artifacts use `schema_version: 1` and an `artifact_type` discriminator.
+The aggregate JSON Schema lives at [`docs/schemas/review-artifacts.v1.schema.json`](schemas/review-artifacts.v1.schema.json). Native structured-output review lanes also use the focused [`docs/schemas/review-lane-draft.v1.schema.json`](schemas/review-lane-draft.v1.schema.json) validator before their semantic consistency check. All artifacts use `schema_version: 1` and an `artifact_type` discriminator.
 
 ## Artifact types
 
@@ -42,6 +42,24 @@ Required fields:
 - `summary`: short human-readable finding.
 - `details`: supporting explanation and evidence.
 - `suggested_fix`: actionable remediation.
+
+### `ReviewLaneDraft`
+
+A `ReviewLaneDraft` is the native agent structured-output submission captured from the `submit_review_lane_draft` tool call before evidence verification normalizes it into a lane result. The checked-in native review workflows validate this payload with `type: json_schema`, `path: docs/schemas/review-lane-draft.v1.schema.json`, and a retained command validator for cross-field semantic checks such as unique draft finding ids and evidence-request links.
+
+Required fields:
+
+- `schema_version`: `1`.
+- `artifact_type`: `review_lane_draft`.
+- `generated_at_utc`: timestamp for the draft generation.
+- `producer`: agent/tool metadata.
+- `lane`: lane metadata (`id`, `name`, `category`, and `version`).
+- `input_refs`: local artifact references consumed by the lane.
+- `draft_findings`: proposed findings with draft ids, claims, severities, locations, and linked evidence request ids.
+- `review_notes`: non-finding notes useful for reviewers or later synthesis.
+- `evidence_requests`: requested checks or artifact inspections linked to draft findings.
+- `self_check`: agent self-check metadata.
+- `remote_mutations`: always `none`.
 
 ### `ReviewLaneResult`
 
