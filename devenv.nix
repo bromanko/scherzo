@@ -6,11 +6,8 @@ let
   linearCommand =
     binName:
     pkgs.writeShellScriptBin binName ''
-      if [ -z "''${LINEAR_API_KEY:-}" ] && [ -n "''${SCHERZO_AGENT_LINEAR_API_KEY:-}" ]; then
-        export LINEAR_API_KEY="$SCHERZO_AGENT_LINEAR_API_KEY"
-      fi
-
-      exec ${linearCli}/bin/linear "$@"
+      export SCHERZO_LINEAR_CLI="''${SCHERZO_LINEAR_CLI:-${linearCli}/bin/linear}"
+      exec ${pkgs.bash}/bin/bash ${./scripts/scherzo-linear-cli-wrapper} "$@"
     '';
 
   projectScript = scriptName: ''
@@ -18,6 +15,8 @@ let
   '';
 in
 {
+  env.LINEAR_DEFAULT_PROJECT = "Scherzo";
+
   packages = [
     pkgs.gleam
     pkgs.erlang

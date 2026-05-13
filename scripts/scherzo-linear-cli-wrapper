@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -eu
+
+if [ -z "${LINEAR_API_KEY:-}" ] && [ -n "${SCHERZO_AGENT_LINEAR_API_KEY:-}" ]; then
+  export LINEAR_API_KEY="$SCHERZO_AGENT_LINEAR_API_KEY"
+fi
+
+has_arg() {
+  needle="$1"
+  shift
+  for arg in "$@"; do
+    if [ "$arg" = "$needle" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+has_project_arg() {
+  for arg in "$@"; do
+    case "$arg" in
+      --project|--project=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+should_add_default_project() {
+  if [ "${1:-}" != "issue" ] || [ "${2:-}" != "create" ]; then
+    return 1
+  fi
+
+  if [ -z "${LINEAR_DEFAULT_PROJECT:-}" ]; then
+    return 1
+  fi
+
+  if has_project_arg "$@" || has_arg "--help" "$@" || has_arg "-h" "$@"; then
+    return 1
+  fi
+
+  return 0
+}
+
+if should_add_default_project "$@"; then
+  set -- "$@" --project "$LINEAR_DEFAULT_PROJECT"
+fi
+
+linear_cli="${SCHERZO_LINEAR_CLI:-linear}"
+exec "$linear_cli" "$@"
