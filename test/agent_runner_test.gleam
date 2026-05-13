@@ -378,6 +378,107 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
     simplifile.is_file(success.workspace_path <> "/AFTER_RUN")
 }
 
+pub fn runner_allows_pi_auto_retry_to_succeed_in_same_turn_test() {
+  let root = "test/tmp/runner-auto-retry-success"
+  reset_dir(root)
+  let transcript_path = root <> "/transcript.jsonl"
+  let assert Ok(transcript) = path.absolute(transcript_path)
+  let command =
+    "FAKE_PI_AUTO_RETRY_SUCCESS=1 FAKE_PI_TRANSCRIPT="
+    <> transcript
+    <> " "
+    <> fake_pi()
+  let base = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      hooks: config_types.HooksConfig(
+        ..base.hooks,
+        after_run: Some("printf after >> AFTER_RUN"),
+      ),
+    )
+  let update_subject = process.new_subject()
+
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert success.tokens.total == 3
+  assert success.result.final_response == Some("done after retry")
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_finished"]
+  let assert Some(_) = find_update(updates, "auto_retry_start")
+  let assert Some(_) = find_update(updates, "auto_retry_end")
+  let assert Ok(contents) = simplifile.read(transcript)
+  assert occurrence_count(contents, "\"type\":\"prompt\"") == 1
+  let assert Ok(after_run_contents) =
+    simplifile.read(success.workspace_path <> "/AFTER_RUN")
+  assert after_run_contents == "after"
+}
+
+pub fn runner_fails_once_when_pi_auto_retry_exhausts_test() {
+  let root = "test/tmp/runner-auto-retry-exhausted"
+  reset_dir(root)
+  let command = "FAKE_PI_AUTO_RETRY_EXHAUSTED=1 " <> fake_pi()
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert error.agent_code(failure.reason) == "agent_pi_failed"
+  let assert error.PiFailed(pi_error) = failure.reason
+  assert error.pi_rpc_code(pi_error) == "pi_protocol_error"
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_failed"]
+  let assert Some(_) = find_update(updates, "auto_retry_start")
+  let assert Some(_) = find_update(updates, "auto_retry_end")
+}
+
+pub fn runner_retryable_error_without_retry_event_fails_after_grace_test() {
+  let root = "test/tmp/runner-auto-retry-no-event"
+  reset_dir(root)
+  let command = "FAKE_PI_RETRYABLE_ERROR_NO_RETRY_EVENT=1 " <> fake_pi()
+  let base = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      pi: config_types.PiConfig(..base.pi, read_timeout_ms: 50),
+    )
+  let update_subject = process.new_subject()
+
+  let assert Error(failure) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert failure.reason
+    == error.PiFailed(error.PiProtocolError(
+      "pi turn_end reported stopReason=error: provider_transport_failure: WebSocket error",
+    ))
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_failed"]
+  assert find_update(updates, "auto_retry_start") == None
+  assert find_update(updates, "auto_retry_end") == None
+}
+
 pub fn runner_fails_when_pi_reports_stop_reason_error_test() {
   let root = "test/tmp/runner-stop-reason-error"
   reset_dir(root)
@@ -396,10 +497,12 @@ pub fn runner_fails_when_pi_reports_stop_reason_error_test() {
 
   assert failure.reason
     == error.PiFailed(error.PiProtocolError(
-      "pi turn_end reported stopReason=error: terminated",
+      "pi turn_end reported stopReason=error: semantic model error",
     ))
-  assert turn_event_names(drain_updates(update_subject, []))
-    == ["turn_started", "turn_failed"]
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_failed"]
+  assert find_update(updates, "auto_retry_start") == None
+  assert find_update(updates, "auto_retry_end") == None
 }
 
 pub fn runner_recovers_context_exhaustion_with_pi_compaction_test() {
@@ -428,6 +531,7 @@ pub fn runner_recovers_context_exhaustion_with_pi_compaction_test() {
   let updates = drain_updates(update_subject, [])
   let assert Some(_) = find_update(updates, "context_recovery_started")
   let assert Some(_) = find_update(updates, "context_recovery_succeeded")
+  assert find_update(updates, "auto_retry_start") == None
   assert turn_event_names(updates)
     == ["turn_started", "turn_started", "turn_finished"]
   let assert Ok(contents) = simplifile.read(transcript)
