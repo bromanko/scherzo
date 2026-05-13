@@ -2,13 +2,17 @@
 """Local helpers for reviewing Scherzo ExecPlan PR artifacts.
 
 The default command is intentionally read-only: given a PR number for the
-current GitHub repository, find the changed ExecPlan file under docs/plans/,
-download the PR-head version into tmp/, render Markdown plans to the standard
-ExecPlan HTML shell when needed, and open the preview in a browser.
+current GitHub repository, find the changed ExecPlan source file under
+``docs/plans/``, download the PR-head version into ``tmp/``, render Markdown
+sources to a temporary HTML viewer when needed, and open the local preview in a
+browser. Markdown plans are the primary checked-in artifact; rendered HTML lives
+under ``tmp/scherzo-execplan-review/`` and is safe to recreate.
 
 The explicit ``review`` subcommand adds a loopback-only interactive HTML review
-server. It keeps GitHub mutation on the Python side of the localhost boundary
-and only submits feedback after the browser asks the server to do so.
+server for Markdown-derived viewers and legacy HTML plan PRs. It keeps GitHub
+mutation on the Python side of the localhost boundary and only submits feedback
+after the browser asks the server to do so. Inline comments target the changed
+source artifact, not the temporary viewer.
 """
 
 from __future__ import annotations
@@ -42,6 +46,22 @@ DEFAULT_OUTPUT_DIR = Path("tmp") / "scherzo-execplan-review"
 SERVER_HOST = "127.0.0.1"
 MAX_DRAFT_BODY_CHARS = 16_000
 MAX_DRAFTS = 200
+
+
+def is_markdown_plan(plan_path: str) -> bool:
+    return plan_path.lower().endswith(".md")
+
+
+def is_html_plan(plan_path: str) -> bool:
+    return plan_path.lower().endswith(".html")
+
+
+def plan_source_kind(plan_path: str) -> str:
+    if is_markdown_plan(plan_path):
+        return "markdown"
+    if is_html_plan(plan_path):
+        return "legacy-html"
+    return "unknown"
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -232,7 +252,9 @@ def find_plan_file(files: list[dict[str, Any]]) -> str:
 
     fail(
         "expected exactly one changed docs/plans/*.html or *.md plan file, found "
-        f"{len(unique_candidates)}: " + ", ".join(unique_candidates)
+        f"{len(unique_candidates)}: "
+        + ", ".join(unique_candidates)
+        + "; review a Markdown-only PR or remove any generated HTML plan artifact"
     )
 
 
@@ -331,16 +353,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "[--output-dir DIR] [--no-open] [--port PORT]"
         ),
         description=(
-            "Download the single docs/plans ExecPlan changed by a GitHub PR "
-            "for this repository and open a local browser preview. Use the "
-            "explicit review subcommand for interactive HTML feedback capture."
+            "Download the single docs/plans ExecPlan source changed by a GitHub PR "
+            "for this repository and open a local browser preview. Markdown is "
+            "the source of truth; temporary HTML previews are rendered under "
+            "tmp/scherzo-execplan-review/. Use the explicit review subcommand "
+            "for interactive feedback capture. Legacy HTML plan PRs remain supported."
         ),
         epilog=(
             "Examples:\n"
             "  scripts/scherzo-execplan-review 123\n"
             "  scripts/scherzo-execplan-review open 123 --no-open\n"
             "  scripts/scherzo-execplan-review review 123 --no-open\n"
-            "  scripts/scherzo-execplan-review 123 --repo bromanko/scherzo"
+            "  scripts/scherzo-execplan-review 123 --repo bromanko/scherzo\n"
+            "\nMarkdown sources are rendered to temporary HTML viewers; inline review comments target the source path."
+
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -393,9 +419,9 @@ def make_plan_session(
 ) -> PlanSession:
     session_root = output_dir / repo.replace("/", "__") / f"pr-{pr_number}"
     source_path = safe_local_path(session_root, plan_path)
-    if review_mode == "interactive-html" and plan_path.lower().endswith(".html"):
+    if review_mode == "interactive-html" and is_html_plan(plan_path):
         preview_path = session_root / "preview" / "index.html"
-    elif plan_path.lower().endswith(".md"):
+    elif is_markdown_plan(plan_path):
         preview_path = source_path.with_suffix(".html")
     else:
         preview_path = source_path
@@ -454,6 +480,8 @@ def write_session_json(session: PlanSession) -> None:
         "head_repo": session.head_repo,
         "head_sha": session.head_sha,
         "review_mode": session.review_mode,
+        "source_kind": plan_source_kind(session.plan_path),
+        "preview_is_derived": is_markdown_plan(session.plan_path) or session.review_mode == "interactive-html",
         "source_hash": session.source_hash,
         "session_root": str(session.session_root),
         "source_path": str(session.source_path),
@@ -484,7 +512,7 @@ def prepare_plan_session(
     files = paginated_pr_files(repo, pr_number)
     plan_path = find_plan_file(files)
 
-    effective_mode = "interactive-html" if review_mode == "review" and plan_path.lower().endswith(".html") else "preview"
+    effective_mode = "interactive-html" if review_mode == "review" else "preview"
     session = make_plan_session(
         repo=repo,
         pr_number=pr_number,
@@ -505,11 +533,15 @@ def prepare_plan_session(
     return session, pr, files
 
 
-def prepare_preview(session: PlanSession) -> str:
-    if session.plan_path.lower().endswith(".md"):
+def render_preview_html(session: PlanSession) -> str:
+    if is_markdown_plan(session.plan_path):
         render_markdown(session.source_path, session.preview_path, session.plan_path)
         return "rendered-markdown"
     return "html"
+
+
+def prepare_preview(session: PlanSession) -> str:
+    return render_preview_html(session)
 
 
 def build_contract_probe_payload(session: PlanSession, line: int, body: str) -> dict[str, object]:
@@ -915,7 +947,11 @@ def json_security_headers() -> dict[str, str]:
 
 
 def prepare_review_preview(session: PlanSession, *, token: str, nonce: str) -> None:
-    source_html = session.source_path.read_text(encoding="utf-8", errors="replace")
+    if is_markdown_plan(session.plan_path):
+        render_markdown(session.source_path, session.preview_path, session.plan_path)
+        source_html = session.preview_path.read_text(encoding="utf-8", errors="replace")
+    else:
+        source_html = session.source_path.read_text(encoding="utf-8", errors="replace")
     sanitized = sanitize_pr_html(source_html, nonce)
     config = {
         "apiBase": "/api",
@@ -961,6 +997,7 @@ def empty_drafts_document(session: PlanSession) -> dict[str, Any]:
         "pr_number": session.pr_number,
         "plan_path": session.plan_path,
         "head_sha": session.head_sha,
+        "source_kind": plan_source_kind(session.plan_path),
         "source_hash": session.source_hash,
         "updated_at": utc_now(),
         "comments": [],
@@ -1084,6 +1121,18 @@ def line_for_comment_id(source_text: str, comment_id: str) -> int | None:
     return None
 
 
+def source_line_for_draft(
+    session: PlanSession, draft: DraftComment, source_text: str
+) -> int | None:
+    if is_markdown_plan(session.plan_path):
+        line = draft.dom_source_line
+        line_count = len(source_text.splitlines())
+        if line is not None and 1 <= line <= line_count:
+            return line
+        return None
+    return line_for_comment_id(source_text, draft.data_comment_id)
+
+
 def right_side_commentable_lines(patch_text: str) -> set[int]:
     lines: set[int] = set()
     new_line: int | None = None
@@ -1179,9 +1228,7 @@ def build_review_submission(
     for draft in drafts:
         if draft.submitted_at:
             continue
-        source_line = draft.source_line
-        if source_line is None:
-            source_line = line_for_comment_id(source_text, draft.data_comment_id)
+        source_line = source_line_for_draft(session, draft, source_text)
         diff_eligible = bool(has_patch and source_line is not None and source_line in eligible_lines)
         draft.source_line = source_line
         draft.diff_eligible = diff_eligible
@@ -1473,8 +1520,7 @@ def start_review_server(
 ) -> tuple[ThreadingHTTPServer, str, str]:
     token = token or secrets.token_urlsafe(32)
     nonce = nonce or secrets.token_urlsafe(24)
-    if not session.preview_path.exists():
-        prepare_review_preview(session, token=token, nonce=nonce)
+    prepare_review_preview(session, token=token, nonce=nonce)
     state = ReviewServerState(session=session, token=token, nonce=nonce, run_command=run_command)
     server = ThreadingHTTPServer((SERVER_HOST, port), make_review_handler(state))
     return server, token, nonce
@@ -1568,7 +1614,6 @@ def review_pr(args: argparse.Namespace) -> int:
 
     token = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(24)
-    prepare_review_preview(session, token=token, nonce=nonce)
     server, _token, _nonce = start_review_server(session, token=token, nonce=nonce, port=args.port)
     actual_port = server.server_address[1]
     server_url = f"http://{SERVER_HOST}:{actual_port}/"
@@ -1585,7 +1630,7 @@ def review_pr(args: argparse.Namespace) -> int:
 
     print_preview_metadata(
         session=session,
-        preview_kind="interactive-html",
+        preview_kind="interactive-rendered-markdown" if is_markdown_plan(session.plan_path) else "interactive-html",
         preview_url=preview_url,
         opened=opened,
         remote_mutations="available-after-browser-submit",
