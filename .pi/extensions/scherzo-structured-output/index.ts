@@ -88,19 +88,90 @@ function validSchemaPath(schemaPath: string): boolean {
 		&& !/^[A-Za-z]:[/\\]/.test(schemaPath);
 }
 
-const disallowedProviderTopLevelKeywords = ["oneOf", "anyOf", "allOf", "enum", "not"] as const;
+const unsupportedProviderSchemaKeywords = new Set(["$schema", "$id", "$defs", "$ref", "oneOf", "anyOf", "allOf", "enum", "not", "const"]);
+
+function resolveLocalDefinition(ref: string, rootDefs: JsonObject): unknown {
+	const prefix = "#/$defs/";
+	if (!ref.startsWith(prefix)) return undefined;
+	return rootDefs[ref.slice(prefix.length)];
+}
+
+function inferredJsonType(value: unknown): string | undefined {
+	if (typeof value === "string") return "string";
+	if (typeof value === "boolean") return "boolean";
+	if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
+	if (Array.isArray(value)) return "array";
+	if (isJsonObject(value)) return "object";
+	return undefined;
+}
+
+function inferredTypeFromSchema(schema: JsonObject): string | undefined {
+	if ("const" in schema) return inferredJsonType(schema.const);
+	const enumValues = schema.enum;
+	if (Array.isArray(enumValues) && enumValues.length > 0) return inferredJsonType(enumValues[0]);
+	return undefined;
+}
+
+function normalizeSchemaType(typeValue: unknown): unknown {
+	if (!Array.isArray(typeValue)) return typeValue;
+	const nonNull = typeValue.find((candidate) => candidate !== "null");
+	return typeof nonNull === "string" ? nonNull : undefined;
+}
+
+function sanitizeProviderProperties(value: unknown, rootDefs: JsonObject): unknown {
+	if (!isJsonObject(value)) return value;
+	return Object.fromEntries(
+		Object.entries(value).map(([key, child]) => [key, sanitizeProviderSchemaNode(child, rootDefs)]),
+	);
+}
+
+function sanitizeProviderSchemaNode(value: unknown, rootDefs: JsonObject): unknown {
+	if (Array.isArray(value)) return value.map((child) => sanitizeProviderSchemaNode(child, rootDefs));
+	if (!isJsonObject(value)) return value;
+
+	const ref = value.$ref;
+	if (typeof ref === "string") {
+		const resolved = resolveLocalDefinition(ref, rootDefs);
+		return resolved === undefined ? {} : sanitizeProviderSchemaNode(resolved, rootDefs);
+	}
+
+	const sanitized: JsonObject = {};
+	for (const [key, child] of Object.entries(value)) {
+		if (unsupportedProviderSchemaKeywords.has(key)) continue;
+		if (key === "type") {
+			const normalizedType = normalizeSchemaType(child);
+			if (normalizedType !== undefined) sanitized.type = normalizedType;
+			continue;
+		}
+		if (key === "properties") {
+			sanitized.properties = sanitizeProviderProperties(child, rootDefs);
+			continue;
+		}
+		if (key === "items") {
+			sanitized.items = sanitizeProviderSchemaNode(child, rootDefs);
+			continue;
+		}
+		if (key === "additionalProperties" && isJsonObject(child)) {
+			sanitized.additionalProperties = sanitizeProviderSchemaNode(child, rootDefs);
+			continue;
+		}
+		sanitized[key] = sanitizeProviderSchemaNode(child, rootDefs);
+	}
+
+	if (sanitized.type === undefined) {
+		const inferred = inferredTypeFromSchema(value);
+		if (inferred !== undefined) sanitized.type = inferred;
+	}
+	return sanitized;
+}
 
 function normalizeProviderParametersSchema(schema: JsonObject): JsonObject {
-	for (const keyword of disallowedProviderTopLevelKeywords) {
-		if (Object.prototype.hasOwnProperty.call(schema, keyword)) {
-			throw new Error(
-				`parameters_schema must not have top-level ${keyword}; provider tool schemas reject top-level oneOf/anyOf/allOf/enum/not`,
-			);
-		}
-	}
-	const rootType = schema.type;
-	if (rootType === undefined) return { ...schema, type: "object" };
-	if (rootType === "object") return schema;
+	const rootDefs = isJsonObject(schema.$defs) ? schema.$defs : {};
+	const sanitizedValue = sanitizeProviderSchemaNode(schema, rootDefs);
+	if (!isJsonObject(sanitizedValue)) throw new Error("parameters_schema must normalize to a JSON object");
+	const rootType = sanitizedValue.type;
+	if (rootType === undefined) return { ...sanitizedValue, type: "object" };
+	if (rootType === "object") return sanitizedValue;
 	throw new Error(
 		`parameters_schema top-level type must be "object" for provider tool registration; got ${JSON.stringify(rootType)}`,
 	);

@@ -83,6 +83,12 @@ function emitInvalidReachedExecute(model: Model<any>): AssistantMessageEventStre
 	return stream;
 }
 
+function schemaInvalidFixture(): Record<string, unknown> {
+	const invalid = fixture("valid-review-lane.arguments.json");
+	delete invalid.schema_version;
+	return invalid;
+}
+
 function streamSimple(model: Model<any>, context: Context, _options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const serialized = JSON.stringify(context);
 	if (serialized.includes("Accepted review_lane_draft") || serialized.includes("scherzo_structured_output_tool_receipt")) {
@@ -91,7 +97,7 @@ function streamSimple(model: Model<any>, context: Context, _options?: SimpleStre
 	if (contextContainsToolError(context)) {
 		return emitToolCall(model, fixture("valid-review-lane.arguments.json"), "raw-schema-smoke-valid");
 	}
-	return emitToolCall(model, fixture("invalid-placeholder-path.arguments.json"), "raw-schema-smoke-invalid");
+	return emitToolCall(model, schemaInvalidFixture(), "raw-schema-smoke-invalid");
 }
 
 export default function smokeProvider(pi: ExtensionAPI) {
