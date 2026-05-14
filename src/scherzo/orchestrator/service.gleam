@@ -1342,6 +1342,17 @@ fn diagnostic_log_fields(
       #("actual", actual),
       #("actual_team", actual_team_key),
     ]
+    linear_contract.MissingCompletionStateId(source, id) -> [
+      #("code", code),
+      #("source", source),
+      #("id", id),
+    ]
+    linear_contract.AmbiguousCompletionStateName(team_key, name, source) -> [
+      #("code", code),
+      #("team", team_key),
+      #("source", source),
+      #("name", name),
+    ]
   }
 }
 

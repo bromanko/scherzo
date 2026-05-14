@@ -6,6 +6,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 import yay
 
 fn env(name: String) -> Option(String) {
@@ -546,6 +547,103 @@ pub fn handoff_result_max_chars_must_be_positive_test() {
     minimal_front() <> "handoff:\n  enabled: true\n  result_max_chars: 0\n"
   let assert Error(error.InvalidConfig(_)) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+}
+
+pub fn handoff_completion_states_parse_display_names_test() {
+  let front =
+    minimal_front()
+    <> "linear_contract:\n  enabled: true\nhandoff:\n  enabled: true\n  completion_states:\n    default_completion_state: In Review\n    no_review_completion_state: Done\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n    cancellation_state: Canceled\n    workflows:\n      execplan:\n        produces_reviewable_artifacts: true\n        requires_review: true\n      no-review-maintenance:\n        produces_reviewable_artifacts: false\n        requires_review: false\n        success_state: Done\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  let assert Some(policy) = configured.handoff.completion_states
+  assert policy.default_completion_state
+    == workflow_completion_policy.StateByName("In Review")
+  assert policy.no_review_completion_state
+    == Some(workflow_completion_policy.StateByName("Done"))
+  assert policy.failure_state
+    == workflow_completion_policy.StateByName("Needs Attention")
+  assert policy.partial_success_state
+    == workflow_completion_policy.StateByName("Needs Attention")
+  assert policy.cancellation_state
+    == Some(workflow_completion_policy.StateByName("Canceled"))
+  let assert Ok(execplan) = dict.get(policy.workflows, "execplan")
+  assert execplan.produces_reviewable_artifacts == Some(True)
+  assert execplan.requires_review == Some(True)
+  let assert Ok(maintenance) =
+    dict.get(policy.workflows, "no-review-maintenance")
+  assert maintenance.produces_reviewable_artifacts == Some(False)
+  assert maintenance.requires_review == Some(False)
+  assert maintenance.success_state
+    == Some(workflow_completion_policy.StateByName("Done"))
+}
+
+pub fn handoff_completion_states_parse_state_ids_test() {
+  let front =
+    minimal_front()
+    <> "linear_contract:\n  enabled: true\nhandoff:\n  enabled: true\n  completion_states:\n    default_completion_state_id: state-review\n    failure_state_id: state-attention\n    partial_success_state_id: state-attention\n    workflows:\n      execplan:\n        success_state_id: state-custom\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+  let assert Some(policy) = configured.handoff.completion_states
+  assert policy.default_completion_state
+    == workflow_completion_policy.StateById("state-review")
+  assert policy.failure_state
+    == workflow_completion_policy.StateById("state-attention")
+  assert policy.partial_success_state
+    == workflow_completion_policy.StateById("state-attention")
+  let assert Ok(execplan) = dict.get(policy.workflows, "execplan")
+  assert execplan.success_state
+    == Some(workflow_completion_policy.StateById("state-custom"))
+}
+
+pub fn handoff_completion_states_reject_invalid_config_test() {
+  let duplicate =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  enabled: true\nhandoff:\n  completion_states:\n    default_completion_state: In Review\n    default_completion_state_id: state-review\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n",
+    )
+  assert string.contains(
+    duplicate,
+    "handoff.completion_states.default_completion_state",
+  )
+  assert string.contains(
+    duplicate,
+    "handoff.completion_states.default_completion_state_id",
+  )
+
+  let missing_required =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  enabled: true\nhandoff:\n  completion_states:\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n",
+    )
+  assert string.contains(
+    missing_required,
+    "handoff.completion_states.default_completion_state",
+  )
+
+  let empty_value =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  enabled: true\nhandoff:\n  completion_states:\n    default_completion_state: \"  \"\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n",
+    )
+  assert string.contains(empty_value, "must be non-empty")
+
+  let contract_disabled =
+    invalid_config_message(
+      minimal_front()
+      <> "handoff:\n  completion_states:\n    default_completion_state: In Review\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n",
+    )
+  assert string.contains(contract_disabled, "linear_contract.enabled")
+  assert string.contains(
+    contract_disabled,
+    "scherzo doctor --check linear-contract",
+  )
+
+  let unsupported =
+    invalid_config_message(
+      minimal_front()
+      <> "linear_contract:\n  enabled: true\nhandoff:\n  completion_states:\n    default_completion_state: In Review\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n    unresolved_state_policy: best_effort\n",
+    )
+  assert string.contains(unsupported, "unresolved_state_policy")
 }
 
 pub fn handoff_attachment_requires_success_comment_test() {

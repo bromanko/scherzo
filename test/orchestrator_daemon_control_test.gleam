@@ -264,7 +264,9 @@ fn park_reporting_handoff(subject: process.Subject(String)) -> handoff.Client {
   handoff.Client(
     claim_issue: fn(_, _) { Ok(Nil) },
     report_success: fn(_, _, _) { Ok(Nil) },
+    report_success_for_workflow: fn(_, _, _, _) { Ok(Nil) },
     report_failure: fn(_, _, _) { Ok(Nil) },
+    report_failure_for_workflow: fn(_, _, _, _) { Ok(Nil) },
     report_park: fn(report) {
       process.send(subject, park_report_message(report))
       Ok(Nil)
@@ -303,7 +305,9 @@ fn blocking_handoff(
       Ok(Nil)
     },
     report_success: fn(_, _, _) { Ok(Nil) },
+    report_success_for_workflow: fn(_, _, _, _) { Ok(Nil) },
     report_failure: fn(_, _, _) { Ok(Nil) },
+    report_failure_for_workflow: fn(_, _, _, _) { Ok(Nil) },
     report_park: fn(_) { Ok(Nil) },
   )
 }
