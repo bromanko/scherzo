@@ -422,6 +422,30 @@ pub fn runner_allows_pi_auto_retry_to_succeed_in_same_turn_test() {
   assert after_run_contents == "after"
 }
 
+pub fn runner_waits_for_agent_end_after_successful_auto_retry_with_tool_events_test() {
+  let root = "test/tmp/runner-auto-retry-early-end-tool-events"
+  reset_dir(root)
+  let command = "FAKE_PI_AUTO_RETRY_EARLY_END_WITH_TOOL_EVENTS=1 " <> fake_pi()
+  let update_subject = process.new_subject()
+
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert success.tokens.total == 3
+  assert success.result.final_response == Some("retry completed after tool")
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_finished"]
+  let assert Some(_) = find_update(updates, "auto_retry_start")
+  let assert Some(_) = find_update(updates, "auto_retry_end")
+}
+
 pub fn runner_fails_once_when_pi_auto_retry_exhausts_test() {
   let root = "test/tmp/runner-auto-retry-exhausted"
   reset_dir(root)

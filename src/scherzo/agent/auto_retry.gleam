@@ -1,4 +1,5 @@
 import gleam/option.{type Option, None, Some}
+import scherzo/agent/pi_event
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/pi/retry_event
@@ -12,6 +13,7 @@ pub type State {
     started: Bool,
     decision_deadline_ms: Option(Int),
     agent_end_seen: Bool,
+    retry_output_seen: Bool,
   )
 }
 
@@ -39,13 +41,20 @@ pub fn defer_failure(
         started: False,
         decision_deadline_ms: deadline,
         agent_end_seen: False,
+        retry_output_seen: False,
       )
-    PendingAutoRetry(started: started, agent_end_seen: agent_end_seen, ..) ->
+    PendingAutoRetry(
+      started: started,
+      agent_end_seen: agent_end_seen,
+      retry_output_seen: retry_output_seen,
+      ..,
+    ) ->
       PendingAutoRetry(
         error: Some(err),
         started: started,
         decision_deadline_ms: deadline,
         agent_end_seen: agent_end_seen,
+        retry_output_seen: retry_output_seen,
       )
   }
 }
@@ -58,27 +67,69 @@ pub fn mark_started(pending_auto_retry: State) -> State {
         started: True,
         decision_deadline_ms: None,
         agent_end_seen: False,
+        retry_output_seen: False,
       )
-    PendingAutoRetry(error: err, agent_end_seen: agent_end_seen, ..) ->
+    PendingAutoRetry(error: err, ..) ->
       PendingAutoRetry(
         error: err,
         started: True,
         decision_deadline_ms: None,
-        agent_end_seen: agent_end_seen,
+        agent_end_seen: False,
+        retry_output_seen: False,
       )
   }
 }
 
-pub fn mark_agent_end(pending_auto_retry: State, deadline_ms: Int) -> State {
-  let deadline = Some(deadline_ms)
+pub fn mark_retry_output(pending_auto_retry: State) -> State {
   case pending_auto_retry {
     NoPendingAutoRetry -> NoPendingAutoRetry
+    PendingAutoRetry(
+      error: err,
+      started: True,
+      decision_deadline_ms: deadline,
+      agent_end_seen: agent_end_seen,
+      ..,
+    ) ->
+      PendingAutoRetry(
+        error: err,
+        started: True,
+        decision_deadline_ms: deadline,
+        agent_end_seen: agent_end_seen,
+        retry_output_seen: True,
+      )
+    PendingAutoRetry(..) -> pending_auto_retry
+  }
+}
+
+pub fn mark_output_event(
+  pending_auto_retry: State,
+  event: pi_event.PiEvent,
+) -> State {
+  case event {
+    pi_event.MessageStart
+    | pi_event.MessageUpdate
+    | pi_event.MessageEnd
+    | pi_event.Message
+    | pi_event.ToolExecutionStart
+    | pi_event.ToolExecutionUpdate
+    | pi_event.ToolExecutionEnd
+    | pi_event.ExtensionUiRequest
+    | pi_event.TurnEnd -> mark_retry_output(pending_auto_retry)
+    _ -> pending_auto_retry
+  }
+}
+
+pub fn mark_agent_end(pending_auto_retry: State, deadline_ms: Int) -> State {
+  case pending_auto_retry {
+    NoPendingAutoRetry -> NoPendingAutoRetry
+    PendingAutoRetry(retry_output_seen: False, ..) -> pending_auto_retry
     PendingAutoRetry(error: err, started: started, ..) ->
       PendingAutoRetry(
         error: err,
         started: started,
-        decision_deadline_ms: deadline,
+        decision_deadline_ms: Some(deadline_ms),
         agent_end_seen: True,
+        retry_output_seen: True,
       )
   }
 }

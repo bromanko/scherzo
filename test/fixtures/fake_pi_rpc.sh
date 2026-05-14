@@ -235,6 +235,22 @@ while IFS= read -r line; do
         jq -cn '{type:"auto_retry_end",success:true,attempt:1}'
         continue
       fi
+      if [[ -n "${FAKE_PI_AUTO_RETRY_EARLY_END_WITH_TOOL_EVENTS:-}" ]]; then
+        jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"first attempt failed"}]}}'
+        jq -cn '{type:"auto_retry_start",attempt:1,maxAttempts:3,delayMs:1,errorMessage:"WebSocket error"}'
+        jq -cn '{type:"turn_start"}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",turns:($turns|tonumber)}'
+        jq -cn '{type:"message_update",delta:"retry produced tool call"}'
+        jq -cn '{type:"message_end",message:{role:"assistant",content:[{type:"toolCall",id:"call_fake",name:"read",arguments:{path:"README.md"}}],stopReason:"toolUse"}}'
+        jq -cn '{type:"auto_retry_end",success:true,attempt:1}'
+        for event_index in $(seq 1 105); do
+          jq -cn --arg event_index "$event_index" '{type:"tool_execution_update",toolCallId:"call_fake",toolName:"read",args:{path:"README.md"},partialResult:{content:[{type:"text",text:("chunk " + $event_index)}]}}'
+        done
+        jq -cn '{type:"tool_execution_end",toolCallId:"call_fake",toolName:"read",result:{content:[{type:"text",text:"tool done"}]},isError:false}'
+        jq -cn '{type:"turn_end",message:{role:"assistant",content:[{type:"text",text:"retry completed after tool"}]}}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",messages:[{role:"assistant",content:"retry completed after tool"}],turns:($turns|tonumber)}'
+        continue
+      fi
       if [[ -n "${FAKE_PI_AUTO_RETRY_EXHAUSTED:-}" ]]; then
         jq -cn '{type:"message_update",delta:"first attempt"}'
         jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"first attempt failed"}]}}'

@@ -597,7 +597,7 @@ fn handle_turn_record(
                 pending_ui,
                 turn_records,
                 stall_deadline_ms,
-                pending_auto_retry,
+                auto_retry.mark_output_event(pending_auto_retry, event),
               )
             _ ->
               active_turn_loop(
@@ -608,7 +608,7 @@ fn handle_turn_record(
                 pending_ui,
                 turn_records,
                 monotonic_ms() + context.config.pi.stall_timeout_ms,
-                pending_auto_retry,
+                auto_retry.mark_output_event(pending_auto_retry, event),
               )
           }
       }
