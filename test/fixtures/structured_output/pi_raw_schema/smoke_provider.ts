@@ -97,6 +97,8 @@ function streamSimple(model: Model<any>, context: Context, _options?: SimpleStre
 export default function smokeProvider(pi: ExtensionAPI) {
 	pi.registerProvider(providerName, {
 		name: "Scherzo Raw Schema Smoke",
+		baseUrl: "http://127.0.0.1/scherzo-raw-schema-smoke",
+		apiKey: "SCHERZO_RAW_SCHEMA_SMOKE_API_KEY",
 		api: "scherzo-raw-schema-smoke" as any,
 		streamSimple,
 		models: [

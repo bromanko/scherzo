@@ -38,7 +38,76 @@ PY
 if command -v pi >/dev/null 2>&1; then
   pi_version="$(pi --version 2>&1 | tail -n 1 | tr ' ' '_')"
 else
-  pi_version="unavailable"
+  printf 'STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=failed reason=pi_unavailable\n' >&2
+  exit 1
 fi
 
-printf 'STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=passed pi_version=%s invalid=rejected_before_execute valid=accepted terminate=true\n' "$pi_version"
+output_dir="${SCHERZO_STRUCTURED_OUTPUT_SMOKE_DIR:-tmp/scherzo-structured-output-raw-schema-smoke}"
+mkdir -p "$output_dir"
+stdout_path="$output_dir/transcript.jsonl"
+stderr_path="$output_dir/pi.stderr"
+: >"$stdout_path"
+: >"$stderr_path"
+spec_path="$repo_root/test/fixtures/structured_output/pi_raw_schema/spec.correctness.json"
+provider_path="$repo_root/test/fixtures/structured_output/pi_raw_schema/smoke_provider.ts"
+
+fail_smoke() {
+  reason="$1"
+  printf 'STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=failed reason=%s transcript=%s stderr=%s\n' "$reason" "$stdout_path" "$stderr_path" >&2
+  if [ -s "$stderr_path" ]; then
+    printf '%s\n' '--- pi stderr ---' >&2
+    tail -80 "$stderr_path" >&2
+  fi
+  if [ -s "$stdout_path" ]; then
+    printf '%s\n' '--- pi transcript tail ---' >&2
+    tail -120 "$stdout_path" >&2
+  fi
+  exit 1
+}
+
+rpc_requests=$(
+  cat <<'EOF'
+{"id":"structured-output-tool-info","type":"prompt","message":"/structured-output-tool-info"}
+{"id":"raw-schema-smoke","type":"prompt","message":"run structured output raw schema smoke"}
+EOF
+)
+
+if ! printf '%s\n' "$rpc_requests" | \
+  SCHERZO_RAW_SCHEMA_SMOKE_API_KEY=dummy \
+  SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH="$spec_path" \
+  SCHERZO_WORKFLOW_ID=implementation \
+  SCHERZO_STEP_ID=lane_correctness \
+  pi \
+    --mode rpc \
+    --no-session \
+    --no-builtin-tools \
+    --no-skills \
+    --no-prompt-templates \
+    --no-themes \
+    --no-context-files \
+    --extension "$provider_path" \
+    --model scherzo-raw-schema-smoke/scherzo-raw-schema-smoke \
+    >"$stdout_path" 2>"$stderr_path"; then
+  fail_smoke pi_rpc_failed
+fi
+
+if grep -q 'Extension runtime not initialized' "$stdout_path" "$stderr_path"; then
+  fail_smoke extension_runtime_not_initialized
+fi
+if ! grep -q 'SCHERZO_STRUCTURED_OUTPUT_TOOL_ADVERTISED=.*"status":"active"' "$stdout_path" "$stderr_path"; then
+  fail_smoke structured_output_tool_not_active
+fi
+if ! grep -q 'Validation failed for tool.*submit_structured_output' "$stdout_path"; then
+  fail_smoke invalid_payload_not_rejected_before_execute
+fi
+if grep -q 'RAW_SCHEMA_SMOKE_INVALID_REACHED_EXECUTE' "$stdout_path"; then
+  fail_smoke invalid_payload_reached_execute
+fi
+if ! grep -q 'scherzo_structured_output_tool_receipt' "$stdout_path"; then
+  fail_smoke valid_payload_not_accepted
+fi
+if ! grep -q '"terminate":true' "$stdout_path"; then
+  fail_smoke terminating_tool_result_missing
+fi
+
+printf 'STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=passed pi_version=%s invalid=rejected_before_execute valid=accepted terminate=true extension=active transcript=%s\n' "$pi_version" "$stdout_path"

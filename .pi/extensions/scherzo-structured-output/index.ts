@@ -24,11 +24,19 @@ export interface StructuredOutputToolSpec {
 	terminate: true;
 }
 
+type StartupToolInfo =
+	| { status: "disabled_missing_spec_env" }
+	| { status: "missing_spec_file"; spec_path: string }
+	| { status: "invalid_spec"; spec_path: string; error: string }
+	| { status: "loaded"; spec_path: string; spec: StructuredOutputToolSpec };
+
 type ToolInfo =
 	| { status: "disabled_missing_spec_env" }
 	| { status: "missing_spec_file"; spec_path: string }
 	| { status: "invalid_spec"; spec_path: string; error: string }
 	| { status: "duplicate_tool_name"; spec_path: string; tool_name: string; active_structured_output_tool_count: number }
+	| { status: "registration_failed"; spec_path: string; tool_name: string; error: string }
+	| { status: "inactive"; spec_path: string; tool_name: string; artifact_name: string; schema_sha256: string; active_structured_output_tool_count: number }
 	| { status: "active"; spec_path: string; tool_name: string; artifact_name: string; schema_sha256: string; active_structured_output_tool_count: number };
 
 const SPEC_ENV = "SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH";
@@ -151,13 +159,12 @@ export function createStructuredOutputTool(spec: StructuredOutputToolSpec) {
 	});
 }
 
-function loadToolInfo(pi: ExtensionAPI): ToolInfo {
+function loadStartupToolInfo(): StartupToolInfo {
 	const specPath = process.env[SPEC_ENV];
 	if (!specPath) return { status: "disabled_missing_spec_env" };
 	if (!existsSync(specPath)) return { status: "missing_spec_file", spec_path: specPath };
-	let spec: StructuredOutputToolSpec;
 	try {
-		spec = loadSpecFromPath(specPath);
+		return { status: "loaded", spec_path: specPath, spec: loadSpecFromPath(specPath) };
 	} catch (error) {
 		return {
 			status: "invalid_spec",
@@ -165,31 +172,92 @@ function loadToolInfo(pi: ExtensionAPI): ToolInfo {
 			error: error instanceof Error ? error.message : String(error),
 		};
 	}
-	const activeTools = pi.getActiveTools();
-	if (activeTools.includes(spec.tool_name)) {
-		return {
-			status: "duplicate_tool_name",
-			spec_path: specPath,
-			tool_name: spec.tool_name,
-			active_structured_output_tool_count: activeTools.filter((name) => name === spec.tool_name).length,
-		};
+}
+
+function startupToolInfoToCommandInfo(info: StartupToolInfo): ToolInfo {
+	switch (info.status) {
+		case "disabled_missing_spec_env":
+			return info;
+		case "missing_spec_file":
+			return info;
+		case "invalid_spec":
+			return info;
+		case "loaded":
+			return {
+				status: "inactive",
+				spec_path: info.spec_path,
+				tool_name: info.spec.tool_name,
+				artifact_name: info.spec.artifact_name,
+				schema_sha256: info.spec.parameters_schema_sha256,
+				active_structured_output_tool_count: 0,
+			};
 	}
-	pi.registerTool(createStructuredOutputTool(spec));
+}
+
+function activeToolCount(pi: ExtensionAPI, toolName: string): number {
+	return pi.getActiveTools().filter((name) => name === toolName).length;
+}
+
+function activeToolInfo(pi: ExtensionAPI, info: Extract<StartupToolInfo, { status: "loaded" }>): ToolInfo {
+	const activeCount = activeToolCount(pi, info.spec.tool_name);
+	const common = {
+		spec_path: info.spec_path,
+		tool_name: info.spec.tool_name,
+		artifact_name: info.spec.artifact_name,
+		schema_sha256: info.spec.parameters_schema_sha256,
+		active_structured_output_tool_count: activeCount,
+	};
 	return {
-		status: "active",
-		spec_path: specPath,
-		tool_name: spec.tool_name,
-		artifact_name: spec.artifact_name,
-		schema_sha256: spec.parameters_schema_sha256,
-		active_structured_output_tool_count: 1,
+		...common,
+		status: activeCount > 0 ? "active" : "inactive",
+	};
+}
+
+function duplicateToolInfo(pi: ExtensionAPI, info: Extract<StartupToolInfo, { status: "loaded" }>): ToolInfo {
+	return {
+		status: "duplicate_tool_name",
+		spec_path: info.spec_path,
+		tool_name: info.spec.tool_name,
+		active_structured_output_tool_count: activeToolCount(pi, info.spec.tool_name),
+	};
+}
+
+function registrationFailedToolInfo(
+	info: Extract<StartupToolInfo, { status: "loaded" }>,
+	error: unknown,
+): ToolInfo {
+	return {
+		status: "registration_failed",
+		spec_path: info.spec_path,
+		tool_name: info.spec.tool_name,
+		error: error instanceof Error ? error.message : String(error),
 	};
 }
 
 export default function scherzoStructuredOutputExtension(pi: ExtensionAPI) {
-	const info = loadToolInfo(pi);
+	const startupInfo = loadStartupToolInfo();
+	let info = startupToolInfoToCommandInfo(startupInfo);
+
+	pi.on("session_start", () => {
+		if (startupInfo.status !== "loaded") return;
+		if (activeToolCount(pi, startupInfo.spec.tool_name) > 0) {
+			info = duplicateToolInfo(pi, startupInfo);
+			return;
+		}
+		try {
+			pi.registerTool(createStructuredOutputTool(startupInfo.spec));
+			info = activeToolInfo(pi, startupInfo);
+		} catch (error) {
+			info = registrationFailedToolInfo(startupInfo, error);
+		}
+	});
+
 	pi.registerCommand("structured-output-tool-info", {
 		description: "Print whether Scherzo's generic structured-output tool is active in this Pi session.",
 		handler: async () => {
+			if (startupInfo.status === "loaded" && info.status !== "duplicate_tool_name" && info.status !== "registration_failed") {
+				info = activeToolInfo(pi, startupInfo);
+			}
 			console.log(`SCHERZO_STRUCTURED_OUTPUT_TOOL_ADVERTISED=${JSON.stringify(info)}`);
 			if (info.status !== "disabled_missing_spec_env" && info.status !== "active") {
 				throw new Error(`Scherzo structured-output tool is not active: ${info.status}`);
