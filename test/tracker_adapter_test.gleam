@@ -60,7 +60,7 @@ fn all_requirements() -> adapter.TrackerRequirements {
     remote_commands_config_path: Some("linear_commands.enabled"),
     handoff_comments_enabled: True,
     handoff_state_moves_enabled: True,
-    handoff_config_path: Some("handoff.states"),
+    handoff_config_path: None,
     workflow_label_paths: ["workflows.<id>.label"],
     scheduled_failure_paths: ["scheduled_jobs.<id>.on_failure"],
     readiness_checks_enabled: True,
@@ -73,6 +73,20 @@ fn no_requirements() -> adapter.TrackerRequirements {
     remote_commands_enabled: False,
     remote_commands_config_path: None,
     handoff_comments_enabled: False,
+    handoff_state_moves_enabled: False,
+    handoff_config_path: None,
+    workflow_label_paths: [],
+    scheduled_failure_paths: [],
+    readiness_checks_enabled: False,
+    smoke_checks_enabled: False,
+  )
+}
+
+fn handoff_comments_requirements() -> adapter.TrackerRequirements {
+  adapter.TrackerRequirements(
+    remote_commands_enabled: False,
+    remote_commands_config_path: None,
+    handoff_comments_enabled: True,
     handoff_state_moves_enabled: False,
     handoff_config_path: None,
     workflow_label_paths: [],
@@ -237,6 +251,7 @@ pub fn read_only_adapter_reports_all_required_missing_capabilities_test() {
     == [
       "tracker_capability_missing feature=remote_commands capability=remote_commands path=linear_commands.enabled backend=test-memory message=\"linear_commands.enabled requires tracker adapter test-memory to expose remote_commands\"",
       "tracker_capability_missing feature=remote_command_ack capability=comments path=linear_commands.enabled backend=test-memory message=\"remote command acknowledgements require comments capability\"",
+      "tracker_capability_missing feature=handoff_comments capability=handoff path=handoff.comments backend=test-memory message=\"handoff comments require handoff capability\"",
       "tracker_capability_missing feature=handoff_state_moves capability=state_transitions path=handoff.states backend=test-memory message=\"handoff state moves require state_transitions capability\"",
       "tracker_capability_missing feature=workflow_label_routing capability=routing_metadata path=workflows.<id>.label backend=test-memory message=\"workflow label routing requires routing_metadata capability\"",
       "tracker_capability_missing feature=scheduled_failures capability=scheduled_failures path=scheduled_jobs.<id>.on_failure backend=test-memory message=\"scheduled failure publication requires scheduled_failures capability\"",
@@ -257,6 +272,36 @@ pub fn full_adapter_satisfies_all_requirements_test() {
   assert adapter.validate_required_capabilities(
       full_adapter(),
       all_requirements(),
+    )
+    == Ok(Nil)
+}
+
+pub fn handoff_comments_requires_handoff_capability_not_comments_test() {
+  let adapter_with_comments_only =
+    adapter.TrackerAdapter(
+      ..read_only_adapter(),
+      comments: Some(comment_capability()),
+    )
+  let assert Error(errors) =
+    adapter.validate_required_capabilities(
+      adapter_with_comments_only,
+      handoff_comments_requirements(),
+    )
+
+  assert validation_messages(errors)
+    == [
+      "tracker_capability_missing feature=handoff_comments capability=handoff path=handoff.comments backend=test-memory message=\"handoff comments require handoff capability\"",
+    ]
+
+  let adapter_with_handoff_only =
+    adapter.TrackerAdapter(
+      ..read_only_adapter(),
+      handoff: Some(handoff_capability()),
+    )
+
+  assert adapter.validate_required_capabilities(
+      adapter_with_handoff_only,
+      handoff_comments_requirements(),
     )
     == Ok(Nil)
 }

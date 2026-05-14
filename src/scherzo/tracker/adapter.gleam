@@ -330,11 +330,31 @@ fn validate_handoff(
   errors: List(CapabilityValidationError),
 ) -> List(CapabilityValidationError) {
   let TrackerRequirements(
+    handoff_comments_enabled: handoff_comments_enabled,
     handoff_state_moves_enabled: handoff_state_moves_enabled,
     handoff_config_path: handoff_config_path,
     ..,
   ) = requirements
-  let path = option_with_default(handoff_config_path, "handoff.states")
+  let comments_path =
+    option_with_default(handoff_config_path, "handoff.comments")
+  let state_moves_path =
+    option_with_default(handoff_config_path, "handoff.states")
+
+  let errors = case handoff_comments_enabled {
+    False -> errors
+    True ->
+      require_option(
+        adapter.handoff,
+        errors,
+        missing_capability(
+          adapter,
+          "handoff_comments",
+          "handoff",
+          comments_path,
+          "handoff comments require handoff capability",
+        ),
+      )
+  }
 
   case handoff_state_moves_enabled {
     False -> errors
@@ -346,7 +366,7 @@ fn validate_handoff(
           adapter,
           "handoff_state_moves",
           "state_transitions",
-          path,
+          state_moves_path,
           "handoff state moves require state_transitions capability",
         ),
       )
