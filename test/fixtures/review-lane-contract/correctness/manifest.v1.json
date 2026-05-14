@@ -1,0 +1,52 @@
+{
+  "artifact_type": "review_lane_contract_fixture_manifest",
+  "fixtures": [
+    {
+      "expect": "pass",
+      "fixture": "valid-minimal.arguments.json"
+    },
+    {
+      "code": "review_lane_submission_shape_invalid",
+      "contains": "self_check",
+      "expect": "fail",
+      "fixture": "missing-required-field.arguments.json"
+    },
+    {
+      "code": "review_lane_submission_unexpected_runner_metadata",
+      "contains": "lane",
+      "expect": "fail",
+      "fixture": "unexpected-runner-metadata.arguments.json"
+    },
+    {
+      "code": "review_lane_submission_canonical_validation_failed",
+      "contains": "severity",
+      "expect": "fail",
+      "fixture": "invalid-severity.arguments.json"
+    },
+    {
+      "code": "review_lane_submission_canonical_validation_failed",
+      "contains": "category",
+      "expect": "fail",
+      "fixture": "invalid-category.arguments.json"
+    },
+    {
+      "code": "review_lane_submission_canonical_validation_failed",
+      "contains": "evidence request",
+      "expect": "fail",
+      "fixture": "invalid-evidence-link.arguments.json"
+    },
+    {
+      "code": "review_lane_submission_canonical_validation_failed",
+      "contains": "start_line",
+      "expect": "fail",
+      "fixture": "malformed-location.arguments.json"
+    },
+    {
+      "code": "review_lane_submission_canonical_validation_failed",
+      "contains": "artifact_path",
+      "expect": "fail",
+      "fixture": "malformed-evidence-target.arguments.json"
+    }
+  ],
+  "schema_version": 1
+}

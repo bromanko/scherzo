@@ -1,0 +1,10 @@
+{
+  "artifact_type": "changed_files",
+  "files": [
+    {
+      "change_kind": "modified",
+      "path": "src/example.gleam"
+    }
+  ],
+  "schema_version": 1
+}

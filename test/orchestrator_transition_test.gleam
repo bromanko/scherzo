@@ -2,12 +2,15 @@ import gleam/dict
 import gleam/option.{None, Some}
 import scherzo/config
 import scherzo/config/types as config_types
+import scherzo/model_config
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition
 import scherzo/orchestrator/transition_types
+import scherzo/review_lane_preflight_policy
 import scherzo/session/tokens as session_tokens
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_dag
 
 pub fn fixture_issue() -> tracker_issue.Issue {
   tracker_issue.Issue(
@@ -79,6 +82,34 @@ pub fn fixture_context() -> transition_types.DispatchContext {
     workspace_root: "test/tmp/workspaces",
     now_ms: 123,
     recovery_by_issue: dict.new(),
+    review_lane_preflight: transition_types.ReviewLanePreflightContext(
+      config_dir: ".scherzo",
+      workflow_dags: dict.from_list([
+        #("default", fixture_workflow_dag("default")),
+      ]),
+      policy: review_lane_preflight_policy.default(),
+      override: None,
+    ),
+  )
+}
+
+pub fn fixture_workflow_dag(id: String) -> workflow_dag.WorkflowDag {
+  workflow_dag.WorkflowDag(
+    id: id,
+    description: None,
+    workspace_profile: None,
+    workspace_capabilities: [],
+    max_parallel_steps: 1,
+    steps: [
+      workflow_dag.WorkflowStep(
+        id: "noop",
+        kind: workflow_dag.CommandStep(run: "true", timeout_ms: None),
+        depends_on: [],
+        workspace: workflow_dag.WorkspaceRef(name: "default", from: None),
+        on_failure: workflow_dag.FailWorkflow,
+        model_settings: model_config.default_settings(),
+      ),
+    ],
   )
 }
 

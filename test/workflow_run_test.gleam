@@ -3539,7 +3539,7 @@ fn unsetenv(name: String) -> Nil
 fn generic_tool_call_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_lane_draft\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_structured_output\n        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json\n        require_single: true\n        reject_sibling_tool_calls: true\n      validators:\n        - name: review_lane_draft_schema\n          type: json_schema\n          path: .scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [schema_version, artifact_type]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_lane_submission\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: docs/schemas/provider/review-lane-draft.correctness.v1.schema.json\n        require_single: true\n        reject_sibling_tool_calls: true\n      validators:\n        - name: review_lane_submission_shape\n          type: json_schema\n          path: docs/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n",
     )
   dag
 }
@@ -3551,12 +3551,14 @@ fn generic_tool_call_result() -> result_artifact.ResultArtifact {
     "test",
     [
       result_artifact.ToolCallSubmission(
-        name: "submit_structured_output",
-        arguments_json: Some(native_review_lane_draft_json()),
+        name: "submit_review_lane_draft",
+        arguments_json: Some(
+          "{\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"summary\":\"ok\"}}",
+        ),
         status: Some("success"),
         sibling_count: 1,
         receipt_json: Some(
-          "{\"artifact_type\":\"scherzo_structured_output_tool_receipt\",\"tool_name\":\"submit_structured_output\",\"remote_mutations\":\"none\"}",
+          "{\"artifact_type\":\"scherzo_structured_output_tool_receipt\",\"tool_name\":\"submit_review_lane_draft\",\"remote_mutations\":\"none\"}",
         ),
       ),
     ],
@@ -3621,10 +3623,10 @@ pub fn generic_pi_tool_call_step_generates_spec_env_and_metadata_test() {
   let assert Some(step_artifact.StructuredOutputValid(metadata)) =
     artifact.structured_output
   assert metadata.source_type == "pi_tool_call"
-  assert metadata.source_tool_name == Some("submit_structured_output")
+  assert metadata.source_tool_name == Some("submit_review_lane_draft")
   assert metadata.source_parameters_schema_path
     == Some(
-      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
+      "docs/schemas/provider/review-lane-draft.correctness.v1.schema.json",
     )
   let assert Some(schema_sha) = metadata.source_parameters_schema_sha256
   assert string.length(schema_sha) == 64

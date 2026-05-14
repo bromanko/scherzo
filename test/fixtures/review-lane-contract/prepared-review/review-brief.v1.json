@@ -1,0 +1,33 @@
+{
+  "artifact_type": "review_brief",
+  "changed_areas": [
+    {
+      "change_kind": "modified",
+      "language": "gleam",
+      "path": "src/example.gleam",
+      "subsystem": "fixture"
+    }
+  ],
+  "generated_at_utc": "2026-01-01T00:00:00Z",
+  "implementation_summary": "Fixture review brief for review-lane contract tests.",
+  "inferred_acceptance_criteria": [],
+  "notes": [],
+  "producer": {
+    "name": "fixture",
+    "version": "1"
+  },
+  "risk_profile": {
+    "level": "low",
+    "rationale": "fixture",
+    "risk_areas": []
+  },
+  "schema_version": 1,
+  "source": {
+    "changed_file_count": 1,
+    "diff_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "kind": "fixture",
+    "label": "review-lane-contract"
+  },
+  "suggested_review_lanes": [],
+  "test_build_status": []
+}

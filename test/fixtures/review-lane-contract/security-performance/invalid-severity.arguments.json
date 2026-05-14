@@ -1,0 +1,39 @@
+{
+  "draft_findings": [
+    {
+      "claim": "The fixture demonstrates a claim.",
+      "details": "Fixture detail.",
+      "draft_finding_id": "finding-001",
+      "evidence_request_ids": [
+        "evidence-001"
+      ],
+      "locations": [
+        {
+          "end_line": 1,
+          "path": "src/example.gleam",
+          "start_line": 1
+        }
+      ],
+      "proposed_blocking": false,
+      "severity": "urgent",
+      "suggested_fix": "Inspect the fixture.",
+      "title": "Example claim"
+    }
+  ],
+  "evidence_requests": [
+    {
+      "claim": "The fixture demonstrates a claim.",
+      "draft_finding_id": "finding-001",
+      "evidence_key": "fixture",
+      "expected_observation": "The fixture is present.",
+      "request_id": "evidence-001",
+      "target": {
+        "changed_file_path": "src/example.gleam"
+      }
+    }
+  ],
+  "review_notes": [],
+  "self_check": {
+    "summary": "Inspected the diff and found no concrete findings."
+  }
+}
