@@ -278,6 +278,31 @@ handoff:
 
 For long-running daemon operation, use some handoff or manual board process that prevents successful issues from remaining eligible for dispatch forever.
 
+Artifact-producing workflows should use completion-state policy instead of a blanket `success_state_id`. A successful implementation or ExecPlan run usually produces work that a human should review, so the standard policy moves those issues to `In Review`, not `Done`. Failure and partial-success outcomes, including a workflow that was expected to produce an artifact but did not, should move to an attention state such as `Needs Attention`. A cancellation leaves the Linear state unchanged unless `cancellation_state` is configured.
+
+```yaml
+linear_contract:
+  enabled: true
+
+handoff:
+  enabled: true
+  completion_states:
+    default_completion_state: In Review
+    no_review_completion_state: Done
+    failure_state: Needs Attention
+    partial_success_state: Needs Attention
+    workflows:
+      execplan:
+        produces_reviewable_artifacts: true
+        requires_review: true
+      no-review-maintenance:
+        produces_reviewable_artifacts: false
+        requires_review: false
+        success_state: Done
+```
+
+Use `_id` keys such as `default_completion_state_id` or `failure_state_id` when your Linear team uses duplicate or localized state names. Before enabling daemon handoff, run `scherzo doctor --check linear-contract`; policy-enabled handoff requires the configured review and attention states to exist. See [Linear completion states](runbooks/linear-completion-states.md) for migration and remediation details.
+
 ## 5. Choose workspace behavior
 
 Workspace profiles are trusted operator policy under `workspace.profiles`. A workflow may select a named profile and require driver capabilities, but workflow YAML cannot define the shell command that creates or removes workspaces.

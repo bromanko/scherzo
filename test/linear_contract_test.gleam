@@ -6,6 +6,7 @@ import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/linear_contract
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 
 fn state(id: String, name: String) -> linear_contract.RemoteState {
   linear_contract.RemoteState(id: id, name: name, type_: "started")
@@ -61,6 +62,34 @@ fn handoff_config(
     attach_result_on_success: False,
     attachment_fallback_to_markdown_link: True,
     result_max_chars: 8000,
+    completion_states: None,
+  )
+}
+
+fn completion_policy() -> workflow_completion_policy.CompletionStatePolicy {
+  workflow_completion_policy.CompletionStatePolicy(
+    default_completion_state: workflow_completion_policy.StateByName(
+      "In Review",
+    ),
+    no_review_completion_state: Some(workflow_completion_policy.StateByName(
+      "Done",
+    )),
+    failure_state: workflow_completion_policy.StateByName("Needs Attention"),
+    partial_success_state: workflow_completion_policy.StateByName(
+      "Needs Attention",
+    ),
+    cancellation_state: None,
+    workflows: dict.from_list([
+      #(
+        "execplan",
+        workflow_completion_policy.WorkflowCompletionOverride(
+          ..workflow_completion_policy.default_override(),
+          success_state: Some(workflow_completion_policy.StateById(
+            "state-custom-review",
+          )),
+        ),
+      ),
+    ]),
   )
 }
 
@@ -526,6 +555,132 @@ pub fn multi_team_handoff_suppresses_secondary_id_diagnostics_test() {
     ]
   assert !contains_code(diagnostics, "missing_handoff_state_id")
   assert !contains_code(diagnostics, "handoff_state_name_mismatch")
+}
+
+pub fn completion_state_policy_names_are_checked_test() {
+  let handoff =
+    config_types.HandoffConfig(
+      ..handoff_config(True, None, None, None),
+      completion_states: Some(completion_policy()),
+    )
+  let diagnostics =
+    linear_contract.check(
+      effective(contract_config(False), handoff, ["Ready for Agent"], ["Done"]),
+      board([team("ENG", all_states(), [])], []),
+    )
+
+  assert list.any(diagnostics, fn(diagnostic) {
+    diagnostic
+    == linear_contract.MissingState(
+      team_key: "ENG",
+      name: "In Review",
+      source: "handoff.completion_states.default_completion_state",
+    )
+  })
+  assert list.any(diagnostics, fn(diagnostic) {
+    diagnostic
+    == linear_contract.MissingState(
+      team_key: "ENG",
+      name: "Needs Attention",
+      source: "handoff.completion_states.failure_state",
+    )
+  })
+  assert list.any(diagnostics, fn(diagnostic) {
+    diagnostic
+    == linear_contract.MissingCompletionStateId(
+      source: "handoff.completion_states.workflows.execplan.success_state_id",
+      id: "state-custom-review",
+    )
+  })
+}
+
+pub fn completion_state_policy_ids_are_checked_test() {
+  let id_policy =
+    workflow_completion_policy.CompletionStatePolicy(
+      ..completion_policy(),
+      default_completion_state: workflow_completion_policy.StateById(
+        "state-review",
+      ),
+      failure_state: workflow_completion_policy.StateById("state-attention"),
+      partial_success_state: workflow_completion_policy.StateById(
+        "missing-attention",
+      ),
+      workflows: dict.new(),
+    )
+  let handoff =
+    config_types.HandoffConfig(
+      ..handoff_config(True, None, None, None),
+      completion_states: Some(id_policy),
+    )
+  let diagnostics =
+    linear_contract.check(
+      effective(contract_config(False), handoff, ["Ready for Agent"], ["Done"]),
+      board(
+        [
+          team(
+            "ENG",
+            list.append(all_states(), [
+              state("state-review", "In Review"),
+              state("state-attention", "Needs Attention"),
+            ]),
+            [],
+          ),
+        ],
+        [],
+      ),
+    )
+
+  assert list.any(diagnostics, fn(diagnostic) {
+    diagnostic
+    == linear_contract.MissingCompletionStateId(
+      source: "handoff.completion_states.partial_success_state_id",
+      id: "missing-attention",
+    )
+  })
+}
+
+pub fn completion_state_policy_ambiguous_names_fail_doctor_test() {
+  let handoff =
+    config_types.HandoffConfig(
+      ..handoff_config(True, None, None, None),
+      completion_states: Some(
+        workflow_completion_policy.CompletionStatePolicy(
+          ..completion_policy(),
+          workflows: dict.new(),
+        ),
+      ),
+    )
+  let diagnostics =
+    linear_contract.check(
+      effective(contract_config(False), handoff, ["Ready for Agent"], ["Done"]),
+      board(
+        [
+          team(
+            "ENG",
+            list.append(all_states(), [
+              state("state-review-a", "In Review"),
+              state("state-review-b", "In Review"),
+              state("state-attention", "Needs Attention"),
+            ]),
+            [],
+          ),
+        ],
+        [],
+      ),
+    )
+
+  assert list.any(diagnostics, fn(diagnostic) {
+    diagnostic
+    == linear_contract.AmbiguousCompletionStateName(
+      team_key: "ENG",
+      name: "In Review",
+      source: "handoff.completion_states.default_completion_state",
+    )
+  })
+  assert string.contains(
+    linear_contract.format_report(diagnostics),
+    "docs/runbooks/linear-completion-states.md",
+  )
 }
 
 fn contains_code(

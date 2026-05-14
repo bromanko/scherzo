@@ -63,13 +63,13 @@ Failing early on missing Linear states can block rollout if the board is not pre
 - [x] (2026-05-13 00:00Z) Drafted this ExecPlan from Linear issue LIV-281 and a focused inspection of the current repository.
 - [x] (2026-05-13 00:30Z) Hardened the plan after review incorporation by closing config syntax ambiguity, state-reference parsing ambiguity, and artifact-detection ambiguity.
 - [x] (2026-05-14 03:23Z) Incorporated the LIV-281 clarification that review and attention states are required Linear config for policy-enabled deployments, validated by doctor, and not an optional runtime compatibility case.
-- [ ] Add policy and outcome types without changing existing behavior.
-- [ ] Add config parsing for global defaults and per-workflow overrides while preserving legacy `handoff.*_state_id` behavior.
-- [ ] Route worker success, partial success, failure, and cancellation through the policy layer.
-- [ ] Update handoff publishing so comments and attachments are published before the selected Linear state transition.
-- [ ] Add unit, config, handoff, and orchestration tests for policy mapping and no-regression behavior.
-- [ ] Update operator-facing documentation and example config.
-- [ ] Run the validation commands and record outcomes here.
+- [x] (2026-05-14 04:45Z) Added pure completion policy and outcome types in `src/scherzo/workflow_completion_policy.gleam` without changing legacy behavior when `handoff.completion_states` is absent.
+- [x] (2026-05-14 04:50Z) Added config parsing for global completion defaults and per-workflow overrides while preserving legacy `handoff.*_state_id` behavior.
+- [x] (2026-05-14 05:05Z) Routed worker success, missing expected artifacts, failure, and operator cancellation through the policy layer used by handoff publishing.
+- [x] (2026-05-14 05:05Z) Updated handoff publishing so comments and attachments are published before the selected Linear state transition or intentional no-op.
+- [x] (2026-05-14 05:05Z) Added unit, config, handoff, linear-contract, and orchestration-adjacent regression tests for policy mapping and legacy behavior.
+- [x] (2026-05-14 05:05Z) Updated operator-facing documentation and the complete config fixture with the new completion-state policy shape.
+- [x] (2026-05-14 05:13Z) Rebased the retained workspace onto `main@origin` and ran `scripts/scherzo-implementation validate`; SelfCI passed, including the Gleam suite with 1353 tests and no failures.
 
 ## Surprises & Discoveries
 
@@ -77,6 +77,10 @@ Failing early on missing Linear states can block rollout if the board is not pre
   Evidence: `src/scherzo/config/types.gleam` defines those fields on `HandoffConfig`, and `src/scherzo/config.gleam` parses them from the `handoff` config block.
 - Observation: Current success and failure reporting already centralizes Linear comments, attachments, and state updates in the handoff client.
   Evidence: `src/scherzo/handoff.gleam` defines `report_success` and `report_failure`; both publish comments and then call `run_state_update` with the configured state id.
+- Observation: Operator cancellation is already distinguishable as `error.OperatorAbort` and `error.OperatorStopAfterCurrentTurn` on `WorkerFailure.reason`.
+  Evidence: `src/scherzo/error.gleam` defines those `AgentRunnerError` constructors, so `src/scherzo/handoff.gleam` can map those failures to `cancellation_outcome()` without adding a new worker result type.
+- Observation: The first manual lint pass introduced one new glinter warning in the new policy file by discarding the `dict.get` error value with `Error(_)`.
+  Evidence: `direnv exec . gleam run -m glinter` reported `src/scherzo/workflow_completion_policy.gleam:292`; changing the match to `Error(Nil)` removed that new warning and reduced the warning count by one.
 
 ## Decision Log
 
@@ -98,10 +102,17 @@ Failing early on missing Linear states can block rollout if the board is not pre
 - Decision: Treat review and attention Linear states as required deployment config for the new completion-state policy instead of supporting missing-state deployments at runtime.
   Rationale: Scherzo's compatibility posture is to keep legacy configs working when the new policy is absent, but fail early once an operator opts into new behavior. Doctor and runbook remediation are safer than silently leaving policy-enabled issues in surprising states.
   Date: 2026-05-14.
+- Decision: Map `OperatorAbort` and `OperatorStopAfterCurrentTurn` failures to cancellation outcomes in the handoff layer rather than changing the worker success/failure records.
+  Rationale: The existing `AgentRunnerError` variants already carry the distinction needed by the completion policy, so using them is the smallest compatible change and keeps cancellation-specific Linear behavior out of the worker runtime.
+  Date: 2026-05-14.
 
 ## Outcomes & Retrospective
 
-This section is intentionally empty at plan creation. During implementation, update it after each milestone with what changed, which validation commands passed, and any behavior that still needs follow-up.
+The implementation adds an additive completion-state policy that leaves legacy `handoff.success_state_id` and `handoff.failure_state_id` behavior unchanged when the new `handoff.completion_states` block is absent. Policy-enabled handoff now chooses configured review, attention, no-review, cancellation, or explicit workflow target states through a pure policy module, resolves configured state names through Linear team-state lookup before mutation, and reports tracking-state reasons in handoff comments.
+
+Configuration parsing now supports paired name/id keys, rejects ambiguous or missing required policy targets, and requires `linear_contract.enabled = true` for policy-enabled deployments. The Linear contract checker validates configured completion-state names and ids, and the new runbook explains how operators should prepare `In Review`, `Needs Attention`, or team-specific state names before enabling the policy.
+
+Validation from the retained workspace passed on 2026-05-14 after rebasing onto `main@origin`: `scripts/scherzo-implementation validate` reported `FINAL_VALIDATION=passed`, and SelfCI included the Gleam suite with 1353 tests and no failures. The manual lint check also showed no new warning in `src/scherzo/workflow_completion_policy.gleam` after replacing the discarded `Error(_)` match with `Error(Nil)`.
 
 ## Context and Orientation
 
@@ -445,4 +456,4 @@ The plan does not require new third-party dependencies. Use the existing Gleam s
 
 ## Open Questions and Clarifications Needed
 
-- [CLARIFY] Confirm the exact current representation of operator cancellation in `src/scherzo/agent/types.gleam` and worker-control code. If cancellation is already distinguishable from failure, map it directly. If not, add the smallest field or constructor needed so policy can leave cancelled issues unchanged by default.
+- Resolved: Operator cancellation is distinguishable through `WorkerFailure.reason` values `error.OperatorAbort` and `error.OperatorStopAfterCurrentTurn`. The implementation maps those reasons to `cancellation_outcome()` in `src/scherzo/handoff.gleam`, and `test/handoff_test.gleam` verifies that policy-enabled cancellation leaves the Linear state unchanged by default.

@@ -58,6 +58,17 @@ pub fn success_comment(
   options: SuccessCommentOptions,
   secrets: List(String),
 ) -> String {
+  success_comment_with_tracking(issue, success, run_id, options, None, secrets)
+}
+
+pub fn success_comment_with_tracking(
+  issue: tracker_issue.Issue,
+  success: agent_types.WorkerSuccess,
+  run_id: String,
+  options: SuccessCommentOptions,
+  tracking_state: Option(String),
+  secrets: List(String),
+) -> String {
   let SuccessCommentOptions(include_result, attachment_filename) = options
   let blocks = [
     comment_format.title("✅", "Scherzo completed the run"),
@@ -77,6 +88,7 @@ pub fn success_comment(
         <> ".",
     ),
   ]
+  let blocks = append_tracking_state(blocks, tracking_state)
   let blocks = case include_result {
     True ->
       list.append(blocks, [
@@ -162,12 +174,38 @@ pub fn failure_comment(
   run_id: String,
   secrets: List(String),
 ) -> String {
+  failure_comment_with_tracking(issue, failure, run_id, None, secrets)
+}
+
+pub fn failure_comment_with_tracking(
+  issue: tracker_issue.Issue,
+  failure: agent_types.WorkerFailure,
+  run_id: String,
+  tracking_state: Option(String),
+  secrets: List(String),
+) -> String {
+  let body = failure_comment_body(issue, failure, run_id, tracking_state)
+  comment_format.finalize_body("failure_comment", body, secrets)
+}
+
+fn failure_comment_body(
+  issue: tracker_issue.Issue,
+  failure: agent_types.WorkerFailure,
+  run_id: String,
+  tracking_state: Option(String),
+) -> String {
   let body = case failure.reason {
     error.WorkflowCommandFailed(code: code, step_id: step_id, ..) ->
       workflow_command_failure_comment(issue, failure, run_id, code, step_id)
     _ -> generic_failure_comment(issue, failure, run_id)
   }
-  comment_format.finalize_body("failure_comment", body, secrets)
+  case tracking_state {
+    None -> body
+    Some(reason) ->
+      body
+      <> "\n\n"
+      <> comment_format.section("Tracking state", tracking_state_text(reason))
+  }
 }
 
 pub fn park_comment(
@@ -317,6 +355,23 @@ fn friendly_error(reason: error.AgentRunnerError) -> String {
     error.OperatorAbort -> "Operator stopped the run"
     error.OperatorStopAfterCurrentTurn -> "Operator stopped after this turn"
   }
+}
+
+fn append_tracking_state(
+  blocks: List(String),
+  tracking_state: Option(String),
+) -> List(String) {
+  case tracking_state {
+    None -> blocks
+    Some(reason) ->
+      list.append(blocks, [
+        comment_format.section("Tracking state", tracking_state_text(reason)),
+      ])
+  }
+}
+
+fn tracking_state_text(reason: String) -> String {
+  "Scherzo " <> reason <> "."
 }
 
 fn run_details(turns: Int, source: String) -> String {

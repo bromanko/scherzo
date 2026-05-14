@@ -1632,7 +1632,9 @@ pub fn daemon_final_validation_blocks_new_dependency_test() {
             Ok(Nil)
           },
           report_success: fn(_, _, _) { Ok(Nil) },
+          report_success_for_workflow: fn(_, _, _, _) { Ok(Nil) },
           report_failure: fn(_, _, _) { Ok(Nil) },
+          report_failure_for_workflow: fn(_, _, _, _) { Ok(Nil) },
           report_park: fn(_) { Ok(Nil) },
         )
       },
@@ -2464,7 +2466,15 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
         handoff.Client(
           claim_issue: fn(_, _) { Ok(Nil) },
           report_success: fn(_, _, _) { Ok(Nil) },
+          report_success_for_workflow: fn(_, _, _, _) { Ok(Nil) },
           report_failure: fn(issue, failure, run_id) {
+            process.send(
+              failure_report_subject,
+              handoff_format.failure_comment(issue, failure, run_id, []),
+            )
+            Ok(Nil)
+          },
+          report_failure_for_workflow: fn(issue, failure, run_id, _) {
             process.send(
               failure_report_subject,
               handoff_format.failure_comment(issue, failure, run_id, []),

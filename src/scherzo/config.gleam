@@ -10,6 +10,7 @@ import scherzo/model_config
 import scherzo/orchestrator/schedule_core
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 import scherzo/workspace_driver_env
 import yay
 
@@ -121,6 +122,7 @@ pub fn default_handoff_config() -> config_types.HandoffConfig {
     attach_result_on_success: False,
     attachment_fallback_to_markdown_link: True,
     result_max_chars: 8000,
+    completion_states: None,
   )
 }
 
@@ -180,8 +182,8 @@ pub fn resolve_root(
   use hooks <- result.try(resolve_hooks(root))
   use agent <- result.try(resolve_agent(root))
   use pi <- result.try(resolve_pi(root))
-  use handoff <- result.try(resolve_handoff(root))
   use linear_contract <- result.try(resolve_linear_contract(root))
+  use handoff <- result.try(resolve_handoff(root, linear_contract.enabled))
   use linear_commands <- result.try(resolve_linear_commands(root))
   Ok(config_types.EffectiveConfig(
     tracker:,
@@ -647,6 +649,7 @@ fn has_forbidden_session_flag(args: List(String)) -> Bool {
 
 fn resolve_handoff(
   root: yay.Node,
+  linear_contract_enabled: Bool,
 ) -> Result(config_types.HandoffConfig, error.ConfigError) {
   let handoff = get_map(root, "handoff")
   let enabled = get_bool(handoff, "enabled") |> bool_default(False)
@@ -666,7 +669,11 @@ fn resolve_handoff(
           Error(error.InvalidConfig(
             "handoff.attach_result_on_success requires handoff.comment_on_success to be true",
           ))
-        False ->
+        False -> {
+          use completion_states <- result.try(resolve_completion_state_policy(
+            handoff,
+            linear_contract_enabled,
+          ))
           Ok(config_types.HandoffConfig(
             enabled: enabled,
             comment_on_claim: get_bool(handoff, "comment_on_claim")
@@ -691,8 +698,294 @@ fn resolve_handoff(
             )
               |> bool_default(True),
             result_max_chars: result_max_chars,
+            completion_states: completion_states,
           ))
+        }
       }
+  }
+}
+
+fn resolve_completion_state_policy(
+  handoff: yay.Node,
+  linear_contract_enabled: Bool,
+) -> Result(
+  Option(workflow_completion_policy.CompletionStatePolicy),
+  error.ConfigError,
+) {
+  case get_node(handoff, "completion_states") {
+    None -> Ok(None)
+    Some(yay.NodeMap(_) as node) -> {
+      case linear_contract_enabled {
+        False ->
+          Error(error.InvalidConfig(
+            "handoff.completion_states requires linear_contract.enabled: true so scherzo doctor --check linear-contract can validate configured Linear states",
+          ))
+        True -> {
+          use policy <- result.try(read_completion_state_policy(node))
+          Ok(Some(policy))
+        }
+      }
+    }
+    Some(_) ->
+      Error(error.InvalidConfig("handoff.completion_states must be a map"))
+  }
+}
+
+fn read_completion_state_policy(
+  node: yay.Node,
+) -> Result(workflow_completion_policy.CompletionStatePolicy, error.ConfigError) {
+  use _ <- result.try(reject_completion_state_unsupported_keys(
+    node,
+    "handoff.completion_states",
+  ))
+  use default_completion_state <- result.try(read_required_state_ref(
+    node,
+    "default_completion_state",
+    "default_completion_state_id",
+    "handoff.completion_states",
+  ))
+  use no_review_completion_state <- result.try(read_optional_state_ref(
+    node,
+    "no_review_completion_state",
+    "no_review_completion_state_id",
+    "handoff.completion_states",
+  ))
+  use failure_state <- result.try(read_required_state_ref(
+    node,
+    "failure_state",
+    "failure_state_id",
+    "handoff.completion_states",
+  ))
+  use partial_success_state <- result.try(read_required_state_ref(
+    node,
+    "partial_success_state",
+    "partial_success_state_id",
+    "handoff.completion_states",
+  ))
+  use cancellation_state <- result.try(read_optional_state_ref(
+    node,
+    "cancellation_state",
+    "cancellation_state_id",
+    "handoff.completion_states",
+  ))
+  use workflows <- result.try(read_completion_workflows(node))
+  Ok(workflow_completion_policy.CompletionStatePolicy(
+    default_completion_state: default_completion_state,
+    no_review_completion_state: no_review_completion_state,
+    failure_state: failure_state,
+    partial_success_state: partial_success_state,
+    cancellation_state: cancellation_state,
+    workflows: workflows,
+  ))
+}
+
+fn reject_completion_state_unsupported_keys(
+  node: yay.Node,
+  path: String,
+) -> Result(Nil, error.ConfigError) {
+  case get_node(node, "unresolved_state_policy") {
+    Some(_) ->
+      Error(error.InvalidConfig(
+        path
+        <> ".unresolved_state_policy is unsupported; unresolved Linear states must be fixed with scherzo doctor --check linear-contract",
+      ))
+    None -> Ok(Nil)
+  }
+}
+
+fn read_completion_workflows(
+  node: yay.Node,
+) -> Result(
+  dict.Dict(String, workflow_completion_policy.WorkflowCompletionOverride),
+  error.ConfigError,
+) {
+  case get_node(node, "workflows") {
+    None -> Ok(dict.new())
+    Some(yay.NodeMap(entries)) -> read_completion_workflow_entries(entries, [])
+    Some(_) ->
+      Error(error.InvalidConfig(
+        "handoff.completion_states.workflows must be a map",
+      ))
+  }
+}
+
+fn read_completion_workflow_entries(
+  entries: List(#(yay.Node, yay.Node)),
+  acc: List(#(String, workflow_completion_policy.WorkflowCompletionOverride)),
+) -> Result(
+  dict.Dict(String, workflow_completion_policy.WorkflowCompletionOverride),
+  error.ConfigError,
+) {
+  case entries {
+    [] -> Ok(dict.from_list(list.reverse(acc)))
+    [#(yay.NodeStr(key), yay.NodeMap(_) as node), ..rest] -> {
+      let workflow_id = normalize_label(key)
+      use _ <- result.try(validate_completion_workflow_id(workflow_id, key))
+      use override <- result.try(read_completion_workflow_override(
+        node,
+        "handoff.completion_states.workflows." <> key,
+      ))
+      read_completion_workflow_entries(rest, [#(workflow_id, override), ..acc])
+    }
+    [#(yay.NodeStr(key), _), ..] ->
+      Error(error.InvalidConfig(
+        "handoff.completion_states.workflows." <> key <> " must be a map",
+      ))
+    [#(_, _), ..] ->
+      Error(error.InvalidConfig(
+        "handoff.completion_states.workflows keys must be strings",
+      ))
+  }
+}
+
+fn validate_completion_workflow_id(
+  workflow_id: String,
+  original: String,
+) -> Result(Nil, error.ConfigError) {
+  case valid_workflow_name(workflow_id) {
+    True -> Ok(Nil)
+    False ->
+      Error(error.InvalidConfig(
+        "handoff.completion_states.workflows has invalid workflow id: "
+        <> original,
+      ))
+  }
+}
+
+fn read_completion_workflow_override(
+  node: yay.Node,
+  path: String,
+) -> Result(
+  workflow_completion_policy.WorkflowCompletionOverride,
+  error.ConfigError,
+) {
+  use produces_reviewable_artifacts <- result.try(get_bool_strict(
+    node,
+    "produces_reviewable_artifacts",
+    path <> ".produces_reviewable_artifacts",
+  ))
+  use requires_review <- result.try(get_bool_strict(
+    node,
+    "requires_review",
+    path <> ".requires_review",
+  ))
+  use success_state <- result.try(read_optional_state_ref(
+    node,
+    "success_state",
+    "success_state_id",
+    path,
+  ))
+  use no_review_completion_state <- result.try(read_optional_state_ref(
+    node,
+    "no_review_completion_state",
+    "no_review_completion_state_id",
+    path,
+  ))
+  use failure_state <- result.try(read_optional_state_ref(
+    node,
+    "failure_state",
+    "failure_state_id",
+    path,
+  ))
+  use partial_success_state <- result.try(read_optional_state_ref(
+    node,
+    "partial_success_state",
+    "partial_success_state_id",
+    path,
+  ))
+  use cancellation_state <- result.try(read_optional_state_ref(
+    node,
+    "cancellation_state",
+    "cancellation_state_id",
+    path,
+  ))
+  Ok(workflow_completion_policy.WorkflowCompletionOverride(
+    produces_reviewable_artifacts: produces_reviewable_artifacts,
+    requires_review: requires_review,
+    success_state: success_state,
+    no_review_completion_state: no_review_completion_state,
+    failure_state: failure_state,
+    partial_success_state: partial_success_state,
+    cancellation_state: cancellation_state,
+  ))
+}
+
+fn read_required_state_ref(
+  node: yay.Node,
+  name_key: String,
+  id_key: String,
+  path: String,
+) -> Result(workflow_completion_policy.LinearStateRef, error.ConfigError) {
+  use maybe_ref <- result.try(read_optional_state_ref(
+    node,
+    name_key,
+    id_key,
+    path,
+  ))
+  case maybe_ref {
+    Some(ref) -> Ok(ref)
+    None ->
+      Error(error.InvalidConfig(path <> "." <> name_key <> " is required"))
+  }
+}
+
+fn read_optional_state_ref(
+  node: yay.Node,
+  name_key: String,
+  id_key: String,
+  path: String,
+) -> Result(
+  Option(workflow_completion_policy.LinearStateRef),
+  error.ConfigError,
+) {
+  use raw_name <- result.try(get_string_strict(
+    node,
+    name_key,
+    path <> "." <> name_key,
+  ))
+  use raw_id <- result.try(get_string_strict(
+    node,
+    id_key,
+    path <> "." <> id_key,
+  ))
+  case raw_name, raw_id {
+    Some(_), Some(_) ->
+      Error(error.InvalidConfig(
+        path
+        <> "."
+        <> name_key
+        <> " and "
+        <> path
+        <> "."
+        <> id_key
+        <> " cannot both be set",
+      ))
+    Some(value), None ->
+      state_ref_from_value(value, path <> "." <> name_key, True)
+    None, Some(value) ->
+      state_ref_from_value(value, path <> "." <> id_key, False)
+    None, None -> Ok(None)
+  }
+}
+
+fn state_ref_from_value(
+  value: String,
+  path: String,
+  by_name: Bool,
+) -> Result(
+  Option(workflow_completion_policy.LinearStateRef),
+  error.ConfigError,
+) {
+  let value = string.trim(value)
+  case value == "" {
+    True -> Error(error.InvalidConfig(path <> " must be non-empty"))
+    False -> {
+      let ref = case by_name {
+        True -> workflow_completion_policy.StateByName(value)
+        False -> workflow_completion_policy.StateById(value)
+      }
+      Ok(Some(ref))
+    }
   }
 }
 

@@ -84,6 +84,11 @@ pub type ContractClient {
   )
 }
 
+pub type StateNameResolutionError {
+  StateNameNotFound
+  StateNameAmbiguous
+}
+
 pub type Transport =
   fn(Request) -> Result(Response, error.TrackerError)
 
@@ -484,6 +489,21 @@ pub fn build_comment_update_body_request(
   Ok(graphql_request(endpoint, api_key, body))
 }
 
+pub fn build_issue_team_states_request(
+  config: config_types.TrackerConfig,
+  issue_id: String,
+) -> Result(Request, error.TrackerError) {
+  use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
+  use api_key <- try_tracker(require_api_key(config))
+  let body =
+    json.object([
+      #("query", json.string(issue_team_states_query())),
+      #("variables", json.object([#("issueId", json.string(issue_id))])),
+    ])
+    |> json.to_string
+  Ok(graphql_request(endpoint, api_key, body))
+}
+
 pub fn build_issue_update_state_request(
   config: config_types.TrackerConfig,
   issue_id: String,
@@ -550,6 +570,10 @@ pub fn comment_update_body_mutation() -> String {
   "mutation ScherzoCommentUpdateBody($commentId: String!, $body: String!) { commentUpdate(id: $commentId, input: { body: $body }, skipEditedAt: true) { success comment { id body bodyData } } }"
 }
 
+pub fn issue_team_states_query() -> String {
+  "query ScherzoIssueTeamStates($issueId: String!) { issue(id: $issueId) { id team { states(first: 50) { nodes { id name type } pageInfo { hasNextPage endCursor } } } } }"
+}
+
 pub fn issue_update_state_mutation() -> String {
   "mutation ScherzoIssueUpdateState($issueId: String!, $stateId: String!) { issueUpdate(id: $issueId, input: { stateId: $stateId }) { success } }"
 }
@@ -604,6 +628,35 @@ pub fn parse_contract_response(
         Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
         Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
       }
+  }
+}
+
+pub fn parse_issue_team_states_response(
+  response: Response,
+) -> Result(List(linear_contract.RemoteState), error.TrackerError) {
+  case response.status == 200 {
+    False -> Error(error.LinearApiStatus(response.status))
+    True ->
+      case json.parse(response.body, issue_team_states_graphql_decoder()) {
+        Ok(Ok(states)) -> Ok(states)
+        Ok(Error(message)) -> Error(error.LinearGraphqlErrors(message))
+        Error(_) -> Error(error.LinearUnknownPayload("invalid JSON payload"))
+      }
+  }
+}
+
+pub fn resolve_state_name(
+  states: List(linear_contract.RemoteState),
+  name: String,
+) -> Result(String, StateNameResolutionError) {
+  let matches =
+    list.filter(states, fn(state) {
+      string.trim(state.name) == string.trim(name)
+    })
+  case matches {
+    [] -> Error(StateNameNotFound)
+    [state] -> Ok(state.id)
+    [_, ..] -> Error(StateNameAmbiguous)
   }
 }
 
@@ -713,6 +766,30 @@ fn graphql_decoder() -> decode.Decoder(Result(Page, String)) {
 fn data_decoder() -> decode.Decoder(Page) {
   use page <- decode.field("issues", page_decoder())
   decode.success(page)
+}
+
+fn issue_team_states_graphql_decoder() -> decode.Decoder(
+  Result(List(linear_contract.RemoteState), String),
+) {
+  use errors <- decode.optional_field(
+    "errors",
+    [],
+    decode.list(error_message_decoder()),
+  )
+  case errors {
+    [] ->
+      decode.at(
+        ["data", "issue", "team", "states"],
+        raw_state_connection_decoder(),
+      )
+      |> decode.map(fn(connection) {
+        case connection.page_info.has_next_page {
+          True -> Error("issue team states metadata truncated")
+          False -> Ok(raw_states_to_remote(connection.nodes))
+        }
+      })
+    errors -> decode.success(Error(string.join(errors, with: "; ")))
+  }
 }
 
 fn mutation_decoder(

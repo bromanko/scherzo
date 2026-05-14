@@ -117,6 +117,7 @@ fn config(
       attach_result_on_success: False,
       attachment_fallback_to_markdown_link: True,
       result_max_chars: 8000,
+      completion_states: None,
     ),
     linear_contract: config_types.LinearContractConfig(
       enabled: False,
