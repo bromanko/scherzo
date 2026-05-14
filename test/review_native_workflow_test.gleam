@@ -7,7 +7,7 @@ import scherzo/structured_output_source
 import scherzo/workflow_dag
 import simplifile
 
-const submit_review_lane_draft_tool = "submit_review_lane_draft"
+const submit_structured_output_tool = "submit_structured_output"
 
 fn review_native_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(contents) =
@@ -39,22 +39,38 @@ fn lane_spec(
   spec
 }
 
-fn assert_review_tool_source(spec: workflow_dag.StructuredOutputSpec) -> Nil {
+fn lane_schema_path(step_id: String) -> String {
+  case step_id {
+    "lane_test_quality" ->
+      "docs/schemas/review-lane-draft.test-quality.v1.schema.json"
+    "lane_idioms_maintainability" ->
+      "docs/schemas/review-lane-draft.idioms-maintainability.v1.schema.json"
+    "lane_security_performance" ->
+      "docs/schemas/review-lane-draft.security-performance.v1.schema.json"
+    _ -> "docs/schemas/review-lane-draft.correctness.v1.schema.json"
+  }
+}
+
+fn assert_review_tool_source(
+  spec: workflow_dag.StructuredOutputSpec,
+  schema_path: String,
+) -> Nil {
   assert spec.source
     == structured_output_source.PiToolCallSource(
-      tool_name: submit_review_lane_draft_tool,
+      tool_name: submit_structured_output_tool,
       require_single: True,
       reject_sibling_tool_calls: True,
+      parameters_schema_path: Some(schema_path),
     )
 }
 
-fn expected_review_lane_validators() -> List(
-  workflow_dag.StructuredOutputValidator,
-) {
+fn expected_review_lane_validators(
+  schema_path: String,
+) -> List(workflow_dag.StructuredOutputValidator) {
   [
     workflow_dag.JsonSchemaValidator(
       name: "review_lane_draft_schema",
-      path: "docs/schemas/review-lane-draft.v1.schema.json",
+      path: schema_path,
       draft: Some("2020-12"),
     ),
     workflow_dag.CommandValidator(
@@ -75,8 +91,9 @@ fn expected_review_lane_validators() -> List(
 
 fn assert_review_lane_validators(
   spec: workflow_dag.StructuredOutputSpec,
+  schema_path: String,
 ) -> Nil {
-  assert spec.validators == expected_review_lane_validators()
+  assert spec.validators == expected_review_lane_validators(schema_path)
 }
 
 fn assert_lane_workspace_from_main(
@@ -173,13 +190,25 @@ fn validate_result(
   )
 }
 
-pub fn review_native_lane_steps_use_submit_review_lane_draft_tool_source_test() {
+pub fn review_native_lane_steps_use_submit_structured_output_tool_source_test() {
   let dag = review_native_dag()
 
-  assert_review_tool_source(lane_spec(dag, "lane_correctness"))
-  assert_review_tool_source(lane_spec(dag, "lane_test_quality"))
-  assert_review_tool_source(lane_spec(dag, "lane_idioms_maintainability"))
-  assert_review_tool_source(lane_spec(dag, "lane_security_performance"))
+  assert_review_tool_source(
+    lane_spec(dag, "lane_correctness"),
+    lane_schema_path("lane_correctness"),
+  )
+  assert_review_tool_source(
+    lane_spec(dag, "lane_test_quality"),
+    lane_schema_path("lane_test_quality"),
+  )
+  assert_review_tool_source(
+    lane_spec(dag, "lane_idioms_maintainability"),
+    lane_schema_path("lane_idioms_maintainability"),
+  )
+  assert_review_tool_source(
+    lane_spec(dag, "lane_security_performance"),
+    lane_schema_path("lane_security_performance"),
+  )
 }
 
 pub fn review_native_lane_steps_use_isolated_derived_workspaces_test() {
@@ -188,34 +217,40 @@ pub fn review_native_lane_steps_use_isolated_derived_workspaces_test() {
 
 pub fn review_native_lane_steps_use_json_schema_plus_semantic_validator_test() {
   let review_dag = review_native_dag()
-  assert_review_lane_validators(lane_spec(review_dag, "lane_correctness"))
-  assert_review_lane_validators(lane_spec(review_dag, "lane_test_quality"))
-  assert_review_lane_validators(lane_spec(
-    review_dag,
-    "lane_idioms_maintainability",
-  ))
-  assert_review_lane_validators(lane_spec(
-    review_dag,
-    "lane_security_performance",
-  ))
+  assert_review_lane_validators(
+    lane_spec(review_dag, "lane_correctness"),
+    lane_schema_path("lane_correctness"),
+  )
+  assert_review_lane_validators(
+    lane_spec(review_dag, "lane_test_quality"),
+    lane_schema_path("lane_test_quality"),
+  )
+  assert_review_lane_validators(
+    lane_spec(review_dag, "lane_idioms_maintainability"),
+    lane_schema_path("lane_idioms_maintainability"),
+  )
+  assert_review_lane_validators(
+    lane_spec(review_dag, "lane_security_performance"),
+    lane_schema_path("lane_security_performance"),
+  )
 
   let implementation_workflow_dag = implementation_dag()
-  assert_review_lane_validators(lane_spec(
-    implementation_workflow_dag,
-    "lane_correctness",
-  ))
-  assert_review_lane_validators(lane_spec(
-    implementation_workflow_dag,
-    "lane_test_quality",
-  ))
-  assert_review_lane_validators(lane_spec(
-    implementation_workflow_dag,
-    "lane_idioms_maintainability",
-  ))
-  assert_review_lane_validators(lane_spec(
-    implementation_workflow_dag,
-    "lane_security_performance",
-  ))
+  assert_review_lane_validators(
+    lane_spec(implementation_workflow_dag, "lane_correctness"),
+    lane_schema_path("lane_correctness"),
+  )
+  assert_review_lane_validators(
+    lane_spec(implementation_workflow_dag, "lane_test_quality"),
+    lane_schema_path("lane_test_quality"),
+  )
+  assert_review_lane_validators(
+    lane_spec(implementation_workflow_dag, "lane_idioms_maintainability"),
+    lane_schema_path("lane_idioms_maintainability"),
+  )
+  assert_review_lane_validators(
+    lane_spec(implementation_workflow_dag, "lane_security_performance"),
+    lane_schema_path("lane_security_performance"),
+  )
 }
 
 pub fn native_review_prompts_and_tool_guidance_use_relative_input_ref_examples_test() {
@@ -251,10 +286,22 @@ pub fn review_lane_draft_tool_is_enabled_for_implementation_lane_steps_test() {
 pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
   let dag = implementation_dag()
 
-  assert_review_tool_source(lane_spec(dag, "lane_correctness"))
-  assert_review_tool_source(lane_spec(dag, "lane_test_quality"))
-  assert_review_tool_source(lane_spec(dag, "lane_idioms_maintainability"))
-  assert_review_tool_source(lane_spec(dag, "lane_security_performance"))
+  assert_review_tool_source(
+    lane_spec(dag, "lane_correctness"),
+    lane_schema_path("lane_correctness"),
+  )
+  assert_review_tool_source(
+    lane_spec(dag, "lane_test_quality"),
+    lane_schema_path("lane_test_quality"),
+  )
+  assert_review_tool_source(
+    lane_spec(dag, "lane_idioms_maintainability"),
+    lane_schema_path("lane_idioms_maintainability"),
+  )
+  assert_review_tool_source(
+    lane_spec(dag, "lane_security_performance"),
+    lane_schema_path("lane_security_performance"),
+  )
   assert_native_review_lane_workspaces_are_isolated(dag)
 
   let assert Ok(cutover_step) =
@@ -293,10 +340,22 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
 pub fn execplan_implementation_workflow_uses_native_agent_lane_steps_test() {
   let dag = execplan_implementation_dag()
 
-  assert_review_tool_source(lane_spec(dag, "lane_correctness"))
-  assert_review_tool_source(lane_spec(dag, "lane_test_quality"))
-  assert_review_tool_source(lane_spec(dag, "lane_idioms_maintainability"))
-  assert_review_tool_source(lane_spec(dag, "lane_security_performance"))
+  assert_review_tool_source(
+    lane_spec(dag, "lane_correctness"),
+    lane_schema_path("lane_correctness"),
+  )
+  assert_review_tool_source(
+    lane_spec(dag, "lane_test_quality"),
+    lane_schema_path("lane_test_quality"),
+  )
+  assert_review_tool_source(
+    lane_spec(dag, "lane_idioms_maintainability"),
+    lane_schema_path("lane_idioms_maintainability"),
+  )
+  assert_review_tool_source(
+    lane_spec(dag, "lane_security_performance"),
+    lane_schema_path("lane_security_performance"),
+  )
   assert_native_review_lane_workspaces_are_isolated(dag)
 
   let assert Ok(cutover_step) =
@@ -349,7 +408,7 @@ pub fn review_native_rejects_final_response_only_and_accepts_tool_submission_tes
     == "structured_output_tool_call_missing"
   assert_contains(
     structured_output.error_message(missing_tool_call),
-    submit_review_lane_draft_tool,
+    submit_structured_output_tool,
   )
 
   let tool_call_result =
@@ -359,10 +418,11 @@ pub fn review_native_rejects_final_response_only_and_accepts_tool_submission_tes
       "review_native_workflow_test",
       [
         result_artifact.ToolCallSubmission(
-          name: submit_review_lane_draft_tool,
+          name: submit_structured_output_tool,
           arguments_json: Some(valid_review_lane_draft_json()),
           status: Some("success"),
           sibling_count: 1,
+          receipt_json: Some("{\"remote_mutations\":\"none\"}"),
         ),
       ],
     )

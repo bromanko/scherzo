@@ -203,6 +203,7 @@ fn validate(dag: WorkflowDag) -> Result(WorkflowDag, DagError) {
   use _ <- result.try(validate_dependencies_exist(dag.steps))
   use _ <- result.try(validate_acyclic(dag.steps))
   use _ <- result.try(validate_workspace_sources(dag.steps))
+  use _ <- result.try(validate_structured_output_schema_paths(dag.steps))
   use _ <- result.try(validate_single_terminal_sink(dag.steps))
   Ok(dag)
 }
@@ -811,6 +812,87 @@ fn first_model_settings_field(node: yay.Node) -> Option(String) {
           }
       }
   }
+}
+
+fn validate_structured_output_schema_paths(
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
+  case steps {
+    [] -> Ok(Nil)
+    [step, ..rest] -> {
+      use Nil <- result.try(validate_structured_output_schema_path(step))
+      validate_structured_output_schema_paths(rest)
+    }
+  }
+}
+
+fn validate_structured_output_schema_path(
+  step: WorkflowStep,
+) -> Result(Nil, DagError) {
+  case step.kind {
+    AgentStep(_, Some(spec)) -> validate_spec_schema_path(spec)
+    _ -> Ok(Nil)
+  }
+}
+
+fn validate_spec_schema_path(
+  spec: StructuredOutputSpec,
+) -> Result(Nil, DagError) {
+  case structured_output_source.parameters_schema_path(spec.source) {
+    None -> Ok(Nil)
+    Some(schema_path) -> {
+      let normalized = normalize_repository_path(schema_path)
+      case has_matching_json_schema_validator(spec.validators, normalized) {
+        True -> Ok(Nil)
+        False -> structured_output_schema_path_error(spec.validators)
+      }
+    }
+  }
+}
+
+fn structured_output_schema_path_error(
+  validators: List(StructuredOutputValidator),
+) -> Result(Nil, DagError) {
+  case has_any_json_schema_validator(validators) {
+    True ->
+      Error(DagError(
+        "structured_output_parameters_schema_path_mismatch",
+        "structured_output.source.parameters_schema_path must match a downstream json_schema validator path",
+      ))
+    False ->
+      Error(DagError(
+        "structured_output_parameters_schema_missing_json_schema_validator",
+        "structured_output.source.parameters_schema_path requires a matching downstream json_schema validator",
+      ))
+  }
+}
+
+fn has_matching_json_schema_validator(
+  validators: List(StructuredOutputValidator),
+  schema_path: String,
+) -> Bool {
+  list.any(validators, fn(validator) {
+    case validator {
+      JsonSchemaValidator(path: validator_path, ..) ->
+        normalize_repository_path(validator_path) == schema_path
+      _ -> False
+    }
+  })
+}
+
+fn has_any_json_schema_validator(
+  validators: List(StructuredOutputValidator),
+) -> Bool {
+  list.any(validators, fn(validator) {
+    case validator {
+      JsonSchemaValidator(..) -> True
+      _ -> False
+    }
+  })
+}
+
+fn normalize_repository_path(value: String) -> String {
+  value |> string.trim |> string.replace(each: "//", with: "/")
 }
 
 fn validate_unique_step_ids(

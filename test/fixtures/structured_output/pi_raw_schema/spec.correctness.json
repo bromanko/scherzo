@@ -1,0 +1,531 @@
+{
+  "artifact_name": "review_lane_draft",
+  "artifact_type": "scherzo_structured_output_tool_spec",
+  "attempt_index": 1,
+  "description": "Submit the raw-schema smoke review_lane_draft artifact. This tool has no side effects.",
+  "label": "Review Lane Draft",
+  "parameters_schema": {
+    "$defs": {
+      "base": {
+        "$defs": {
+          "ArtifactHeader": {
+            "properties": {
+              "$schema": {
+                "type": "string"
+              },
+              "artifact_type": {
+                "type": "string"
+              },
+              "generated_at_utc": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "producer": {
+                "additionalProperties": true,
+                "properties": {
+                  "mode": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "schema_version": {
+                "const": 1
+              }
+            },
+            "required": [
+              "schema_version",
+              "artifact_type"
+            ],
+            "type": "object"
+          },
+          "ArtifactReference": {
+            "additionalProperties": true,
+            "properties": {
+              "artifact_type": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "path": {
+                "$ref": "#/$defs/RepoRelativePath"
+              },
+              "sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_type",
+              "path"
+            ],
+            "type": "object"
+          },
+          "DraftFinding": {
+            "additionalProperties": true,
+            "properties": {
+              "category": {
+                "type": "string"
+              },
+              "claim": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "details": {
+                "type": "string"
+              },
+              "draft_finding_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "evidence_request_ids": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "locations": {
+                "items": {
+                  "$ref": "#/$defs/SafeLocationReference"
+                },
+                "type": "array"
+              },
+              "proposed_blocking": {
+                "type": "boolean"
+              },
+              "severity": {
+                "enum": [
+                  "info",
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ],
+                "type": "string"
+              },
+              "suggested_fix": {
+                "type": "string"
+              },
+              "title": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "draft_finding_id",
+              "title",
+              "claim",
+              "severity",
+              "proposed_blocking",
+              "locations",
+              "evidence_request_ids"
+            ],
+            "type": "object"
+          },
+          "EvidenceRequest": {
+            "additionalProperties": true,
+            "properties": {
+              "claim": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "draft_finding_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "evidence_key": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "expected_observation": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "request_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/$defs/EvidenceTarget"
+              }
+            },
+            "required": [
+              "request_id",
+              "draft_finding_id",
+              "evidence_key",
+              "claim",
+              "expected_observation",
+              "target"
+            ],
+            "type": "object"
+          },
+          "EvidenceTarget": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_path": {
+                "$ref": "#/$defs/RepoRelativePath"
+              },
+              "changed_file_path": {
+                "$ref": "#/$defs/RepoRelativePath"
+              },
+              "fixture_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "static_scan_rule": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "test_name": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "LocationReference": {
+            "additionalProperties": true,
+            "properties": {
+              "diff_hunk": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "end_line": {
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "start_line": {
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "symbol": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "RepoRelativePath": {
+            "minLength": 1,
+            "not": {
+              "anyOf": [
+                {
+                  "pattern": "^/"
+                },
+                {
+                  "pattern": "(^|/)\\.\\.(/|$)"
+                },
+                {
+                  "pattern": "^\\$(\\{[A-Za-z_][A-Za-z0-9_]*\\}|[A-Za-z_][A-Za-z0-9_]*)([\\\\/]|$)"
+                },
+                {
+                  "pattern": "^[A-Za-z]:[\\\\/]"
+                },
+                {
+                  "pattern": "^<absolute-local-path>"
+                }
+              ]
+            },
+            "type": "string"
+          },
+          "ReviewLaneDraft": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/ArtifactHeader"
+              },
+              {
+                "additionalProperties": true,
+                "properties": {
+                  "artifact_type": {
+                    "const": "review_lane_draft"
+                  },
+                  "draft_findings": {
+                    "items": {
+                      "$ref": "#/$defs/DraftFinding"
+                    },
+                    "type": "array"
+                  },
+                  "evidence_requests": {
+                    "items": {
+                      "$ref": "#/$defs/EvidenceRequest"
+                    },
+                    "type": "array"
+                  },
+                  "input_refs": {
+                    "items": {
+                      "$ref": "#/$defs/ArtifactReference"
+                    },
+                    "type": "array"
+                  },
+                  "lane": {
+                    "$ref": "#/$defs/ReviewLaneMetadata"
+                  },
+                  "producer": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "remote_mutations": {
+                    "const": "none"
+                  },
+                  "review_notes": {
+                    "items": {
+                      "$ref": "#/$defs/ReviewNote"
+                    },
+                    "type": "array"
+                  },
+                  "self_check": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "schema_version",
+                  "artifact_type",
+                  "generated_at_utc",
+                  "producer",
+                  "lane",
+                  "input_refs",
+                  "draft_findings",
+                  "review_notes",
+                  "evidence_requests",
+                  "self_check",
+                  "remote_mutations"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "ReviewLaneMetadata": {
+            "additionalProperties": true,
+            "properties": {
+              "category": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "enum": [
+                  "correctness",
+                  "test-quality",
+                  "idioms-maintainability",
+                  "security-performance"
+                ],
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "name": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              },
+              "version": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "category",
+              "version"
+            ],
+            "type": "object"
+          },
+          "ReviewNote": {
+            "additionalProperties": true,
+            "properties": {
+              "category": {
+                "enum": [
+                  "correctness",
+                  "maintainability",
+                  "security",
+                  "performance",
+                  "testing",
+                  "workflow",
+                  "documentation",
+                  "artifact_contract",
+                  "other"
+                ],
+                "type": "string"
+              },
+              "details": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "risk_note",
+                  "coverage_note",
+                  "review_note",
+                  "follow_up_test"
+                ],
+                "type": "string"
+              },
+              "locations": {
+                "items": {
+                  "$ref": "#/$defs/LocationReference"
+                },
+                "type": "array"
+              },
+              "severity": {
+                "enum": [
+                  "info",
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ],
+                "type": "string"
+              },
+              "suggested_action": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "summary": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "category",
+              "severity",
+              "locations",
+              "summary",
+              "details",
+              "suggested_action"
+            ],
+            "type": "object"
+          },
+          "SafeLocationReference": {
+            "additionalProperties": true,
+            "properties": {
+              "diff_hunk": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "end_line": {
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "path": {
+                "$ref": "#/$defs/RepoRelativePath"
+              },
+              "start_line": {
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "symbol": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          }
+        },
+        "$id": "https://github.com/bromanko/scherzo/docs/schemas/review-lane-draft.v1.schema.json",
+        "$ref": "#/$defs/ReviewLaneDraft",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Structured-output contract for native Scherzo review lane draft submissions.",
+        "title": "Scherzo review lane draft v1"
+      }
+    },
+    "$id": "https://github.com/bromanko/scherzo/docs/schemas/review-lane-draft.correctness.v1.schema.json",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "allOf": [
+      {
+        "$ref": "#/$defs/base"
+      },
+      {
+        "properties": {
+          "lane": {
+            "properties": {
+              "id": {
+                "const": "correctness"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    ],
+    "description": "Structured-output contract for the native correctness review lane.",
+    "title": "Scherzo correctness review lane draft v1"
+  },
+  "parameters_schema_path": "docs/schemas/review-lane-draft.correctness.v1.schema.json",
+  "parameters_schema_sha256": "d571b4a0662d8275060d1066d943989381fd553db6c67917655befdad435ef6f",
+  "prompt_guidelines": [
+    "Call submit_structured_output exactly once.",
+    "Do not print final assistant JSON.",
+    "Do not call sibling tools."
+  ],
+  "prompt_snippet": "Submit review_lane_draft by calling submit_structured_output exactly once",
+  "reject_sibling_tool_calls": true,
+  "require_single": true,
+  "run_id": "raw-schema-smoke",
+  "schema_version": 1,
+  "step_id": "lane_correctness",
+  "terminate": true,
+  "tool_name": "submit_structured_output",
+  "workflow_id": "review-native"
+}

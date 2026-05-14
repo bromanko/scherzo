@@ -1,1 +1,1 @@
-Do not call `submit_review_lane_draft`. Return the valid `review_lane_draft` object as final assistant JSON only. Final assistant JSON alone is invalid for this workflow, so this lane is expected to exercise the missing-tool-call failure path while downstream continuation still runs.
+Do not call `submit_structured_output`. Return the valid `review_lane_draft` object as final assistant JSON only. Final assistant JSON alone is invalid for this workflow, so this lane is expected to exercise the missing-tool-call failure path while downstream continuation still runs.

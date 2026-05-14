@@ -57,15 +57,15 @@ A final risk is failure at step launch because the spec file is missing, malform
 
 - [x] (2026-05-13 00:00Z) Drafted this self-contained ExecPlan proposal for `LIV-282` under `docs/plans/`.
 - [x] (2026-05-13 00:30Z) Incorporated adversarial review feedback: resolved migration coexistence, added schema-parity work, made the Pi smoke falsifiable, specified the schema-path invariant, and split implementation steps.
-- [ ] Inventory bespoke review-lane extension checks against the durable JSON Schema and add parity tests.
-- [ ] Update the review-lane base schema and per-lane overlay schemas so Pi and Scherzo validate the same static contract.
-- [ ] Prove Pi raw JSON Schema support with a repository smoke test before broader integration work.
-- [ ] Add the generic `.pi/extensions/scherzo-structured-output` extension and its spec loader.
-- [ ] Add Scherzo spec generation and Pi environment handoff for configured `pi_tool_call` steps.
-- [ ] Persist and extract accepted tool-call arguments and receipt metadata for generic structured outputs.
-- [ ] Preserve downstream structured-output validation and retry behavior for accepted Pi tool calls.
-- [ ] Migrate review-native compatibility to `submit_structured_output` without duplicate tool registration.
-- [ ] Run the full validation gates and update Outcomes & Retrospective.
+- [x] (2026-05-14 01:29Z) Inventoried bespoke review-lane extension checks against the durable JSON Schema and added parity tests in `test/structured_output_json_schema_test.gleam`.
+- [x] (2026-05-14 01:29Z) Updated the review-lane base schema and added per-lane overlay schemas so Pi and Scherzo validate the same static review-lane contract.
+- [x] (2026-05-14 01:29Z) Proved Pi raw JSON Schema support with `scripts/scherzo-structured-output-raw-schema-smoke` against Pi 0.74.0.
+- [x] (2026-05-14 01:29Z) Added the generic `.pi/extensions/scherzo-structured-output` extension and its spec loader.
+- [x] (2026-05-14 01:29Z) Added Scherzo spec generation and Pi environment handoff for configured `pi_tool_call` steps in normal and local workflow paths.
+- [x] (2026-05-14 01:29Z) Persisted accepted tool-call receipt metadata while keeping tool arguments as the structured-output payload.
+- [x] (2026-05-14 01:29Z) Preserved downstream structured-output JSON Schema, command-validator, and retry behavior for accepted Pi tool calls.
+- [x] (2026-05-14 01:29Z) Migrated review-native compatibility to `submit_structured_output` without duplicate tool registration.
+- [x] (2026-05-14 01:29Z) Ran the full validation gates in the retained implementation workspace and the manual recovery workspace, then updated Outcomes & Retrospective.
 
 ## Surprises & Discoveries
 
@@ -89,6 +89,12 @@ A final risk is failure at step launch because the spec file is missing, malform
 
 - Observation: Pi's extension documentation says a custom tool can return `terminate: true`, and termination only skips the automatic follow-up LLM call when every finalized tool result in the same batch is terminating.
   Evidence: Pi `docs/extensions.md` and `examples/extensions/structured-output.ts` describe terminating structured-output tools and custom tool registration.
+
+- Observation: The repository-supported Pi version accepts raw JSON Schema objects as tool parameters and rejects invalid tool-call arguments before the generic tool executes.
+  Evidence: `direnv exec . scripts/scherzo-structured-output-raw-schema-smoke` printed `STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=passed pi_version=0.74.0 invalid=rejected_before_execute valid=accepted terminate=true` in the retained implementation workspace.
+
+- Observation: The failed Scherzo workflow had already produced a green implementation workspace; the final automated recovery failed because the Pi context window was exhausted while applying plan-completion feedback.
+  Evidence: The retained workspace passed `direnv exec . gleam test`, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter`, `direnv exec . gleam run -m scherzo_lint`, and `direnv exec . scripts/scherzo-structured-output-raw-schema-smoke`; the failure artifact for `apply_plan_completion_feedback` reported `pi_context_window_exhausted`.
 
 ## Decision Log
 
@@ -130,7 +136,13 @@ A final risk is failure at step launch because the spec file is missing, malform
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion. At minimum, record whether raw JSON Schema support was proven against the repository-supported Pi version, whether review-native parity passed, whether any fallback path was needed, and whether the bespoke review-lane extension could be retired.)
+The implementation delivers the generic schema-enforced Pi structured-output path. Review-lane static contract parity now lives in `docs/schemas/review-lane-draft.v1.schema.json` plus four per-lane overlay schemas, and tests prove the base and overlay schemas reject the high-risk mistakes that previously depended on the bespoke review-lane extension.
+
+Raw JSON Schema support was proven against Pi 0.74.0 with `scripts/scherzo-structured-output-raw-schema-smoke`. The smoke demonstrates that invalid arguments are rejected before `execute`, the session stays repairable, a valid follow-up call is accepted, and the accepted tool returns `terminate: true` with receipt metadata.
+
+Scherzo now generates per-step generic structured-output tool specs, passes `SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH` into normal and local Pi launches, records receipt metadata, preserves downstream validation and retry behavior, and fingerprints the new source contract fields. Review-native workflow definitions and prompts now use `submit_structured_output` with matching `parameters_schema_path` and downstream `json_schema` validator paths.
+
+No fallback path was needed for the generic implementation. The bespoke `.pi/extensions/scherzo-review-lane-draft` extension remains as a rollback shim and disables itself with `disabled_generic_structured_output_active` whenever the generic spec environment variable is present; it has not been retired in this change.
 
 ## Context and Orientation
 

@@ -343,10 +343,11 @@ fn local_step_env(
     #("SCHERZO_WORKSPACE_NAME", context.workspace_name),
     #("SCHERZO_WORKSPACE_PATH", context.workspace_path),
   ]
-  case scenario {
+  let base = case scenario {
     Some(value) -> [#("SCHERZO_NATIVE_REVIEW_SCENARIO", value), ..base]
     None -> base
   }
+  list.append(base, context.extra_pi_env)
 }
 
 fn native_fixture_agent_step(
@@ -413,10 +414,13 @@ fn fixture_result(
         "native_review_fixture_agent_tool_call",
         [
           result_artifact.ToolCallSubmission(
-            name: "submit_review_lane_draft",
+            name: "submit_structured_output",
             arguments_json: Some(arguments_json),
             status: Some("success"),
             sibling_count: 1,
+            receipt_json: Some(
+              "{\"artifact_type\":\"scherzo_structured_output_tool_receipt\",\"tool_name\":\"submit_structured_output\",\"remote_mutations\":\"none\"}",
+            ),
           ),
         ],
       )
@@ -494,9 +498,8 @@ fn identity_json(value: json.Json) -> json.Json {
   value
 }
 
-fn input_refs(run_root: String) -> List(json.Json) {
-  let prepare_dir =
-    path.join(path.join(run_root, "artifacts/review"), "prepare_review")
+fn input_refs(_run_root: String) -> List(json.Json) {
+  let prepare_dir = "artifacts/review/prepare_review"
   [
     artifact_ref_json(
       "review_brief",

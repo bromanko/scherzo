@@ -177,6 +177,7 @@ fn source_retry_instruction(spec: workflow_dag.StructuredOutputSpec) -> String {
       tool_name,
       require_single,
       reject_sibling_tool_calls,
+      _,
     ) ->
       "Call the Pi tool `"
       <> tool_name

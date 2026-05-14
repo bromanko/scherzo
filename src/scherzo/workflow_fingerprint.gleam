@@ -352,12 +352,17 @@ fn structured_output_source_to_json(
       tool_name,
       require_single,
       reject_sibling_tool_calls,
+      parameters_schema_path,
     ) ->
       json.object([
         #("type", json.string("pi_tool_call")),
         #("tool_name", json.string(tool_name)),
         #("require_single", json.bool(require_single)),
         #("reject_sibling_tool_calls", json.bool(reject_sibling_tool_calls)),
+        #(
+          "parameters_schema_path",
+          option_string_to_json(parameters_schema_path),
+        ),
       ])
   }
 }

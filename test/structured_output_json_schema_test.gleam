@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/json_value
@@ -170,12 +171,22 @@ pub fn json_schema_rejects_invalid_payload_with_instance_path_test() {
 pub fn review_lane_draft_schema_rejects_absolute_input_ref_paths_test() {
   let validator =
     schema_validator("docs/schemas/review-lane-draft.v1.schema.json")
+  let assert Ok(contents) =
+    simplifile.read(
+      "test/fixtures/review-lane-draft-tool/absolute-path.arguments.json",
+    )
+  let absolute_input_ref_contents =
+    contents
+    |> string.replace(
+      each: "<absolute-local-path>/src/example.gleam",
+      with: "src/example.gleam",
+    )
+  let assert Ok(absolute_input_ref_payload) =
+    json_value.parse(absolute_input_ref_contents)
   let assert Error(error) =
     structured_output_json_schema.run_json_schema_validator(
       validator,
-      payload(
-        "test/fixtures/review-lane-draft-tool/absolute-path.arguments.json",
-      ),
+      absolute_input_ref_payload,
       context(validator),
       [],
     )
@@ -197,6 +208,10 @@ pub fn review_lane_draft_schema_rejects_env_placeholder_input_ref_paths_test() {
     |> string.replace(
       each: "/absolute-local-path/artifacts/review/prepare_review/diff.patch",
       with: "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch",
+    )
+    |> string.replace(
+      each: "<absolute-local-path>/src/example.gleam",
+      with: "src/example.gleam",
     )
   let assert Ok(env_placeholder_payload) =
     json_value.parse(env_placeholder_contents)
@@ -386,4 +401,76 @@ pub fn json_schema_helper_import_failure_is_non_retryable_config_error_test() {
   assert error.code == "structured_output_json_schema_config_error"
   assert !error.retryable
   assert string.contains(error.message, "jsonschema import failed")
+}
+
+fn review_lane_payload_with_lane(lane_id: String) -> json_value.JsonValue {
+  let contents =
+    "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"generated_at_utc\":\"2026-05-13T00:00:00Z\",\"producer\":{\"name\":\"schema-test\",\"version\":\"1\",\"mode\":\"test\"},\"lane\":{\"id\":\""
+    <> lane_id
+    <> "\",\"name\":\"Lane\",\"category\":\"correctness\",\"version\":\"1\"},\"input_refs\":[{\"artifact_type\":\"diff\",\"path\":\"artifacts/review/prepare_review/diff.patch\"}],\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"inspected_diff\":true,\"used_repository_relative_paths\":true},\"remote_mutations\":\"none\"}"
+  let assert Ok(value) = json_value.parse(contents)
+  value
+}
+
+pub fn review_lane_base_schema_rejects_unknown_lane_id_test() {
+  let validator =
+    schema_validator("docs/schemas/review-lane-draft.v1.schema.json")
+  let assert Error(error) =
+    structured_output_json_schema.run_json_schema_validator(
+      validator,
+      review_lane_payload_with_lane("unknown-lane"),
+      context(validator),
+      [],
+    )
+
+  assert error.code == "structured_output_json_schema_rejected"
+  assert string.contains(error.diagnostic_summary, "/lane/id")
+}
+
+pub fn review_lane_overlay_schema_accepts_matching_and_rejects_wrong_lane_test() {
+  let correctness =
+    schema_validator(
+      "docs/schemas/review-lane-draft.correctness.v1.schema.json",
+    )
+  assert structured_output_json_schema.run_json_schema_validator(
+      correctness,
+      review_lane_payload_with_lane("correctness"),
+      context(correctness),
+      [],
+    )
+    == Ok(structured_output_validator.ValidatorPass)
+  let assert Error(wrong_lane) =
+    structured_output_json_schema.run_json_schema_validator(
+      correctness,
+      review_lane_payload_with_lane("test-quality"),
+      context(correctness),
+      [],
+    )
+  assert string.contains(wrong_lane.diagnostic_summary, "/lane/id")
+
+  let overlays = [
+    #(
+      "docs/schemas/review-lane-draft.test-quality.v1.schema.json",
+      "test-quality",
+    ),
+    #(
+      "docs/schemas/review-lane-draft.idioms-maintainability.v1.schema.json",
+      "idioms-maintainability",
+    ),
+    #(
+      "docs/schemas/review-lane-draft.security-performance.v1.schema.json",
+      "security-performance",
+    ),
+  ]
+  list.each(overlays, fn(entry) {
+    let #(schema_path, lane_id) = entry
+    let validator = schema_validator(schema_path)
+    assert structured_output_json_schema.run_json_schema_validator(
+        validator,
+        review_lane_payload_with_lane(lane_id),
+        context(validator),
+        [],
+      )
+      == Ok(structured_output_validator.ValidatorPass)
+  })
 }

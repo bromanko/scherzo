@@ -11,6 +11,7 @@ pub type ToolCallSubmission {
     arguments_json: Option(String),
     status: Option(String),
     sibling_count: Int,
+    receipt_json: Option(String),
   )
 }
 
@@ -222,6 +223,7 @@ fn tool_call_submissions(
       arguments_json: observed.call.arguments_json,
       status: observed.status,
       sibling_count: observed.call.sibling_count,
+      receipt_json: tool_receipt_for_call(records, observed.call),
     )
   })
 }
@@ -382,6 +384,138 @@ fn tool_status_for_name(
         True, Some(status) -> Some(status)
         _, _ -> tool_status_for_name(rest, name)
       }
+  }
+}
+
+fn tool_receipt_for_call(
+  records: List(protocol.RpcRecord),
+  call: protocol.ToolCallRecord,
+) -> Option(String) {
+  case call.id {
+    Some(id) ->
+      case tool_receipt_for_id(records, id) {
+        Some(receipt) -> Some(receipt)
+        None -> tool_receipt_for_name(records, call.name)
+      }
+    None -> tool_receipt_for_name(records, call.name)
+  }
+}
+
+fn tool_receipt_for_id(
+  records: List(protocol.RpcRecord),
+  id: String,
+) -> Option(String) {
+  case records {
+    [] -> None
+    [record, ..rest] ->
+      case record.tool_call_id == Some(id), receipt_from_record(record) {
+        True, Some(receipt) -> Some(receipt)
+        _, _ -> tool_receipt_for_id(rest, id)
+      }
+  }
+}
+
+fn tool_receipt_for_name(
+  records: List(protocol.RpcRecord),
+  name: String,
+) -> Option(String) {
+  case records {
+    [] -> None
+    [record, ..rest] ->
+      case record.tool_name == Some(name), receipt_from_record(record) {
+        True, Some(receipt) -> Some(receipt)
+        _, _ -> tool_receipt_for_name(rest, name)
+      }
+  }
+}
+
+fn receipt_from_record(record: protocol.RpcRecord) -> Option(String) {
+  case receipt_from_raw_json(record.raw_json) {
+    Some(receipt) -> Some(receipt)
+    None -> receipt_from_output(record.tool_output)
+  }
+}
+
+fn receipt_from_output(output: Option(String)) -> Option(String) {
+  case output {
+    Some(output) ->
+      case json_value.parse(output) {
+        Ok(value) -> receipt_json_from_value(value)
+        Error(Nil) -> None
+      }
+    None -> None
+  }
+}
+
+fn receipt_from_raw_json(raw_json: String) -> Option(String) {
+  case json_value.parse(raw_json) {
+    Ok(value) ->
+      first_receipt_value([
+        json_value_at(value, ["details"]),
+        json_value_at(value, ["data", "details"]),
+        json_value_at(value, ["result", "details"]),
+      ])
+    Error(Nil) -> None
+  }
+}
+
+fn first_receipt_value(
+  values: List(Option(json_value.JsonValue)),
+) -> Option(String) {
+  case values {
+    [] -> None
+    [Some(value), ..] -> receipt_json_from_value(value)
+    [None, ..rest] -> first_receipt_value(rest)
+  }
+}
+
+fn receipt_json_from_value(value: json_value.JsonValue) -> Option(String) {
+  case value {
+    json_value.JObject(entries) ->
+      case object_string(entries, "artifact_type") {
+        Some(_) -> Some(json_value.to_string(value))
+        None -> None
+      }
+    _ -> None
+  }
+}
+
+fn json_value_at(
+  value: json_value.JsonValue,
+  path: List(String),
+) -> Option(json_value.JsonValue) {
+  case path, value {
+    [], _ -> Some(value)
+    [key, ..rest], json_value.JObject(entries) ->
+      case object_value(entries, key) {
+        Some(child) -> json_value_at(child, rest)
+        None -> None
+      }
+    _, _ -> None
+  }
+}
+
+fn object_value(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+) -> Option(json_value.JsonValue) {
+  case entries {
+    [] -> None
+    [#(entry_key, value), ..rest] ->
+      case entry_key == key {
+        True -> Some(value)
+        False -> object_value(rest, key)
+      }
+  }
+}
+
+fn object_string(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+) -> Option(String) {
+  case object_value(entries, key) {
+    Some(json_value.JString(value)) -> Some(value)
+    _ -> None
   }
 }
 

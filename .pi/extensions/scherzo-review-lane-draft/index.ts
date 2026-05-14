@@ -133,6 +133,9 @@ export function shouldRegisterReviewLaneDraftTool(
 	workflowId = process.env.SCHERZO_WORKFLOW_ID || "",
 	stepId = process.env.SCHERZO_STEP_ID || "",
 ): boolean {
+	if (process.env.SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH) {
+		return false;
+	}
 	if (!REVIEW_LANE_DRAFT_WORKFLOW_IDS.includes(workflowId as typeof REVIEW_LANE_DRAFT_WORKFLOW_IDS[number])) {
 		return false;
 	}
@@ -349,6 +352,7 @@ export default function scherzoReviewLaneDraftExtension(pi: ExtensionAPI) {
 	const stepId = process.env.SCHERZO_STEP_ID || "";
 	const workflowInScope = REVIEW_LANE_DRAFT_WORKFLOW_IDS.includes(workflowId as typeof REVIEW_LANE_DRAFT_WORKFLOW_IDS[number]);
 	const stepInScope = allowedStepIdsForWorkflow(workflowId).includes(stepId);
+	const genericStructuredOutputActive = !!process.env.SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH;
 	const enabledForStep = shouldRegisterReviewLaneDraftTool(workflowId, stepId);
 	if (enabledForStep) {
 		pi.registerTool(submitReviewLaneDraftTool);
@@ -362,11 +366,13 @@ export default function scherzoReviewLaneDraftExtension(pi: ExtensionAPI) {
 			const active = activeToolNames.has(SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME);
 			const status = active
 				? "active"
-				: enabledForStep
-					? "inactive"
-					: workflowInScope && !stepInScope
-						? "disabled_step_scope"
-						: "disabled_workflow_scope";
+				: genericStructuredOutputActive
+					? "disabled_generic_structured_output_active"
+					: enabledForStep
+						? "inactive"
+						: workflowInScope && !stepInScope
+							? "disabled_step_scope"
+							: "disabled_workflow_scope";
 			console.log(`REVIEW_LANE_DRAFT_TOOL_ADVERTISED=${JSON.stringify({
 				status,
 				tool_name: SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME,

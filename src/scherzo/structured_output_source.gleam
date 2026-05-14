@@ -11,6 +11,7 @@ pub type StructuredOutputSource {
     tool_name: String,
     require_single: Bool,
     reject_sibling_tool_calls: Bool,
+    parameters_schema_path: Option(String),
   )
 }
 
@@ -25,14 +26,23 @@ pub fn default() -> StructuredOutputSource {
 pub fn type_to_string(source: StructuredOutputSource) -> String {
   case source {
     FinalResponseSource -> "final_response"
-    PiToolCallSource(_, _, _) -> "pi_tool_call"
+    PiToolCallSource(_, _, _, _) -> "pi_tool_call"
   }
 }
 
 pub fn tool_name(source: StructuredOutputSource) -> Option(String) {
   case source {
     FinalResponseSource -> None
-    PiToolCallSource(name, _, _) -> Some(name)
+    PiToolCallSource(name, _, _, _) -> Some(name)
+  }
+}
+
+pub fn parameters_schema_path(
+  source: StructuredOutputSource,
+) -> Option(String) {
+  case source {
+    FinalResponseSource -> None
+    PiToolCallSource(_, _, _, path) -> path
   }
 }
 
@@ -106,7 +116,11 @@ fn first_present_pi_field(node: yay.Node) -> Option(String) {
         None ->
           case get_node(node, "reject_sibling_tool_calls") {
             Some(_) -> Some("reject_sibling_tool_calls")
-            None -> None
+            None ->
+              case get_node(node, "parameters_schema_path") {
+                Some(_) -> Some("parameters_schema_path")
+                None -> None
+              }
           }
       }
   }
@@ -122,6 +136,7 @@ fn read_pi_tool_call_source(
     "reject_sibling_tool_calls",
     True,
   ))
+  use parameters_schema_path <- result.try(read_optional_schema_path(node))
   case require_single, reject_sibling_tool_calls {
     False, _ ->
       error(
@@ -138,8 +153,66 @@ fn read_pi_tool_call_source(
         tool_name: name,
         require_single: require_single,
         reject_sibling_tool_calls: reject_sibling_tool_calls,
+        parameters_schema_path: parameters_schema_path,
       ))
   }
+}
+
+fn read_optional_schema_path(
+  node: yay.Node,
+) -> Result(Option(String), SourceError) {
+  case get_node(node, "parameters_schema_path") {
+    None -> Ok(None)
+    Some(yay.NodeStr(value)) -> {
+      let path = string.trim(value)
+      case valid_parameters_schema_path(path) {
+        True -> Ok(Some(path))
+        False ->
+          error(
+            "structured_output_parameters_schema_path_invalid",
+            "structured_output.source.parameters_schema_path must be repository-relative and confined to the repository: "
+              <> value,
+          )
+      }
+    }
+    Some(_) ->
+      error(
+        "structured_output_source_parameters_schema_path_not_string",
+        "structured_output.source.parameters_schema_path must be a string",
+      )
+  }
+}
+
+pub fn valid_parameters_schema_path(value: String) -> Bool {
+  value != ""
+  && !string.starts_with(value, "/")
+  && !has_parent_segment(value)
+  && !starts_with_env_prefix(value)
+  && !starts_with_drive_path(value)
+  && !string.starts_with(value, "<absolute-local-path>")
+}
+
+fn has_parent_segment(value: String) -> Bool {
+  value == ".."
+  || string.starts_with(value, "../")
+  || string.ends_with(value, "/..")
+  || string.contains(value, "/../")
+}
+
+fn starts_with_env_prefix(value: String) -> Bool {
+  string.starts_with(value, "$")
+}
+
+fn starts_with_drive_path(value: String) -> Bool {
+  case string.to_graphemes(value) {
+    [letter, ":", separator, ..] ->
+      is_letter(letter) && { separator == "/" || separator == "\\" }
+    _ -> False
+  }
+}
+
+fn is_letter(ch: String) -> Bool {
+  is_lower(ch) || is_upper(ch)
 }
 
 fn read_tool_name(node: yay.Node) -> Result(String, SourceError) {
@@ -201,6 +274,10 @@ fn is_lower_or_digit(ch: String) -> Bool {
 
 fn is_lower(ch: String) -> Bool {
   string.compare(ch, "a") != Lt && string.compare(ch, "z") != Gt
+}
+
+fn is_upper(ch: String) -> Bool {
+  string.compare(ch, "A") != Lt && string.compare(ch, "Z") != Gt
 }
 
 fn is_digit(ch: String) -> Bool {

@@ -87,6 +87,9 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
       schema_status: "valid",
       source_type: "final_response",
       source_tool_name: None,
+      source_parameters_schema_path: None,
+      source_parameters_schema_sha256: None,
+      source_receipt_json: None,
       baseline_required_keys: ["summary", "findings"],
       validators: [
         structured_output_metadata.ValidatorSummary(

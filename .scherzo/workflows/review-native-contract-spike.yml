@@ -14,7 +14,8 @@ steps:
       artifact_name: valid_draft
       source:
         type: pi_tool_call
-        tool_name: submit_review_lane_draft
+        tool_name: submit_structured_output
+        parameters_schema_path: docs/schemas/review-lane-draft.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
@@ -58,7 +59,8 @@ steps:
       artifact_name: malformed_draft
       source:
         type: pi_tool_call
-        tool_name: submit_review_lane_draft
+        tool_name: submit_structured_output
+        parameters_schema_path: docs/schemas/review-lane-draft.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
@@ -102,7 +104,8 @@ steps:
       artifact_name: failed_draft
       source:
         type: pi_tool_call
-        tool_name: submit_review_lane_draft
+        tool_name: submit_structured_output
+        parameters_schema_path: docs/schemas/review-lane-draft.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true

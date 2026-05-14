@@ -851,7 +851,7 @@ pub fn implementation_workflows_native_cutover_removes_legacy_backend_default_te
 
   list.each(workflow_paths, fn(path) {
     let assert Ok(workflow) = simplifile.read(path)
-    assert_contains(workflow, "submit_review_lane_draft")
+    assert_contains(workflow, "submit_structured_output")
     assert_contains(workflow, "prepare-native")
     assert_contains(workflow, "refuses fixture/scenario/heuristic")
     assert_not_contains(workflow, "run-lane --lane")

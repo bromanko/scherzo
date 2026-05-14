@@ -61,6 +61,9 @@ pub type StructuredOutputMetadata {
     schema_status: String,
     source_type: String,
     source_tool_name: Option(String),
+    source_parameters_schema_path: Option(String),
+    source_parameters_schema_sha256: Option(String),
+    source_receipt_json: Option(String),
     baseline_required_keys: List(String),
     validators: List(structured_output_metadata.ValidatorSummary),
     retry: Option(StructuredOutputRetryInfo),
@@ -285,6 +288,18 @@ fn structured_output_to_json(outcome: StructuredOutputOutcome) -> json.Json {
         #("source_type", json.string(metadata.source_type)),
         #("source_tool_name", option_string_to_json(metadata.source_tool_name)),
         #(
+          "source_parameters_schema_path",
+          option_string_to_json(metadata.source_parameters_schema_path),
+        ),
+        #(
+          "source_parameters_schema_sha256",
+          option_string_to_json(metadata.source_parameters_schema_sha256),
+        ),
+        #(
+          "source_receipt_json",
+          option_string_to_json(metadata.source_receipt_json),
+        ),
+        #(
           "baseline_required_keys",
           json.array(metadata.baseline_required_keys, of: json.string),
         ),
@@ -387,6 +402,21 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
         None,
         decode.optional(decode.string),
       )
+      use source_parameters_schema_path <- decode.optional_field(
+        "source_parameters_schema_path",
+        None,
+        decode.optional(decode.string),
+      )
+      use source_parameters_schema_sha256 <- decode.optional_field(
+        "source_parameters_schema_sha256",
+        None,
+        decode.optional(decode.string),
+      )
+      use source_receipt_json <- decode.optional_field(
+        "source_receipt_json",
+        None,
+        decode.optional(decode.string),
+      )
       use baseline_required_keys <- decode.optional_field(
         "baseline_required_keys",
         [],
@@ -413,6 +443,9 @@ fn structured_output_decoder() -> decode.Decoder(StructuredOutputOutcome) {
           schema_status: schema_status,
           source_type: source_type,
           source_tool_name: source_tool_name,
+          source_parameters_schema_path: source_parameters_schema_path,
+          source_parameters_schema_sha256: source_parameters_schema_sha256,
+          source_receipt_json: source_receipt_json,
           baseline_required_keys: baseline_required_keys,
           validators: validators,
           retry: retry,

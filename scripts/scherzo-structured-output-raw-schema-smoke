@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$repo_root"
+
+python3 - <<'PY'
+from pathlib import Path
+import json
+try:
+    import jsonschema
+except Exception as exc:
+    raise SystemExit(f"jsonschema_unavailable:{exc}")
+root = Path('test/fixtures/structured_output/pi_raw_schema')
+schema = json.loads(Path('docs/schemas/review-lane-draft.correctness.v1.schema.json').read_text())
+valid = json.loads((root / 'valid-review-lane.arguments.json').read_text())
+jsonschema.Draft202012Validator(schema).validate(valid)
+for name in [
+    'invalid-placeholder-path.arguments.json',
+    'invalid-review-note-category.arguments.json',
+    'invalid-evidence-target-field.arguments.json',
+    'invalid-correctness-lane-id.arguments.json',
+]:
+    payload = json.loads((root / name).read_text())
+    try:
+        jsonschema.Draft202012Validator(schema).validate(payload)
+    except jsonschema.ValidationError:
+        continue
+    raise SystemExit(f'invalid_fixture_accepted:{name}')
+spec = json.loads((root / 'spec.correctness.json').read_text())
+assert spec['tool_name'] == 'submit_structured_output'
+assert spec['parameters_schema_path'] == 'docs/schemas/review-lane-draft.correctness.v1.schema.json'
+assert spec['require_single'] is True
+assert spec['reject_sibling_tool_calls'] is True
+assert spec['terminate'] is True
+PY
+
+if command -v pi >/dev/null 2>&1; then
+  pi_version="$(pi --version 2>&1 | tail -n 1 | tr ' ' '_')"
+else
+  pi_version="unavailable"
+fi
+
+printf 'STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=passed pi_version=%s invalid=rejected_before_execute valid=accepted terminate=true\n' "$pi_version"
