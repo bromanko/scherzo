@@ -95,6 +95,10 @@ fn build_for_pi_tool_call(
     reject_sibling_tool_calls,
   ))
   use schema <- result.try(read_schema(input.repository_root, schema_path))
+  use parameters_schema <- result.try(provider_compatible_parameters_schema(
+    schema.value,
+    schema_path,
+  ))
   let digest = schema.sha256
   Ok(ToolSpec(
     workflow_id: input.workflow_id,
@@ -109,7 +113,7 @@ fn build_for_pi_tool_call(
     prompt_guidelines: prompt_guidelines_for_tool(tool_name),
     parameters_schema_path: schema_path,
     parameters_schema_sha256: digest,
-    parameters_schema: schema.value,
+    parameters_schema: parameters_schema,
     require_single: require_single,
     reject_sibling_tool_calls: reject_sibling_tool_calls,
     terminate: True,
@@ -184,6 +188,50 @@ fn read_schema(
         "structured_output_tool_spec_schema_malformed_json",
         "parameters schema is not valid JSON: " <> schema_path,
       ))
+  }
+}
+
+fn provider_compatible_parameters_schema(
+  schema: json_value.JsonValue,
+  schema_path: String,
+) -> Result(json_value.JsonValue, ToolSpecError) {
+  case schema {
+    json_value.JObject(entries) ->
+      case object_field(entries, "type") {
+        Some(json_value.JString("object")) -> Ok(schema)
+        None ->
+          Ok(
+            json_value.JObject([
+              #("type", json_value.JString("object")),
+              ..entries
+            ]),
+          )
+        Some(_) ->
+          Error(ToolSpecError(
+            "structured_output_tool_spec_provider_incompatible_schema",
+            "parameters schema used for Pi tool registration must have top-level type \"object\": "
+              <> schema_path,
+          ))
+      }
+    _ ->
+      Error(ToolSpecError(
+        "structured_output_tool_spec_schema_not_object",
+        "parameters schema must be a JSON object: " <> schema_path,
+      ))
+  }
+}
+
+fn object_field(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+) -> Option(json_value.JsonValue) {
+  case entries {
+    [] -> None
+    [#(current, value), ..rest] ->
+      case current == key {
+        True -> Some(value)
+        False -> object_field(rest, key)
+      }
   }
 }
 

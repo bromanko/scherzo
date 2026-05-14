@@ -88,6 +88,15 @@ function validSchemaPath(schemaPath: string): boolean {
 		&& !/^[A-Za-z]:[/\\]/.test(schemaPath);
 }
 
+function normalizeProviderParametersSchema(schema: JsonObject): JsonObject {
+	const rootType = schema.type;
+	if (rootType === undefined) return { ...schema, type: "object" };
+	if (rootType === "object") return schema;
+	throw new Error(
+		`parameters_schema top-level type must be "object" for provider tool registration; got ${JSON.stringify(rootType)}`,
+	);
+}
+
 export function validateSpec(value: unknown): StructuredOutputToolSpec {
 	if (!isJsonObject(value)) throw new Error("spec must be a JSON object");
 	if (value.schema_version !== 1) throw new Error("schema_version must be 1");
@@ -98,8 +107,9 @@ export function validateSpec(value: unknown): StructuredOutputToolSpec {
 	if (!validToolName(toolName)) throw new Error(`tool_name is invalid: ${toolName}`);
 	const schemaPath = requireString(value, "parameters_schema_path");
 	if (!validSchemaPath(schemaPath)) throw new Error(`parameters_schema_path is invalid: ${schemaPath}`);
-	const schema = value.parameters_schema;
-	if (!isJsonObject(schema)) throw new Error("parameters_schema must be a JSON object");
+	const schemaValue = value.parameters_schema;
+	if (!isJsonObject(schemaValue)) throw new Error("parameters_schema must be a JSON object");
+	const schema = normalizeProviderParametersSchema(schemaValue);
 	return {
 		schema_version: 1,
 		artifact_type: SPEC_ARTIFACT_TYPE,

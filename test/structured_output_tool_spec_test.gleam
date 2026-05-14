@@ -1,4 +1,4 @@
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/json_value
 import scherzo/structured_output_source
@@ -56,6 +56,30 @@ fn assert_error_code(
   assert error.code == code
 }
 
+fn json_object_field(
+  value: json_value.JsonValue,
+  key: String,
+) -> Option(json_value.JsonValue) {
+  case value {
+    json_value.JObject(entries) -> json_object_field_loop(entries, key)
+    _ -> None
+  }
+}
+
+fn json_object_field_loop(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+) -> Option(json_value.JsonValue) {
+  case entries {
+    [] -> None
+    [#(current, value), ..rest] ->
+      case current == key {
+        True -> Some(value)
+        False -> json_object_field_loop(rest, key)
+      }
+  }
+}
+
 pub fn structured_output_tool_spec_builds_raw_schema_spec_test() {
   let assert Ok(tool_spec) =
     build("docs/schemas/review-lane-draft.correctness.v1.schema.json")
@@ -70,6 +94,8 @@ pub fn structured_output_tool_spec_builds_raw_schema_spec_test() {
     == "docs/schemas/review-lane-draft.correctness.v1.schema.json"
   assert string.length(tool_spec.parameters_schema_sha256) == 64
   let assert json_value.JObject(_) = tool_spec.parameters_schema
+  assert json_object_field(tool_spec.parameters_schema, "type")
+    == Some(json_value.JString("object"))
   assert tool_spec.require_single
   assert tool_spec.reject_sibling_tool_calls
   assert tool_spec.terminate
@@ -115,6 +141,19 @@ pub fn structured_output_tool_spec_reports_malformed_schema_json_test() {
   assert_error_code(
     build(schema_path),
     "structured_output_tool_spec_schema_malformed_json",
+  )
+}
+
+pub fn structured_output_tool_spec_rejects_provider_incompatible_schema_type_test() {
+  let dir = "test/tmp/structured-output-tool-spec"
+  let _ = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let schema_path = dir <> "/array.schema.json"
+  let assert Ok(Nil) = simplifile.write(schema_path, "{\"type\":\"array\"}\n")
+
+  assert_error_code(
+    build(schema_path),
+    "structured_output_tool_spec_provider_incompatible_schema",
   )
 }
 

@@ -30,6 +30,7 @@ for name in [
 spec = json.loads((root / 'spec.correctness.json').read_text())
 assert spec['tool_name'] == 'submit_structured_output'
 assert spec['parameters_schema_path'] == 'docs/schemas/review-lane-draft.correctness.v1.schema.json'
+assert spec['parameters_schema'].get('type') == 'object'
 assert spec['require_single'] is True
 assert spec['reject_sibling_tool_calls'] is True
 assert spec['terminate'] is True

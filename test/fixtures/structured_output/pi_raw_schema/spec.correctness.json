@@ -510,7 +510,8 @@
       }
     ],
     "description": "Structured-output contract for the native correctness review lane.",
-    "title": "Scherzo correctness review lane draft v1"
+    "title": "Scherzo correctness review lane draft v1",
+    "type": "object"
   },
   "parameters_schema_path": "docs/schemas/review-lane-draft.correctness.v1.schema.json",
   "parameters_schema_sha256": "d571b4a0662d8275060d1066d943989381fd553db6c67917655befdad435ef6f",
