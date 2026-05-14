@@ -7,7 +7,7 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Put the repo dogfood runtime config in `.scherzo/scherzo.yaml`.
 - Put versioned YAML workflow DAGs in `.scherzo/workflows/*.yaml`.
 - Put prompt templates referenced by YAML DAG agent steps in `.scherzo/workflows/prompts/*.md`.
-- Put workflow-required pi skills in `.pi/skills/` so jj workspaces and other operators use the same skill snapshot.
+- Put workflow-required agent guidance directly in checked-in prompt templates (or a workflow-owned bundled include mechanism when one exists) so consuming repositories do not have to vendor Pi skills.
 - Put runtime jj workspaces under `.scherzo/workspaces/<workflow-name>/`; they are ignored by git.
 - Config-relative paths are resolved from `.scherzo/scherzo.yaml`, so this repository uses `workspace.root: workspaces` to land at repo-root `.scherzo/workspaces`.
 - Populate Scherzo workspaces with `jj workspace add`, not separate `git clone` checkouts. New root workspaces prefer `SCHERZO_PR_BASE@SCHERZO_PR_REMOTE` (default `main@origin`) when that revision is already known locally, falling back through the local base branch and finally `@`; set `SCHERZO_JJ_WORKSPACE_BASE` to override this for deliberate local dogfooding.
@@ -19,18 +19,22 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 
 The repo `.gitignore` intentionally ignores runtime `.scherzo/*` state while allowing this README, `.scherzo/scherzo.yaml`, and `.scherzo/workflows/**` to be checked in.
 
-## Vendored pi skills and portability
+## Workflow-packaged guidance and portability
 
-ExecPlan dogfood workflows must not depend on a developer's personal pi skill installation. The checked-in ExecPlan prompts explicitly read these repo-owned skill files:
+`workflow:execplan` must not depend on a consuming repository's personal or repo-local Pi skill installation. Its draft, review, and review-incorporation prompts embed the required ExecPlan authoring and adversarial review guidance directly in the workflow prompt files under `.scherzo/workflows/prompts/`. A clean consuming repository that points `.scherzo/scherzo.yaml` at this workflow bundle can therefore prepare those prompts without committing local ExecPlan skill files.
 
-- `.pi/skills/exec-plan/SKILL.md`
-- `.pi/skills/exec-plan-review/SKILL.md`
-
-A clean checkout therefore contains the skill assets needed by `workflow:execplan`, `workflow:execplan-revision`, and `workflow:execplan-implementation`. When updating these skills, copy the canonical skill content into the matching `.pi/skills/<name>/SKILL.md` path, verify the frontmatter `name:` still matches the directory name, keep relative links within `.pi/skills/`, and run the workflow portability validation:
+Command steps that need Scherzo helpers should resolve the configured repository root before invoking scripts, for example:
 
 ```sh
-LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
-direnv exec . gleam test
+repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+"$repo_root/scripts/scherzo-execplan" validate
+```
+
+When updating `workflow:execplan` guidance or helper invocations, run the workflow portability validation:
+
+```sh
+LINEAR_API_KEY=dummy SCHERZO_REPO_ROOT=$(pwd) direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
+direnv exec . gleam test -- --suite unit
 ```
 
 The implementation review workflows now use repo-local staged review artifacts from `scripts/scherzo-review` instead of local `/review` pi commands or language-specific local skills. There is no remaining routed-workflow dependency on local language-specific pi review skills; LIV-115 remains the tracking issue for the broader staged code review workflow cutover, so do not add language-specific review skills as required dogfood configuration.
@@ -159,7 +163,7 @@ The checked-in workflows are:
 
 - `workflow:research` — investigates with `openai-codex/gpt-5.5:xhigh`, writes `research-findings.md`, verifies the file, and uses that Markdown as the inline Linear result text.
 - `workflow:implementation` — fetches Linear ticket context directly, implements without requiring an ExecPlan, detects changed files across the full workflow diff, generates a local schema-versioned review brief under `$SCHERZO_RUN_ROOT/artifacts/review/`, runs repo-local staged review lanes through `scripts/scherzo-review`, validates format and tests through direnv, publishes a final jj bookmark as a GitHub PR, and lets Scherzo delete the workspace only after publication. If the workflow stops before publication, a `.scherzo-keep-workspace` marker keeps the run directory for operator recovery instead of deleting unpushed work.
-- `workflow:execplan` — uses repo-local exec-plan skills with `openai-codex/gpt-5.5:xhigh` to draft a single checked-in Markdown ExecPlan source file at `docs/plans/<plan>.md`, adversarially review it, incorporate the review, push a jj bookmark, open a ready GitHub PR, and create or reuse a follow-up `workflow:execplan-implementation` Linear issue in `Backlog`. The final validation and publish commands print `PRIMARY_PLAN_ARTIFACT=...`, `PLAN_MARKDOWN_PATH=...`, and `PLAN_PATH=...` pointing at the checked-in `docs/plans/*.md` file. HTML previews are derived viewer artifacts only and are not authoritative workflow output. The follow-up issue references the Markdown plan path and PR but stays out of Scherzo's active `Todo`/`In Progress` dispatch states until a human merges the plan PR and moves the implementation issue to `Todo`.
+- `workflow:execplan` — uses workflow-packaged ExecPlan guidance with `openai-codex/gpt-5.5:xhigh` to draft a single checked-in Markdown ExecPlan source file at `docs/plans/<plan>.md`, adversarially review it, incorporate the review, push a jj bookmark, open a ready GitHub PR, and create or reuse a follow-up `workflow:execplan-implementation` Linear issue in `Backlog`. The final validation and publish commands print `PRIMARY_PLAN_ARTIFACT=...`, `PLAN_MARKDOWN_PATH=...`, and `PLAN_PATH=...` pointing at the checked-in `docs/plans/*.md` file. HTML previews are derived viewer artifacts only and are not authoritative workflow output. The follow-up issue references the Markdown plan path and PR but stays out of Scherzo's active `Todo`/`In Progress` dispatch states until a human merges the plan PR and moves the implementation issue to `Todo`.
 - `workflow:execplan-revision` — finds an existing ExecPlan PR referenced by a human-friendly Linear issue phrase such as `Revise PR #51`, fetches the latest PR head, collects top-level/review/inline GitHub feedback, revises only the plan file, pushes the existing PR branch, and posts one concise PR acknowledgement.
 - `workflow:execplan-implementation` — finds exactly one referenced ExecPlan under `docs/plans/` (`.md` for new Markdown source plans, with legacy `.html` still accepted for older plans), implements it in an isolated jj workspace using the same shared implementation helper as `workflow:implementation`, detects changed files across the full workflow diff, verifies plan completion, generates a local schema-versioned review brief under `$SCHERZO_RUN_ROOT/artifacts/review/`, runs repo-local staged review lanes through `scripts/scherzo-review`, validates format and tests through direnv, publishes a final jj bookmark as a GitHub PR, and lets Scherzo delete the workspace only after publication. If the workflow stops before publication, a `.scherzo-keep-workspace` marker keeps the run directory for operator recovery instead of deleting unpushed work.
 - `workflow:merge-conflict-resolution` — manually resolves merge conflicts for one same-repository GitHub PR or branch referenced by a Linear issue. The issue should include an unambiguous target such as `Resolve conflicts for PR #51`, `bromanko/scherzo#51`, a full GitHub PR URL, or `Branch: feature/name`. The workflow creates a merge commit from the target branch and the configured base branch, lets the agent edit only files that jj reports as conflicted, fails if non-conflicted tracked files change or ambiguity requires a behavior choice, validates through direnv, and fast-forwards the target branch only after validation passes.

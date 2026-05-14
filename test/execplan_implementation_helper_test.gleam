@@ -1381,11 +1381,11 @@ pub fn execplan_workflow_creates_followup_issue_after_pr_test() {
   assert string.contains(workflow, "depends_on: [create_pr]")
   assert string.contains(
     workflow,
-    "scripts/scherzo-execplan create-pr --publish-context tmp/scherzo-execplan-publish-context.json",
+    "\"$repo_root/scripts/scherzo-execplan\" create-pr --publish-context tmp/scherzo-execplan-publish-context.json",
   )
   assert string.contains(
     workflow,
-    "scripts/scherzo-execplan create-implementation-issue --publish-context tmp/scherzo-execplan-publish-context.json",
+    "\"$repo_root/scripts/scherzo-execplan\" create-implementation-issue --publish-context tmp/scherzo-execplan-publish-context.json",
   )
 }
 

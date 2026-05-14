@@ -18,10 +18,10 @@ Workflow contract:
 - This workflow turns a sufficiently detailed Linear ticket into a checked-in Markdown ExecPlan proposal.
 - You are already inside a dedicated workflow workspace prepared by Scherzo; do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
 - Use `$SCHERZO_WORKSPACE_DRIVER status --human` for source-control inspection.
-- Use the repo-local exec-plan skill by reading `.pi/skills/exec-plan/SKILL.md` before drafting.
+- Follow the workflow-packaged ExecPlan authoring standard in this prompt. Do not require a local Pi skill file; all guidance needed for this workflow step is embedded below.
 - Inspect the current repository with the smallest useful scope required to make the plan accurate and self-contained.
 - The ticket should contain enough information to draft the plan. Prefer recording `[CLARIFY]` items over exhaustive discovery when details are ambiguous.
-- Do not read existing `docs/plans/*` files except to avoid filename collisions; use the skill skeleton for the plan content requirements.
+- Do not read existing `docs/plans/*` files except to avoid filename collisions; use the embedded required Markdown structure for the plan content requirements.
 - Do not implement the ticket. Do not edit source code, tests, config, or existing docs except for the one new plan artifact.
 - Create exactly one self-contained Markdown ExecPlan source file under `docs/plans/`.
 - Name the file `docs/plans/{{ issue.identifier }}-<short-kebab-title>.md`, using a lowercase title slug.
@@ -32,6 +32,24 @@ Workflow contract:
 - Include `## Open Questions and Clarifications Needed` even when there are no open questions; write `None.` in that case.
 - Keep the plan suitable for review in a PR. It should be detailed enough to implement later, but it must not start implementation now.
 
+Workflow-packaged ExecPlan authoring standard:
+
+- An ExecPlan is a living, self-contained Markdown document that lets a skilled developer who is new to this repository implement a working, observable change from the plan alone.
+- The plan must be worth doing: frame the concrete user or operator problem, explain why it is real now, and keep the approach proportionate to that problem.
+- The plan must be portable: use repository-relative paths only; never write absolute local paths or checkout-specific assumptions.
+- The plan must be falsifiable: state exactly what tests, commands, outputs, and observations would prove the plan works, and what results would prove it wrong.
+- The plan must be safe and reversible: identify likely failure modes, rollout or containment concerns, and rollback or recovery steps when the change touches existing behavior.
+- Write for a developer who can program but does not know this codebase, toolchain, or domain. Name the files, modules, commands, expected outputs, fixtures, and edge cases they need; do not leave design choices for the implementer.
+- Use plain language. Define repository-specific terms when first used, and embed necessary context instead of pointing to external docs or prior plans.
+- Required Markdown structure: begin with a level-1 `#` title and include a living-document note followed by `## Purpose / Big Picture`, `## Problem Framing and Constraints`, `## Strategy Overview`, `## Alternatives Considered`, `## Risks and Countermeasures`, `## Progress`, `## Surprises & Discoveries`, `## Decision Log`, `## Outcomes & Retrospective`, `## Context and Orientation`, `## Preconditions and Verified Facts`, `## Scope Boundaries`, `## Milestones`, `## Plan of Work`, `## Concrete Steps`, `## Testing and Falsifiability`, `## Validation and Acceptance`, `## Rollout, Recovery, and Idempotence`, `## Artifacts and Notes`, `## Interfaces and Dependencies`, and `## Open Questions and Clarifications Needed`.
+- The four living-document sections are mandatory. `## Progress` must be a granular checklist with timestamps where possible. `## Surprises & Discoveries`, `## Decision Log`, and `## Outcomes & Retrospective` must remain present even when initially sparse.
+- `## Milestones` should tell the implementation story in independently verifiable increments. `## Concrete Steps` should break work into small actions of roughly 2-5 minutes, name exact files, include exact commands from the repository root, and call out commit points for later implementation.
+- Testing instructions must be explicit enough that the implementer does not invent coverage. Name test files, inputs, expected assertions, red/green expectations, targeted commands, and final validation commands.
+- Use this root-resolved helper invocation when local ExecPlan validation is practical from any workspace:
+
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      "$repo_root/scripts/scherzo-execplan" validate docs/plans/{{ issue.identifier }}-<short-kebab-title>.md
+
 Dogfood time budget:
 
 - Use at most 12 tool calls before writing the draft plan.
@@ -40,11 +58,11 @@ Dogfood time budget:
 
 Drafting process:
 
-1. Read `.pi/skills/exec-plan/SKILL.md` and follow its authoring guidance.
+1. Follow the workflow-packaged ExecPlan authoring standard above.
 2. Restate the problem from the Linear ticket in operator/user terms.
 3. Inspect only the repository files needed to make file paths, commands, existing behavior, and validation steps credible.
 4. Write the plan content as the single `docs/plans/{{ issue.identifier }}-<short-kebab-title>.md` Markdown source artifact.
-5. Run `scripts/scherzo-execplan validate docs/plans/{{ issue.identifier }}-<short-kebab-title>.md` if practical; otherwise rely on the following validation step.
+5. Run `repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan" validate docs/plans/{{ issue.identifier }}-<short-kebab-title>.md` if practical; otherwise rely on the following validation step.
 6. Run lightweight local checks only if useful for fact-finding. Do not run broad validation unless needed to verify facts in the plan.
 7. Finish with a concise response naming the Markdown plan artifact and any `[CLARIFY]` items.
 
