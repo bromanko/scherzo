@@ -5,6 +5,7 @@ import gleam/order.{type Order}
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 
 pub type RemoteBoard {
   RemoteBoard(
@@ -58,6 +59,8 @@ pub type ContractDiagnostic {
     actual: String,
     actual_team_key: String,
   )
+  MissingCompletionStateId(source: String, id: String)
+  AmbiguousCompletionStateName(team_key: String, name: String, source: String)
 }
 
 type StateRequirement {
@@ -76,6 +79,7 @@ pub fn check(
   |> append_state_diagnostics(state_requirements(effective), remote.teams)
   |> append_label_diagnostics(label_requirements(effective), remote)
   |> append_handoff_diagnostics(effective, remote)
+  |> append_completion_state_policy_diagnostics(effective, remote)
   |> append_invalid_workflow_state_diagnostics(effective, remote)
   |> list.reverse
 }
@@ -97,6 +101,8 @@ pub fn diagnostic_code(diagnostic: ContractDiagnostic) -> String {
       "multi_team_invalid_workflow_state_unsupported"
     InvalidWorkflowStateNameMismatch(_, _, _, _) ->
       "invalid_workflow_state_name_mismatch"
+    MissingCompletionStateId(_, _) -> "missing_completion_state_id"
+    AmbiguousCompletionStateName(_, _, _) -> "ambiguous_completion_state_name"
   }
 }
 
@@ -402,6 +408,183 @@ fn append_handoff_name_mismatch(
   }
 }
 
+fn append_completion_state_policy_diagnostics(
+  acc: List(ContractDiagnostic),
+  effective: config_types.EffectiveConfig,
+  remote: RemoteBoard,
+) -> List(ContractDiagnostic) {
+  case effective.handoff.completion_states {
+    None -> acc
+    Some(policy) ->
+      append_completion_state_refs(
+        acc,
+        completion_state_refs(policy),
+        remote.teams,
+      )
+  }
+}
+
+fn completion_state_refs(
+  policy: workflow_completion_policy.CompletionStatePolicy,
+) -> List(#(String, workflow_completion_policy.LinearStateRef)) {
+  let base = "handoff.completion_states"
+  let globals = [
+    state_ref_source(
+      base,
+      "default_completion_state",
+      policy.default_completion_state,
+    ),
+    state_ref_source(base, "failure_state", policy.failure_state),
+    state_ref_source(
+      base,
+      "partial_success_state",
+      policy.partial_success_state,
+    ),
+  ]
+  let globals =
+    append_optional_state_ref(
+      globals,
+      base,
+      "no_review_completion_state",
+      policy.no_review_completion_state,
+    )
+  let globals =
+    append_optional_state_ref(
+      globals,
+      base,
+      "cancellation_state",
+      policy.cancellation_state,
+    )
+  policy.workflows
+  |> dict.to_list
+  |> list.sort(by: compare_workflow_override_pairs)
+  |> list.fold(globals, fn(acc, entry) {
+    let #(workflow_id, override) = entry
+    let path = base <> ".workflows." <> workflow_id
+    acc
+    |> append_optional_state_ref(path, "success_state", override.success_state)
+    |> append_optional_state_ref(
+      path,
+      "no_review_completion_state",
+      override.no_review_completion_state,
+    )
+    |> append_optional_state_ref(path, "failure_state", override.failure_state)
+    |> append_optional_state_ref(
+      path,
+      "partial_success_state",
+      override.partial_success_state,
+    )
+    |> append_optional_state_ref(
+      path,
+      "cancellation_state",
+      override.cancellation_state,
+    )
+  })
+}
+
+fn append_optional_state_ref(
+  acc: List(#(String, workflow_completion_policy.LinearStateRef)),
+  path: String,
+  key: String,
+  maybe_ref: Option(workflow_completion_policy.LinearStateRef),
+) -> List(#(String, workflow_completion_policy.LinearStateRef)) {
+  case maybe_ref {
+    None -> acc
+    Some(ref) -> [state_ref_source(path, key, ref), ..acc]
+  }
+}
+
+fn state_ref_source(
+  path: String,
+  key: String,
+  ref: workflow_completion_policy.LinearStateRef,
+) -> #(String, workflow_completion_policy.LinearStateRef) {
+  let suffix = case ref {
+    workflow_completion_policy.StateById(_) -> key <> "_id"
+    workflow_completion_policy.StateByName(_) -> key
+  }
+  #(path <> "." <> suffix, ref)
+}
+
+fn compare_workflow_override_pairs(
+  a: #(String, workflow_completion_policy.WorkflowCompletionOverride),
+  b: #(String, workflow_completion_policy.WorkflowCompletionOverride),
+) -> Order {
+  let #(a_key, _) = a
+  let #(b_key, _) = b
+  string.compare(a_key, b_key)
+}
+
+fn append_completion_state_refs(
+  acc: List(ContractDiagnostic),
+  refs: List(#(String, workflow_completion_policy.LinearStateRef)),
+  teams: List(RemoteTeam),
+) -> List(ContractDiagnostic) {
+  case refs {
+    [] -> acc
+    [#(source, ref), ..rest] ->
+      append_completion_state_refs(
+        append_completion_state_ref(acc, source, ref, teams),
+        rest,
+        teams,
+      )
+  }
+}
+
+fn append_completion_state_ref(
+  acc: List(ContractDiagnostic),
+  source: String,
+  ref: workflow_completion_policy.LinearStateRef,
+  teams: List(RemoteTeam),
+) -> List(ContractDiagnostic) {
+  case ref {
+    workflow_completion_policy.StateById(id) ->
+      case any_team_has_state_id(teams, id) {
+        True -> acc
+        False -> [MissingCompletionStateId(source, id), ..acc]
+      }
+    workflow_completion_policy.StateByName(name) ->
+      append_completion_state_name_diagnostics(acc, source, name, teams)
+  }
+}
+
+fn append_completion_state_name_diagnostics(
+  acc: List(ContractDiagnostic),
+  source: String,
+  name: String,
+  teams: List(RemoteTeam),
+) -> List(ContractDiagnostic) {
+  case teams {
+    [] -> acc
+    [team, ..rest] -> {
+      let matches = matching_state_names(team.states, name)
+      let acc = case matches {
+        [] -> [MissingState(team.key, name, source), ..acc]
+        [_] -> acc
+        [_, ..] -> [AmbiguousCompletionStateName(team.key, name, source), ..acc]
+      }
+      append_completion_state_name_diagnostics(acc, source, name, rest)
+    }
+  }
+}
+
+fn any_team_has_state_id(teams: List(RemoteTeam), id: String) -> Bool {
+  list.any(teams, fn(team) {
+    case find_state_by_id(team.states, id) {
+      Some(_) -> True
+      None -> False
+    }
+  })
+}
+
+fn matching_state_names(
+  states: List(RemoteState),
+  name: String,
+) -> List(RemoteState) {
+  let expected = string.trim(name)
+  list.filter(states, fn(state) { string.trim(state.name) == expected })
+}
+
 fn append_invalid_workflow_state_diagnostics(
   acc: List(ContractDiagnostic),
   effective: config_types.EffectiveConfig,
@@ -583,6 +766,26 @@ fn format_diagnostic(diagnostic: ContractDiagnostic) -> String {
       <> quote(actual)
       <> " actual_team="
       <> actual_team_key
+    MissingCompletionStateId(source, id) ->
+      "missing_completion_state_id source="
+      <> source
+      <> " id="
+      <> quote(id)
+      <> " remediation="
+      <> quote(
+        "run scherzo doctor --check linear-contract and see docs/runbooks/linear-completion-states.md",
+      )
+    AmbiguousCompletionStateName(team_key, name, source) ->
+      "ambiguous_completion_state_name team="
+      <> team_key
+      <> " source="
+      <> source
+      <> " name="
+      <> quote(name)
+      <> " remediation="
+      <> quote(
+        "run scherzo doctor --check linear-contract and see docs/runbooks/linear-completion-states.md",
+      )
   }
 }
 

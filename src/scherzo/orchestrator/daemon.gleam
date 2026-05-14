@@ -3474,6 +3474,7 @@ fn transition_report_worker_success(
       issue: final_issue,
       success: success,
       run_id: identity.run_id,
+      workflow_id: identity.workflow_id,
       client: state.handoff_client,
     ),
   )
@@ -3491,6 +3492,7 @@ fn transition_report_worker_failure(
       issue: identity.issue,
       failure: failure,
       run_id: identity.run_id,
+      workflow_id: identity.workflow_id,
       client: state.handoff_client,
     ),
   )
@@ -6003,13 +6005,13 @@ fn crash_result_for_effect(
         run_id,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReportSuccess(issue_id, _, _, run_id, _) ->
+    effect_runner.ReportSuccess(issue_id, _, _, run_id, _, _) ->
       effect_runner.HandoffSuccessFinished(
         issue_id,
         run_id,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReportFailure(issue_id, _, _, run_id, _) ->
+    effect_runner.ReportFailure(issue_id, _, _, run_id, _, _) ->
       effect_runner.HandoffFailureFinished(
         issue_id,
         run_id,

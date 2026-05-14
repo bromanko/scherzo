@@ -9,6 +9,7 @@ import scherzo/linear
 import scherzo/linear_attachment
 import scherzo/result_artifact
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_completion_policy
 
 pub type ParkReport {
   ParkReport(
@@ -26,8 +27,20 @@ pub type Client {
       Result(Nil, error.TrackerError),
     report_success: fn(tracker_issue.Issue, agent_types.WorkerSuccess, String) ->
       Result(Nil, error.TrackerError),
+    report_success_for_workflow: fn(
+      tracker_issue.Issue,
+      agent_types.WorkerSuccess,
+      String,
+      String,
+    ) -> Result(Nil, error.TrackerError),
     report_failure: fn(tracker_issue.Issue, agent_types.WorkerFailure, String) ->
       Result(Nil, error.TrackerError),
+    report_failure_for_workflow: fn(
+      tracker_issue.Issue,
+      agent_types.WorkerFailure,
+      String,
+      String,
+    ) -> Result(Nil, error.TrackerError),
     report_park: fn(ParkReport) -> Result(Nil, error.TrackerError),
   )
 }
@@ -36,7 +49,9 @@ pub fn disabled_client() -> Client {
   Client(
     claim_issue: fn(_, _) { Ok(Nil) },
     report_success: fn(_, _, _) { Ok(Nil) },
+    report_success_for_workflow: fn(_, _, _, _) { Ok(Nil) },
     report_failure: fn(_, _, _) { Ok(Nil) },
+    report_failure_for_workflow: fn(_, _, _, _) { Ok(Nil) },
     report_park: fn(_) { Ok(Nil) },
   )
 }
@@ -79,6 +94,18 @@ pub fn linear_client_with_attachment_dependencies(
             issue,
             success,
             run_id,
+            "",
+          )
+        },
+        report_success_for_workflow: fn(issue, success, run_id, workflow_id) {
+          report_success(
+            tracker_config,
+            handoff_config,
+            dependencies,
+            issue,
+            success,
+            run_id,
+            workflow_id,
           )
         },
         report_failure: fn(issue, failure, run_id) {
@@ -89,6 +116,18 @@ pub fn linear_client_with_attachment_dependencies(
             issue,
             failure,
             run_id,
+            "",
+          )
+        },
+        report_failure_for_workflow: fn(issue, failure, run_id, workflow_id) {
+          report_failure(
+            tracker_config,
+            handoff_config,
+            dependencies.graphql_transport,
+            issue,
+            failure,
+            run_id,
+            workflow_id,
           )
         },
         report_park: fn(report) {
@@ -136,7 +175,12 @@ fn report_success(
   issue: tracker_issue.Issue,
   success: agent_types.WorkerSuccess,
   run_id: String,
+  workflow_id: String,
 ) -> Result(Nil, error.TrackerError) {
+  let decision =
+    success_completion_decision(handoff_config, workflow_id, success)
+  let tracking_state =
+    option.map(decision, workflow_completion_policy.decision_reason)
   let attachment_filename =
     success_attachment_filename(handoff_config, issue, success, run_id)
   let options =
@@ -152,13 +196,21 @@ fn report_success(
         tracker_config,
         dependencies.graphql_transport,
         issue.id,
-        handoff_format.success_comment(issue, success, run_id, options, secrets),
+        handoff_format.success_comment_with_tracking(
+          issue,
+          success,
+          run_id,
+          options,
+          tracking_state,
+          secrets,
+        ),
       ))
-      run_state_update(
+      run_success_state_update(
         tracker_config,
+        handoff_config,
         dependencies.graphql_transport,
         issue.id,
-        handoff_config.success_state_id,
+        decision,
       )
     }
     True -> {
@@ -169,6 +221,7 @@ fn report_success(
         success,
         run_id,
         options,
+        tracking_state,
         secrets,
       ))
       use _ <- try_tracker(maybe_attach_success_result(
@@ -181,11 +234,12 @@ fn report_success(
         comment.id,
         attachment_filename,
       ))
-      run_state_update(
+      run_success_state_update(
         tracker_config,
+        handoff_config,
         dependencies.graphql_transport,
         issue.id,
-        handoff_config.success_state_id,
+        decision,
       )
     }
   }
@@ -198,24 +252,31 @@ fn report_failure(
   issue: tracker_issue.Issue,
   failure: agent_types.WorkerFailure,
   run_id: String,
+  workflow_id: String,
 ) -> Result(Nil, error.TrackerError) {
+  let decision =
+    failure_completion_decision(handoff_config, workflow_id, failure)
+  let tracking_state =
+    option.map(decision, workflow_completion_policy.decision_reason)
   use _ <- try_tracker(run_comment(
     handoff_config.comment_on_failure,
     tracker_config,
     transport,
     issue.id,
-    handoff_format.failure_comment(
+    handoff_format.failure_comment_with_tracking(
       issue,
       failure,
       run_id,
+      tracking_state,
       tracker_secrets(tracker_config),
     ),
   ))
-  run_state_update(
+  run_failure_state_update(
     tracker_config,
+    handoff_config,
     transport,
     issue.id,
-    handoff_config.failure_state_id,
+    decision,
   )
 }
 
@@ -247,12 +308,20 @@ fn create_success_comment(
   success: agent_types.WorkerSuccess,
   run_id: String,
   options: handoff_format.SuccessCommentOptions,
+  tracking_state: Option(String),
   secrets: List(String),
 ) -> Result(linear.LinearCommentDocument, error.TrackerError) {
   use request <- try_tracker(linear.build_comment_create_request(
     tracker_config,
     issue.id,
-    handoff_format.success_comment(issue, success, run_id, options, secrets),
+    handoff_format.success_comment_with_tracking(
+      issue,
+      success,
+      run_id,
+      options,
+      tracking_state,
+      secrets,
+    ),
   ))
   use response <- try_tracker(transport(request))
   linear.parse_comment_create_response(response)
@@ -316,6 +385,150 @@ fn maybe_attach_success_result(
       Ok(Nil)
     }
   }
+}
+
+fn success_completion_decision(
+  handoff_config: config_types.HandoffConfig,
+  workflow_id: String,
+  success: agent_types.WorkerSuccess,
+) -> Option(workflow_completion_policy.CompletionStateDecision) {
+  case handoff_config.completion_states {
+    None -> None
+    Some(policy) ->
+      Some(workflow_completion_policy.choose_linear_completion_state(
+        policy,
+        workflow_id,
+        workflow_completion_policy.success_outcome(
+          handoff_config.completion_states,
+          workflow_id,
+          success,
+        ),
+      ))
+  }
+}
+
+fn failure_completion_decision(
+  handoff_config: config_types.HandoffConfig,
+  workflow_id: String,
+  failure: agent_types.WorkerFailure,
+) -> Option(workflow_completion_policy.CompletionStateDecision) {
+  case handoff_config.completion_states {
+    None -> None
+    Some(policy) ->
+      Some(workflow_completion_policy.choose_linear_completion_state(
+        policy,
+        workflow_id,
+        failure_completion_outcome(failure),
+      ))
+  }
+}
+
+fn failure_completion_outcome(
+  failure: agent_types.WorkerFailure,
+) -> workflow_completion_policy.WorkflowCompletionOutcome {
+  case failure.reason {
+    error.OperatorAbort -> workflow_completion_policy.cancellation_outcome()
+    error.OperatorStopAfterCurrentTurn ->
+      workflow_completion_policy.cancellation_outcome()
+    _ -> workflow_completion_policy.failure_outcome()
+  }
+}
+
+fn run_success_state_update(
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  decision: Option(workflow_completion_policy.CompletionStateDecision),
+) -> Result(Nil, error.TrackerError) {
+  case decision {
+    Some(decision) ->
+      run_completion_state_update(tracker_config, transport, issue_id, decision)
+    None ->
+      run_state_update(
+        tracker_config,
+        transport,
+        issue_id,
+        handoff_config.success_state_id,
+      )
+  }
+}
+
+fn run_failure_state_update(
+  tracker_config: config_types.TrackerConfig,
+  handoff_config: config_types.HandoffConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  decision: Option(workflow_completion_policy.CompletionStateDecision),
+) -> Result(Nil, error.TrackerError) {
+  case decision {
+    Some(decision) ->
+      run_completion_state_update(tracker_config, transport, issue_id, decision)
+    None ->
+      run_state_update(
+        tracker_config,
+        transport,
+        issue_id,
+        handoff_config.failure_state_id,
+      )
+  }
+}
+
+fn run_completion_state_update(
+  tracker_config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  decision: workflow_completion_policy.CompletionStateDecision,
+) -> Result(Nil, error.TrackerError) {
+  case decision {
+    workflow_completion_policy.LeaveLinearState(_) -> Ok(Nil)
+    workflow_completion_policy.MoveToState(state, _) ->
+      run_state_ref_update(tracker_config, transport, issue_id, state)
+  }
+}
+
+fn run_state_ref_update(
+  tracker_config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  state: workflow_completion_policy.LinearStateRef,
+) -> Result(Nil, error.TrackerError) {
+  case state {
+    workflow_completion_policy.StateById(state_id) ->
+      run_state_update(tracker_config, transport, issue_id, Some(state_id))
+    workflow_completion_policy.StateByName(name) -> {
+      use request <- try_tracker(linear.build_issue_team_states_request(
+        tracker_config,
+        issue_id,
+      ))
+      use response <- try_tracker(transport(request))
+      use states <- try_tracker(linear.parse_issue_team_states_response(
+        response,
+      ))
+      case linear.resolve_state_name(states, name) {
+        Ok(state_id) ->
+          run_state_update(tracker_config, transport, issue_id, Some(state_id))
+        Error(reason) -> Error(completion_state_resolution_error(name, reason))
+      }
+    }
+  }
+}
+
+fn completion_state_resolution_error(
+  name: String,
+  reason: linear.StateNameResolutionError,
+) -> error.TrackerError {
+  let reason_text = case reason {
+    linear.StateNameNotFound -> "not found"
+    linear.StateNameAmbiguous -> "ambiguous"
+  }
+  error.LinearApiRequest(
+    "configured completion state "
+    <> name
+    <> " is "
+    <> reason_text
+    <> "; run scherzo doctor --check linear-contract and see docs/runbooks/linear-completion-states.md",
+  )
 }
 
 fn limit_success_result_for_attachment(

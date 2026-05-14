@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/model_config
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 
 pub type TrackerConfig {
   TrackerConfig(
@@ -98,6 +99,7 @@ pub type HandoffConfig {
     attach_result_on_success: Bool,
     attachment_fallback_to_markdown_link: Bool,
     result_max_chars: Int,
+    completion_states: Option(workflow_completion_policy.CompletionStatePolicy),
   )
 }
 

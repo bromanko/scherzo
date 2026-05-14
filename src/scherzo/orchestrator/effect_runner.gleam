@@ -47,6 +47,7 @@ pub type Effect {
     issue: tracker_issue.Issue,
     success: agent_types.WorkerSuccess,
     run_id: String,
+    workflow_id: String,
     client: handoff.Client,
   )
   ReportFailure(
@@ -54,6 +55,7 @@ pub type Effect {
     issue: tracker_issue.Issue,
     failure: agent_types.WorkerFailure,
     run_id: String,
+    workflow_id: String,
     client: handoff.Client,
   )
   ReportPark(report: handoff.ParkReport, client: handoff.Client)
@@ -343,8 +345,8 @@ pub fn effect_kind(effect: Effect) -> String {
     RefreshRetry(_, _, _) -> "refresh_retry"
     ValidateDispatchClaim(_, _, _) -> "validate_dispatch_claim"
     ClaimIssue(_, _, _, _) -> "claim_issue"
-    ReportSuccess(_, _, _, _, _) -> "report_success"
-    ReportFailure(_, _, _, _, _) -> "report_failure"
+    ReportSuccess(_, _, _, _, _, _) -> "report_success"
+    ReportFailure(_, _, _, _, _, _) -> "report_failure"
     ReportPark(_, _) -> "report_park"
     PostLinearCommandAck(_, _, _, _) -> "post_linear_command_ack"
     ReportInvalidWorkflow(_, _, _, _, _) -> "report_invalid_workflow"
@@ -554,17 +556,17 @@ fn run_side_effect(effect: Effect) -> EffectResult {
       )
     ClaimIssue(issue, _workspace_path, run_id, client) ->
       HandoffClaimFinished(issue.id, run_id, client.claim_issue(issue, run_id))
-    ReportSuccess(issue_id, issue, success, run_id, client) ->
+    ReportSuccess(issue_id, issue, success, run_id, workflow_id, client) ->
       HandoffSuccessFinished(
         issue_id,
         run_id,
-        client.report_success(issue, success, run_id),
+        client.report_success_for_workflow(issue, success, run_id, workflow_id),
       )
-    ReportFailure(issue_id, issue, failure, run_id, client) ->
+    ReportFailure(issue_id, issue, failure, run_id, workflow_id, client) ->
       HandoffFailureFinished(
         issue_id,
         run_id,
-        client.report_failure(issue, failure, run_id),
+        client.report_failure_for_workflow(issue, failure, run_id, workflow_id),
       )
     ReportPark(report, client) ->
       HandoffParkFinished(report.issue_id, client.report_park(report))

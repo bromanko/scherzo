@@ -1,5 +1,6 @@
 import birl
 import gleam/bit_array
+import gleam/dict
 import gleam/erlang/process
 import gleam/json
 import gleam/option.{type Option, None, Some}
@@ -16,6 +17,7 @@ import scherzo/session/tokens as session_tokens
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 import simplifile
 import test_async
 
@@ -45,6 +47,7 @@ fn handoff_config() -> config_types.HandoffConfig {
     attach_result_on_success: False,
     attachment_fallback_to_markdown_link: True,
     result_max_chars: 8000,
+    completion_states: None,
   )
 }
 
@@ -493,6 +496,146 @@ pub fn success_handoff_attachment_failure_stops_before_state_update_test() {
   test_async.assert_no_extra_message_within(graphql_subject, 20)
 }
 
+pub fn policy_state_by_id_updates_without_lookup_test() {
+  let subject = process.new_subject()
+  let client =
+    handoff.linear_client(
+      tracker_config(),
+      config_types.HandoffConfig(
+        ..handoff_config(),
+        success_state_id: Some("legacy-success"),
+        completion_states: Some(
+          completion_policy(workflow_completion_policy.StateById("state-review")),
+        ),
+      ),
+      success_transport(subject, team_states_response([])),
+    )
+
+  assert client.report_success(issue(), success(), "run-policy-id") == Ok(Nil)
+  let assert Ok(comment) = process.receive(subject, within: 100)
+  let assert Ok(issue_update) = process.receive(subject, within: 100)
+  test_async.assert_no_extra_message_within(subject, 20)
+  assert string.contains(comment, "## Tracking state")
+  assert string.contains(comment, "moved to state-review")
+  assert string.contains(issue_update, "ScherzoIssueUpdateState")
+  assert string.contains(issue_update, "state-review")
+  assert !string.contains(issue_update, "legacy-success")
+}
+
+pub fn policy_state_by_name_resolves_before_update_test() {
+  let subject = process.new_subject()
+  let client =
+    handoff.linear_client(
+      tracker_config(),
+      config_types.HandoffConfig(
+        ..handoff_config(),
+        completion_states: Some(
+          completion_policy(workflow_completion_policy.StateByName("In Review")),
+        ),
+      ),
+      success_transport(
+        subject,
+        team_states_response([
+          #("state-review", "In Review"),
+          #("state-done", "Done"),
+        ]),
+      ),
+    )
+
+  assert client.report_success(issue(), success(), "run-policy-name") == Ok(Nil)
+  let assert Ok(comment) = process.receive(subject, within: 100)
+  let assert Ok(lookup) = process.receive(subject, within: 100)
+  let assert Ok(update) = process.receive(subject, within: 100)
+  test_async.assert_no_extra_message_within(subject, 20)
+  assert string.contains(comment, "moved to In Review")
+  assert string.contains(lookup, "ScherzoIssueTeamStates")
+  assert string.contains(update, "state-review")
+}
+
+pub fn unresolved_policy_state_name_skips_update_with_diagnostic_test() {
+  let subject = process.new_subject()
+  let client =
+    handoff.linear_client(
+      tracker_config(),
+      config_types.HandoffConfig(
+        ..handoff_config(),
+        completion_states: Some(
+          completion_policy(workflow_completion_policy.StateByName("In Review")),
+        ),
+      ),
+      success_transport(
+        subject,
+        team_states_response([#("state-done", "Done")]),
+      ),
+    )
+
+  let assert Error(error.LinearApiRequest(message)) =
+    client.report_success(issue(), success(), "run-missing-state")
+  let assert Ok(comment) = process.receive(subject, within: 100)
+  let assert Ok(lookup) = process.receive(subject, within: 100)
+  test_async.assert_no_extra_message_within(subject, 20)
+  assert string.contains(comment, "run-missing-state")
+  assert string.contains(lookup, "ScherzoIssueTeamStates")
+  assert string.contains(message, "scherzo doctor --check linear-contract")
+  assert string.contains(message, "docs/runbooks/linear-completion-states.md")
+}
+
+pub fn ambiguous_policy_state_name_skips_update_with_diagnostic_test() {
+  let subject = process.new_subject()
+  let client =
+    handoff.linear_client(
+      tracker_config(),
+      config_types.HandoffConfig(
+        ..handoff_config(),
+        completion_states: Some(
+          completion_policy(workflow_completion_policy.StateByName("In Review")),
+        ),
+      ),
+      success_transport(
+        subject,
+        team_states_response([
+          #("state-review-1", "In Review"),
+          #("state-review-2", "In Review"),
+        ]),
+      ),
+    )
+
+  let assert Error(error.LinearApiRequest(message)) =
+    client.report_success(issue(), success(), "run-ambiguous-state")
+  let assert Ok(_) = process.receive(subject, within: 100)
+  let assert Ok(_) = process.receive(subject, within: 100)
+  test_async.assert_no_extra_message_within(subject, 20)
+  assert string.contains(message, "ambiguous")
+  assert string.contains(message, "scherzo doctor --check linear-contract")
+}
+
+pub fn cancellation_failure_policy_leaves_state_unchanged_test() {
+  let subject = process.new_subject()
+  let client =
+    handoff.linear_client(
+      tracker_config(),
+      config_types.HandoffConfig(
+        ..handoff_config(),
+        completion_states: Some(
+          completion_policy(workflow_completion_policy.StateByName("In Review")),
+        ),
+      ),
+      success_transport(subject, team_states_response([])),
+    )
+
+  assert client.report_failure(
+      issue(),
+      worker_failure(error.OperatorAbort, None),
+      "run-cancelled",
+    )
+    == Ok(Nil)
+  let assert Ok(comment) = process.receive(subject, within: 100)
+  test_async.assert_no_extra_message_within(subject, 20)
+  assert string.contains(comment, "## Tracking state")
+  assert string.contains(comment, "left unchanged")
+  assert string.contains(comment, "workflow was cancelled")
+}
+
 pub fn disabled_handoff_performs_no_transport_calls_test() {
   let subject = process.new_subject()
   let transport = fn(request: linear.Request) {
@@ -513,6 +656,91 @@ pub fn disabled_handoff_performs_no_transport_calls_test() {
     ))
     == Ok(Nil)
   test_async.assert_no_extra_message_within(subject, 20)
+}
+
+fn completion_policy(
+  default_state: workflow_completion_policy.LinearStateRef,
+) -> workflow_completion_policy.CompletionStatePolicy {
+  workflow_completion_policy.CompletionStatePolicy(
+    default_completion_state: default_state,
+    no_review_completion_state: None,
+    failure_state: workflow_completion_policy.StateByName("Needs Attention"),
+    partial_success_state: workflow_completion_policy.StateByName(
+      "Needs Attention",
+    ),
+    cancellation_state: None,
+    workflows: dict.new(),
+  )
+}
+
+fn success_transport(
+  subject: process.Subject(String),
+  states_response: String,
+) -> linear.Transport {
+  fn(request: linear.Request) {
+    process.send(subject, request.body)
+    case string.contains(request.body, "ScherzoIssueTeamStates") {
+      True -> Ok(linear.Response(status: 200, body: states_response))
+      False ->
+        case string.contains(request.body, "ScherzoIssueUpdateState") {
+          True ->
+            Ok(linear.Response(
+              status: 200,
+              body: "{\"data\":{\"issueUpdate\":{\"success\":true}}}",
+            ))
+          False ->
+            Ok(linear.Response(
+              status: 200,
+              body: "{\"data\":{\"commentCreate\":{\"success\":true}}}",
+            ))
+        }
+    }
+  }
+}
+
+fn team_states_response(states: List(#(String, String))) -> String {
+  json.to_string(
+    json.object([
+      #(
+        "data",
+        json.object([
+          #(
+            "issue",
+            json.object([
+              #(
+                "team",
+                json.object([
+                  #(
+                    "states",
+                    json.object([
+                      #(
+                        "nodes",
+                        json.array(states, of: fn(entry) {
+                          let #(id, name) = entry
+                          json.object([
+                            #("id", json.string(id)),
+                            #("name", json.string(name)),
+                            #("type", json.string("started")),
+                          ])
+                        }),
+                      ),
+                      #(
+                        "pageInfo",
+                        json.object([
+                          #("hasNextPage", json.bool(False)),
+                          #("endCursor", json.null()),
+                        ]),
+                      ),
+                    ]),
+                  ),
+                ]),
+              ),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  )
 }
 
 fn attachment_deps(
