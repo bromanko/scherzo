@@ -19,6 +19,7 @@ export interface StructuredOutputToolSpec {
 	parameters_schema_path: string;
 	parameters_schema_sha256: string;
 	parameters_schema: JsonObject;
+	validation_schema: JsonObject;
 	require_single: true;
 	reject_sibling_tool_calls: true;
 	terminate: true;
@@ -41,6 +42,9 @@ type ToolInfo =
 
 const SPEC_ENV = "SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH";
 const SPEC_ARTIFACT_TYPE = "scherzo_structured_output_tool_spec";
+const MAX_SCHEMA_VALIDATION_ERRORS = 20;
+
+type SchemaValidationFailure = { path: string; message: string };
 
 function isJsonObject(value: unknown): value is JsonObject {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -177,6 +181,220 @@ function normalizeProviderParametersSchema(schema: JsonObject): JsonObject {
 	);
 }
 
+// Codex rejects several JSON Schema keywords that Scherzo's durable schemas use.
+// The advertised provider schema is normalized above, so execute mirrors the
+// supported contract subset locally and returns a tool error the model can fix
+// within the same Pi session before Scherzo spends its retry budget.
+function pointerToken(value: string): string {
+	return value.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
+function childPath(path: string, key: string | number): string {
+	return `${path}/${pointerToken(String(key))}`;
+}
+
+function resolveJsonPointer(ref: string, rootSchema: JsonObject): unknown {
+	if (ref === "#") return rootSchema;
+	if (!ref.startsWith("#/")) return undefined;
+	let current: unknown = rootSchema;
+	for (const token of ref.slice(2).split("/")) {
+		const key = token.replace(/~1/g, "/").replace(/~0/g, "~");
+		if (!isJsonObject(current) && !Array.isArray(current)) return undefined;
+		current = (current as Record<string, unknown>)[key];
+	}
+	return current;
+}
+
+function jsonType(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "array";
+	if (Number.isInteger(value)) return "integer";
+	if (typeof value === "number") return "number";
+	return typeof value;
+}
+
+function jsonTypeMatches(value: unknown, expected: string): boolean {
+	switch (expected) {
+		case "null":
+			return value === null;
+		case "array":
+			return Array.isArray(value);
+		case "object":
+			return isJsonObject(value);
+		case "integer":
+			return typeof value === "number" && Number.isInteger(value);
+		case "number":
+			return typeof value === "number" && Number.isFinite(value);
+		case "string":
+			return typeof value === "string";
+		case "boolean":
+			return typeof value === "boolean";
+		default:
+			return true;
+	}
+}
+
+function schemaTypeList(typeValue: unknown): string[] {
+	if (typeof typeValue === "string") return [typeValue];
+	if (Array.isArray(typeValue)) return typeValue.filter((item): item is string => typeof item === "string");
+	return [];
+}
+
+function jsonEquals(left: unknown, right: unknown): boolean {
+	if (Object.is(left, right)) return true;
+	if (Array.isArray(left) && Array.isArray(right)) {
+		return left.length === right.length && left.every((item, index) => jsonEquals(item, right[index]));
+	}
+	if (isJsonObject(left) && isJsonObject(right)) {
+		const leftKeys = Object.keys(left).sort();
+		const rightKeys = Object.keys(right).sort();
+		return leftKeys.length === rightKeys.length
+			&& leftKeys.every((key, index) => key === rightKeys[index] && jsonEquals(left[key], right[key]));
+	}
+	return false;
+}
+
+function pushSchemaError(errors: SchemaValidationFailure[], path: string, message: string) {
+	if (errors.length < MAX_SCHEMA_VALIDATION_ERRORS) {
+		errors.push({ path: path || "/", message });
+	}
+}
+
+function validateSchemaNode(
+	value: unknown,
+	schemaValue: unknown,
+	rootSchema: JsonObject,
+	path: string,
+	errors: SchemaValidationFailure[],
+	seenRefs: Set<string>,
+) {
+	if (errors.length >= MAX_SCHEMA_VALIDATION_ERRORS) return;
+	if (!isJsonObject(schemaValue)) return;
+
+	const ref = schemaValue.$ref;
+	if (typeof ref === "string") {
+		const resolved = resolveJsonPointer(ref, rootSchema);
+		if (resolved === undefined) {
+			pushSchemaError(errors, path, `references unsupported schema ${ref}`);
+			return;
+		}
+		const refKey = `${path}:${ref}`;
+		if (seenRefs.has(refKey)) return;
+		const nextSeen = new Set(seenRefs);
+		nextSeen.add(refKey);
+		validateSchemaNode(value, resolved, rootSchema, path, errors, nextSeen);
+		return;
+	}
+
+	if (Array.isArray(schemaValue.allOf)) {
+		for (const child of schemaValue.allOf) {
+			validateSchemaNode(value, child, rootSchema, path, errors, seenRefs);
+		}
+	}
+
+	if (Array.isArray(schemaValue.anyOf)) {
+		const matched = schemaValue.anyOf.some((child) => {
+			const childErrors: SchemaValidationFailure[] = [];
+			validateSchemaNode(value, child, rootSchema, path, childErrors, seenRefs);
+			return childErrors.length === 0;
+		});
+		if (!matched) pushSchemaError(errors, path, "must match at least one allowed schema");
+	}
+
+	if (Array.isArray(schemaValue.oneOf)) {
+		const matches = schemaValue.oneOf.filter((child) => {
+			const childErrors: SchemaValidationFailure[] = [];
+			validateSchemaNode(value, child, rootSchema, path, childErrors, seenRefs);
+			return childErrors.length === 0;
+		}).length;
+		if (matches !== 1) pushSchemaError(errors, path, "must match exactly one allowed schema");
+	}
+
+	if ("not" in schemaValue) {
+		const childErrors: SchemaValidationFailure[] = [];
+		validateSchemaNode(value, schemaValue.not, rootSchema, path, childErrors, seenRefs);
+		if (childErrors.length === 0) pushSchemaError(errors, path, "must not match a disallowed schema");
+	}
+
+	const expectedTypes = schemaTypeList(schemaValue.type);
+	if (expectedTypes.length > 0 && !expectedTypes.some((expected) => jsonTypeMatches(value, expected))) {
+		pushSchemaError(errors, path, `must be ${expectedTypes.join(" or ")}; got ${jsonType(value)}`);
+	}
+
+	if ("const" in schemaValue && !jsonEquals(value, schemaValue.const)) {
+		pushSchemaError(errors, path, `must equal ${JSON.stringify(schemaValue.const)}`);
+	}
+
+	if (Array.isArray(schemaValue.enum) && !schemaValue.enum.some((candidate) => jsonEquals(value, candidate))) {
+		pushSchemaError(errors, path, `must be one of ${schemaValue.enum.map((item) => JSON.stringify(item)).join(", ")}`);
+	}
+
+	if (typeof value === "string") {
+		if (typeof schemaValue.minLength === "number" && value.length < schemaValue.minLength) {
+			pushSchemaError(errors, path, `must be at least ${schemaValue.minLength} characters`);
+		}
+		if (typeof schemaValue.pattern === "string") {
+			try {
+				if (!new RegExp(schemaValue.pattern).test(value)) {
+					pushSchemaError(errors, path, `must match pattern ${schemaValue.pattern}`);
+				}
+			} catch (_error) {
+				pushSchemaError(errors, path, `has invalid schema pattern ${schemaValue.pattern}`);
+			}
+		}
+	}
+
+	if (typeof value === "number" && typeof schemaValue.minimum === "number" && value < schemaValue.minimum) {
+		pushSchemaError(errors, path, `must be at least ${schemaValue.minimum}`);
+	}
+
+	if (Array.isArray(value) && isJsonObject(schemaValue.items)) {
+		for (const [index, item] of value.entries()) {
+			validateSchemaNode(item, schemaValue.items, rootSchema, childPath(path, index), errors, seenRefs);
+		}
+	}
+
+	if (isJsonObject(value)) {
+		const properties = isJsonObject(schemaValue.properties) ? schemaValue.properties : {};
+		if (Array.isArray(schemaValue.required)) {
+			for (const requiredKey of schemaValue.required) {
+				if (typeof requiredKey === "string" && !Object.prototype.hasOwnProperty.call(value, requiredKey)) {
+					pushSchemaError(errors, childPath(path, requiredKey), "is required");
+				}
+			}
+		}
+		for (const [key, child] of Object.entries(properties)) {
+			if (Object.prototype.hasOwnProperty.call(value, key)) {
+				validateSchemaNode(value[key], child, rootSchema, childPath(path, key), errors, seenRefs);
+			}
+		}
+		if (schemaValue.additionalProperties === false) {
+			for (const key of Object.keys(value)) {
+				if (!Object.prototype.hasOwnProperty.call(properties, key)) {
+					pushSchemaError(errors, childPath(path, key), "is not an allowed property");
+				}
+			}
+		} else if (isJsonObject(schemaValue.additionalProperties)) {
+			for (const key of Object.keys(value)) {
+				if (!Object.prototype.hasOwnProperty.call(properties, key)) {
+					validateSchemaNode(value[key], schemaValue.additionalProperties, rootSchema, childPath(path, key), errors, seenRefs);
+				}
+			}
+		}
+	}
+}
+
+function validateAgainstConfiguredSchema(value: unknown, schema: JsonObject): SchemaValidationFailure[] {
+	const errors: SchemaValidationFailure[] = [];
+	validateSchemaNode(value, schema, schema, "", errors, new Set());
+	return errors;
+}
+
+function formatSchemaValidationFailures(errors: SchemaValidationFailure[]): string {
+	const suffix = errors.length >= MAX_SCHEMA_VALIDATION_ERRORS ? "; additional errors omitted" : "";
+	return errors.map((error) => `${error.path}: ${error.message}`).join("; ") + suffix;
+}
+
 export function validateSpec(value: unknown): StructuredOutputToolSpec {
 	if (!isJsonObject(value)) throw new Error("spec must be a JSON object");
 	if (value.schema_version !== 1) throw new Error("schema_version must be 1");
@@ -206,6 +424,7 @@ export function validateSpec(value: unknown): StructuredOutputToolSpec {
 		parameters_schema_path: schemaPath,
 		parameters_schema_sha256: requireString(value, "parameters_schema_sha256"),
 		parameters_schema: schema,
+		validation_schema: schemaValue,
 		require_single: requireBooleanTrue(value, "require_single"),
 		reject_sibling_tool_calls: requireBooleanTrue(value, "reject_sibling_tool_calls"),
 		terminate: requireBooleanTrue(value, "terminate"),
@@ -228,6 +447,12 @@ export function createStructuredOutputTool(spec: StructuredOutputToolSpec) {
 		async execute(_toolCallId: string, params: unknown) {
 			if (!isJsonObject(params)) {
 				throw new Error(`${spec.tool_name} arguments must be a JSON object`);
+			}
+			const schemaErrors = validateAgainstConfiguredSchema(params, spec.validation_schema);
+			if (schemaErrors.length > 0) {
+				throw new Error(
+					`${spec.tool_name} arguments failed configured JSON Schema ${spec.parameters_schema_path}: ${formatSchemaValidationFailures(schemaErrors)}`,
+				);
 			}
 			return {
 				content: [{ type: "text" as const, text: `Accepted ${spec.artifact_name} via ${spec.tool_name}` }],

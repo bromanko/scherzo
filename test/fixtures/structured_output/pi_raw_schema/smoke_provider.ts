@@ -84,6 +84,8 @@ function emitInvalidReachedExecute(model: Model<any>): AssistantMessageEventStre
 }
 
 function schemaInvalidFixture(): Record<string, unknown> {
+	const configuredFixture = process.env.SCHERZO_RAW_SCHEMA_SMOKE_INVALID_FIXTURE;
+	if (configuredFixture) return fixture(configuredFixture);
 	const invalid = fixture("valid-review-lane.arguments.json");
 	delete invalid.schema_version;
 	return invalid;

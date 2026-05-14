@@ -45,12 +45,11 @@ fi
 
 output_dir="${SCHERZO_STRUCTURED_OUTPUT_SMOKE_DIR:-tmp/scherzo-structured-output-raw-schema-smoke}"
 mkdir -p "$output_dir"
-stdout_path="$output_dir/transcript.jsonl"
-stderr_path="$output_dir/pi.stderr"
-: >"$stdout_path"
-: >"$stderr_path"
 spec_path="$repo_root/test/fixtures/structured_output/pi_raw_schema/spec.correctness.json"
 provider_path="$repo_root/test/fixtures/structured_output/pi_raw_schema/smoke_provider.ts"
+
+stdout_path=""
+stderr_path=""
 
 fail_smoke() {
   reason="$1"
@@ -66,49 +65,71 @@ fail_smoke() {
   exit 1
 }
 
-rpc_requests=$(
-  cat <<'EOF'
+run_smoke_case() {
+  name="$1"
+  invalid_fixture="${2:-}"
+  stdout_path="$output_dir/$name.transcript.jsonl"
+  stderr_path="$output_dir/$name.pi.stderr"
+  : >"$stdout_path"
+  : >"$stderr_path"
+
+  rpc_requests=$(
+    cat <<'EOF'
 {"id":"structured-output-tool-info","type":"prompt","message":"/structured-output-tool-info"}
 {"id":"raw-schema-smoke","type":"prompt","message":"run structured output raw schema smoke"}
 EOF
-)
+  )
 
-if ! printf '%s\n' "$rpc_requests" | \
-  SCHERZO_RAW_SCHEMA_SMOKE_API_KEY=dummy \
-  SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH="$spec_path" \
-  SCHERZO_WORKFLOW_ID=implementation \
-  SCHERZO_STEP_ID=lane_correctness \
-  pi \
-    --mode rpc \
-    --no-session \
-    --no-builtin-tools \
-    --no-skills \
-    --no-prompt-templates \
-    --no-themes \
-    --no-context-files \
-    --extension "$provider_path" \
-    --model scherzo-raw-schema-smoke/scherzo-raw-schema-smoke \
-    >"$stdout_path" 2>"$stderr_path"; then
-  fail_smoke pi_rpc_failed
-fi
+  if ! printf '%s\n' "$rpc_requests" | \
+    SCHERZO_RAW_SCHEMA_SMOKE_API_KEY=dummy \
+    SCHERZO_RAW_SCHEMA_SMOKE_INVALID_FIXTURE="$invalid_fixture" \
+    SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH="$spec_path" \
+    SCHERZO_WORKFLOW_ID=implementation \
+    SCHERZO_STEP_ID=lane_correctness \
+    pi \
+      --mode rpc \
+      --no-session \
+      --no-builtin-tools \
+      --no-skills \
+      --no-prompt-templates \
+      --no-themes \
+      --no-context-files \
+      --extension "$provider_path" \
+      --model scherzo-raw-schema-smoke/scherzo-raw-schema-smoke \
+      >"$stdout_path" 2>"$stderr_path"; then
+    fail_smoke "${name}_pi_rpc_failed"
+  fi
 
-if grep -q 'Extension runtime not initialized' "$stdout_path" "$stderr_path"; then
-  fail_smoke extension_runtime_not_initialized
-fi
-if ! grep -q 'SCHERZO_STRUCTURED_OUTPUT_TOOL_ADVERTISED=.*"status":"active"' "$stdout_path" "$stderr_path"; then
-  fail_smoke structured_output_tool_not_active
-fi
+  if grep -q 'Extension runtime not initialized' "$stdout_path" "$stderr_path"; then
+    fail_smoke "${name}_extension_runtime_not_initialized"
+  fi
+  if ! grep -q 'SCHERZO_STRUCTURED_OUTPUT_TOOL_ADVERTISED=.*"status":"active"' "$stdout_path" "$stderr_path"; then
+    fail_smoke "${name}_structured_output_tool_not_active"
+  fi
+  if grep -q 'RAW_SCHEMA_SMOKE_INVALID_REACHED_EXECUTE' "$stdout_path"; then
+    fail_smoke "${name}_invalid_payload_accepted"
+  fi
+  if ! grep -q 'scherzo_structured_output_tool_receipt' "$stdout_path"; then
+    fail_smoke "${name}_valid_payload_not_accepted"
+  fi
+  if ! grep -q '"terminate":true' "$stdout_path"; then
+    fail_smoke "${name}_terminating_tool_result_missing"
+  fi
+}
+
+run_smoke_case missing-required ""
 if ! grep -q 'Validation failed for tool.*submit_structured_output' "$stdout_path"; then
-  fail_smoke invalid_payload_not_rejected_before_execute
+  fail_smoke missing_required_not_rejected_by_provider_validation
 fi
-if grep -q 'RAW_SCHEMA_SMOKE_INVALID_REACHED_EXECUTE' "$stdout_path"; then
-  fail_smoke invalid_payload_reached_execute
-fi
-if ! grep -q 'scherzo_structured_output_tool_receipt' "$stdout_path"; then
-  fail_smoke valid_payload_not_accepted
-fi
-if ! grep -q '"terminate":true' "$stdout_path"; then
-  fail_smoke terminating_tool_result_missing
-fi
+missing_required_transcript="$stdout_path"
 
-printf 'STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=passed pi_version=%s invalid=rejected_before_execute valid=accepted terminate=true extension=active transcript=%s\n' "$pi_version" "$stdout_path"
+run_smoke_case invalid-lane-id invalid-correctness-lane-id.arguments.json
+if ! grep -q 'failed configured JSON Schema' "$stdout_path"; then
+  fail_smoke invalid_lane_id_not_rejected_by_local_schema_validation
+fi
+if ! grep -q '/lane/id: must equal' "$stdout_path"; then
+  fail_smoke invalid_lane_id_diagnostic_missing
+fi
+invalid_lane_id_transcript="$stdout_path"
+
+printf 'STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=passed pi_version=%s invalid_required=rejected_before_execute invalid_lane_id=rejected_by_local_schema valid=accepted terminate=true extension=active transcripts=%s,%s\n' "$pi_version" "$missing_required_transcript" "$invalid_lane_id_transcript"
