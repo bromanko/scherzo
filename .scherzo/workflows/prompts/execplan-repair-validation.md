@@ -20,7 +20,7 @@ Initial draft validation stderr:
 Workflow contract:
 
 - You are already inside the same dedicated workflow workspace prepared by Scherzo as the draft plan. Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
-- This step exists only to repair mechanical ExecPlan validation failures from `scripts/scherzo-execplan validate`.
+- This step exists only to repair mechanical ExecPlan validation failures from the root-resolved `scherzo-execplan validate` helper.
 - If `Initial draft validation status` is `success`, do not edit anything. Finish immediately with a concise no-op response.
 - If validation failed, locate the single changed Markdown plan artifact under `docs/plans/` using the validation output above or `$SCHERZO_WORKSPACE_DRIVER changed-files --json`.
 - Make the smallest edits needed for the validator to pass. Do not broaden scope, rewrite the plan, or add new design content beyond what is required to satisfy validation.
@@ -32,7 +32,7 @@ Workflow contract:
 Dogfood time budget:
 
 - Use at most 6 tool calls before applying a repair.
-- After editing, run `scripts/scherzo-execplan validate` if possible within the budget; otherwise make the smallest obvious fix and rely on the following `validate_after_repair` command step.
+- After editing, run `repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan" validate` if possible within the budget; otherwise make the smallest obvious fix and rely on the following `validate_after_repair` command step.
 
 Repair process:
 
@@ -40,7 +40,7 @@ Repair process:
 2. If it succeeded, stop with no edits.
 3. If it failed, read only the validation output and the plan file sections needed to fix the reported problem.
 4. Edit the plan file minimally.
-5. Run `scripts/scherzo-execplan validate` if practical.
+5. Run `repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan" validate` if practical.
 6. Finish with a concise response naming the plan file, whether you edited it, and the expected validation result.
 
 Final response format:

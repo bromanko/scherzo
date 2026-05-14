@@ -34,8 +34,7 @@ Review step response:
 Workflow contract:
 
 - You are already inside the same dedicated workflow workspace prepared by Scherzo as the draft plan. Do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
-- Use the repo-local exec-plan skill by reading `.pi/skills/exec-plan/SKILL.md` before revising.
-- Use the repo-local exec-plan-review skill by reading `.pi/skills/exec-plan-review/SKILL.md` before interpreting the review.
+- Follow the workflow-packaged ExecPlan authoring and review-incorporation standards in this prompt. Do not require local Pi skill files; all guidance needed for this workflow step is embedded below.
 - Read `tmp/execplan-review.md` and the Markdown plan artifact under `docs/plans/`.
 - Keep the incorporation bounded: focus on the review findings and inspect only files needed to resolve concrete uncertainty.
 - Revise only the `docs/plans/*.md` plan artifact. Do not create a tracked HTML artifact, and do not edit source code, tests, config, existing docs, or the review file.
@@ -46,6 +45,17 @@ Workflow contract:
 - Include `## Open Questions and Clarifications Needed` even when there are no open questions; write `None.` in that case.
 - Use repository-relative paths only. Do not introduce absolute local paths, even as examples or negative test data. Do not include literal prefixes such as `/Users/`, `/home/`, `/private/`, or `/var/folders/`; use placeholders like `<absolute-local-path>` when discussing forbidden path shapes.
 
+Workflow-packaged ExecPlan incorporation standard:
+
+- Preserve the plan as a living, self-contained Markdown document that a skilled developer new to the repository can implement from the plan alone.
+- Keep the plan worth doing, proportionate, portable, falsifiable, safe to roll out or recover from, and concrete enough that the later implementer does not make design choices.
+- Maintain repository-relative paths only. Do not introduce checkout-specific assumptions or absolute local paths.
+- Treat review findings by severity: `BLOCKING` findings must be fixed or explicitly rejected with a rationale in `## Decision Log`; `GAP` findings must be filled unless demonstrably inapplicable; `SUGGESTION` findings should be applied when they materially improve safety, executability, scope clarity, or validation.
+- When a finding changes strategy, update every affected section, not just the sentence where the issue was raised. Keep purpose, constraints, risks, milestones, concrete steps, tests, validation, rollout, and open questions consistent.
+- Keep the mandatory living-document sections present and current: `## Progress`, `## Surprises & Discoveries`, `## Decision Log`, and `## Outcomes & Retrospective`. Record rejected review findings or major incorporation decisions in `## Decision Log`.
+- Preserve `## Open Questions and Clarifications Needed`. If uncertainty remains, keep explicit `[CLARIFY]` tags and list them there; otherwise write `None.`.
+- Re-read the final plan for consistency before finishing. A later implementation workflow should not need the review file, this prompt, or any unstated context.
+
 Dogfood time budget:
 
 - Use at most 10 tool calls before updating the plan.
@@ -53,7 +63,7 @@ Dogfood time budget:
 
 Incorporation process:
 
-1. Read both repo-local skill files.
+1. Follow the workflow-packaged ExecPlan incorporation standard above.
 2. Read the Markdown plan path printed as `PLAN_PATH=<path>` in the final validation stdout above, or discover it with `$SCHERZO_WORKSPACE_DRIVER changed-files --json` if needed.
 3. Read `tmp/execplan-review.md`.
 4. Update the plan so a later implementation workflow can start from the plan alone.
