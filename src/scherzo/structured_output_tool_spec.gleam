@@ -197,27 +197,63 @@ fn provider_compatible_parameters_schema(
 ) -> Result(json_value.JsonValue, ToolSpecError) {
   case schema {
     json_value.JObject(entries) ->
-      case object_field(entries, "type") {
-        Some(json_value.JString("object")) -> Ok(schema)
-        None ->
-          Ok(
-            json_value.JObject([
-              #("type", json_value.JString("object")),
-              ..entries
-            ]),
-          )
-        Some(_) ->
+      case provider_incompatible_top_level_keyword(entries) {
+        Some(keyword) ->
           Error(ToolSpecError(
             "structured_output_tool_spec_provider_incompatible_schema",
-            "parameters schema used for Pi tool registration must have top-level type \"object\": "
+            "parameters schema used for Pi tool registration must not have top-level `"
+              <> keyword
+              <> "`; provider tool schemas reject top-level oneOf/anyOf/allOf/enum/not: "
               <> schema_path,
           ))
+        None ->
+          case object_field(entries, "type") {
+            Some(json_value.JString("object")) -> Ok(schema)
+            None ->
+              Ok(
+                json_value.JObject([
+                  #("type", json_value.JString("object")),
+                  ..entries
+                ]),
+              )
+            Some(_) ->
+              Error(ToolSpecError(
+                "structured_output_tool_spec_provider_incompatible_schema",
+                "parameters schema used for Pi tool registration must have top-level type \"object\": "
+                  <> schema_path,
+              ))
+          }
       }
     _ ->
       Error(ToolSpecError(
         "structured_output_tool_spec_schema_not_object",
         "parameters schema must be a JSON object: " <> schema_path,
       ))
+  }
+}
+
+fn provider_incompatible_top_level_keyword(
+  entries: List(#(String, json_value.JsonValue)),
+) -> Option(String) {
+  case object_field(entries, "oneOf") {
+    Some(_) -> Some("oneOf")
+    None ->
+      case object_field(entries, "anyOf") {
+        Some(_) -> Some("anyOf")
+        None ->
+          case object_field(entries, "allOf") {
+            Some(_) -> Some("allOf")
+            None ->
+              case object_field(entries, "enum") {
+                Some(_) -> Some("enum")
+                None ->
+                  case object_field(entries, "not") {
+                    Some(_) -> Some("not")
+                    None -> None
+                  }
+              }
+          }
+      }
   }
 }
 

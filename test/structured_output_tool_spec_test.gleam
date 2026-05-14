@@ -96,6 +96,11 @@ pub fn structured_output_tool_spec_builds_raw_schema_spec_test() {
   let assert json_value.JObject(_) = tool_spec.parameters_schema
   assert json_object_field(tool_spec.parameters_schema, "type")
     == Some(json_value.JString("object"))
+  assert json_object_field(tool_spec.parameters_schema, "oneOf") == None
+  assert json_object_field(tool_spec.parameters_schema, "anyOf") == None
+  assert json_object_field(tool_spec.parameters_schema, "allOf") == None
+  assert json_object_field(tool_spec.parameters_schema, "enum") == None
+  assert json_object_field(tool_spec.parameters_schema, "not") == None
   assert tool_spec.require_single
   assert tool_spec.reject_sibling_tool_calls
   assert tool_spec.terminate
@@ -150,6 +155,23 @@ pub fn structured_output_tool_spec_rejects_provider_incompatible_schema_type_tes
   let assert Ok(Nil) = simplifile.create_directory_all(dir)
   let schema_path = dir <> "/array.schema.json"
   let assert Ok(Nil) = simplifile.write(schema_path, "{\"type\":\"array\"}\n")
+
+  assert_error_code(
+    build(schema_path),
+    "structured_output_tool_spec_provider_incompatible_schema",
+  )
+}
+
+pub fn structured_output_tool_spec_rejects_provider_incompatible_top_level_keywords_test() {
+  let dir = "test/tmp/structured-output-tool-spec"
+  let _ = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let schema_path = dir <> "/all-of.schema.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      schema_path,
+      "{\"type\":\"object\",\"allOf\":[{\"type\":\"object\"}]}\n",
+    )
 
   assert_error_code(
     build(schema_path),

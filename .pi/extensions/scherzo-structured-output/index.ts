@@ -88,7 +88,16 @@ function validSchemaPath(schemaPath: string): boolean {
 		&& !/^[A-Za-z]:[/\\]/.test(schemaPath);
 }
 
+const disallowedProviderTopLevelKeywords = ["oneOf", "anyOf", "allOf", "enum", "not"] as const;
+
 function normalizeProviderParametersSchema(schema: JsonObject): JsonObject {
+	for (const keyword of disallowedProviderTopLevelKeywords) {
+		if (Object.prototype.hasOwnProperty.call(schema, keyword)) {
+			throw new Error(
+				`parameters_schema must not have top-level ${keyword}; provider tool schemas reject top-level oneOf/anyOf/allOf/enum/not`,
+			);
+		}
+	}
 	const rootType = schema.type;
 	if (rootType === undefined) return { ...schema, type: "object" };
 	if (rootType === "object") return schema;
