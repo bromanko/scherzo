@@ -93,7 +93,7 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
   assert_contains(implementation_workflow, "lane_test_quality")
   assert_contains(implementation_workflow, "lane_idioms_maintainability")
   assert_contains(implementation_workflow, "lane_security_performance")
-  assert_contains(implementation_workflow, "submit_review_lane_draft")
+  assert_contains(implementation_workflow, "submit_structured_output")
   assert_contains(implementation_workflow, "prepare-native")
   assert_contains(implementation_workflow, "synthesize_review")
   assert_contains(implementation_workflow, "scripts/scherzo-review")
@@ -105,7 +105,7 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
     "lane_idioms_maintainability",
   )
   assert_contains(execplan_implementation_workflow, "lane_security_performance")
-  assert_contains(execplan_implementation_workflow, "submit_review_lane_draft")
+  assert_contains(execplan_implementation_workflow, "submit_structured_output")
   assert_contains(execplan_implementation_workflow, "prepare-native")
   assert_contains(execplan_implementation_workflow, "synthesize_review")
   assert_contains(execplan_implementation_workflow, "scripts/scherzo-review")

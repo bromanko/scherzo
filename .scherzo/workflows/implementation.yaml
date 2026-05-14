@@ -33,7 +33,7 @@ steps:
   - id: assert_native_review_cutover
     kind: command
     depends_on: [analyze_changes]
-    run: 'output_dir="$SCHERZO_RUN_ROOT/artifacts/review/cutover_contract"; mkdir -p "$output_dir"; forbidden=""; if [ -n "${SCHERZO_NATIVE_REVIEW_SCENARIO:-}" ]; then forbidden="$forbidden SCHERZO_NATIVE_REVIEW_SCENARIO"; fi; if [ -n "${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_STAGED_REVIEW_AGENT_BACKEND"; fi; if [ -n "${SCHERZO_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_REVIEW_AGENT_BACKEND"; fi; if [ -n "$forbidden" ]; then printf "native implementation review cutover refuses fixture/scenario/heuristic override environment variables:%s\n" "$forbidden" | tee "$output_dir/cutover-contract.txt"; exit 1; fi; printf "native_review_cutover=enabled\nsemantic_review=kind_agent\nstructured_output_source=pi_tool_call/submit_review_lane_draft\nlegacy_backend_env=refused\nnative_review_scenario=refused\nremote_mutations=none\n" > "$output_dir/cutover-contract.txt"; cat "$output_dir/cutover-contract.txt"'
+    run: 'output_dir="$SCHERZO_RUN_ROOT/artifacts/review/cutover_contract"; mkdir -p "$output_dir"; forbidden=""; if [ -n "${SCHERZO_NATIVE_REVIEW_SCENARIO:-}" ]; then forbidden="$forbidden SCHERZO_NATIVE_REVIEW_SCENARIO"; fi; if [ -n "${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_STAGED_REVIEW_AGENT_BACKEND"; fi; if [ -n "${SCHERZO_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_REVIEW_AGENT_BACKEND"; fi; if [ -n "$forbidden" ]; then printf "native implementation review cutover refuses fixture/scenario/heuristic override environment variables:%s\n" "$forbidden" | tee "$output_dir/cutover-contract.txt"; exit 1; fi; printf "native_review_cutover=enabled\nsemantic_review=kind_agent\nstructured_output_source=pi_tool_call/submit_structured_output\nlegacy_backend_env=refused\nnative_review_scenario=refused\nremote_mutations=none\n" > "$output_dir/cutover-contract.txt"; cat "$output_dir/cutover-contract.txt"'
     workspace: main
 
   - id: prepare_review
@@ -62,14 +62,15 @@ steps:
       artifact_name: correctness_draft
       source:
         type: pi_tool_call
-        tool_name: submit_review_lane_draft
+        tool_name: submit_structured_output
+        parameters_schema_path: docs/schemas/review-lane-draft.correctness.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_draft_schema
           type: json_schema
-          path: docs/schemas/review-lane-draft.v1.schema.json
+          path: docs/schemas/review-lane-draft.correctness.v1.schema.json
           draft: "2020-12"
         - name: review_lane_semantics
           type: command
@@ -109,14 +110,15 @@ steps:
       artifact_name: test_quality_draft
       source:
         type: pi_tool_call
-        tool_name: submit_review_lane_draft
+        tool_name: submit_structured_output
+        parameters_schema_path: docs/schemas/review-lane-draft.test-quality.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_draft_schema
           type: json_schema
-          path: docs/schemas/review-lane-draft.v1.schema.json
+          path: docs/schemas/review-lane-draft.test-quality.v1.schema.json
           draft: "2020-12"
         - name: review_lane_semantics
           type: command
@@ -156,14 +158,15 @@ steps:
       artifact_name: idioms_maintainability_draft
       source:
         type: pi_tool_call
-        tool_name: submit_review_lane_draft
+        tool_name: submit_structured_output
+        parameters_schema_path: docs/schemas/review-lane-draft.idioms-maintainability.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_draft_schema
           type: json_schema
-          path: docs/schemas/review-lane-draft.v1.schema.json
+          path: docs/schemas/review-lane-draft.idioms-maintainability.v1.schema.json
           draft: "2020-12"
         - name: review_lane_semantics
           type: command
@@ -203,14 +206,15 @@ steps:
       artifact_name: security_performance_draft
       source:
         type: pi_tool_call
-        tool_name: submit_review_lane_draft
+        tool_name: submit_structured_output
+        parameters_schema_path: docs/schemas/review-lane-draft.security-performance.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_draft_schema
           type: json_schema
-          path: docs/schemas/review-lane-draft.v1.schema.json
+          path: docs/schemas/review-lane-draft.security-performance.v1.schema.json
           draft: "2020-12"
         - name: review_lane_semantics
           type: command

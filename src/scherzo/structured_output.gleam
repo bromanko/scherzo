@@ -59,6 +59,7 @@ pub fn validate_agent_result(
       tool_name,
       require_single,
       reject_sibling_tool_calls,
+      _,
     ) ->
       validate_tool_call_source(
         spec,

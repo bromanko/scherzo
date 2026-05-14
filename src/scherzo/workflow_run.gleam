@@ -15,10 +15,13 @@ import scherzo/log
 import scherzo/model_config
 import scherzo/orchestrator/schedule_core
 import scherzo/process_ext
+import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/structured_output
 import scherzo/structured_output_metadata
+import scherzo/structured_output_source
+import scherzo/structured_output_tool_spec
 import scherzo/template
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
@@ -68,6 +71,7 @@ pub type StepContext {
     schedule_due_at: String,
     schedule_started_at: String,
     run_attempt: Int,
+    extra_pi_env: List(#(String, String)),
   )
 }
 
@@ -2266,22 +2270,16 @@ fn run_agent_step(
   Option(tracker_issue.Issue),
   Int,
 ) {
-  case
-    prompt_mode_for_step(
-      step,
-      prompt_ref,
-      issue,
-      artifacts,
-      pi_session_continuations,
-      context,
-    )
-  {
-    Error(Nil) -> #(
+  case prepare_structured_output_tool_context(context, structured_output_spec) {
+    Error(spec_error) -> #(
       step_artifact.from_command_result(
         step.id,
         1,
         "",
-        "template render failed",
+        "structured-output tool spec generation failed: "
+          <> spec_error.code
+          <> ":"
+          <> spec_error.message,
         False,
         secrets,
         orchestrator.artifact_limits,
@@ -2290,55 +2288,120 @@ fn run_agent_step(
       None,
       0,
     )
-    Ok(prompt_mode) -> {
-      let effective = effective_for_step(orchestrator, step)
-      let continuation = case dict.get(pi_session_continuations, step.id) {
-        Ok(value) -> Some(value)
-        Error(Nil) -> None
-      }
+    Ok(context) ->
       case
-        run_agent_invocation(
+        prompt_mode_for_step(
+          step,
+          prompt_ref,
           issue,
+          artifacts,
+          pi_session_continuations,
           context,
-          dag,
-          orchestrator,
-          prompt_mode,
-          continuation,
-          effective,
-          tracker_client,
-          dependencies,
         )
       {
-        Ok(success) ->
-          agent_success_result(
-            step,
-            context,
-            success,
-            structured_output_spec,
-            issue,
-            dag,
-            orchestrator,
-            tracker_client,
+        Error(Nil) -> #(
+          step_artifact.from_command_result(
+            step.id,
+            1,
+            "",
+            "template render failed",
+            False,
             secrets,
-            dependencies,
-            effective,
-          )
-        Error(failure) ->
-          agent_failure_result(
-            step,
-            context,
-            failure,
-            structured_output_spec,
-            issue,
-            dag,
-            orchestrator,
-            tracker_client,
-            secrets,
-            dependencies,
-            effective,
-          )
+            orchestrator.artifact_limits,
+          ),
+          session_tokens.zero_token_totals(),
+          None,
+          0,
+        )
+        Ok(prompt_mode) -> {
+          let effective = effective_for_step(orchestrator, step)
+          let continuation = case dict.get(pi_session_continuations, step.id) {
+            Ok(value) -> Some(value)
+            Error(Nil) -> None
+          }
+          case
+            run_agent_invocation(
+              issue,
+              context,
+              dag,
+              orchestrator,
+              prompt_mode,
+              continuation,
+              effective,
+              tracker_client,
+              dependencies,
+            )
+          {
+            Ok(success) ->
+              agent_success_result(
+                step,
+                context,
+                success,
+                structured_output_spec,
+                issue,
+                dag,
+                orchestrator,
+                tracker_client,
+                secrets,
+                dependencies,
+                effective,
+              )
+            Error(failure) ->
+              agent_failure_result(
+                step,
+                context,
+                failure,
+                structured_output_spec,
+                issue,
+                dag,
+                orchestrator,
+                tracker_client,
+                secrets,
+                dependencies,
+                effective,
+              )
+          }
+        }
       }
-    }
+  }
+}
+
+fn prepare_structured_output_tool_context(
+  context: StepContext,
+  structured_output_spec: Option(workflow_dag.StructuredOutputSpec),
+) -> Result(StepContext, structured_output_tool_spec.ToolSpecError) {
+  case structured_output_spec {
+    Some(spec) ->
+      case structured_output_tool_spec.schema_path_for_source(spec.source) {
+        Some(_) -> {
+          use tool_spec <- result.try(
+            structured_output_tool_spec.for_step(
+              structured_output_tool_spec.BuildInput(
+                workflow_id: context.workflow_id,
+                run_id: context.run_id,
+                step_id: context.step_id,
+                attempt_index: context.attempt_index,
+                repository_root: structured_output.validator_repo_root(
+                  context.config_dir,
+                  context.workspace_path,
+                ),
+                spec: spec,
+              ),
+            ),
+          )
+          use written <- result.try(structured_output_tool_spec.write(
+            tool_spec,
+            context.run_root,
+          ))
+          Ok(
+            StepContext(..context, extra_pi_env: [
+              structured_output_tool_spec.env_pair(written),
+            ]),
+          )
+        }
+        None -> Ok(context)
+      }
+    None -> Ok(context)
   }
 }
 
@@ -2847,12 +2910,13 @@ fn write_structured_output_artifact(
   checkpoint: workflow_checkpoint.Writer,
 ) -> step_artifact.StepArtifact {
   let validation =
-    structured_output_metadata.from_spec(
+    structured_output_metadata.from_spec_with_receipt(
       spec,
       structured_output.validator_repo_root(
         context.config_dir,
         context.workspace_path,
       ),
+      receipt_json_for_source(spec.source, success.result.tool_calls),
     )
   let write =
     workflow_checkpoint.StructuredOutputWrite(
@@ -2881,8 +2945,11 @@ fn write_structured_output_artifact(
           sha256: written.sha256,
           bytes: written.bytes,
           schema_status: "valid",
-          source_type: structured_output.source_type_to_string(spec.source),
-          source_tool_name: structured_output.source_tool_name(spec.source),
+          source_type: validation.source_type,
+          source_tool_name: validation.source_tool_name,
+          source_parameters_schema_path: validation.source_parameters_schema_path,
+          source_parameters_schema_sha256: validation.source_parameters_schema_sha256,
+          source_receipt_json: validation.source_receipt_json,
           baseline_required_keys: required_keys,
           validators: structured_output_metadata.validator_summaries(validation),
           retry: None,
@@ -2905,6 +2972,31 @@ fn write_structured_output_artifact(
         format,
       )
     }
+  }
+}
+
+fn receipt_json_for_source(
+  source: structured_output_source.StructuredOutputSource,
+  tool_calls: List(result_artifact.ToolCallSubmission),
+) -> Option(String) {
+  case source {
+    structured_output_source.PiToolCallSource(tool_name, _, _, _) ->
+      receipt_json_for_tool(tool_calls, tool_name)
+    structured_output_source.FinalResponseSource -> None
+  }
+}
+
+fn receipt_json_for_tool(
+  tool_calls: List(result_artifact.ToolCallSubmission),
+  tool_name: String,
+) -> Option(String) {
+  case tool_calls {
+    [] -> None
+    [call, ..rest] ->
+      case call.name == tool_name, call.receipt_json {
+        True, Some(receipt_json) -> Some(receipt_json)
+        _, _ -> receipt_json_for_tool(rest, tool_name)
+      }
   }
 }
 
@@ -3092,6 +3184,7 @@ fn step_context(
     schedule_due_at: "",
     schedule_started_at: "",
     run_attempt: 0,
+    extra_pi_env: [],
   )
 }
 
@@ -3129,6 +3222,7 @@ fn step_command_env(context: StepContext) -> List(#(String, String)) {
     context.workspace_context,
     generated,
   )
+  |> list.append(context.extra_pi_env)
 }
 
 fn effective_for_step(

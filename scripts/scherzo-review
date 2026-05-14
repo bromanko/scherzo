@@ -1981,8 +1981,8 @@ def validate_preflight_manifest(value: dict[str, Any]) -> None:
             validate_repo_relative_path(item.get("workflow_path"), field="native_lane_step_provenance.workflow_path")
             if item.get("source_type") != "pi_tool_call":
                 raise ReviewError("native lane step provenance source_type must be pi_tool_call")
-            if item.get("source_tool_name") != "submit_review_lane_draft":
-                raise ReviewError("native lane step provenance source_tool_name must be submit_review_lane_draft")
+            if item.get("source_tool_name") not in ("submit_structured_output", "submit_review_lane_draft"):
+                raise ReviewError("native lane step provenance source_tool_name must be submit_structured_output or submit_review_lane_draft")
             if not isinstance(item.get("review_local_validation"), dict):
                 raise ReviewError("native lane step provenance must record review_local_validation")
 
@@ -2191,8 +2191,8 @@ def validate_legacy_pr_smoke_manifest(value: dict[str, Any]) -> None:
                     validate_string_field(lane_state, field)
                 if lane_state.get("source_type") != "pi_tool_call":
                     raise ReviewError("legacy PR smoke lane source_type must be pi_tool_call")
-                if lane_state.get("source_tool_name") != "submit_review_lane_draft":
-                    raise ReviewError("legacy PR smoke lane source_tool_name must be submit_review_lane_draft")
+                if lane_state.get("source_tool_name") not in ("submit_structured_output", "submit_review_lane_draft"):
+                    raise ReviewError("legacy PR smoke lane source_tool_name must be submit_structured_output or submit_review_lane_draft")
 
 
 def validate_review_extension_schema_smoke(value: dict[str, Any]) -> None:
@@ -3990,8 +3990,8 @@ def require_review_lane_pi_tool_provenance(provenance: list[dict[str, Any]], *, 
         lane_id = str(item.get("lane_id") or "unknown")
         if item.get("source_type") != "pi_tool_call":
             raise ReviewError(f"{context} lane {lane_id} source_type must be pi_tool_call")
-        if item.get("source_tool_name") != "submit_review_lane_draft":
-            raise ReviewError(f"{context} lane {lane_id} source_tool_name must be submit_review_lane_draft")
+        if item.get("source_tool_name") not in ("submit_structured_output", "submit_review_lane_draft"):
+            raise ReviewError(f"{context} lane {lane_id} source_tool_name must be submit_structured_output or submit_review_lane_draft")
 
 
 def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
@@ -4012,7 +4012,7 @@ def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
     assertions = {
         "valid_structured_output": step_structured_status(valid_step) == "valid" and bool(step_structured_path(valid_step)),
         "valid_tool_call_source": step_structured_source_type(valid_step, workflow_path, "valid_lane") == "pi_tool_call"
-        and step_structured_source_tool_name(valid_step, workflow_path, "valid_lane") == "submit_review_lane_draft",
+        and step_structured_source_tool_name(valid_step, workflow_path, "valid_lane") in ("submit_structured_output", "submit_review_lane_draft"),
         "malformed_tool_call_continued": step_structured_status(malformed_step) == "error"
         and step_structured_source_type(malformed_step, workflow_path, "malformed_lane") == "pi_tool_call",
         "missing_tool_call_continued": step_structured_status(failed_step) == "error"
@@ -4246,8 +4246,8 @@ def evaluate_native_cutover_readiness(manifest: dict[str, Any]) -> dict[str, Any
                 reasons.append(f"scenario {sid} lane {lane_id} did not come from the Scherzo workflow runner")
             if item.get("source_type") != "pi_tool_call":
                 reasons.append(f"scenario {sid} lane {lane_id} source_type was not pi_tool_call")
-            if item.get("source_tool_name") != "submit_review_lane_draft":
-                reasons.append(f"scenario {sid} lane {lane_id} source_tool_name was not submit_review_lane_draft")
+            if item.get("source_tool_name") not in ("submit_structured_output", "submit_review_lane_draft"):
+                reasons.append(f"scenario {sid} lane {lane_id} source_tool_name was not submit_structured_output or submit_review_lane_draft")
             if not isinstance(item.get("review_local_validation"), dict):
                 reasons.append(f"scenario {sid} lane {lane_id} missing review-local validation record")
             if "gleam run -- workflow run .scherzo/workflows/review-native.yml" not in str(item.get("runner_invocation") or ""):
@@ -4362,7 +4362,7 @@ def native_preflight_command(args: argparse.Namespace) -> None:
     print(f"REVIEW_PREFLIGHT_SCENARIOS={len(scenarios)}")
     print(
         "REVIEW_NATIVE_PREFLIGHT "
-        f"status=passed manifest={manifest_path} source_type=pi_tool_call source_tool_name=submit_review_lane_draft"
+        f"status=passed manifest={manifest_path} source_type=pi_tool_call source_tool_name=submit_structured_output"
     )
     print("REVIEW_REMOTE_MUTATIONS=none")
 

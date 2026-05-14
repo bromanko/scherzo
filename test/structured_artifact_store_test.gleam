@@ -1,5 +1,5 @@
 import gleam/bit_array
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/json_value
 import scherzo/state/artifact_store
@@ -79,6 +79,7 @@ pub fn structured_output_artifact_store_writes_json_schema_metadata_test() {
         tool_name: "submit_review_lane_draft",
         require_single: True,
         reject_sibling_tool_calls: True,
+        parameters_schema_path: None,
       ),
       format: workflow_dag.StructuredJson,
       schema: workflow_dag.StructuredObjectSchema([

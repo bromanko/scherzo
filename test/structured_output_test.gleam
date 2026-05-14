@@ -53,6 +53,7 @@ fn tool_source_spec() -> workflow_dag.StructuredOutputSpec {
       tool_name: "submit_example_artifact",
       require_single: True,
       reject_sibling_tool_calls: True,
+      parameters_schema_path: None,
     ),
     format: workflow_dag.StructuredJson,
     schema: workflow_dag.StructuredObjectSchema([
@@ -191,6 +192,7 @@ fn tool_call(
     arguments_json: arguments_json,
     status: status,
     sibling_count: sibling_count,
+    receipt_json: None,
   )
 }
 
@@ -293,6 +295,7 @@ pub fn json_schema_validator_runs_for_pi_tool_call_source_test() {
       tool_name: "submit_review_lane_draft",
       require_single: True,
       reject_sibling_tool_calls: True,
+      parameters_schema_path: None,
     )
   let spec =
     json_schema_review_spec(
@@ -600,4 +603,46 @@ fn stale_finding_shape_json() -> String {
 
 fn malformed_input_refs_json() -> String {
   "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"generated_at_utc\":\"2026-05-10T00:00:00Z\",\"producer\":{\"name\":\"structured-output-test\",\"version\":\"1\",\"mode\":\"native\"},\"lane\":{\"id\":\"correctness\",\"name\":\"Correctness reviewer\",\"category\":\"correctness\",\"version\":\"1\"},\"input_refs\":[{\"artifact_type\":\"review_brief\"}],\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"inspected_diff\":true,\"used_repository_relative_paths\":true},\"remote_mutations\":\"none\"}"
+}
+
+fn review_lane_json(lane_id: String) -> String {
+  "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"generated_at_utc\":\"2026-05-13T00:00:00Z\",\"producer\":{\"name\":\"structured-output-test\",\"version\":\"1\",\"mode\":\"test\"},\"lane\":{\"id\":\""
+  <> lane_id
+  <> "\",\"name\":\"Lane\",\"category\":\"correctness\",\"version\":\"1\"},\"input_refs\":[],\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"inspected_diff\":true,\"used_repository_relative_paths\":true},\"remote_mutations\":\"none\"}"
+}
+
+pub fn pi_tool_call_source_still_runs_downstream_json_schema_after_acceptance_test() {
+  let source =
+    structured_output_source.PiToolCallSource(
+      tool_name: "submit_structured_output",
+      require_single: True,
+      reject_sibling_tool_calls: True,
+      parameters_schema_path: Some(
+        "docs/schemas/review-lane-draft.correctness.v1.schema.json",
+      ),
+    )
+  let spec =
+    json_schema_review_spec(
+      source,
+      True,
+      "docs/schemas/review-lane-draft.correctness.v1.schema.json",
+    )
+  let result =
+    result_artifact.from_final_response_with_tool_calls(
+      Some(review_lane_json("correctness")),
+      False,
+      "test",
+      [
+        tool_call(
+          "submit_structured_output",
+          Some(review_lane_json("test-quality")),
+          Some("success"),
+          1,
+        ),
+      ],
+    )
+  let assert Error(error) = validate_json_schema_result(spec, result)
+
+  assert structured_output.error_code(error)
+    == "structured_output_json_schema_rejected"
 }

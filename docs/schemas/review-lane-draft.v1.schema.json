@@ -13,7 +13,8 @@
           { "pattern": "^/" },
           { "pattern": "(^|/)\\.\\.(/|$)" },
           { "pattern": "^\\$(\\{[A-Za-z_][A-Za-z0-9_]*\\}|[A-Za-z_][A-Za-z0-9_]*)([\\\\/]|$)" },
-          { "pattern": "^[A-Za-z]:[\\\\/]" }
+          { "pattern": "^[A-Za-z]:[\\\\/]" },
+          { "pattern": "^<absolute-local-path>" }
         ]
       }
     },
@@ -40,7 +41,15 @@
       "type": "object",
       "required": ["id", "name", "category", "version"],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": {
+          "type": "string",
+          "enum": [
+            "correctness",
+            "test-quality",
+            "idioms-maintainability",
+            "security-performance"
+          ]
+        },
         "name": { "type": "string", "minLength": 1 },
         "category": { "type": "string", "minLength": 1 },
         "version": { "type": "string", "minLength": 1 },

@@ -532,6 +532,7 @@ pub fn default_command_step_receives_profile_driver_env_test() {
       schedule_due_at: "",
       schedule_started_at: "",
       run_attempt: 0,
+      extra_pi_env: [],
     )
   let dependencies = workflow_run.default_dependencies()
   let artifact =
@@ -736,6 +737,7 @@ fn tool_call_result(
         arguments_json: arguments_json,
         status: status,
         sibling_count: sibling_count,
+        receipt_json: None,
       ),
     ],
   )
@@ -1296,6 +1298,7 @@ fn agent_driver_env_step_context(
     schedule_due_at: "",
     schedule_started_at: "",
     run_attempt: 0,
+    extra_pi_env: [],
   )
 }
 
@@ -3532,3 +3535,97 @@ fn setenv(name: String, value: String) -> Result(Nil, Nil)
 
 @external(erlang, "scherzo_test_ffi", "unsetenv")
 fn unsetenv(name: String) -> Nil
+
+fn generic_tool_call_structured_output_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_lane_draft\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_structured_output\n        parameters_schema_path: docs/schemas/review-lane-draft.correctness.v1.schema.json\n        require_single: true\n        reject_sibling_tool_calls: true\n      validators:\n        - name: review_lane_draft_schema\n          type: json_schema\n          path: docs/schemas/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [schema_version, artifact_type]\n",
+    )
+  dag
+}
+
+fn generic_tool_call_result() -> result_artifact.ResultArtifact {
+  result_artifact.from_final_response_with_tool_calls(
+    Some("{\"schema_version\":999,\"artifact_type\":\"ignored\"}"),
+    False,
+    "test",
+    [
+      result_artifact.ToolCallSubmission(
+        name: "submit_structured_output",
+        arguments_json: Some(native_review_lane_draft_json()),
+        status: Some("success"),
+        sibling_count: 1,
+        receipt_json: Some(
+          "{\"artifact_type\":\"scherzo_structured_output_tool_receipt\",\"tool_name\":\"submit_structured_output\",\"remote_mutations\":\"none\"}",
+        ),
+      ),
+    ],
+  )
+}
+
+fn env_value(env: List(#(String, String)), key: String) -> Option(String) {
+  case env {
+    [] -> None
+    [#(candidate, value), ..rest] ->
+      case candidate == key {
+        True -> Some(value)
+        False -> env_value(rest, key)
+      }
+  }
+}
+
+pub fn generic_pi_tool_call_step_generates_spec_env_and_metadata_test() {
+  let subject = process.new_subject()
+  let result = generic_tool_call_result()
+  let base =
+    deps_with_structured_agent_result(
+      subject,
+      result,
+      workflow_checkpoint.noop_writer(),
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        let assert Some(spec_path) =
+          env_value(
+            context.extra_pi_env,
+            "SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH",
+          )
+        process.send(subject, "spec_env:" <> spec_path)
+        Ok(success_agent_with_result(result))
+      },
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      generic_tool_call_structured_output_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  let assert Ok(artifact) = dict.get(success.artifacts, "example_json")
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    artifact.structured_output
+  assert metadata.source_type == "pi_tool_call"
+  assert metadata.source_tool_name == Some("submit_structured_output")
+  assert metadata.source_parameters_schema_path
+    == Some("docs/schemas/review-lane-draft.correctness.v1.schema.json")
+  let assert Some(schema_sha) = metadata.source_parameters_schema_sha256
+  assert string.length(schema_sha) == 64
+  let assert Some(receipt_json) = metadata.source_receipt_json
+  assert string.contains(receipt_json, "remote_mutations")
+}

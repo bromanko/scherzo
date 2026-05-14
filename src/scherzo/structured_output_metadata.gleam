@@ -36,6 +36,9 @@ pub type ValidationMetadata {
   ValidationMetadata(
     source_type: String,
     source_tool_name: Option(String),
+    source_parameters_schema_path: Option(String),
+    source_parameters_schema_sha256: Option(String),
+    source_receipt_json: Option(String),
     baseline: BaselineValidationMetadata,
     validators: List(ValidatorValidationMetadata),
   )
@@ -49,6 +52,9 @@ pub fn baseline_only(required_keys: List(String)) -> ValidationMetadata {
   ValidationMetadata(
     source_type: "final_response",
     source_tool_name: None,
+    source_parameters_schema_path: None,
+    source_parameters_schema_sha256: None,
+    source_receipt_json: None,
     baseline: BaselineValidationMetadata(
       schema_type: "object",
       required_keys: required_keys,
@@ -61,10 +67,24 @@ pub fn from_spec(
   spec: workflow_dag.StructuredOutputSpec,
   repository_root: String,
 ) -> ValidationMetadata {
+  from_spec_with_receipt(spec, repository_root, None)
+}
+
+pub fn from_spec_with_receipt(
+  spec: workflow_dag.StructuredOutputSpec,
+  repository_root: String,
+  receipt_json: Option(String),
+) -> ValidationMetadata {
   let workflow_dag.StructuredObjectSchema(required_keys) = spec.schema
+  let schema_path = structured_output_source.parameters_schema_path(spec.source)
   ValidationMetadata(
     source_type: structured_output_source.type_to_string(spec.source),
     source_tool_name: structured_output_source.tool_name(spec.source),
+    source_parameters_schema_path: schema_path,
+    source_parameters_schema_sha256: option_map(schema_path, fn(path_value) {
+      schema_sha256(repository_root, path_value)
+    }),
+    source_receipt_json: receipt_json,
     baseline: BaselineValidationMetadata(
       schema_type: "object",
       required_keys: required_keys,
@@ -90,6 +110,18 @@ pub fn to_json(metadata: ValidationMetadata) -> json.Json {
   json.object([
     #("source_type", json.string(metadata.source_type)),
     #("source_tool_name", option_string_to_json(metadata.source_tool_name)),
+    #(
+      "source_parameters_schema_path",
+      option_string_to_json(metadata.source_parameters_schema_path),
+    ),
+    #(
+      "source_parameters_schema_sha256",
+      option_string_to_json(metadata.source_parameters_schema_sha256),
+    ),
+    #(
+      "source_receipt_json",
+      option_string_to_json(metadata.source_receipt_json),
+    ),
     #("baseline", baseline_to_json(metadata.baseline)),
     #("validators", json.array(metadata.validators, of: validator_to_json)),
   ])
@@ -106,11 +138,29 @@ pub fn decoder() -> decode.Decoder(ValidationMetadata) {
     None,
     decode.optional(decode.string),
   )
+  use source_parameters_schema_path <- decode.optional_field(
+    "source_parameters_schema_path",
+    None,
+    decode.optional(decode.string),
+  )
+  use source_parameters_schema_sha256 <- decode.optional_field(
+    "source_parameters_schema_sha256",
+    None,
+    decode.optional(decode.string),
+  )
+  use source_receipt_json <- decode.optional_field(
+    "source_receipt_json",
+    None,
+    decode.optional(decode.string),
+  )
   use baseline <- decode.field("baseline", baseline_decoder())
   use validators <- decode.field("validators", decode.list(validator_decoder()))
   decode.success(ValidationMetadata(
     source_type: source_type,
     source_tool_name: source_tool_name,
+    source_parameters_schema_path: source_parameters_schema_path,
+    source_parameters_schema_sha256: source_parameters_schema_sha256,
+    source_receipt_json: source_receipt_json,
     baseline: baseline,
     validators: validators,
   ))
@@ -311,6 +361,13 @@ fn option_string(value: Option(String), default: String) -> String {
   case value {
     Some(value) -> value
     None -> default
+  }
+}
+
+fn option_map(value: Option(a), mapper: fn(a) -> b) -> Option(b) {
+  case value {
+    Some(value) -> Some(mapper(value))
+    None -> None
   }
 }
 
