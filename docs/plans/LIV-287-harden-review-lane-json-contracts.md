@@ -37,7 +37,7 @@ A broader alternative is to add a generic transform pipeline to all Scherzo stru
 
 A provider-safe schema may become too weak and allow malformed payloads. The countermeasure is that provider schemas are never the source of truth. The materialized canonical artifact is validated with the existing rich local schema plus semantic validation, and fixtures cover malformed severities, categories, evidence links, and locations.
 
-The materializer could drift from the canonical schema. The countermeasure is to validate every materialized fixture through `docs/schemas/review-lane-draft.v1.schema.json` and `scripts/scherzo-review validate-structured-output --validator review_lane_draft`. The offline command fails if any lane materializes an artifact that canonical validation rejects.
+The materializer could drift from the canonical schema. The countermeasure is to validate every materialized fixture through `.scherzo/workflows/schemas/review-lane-draft.v1.schema.json` and `scripts/scherzo-review validate-structured-output --validator review_lane_draft`. The offline command fails if any lane materializes an artifact that canonical validation rejects.
 
 The live-provider canary could be flaky because real model behavior is not fully deterministic. The countermeasure is to split live results into provider/tool registration failures, model-submission failures, and repair-loop failures. Provider schema rejection is blocking for dispatcher preflight. Model quality failures are reported separately and do not prove the schema is incompatible unless the provider rejects tool registration or tool-call arguments at the transport layer.
 
@@ -53,13 +53,15 @@ If every native review lane fails for review-infrastructure reasons, Scherzo cou
 
 - [x] (2026-05-14 00:00Z) Drafted this ExecPlan proposal from the Linear ticket and a targeted inspection of the current review-lane structured-output path.
 - [x] (2026-05-14 00:30Z) Incorporated adversarial review findings about raw workflow validators, preflight policy, all-lanes review-infrastructure failure handling, and open clarification scope.
-- [ ] Implement provider-safe review-lane tool schemas and recursive schema allowlist validation.
-- [ ] Implement review-lane submission materialization and canonical local validation.
-- [ ] Add offline fixtures for all lanes and all required failure classes.
-- [ ] Add the standalone offline and live-provider contract command.
-- [ ] Migrate review workflows and prompts to model-owned payloads only.
-- [ ] Add dispatcher preflight/cache behavior and runtime review-infrastructure classification.
-- [ ] Wire the required offline suite into SelfCI and document optional provider-backed checks.
+- [x] (2026-05-14 23:05Z) Implemented provider-safe review-lane tool schemas under `docs/schemas/provider/` and recursive provider schema allowlist validation in `src/scherzo/structured_output_tool_spec.gleam` with nested disallowed-keyword tests.
+- [x] (2026-05-14 23:10Z) Implemented review-lane submission materialization and canonical local validation in `scripts/scherzo_review/review_lane_contract.py` and `scripts/scherzo-review-lane-contract`.
+- [x] (2026-05-14 23:11Z) Added offline fixtures for all four lanes and the required valid, missing-field, runner-metadata, invalid severity/category/link/path/location failure classes under `test/fixtures/review-lane-contract/`.
+- [x] (2026-05-14 23:20Z) Added the standalone contract command with `check-schema`, `materialize`, `offline`, `live --skip-if-missing-credentials`, and `preflight-cache-key` subcommands.
+- [x] (2026-05-14 23:28Z) Migrated `.scherzo/workflows/review-native.yml`, `.scherzo/workflows/implementation.yaml`, `.scherzo/workflows/execplan-implementation.yaml`, and the four native review prompts to model-owned payloads and materialized canonical drafts.
+- [x] (2026-05-14 23:40Z) Added runtime review-infrastructure classification for failed native lane results and all-lanes synthesis exit 42 with `review-infrastructure-failure.v1.json`.
+- [x] (2026-05-14 23:45Z) Wired the required offline suite into `.config/selfci/ci.sh` and documented offline/live contract commands in `docs/review-artifacts.md`.
+- [x] (2026-05-15 00:55Z) Completed the plan-completion repair for dispatcher pre-claim enforcement and the provider-backed live probe. The daemon dispatch context now carries loaded workflow DAGs into the transition layer, `claims.begin_for_issue` calls `review_lane_preflight_gate.before_claim` before `ClaimIssue`, blocking preflight failures leave work unclaimed and unstarted, focused transition tests cover blocking, park suppression, off mode, nonblocking warnings, required-live missing credentials, and cached blocking failures, and `scripts/scherzo-review-lane-contract live` now delegates credentialed probes to `src/scherzo/review_lane_live_probe.gleam` instead of fabricating `provider_tool_registration_failed`.
+- [x] (2026-05-15 01:25Z) Repaired the remaining plan-completion blockers. `src/scherzo/review_lane_preflight.gleam` now persists and consults `review-lane-contract-cache.v1.json` under the daemon state root, respects `expires_at_ms`/TTL when deciding cache hits, and runs `review_lane_live_probe.probe_loaded_workflow` in `required-live` mode when credentials are present. `src/scherzo/review_lane_tools.gleam` now owns shared review-lane tool discovery, and `test/review_lane_preflight_test.gleam` covers unexpired blocking cache hits and expired-entry misses.
 
 ## Surprises & Discoveries
 
@@ -73,7 +75,7 @@ If every native review lane fails for review-infrastructure reasons, Scherzo cou
   Evidence: `.scherzo/workflows/review-native.yml`, `.scherzo/workflows/implementation.yaml`, and `.scherzo/workflows/execplan-implementation.yaml` include raw `structured_output.validators` entries named `review_lane_draft_schema`, `review_lane_semantics`, or `review_lane_draft` next to the agent `structured_output` blocks. These validators must move off the raw submission path during migration.
 
 - Observation: The checked-in canonical review-lane draft schema contains rich JSON Schema constructs that are appropriate for local validation but risky as provider tool parameter schemas.
-  Evidence: `docs/schemas/review-lane-draft.v1.schema.json` uses local-contract constructs such as `$ref`, `$defs`, `allOf`, `enum`, `const`, `not`, nested `anyOf`, and union-style `type` arrays.
+  Evidence: `.scherzo/workflows/schemas/review-lane-draft.v1.schema.json` uses local-contract constructs such as `$ref`, `$defs`, `allOf`, `enum`, `const`, `not`, nested `anyOf`, and union-style `type` arrays.
 
 - Observation: The current provider compatibility guard is shallow.
   Evidence: `src/scherzo/structured_output_tool_spec.gleam` rejects only top-level `oneOf`, `anyOf`, `allOf`, `enum`, and `not`, and ensures the top-level schema type is `object`; it does not recursively enforce a strict provider-safe keyword allowlist.
@@ -83,6 +85,21 @@ If every native review lane fails for review-infrastructure reasons, Scherzo cou
 
 - Observation: SelfCI is available as a repo-level final gate and currently runs formatting, production lint, custom Scherzo lint, unit tests, and Nix flake checks.
   Evidence: `.config/selfci/ci.sh` invokes `direnv allow .`, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter`, `direnv exec . gleam run -m scherzo_lint`, `direnv exec . scherzo-test-unit`, and `nix flake check --print-build-logs`.
+
+- Observation: The offline command could be red-tested after adding schemas, fixtures, and helper code but before workflow migration.
+  Evidence: `direnv exec . scripts/scherzo-review-lane-contract offline --workflow .scherzo/workflows/review-native.yml --fixtures test/fixtures/review-lane-contract --output-dir tmp/scherzo-review-lane-contract/offline-red` exited 1 with `REVIEW_LANE_CONTRACT_OFFLINE=failed` because the workflow still used canonical raw validators; fixture and schema statuses already passed in the written report.
+
+- Observation: The existing `scripts/scherzo-review` semantic validator was close to the needed canonical checks but did not enforce every planned semantic guardrail.
+  Evidence: Implementation added severity/category and location line-order checks to the script validator and kept extra guardrails in `scripts/scherzo_review/review_lane_contract.py` so fixture failures are classified consistently.
+
+- Observation: Wiring preflight in the transition layer is enough to prevent both tracker claim and workspace preparation for issue dispatch.
+  Evidence: `src/scherzo/orchestrator/transitions/claims.gleam` now calls `review_lane_preflight_gate.before_claim` before emitting `effects_types.ClaimIssue`; `direnv exec . gleam test` passed with focused tests asserting no `ClaimIssue` or `StartWorker` effects on blocking preflight failures.
+
+- Observation: The daemon source guardrail prevented adding policy imports and constructor fields directly to the daemon without refactoring.
+  Evidence: An intermediate unit run failed `source_guardrail_test.source_guardrail_matches_checked_in_baseline_test` because `src/scherzo/orchestrator/daemon.gleam` exceeded its line/import baseline; moving context construction into `transition_types.dispatch_context` kept the daemon within the existing baseline and the next `direnv exec . gleam test` passed.
+
+- Observation: The first plan-completion repair still left the two riskiest Milestone 4 behaviors as scaffolding: required-live preflight only checked for credentials, and the cache existed only as a filename/key concept.
+  Evidence: The retained `gate_plan_completion` diagnostic reported that provider-backed `provider_tool_registration_failed`/`provider_tool_call_failed` results could not block claims and that no `review-lane-contract-cache.v1.json` read/write, expiry, decoding, or cache-hit path existed.
 
 ## Decision Log
 
@@ -118,15 +135,39 @@ If every native review lane fails for review-infrastructure reasons, Scherzo cou
   Rationale: Implementation may still fact-check exact call sites in the current tree, but it should not have to design the live probe or pre-claim gate contract from scratch.
   Date: 2026-05-14
 
+- Decision: Land the offline contract hardening, workflow migration, and runtime classification before full dispatcher pre-claim integration.
+  Rationale: The offline path is the required SelfCI gate and removes the immediate provider-schema and raw-validator hazards without changing daemon claim behavior. The preflight policy/cache scaffolding records the intended boundary, but wiring daemon claim gating should be a focused follow-up because the current dispatcher claim path spans transition effects, tracker handoff, and workspace lifecycle code.
+  Date: 2026-05-14
+
+- Decision: Wire dispatcher preflight in `src/scherzo/orchestrator/transitions/claims.gleam`, after workflow route selection and before `workspace.workspace_path` and `effects_types.ClaimIssue`.
+  Rationale: This is the earliest transition-layer point with the selected workflow id and candidate issue. Blocking there prevents tracker claim effects and worker start effects while preserving the existing dispatch continuation behavior for later candidates.
+  Date: 2026-05-15
+
+- Decision: Implement the live-provider canary as `src/scherzo/review_lane_live_probe.gleam` and keep the Python `live` command as the operator/reporting wrapper.
+  Rationale: The Gleam helper can reuse loaded workflow DAGs, `structured_output_tool_spec.for_step`, configured Pi launch settings, and the existing structured-output retry prompt without creating Linear runs or jj workspaces. The Python wrapper preserves the stable `scripts/scherzo-review-lane-contract live` interface and the skip-safe no-credentials behavior.
+  Date: 2026-05-15
+
+- Decision: Share review-lane tool discovery through `src/scherzo/review_lane_tools.gleam` and let `required-live` dispatcher preflight call `review_lane_live_probe.probe_loaded_workflow` directly.
+  Rationale: The dispatcher already has the selected workflow DAG, effective Pi configuration, repository root, and daemon state root. Calling the probe helper in process avoids spawning a nested Scherzo dispatch or jj workspace while still exercising the same provider-backed tool registration and tool-call path as the operator `live` command.
+  Date: 2026-05-15
+
+- Decision: Store dispatcher preflight cache entries in `<workspace-root>/.scherzo-state/review-lane-contract-cache.v1.json` with `checked_at_ms`, `expires_at_ms`, UTC timestamps, key material, status, code, message, warnings, and blocking status.
+  Rationale: The daemon state root is already the durable local state location for controls, ledger, and artifacts. Millisecond fields make TTL checks deterministic in tests, while UTC fields keep the cache inspectable by operators. The cache key includes workflow fingerprint, provider/model identity, schema digests, checker version, and preflight mode, so stale entries are bypassed when relevant inputs change.
+  Date: 2026-05-15
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+As of 2026-05-15 00:55Z, the required review-lane hardening path is implemented. Review lane tool registration now uses provider-safe schemas with model-owned fields only; workflows materialize captured submissions into canonical `ReviewLaneDraft` artifacts before evidence verification and normalization; fixture validation covers the specified failure classes; runtime normalization and synthesis distinguish review infrastructure failures from implementation findings; SelfCI runs the offline contract suite; the daemon dispatch transition runs the review-lane preflight gate before issue claim/workspace preparation; and the live contract command has a credentialed provider-backed probe path that registers the exact review-lane tools and exercises the structured-output repair prompt without creating Linear runs or jj workspaces.
+
+As of 2026-05-15 01:25Z, the plan-completion blockers found after that repair are also closed. In `required-live` mode, dispatcher preflight no longer treats credential presence as success; it either blocks for missing credentials, reuses an unexpired matching cache entry, or runs the provider-backed live probe and maps provider transport/tool registration failures to blocking pre-claim failures. The preflight cache now has a durable JSON file, decode path, write path, TTL expiry behavior, and tests for hit/expiry semantics.
+
+The no-credentials live path remains intentionally skip-safe and was validated with `env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY direnv exec . scripts/scherzo-review-lane-contract live --workflow .scherzo/workflows/review-native.yml --output-dir tmp/scherzo-review-lane-contract/live-repair --skip-if-missing-credentials`, which wrote `skipped_missing_credentials` and `remote_mutations: "none"`. A real provider-backed run is still optional operational validation because it requires credentials and may incur provider cost, but the implementation no longer fabricates `provider_tool_registration_failed` when credentials are present.
 
 ## Context and Orientation
 
 Scherzo is a workflow runner that reads workflow YAML files from `.scherzo/workflows/`, runs command and agent steps, captures artifacts under a run root, and reports progress to operators. A native review lane is an agent step that asks a model to call a Pi tool with JSON arguments. Scherzo captures those tool-call arguments as structured output and validates them before later command steps verify evidence and synthesize a final review.
 
-The current review-lane documentation is in `docs/review-artifacts.md`. The canonical aggregate schema is `docs/schemas/review-artifacts.v1.schema.json`. The focused review-lane draft schema is `docs/schemas/review-lane-draft.v1.schema.json`, with lane-specific schema files currently named `docs/schemas/review-lane-draft.correctness.v1.schema.json`, `docs/schemas/review-lane-draft.test-quality.v1.schema.json`, `docs/schemas/review-lane-draft.idioms-maintainability.v1.schema.json`, and `docs/schemas/review-lane-draft.security-performance.v1.schema.json`.
+The current review-lane documentation is in `docs/review-artifacts.md`. The canonical aggregate schema is `.scherzo/workflows/schemas/review-artifacts.v1.schema.json`. The focused review-lane draft schema is `.scherzo/workflows/schemas/review-lane-draft.v1.schema.json`, with lane-specific schema files currently named `.scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json`, `.scherzo/workflows/schemas/review-lane-draft.test-quality.v1.schema.json`, `.scherzo/workflows/schemas/review-lane-draft.idioms-maintainability.v1.schema.json`, and `.scherzo/workflows/schemas/review-lane-draft.security-performance.v1.schema.json`.
 
 The review workflows that must be migrated are `.scherzo/workflows/review-native.yml`, `.scherzo/workflows/implementation.yaml`, and `.scherzo/workflows/execplan-implementation.yaml`. Each currently defines four lane agent steps and later command steps that call `scripts/scherzo-review verify-evidence`, `scripts/scherzo-review normalize-lane-result`, and `scripts/scherzo-review synthesize`.
 
@@ -157,7 +198,7 @@ In scope: define provider-safe review-lane submission schemas; keep and strength
 
 Out of scope: replacing the staged review architecture, changing Linear tracker semantics unrelated to preflight reporting, changing jj workspace drivers, weakening canonical review artifact schemas to match provider limitations, requiring provider credentials for normal unit tests, or using a full implementation workflow as the contract test harness.
 
-The new provider-safe schemas must not replace `docs/schemas/review-lane-draft.v1.schema.json` as the source of truth for retained review artifacts. They are only Pi tool parameter schemas.
+The new provider-safe schemas must not replace `.scherzo/workflows/schemas/review-lane-draft.v1.schema.json` as the source of truth for retained review artifacts. They are only Pi tool parameter schemas.
 
 The migration should preserve existing local-only safety: contract commands, preflight, and review helpers must not post comments, update Linear, push branches, or mutate remote state unless the dispatcher preflight reporting path explicitly decides to park or comment on an issue before claim.
 
@@ -208,7 +249,7 @@ The materializer builds a canonical `ReviewLaneDraft` by injecting:
 
 The model-submitted arrays and `self_check` are copied from the submission after local validation. The materializer must reject unexpected metadata fields in the provider submission. If a submission includes `schema_version`, `artifact_type`, `generated_at_utc`, `producer`, `lane`, `input_refs`, or `remote_mutations`, fail with an error code such as `review_lane_submission_unexpected_runner_metadata`.
 
-Keep canonical validation in the local path. After materialization, validate the artifact against `docs/schemas/review-lane-draft.v1.schema.json` or the lane-specific canonical schema, then run the existing semantic validator through `scripts/scherzo-review validate-structured-output --validator review_lane_draft`. Add semantic checks if they are missing: draft finding ids are unique within a lane; each evidence request references an existing draft finding id; each draft finding evidence request id exists; severity values are one of `info`, `low`, `medium`, `high`, or `critical`; review-note categories are one of the documented canonical categories; finding locations and evidence target paths are repository-relative; and location `start_line` is not greater than `end_line` when both are present.
+Keep canonical validation in the local path. After materialization, validate the artifact against `.scherzo/workflows/schemas/review-lane-draft.v1.schema.json` or the lane-specific canonical schema, then run the existing semantic validator through `scripts/scherzo-review validate-structured-output --validator review_lane_draft`. Add semantic checks if they are missing: draft finding ids are unique within a lane; each evidence request references an existing draft finding id; each draft finding evidence request id exists; severity values are one of `info`, `low`, `medium`, `high`, or `critical`; review-note categories are one of the documented canonical categories; finding locations and evidence target paths are repository-relative; and location `start_line` is not greater than `end_line` when both are present.
 
 Add fixture directories under `test/fixtures/review-lane-contract/`. Use one directory per lane:
 

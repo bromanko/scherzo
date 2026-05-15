@@ -56,6 +56,16 @@ fn assert_error_code(
   assert error.code == code
 }
 
+fn assert_error_contains(
+  result: Result(a, structured_output_tool_spec.ToolSpecError),
+  code: String,
+  text: String,
+) -> Nil {
+  let assert Error(error) = result
+  assert error.code == code
+  assert string.contains(error.message, text)
+}
+
 fn json_object_field(
   value: json_value.JsonValue,
   key: String,
@@ -80,11 +90,9 @@ fn json_object_field_loop(
   }
 }
 
-pub fn structured_output_tool_spec_builds_raw_schema_spec_test() {
+pub fn structured_output_tool_spec_builds_provider_schema_spec_test() {
   let assert Ok(tool_spec) =
-    build(
-      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
-    )
+    build("docs/schemas/provider/review-lane-draft.correctness.v1.schema.json")
 
   assert tool_spec.workflow_id == "review-native"
   assert tool_spec.run_id == "run-1"
@@ -93,7 +101,7 @@ pub fn structured_output_tool_spec_builds_raw_schema_spec_test() {
   assert tool_spec.artifact_name == "review_lane_draft"
   assert tool_spec.tool_name == "submit_structured_output"
   assert tool_spec.parameters_schema_path
-    == ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json"
+    == "docs/schemas/provider/review-lane-draft.correctness.v1.schema.json"
   assert string.length(tool_spec.parameters_schema_sha256) == 64
   let assert json_value.JObject(_) = tool_spec.parameters_schema
   assert json_object_field(tool_spec.parameters_schema, "type")
@@ -181,13 +189,115 @@ pub fn structured_output_tool_spec_rejects_provider_incompatible_top_level_keywo
   )
 }
 
+pub fn structured_output_tool_spec_accepts_nested_provider_safe_keywords_test() {
+  let dir = "test/tmp/structured-output-tool-spec"
+  let _ = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let schema_path = dir <> "/nested-ok.schema.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      schema_path,
+      "{\"type\":\"object\",\"properties\":{\"draft_findings\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"description\":\"finding\",\"required\":[\"severity\"],\"properties\":{\"severity\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":20}}}}},\"additionalProperties\":false}\n",
+    )
+
+  let assert Ok(_) = build(schema_path)
+}
+
+pub fn structured_output_tool_spec_rejects_nested_enum_keyword_test() {
+  let dir = "test/tmp/structured-output-tool-spec"
+  let _ = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let schema_path = dir <> "/nested-enum.schema.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      schema_path,
+      "{\"type\":\"object\",\"properties\":{\"draft_findings\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"severity\":{\"type\":\"string\",\"enum\":[\"low\"]}}}}}}\n",
+    )
+
+  assert_error_contains(
+    build(schema_path),
+    "structured_output_tool_spec_provider_incompatible_schema",
+    "properties.draft_findings.items.properties.severity.enum",
+  )
+}
+
+pub fn structured_output_tool_spec_rejects_nested_const_keyword_test() {
+  let dir = "test/tmp/structured-output-tool-spec"
+  let _ = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let schema_path = dir <> "/nested-const.schema.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      schema_path,
+      "{\"type\":\"object\",\"properties\":{\"self_check\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\",\"const\":\"ok\"}}}}}\n",
+    )
+
+  assert_error_contains(
+    build(schema_path),
+    "structured_output_tool_spec_provider_incompatible_schema",
+    "properties.self_check.properties.summary.const",
+  )
+}
+
+pub fn structured_output_tool_spec_rejects_nested_all_of_keyword_test() {
+  let dir = "test/tmp/structured-output-tool-spec"
+  let _ = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let schema_path = dir <> "/nested-all-of.schema.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      schema_path,
+      "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"object\",\"allOf\":[{\"type\":\"object\"}]}}}\n",
+    )
+
+  assert_error_contains(
+    build(schema_path),
+    "structured_output_tool_spec_provider_incompatible_schema",
+    "properties.target.allOf",
+  )
+}
+
+pub fn structured_output_tool_spec_rejects_nested_ref_keyword_test() {
+  let dir = "test/tmp/structured-output-tool-spec"
+  let _ = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let schema_path = dir <> "/nested-ref.schema.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      schema_path,
+      "{\"type\":\"object\",\"properties\":{\"target\":{\"$ref\":\"#/$defs/Target\"}}}\n",
+    )
+
+  assert_error_contains(
+    build(schema_path),
+    "structured_output_tool_spec_provider_incompatible_schema",
+    "properties.target.$ref",
+  )
+}
+
+pub fn structured_output_tool_spec_rejects_union_type_array_test() {
+  let dir = "test/tmp/structured-output-tool-spec"
+  let _ = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let schema_path = dir <> "/union-type.schema.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      schema_path,
+      "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":[\"string\",\"null\"]}}}\n",
+    )
+
+  assert_error_contains(
+    build(schema_path),
+    "structured_output_tool_spec_provider_incompatible_schema",
+    "properties.summary.type",
+  )
+}
+
 pub fn structured_output_tool_spec_writes_retained_path_test() {
   let run_root = "test/tmp/structured-output-tool-spec-write/run-root"
   let _ = simplifile.delete(run_root)
   let assert Ok(tool_spec) =
-    build(
-      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
-    )
+    build("docs/schemas/provider/review-lane-draft.correctness.v1.schema.json")
   let assert Ok(written) =
     structured_output_tool_spec.write(tool_spec, run_root)
 

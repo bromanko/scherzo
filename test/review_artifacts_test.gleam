@@ -851,7 +851,7 @@ pub fn implementation_workflows_native_cutover_removes_legacy_backend_default_te
 
   list.each(workflow_paths, fn(path) {
     let assert Ok(workflow) = simplifile.read(path)
-    assert_contains(workflow, "submit_structured_output")
+    assert_contains(workflow, "submit_review_lane_draft")
     assert_contains(workflow, "prepare-native")
     assert_contains(workflow, "refuses fixture/scenario/heuristic")
     assert_not_contains(workflow, "run-lane --lane")
@@ -1516,6 +1516,77 @@ pub fn missing_draft_normalize_preserves_structured_output_root_cause_test() {
   assert_contains(result, "review_lane_draft_schema")
   assert_contains(result, "input_refs[0].path")
   assert_contains(result, "draft_artifact_error")
+}
+
+pub fn all_lanes_review_infrastructure_failure_exits_42_test() {
+  let dir = "test/tmp/native-all-lanes-infrastructure-failure"
+  reset_dir(dir)
+  write_native_support_files(dir)
+  let lanes = [
+    "correctness",
+    "test-quality",
+    "idioms-maintainability",
+    "security-performance",
+  ]
+
+  list.each(lanes, fn(lane) {
+    let lane_dir = dir <> "/" <> lane
+    let metadata_path = lane_dir <> "/agent-step-metadata.v1.json"
+    let assert Ok(Nil) = simplifile.create_directory_all(lane_dir)
+    write_metadata(metadata_path)
+    let normalized =
+      run_command(
+        "scripts/scherzo-review normalize-lane-result --lane "
+        <> lane
+        <> " --draft "
+        <> lane_dir
+        <> "/missing-draft.json --evidence-ledger "
+        <> lane_dir
+        <> "/missing-ledger.json --agent-step-metadata "
+        <> metadata_path
+        <> " --brief "
+        <> dir
+        <> "/review-brief.v1.json --output-dir "
+        <> lane_dir,
+      )
+    assert normalized.status == step_artifact.StepSucceeded
+  })
+
+  let lane_args =
+    lanes
+    |> list.map(fn(lane) {
+      " --lane-result "
+      <> dir
+      <> "/"
+      <> lane
+      <> "/review-lane-"
+      <> lane
+      <> ".v1.json"
+    })
+    |> string.join(with: "")
+  let synth_dir = dir <> "/synthesis"
+  let synthesized =
+    run_command(
+      "scripts/scherzo-review synthesize --brief "
+      <> dir
+      <> "/review-brief.v1.json"
+      <> lane_args
+      <> " --output-dir "
+      <> synth_dir,
+    )
+
+  assert synthesized.status == step_artifact.StepFailed
+  assert synthesized.exit_code == Some(42)
+  assert string.contains(
+    synthesized.stdout,
+    "REVIEW_SYNTHESIS=review_infrastructure_failure",
+  )
+  let assert Ok(diagnostic) =
+    simplifile.read(synth_dir <> "/review-infrastructure-failure.v1.json")
+  assert string.contains(diagnostic, "review_infrastructure_all_lanes_failed")
+  assert string.contains(diagnostic, "review_infrastructure_failure")
+  let assert Ok(False) =
+    simplifile.is_file(synth_dir <> "/final-review.v1.json")
 }
 
 pub fn missing_or_malformed_draft_produces_failed_lane_result_test() {

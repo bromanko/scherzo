@@ -1,5 +1,6 @@
 import gleam/int
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -196,34 +197,28 @@ fn provider_compatible_parameters_schema(
   schema_path: String,
 ) -> Result(json_value.JsonValue, ToolSpecError) {
   case schema {
-    json_value.JObject(entries) ->
-      case provider_incompatible_top_level_keyword(entries) {
-        Some(keyword) ->
+    json_value.JObject(entries) -> {
+      use Nil <- result.try(validate_provider_schema_keywords(
+        schema,
+        schema_path,
+      ))
+      case object_field(entries, "type") {
+        Some(json_value.JString("object")) -> Ok(schema)
+        None ->
+          Ok(
+            json_value.JObject([
+              #("type", json_value.JString("object")),
+              ..entries
+            ]),
+          )
+        Some(_) ->
           Error(ToolSpecError(
             "structured_output_tool_spec_provider_incompatible_schema",
-            "parameters schema used for Pi tool registration must not have top-level `"
-              <> keyword
-              <> "`; provider tool schemas reject top-level oneOf/anyOf/allOf/enum/not: "
+            "parameters schema used for Pi tool registration must have top-level type \"object\": "
               <> schema_path,
           ))
-        None ->
-          case object_field(entries, "type") {
-            Some(json_value.JString("object")) -> Ok(schema)
-            None ->
-              Ok(
-                json_value.JObject([
-                  #("type", json_value.JString("object")),
-                  ..entries
-                ]),
-              )
-            Some(_) ->
-              Error(ToolSpecError(
-                "structured_output_tool_spec_provider_incompatible_schema",
-                "parameters schema used for Pi tool registration must have top-level type \"object\": "
-                  <> schema_path,
-              ))
-          }
       }
+    }
     _ ->
       Error(ToolSpecError(
         "structured_output_tool_spec_schema_not_object",
@@ -232,28 +227,182 @@ fn provider_compatible_parameters_schema(
   }
 }
 
-fn provider_incompatible_top_level_keyword(
+pub fn validate_provider_schema_keywords(
+  schema: json_value.JsonValue,
+  schema_path: String,
+) -> Result(Nil, ToolSpecError) {
+  validate_schema_value(schema, schema_path, "")
+}
+
+fn validate_schema_value(
+  value: json_value.JsonValue,
+  schema_path: String,
+  location: String,
+) -> Result(Nil, ToolSpecError) {
+  case value {
+    json_value.JObject(entries) ->
+      validate_schema_entries(entries, schema_path, location)
+    json_value.JArray(values) ->
+      validate_schema_array(values, schema_path, location, 0)
+    _ -> Ok(Nil)
+  }
+}
+
+fn validate_schema_entries(
   entries: List(#(String, json_value.JsonValue)),
-) -> Option(String) {
-  case object_field(entries, "oneOf") {
-    Some(_) -> Some("oneOf")
-    None ->
-      case object_field(entries, "anyOf") {
-        Some(_) -> Some("anyOf")
-        None ->
-          case object_field(entries, "allOf") {
-            Some(_) -> Some("allOf")
-            None ->
-              case object_field(entries, "enum") {
-                Some(_) -> Some("enum")
-                None ->
-                  case object_field(entries, "not") {
-                    Some(_) -> Some("not")
-                    None -> None
-                  }
-              }
-          }
+  schema_path: String,
+  location: String,
+) -> Result(Nil, ToolSpecError) {
+  case entries {
+    [] -> Ok(Nil)
+    [#(key, value), ..rest] -> {
+      use Nil <- result.try(validate_schema_keyword(
+        key,
+        value,
+        schema_path,
+        location,
+      ))
+      use Nil <- result.try(validate_schema_keyword_value(
+        key,
+        value,
+        schema_path,
+        keyword_location(location, key),
+      ))
+      validate_schema_entries(rest, schema_path, location)
+    }
+  }
+}
+
+fn validate_schema_keyword(
+  key: String,
+  value: json_value.JsonValue,
+  schema_path: String,
+  location: String,
+) -> Result(Nil, ToolSpecError) {
+  case list.contains(provider_schema_allowed_keywords(), key) {
+    True ->
+      case key == "type" {
+        True -> validate_schema_type_keyword(value, schema_path, location)
+        False -> Ok(Nil)
       }
+    False -> provider_schema_keyword_error(schema_path, location, key)
+  }
+}
+
+fn validate_schema_type_keyword(
+  value: json_value.JsonValue,
+  schema_path: String,
+  location: String,
+) -> Result(Nil, ToolSpecError) {
+  case value {
+    json_value.JArray(_) ->
+      provider_schema_keyword_error(schema_path, location, "type")
+    _ -> Ok(Nil)
+  }
+}
+
+fn validate_schema_keyword_value(
+  key: String,
+  value: json_value.JsonValue,
+  schema_path: String,
+  location: String,
+) -> Result(Nil, ToolSpecError) {
+  case key {
+    "properties" -> validate_schema_properties(value, schema_path, location)
+    "items" -> validate_schema_value(value, schema_path, location)
+    "additionalProperties" ->
+      validate_schema_value(value, schema_path, location)
+    _ -> Ok(Nil)
+  }
+}
+
+fn validate_schema_properties(
+  value: json_value.JsonValue,
+  schema_path: String,
+  location: String,
+) -> Result(Nil, ToolSpecError) {
+  case value {
+    json_value.JObject(entries) ->
+      validate_schema_property_entries(entries, schema_path, location)
+    _ -> Ok(Nil)
+  }
+}
+
+fn validate_schema_property_entries(
+  entries: List(#(String, json_value.JsonValue)),
+  schema_path: String,
+  location: String,
+) -> Result(Nil, ToolSpecError) {
+  case entries {
+    [] -> Ok(Nil)
+    [#(property_name, value), ..rest] -> {
+      use Nil <- result.try(validate_schema_value(
+        value,
+        schema_path,
+        keyword_location(location, property_name),
+      ))
+      validate_schema_property_entries(rest, schema_path, location)
+    }
+  }
+}
+
+fn validate_schema_array(
+  values: List(json_value.JsonValue),
+  schema_path: String,
+  location: String,
+  index: Int,
+) -> Result(Nil, ToolSpecError) {
+  case values {
+    [] -> Ok(Nil)
+    [value, ..rest] -> {
+      use Nil <- result.try(validate_schema_value(
+        value,
+        schema_path,
+        location <> "[" <> int.to_string(index) <> "]",
+      ))
+      validate_schema_array(rest, schema_path, location, index + 1)
+    }
+  }
+}
+
+fn provider_schema_allowed_keywords() -> List(String) {
+  [
+    "type",
+    "description",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "minLength",
+    "maxLength",
+    "minimum",
+    "maximum",
+    "minItems",
+    "maxItems",
+    "pattern",
+  ]
+}
+
+fn provider_schema_keyword_error(
+  schema_path: String,
+  location: String,
+  keyword: String,
+) -> Result(Nil, ToolSpecError) {
+  Error(ToolSpecError(
+    "structured_output_tool_spec_provider_incompatible_schema",
+    "provider schema "
+      <> schema_path
+      <> " contains disallowed keyword "
+      <> keyword
+      <> " at "
+      <> keyword_location(location, keyword),
+  ))
+}
+
+fn keyword_location(location: String, key: String) -> String {
+  case location == "" {
+    True -> key
+    False -> location <> "." <> key
   }
 }
 

@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Offline and live review-lane structured JSON contract checks."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from scherzo_review import review_lane_contract as contract
+
+
+def print_kv(key: str, value: str) -> None:
+    print(f"{key}={value}")
+
+
+def command_check_schema(args: argparse.Namespace) -> int:
+    schema = contract.check_provider_schema(Path(args.schema))
+    print_kv("REVIEW_LANE_CONTRACT_SCHEMA", "ok")
+    print_kv("SCHEMA_PATH", args.schema)
+    print_kv("SCHEMA_TOP_LEVEL_TYPE", str(schema.get("type", "")))
+    return 0
+
+
+def command_materialize(args: argparse.Namespace) -> int:
+    artifact = contract.materialize_submission(
+        lane_id=args.lane,
+        submission_path=Path(args.submission),
+        prepare_dir=Path(args.prepare_dir),
+        output_path=Path(args.output),
+    )
+    print_kv("REVIEW_LANE_MATERIALIZE", "ok")
+    print_kv("REVIEW_LANE", args.lane)
+    print_kv("REVIEW_LANE_DRAFT_PATH", args.output)
+    print_kv("REVIEW_REMOTE_MUTATIONS", str(artifact.get("remote_mutations", "none")))
+    return 0
+
+
+def command_offline(args: argparse.Namespace) -> int:
+    report = contract.offline_report(
+        workflow_path=Path(args.workflow),
+        fixtures_dir=Path(args.fixtures),
+        output_dir=Path(args.output_dir),
+    )
+    report_path = Path(args.output_dir) / "contract-report.v1.json"
+    print_kv("REVIEW_LANE_CONTRACT_OFFLINE", str(report.get("status", "unknown")))
+    print_kv("REVIEW_LANE_CONTRACT_REPORT", str(report_path))
+    print_kv("REVIEW_REMOTE_MUTATIONS", str(report.get("remote_mutations", "none")))
+    return 0 if report.get("status") == "passed" else 1
+
+
+def command_live(args: argparse.Namespace) -> int:
+    report = contract.live_report(
+        workflow_path=Path(args.workflow),
+        output_dir=Path(args.output_dir),
+        skip_if_missing_credentials=args.skip_if_missing_credentials,
+    )
+    report_path = Path(args.output_dir) / "live-probe-report.v1.json"
+    print_kv("REVIEW_LANE_CONTRACT_LIVE", str(report.get("status", "unknown")))
+    print_kv("REVIEW_LANE_LIVE_REPORT", str(report_path))
+    print_kv("REVIEW_REMOTE_MUTATIONS", str(report.get("remote_mutations", "none")))
+    return 0 if report.get("status") in {"passed", "skipped"} else 1
+
+
+def command_preflight_cache_key(args: argparse.Namespace) -> int:
+    key = contract.preflight_cache_key(Path(args.workflow))
+    if args.output:
+        contract.write_json(Path(args.output), key)
+    print(json.dumps(key, sort_keys=True))
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="scherzo-review-lane-contract",
+        description=(
+            "Validate provider-safe Scherzo review-lane tool schemas, materialize "
+            "model-owned submissions into canonical ReviewLaneDraft artifacts, and "
+            "run the offline review-lane contract suite without remote mutations."
+        ),
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    check_schema = subparsers.add_parser("check-schema", help="Validate one provider-safe lane tool schema.")
+    check_schema.add_argument("--schema", required=True)
+    check_schema.set_defaults(func=command_check_schema)
+
+    materialize = subparsers.add_parser("materialize", help="Materialize one captured provider submission into a canonical ReviewLaneDraft.")
+    materialize.add_argument("--lane", required=True, choices=contract.lane_ids())
+    materialize.add_argument("--submission", required=True)
+    materialize.add_argument("--prepare-dir", required=True)
+    materialize.add_argument("--output", required=True)
+    materialize.set_defaults(func=command_materialize)
+
+    offline = subparsers.add_parser("offline", help="Run the complete local review-lane contract suite.")
+    offline.add_argument("--workflow", required=True)
+    offline.add_argument("--fixtures", required=True)
+    offline.add_argument("--output-dir", required=True)
+    offline.set_defaults(func=command_offline)
+
+    live = subparsers.add_parser("live", help="Run the optional provider-backed canary without Linear or workspace mutation.")
+    live.add_argument("--workflow", required=True)
+    live.add_argument("--output-dir", required=True)
+    live.add_argument("--skip-if-missing-credentials", action="store_true")
+    live.set_defaults(func=command_live)
+
+    cache_key = subparsers.add_parser("preflight-cache-key", help="Compute the offline preflight cache key material for a workflow.")
+    cache_key.add_argument("--workflow", required=True)
+    cache_key.add_argument("--output")
+    cache_key.set_defaults(func=command_preflight_cache_key)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        return int(args.func(args))
+    except contract.ContractError as exc:
+        print(f"scherzo-review-lane-contract: {exc.code}: {exc.message}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

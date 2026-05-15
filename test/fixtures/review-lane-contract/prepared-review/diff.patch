@@ -1,0 +1,6 @@
+diff --git a/src/example.gleam b/src/example.gleam
+--- a/src/example.gleam
++++ b/src/example.gleam
+@@ -1 +1 @@
+-old
++new

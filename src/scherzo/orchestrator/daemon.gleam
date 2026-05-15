@@ -3086,21 +3086,20 @@ fn poll_snapshot(state: State) -> transition_types.PollSnapshot {
 fn transition_dispatch_context(
   state: State,
 ) -> transition_types.DispatchContext {
-  transition_types.DispatchContext(
-    effective: state.workflow.effective,
-    routing: state.workflow.bundle.orchestrator.routing,
-    available_workflow_ids: dict.keys(state.workflow.bundle.workflows),
-    dispatch_enabled: config.can_dispatch(state.workflow.reload_state),
-    operator_paused: state.operator_paused,
-    active_issue_ids: worker_registry.worker_issue_ids(state.registry),
-    active_issues: worker_registry.worker_issues(state.registry),
-    reserved_non_issue_slots: list.length(
-      worker_registry.scheduled_worker_handles(state.registry),
-    )
+  transition_types.dispatch_context(
+    state.workflow.effective,
+    state.workflow.bundle.orchestrator.routing,
+    state.workflow.bundle.workflows,
+    config.can_dispatch(state.workflow.reload_state),
+    state.operator_paused,
+    worker_registry.worker_issue_ids(state.registry),
+    worker_registry.worker_issues(state.registry),
+    list.length(worker_registry.scheduled_worker_handles(state.registry))
       + dict.size(state.pending_scheduled_starts),
-    workspace_root: state.workflow.effective.workspace.root,
-    now_ms: state.dependencies.now_ms(),
-    recovery_by_issue: state.recovery_by_issue,
+    state.workflow.effective.workspace.root,
+    state.dependencies.now_ms(),
+    state.recovery_by_issue,
+    state.workflow.bundle.orchestrator.config_dir,
   )
 }
 

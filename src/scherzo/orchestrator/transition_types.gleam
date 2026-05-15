@@ -1,5 +1,5 @@
 import gleam/dict
-import gleam/option.{type Option}
+import gleam/option.{type Option, None}
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
@@ -9,12 +9,15 @@ import scherzo/linear
 
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/state as orchestrator_state
+import scherzo/review_lane_preflight
+import scherzo/review_lane_preflight_policy
 import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_dag
 
 pub type State {
   State(
@@ -275,6 +278,61 @@ pub type DispatchContext {
     workspace_root: String,
     now_ms: Int,
     recovery_by_issue: dict.Dict(String, session_event.RecoveryInfo),
+    review_lane_preflight: ReviewLanePreflightContext,
+  )
+}
+
+pub type ReviewLanePreflightContext {
+  ReviewLanePreflightContext(
+    config_dir: String,
+    workflow_dags: dict.Dict(String, workflow_dag.WorkflowDag),
+    policy: review_lane_preflight_policy.Policy,
+    override: Option(review_lane_preflight.PreflightResult),
+  )
+}
+
+pub fn dispatch_context(
+  effective: config_types.EffectiveConfig,
+  routing: config_types.RoutingConfig,
+  workflow_dags: dict.Dict(String, workflow_dag.WorkflowDag),
+  dispatch_enabled: Bool,
+  operator_paused: Bool,
+  active_issue_ids: List(String),
+  active_issues: List(tracker_issue.Issue),
+  reserved_non_issue_slots: Int,
+  workspace_root: String,
+  now_ms: Int,
+  recovery_by_issue: dict.Dict(String, session_event.RecoveryInfo),
+  config_dir: String,
+) -> DispatchContext {
+  DispatchContext(
+    effective: effective,
+    routing: routing,
+    available_workflow_ids: dict.keys(workflow_dags),
+    dispatch_enabled: dispatch_enabled,
+    operator_paused: operator_paused,
+    active_issue_ids: active_issue_ids,
+    active_issues: active_issues,
+    reserved_non_issue_slots: reserved_non_issue_slots,
+    workspace_root: workspace_root,
+    now_ms: now_ms,
+    recovery_by_issue: recovery_by_issue,
+    review_lane_preflight: review_lane_preflight_context(
+      config_dir,
+      workflow_dags,
+    ),
+  )
+}
+
+pub fn review_lane_preflight_context(
+  config_dir: String,
+  workflow_dags: dict.Dict(String, workflow_dag.WorkflowDag),
+) -> ReviewLanePreflightContext {
+  ReviewLanePreflightContext(
+    config_dir: config_dir,
+    workflow_dags: workflow_dags,
+    policy: review_lane_preflight_policy.from_env(),
+    override: None,
   )
 }
 
