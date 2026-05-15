@@ -87,6 +87,15 @@ handoff:
       execplan-revision:
         produces_reviewable_artifacts: true
         requires_review: true
+      execplan-v2:
+        produces_reviewable_artifacts: true
+        requires_review: true
+      execplan-revision-v2:
+        produces_reviewable_artifacts: true
+        requires_review: true
+      execplan-implementation-v2:
+        produces_reviewable_artifacts: true
+        requires_review: true
       implementation:
         produces_reviewable_artifacts: true
         requires_review: true
@@ -114,6 +123,9 @@ routing:
     execplan: workflows/execplan.yaml
     execplan-revision: workflows/execplan-revision.yaml
     execplan-implementation: workflows/execplan-implementation.yaml
+    execplan-v2: workflows/execplan-v2.yaml
+    execplan-revision-v2: workflows/execplan-revision-v2.yaml
+    execplan-implementation-v2: workflows/execplan-implementation-v2.yaml
     merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
     github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
     origin-sync: workflows/origin-sync.yaml
@@ -151,7 +163,7 @@ artifact_limits:
 linear_contract:
   enabled: true
   workflow_label_prefix: "workflow:"
-  workflow_labels: [research, implementation, execplan, execplan-revision, execplan-implementation, merge-conflict-resolution]
+  workflow_labels: [research, implementation, execplan, execplan-revision, execplan-implementation, execplan-v2, execplan-revision-v2, execplan-implementation-v2, merge-conflict-resolution]
   support_labels: [needs-workflow, needs-clarification]
   required_states:
     todo: Todo

@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scherzo.local/workflows/schemas/code-change-bundle.v2.schema.json",
+  "title": "Scherzo ExecPlan v2 code change bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "source_bundle",
+    "review_doc",
+    "implementation_pack",
+    "pr",
+    "change",
+    "validation_artifacts",
+    "plan_completion",
+    "review_artifacts"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "artifact_type": { "const": "code_change_bundle" },
+    "source_bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "sha256", "review_doc_sha256", "implementation_pack_sha256"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/artifact_ref" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "review_doc_sha256": { "$ref": "#/$defs/sha256" },
+        "implementation_pack_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "review_doc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/repo_path" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "implementation_pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "sha256"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/artifact_ref" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "pr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "branch", "base_revision", "head_revision"],
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "branch": { "$ref": "#/$defs/non_empty_string" },
+        "base_revision": { "$ref": "#/$defs/non_empty_string" },
+        "head_revision": { "$ref": "#/$defs/non_empty_string" }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["changed_files", "diff"],
+      "properties": {
+        "changed_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "status"],
+            "properties": {
+              "path": { "$ref": "#/$defs/repo_path" },
+              "status": { "$ref": "#/$defs/non_empty_string" }
+            }
+          }
+        },
+        "diff": { "$ref": "#/$defs/retained_artifact" }
+      }
+    },
+    "validation_artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/named_retained_artifact" }
+    },
+    "plan_completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "ref", "sha256"],
+      "properties": {
+        "verdict": { "enum": ["complete", "incomplete", "blocked"] },
+        "ref": { "$ref": "#/$defs/artifact_ref" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "$ref": "#/$defs/bytes" }
+      }
+    },
+    "review_artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/named_retained_artifact" }
+    }
+  },
+  "$defs": {
+    "artifact_ref": {
+      "type": "string",
+      "pattern": "^runs/[^/]+/.+"
+    },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "named_retained_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "ref", "sha256", "bytes"],
+      "properties": {
+        "name": { "$ref": "#/$defs/non_empty_string" },
+        "ref": { "$ref": "#/$defs/artifact_ref" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "$ref": "#/$defs/bytes" }
+      }
+    },
+    "non_empty_string": { "type": "string", "minLength": 1 },
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?![A-Za-z]:[\\\\/])(?!<absolute-local-path>)[^\\u0000]+$"
+    },
+    "retained_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "sha256", "bytes"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/artifact_ref" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "$ref": "#/$defs/bytes" }
+      }
+    },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

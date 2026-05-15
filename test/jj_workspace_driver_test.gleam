@@ -127,7 +127,7 @@ fn write_fake_gh(path: String, log: String) -> Nil {
         <> "printf 'gh: %s\\n' \"$*\" >> "
         <> shell_quote(log)
         <> "\n"
-        <> "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then exit 1; fi\n"
+        <> "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then if [ -n \"${SCHERZO_FAKE_GH_VIEW_URL:-}\" ]; then echo \"$SCHERZO_FAKE_GH_VIEW_URL\"; exit 0; fi; exit 1; fi\n"
         <> "if [ \"$1\" = pr ] && [ \"$2\" = create ]; then echo https://github.com/example/repo/pull/1; exit 0; fi\n"
         <> "exit 1\n",
     )
@@ -680,6 +680,10 @@ pub fn jj_driver_publish_target_branch_allows_stale_local_bookmark_test() {
       "publish-change --kind merge-conflict --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --target-branch feature/pr --target-pr 198 --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #(
+          "SCHERZO_FAKE_GH_VIEW_URL",
+          "https://github.com/example/repo/pull/198",
+        ),
         #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
         #("SCHERZO_PR_REPO", "example/repo"),
       ]),

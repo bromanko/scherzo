@@ -1,0 +1,59 @@
+{
+  "artifact_type": "code_change_bundle",
+  "change": {
+    "changed_files": [
+      {
+        "path": "docs/example.md",
+        "status": "modified"
+      }
+    ],
+    "diff": {
+      "bytes": 47,
+      "ref": "runs/run-2/execplan-v2/code-change/diff.patch",
+      "sha256": "03d60b35e28eedda292f897cf3df901b767016d1d4b5ecbc934ebf2bd8ad78cb"
+    }
+  },
+  "implementation_pack": {
+    "ref": "runs/run-1/outputs/implementation_pack.json",
+    "sha256": "5e3a24e5f6f33f1c79919c31e16ddc5601dcfe4a8b842f118b9d15ca87c4f173"
+  },
+  "plan_completion": {
+    "bytes": 62,
+    "ref": "runs/run-2/execplan-v2/code-change/plan-completion.json",
+    "sha256": "4cd32a5c9e69d8e96d2fc76382fe3dc73c1cb34f92bb43509efa7d9bfc27f0bb",
+    "verdict": "complete"
+  },
+  "pr": {
+    "base_revision": "base-fixture",
+    "branch": "impl/liv-315",
+    "head_revision": "head-fixture",
+    "url": "https://github.com/living-systems/scherzo/pull/315"
+  },
+  "review_artifacts": [
+    {
+      "bytes": 43,
+      "name": "final-review",
+      "ref": "runs/run-2/execplan-v2/code-change/review/final-review.json",
+      "sha256": "901c63d7d00aa05be77f85b488662475ee888b1ce79414f4d60f515898faa0df"
+    }
+  ],
+  "review_doc": {
+    "path": "test/fixtures/execplan_v2/review-doc.valid.md",
+    "sha256": "482a8c94bd2d5e5ba027ef6dc77799e595d614aebd59ded45ad152375aae6e26"
+  },
+  "schema_version": 2,
+  "source_bundle": {
+    "implementation_pack_sha256": "5e3a24e5f6f33f1c79919c31e16ddc5601dcfe4a8b842f118b9d15ca87c4f173",
+    "ref": "runs/run-1/outputs/exec_plan_bundle.json",
+    "review_doc_sha256": "482a8c94bd2d5e5ba027ef6dc77799e595d614aebd59ded45ad152375aae6e26",
+    "sha256": "855538539e74d07e6c269c2637389a4d104d35db22f7f56ae56db3281a633cac"
+  },
+  "validation_artifacts": [
+    {
+      "bytes": 45,
+      "name": "selfci",
+      "ref": "runs/run-2/execplan-v2/code-change/validation/selfci.json",
+      "sha256": "b81b7f38f5afb508039afea118728dee0b5a846e1cd28fa26a67ed13e483071a"
+    }
+  ]
+}

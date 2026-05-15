@@ -1,0 +1,51 @@
+{
+  "artifact_type": "implementation_pack",
+  "conflict_policy": "If review doc intent and implementation pack mechanics conflict, stop and request workflow:execplan-revision-v2.",
+  "derived_from": {
+    "review_doc_path": "test/fixtures/execplan_v2/review-doc.valid.md",
+    "review_doc_sha256": "482a8c94bd2d5e5ba027ef6dc77799e595d614aebd59ded45ad152375aae6e26"
+  },
+  "pack_id": "fixture-pack-liv-314",
+  "provenance": {
+    "created_at": "2026-05-15T00:00:00Z",
+    "run_id": "run-1",
+    "step_id": "materialize_pack",
+    "workflow_id": "execplan-v2"
+  },
+  "review_doc": {
+    "bytes": 1770,
+    "path": "test/fixtures/execplan_v2/review-doc.valid.md",
+    "sha256": "482a8c94bd2d5e5ba027ef6dc77799e595d614aebd59ded45ad152375aae6e26"
+  },
+  "schema_version": 2,
+  "sections": {
+    "artifacts_and_notes": "The implementation pack is retained under runs/run-1/outputs/implementation_pack.json in the fixture artifact root.",
+    "concrete_steps": [
+      {
+        "commands": [
+          "scripts/scherzo-execplan-v2 validate-review-doc --path test/fixtures/execplan_v2/review-doc.valid.md"
+        ],
+        "expected_result": "The command exits zero.",
+        "files": [
+          "test/fixtures/execplan_v2/review-doc.valid.md"
+        ],
+        "instructions": "Run the v2 helper validate-review-doc command against the fixture file.",
+        "title": "Validate the review document"
+      }
+    ],
+    "interfaces_and_dependencies": "The fixture depends on scripts/scherzo-execplan-v2 and the v2 JSON schemas under .scherzo/workflows/schemas/.",
+    "repo_context": "The fixture lives under test/fixtures/execplan_v2 and exercises helper validation only.",
+    "testing_and_falsifiability": "The bundle is falsified if any linked hash does not match the referenced bytes.",
+    "verified_facts": [
+      {
+        "evidence": "test/fixtures/execplan_v2/review-doc.valid.md",
+        "fact": "The review document is repository-relative Markdown."
+      }
+    ]
+  },
+  "source_issue": {
+    "identifier": "LIV-314",
+    "title": "Fixture v2 ExecPlan bundle",
+    "url": "https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle"
+  }
+}
