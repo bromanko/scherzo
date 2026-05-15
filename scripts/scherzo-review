@@ -1776,6 +1776,7 @@ def validate_locations(value: dict[str, Any], field: str) -> None:
         if not isinstance(location, dict):
             raise ReviewError(f"{field} items must be objects")
         validate_string_field(location, "path")
+        validate_location_line_order(location, field=field)
 
 
 def validate_safe_locations(value: dict[str, Any], field: str) -> None:
@@ -1784,6 +1785,14 @@ def validate_safe_locations(value: dict[str, Any], field: str) -> None:
         if not isinstance(location, dict):
             raise ReviewError(f"{field} items must be objects")
         validate_repo_relative_path(location.get("path"), field=f"{field}.path")
+        validate_location_line_order(location, field=field)
+
+
+def validate_location_line_order(location: dict[str, Any], *, field: str) -> None:
+    start_line = location.get("start_line")
+    end_line = location.get("end_line")
+    if isinstance(start_line, int) and isinstance(end_line, int) and start_line > end_line:
+        raise ReviewError(f"{field} start_line must not be greater than end_line")
 
 
 def validate_artifact_ref(value: Any, *, field: str) -> None:
@@ -1803,6 +1812,10 @@ def validate_execution_status_shape(value: Any, *, field: str) -> None:
 def validate_review_finding_core(value: dict[str, Any]) -> None:
     for field in ["id", "category", "severity", "evidence_type", "summary", "details", "suggested_fix"]:
         validate_string_field(value, field)
+    if value.get("severity") not in SEVERITY_RANK:
+        raise ReviewError("review finding severity must be info, low, medium, high, or critical")
+    if value.get("category") not in CATEGORY_ORDER:
+        raise ReviewError("review finding category must be a documented canonical category")
     validate_bool_field(value, "verified")
     validate_bool_field(value, "blocking")
     validate_locations(value, "locations")
@@ -1811,6 +1824,10 @@ def validate_review_finding_core(value: dict[str, Any]) -> None:
 def validate_review_note_core(value: dict[str, Any]) -> None:
     for field in ["id", "kind", "category", "severity", "summary", "details", "suggested_action"]:
         validate_string_field(value, field)
+    if value.get("severity") not in SEVERITY_RANK:
+        raise ReviewError("review note severity must be info, low, medium, high, or critical")
+    if value.get("category") not in CATEGORY_ORDER:
+        raise ReviewError("review note category must be a documented canonical category")
     validate_locations(value, "locations")
 
 
@@ -2043,6 +2060,8 @@ def validate_review_lane_draft(value: dict[str, Any]) -> None:
             raise ReviewError("draft_findings items must be objects")
         for field in ["draft_finding_id", "title", "claim", "severity"]:
             validate_string_field(finding, field, display_field=f"draft_findings[].{field}")
+        if finding.get("severity") not in SEVERITY_RANK:
+            raise ReviewError("draft finding severity must be info, low, medium, high, or critical")
         validate_bool_field(finding, "proposed_blocking", display_field="draft_findings[].proposed_blocking")
         finding_id = str(finding.get("draft_finding_id"))
         if finding_id in finding_ids:
@@ -3457,9 +3476,10 @@ def failed_native_lane_result(
         "lane": lane,
         "execution_status": {
             "state": "failed",
+            "reason": "review_infrastructure_failure",
             "started_at_utc": timestamp,
             "completed_at_utc": timestamp,
-            "summary": f"{lane['name']} failed before producing a valid ReviewLaneDraft.",
+            "summary": f"review infrastructure failure: {lane['name']} failed before producing a valid ReviewLaneDraft.",
             "error": message,
         },
         "agent_backend": "native",
@@ -5367,6 +5387,7 @@ def lane_status_from_result(path: Path, result: dict[str, Any]) -> dict[str, Any
         "lane_id": lane.get("id", "unknown"),
         "lane_name": lane.get("name", "unknown"),
         "state": status.get("state", "unknown"),
+        "reason": status.get("reason"),
         "summary": status.get("summary", "no summary"),
         "error": status.get("error"),
         "finding_count": len(findings),
@@ -5399,10 +5420,12 @@ def build_review_synthesis(
         lane_statuses.append(lane_status)
         lane_id = str(lane_status.get("lane_id", "unknown"))
         if lane_status.get("state") != "succeeded":
+            reason = lane_status.get("reason")
             execution_issues.append({
-                "kind": "lane_failure",
+                "kind": "review_infrastructure_failure" if reason == "review_infrastructure_failure" else "lane_failure",
                 "lane_id": lane_id,
                 "path": str(lane_path),
+                "reason": reason,
                 "summary": lane_status.get("summary"),
                 "error": lane_status.get("error"),
             })
@@ -5729,6 +5752,42 @@ def synthesis_log_text(
     return "\n".join(lines) + "\n"
 
 
+def all_lanes_review_infrastructure_failures(lane_results: list[tuple[Path, dict[str, Any]]]) -> bool:
+    if not lane_results:
+        return False
+    for _, lane_result in lane_results:
+        status = lane_result.get("execution_status")
+        if not isinstance(status, dict):
+            return False
+        if status.get("state") != "failed" or status.get("reason") != "review_infrastructure_failure":
+            return False
+    return True
+
+
+def review_infrastructure_failure_diagnostic(lane_results: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
+    lanes = []
+    for lane_path, lane_result in lane_results:
+        lane = lane_result.get("lane", {}) if isinstance(lane_result.get("lane"), dict) else {}
+        status = lane_result.get("execution_status", {}) if isinstance(lane_result.get("execution_status"), dict) else {}
+        lanes.append({
+            "lane_id": lane.get("id", "unknown"),
+            "lane_result_path": str(lane_path),
+            "summary": status.get("summary"),
+            "error": status.get("error"),
+            "artifacts": lane_result.get("artifacts", []),
+        })
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_infrastructure_failure",
+        "generated_at_utc": now_utc(),
+        "code": "review_infrastructure_all_lanes_failed",
+        "summary": "all native review lanes failed with review infrastructure failures",
+        "lane_ids": [str(lane.get("lane_id", "unknown")) for lane in lanes],
+        "lanes": lanes,
+        "remote_mutations": "none",
+    }
+
+
 def synthesize_command(args: argparse.Namespace) -> None:
     started_at = now_utc()
     output_dir = Path(args.output_dir)
@@ -5757,6 +5816,45 @@ def synthesize_command(args: argparse.Namespace) -> None:
     synthesis_path = output_dir / "review-synthesis.v1.json"
     write_json(synthesis_path, synthesis)
 
+    completed_at = now_utc()
+    log_path = output_dir / "review-synthesis.log"
+    log_path.write_text(synthesis_log_text(
+        started_at=started_at,
+        completed_at=completed_at,
+        brief_path=brief_path,
+        lane_paths=lane_paths,
+        synthesis=synthesis,
+    ))
+
+    if all_lanes_review_infrastructure_failures(lane_results):
+        diagnostic = review_infrastructure_failure_diagnostic(lane_results)
+        diagnostic_path = output_dir / "review-infrastructure-failure.v1.json"
+        write_json(diagnostic_path, diagnostic)
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "artifact_type": "review_synthesis_manifest",
+            "generated_at_utc": completed_at,
+            "remote_mutations": "none",
+            "artifacts": [
+                {"path": synthesis_path.name, "sha256": sha256_file(synthesis_path)},
+                {"path": diagnostic_path.name, "sha256": sha256_file(diagnostic_path)},
+                {"path": log_path.name, "sha256": sha256_file(log_path)},
+            ],
+        }
+        manifest_path = output_dir / "manifest.v1.json"
+        write_json(manifest_path, manifest)
+        counts = synthesis.get("finding_counts", {})
+        print("REVIEW_SYNTHESIS=review_infrastructure_failure")
+        print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
+        print(f"REVIEW_ARTIFACT_DIR={output_dir}")
+        print(f"REVIEW_SYNTHESIS_PATH={synthesis_path}")
+        print(f"REVIEW_INFRASTRUCTURE_FAILURE_PATH={diagnostic_path}")
+        print(f"REVIEW_SYNTHESIS_LOG_PATH={log_path}")
+        print(f"REVIEW_FINDINGS={counts.get('total', 0)}")
+        print(f"REVIEW_LANE_FAILURES={counts.get('lane_failed', 0)}")
+        print("REVIEW_REMOTE_MUTATIONS=none")
+        sys.exit(42)
+
     final_review = build_final_review_artifact(
         brief_path=brief_path,
         brief=brief,
@@ -5767,16 +5865,6 @@ def synthesize_command(args: argparse.Namespace) -> None:
     validate_final_review(final_review)
     final_path = output_dir / "final-review.v1.json"
     write_json(final_path, final_review)
-
-    completed_at = now_utc()
-    log_path = output_dir / "review-synthesis.log"
-    log_path.write_text(synthesis_log_text(
-        started_at=started_at,
-        completed_at=completed_at,
-        brief_path=brief_path,
-        lane_paths=lane_paths,
-        synthesis=synthesis,
-    ))
 
     manifest = {
         "schema_version": SCHEMA_VERSION,

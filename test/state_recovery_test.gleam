@@ -8,6 +8,7 @@ import scherzo/orchestrator/core
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/session/event as session_event
 import scherzo/session/recovery as session_recovery
+import scherzo/state/outbox
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
@@ -521,6 +522,98 @@ pub fn linear_command_ack_outbox_is_replayed_test() {
     ),
   ] = plan.outbox_to_replay
   assert plan.records_to_append == []
+}
+
+pub fn remote_command_ack_outbox_is_replayed_test() {
+  let payload =
+    outbox.remote_command_ack_payload(
+      "linear",
+      "comment-1",
+      "issue-1",
+      "ack",
+      [],
+    )
+  let projection =
+    projection.fold([
+      record.with_id(
+        "outbox-remote-ack",
+        1000,
+        record.OutboxPendingV2(
+          outbox_id: "comment-1",
+          issue_id: "issue-1",
+          outbox_kind: "remote_command_ack",
+          dedupe_key: "remote_command_ack:comment-1",
+          payload_json: payload,
+        ),
+      ),
+    ])
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
+
+  let assert [
+    recovery.OutboxReplay(
+      outbox_id: "comment-1",
+      issue_id: "issue-1",
+      outbox_kind: "remote_command_ack",
+      dedupe_key: "remote_command_ack:comment-1",
+      payload_json: replay_payload,
+    ),
+  ] = plan.outbox_to_replay
+  assert replay_payload == payload
+  assert plan.records_to_append == []
+}
+
+pub fn acked_remote_command_suppresses_legacy_linear_ack_outbox_replay_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "outbox-ack",
+        1000,
+        record.OutboxPendingV2(
+          outbox_id: "comment-1",
+          issue_id: "issue-1",
+          outbox_kind: "linear_command_ack",
+          dedupe_key: "linear_command_ack:comment-1",
+          payload_json: "{\"type\":\"linear_command_ack\",\"source_comment_id\":\"comment-1\",\"body\":\"ack\"}",
+        ),
+      ),
+      record.with_id(
+        "remote-acked",
+        1001,
+        record.RemoteCommandAcked(
+          backend_kind: "linear",
+          event_id: "comment-1",
+          task_remote_id: "issue-1",
+        ),
+      ),
+    ])
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
+
+  assert plan.outbox_to_replay == []
+  assert plan.records_to_append == []
+}
+
+pub fn mixed_issue_and_task_workflow_records_recover_one_task_ref_test() {
+  let old_started =
+    decode_ledger_record(legacy_ledger_fixtures.workflow_run_started_v2(
+      "old-1",
+      1,
+    ))
+  let new_finished =
+    decode_ledger_record(
+      legacy_ledger_fixtures.workflow_run_finished_with_task_v2("new-2", 4),
+    )
+  let folded = projection.fold([old_started, new_finished])
+
+  let assert Ok(task_ref) = projection.workflow_task_ref(folded, "run-1")
+  assert task_ref
+    == record.TaskRefFields(
+      task_backend_kind: "linear",
+      task_remote_id: "issue-1",
+      task_key: Some("LIV-266"),
+      task_url: Some("https://linear.app/living-systems/issue/LIV-266"),
+    )
 }
 
 pub fn old_workflow_and_linear_command_ledger_records_remain_recoverable_test() {

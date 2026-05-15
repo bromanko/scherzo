@@ -82,6 +82,7 @@ pub type WorkflowRecoveryCandidate {
     workflow_fingerprint: String,
     issue_id: String,
     issue_identifier: String,
+    task_ref: record.TaskRefFields,
     issue_fingerprint: String,
     observed_updated_at_ms: Int,
     run_root: String,
@@ -189,6 +190,12 @@ pub fn workflow_candidates(
           workflow_fingerprint: workflow_fingerprint,
           issue_id: issue_id,
           issue_identifier: issue_identifier,
+          task_ref: workflow_task_ref_or_legacy(
+            projection,
+            run_id,
+            issue_id,
+            issue_identifier,
+          ),
           issue_fingerprint: issue_fingerprint,
           observed_updated_at_ms: observed_updated_at_ms,
           run_root: run_root,
@@ -327,6 +334,19 @@ pub fn describe_error(error: RecoveryError) -> String {
     UnsafeWorkflowRecovery(reason) -> "unsafe_workflow_recovery:" <> reason
     WorkspaceRecoveryFailed(reason) -> "workspace_recovery_failed:" <> reason
   }
+}
+
+fn workflow_task_ref_or_legacy(
+  projection: projection.Projection,
+  run_id: String,
+  issue_id: String,
+  issue_identifier: String,
+) -> record.TaskRefFields {
+  projection.workflow_task_ref(projection, run_id)
+  |> result.unwrap(record.legacy_linear_task_ref_fields(
+    issue_id,
+    issue_identifier,
+  ))
 }
 
 fn attempts_for_run(
@@ -1565,7 +1585,7 @@ fn replayable_outbox(projection: projection.Projection) -> OutboxRecovery {
     |> list.sort(by: compare_outbox_entries_by_time)
     |> list.fold(
       OutboxRecovery(outbox_to_replay: [], record_bodies: [], warnings: []),
-      recover_outbox_entry,
+      fn(recovery, entry) { recover_outbox_entry(recovery, projection, entry) },
     )
 
   OutboxRecovery(
@@ -1577,6 +1597,7 @@ fn replayable_outbox(projection: projection.Projection) -> OutboxRecovery {
 
 fn recover_outbox_entry(
   recovery: OutboxRecovery,
+  projection: projection.Projection,
   entry: #(String, projection.OutboxStatus),
 ) -> OutboxRecovery {
   let #(outbox_id, status) = entry
@@ -1616,20 +1637,61 @@ fn recover_outbox_entry(
                 error,
               )
             Ok(Nil) ->
-              OutboxRecovery(..recovery, outbox_to_replay: [
-                OutboxReplay(
-                  outbox_id,
-                  issue_id,
-                  outbox_kind,
-                  dedupe_key,
-                  payload_json,
-                ),
-                ..recovery.outbox_to_replay
-              ])
+              case
+                command_ack_already_recorded(projection, outbox_id, payload)
+              {
+                True -> recovery
+                False ->
+                  OutboxRecovery(..recovery, outbox_to_replay: [
+                    OutboxReplay(
+                      outbox_id,
+                      issue_id,
+                      outbox_kind,
+                      dedupe_key,
+                      payload_json,
+                    ),
+                    ..recovery.outbox_to_replay
+                  ])
+              }
           }
       }
     projection.OutboxCompleted(_, _, _) | projection.OutboxFailed(_, _, _, _) ->
       recovery
+  }
+}
+
+fn command_ack_already_recorded(
+  projection: projection.Projection,
+  outbox_id: String,
+  payload: outbox.Payload,
+) -> Bool {
+  case command_ack_event_id(outbox_id, payload) {
+    Some(event_id) ->
+      command_receipt_is_acked(projection.command_receipt(projection, event_id))
+    None -> False
+  }
+}
+
+fn command_ack_event_id(
+  outbox_id: String,
+  payload: outbox.Payload,
+) -> Option(String) {
+  case payload.kind {
+    "linear_command_ack" ->
+      case payload.source_comment_id {
+        Some(source_comment_id) -> Some(source_comment_id)
+        None -> Some(outbox_id)
+      }
+    "remote_command_ack" -> payload.event_id
+    _ -> None
+  }
+}
+
+fn command_receipt_is_acked(receipt: projection.CommandReceiptState) -> Bool {
+  case receipt {
+    projection.CommandReceiptCompleted(acked_at_ms: Some(_), ..) -> True
+    projection.CommandReceiptAcked(..) -> True
+    _ -> False
   }
 }
 

@@ -1,6 +1,6 @@
 import gleam/dynamic/decode
 import gleam/json
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import scherzo/log
 
 pub const max_payload_chars = 500
@@ -34,13 +34,37 @@ pub fn linear_command_ack_payload(
   |> json.to_string
 }
 
+pub fn remote_command_ack_payload(
+  backend_kind: String,
+  event_id: String,
+  task_remote_id: String,
+  body: String,
+  secrets: List(String),
+) -> String {
+  json.object([
+    #("type", json.string("remote_command_ack")),
+    #("backend_kind", json.string(backend_kind)),
+    #("event_id", json.string(event_id)),
+    #("task_remote_id", json.string(task_remote_id)),
+    #("body", json.string(safe_body(body, secrets))),
+  ])
+  |> json.to_string
+}
+
 pub fn safe_body(body: String, secrets: List(String)) -> String {
   log.redact("outbox_payload_body", body, secrets)
   |> log.truncate(max_payload_chars)
 }
 
 pub type Payload {
-  Payload(kind: String, body: String, source_comment_id: Option(String))
+  Payload(
+    kind: String,
+    body: String,
+    source_comment_id: Option(String),
+    backend_kind: Option(String),
+    event_id: Option(String),
+    task_remote_id: Option(String),
+  )
 }
 
 pub type ReplayError {
@@ -63,7 +87,9 @@ pub fn recovery_replay_error(
 ) -> Result(Nil, ReplayError) {
   case outbox_kind, payload_kind {
     "linear_command_ack", "linear_command_ack" -> Ok(Nil)
+    "remote_command_ack", "remote_command_ack" -> Ok(Nil)
     "linear_command_ack", other -> Error(UnsupportedOutboxPayloadKind(other))
+    "remote_command_ack", other -> Error(UnsupportedOutboxPayloadKind(other))
     other, _ -> Error(UnsupportedOutboxKind(other))
   }
 }
@@ -96,5 +122,47 @@ fn payload_decoder() -> decode.Decoder(Payload) {
     None,
     decode.optional(decode.string),
   )
-  decode.success(Payload(kind, body, source_comment_id))
+  use backend_kind <- decode.optional_field(
+    "backend_kind",
+    None,
+    decode.optional(decode.string),
+  )
+  use event_id <- decode.optional_field(
+    "event_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use task_remote_id <- decode.optional_field(
+    "task_remote_id",
+    None,
+    decode.optional(decode.string),
+  )
+  case kind {
+    "remote_command_ack" ->
+      case backend_kind, event_id, task_remote_id {
+        Some(_), Some(_), Some(_) ->
+          decode.success(Payload(
+            kind,
+            body,
+            source_comment_id,
+            backend_kind,
+            event_id,
+            task_remote_id,
+          ))
+        _, _, _ ->
+          decode.failure(
+            Payload(kind, body, source_comment_id, None, None, None),
+            expected: "remote_command_ack payload fields",
+          )
+      }
+    _ ->
+      decode.success(Payload(
+        kind,
+        body,
+        source_comment_id,
+        backend_kind,
+        event_id,
+        task_remote_id,
+      ))
+  }
 }

@@ -7,7 +7,7 @@ import scherzo/structured_output_source
 import scherzo/workflow_dag
 import simplifile
 
-const submit_structured_output_tool = "submit_structured_output"
+const submit_structured_output_tool = "submit_review_lane_draft"
 
 fn review_native_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(contents) =
@@ -42,13 +42,12 @@ fn lane_spec(
 fn lane_schema_path(step_id: String) -> String {
   case step_id {
     "lane_test_quality" ->
-      ".scherzo/workflows/schemas/review-lane-draft.test-quality.v1.schema.json"
+      "docs/schemas/provider/review-lane-draft.test-quality.v1.schema.json"
     "lane_idioms_maintainability" ->
-      ".scherzo/workflows/schemas/review-lane-draft.idioms-maintainability.v1.schema.json"
+      "docs/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json"
     "lane_security_performance" ->
-      ".scherzo/workflows/schemas/review-lane-draft.security-performance.v1.schema.json"
-    _ ->
-      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json"
+      "docs/schemas/provider/review-lane-draft.security-performance.v1.schema.json"
+    _ -> "docs/schemas/provider/review-lane-draft.correctness.v1.schema.json"
   }
 }
 
@@ -70,22 +69,9 @@ fn expected_review_lane_validators(
 ) -> List(workflow_dag.StructuredOutputValidator) {
   [
     workflow_dag.JsonSchemaValidator(
-      name: "review_lane_draft_schema",
+      name: "review_lane_submission_shape",
       path: schema_path,
       draft: Some("2020-12"),
-    ),
-    workflow_dag.CommandValidator(
-      name: "review_lane_semantics",
-      argv: [
-        "python3",
-        "scripts/scherzo-review",
-        "validate-structured-output",
-        "--validator",
-        "review_lane_draft",
-      ],
-      timeout_ms: 30_000,
-      working_directory: workflow_dag.ValidatorInRepository,
-      env: [],
     ),
   ]
 }
@@ -159,7 +145,7 @@ fn assert_list_contains(values: List(String), expected: String) -> Nil {
 }
 
 fn valid_review_lane_draft_json() -> String {
-  "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"generated_at_utc\":\"2026-05-11T00:00:00Z\",\"producer\":{\"name\":\"review-native-workflow-test\",\"version\":\"1\",\"mode\":\"native\"},\"lane\":{\"id\":\"correctness\",\"name\":\"Correctness reviewer\",\"category\":\"correctness\",\"version\":\"1\"},\"input_refs\":[],\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"inspected_diff\":true,\"used_repository_relative_paths\":true},\"remote_mutations\":\"none\"}"
+  "{\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"summary\":\"Inspected the diff and found no concrete findings.\"}}"
 }
 
 fn workflow_schema_files() -> List(String) {
@@ -173,10 +159,18 @@ fn workflow_schema_files() -> List(String) {
   ]
 }
 
-fn review_workflow_paths() -> List(String) {
+fn provider_schema_files() -> List(String) {
+  [
+    "review-lane-draft.correctness.v1.schema.json",
+    "review-lane-draft.test-quality.v1.schema.json",
+    "review-lane-draft.idioms-maintainability.v1.schema.json",
+    "review-lane-draft.security-performance.v1.schema.json",
+  ]
+}
+
+fn provider_review_workflow_paths() -> List(String) {
   [
     ".scherzo/workflows/review-native.yml",
-    ".scherzo/workflows/review-native-contract-spike.yml",
     ".scherzo/workflows/implementation.yaml",
     ".scherzo/workflows/execplan-implementation.yaml",
   ]
@@ -212,8 +206,8 @@ fn validate_result(
 }
 
 pub fn review_schema_files_are_packaged_with_workflows_test() {
-  let assert Ok(False) = simplifile.is_directory("docs/schemas")
   let assert Ok(True) = simplifile.is_directory(".scherzo/workflows/schemas")
+  let assert Ok(True) = simplifile.is_directory("docs/schemas/provider")
 
   list.each(workflow_schema_files(), fn(name) {
     let assert Ok(True) =
@@ -221,14 +215,27 @@ pub fn review_schema_files_are_packaged_with_workflows_test() {
     Nil
   })
 
-  list.each(review_workflow_paths(), fn(path) {
-    let assert Ok(contents) = simplifile.read(path)
-    assert_contains(contents, ".scherzo/workflows/schemas/")
-    assert_not_contains(contents, "docs/schemas/")
+  list.each(provider_schema_files(), fn(name) {
+    let assert Ok(True) = simplifile.is_file("docs/schemas/provider/" <> name)
+    Nil
   })
+
+  list.each(provider_review_workflow_paths(), fn(path) {
+    let assert Ok(contents) = simplifile.read(path)
+    assert_contains(contents, "submit_review_lane_draft")
+    assert_contains(contents, "docs/schemas/provider/")
+    assert_not_contains(contents, "docs/schemas/review-lane-draft")
+  })
+
+  let assert Ok(contract_spike) =
+    simplifile.read(".scherzo/workflows/review-native-contract-spike.yml")
+  assert_contains(
+    contract_spike,
+    ".scherzo/workflows/schemas/review-lane-draft.v1.schema.json",
+  )
 }
 
-pub fn review_native_lane_steps_use_submit_structured_output_tool_source_test() {
+pub fn review_native_lane_steps_use_submit_review_lane_draft_tool_source_test() {
   let dag = review_native_dag()
 
   assert_review_tool_source(
@@ -253,7 +260,7 @@ pub fn review_native_lane_steps_use_isolated_derived_workspaces_test() {
   assert_native_review_lane_workspaces_are_isolated(review_native_dag())
 }
 
-pub fn review_native_lane_steps_use_json_schema_plus_semantic_validator_test() {
+pub fn review_native_lane_steps_use_provider_schema_shape_validator_test() {
   let review_dag = review_native_dag()
   assert_review_lane_validators(
     lane_spec(review_dag, "lane_correctness"),
@@ -300,8 +307,8 @@ pub fn native_review_prompts_and_tool_guidance_use_relative_input_ref_examples_t
   ]
   list.each(prompt_paths, fn(path) {
     let assert Ok(prompt) = simplifile.read(path)
-    assert_contains(prompt, "artifacts/review/prepare_review/diff.patch")
-    assert_contains(prompt, "never `$SCHERZO_RUN_ROOT/...` or `/Users/...`")
+    assert_contains(prompt, "draft_findings")
+    assert_contains(prompt, "Do not include runner-owned metadata fields")
   })
 
   let assert Ok(extension) =
@@ -467,5 +474,5 @@ pub fn review_native_rejects_final_response_only_and_accepts_tool_submission_tes
 
   let assert Ok(structured_output.StructuredOutputPresent(payload)) =
     validate_result(spec, tool_call_result)
-  assert_contains(payload, "review_lane_draft")
+  assert_contains(payload, "draft_findings")
 }

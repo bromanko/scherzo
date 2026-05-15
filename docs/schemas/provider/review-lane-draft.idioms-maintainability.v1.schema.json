@@ -1,0 +1,145 @@
+{
+  "type": "object",
+  "description": "Provider-facing idioms and maintainability review lane submission. Scherzo injects runner-owned ReviewLaneDraft metadata after tool capture.",
+  "required": [
+    "draft_findings",
+    "review_notes",
+    "evidence_requests",
+    "self_check"
+  ],
+  "properties": {
+    "draft_findings": {
+      "type": "array",
+      "description": "Model-owned proposed findings for this lane.",
+      "items": {
+        "type": "object",
+        "required": [
+          "draft_finding_id",
+          "title",
+          "claim",
+          "severity",
+          "proposed_blocking",
+          "locations",
+          "evidence_request_ids"
+        ],
+        "properties": {
+          "draft_finding_id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "claim": { "type": "string", "minLength": 1 },
+          "category": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "minLength": 1 },
+          "proposed_blocking": { "type": "boolean" },
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer", "minimum": 1 },
+                "symbol": { "type": "string" },
+                "diff_hunk": { "type": "string" },
+                "url": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "evidence_request_ids": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "suggested_fix": { "type": "string" },
+          "details": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "review_notes": {
+      "type": "array",
+      "description": "Model-owned notes that are not concrete findings.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "category",
+          "severity",
+          "locations",
+          "summary",
+          "details",
+          "suggested_action"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "minLength": 1 },
+          "category": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "minLength": 1 },
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "start_line": { "type": "integer", "minimum": 1 },
+                "end_line": { "type": "integer", "minimum": 1 },
+                "symbol": { "type": "string" },
+                "diff_hunk": { "type": "string" },
+                "url": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "summary": { "type": "string", "minLength": 1 },
+          "details": { "type": "string", "minLength": 1 },
+          "suggested_action": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "evidence_requests": {
+      "type": "array",
+      "description": "Model-owned evidence checks linked to draft findings.",
+      "items": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "draft_finding_id",
+          "evidence_key",
+          "claim",
+          "expected_observation",
+          "target"
+        ],
+        "properties": {
+          "request_id": { "type": "string", "minLength": 1 },
+          "draft_finding_id": { "type": "string", "minLength": 1 },
+          "evidence_key": { "type": "string", "minLength": 1 },
+          "claim": { "type": "string", "minLength": 1 },
+          "expected_observation": { "type": "string", "minLength": 1 },
+          "target": {
+            "type": "object",
+            "properties": {
+              "test_name": { "type": "string", "minLength": 1 },
+              "fixture_id": { "type": "string", "minLength": 1 },
+              "artifact_path": { "type": "string", "minLength": 1 },
+              "changed_file_path": { "type": "string", "minLength": 1 },
+              "static_scan_rule": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "self_check": {
+      "type": "object",
+      "required": ["summary"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

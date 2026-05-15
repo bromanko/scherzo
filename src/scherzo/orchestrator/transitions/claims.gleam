@@ -1,13 +1,20 @@
 import gleam/dict
 import gleam/int
-import gleam/option
+import gleam/option.{None, Some}
+import gleam/string
 import scherzo/error
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/reason as orchestrator_reason
+import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/helpers
+import scherzo/path as scherzo_path
+import scherzo/review_lane_preflight
+import scherzo/review_lane_preflight_gate
 import scherzo/state/ledger
 import scherzo/state/record
+import scherzo/structured_output
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workspace
 
@@ -42,59 +49,192 @@ pub fn begin_for_issue(
       ])
     }
     Ok(workflow_id) ->
-      case workspace.workspace_path(context.workspace_root, issue.identifier) {
-        Error(err) -> {
-          let outcome = dispatch(remaining_candidates, state, context)
-          transition_types.Outcome(state: outcome.state, effects: [
-            effects_types.Log("warn", "dispatch_workspace_path_failed", [
-              #("issue_id", issue.id),
-              #("error", error.workspace_code(err)),
-            ]),
-            ..outcome.effects
-          ])
-        }
-        Ok(#(_, workspace_path)) -> {
-          let sequence = state.next_session_sequence
-          let run_id = helpers.make_run_id(issue, context.now_ms, sequence)
-          let session_id =
-            helpers.make_session_id(issue.identifier, run_id, sequence)
-          let recovery =
-            dict.get(context.recovery_by_issue, issue.id)
-            |> option.from_result
-          let pending =
-            transition_types.PendingClaim(
-              issue_id: issue.id,
-              run_id: run_id,
-              session_id: session_id,
-              workspace_path: workspace_path,
-              workflow_id: workflow_id,
-              command_route_id: "worker:"
-                <> run_id
-                <> ":"
-                <> int.to_string(sequence),
-              route_label: issue.identifier,
-              issue: issue,
-              recovery: recovery,
-              remaining_candidates: remaining_candidates,
-              dispatch_context: context,
-            )
-          transition_types.Outcome(
-            state: transition_types.State(
-              ..state,
-              pending_claims: dict.insert(
-                state.pending_claims,
-                issue.id,
-                pending,
-              ),
-              next_session_sequence: sequence + 1,
-            ),
-            effects: [
-              effects_types.ReserveSessionSequence(sequence),
-              effects_types.ClaimIssue(issue, workspace_path, run_id),
-            ],
+      case review_lane_claim_gate(context, workflow_id) {
+        review_lane_preflight_gate.ClaimBlocked(code, message, park_on_failure) ->
+          block_for_review_lane_preflight(
+            state,
+            issue,
+            remaining_candidates,
+            context,
+            callbacks,
+            workflow_id,
+            code,
+            message,
+            park_on_failure,
           )
-        }
+        review_lane_preflight_gate.ClaimAllowed ->
+          case
+            workspace.workspace_path(context.workspace_root, issue.identifier)
+          {
+            Error(err) -> {
+              let outcome = dispatch(remaining_candidates, state, context)
+              transition_types.Outcome(state: outcome.state, effects: [
+                effects_types.Log("warn", "dispatch_workspace_path_failed", [
+                  #("issue_id", issue.id),
+                  #("error", error.workspace_code(err)),
+                ]),
+                ..outcome.effects
+              ])
+            }
+            Ok(#(_, workspace_path)) -> {
+              let sequence = state.next_session_sequence
+              let run_id = helpers.make_run_id(issue, context.now_ms, sequence)
+              let session_id =
+                helpers.make_session_id(issue.identifier, run_id, sequence)
+              let recovery =
+                dict.get(context.recovery_by_issue, issue.id)
+                |> option.from_result
+              let pending =
+                transition_types.PendingClaim(
+                  issue_id: issue.id,
+                  run_id: run_id,
+                  session_id: session_id,
+                  workspace_path: workspace_path,
+                  workflow_id: workflow_id,
+                  command_route_id: "worker:"
+                    <> run_id
+                    <> ":"
+                    <> int.to_string(sequence),
+                  route_label: issue.identifier,
+                  issue: issue,
+                  recovery: recovery,
+                  remaining_candidates: remaining_candidates,
+                  dispatch_context: context,
+                )
+              transition_types.Outcome(
+                state: transition_types.State(
+                  ..state,
+                  pending_claims: dict.insert(
+                    state.pending_claims,
+                    issue.id,
+                    pending,
+                  ),
+                  next_session_sequence: sequence + 1,
+                ),
+                effects: [
+                  effects_types.ReserveSessionSequence(sequence),
+                  effects_types.ClaimIssue(issue, workspace_path, run_id),
+                ],
+              )
+            }
+          }
       }
+  }
+}
+
+fn review_lane_claim_gate(
+  context: transition_types.DispatchContext,
+  workflow_id: String,
+) -> review_lane_preflight_gate.ClaimGateResult {
+  let preflight = context.review_lane_preflight
+  let result = case preflight.override {
+    Some(result) -> result
+    None ->
+      case dict.get(preflight.workflow_dags, workflow_id) {
+        Ok(dag) ->
+          review_lane_preflight.for_workflow(
+            workflow_id,
+            dag,
+            structured_output.validator_repo_root(preflight.config_dir, "."),
+            workflow_path_for_preflight(context, workflow_id),
+            scherzo_path.join(context.workspace_root, ".scherzo-state"),
+            context.effective,
+            preflight.policy,
+            context.now_ms,
+          )
+        Error(Nil) ->
+          review_lane_preflight.failed(
+            "missing-workflow-dag",
+            "review_lane_preflight_workflow_missing",
+            "review-lane preflight could not find loaded workflow DAG "
+              <> workflow_id,
+            True,
+          )
+      }
+  }
+  review_lane_preflight_gate.before_claim(preflight.policy, result)
+}
+
+fn workflow_path_for_preflight(
+  context: transition_types.DispatchContext,
+  workflow_id: String,
+) -> String {
+  case dict.get(context.routing.workflows, workflow_id) {
+    Error(Nil) -> workflow_id
+    Ok(workflow_path) ->
+      case
+        string.starts_with(workflow_path, "/")
+        || string.starts_with(workflow_path, ".")
+      {
+        True -> workflow_path
+        False ->
+          scherzo_path.join(
+            context.review_lane_preflight.config_dir,
+            workflow_path,
+          )
+      }
+  }
+}
+
+fn block_for_review_lane_preflight(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  remaining_candidates: List(tracker_issue.Issue),
+  context: transition_types.DispatchContext,
+  callbacks: Callbacks,
+  workflow_id: String,
+  code: String,
+  message: String,
+  park_on_failure: Bool,
+) -> transition_types.Outcome {
+  let Callbacks(dispatch_candidates: dispatch) = callbacks
+  let #(state, park_effects) = case park_on_failure {
+    False -> #(state, [])
+    True -> park_preflight_failure(state, issue, context.now_ms)
+  }
+  let outcome = dispatch(remaining_candidates, state, context)
+  transition_types.Outcome(state: outcome.state, effects: [
+    effects_types.Log("warn", "review_infrastructure_preflight_failed", [
+      #("issue_id", issue.id),
+      #("issue_identifier", issue.identifier),
+      #("workflow_id", workflow_id),
+      #("code", code),
+      #("message", message),
+      #("park_on_failure", helpers.bool_field(park_on_failure)),
+    ]),
+    ..list_append(park_effects, outcome.effects)
+  ])
+}
+
+fn park_preflight_failure(
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  now_ms: Int,
+) -> #(transition_types.State, List(effects_types.Effect)) {
+  let parked =
+    orchestrator_state.ParkedEntry(
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      reason: orchestrator_reason.ParkOperator(
+        "review_infrastructure_preflight_failed",
+      ),
+      release_policy: orchestrator_state.ExplicitUnparkOnly,
+      parked_at_ms: now_ms,
+    )
+  let runtime =
+    orchestrator_state.RuntimeState(
+      ..state.runtime,
+      parked: dict.insert(state.runtime.parked, issue.id, parked),
+    )
+  #(transition_types.State(..state, runtime: runtime), [
+    effects_types.ParkIssue(parked, None),
+  ])
+}
+
+fn list_append(left: List(a), right: List(a)) -> List(a) {
+  case left {
+    [] -> right
+    [item, ..rest] -> [item, ..list_append(rest, right)]
   }
 }
 

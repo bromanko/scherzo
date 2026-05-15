@@ -2,7 +2,7 @@
 
 Scherzo's staged code-review workflow passes machine-readable artifacts between review steps. This contract is intentionally separate from the Scherzo daemon runtime: review artifacts are local workflow files for agents and operators to inspect, not durable daemon state and not Linear or GitHub comments.
 
-The aggregate JSON Schema lives at [`.scherzo/workflows/schemas/review-artifacts.v1.schema.json`](../.scherzo/workflows/schemas/review-artifacts.v1.schema.json). Native structured-output review lanes also use the focused [`.scherzo/workflows/schemas/review-lane-draft.v1.schema.json`](../.scherzo/workflows/schemas/review-lane-draft.v1.schema.json) validator before their semantic consistency check. All artifacts use `schema_version: 1` and an `artifact_type` discriminator.
+The aggregate JSON Schema lives at [`.scherzo/workflows/schemas/review-artifacts.v1.schema.json`](../.scherzo/workflows/schemas/review-artifacts.v1.schema.json). Native structured-output review lanes use a two-layer contract: provider-facing tool argument schemas under [`docs/schemas/provider/`](schemas/provider/) accept only model-owned submission fields, then Scherzo materializes those submissions into canonical [`.scherzo/workflows/schemas/review-lane-draft.v1.schema.json`](../.scherzo/workflows/schemas/review-lane-draft.v1.schema.json) artifacts and runs local semantic consistency checks. All retained artifacts use `schema_version: 1` and an `artifact_type` discriminator.
 
 ## ExecPlan PR review previews
 
@@ -47,9 +47,22 @@ Required fields:
 - `details`: supporting explanation and evidence.
 - `suggested_fix`: actionable remediation.
 
+### `ReviewLaneSubmission`
+
+A `ReviewLaneSubmission` is the provider-facing object passed as the `submit_review_lane_draft` tool arguments by a native review lane. It is not a retained artifact. It deliberately contains only model-owned fields so provider tool schemas stay small and provider-compatible: `draft_findings`, `review_notes`, `evidence_requests`, and `self_check`. The model must not include `schema_version`, `artifact_type`, `generated_at_utc`, `producer`, `lane`, `input_refs`, `remote_mutations`, or `$schema`; Scherzo injects those fields after capture.
+
+Provider schemas live at:
+
+- `docs/schemas/provider/review-lane-draft.correctness.v1.schema.json`
+- `docs/schemas/provider/review-lane-draft.test-quality.v1.schema.json`
+- `docs/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json`
+- `docs/schemas/provider/review-lane-draft.security-performance.v1.schema.json`
+
+These provider schemas are Pi tool parameter schemas only. They intentionally avoid provider-hostile JSON Schema keywords such as `$ref`, `$defs`, `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and union-style `type` arrays. They do not replace canonical artifact validation.
+
 ### `ReviewLaneDraft`
 
-A `ReviewLaneDraft` is the native agent structured-output submission captured from the `submit_review_lane_draft` tool call before evidence verification normalizes it into a lane result. The checked-in native review workflows validate this payload with `type: json_schema`, `path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json`, and a retained command validator for cross-field semantic checks such as unique draft finding ids and evidence-request links.
+A `ReviewLaneDraft` is the canonical retained artifact produced by Scherzo after it captures a `ReviewLaneSubmission`, rejects runner-owned metadata in the submission, injects deterministic runner metadata, validates the artifact with `.scherzo/workflows/schemas/review-lane-draft.v1.schema.json`, and runs semantic checks such as unique draft finding ids and evidence-request links.
 
 Required fields:
 
@@ -214,6 +227,45 @@ scripts/scherzo-review validate --artifact tmp/scherzo-review-preflight/prefligh
 ```
 
 That validation succeeds only for a fixture or external manifest whose required semantic scenarios passed, whose required lane runs succeeded with backend metadata, and whose artifacts preserve `remote_mutations: "none"`. A heuristic preflight remains useful for backwards compatibility, but it is not cutover-ready evidence and is never a production implementation-review fallback.
+
+## Review-lane contract validation
+
+The local contract command is the test harness for review-lane schema, prompt, and provider-compatibility changes. The required offline check does not create Linear runs, prepare jj workspaces, push branches, or mutate remote state:
+
+```sh
+scripts/scherzo-review-lane-contract offline \
+  --workflow .scherzo/workflows/review-native.yml \
+  --fixtures test/fixtures/review-lane-contract \
+  --output-dir tmp/scherzo-review-lane-contract/offline
+```
+
+It checks every provider schema against the recursive allowlist, verifies migrated review workflow wiring, runs all lane fixtures, materializes valid submissions into canonical drafts, runs canonical JSON Schema and semantic validation, and writes `contract-report.v1.json` with `remote_mutations: "none"`.
+
+Operators can check one schema or one captured submission directly:
+
+```sh
+scripts/scherzo-review-lane-contract check-schema \
+  --schema docs/schemas/provider/review-lane-draft.correctness.v1.schema.json
+
+scripts/scherzo-review-lane-contract materialize \
+  --lane correctness \
+  --submission test/fixtures/review-lane-contract/correctness/valid-minimal.arguments.json \
+  --prepare-dir test/fixtures/review-lane-contract/prepared-review \
+  --output tmp/scherzo-review-lane-contract/correctness/review-lane-draft.v1.json
+```
+
+The optional live-provider canary is separate from required SelfCI because it may need provider credentials or incur provider cost:
+
+```sh
+scripts/scherzo-review-lane-contract live \
+  --workflow .scherzo/workflows/review-native.yml \
+  --output-dir tmp/scherzo-review-lane-contract/live \
+  --skip-if-missing-credentials
+```
+
+With no credentials this command writes a skipped report with `skipped_missing_credentials`. Hosted CI should enable provider-backed checks only after confirming credential and cost policy.
+
+When `SCHERZO_REVIEW_LANE_PREFLIGHT_MODE=required-live`, dispatcher preflight uses the same provider-backed live probe before claiming an implementation issue. It caches matching results in `<workspace-root>/.scherzo-state/review-lane-contract-cache.v1.json`; entries include the workflow fingerprint, provider/model identity, review-lane tool names, provider schema digests, checker version, mode, status, blocking flag, `checked_at_ms`, and `expires_at_ms`. Deleting the cache file is safe and forces a fresh preflight. Setting `SCHERZO_REVIEW_LANE_PREFLIGHT_CACHE_TTL_SECONDS=0` disables cache reuse.
 
 ## Checked-in workflow integration
 
