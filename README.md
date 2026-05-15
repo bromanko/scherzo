@@ -108,8 +108,11 @@ direnv allow .
 Common source-checkout commands:
 
 ```sh
-# Fast deterministic unit suite
+# Deterministic unit suite
 direnv exec . gleam test
+
+# Shell-heavy script/workflow/driver contract suite
+direnv exec . scherzo-test-contract
 
 # Production lint gates
 direnv exec . gleam run -m glinter
@@ -135,11 +138,21 @@ Every PR should run the deterministic unit suite before review:
 
 ```sh
 direnv exec . gleam test
+# equivalent explicit wrapper:
+direnv exec . scherzo-test-unit
 ```
 
-The explicit integration suites are opt-in because they have Required dependencies outside the normal unit loop: `scherzo-test-local-integration` exercises local jj/workspace behavior, and `scherzo-test-real-pi-validation` requires `pi` on `PATH` plus working model/provider credentials.
+Shell-heavy script, workflow-helper, renderer, and workspace-driver contract coverage is explicit so the default loop stays unit-scoped:
 
-For the full local gate used by dogfood implementation workflows, run SelfCI against the configured pull-request base:
+```sh
+direnv exec . scherzo-test-contract
+```
+
+Run the contract suite when changing helper scripts such as `scripts/scherzo-review` or `scripts/scherzo-implementation`, ExecPlan HTML rendering, workspace driver scripts, or before relying on repository confidence from the final gate.
+
+The explicit integration suites are opt-in because they have required dependencies outside the normal unit and contract loops: `scherzo-test-local-integration` exercises local jj/workspace behavior, and `scherzo-test-real-pi-validation` requires `pi` on `PATH` plus working model/provider credentials.
+
+For the full local gate used by dogfood implementation workflows, run SelfCI against the configured pull-request base. SelfCI runs the unit and contract suites; local-integration and real-pi-validation remain explicit because of their external dependency requirements.
 
 ```sh
 direnv exec . selfci check --base main@origin --candidate @ --print-output

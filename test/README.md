@@ -1,4 +1,12 @@
-# Test synchronization patterns
+# Test guidance
+
+## Suite selection
+
+`direnv exec . gleam test` and `direnv exec . scherzo-test-unit` run the deterministic unit suite. Shell-heavy helper-script, workflow, renderer, and workspace-driver contract tests are excluded from that default loop and run with `direnv exec . scherzo-test-contract` (or `gleam test -- --suite contract`).
+
+The local integration and real pi validation suites remain explicit: use `direnv exec . scherzo-test-local-integration` for local jj/workspace integration and `direnv exec . scherzo-test-real-pi-validation` only when `pi` plus provider credentials are available.
+
+## Async process synchronization
 
 Prefer explicit handshakes over sleeps in async tests. If a fake actor, daemon dependency, or worker needs to stay alive while the test sends a control command or inspects state, use `test/test_async.gleam` instead of `process.sleep/1`.
 
