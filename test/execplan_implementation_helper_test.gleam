@@ -576,7 +576,7 @@ pub fn prepare_ticket_writes_canonical_metadata_and_cache_test() {
     simplifile.read(dir <> "/tmp/scherzo-implementation-brief.md")
   assert string.contains(
     brief,
-    "# Ticket context for LIV-254: Implement from ticket",
+    "# Task context for LIV-254: Implement from ticket",
   )
 }
 
@@ -778,7 +778,7 @@ pub fn ticket_brief_renders_linear_context_test() {
   assert artifact.exit_code == Some(0)
   assert string.contains(
     artifact.stdout,
-    "# Ticket context for SCH-123: Implement generic workflow",
+    "# Task context for SCH-123: Implement generic workflow",
   )
   assert string.contains(artifact.stdout, "- Labels: workflow:implementation")
   assert string.contains(artifact.stdout, "Implement from ticket context.")
@@ -1106,6 +1106,14 @@ pub fn publish_rebases_to_remote_base_and_revalidates_test() {
   )
   let assert Ok(body) =
     simplifile.read(dir <> "/tmp/scherzo-implementation-pr-body.md")
+  assert string.contains(
+    body,
+    "Task: [SCH-123: Fix publish](https://linear.example/SCH-123)",
+  )
+  assert string.contains(
+    body,
+    "Source: task title, description, labels, and recent comments fetched from Linear.",
+  )
   assert string.contains(body, "SelfCI validation completed before publication")
   assert string.contains(
     body,
@@ -1183,7 +1191,7 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
     simplifile.read(dir <> "/tmp/scherzo-implementation-pr-body.md")
   assert string.contains(
     body,
-    "Issue: [LIV-65: Implement plan: workflow recovery operator UX and retention](https://linear.example/LIV-65)",
+    "Task: [LIV-65: Implement plan: workflow recovery operator UX and retention](https://linear.example/LIV-65)",
   )
   assert string.contains(
     body,

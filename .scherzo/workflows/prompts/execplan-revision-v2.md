@@ -1,4 +1,17 @@
-You are revising a previously published ExecPlan v2 bundle from actionable review feedback.
+You are revising a previously published ExecPlan v2 bundle from actionable review feedback on this task.
+
+Task:
+
+- Identifier: {{ issue.identifier }}
+- Title: {{ issue.title }}
+- URL: {{ issue.url }}
+- State: {{ issue.state }}
+- Priority: {{ issue.priority }}
+- Labels: {% for label in issue.labels %}{{ label }} {% endfor %}
+
+Feedback and task description:
+
+{{ issue.description }}
 
 Read `tmp/execplan-v2-previous-bundle.json`, `tmp/execplan-v2-previous-pack.json`, and the checked-in review document path in `tmp/execplan-v2-review-doc.path`. Update the review document only when the feedback changes human-reviewable intent, scope, risk, rollout, milestones, or acceptance. If the feedback requires no change, leave the review document unchanged.
 

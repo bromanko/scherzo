@@ -8,9 +8,9 @@ Backed statuses in this release are `recovered`, `interrupted`, `parked`, `clean
 
 `recovered` means Scherzo replayed durable state and restored something such as retry timers, outbox entries, or warnings, but no more specific hold applies to the session being inspected. Safe actions are to inspect the session and view events.
 
-`interrupted` means a run was active without a durable finish record. Live Erlang ports and live pi processes do not survive daemon restart, even if a later live session has a current `pi_session_id`. Safe actions are to inspect, view events, retry if the issue is safe to retry, or park the issue.
+`interrupted` means a run was active without a durable finish record. Live Erlang ports and live pi processes do not survive daemon restart, even if a later live session has a current `pi_session_id`. Safe actions are to inspect, view events, retry if the task is safe to retry, or park the task.
 
-`parked` means dispatch is suppressed for the issue. Inspect the park reason, release policy, parked time, and issue fingerprint when present. Safe actions are to inspect, view events, or unpark when the reason has been resolved.
+`parked` means dispatch is suppressed for the task. Inspect the park reason, release policy, parked time, and task fingerprint when present. Safe actions are to inspect, view events, or unpark when the reason has been resolved.
 
 `cleanup` is artifact lifecycle state. It means no new runtime work is expected for the artifact and retention classification is `retained`, `eligible`, `deleting`, or `deleted`. It is not proof that the workflow succeeded.
 
@@ -39,27 +39,27 @@ scripts/scherzoctl events --pretty <session-id>
 
 Look for `recovery.status`, `recovery.source`, `recovery.message`, `recovery.safe_actions`, `workflow_run_id`, and pi session ids. Do not assume a current pi session id is a recovered old pi process. If `status` is `running` and `recovery.status` is `interrupted`, keep those meanings separate: the process status is current process state; the recovery status is durable history or operator guidance.
 
-If retrying could repeat an unsafe external side effect, park the issue first:
+If retrying could repeat an unsafe external side effect, park the task first:
 
 ```sh
-scripts/scherzoctl park <issue> --reason "operator inspection after interrupted recovery" --yes
+scripts/scherzoctl park <task> --reason "operator inspection after interrupted recovery" --yes
 ```
 
-## Handle parked issues
+## Handle parked tasks
 
-When a session or issue shows `parked`, read the recovery details:
+When a session or task shows `parked`, read the recovery details:
 
 ```sh
 scripts/scherzoctl session <session-id>
 ```
 
-Check `park_reason`, `park_release_policy`, and `parked_at_ms`. If the issue was parked by operator policy, unpark only after the reason is resolved:
+Check `park_reason`, `park_release_policy`, and `parked_at_ms`. If the task was parked by operator policy, unpark only after the reason is resolved:
 
 ```sh
-scripts/scherzoctl unpark <issue>
+scripts/scherzoctl unpark <task>
 ```
 
-If a parked issue exists because of retry caps, inspect recent events and handoff comments before unpark or retry. Do not unpark solely because the live worker list is quiet.
+If a parked task exists because of retry caps, inspect recent events and handoff comments before unpark or retry. Do not unpark solely because the live worker list is quiet.
 
 ## Inspect cleanup eligibility
 
@@ -127,7 +127,7 @@ Discard is not reversible. It deletes unsupported active ledger state. It refuse
 
 ## Sensitive-data handling
 
-Treat pi transcripts, raw event payloads, prompts, tool inputs, tool outputs, and Linear excerpts as sensitive. Scherzo recovery output uses bounded redacted text for recovery messages, cleanup warnings, old-state reasons, and structured logs, but operators should still avoid pasting full prompts, API tokens, raw tool payloads, or full Linear comment bodies into issue comments or public logs.
+Treat pi transcripts, raw event payloads, prompts, tool inputs, tool outputs, and tracker excerpts as sensitive. Scherzo recovery output uses bounded redacted text for recovery messages, cleanup warnings, old-state reasons, and structured logs, but operators should still avoid pasting full prompts, API tokens, raw tool payloads, or full Linear comment bodies into task comments or public logs.
 
 ## Do not do this
 

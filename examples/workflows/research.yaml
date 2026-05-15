@@ -1,6 +1,6 @@
 version: 1
 id: research
-description: Investigate an issue, write one Markdown findings artifact, verify it through the workspace driver, and stream it as the workflow result.
+description: Investigate a task, write one Markdown findings artifact, verify it through the workspace driver, and stream it as the workflow result.
 workspace_profile: noop
 workspace_capabilities: [assert-only]
 max_parallel_steps: 1

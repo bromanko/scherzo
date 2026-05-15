@@ -1,6 +1,6 @@
 # Getting started with Scherzo
 
-This guide is for humans and coding agents adapting Scherzo to a different repository. It starts from an empty repo-local Scherzo config and ends with a cautious `--once` run against one Linear issue.
+This guide is for humans and coding agents adapting Scherzo to a different repository. It starts from an empty repo-local Scherzo config and ends with a cautious `--once` run against one task. The production tracker adapter is Linear today, so the task is a Linear issue in this guide.
 
 Keep this guide practical and use the normative specs when you need exact contracts:
 
@@ -13,24 +13,26 @@ Adapt Scherzo in this order so each layer can be checked before the next one add
 
 1. `.scherzo/scherzo.yaml`
 2. workspace profile / driver
-3. Linear workflow labels and routing
+3. tracker adapter setup, Linear workflow labels, and routing
 4. workflow DAG
 5. prompt templates
 6. structured output schemas / validators
-7. handoff and Linear comment policy
+7. handoff and task-system comment policy
 8. scheduled jobs, if needed
 
 ## 1. Prerequisites
 
 Before configuring Scherzo for a repository, collect these inputs.
 
-### Linear
+### Tracker adapter and Linear
 
 - A Linear API key available as `LINEAR_API_KEY` or another environment variable referenced by config.
-- The Linear project slug for issues Scherzo should poll.
+- The Linear project slug for tasks Scherzo should poll. In Linear, each task is a Linear issue.
 - The state names used for dispatch and lifecycle decisions, for example `Todo`, `In Progress`, `Done`, `Canceled`, and `Duplicate`.
 - The workflow labels you want to route, usually labels with the `workflow:` prefix such as `workflow:research` and `workflow:implementation`.
 - Whether Scherzo should post comments or move states during handoff. Start with handoff disabled until `doctor` and a single `--once` run are understood.
+
+See [Tracker adapters](runbooks/tracker-adapters.md) for the adapter capability matrix and the compatibility aliases that still use Linear or issue vocabulary.
 
 ### `pi` and model/provider credentials
 
@@ -119,9 +121,11 @@ Start with a minimal no-op workspace profile. This is useful for research, plann
 version: 1
 tracker:
   kind: linear
-  endpoint: https://api.linear.app/graphql
-  api_key: "$LINEAR_API_KEY"
-  project_slug: YOUR_LINEAR_PROJECT_SLUG
+  credentials:
+    api_key_env: LINEAR_API_KEY
+  linear:
+    endpoint: https://api.linear.app/graphql
+    project_slug: YOUR_LINEAR_PROJECT_SLUG
   active_states: [Todo, In Progress]
   dispatch_states: [Todo]
   terminal_states: [Done, Canceled, Cancelled, Duplicate]
@@ -129,9 +133,9 @@ tracker:
 polling:
   interval_ms: 30000
 
-# Daemon mode runs one immediate startup poll, then schedules recurring Linear polls at
-# interval_ms plus bounded jitter. The jitter bound is 10% of interval_ms, with a 1 ms
-# floor, and the effective delay is always positive.
+# Daemon mode runs one immediate startup poll, then schedules recurring tracker polls
+# at interval_ms plus bounded jitter. The jitter bound is 10% of interval_ms, with
+# a 1 ms floor, and the effective delay is always positive.
 
 workspace:
   # Relative to .scherzo/scherzo.yaml, so this becomes .scherzo/workspaces/.
@@ -199,17 +203,17 @@ Path rule of thumb:
 - Command validator `argv` entries run from `working_directory`, usually `repository` for scripts under `scripts/`.
 - Packaged workspace drivers can be named directly, for example `scherzo-workspace-noop` or `scherzo-workspace-jj`. Repository-local drivers can use `scripts/...`, an absolute path, or `$SCHERZO_REPO_ROOT/scripts/...` where supported by the workspace driver spec.
 
-## 4. Configure Linear
+## 4. Configure the Linear tracker adapter
 
 ### Project, API key, and states
 
-Set `tracker.project_slug` to the Linear project slug Scherzo should poll. Keep the API key in the environment rather than committing a secret:
+Set `tracker.linear.project_slug` to the Linear project slug Scherzo should poll. Keep the API key in the environment rather than committing a secret:
 
 ```sh
 export LINEAR_API_KEY=lin_api_...
 ```
 
-Use `tracker.dispatch_states` for states Scherzo may pick up. It must be a subset of `tracker.active_states`. Put completed or abandoned states in `tracker.terminal_states` so Scherzo can ignore them and reason about recovery.
+Use `tracker.dispatch_states` for task states Scherzo may pick up. It must be a subset of `tracker.active_states`. Put completed or abandoned states in `tracker.terminal_states` so Scherzo can ignore those tasks and reason about recovery. Older flat fields such as `tracker.api_key`, `tracker.endpoint`, and `tracker.project_slug` remain compatibility aliases; prefer `tracker.credentials.api_key_env` and `tracker.linear.*` in new config.
 
 ### Workflow labels and routing
 
@@ -224,7 +228,7 @@ routing:
     implementation: workflows/implementation.yaml
 ```
 
-an issue labeled `workflow:getting-started` routes to `.scherzo/workflows/getting-started.yaml`, and an issue labeled `workflow:implementation` routes to `.scherzo/workflows/implementation.yaml`. With `require_exactly_one_workflow_label: true`, Scherzo rejects issues with no workflow label or multiple workflow labels.
+a task labeled `workflow:getting-started` routes to `.scherzo/workflows/getting-started.yaml`, and a task labeled `workflow:implementation` routes to `.scherzo/workflows/implementation.yaml`. With `require_exactly_one_workflow_label: true`, Scherzo rejects tasks with no workflow label or multiple workflow labels.
 
 ### Linear contract checks
 
@@ -249,7 +253,7 @@ linear_contract:
   comment_on_invalid_workflow: true
 ```
 
-Run `doctor --check linear-contract` before enabling enforcement on a real board.
+Run `doctor --check tracker-contract` before enabling enforcement on a real board. `linear-contract` remains a compatibility alias.
 
 ### Handoff policy
 
@@ -280,9 +284,9 @@ handoff:
   # failure_state_id: <linear-needs-workflow-or-triage-state-id>
 ```
 
-For long-running daemon operation, use some handoff or manual board process that prevents successful issues from remaining eligible for dispatch forever.
+For long-running daemon operation, use some handoff or manual board process that prevents successful tasks from remaining eligible for dispatch forever.
 
-Artifact-producing workflows should use completion-state policy instead of a blanket `success_state_id`. A successful implementation or ExecPlan run usually produces work that a human should review, so the standard policy moves those issues to `In Review`, not `Done`. Failure and partial-success outcomes, including a workflow that was expected to produce an artifact but did not, should move to an attention state such as `Needs Attention`. A cancellation leaves the Linear state unchanged unless `cancellation_state` is configured.
+Artifact-producing workflows should use completion-state policy instead of a blanket `success_state_id`. A successful implementation or ExecPlan run usually produces work that a human should review, so the standard policy moves those tasks to `In Review`, not `Done`. Failure and partial-success outcomes, including a workflow that was expected to produce an artifact but did not, should move to an attention state such as `Needs Attention`. A cancellation leaves the Linear state unchanged unless `cancellation_state` is configured.
 
 ```yaml
 linear_contract:
@@ -305,7 +309,7 @@ handoff:
         success_state: Done
 ```
 
-Use `_id` keys such as `default_completion_state_id` or `failure_state_id` when your Linear team uses duplicate or localized state names. Before enabling daemon handoff, run `scherzo doctor --check linear-contract`; policy-enabled handoff requires the configured review and attention states to exist. See [Linear completion states](runbooks/linear-completion-states.md) for migration and remediation details.
+Use `_id` keys such as `default_completion_state_id` or `failure_state_id` when your Linear team uses duplicate or localized state names. Before enabling daemon handoff, run `scherzo doctor --check tracker-contract`; policy-enabled handoff requires the configured review and attention states to exist. See [Linear completion states](runbooks/linear-completion-states.md) for migration and remediation details.
 
 ## 5. Choose workspace behavior
 
@@ -417,7 +421,7 @@ routing:
     research: workflows/research.yaml
 ```
 
-Create matching Linear labels:
+Create matching workflow labels in the tracker. With the Linear adapter, these are Linear issue labels:
 
 - `workflow:getting-started`
 - `workflow:implementation`
@@ -468,7 +472,7 @@ Create `.scherzo/workflows/prompts/getting-started.md`:
 ```md
 You are adapting this repository to Scherzo.
 
-Issue: {{ issue.identifier }} — {{ issue.title }}
+Task: {{ issue.identifier }} — {{ issue.title }}
 
 Description:
 {{ issue.description }}
@@ -485,7 +489,7 @@ Include:
 Do not modify unrelated files.
 ```
 
-Prompt templates are Markdown files rendered for `pi`. They can reference the issue and prior step artifacts, for example:
+Prompt templates are Markdown files rendered for `pi`. Prefer task language in prompt prose. The current compatibility variables are still `issue.*`, so templates can reference the source task and prior step artifacts like this:
 
 ```md
 Previous validation output:
@@ -591,7 +595,7 @@ Use the [Structured Output Validator Specification](specs/STRUCTURED_OUTPUT_VALI
 
 ## 10. Run readiness checks
 
-Run `doctor` before any real issue dispatch:
+Run `doctor` before any real task dispatch:
 
 ```sh
 LINEAR_API_KEY=lin_api_... direnv exec . scherzo doctor .scherzo/scherzo.yaml
@@ -603,17 +607,19 @@ From a Scherzo source checkout, use:
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml
 ```
 
-The default doctor run loads config, workflows, and prompts; checks Linear contract and read-only Linear access; acquires the local instance lock; exercises workspace lifecycle; and launches a pi compatibility probe without sending a task prompt.
+The default doctor run loads config, workflows, and prompts; checks the tracker contract and read-only tracker access; acquires the local instance lock; exercises workspace lifecycle; and launches a pi compatibility probe without sending a task prompt.
 
-Use the read-only subset when you only want config and Linear validation:
+Use the read-only subset when you only want config and tracker validation:
 
 ```sh
 LINEAR_API_KEY=lin_api_... direnv exec . scherzo doctor \
   --check workflow-config \
-  --check linear-contract \
-  --check linear-smoke \
+  --check tracker-contract \
+  --check tracker-smoke \
   .scherzo/scherzo.yaml
 ```
+
+`linear-contract` and `linear-smoke` remain compatibility aliases for the Linear adapter.
 
 List available checks:
 
@@ -627,25 +633,25 @@ Common doctor failures:
 | --- | --- | --- |
 | Config file not found | Running from the wrong directory or no config path passed | Run from the target repo or pass `.scherzo/scherzo.yaml` |
 | Linear auth failure | Missing/invalid `LINEAR_API_KEY` | Export a valid key in the Scherzo process environment |
-| Project not found | Wrong `tracker.project_slug` | Copy the slug from the Linear project URL/config |
+| Project not found | Wrong `tracker.linear.project_slug` | Copy the slug from the Linear project URL/config |
 | State/label mismatch | Board does not have configured states or labels | Create labels/states or adjust `linear_contract` and `tracker` config |
-| No workflow route | Issue label suffix does not match `routing.workflows` | Add the workflow YAML and routing key or fix the Linear label |
-| Multiple workflow labels | `require_exactly_one_workflow_label: true` and issue has more than one | Leave exactly one `workflow:*` label on the issue |
+| No workflow route | Task label suffix does not match `routing.workflows` | Add the workflow YAML and routing key or fix the Linear label |
+| Multiple workflow labels | `require_exactly_one_workflow_label: true` and task has more than one | Leave exactly one `workflow:*` label on the task |
 | Workspace driver discovery fails | Driver not on `PATH`, not executable, or invalid `describe --json` | Fix the profile command or implement the driver spec |
 | Workspace lifecycle fails | Driver cannot create/remove scratch workspace or selected jj base is unavailable | Fix driver env, VCS state, base branch, or local permissions |
 | Pi probe fails | `pi` missing, provider credentials missing, or command incompatible | Run `pi --mode rpc --no-session` manually and fix credentials/config |
 | Prompt/schema path missing | Paths are relative to different roots | Check workflow-relative prompt paths and repository-relative schema paths |
 
-## 11. Run one issue with `--once`
+## 11. Run one task with `--once`
 
-After doctor passes, create or choose one low-risk Linear issue:
+After doctor passes, create or choose one low-risk task. With the Linear adapter this means a Linear issue:
 
 - State is in `tracker.dispatch_states`, for example `Todo`.
-- Project matches `tracker.project_slug`.
+- Project matches `tracker.linear.project_slug`.
 - Exactly one workflow label is present, for example `workflow:getting-started`.
-- The issue description is safe for the configured workflow and workspace profile.
+- The task description is safe for the configured workflow and workspace profile.
 
-Run one eligible issue and exit:
+Run one eligible task and exit:
 
 ```sh
 LINEAR_API_KEY=lin_api_... direnv exec . scherzo --once .scherzo/scherzo.yaml
@@ -657,7 +663,7 @@ Source-checkout equivalent:
 LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- --once .scherzo/scherzo.yaml
 ```
 
-Inspect the workspace root, retained artifacts, command output, and Linear comments before moving to daemon mode. If handoff is disabled, manually move or relabel the issue so it does not remain eligible for repeated dispatch.
+Inspect the workspace root, retained artifacts, command output, and tracker comments before moving to daemon mode. If handoff is disabled, manually move or relabel the task so it does not remain eligible for repeated dispatch.
 
 ## 12. Start daemon mode with `scherzo-start`
 
@@ -670,10 +676,10 @@ LINEAR_API_KEY=lin_api_... direnv exec . scherzo-start .scherzo/scherzo.yaml
 Before daemon mode:
 
 - Keep `agent.max_concurrent_agents: 1` until the workflow is proven.
-- Enable handoff or establish a manual policy that removes completed issues from dispatch states.
+- Enable handoff or establish a manual policy that removes completed tasks from dispatch states.
 - Keep an operator watching the first several runs.
-- Run only one Scherzo instance per Linear project and canonical workspace root.
-- For multi-repo or multi-instance operations, rely on the built-in poll jitter; it spreads recurring Linear requests around `polling.interval_ms` and logs `next_poll_scheduled` with the effective next delay.
+- Run only one Scherzo instance per tracker project and canonical workspace root.
+- For multi-repo or multi-instance operations, rely on the built-in poll jitter; it spreads recurring tracker requests around `polling.interval_ms` and logs `next_poll_scheduled` with the effective next delay.
 
 Set `agent.max_concurrent_agents: 0` to pause new dispatch while keeping daemon reload and reconciliation alive.
 
@@ -704,7 +710,7 @@ direnv exec . scripts/scherzoctl stop-after-turn <session-id> --yes
 direnv exec . scripts/scherzoctl abort <session-id> --yes
 ```
 
-Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. For mutating commands, use exact issue ids, session ids, and request ids from JSON inspection. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
+Use `ps --json` and `session --json` when scripting or when an agent is acting as an operator. For mutating commands, use exact task/issue ids, session ids, and request ids from JSON inspection. See [workflow recovery](runbooks/workflow-recovery.md) for retained artifacts, recovery status, cleanup, and unsupported local state handling.
 
 ## 14. Adaptation checklist and troubleshooting
 
@@ -712,26 +718,26 @@ Use `ps --json` and `session --json` when scripting or when an agent is acting a
 
 - [ ] Scherzo command is installed and `scherzo --version` works.
 - [ ] `LINEAR_API_KEY` is set outside committed config.
-- [ ] `.scherzo/scherzo.yaml` has the right Linear project slug, states, and dispatch states.
+- [ ] `.scherzo/scherzo.yaml` has the right tracker adapter kind, Linear project slug, states, and dispatch states.
 - [ ] Workspace profile starts with `noop` for artifact-only workflows or a reviewed `jj`/custom driver for implementation workflows.
 - [ ] Custom workspace driver, if any, passes `describe --json` and follows the workspace driver spec.
-- [ ] Linear workflow labels exist and match `routing.workflows` suffixes.
+- [ ] Workflow labels exist in the tracker and match `routing.workflows` suffixes.
 - [ ] One workflow YAML DAG exists and has a matching prompt template.
 - [ ] Command validation steps run local deterministic checks.
 - [ ] Structured-output schemas and validators are repository-local, reviewed, and declared with correct paths.
 - [ ] Handoff comments/state moves are disabled until `doctor` and `--once` are understood, then enabled deliberately.
 - [ ] `scherzo doctor` passes, or every warning/failure has an accepted explanation.
-- [ ] A low-risk issue succeeds with `--once`.
+- [ ] A low-risk task succeeds with `--once`.
 - [ ] Daemon mode starts with low concurrency and an operator watching `scherzoctl ps`/`attach`.
-- [ ] Scheduled jobs are left disabled until normal issue workflows are stable; see [scheduled jobs](runbooks/scheduled-jobs.md) when needed.
+- [ ] Scheduled jobs are left disabled until normal task workflows are stable; see [scheduled jobs](runbooks/scheduled-jobs.md) when needed.
 
 ### Troubleshooting quick map
 
 | Problem | First command | Notes |
 | --- | --- | --- |
 | Unsure if config loads | `scherzo doctor --check workflow-config .scherzo/scherzo.yaml` | Checks YAML, routed workflows, prompts, and local config shape |
-| Unsure if Linear board matches config | `scherzo doctor --check linear-contract .scherzo/scherzo.yaml` | Requires API key and configured project slug |
-| No issues dispatch | `scherzo doctor --check linear-smoke .scherzo/scherzo.yaml` | Check project, dispatch state, active state, terminal state, and workflow labels |
+| Unsure if the tracker board matches config | `scherzo doctor --check tracker-contract .scherzo/scherzo.yaml` | Requires API key and configured project slug |
+| No tasks dispatch | `scherzo doctor --check tracker-smoke .scherzo/scherzo.yaml` | Check project, dispatch state, active state, terminal state, and workflow labels |
 | Driver problem | `<driver> describe --json` | Then run the relevant driver lifecycle/capability command by hand |
 | jj workspace problem | `jj status` and driver env review | Verify base, remote, fetch policy, and publish remote before daemon mode |
 | Agent cannot start | `pi --mode rpc --no-session` | Fix `pi` install, model/provider credentials, or `pi.command` |

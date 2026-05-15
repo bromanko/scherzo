@@ -1,9 +1,9 @@
-You are running Scherzo's portable research workflow for issue {{ issue.identifier }}: {{ issue.title }}.
+You are running Scherzo's portable research workflow for task {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
+Task description:
 {{ issue.description }}
 
-Issue labels:
+Task labels:
 {% for label in issue.labels %}
 - {{ label }}
 {% endfor %}
@@ -12,7 +12,7 @@ Attempt: {{ attempt }}
 
 Workflow contract:
 
-- This workflow is for research issues routed to Scherzo.
+- This workflow is for research tasks routed to Scherzo.
 - You are already inside a dedicated workflow workspace created by Scherzo; do not create, remove, switch, publish, commit, abandon, or otherwise integrate workspaces or changes.
 - Do not edit repository files except for the required `research-findings.md` report in the workspace root.
 - You may inspect repository files and run commands with the smallest useful scope.
@@ -22,7 +22,7 @@ Workflow contract:
 Research process:
 
 1. Restate the question you are answering.
-2. Inspect the relevant files, commands, docs, issue context, or external resources with the smallest useful scope.
+2. Inspect the relevant files, commands, docs, task context, or external resources with the smallest useful scope.
 3. Capture concrete evidence: file paths, commands run, observed output, links, and uncertainty.
 4. Avoid implementation, broad refactors, speculative cleanup, or unrelated edits.
 5. Write a Markdown report to `research-findings.md` in the workspace root. This file is the workflow's only result artifact.

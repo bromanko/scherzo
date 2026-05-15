@@ -3,7 +3,7 @@
 #
 # Scherzo currently has one pi.command for all routed workflows, so this wrapper
 # selects workflow-specific pi flags from the prepared workspace path.
-# ExecPlan drafting, revision, and implementation use the same high-capacity model.
+# ExecPlan v1/v2 drafting, revision, and implementation use the same high-capacity model.
 
 set -eu
 
@@ -22,7 +22,7 @@ case "$cwd" in
   */.scherzo/workspaces/research/*)
     run_pi --model "$research_model" --mode rpc "$@"
     ;;
-  */.scherzo/workspaces/execplan/*|*/.scherzo/workspaces/execplan-revision/*|*/.scherzo/workspaces/execplan-implementation/*)
+  */.scherzo/workspaces/execplan/*|*/.scherzo/workspaces/execplan-revision/*|*/.scherzo/workspaces/execplan-implementation/*|*/.scherzo/workspaces/execplan-v2/*|*/.scherzo/workspaces/execplan-revision-v2/*|*/.scherzo/workspaces/execplan-implementation-v2/*)
     run_pi --model "$execplan_model" --mode rpc "$@"
     ;;
   *)

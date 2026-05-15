@@ -1,6 +1,6 @@
 You are running the validation-repair step for Scherzo's `workflow:execplan` workflow.
 
-Linear issue:
+Task:
 
 - Identifier: {{ issue.identifier }}
 - Title: {{ issue.title }}
@@ -46,7 +46,7 @@ Repair process:
 Final response format:
 
 ## Summary
-One short paragraph stating whether this step was a no-op or what validation issue was repaired.
+One short paragraph stating whether this step was a no-op or what validation problem was repaired.
 
 ## Changes
 - `None` if no-op, or bullets naming the minimal edits made.

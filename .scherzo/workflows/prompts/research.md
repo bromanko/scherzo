@@ -1,9 +1,9 @@
-You are running Scherzo's checked-in research workflow for Linear issue {{ issue.identifier }}: {{ issue.title }}.
+You are running Scherzo's checked-in research workflow for task {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
+Task description:
 {{ issue.description }}
 
-Issue labels:
+Task labels:
 {% for label in issue.labels %}
 - {{ label }}
 {% endfor %}
@@ -12,7 +12,7 @@ Attempt: {{ attempt }}
 
 Workflow contract:
 
-- This workflow is for `workflow:research` issues only.
+- This workflow is for `workflow:research` tasks only.
 - Prefer investigation, evidence gathering, and concise recommendations.
 - You are already inside a dedicated jj workspace created by Scherzo; do not create, forget, finish, or switch jj workspaces.
 - Use `jj status --color=never` for source-control inspection.
@@ -50,7 +50,7 @@ For `Issues encountered`, include `None` if the investigation had no tool, acces
 Research budget for dogfood runs:
 
 - Prefer a useful answer in one pi turn over exhaustive coverage.
-- Do not run the full test suite unless the issue asks for validation; cite existing test status from the operator context when relevant.
+- Do not run the full test suite unless the task asks for validation; cite existing test status from the operator context when relevant.
 
 Final response format:
 

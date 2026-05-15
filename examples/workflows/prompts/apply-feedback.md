@@ -1,4 +1,4 @@
-Apply the feedback from the completed validation and review steps for Linear issue {{ issue.identifier }}.
+Apply the feedback from the completed validation and review steps for task {{ issue.identifier }}.
 
 The first test command exited with {{ steps.test_after_implement.exit_code }}.
 

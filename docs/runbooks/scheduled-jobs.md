@@ -1,6 +1,6 @@
 # Scheduled jobs operator runbook
 
-Scherzo scheduled jobs run configured workflow DAGs on fixed intervals without creating a Linear issue for successful intervals. Use them for recurring maintenance workflows that should be quiet when healthy and visible when they need human attention.
+Scherzo scheduled jobs run configured workflow DAGs on fixed intervals without creating a tracker task for successful intervals. Use them for recurring maintenance workflows that should be quiet when healthy and visible when they need human attention. The production failure-reporting adapter is Linear today, so terminal failures can create or update a Linear issue.
 
 ## MVP configuration shape
 
@@ -27,11 +27,11 @@ scheduled_jobs:
         dedupe: open_issue_per_job
 ```
 
-The scheduler also applies reserved Linear labels `scherzo:scheduled` and `scherzo:scheduled-job:<job-id>` and writes the marker `<!-- scherzo-dedupe: scheduled-job:<job-id> -->` into the failure issue body/comments. Do not rely on configured labels for dedupe.
+When `on_failure.linear.enabled: true`, the scheduler also applies reserved Linear labels `scherzo:scheduled` and `scherzo:scheduled-job:<job-id>` and writes the marker `<!-- scherzo-dedupe: scheduled-job:<job-id> -->` into the failure task body/comments. Do not rely on configured labels for dedupe.
 
 ## Workflow and prompt shape
 
-The scheduled workflow is a normal workflow DAG. Scheduled prompts and command templates may use scheduled context variables and must not reference `issue.*` because no Linear issue exists for successful scheduled intervals.
+The scheduled workflow is a normal workflow DAG. Scheduled prompts and command templates may use scheduled context variables and must not reference `issue.*` because no tracker task exists for successful scheduled intervals.
 
 ```yaml
 version: 1
@@ -53,7 +53,7 @@ Useful scheduled variables include `{{ scheduled_job.id }}`, `{{ scheduled_job.w
 
 ## Rollout
 
-Start with `enabled: false` or `on_failure.linear.enabled: false` while validating local behavior. Use a conservative interval such as `15m`; the MVP rejects `catch_up: true`, `overlap: queue`, `overlap: cancel`, and intervals below one second. Make scripts idempotent because retries and daemon restarts can run the same due interval more than once.
+Start with `enabled: false` or `on_failure.linear.enabled: false` while validating local behavior. The current production `scheduled_failures` capability is provided by the Linear tracker adapter. Use a conservative interval such as `15m`; the MVP rejects `catch_up: true`, `overlap: queue`, `overlap: cancel`, and intervals below one second. Make scripts idempotent because retries and daemon restarts can run the same due interval more than once.
 
 After reload or daemon start, inspect local state:
 
@@ -72,9 +72,9 @@ scherzoctl schedules logs pr-conflict-repair --last
 
 ## Failure triage
 
-Successful scheduled intervals are silent in Linear. A terminal scheduled failure after retries are exhausted, or a needs-human scheduled outcome, creates or updates one open Linear issue per scheduled job using the stable dedupe key `scheduled-job:<job-id>`. Later failures for the same job update the same issue when possible. Later successes remain local and do not comment on or close the prior failure issue.
+Successful scheduled intervals are silent in the tracker. A terminal scheduled failure after retries are exhausted, or a needs-human scheduled outcome, creates or updates one open failure task per scheduled job using the stable dedupe key `scheduled-job:<job-id>`. With the Linear adapter, that task is a Linear issue. Later failures for the same job update the same task when possible. Later successes remain local and do not comment on or close the prior failure task.
 
-If Linear reporting fails, Scherzo records `scheduled_failure_report_failed` in the local ledger and retries only the report side effect. It does not rerun the completed workflow solely because the Linear side effect failed.
+If tracker failure reporting fails, Scherzo records `scheduled_failure_report_failed` in the local ledger and retries only the report side effect. It does not rerun the completed workflow solely because the tracker side effect failed. See [Tracker adapters](tracker-adapters.md) for the current capability matrix.
 
 ## Rollback caution
 

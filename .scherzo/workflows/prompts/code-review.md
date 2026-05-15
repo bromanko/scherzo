@@ -1,9 +1,9 @@
-You are reviewing the implementation produced by Scherzo's `workflow:implementation` workflow for Linear issue {{ issue.identifier }}: {{ issue.title }}.
+You are reviewing the implementation produced by Scherzo's `workflow:implementation` workflow for task {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
+Task description:
 {{ issue.description }}
 
-Ticket preparation output:
+Task preparation output:
 {{ steps.prepare_context.stdout }}
 
 Implementation step response:

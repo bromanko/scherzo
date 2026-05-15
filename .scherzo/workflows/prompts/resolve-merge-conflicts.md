@@ -1,9 +1,9 @@
-You are running Scherzo's checked-in `workflow:merge-conflict-resolution` workflow for Linear issue {{ issue.identifier }}: {{ issue.title }}.
+You are running Scherzo's checked-in `workflow:merge-conflict-resolution` workflow for task {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
+Task description:
 {{ issue.description }}
 
-Issue labels:
+Task labels:
 {% for label in issue.labels %}
 - {{ label }}
 {% endfor %}
@@ -13,7 +13,7 @@ Preparation output:
 
 Workflow contract:
 
-- This workflow is manually triggered for one existing same-repository GitHub PR or branch. The Linear issue must name the target PR or branch; the prepare step has already fetched it.
+- This workflow is manually triggered for one existing same-repository GitHub PR or branch. With the current Linear adapter, the source Linear issue must name the target PR or branch; the prepare step has already fetched it.
 - The only allowed goal is to resolve merge conflicts caused by merging the printed base branch into the printed target branch.
 - Do not intentionally change functionality, public behavior, requirements, tests, or documentation beyond what is strictly necessary to remove conflict markers and preserve the combined intent of the two parents.
 - If you cannot resolve a conflict without making a behavioral choice, write `tmp/scherzo-merge-conflict-failure.md` explaining the ambiguity and stop. The validation step will fail the workflow as requested.

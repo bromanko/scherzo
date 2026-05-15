@@ -1,4 +1,7 @@
-You are running Scherzo workflow:execplan-implementation-v2.
+You are running Scherzo's `workflow:execplan-implementation-v2` workflow for task {{ issue.identifier }}: {{ issue.title }}.
+
+Task URL:
+{{ issue.url }}
 
 Use these prepared files as the complete handoff:
 

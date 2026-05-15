@@ -157,5 +157,5 @@ pub fn readme_documents_pi_operator_skill_test() {
   assert_contains(readme, "SCHERZO_CONTROL_FILE")
   assert_contains(readme, "scripts/scherzoctl ps --json")
   assert_contains(readme, "read-only summaries first")
-  assert_contains(readme, "exact issue ids")
+  assert_contains(readme, "exact task/issue ids")
 }
