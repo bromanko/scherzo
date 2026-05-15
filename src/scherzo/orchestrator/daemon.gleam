@@ -1510,6 +1510,12 @@ fn run_recovered_workflow_worker(
                   next_attempt_indexes: recovered.next_attempt_indexes,
                   run_root: Some(recovered.run_root),
                   pi_session_continuations: recovered.pi_session_continuations,
+                  contract_inputs_recorded: recovered_contract_manifest(
+                    recovered.contract_input_manifest,
+                  ),
+                  contract_outputs_recorded: recovered_contract_manifest(
+                    recovered.contract_output_manifest,
+                  ),
                 )
               case
                 workflow_run.execute_with_resume(
@@ -1539,6 +1545,19 @@ fn run_recovered_workflow_worker(
         }
       }
   }
+}
+
+fn recovered_contract_manifest(
+  manifest: Option(recovery.RecoveredContractManifest),
+) -> Option(workflow_checkpoint.ArtifactWritten) {
+  manifest
+  |> option.map(fn(manifest) {
+    workflow_checkpoint.ArtifactWritten(
+      ref: manifest.ref,
+      sha256: manifest.sha256,
+      bytes: manifest.bytes,
+    )
+  })
 }
 
 fn recovered_workflow_identity_matches(

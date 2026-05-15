@@ -95,6 +95,22 @@ pub type RecordBody {
     token_total: Int,
     turns: Int,
   )
+  WorkflowRunInputsRecorded(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    artifact_ref: String,
+    artifact_sha256: String,
+    artifact_bytes: Int,
+  )
+  WorkflowRunOutputsRecorded(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    artifact_ref: String,
+    artifact_sha256: String,
+    artifact_bytes: Int,
+  )
   WorkflowRunInterrupted(
     run_id: String,
     workflow_id: String,
@@ -439,6 +455,7 @@ type RecordFields {
     outcome: Option(String),
     artifact_ref: Option(String),
     artifact_sha256: Option(String),
+    artifact_bytes: Option(Int),
     superseded_by_run_id: Option(String),
     superseded_by_attempt_index: Option(Int),
     classification: Option(String),
@@ -514,6 +531,8 @@ pub fn kind(body: RecordBody) -> String {
     WorkflowRunStartedWithTask(..) -> "workflow_run_started"
     WorkflowRunFinished(..) -> "workflow_run_finished"
     WorkflowRunFinishedWithTask(..) -> "workflow_run_finished"
+    WorkflowRunInputsRecorded(..) -> "workflow_run_inputs_recorded"
+    WorkflowRunOutputsRecorded(..) -> "workflow_run_outputs_recorded"
     WorkflowRunInterrupted(..) -> "workflow_run_interrupted"
     WorkflowRunSuperseded(..) -> "workflow_run_superseded"
     StepAttemptPrepared(..) -> "step_attempt_prepared"
@@ -700,6 +719,38 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         #("token_total", json.int(token_total)),
         #("turns", json.int(turns)),
       ])
+    WorkflowRunInputsRecorded(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      artifact_ref,
+      artifact_sha256,
+      artifact_bytes,
+    ) ->
+      workflow_contract_record_entries(
+        run_id,
+        workflow_id,
+        workflow_fingerprint,
+        artifact_ref,
+        artifact_sha256,
+        artifact_bytes,
+      )
+    WorkflowRunOutputsRecorded(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      artifact_ref,
+      artifact_sha256,
+      artifact_bytes,
+    ) ->
+      workflow_contract_record_entries(
+        run_id,
+        workflow_id,
+        workflow_fingerprint,
+        artifact_ref,
+        artifact_sha256,
+        artifact_bytes,
+      )
     WorkflowRunInterrupted(run_id, workflow_id, issue_id, reason) -> [
       #("run_id", json.string(run_id)),
       #("workflow_id", json.string(workflow_id)),
@@ -1189,6 +1240,24 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
   }
 }
 
+fn workflow_contract_record_entries(
+  run_id: String,
+  workflow_id: String,
+  workflow_fingerprint: String,
+  artifact_ref: String,
+  artifact_sha256: String,
+  artifact_bytes: Int,
+) -> List(#(String, json.Json)) {
+  [
+    #("run_id", json.string(run_id)),
+    #("workflow_id", json.string(workflow_id)),
+    #("workflow_fingerprint", json.string(workflow_fingerprint)),
+    #("artifact_ref", json.string(artifact_ref)),
+    #("artifact_sha256", json.string(artifact_sha256)),
+    #("artifact_bytes", json.int(artifact_bytes)),
+  ]
+}
+
 fn scheduled_base_entries(
   job_id: String,
   workflow_id: String,
@@ -1371,6 +1440,10 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
           ))
       }
     }
+    "workflow_run_inputs_recorded" ->
+      decode_workflow_contract_record(fields, WorkflowRunInputsRecorded)
+    "workflow_run_outputs_recorded" ->
+      decode_workflow_contract_record(fields, WorkflowRunOutputsRecorded)
     "workflow_run_interrupted" -> {
       use run_id <- result.try(required_string(fields.run_id, "run_id"))
       use workflow_id <- result.try(required_string(
@@ -2309,6 +2382,11 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use artifact_bytes <- decode.optional_field(
+    "artifact_bytes",
+    None,
+    decode.optional(decode.int),
+  )
   use superseded_by_run_id <- decode.optional_field(
     "superseded_by_run_id",
     None,
@@ -2549,6 +2627,7 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     outcome: outcome,
     artifact_ref: artifact_ref,
     artifact_sha256: artifact_sha256,
+    artifact_bytes: artifact_bytes,
     superseded_by_run_id: superseded_by_run_id,
     superseded_by_attempt_index: superseded_by_attempt_index,
     classification: classification,
@@ -2643,6 +2722,41 @@ fn required_bool(
     Some(value) -> Ok(value)
     None -> Error(InvalidRecord("missing " <> field))
   }
+}
+
+fn decode_workflow_contract_record(
+  fields: RecordFields,
+  make_record: fn(String, String, String, String, String, Int) -> RecordBody,
+) -> Result(RecordBody, DecodeError) {
+  use run_id <- result.try(required_string(fields.run_id, "run_id"))
+  use workflow_id <- result.try(required_string(
+    fields.workflow_id,
+    "workflow_id",
+  ))
+  use workflow_fingerprint <- result.try(required_string(
+    fields.workflow_fingerprint,
+    "workflow_fingerprint",
+  ))
+  use artifact_ref <- result.try(required_string(
+    fields.artifact_ref,
+    "artifact_ref",
+  ))
+  use artifact_sha256 <- result.try(required_string(
+    fields.artifact_sha256,
+    "artifact_sha256",
+  ))
+  use artifact_bytes <- result.try(required_int(
+    fields.artifact_bytes,
+    "artifact_bytes",
+  ))
+  Ok(make_record(
+    run_id,
+    workflow_id,
+    workflow_fingerprint,
+    artifact_ref,
+    artifact_sha256,
+    artifact_bytes,
+  ))
 }
 
 fn required_scheduled_base(

@@ -61,6 +61,10 @@ pub type RecoveredWorkspaceSummary {
   )
 }
 
+pub type RecoveredContractManifest {
+  RecoveredContractManifest(ref: String, sha256: String, bytes: Int)
+}
+
 pub type RecoveredWorkflowRun {
   RecoveredWorkflowRun(
     issue: tracker_issue.Issue,
@@ -72,6 +76,8 @@ pub type RecoveredWorkflowRun {
     completed_workspaces: Dict(String, RecoveredWorkspaceSummary),
     next_attempt_indexes: Dict(String, Int),
     pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+    contract_input_manifest: Option(RecoveredContractManifest),
+    contract_output_manifest: Option(RecoveredContractManifest),
   )
 }
 
@@ -87,6 +93,8 @@ pub type WorkflowRecoveryCandidate {
     observed_updated_at_ms: Int,
     run_root: String,
     attempts: List(projection.StepAttemptStatus),
+    contract_input_manifest: Option(RecoveredContractManifest),
+    contract_output_manifest: Option(RecoveredContractManifest),
   )
 }
 
@@ -200,10 +208,30 @@ pub fn workflow_candidates(
           observed_updated_at_ms: observed_updated_at_ms,
           run_root: run_root,
           attempts: attempts_for_run(projection, run_id),
+          contract_input_manifest: projection.workflow_input_manifest(
+            projection,
+            run_id,
+          )
+            |> option.map(projection_manifest_to_recovered),
+          contract_output_manifest: projection.workflow_output_manifest(
+            projection,
+            run_id,
+          )
+            |> option.map(projection_manifest_to_recovered),
         ))
       _ -> Error(Nil)
     }
   })
+}
+
+fn projection_manifest_to_recovered(
+  manifest: projection.WorkflowContractManifestRef,
+) -> RecoveredContractManifest {
+  RecoveredContractManifest(
+    ref: manifest.artifact_ref,
+    sha256: manifest.artifact_sha256,
+    bytes: manifest.artifact_bytes,
+  )
 }
 
 pub fn finalize_workflow_candidates(
@@ -654,6 +682,8 @@ fn recover_attempts_loop(
           completed_workspaces: workspaces,
           next_attempt_indexes: next_indexes,
           pi_session_continuations: continuations,
+          contract_input_manifest: candidate.contract_input_manifest,
+          contract_output_manifest: candidate.contract_output_manifest,
         ),
         list.reverse(bodies),
       ))

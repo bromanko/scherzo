@@ -141,3 +141,33 @@ fn temp_entries(dir: String) -> List(String) {
     string.contains(entry, ".scherzo-") && string.ends_with(entry, ".tmp")
   })
 }
+
+pub fn artifact_store_writes_contract_manifests_and_output_blobs_test() {
+  let root = "test/tmp/artifact-store/contract-manifests"
+  reset_dir(root)
+  let store = artifact_store.new(root)
+
+  let assert Ok(inputs) =
+    artifact_store.write_input_manifest(store, "run-1", "{\"inputs\":[]}")
+  assert inputs.ref == "runs/run-1/inputs.v1.json"
+  assert inputs.bytes == 13
+  let assert Ok(input_contents) =
+    artifact_store.read_artifact_unverified(store, inputs.ref)
+  assert input_contents == "{\"inputs\":[]}"
+
+  let assert Ok(outputs) =
+    artifact_store.write_output_manifest(store, "run-1", "{\"outputs\":[]}")
+  assert outputs.ref == "runs/run-1/outputs.v1.json"
+  let assert Ok(blob) =
+    artifact_store.write_output_blob(
+      store,
+      "run-1",
+      "findings",
+      ".md",
+      "# Findings",
+    )
+  assert blob.ref == "runs/run-1/outputs/findings.md"
+  let assert Ok(blob_contents) =
+    artifact_store.read_artifact_unverified(store, blob.ref)
+  assert blob_contents == "# Findings"
+}

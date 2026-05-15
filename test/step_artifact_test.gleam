@@ -444,6 +444,7 @@ pub fn workflow_result_uses_terminal_step_and_summary_test() {
           model_settings: model_config.default_settings(),
         ),
       ],
+      contract: None,
     )
   let implement_artifact =
     step_artifact.from_agent_success(

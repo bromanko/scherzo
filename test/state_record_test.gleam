@@ -518,6 +518,42 @@ pub fn encodes_and_decodes_scheduled_records_test() {
   ))
 }
 
+pub fn encodes_and_decodes_workflow_contract_manifest_records_test() {
+  let inputs =
+    record.with_id(
+      "workflow-inputs-1",
+      12_000,
+      record.WorkflowRunInputsRecorded(
+        run_id: "run-1",
+        workflow_id: "research",
+        workflow_fingerprint: "fp",
+        artifact_ref: "runs/run-1/inputs.v1.json",
+        artifact_sha256: "abc",
+        artifact_bytes: 123,
+      ),
+    )
+  let outputs =
+    record.with_id(
+      "workflow-outputs-1",
+      12_100,
+      record.WorkflowRunOutputsRecorded(
+        run_id: "run-1",
+        workflow_id: "research",
+        workflow_fingerprint: "fp",
+        artifact_ref: "runs/run-1/outputs.v1.json",
+        artifact_sha256: "def",
+        artifact_bytes: 456,
+      ),
+    )
+  assert_roundtrip(inputs)
+  assert_roundtrip(outputs)
+  assert string.contains(
+    record.to_string(inputs),
+    "workflow_run_inputs_recorded",
+  )
+  assert string.contains(record.to_string(outputs), "artifact_bytes")
+}
+
 pub fn unsupported_schema_version_is_rejected_test() {
   let line =
     "{\"schema_version\":3,\"record_id\":\"future\",\"at_ms\":1,\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"

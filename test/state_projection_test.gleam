@@ -166,6 +166,46 @@ pub fn projection_exposes_recovery_facts_test() {
   ]) = projection.pending_outbox_replays(folded)
 }
 
+pub fn projection_records_workflow_contract_manifest_refs_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "inputs",
+        2000,
+        record.WorkflowRunInputsRecorded(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-1",
+          artifact_ref: "runs/run-1/inputs.v1.json",
+          artifact_sha256: "sha-inputs",
+          artifact_bytes: 12,
+        ),
+      ),
+      record.with_id(
+        "outputs",
+        3000,
+        record.WorkflowRunOutputsRecorded(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-1",
+          artifact_ref: "runs/run-1/outputs.v1.json",
+          artifact_sha256: "sha-outputs",
+          artifact_bytes: 34,
+        ),
+      ),
+    ])
+
+  let assert Some(input_ref) =
+    projection.workflow_input_manifest(folded, "run-1")
+  assert input_ref.artifact_ref == "runs/run-1/inputs.v1.json"
+  assert input_ref.artifact_sha256 == "sha-inputs"
+  assert input_ref.artifact_bytes == 12
+  let assert Some(output_ref) =
+    projection.workflow_output_manifest(folded, "run-1")
+  assert output_ref.artifact_ref == "runs/run-1/outputs.v1.json"
+  assert output_ref.recorded_at_ms == 3000
+}
+
 pub fn known_issue_ids_omits_blank_issue_ids_test() {
   let folded =
     projection.fold([

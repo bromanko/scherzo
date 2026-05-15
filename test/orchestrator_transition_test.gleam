@@ -100,6 +100,7 @@ pub fn fixture_workflow_dag(id: String) -> workflow_dag.WorkflowDag {
     workspace_profile: None,
     workspace_capabilities: [],
     max_parallel_steps: 1,
+    contract: None,
     steps: [
       workflow_dag.WorkflowStep(
         id: "noop",
