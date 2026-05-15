@@ -251,7 +251,9 @@ workspace:
         timeout_ms: 60000
 ```
 
-Older dogfood configs called `scripts/scherzo-jj-workspace` from hook snippets. That path is now only a deprecated compatibility wrapper; the driver no longer depends on it. New docs and workflows should point at `scripts/scherzo-workspace-jj` as the driver command.
+The jj driver is self-contained. Configure `scripts/scherzo-workspace-jj` directly for source-tree dogfood workflows, or use the packaged `scherzo-workspace-jj` command in installed deployments.
+
+Legacy hook snippets that previously used the removed `scripts/scherzo-jj-workspace` compatibility command should map its verbs onto the driver lifecycle operations instead: `after-create` becomes `scripts/scherzo-workspace-jj lifecycle create`, `before-run` becomes `scripts/scherzo-workspace-jj lifecycle before-step`, and `before-remove` becomes `scripts/scherzo-workspace-jj lifecycle remove`.
 
 ## Replacing simple environment wrapper scripts
 
