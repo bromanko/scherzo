@@ -37,6 +37,11 @@ STATUS_MAP = {
     "R": "renamed",
     "C": "modified",
 }
+PORTABLE_SCHERZO_BRIDGE_NAME = "scherzo"
+PORTABLE_SCHERZO_LINKS = [
+    ("scripts", "scripts"),
+    (".scherzo/workflows", ".scherzo/workflows"),
+]
 
 
 def usage_error(message: str | None = None) -> None:
@@ -363,6 +368,212 @@ def default_base_candidates(branch: str, remote: str) -> list[str]:
     return unique_values([f"{branch}@{remote}", branch, "main@origin", "main", "@"])
 
 
+def lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.normpath(str(path))))
+
+
+def valid_scherzo_core_checkout(root: Path) -> bool:
+    return (root / "scripts").is_dir() and (root / ".scherzo" / "workflows").is_dir()
+
+
+def candidate_core_from_script_path(raw: str) -> Path | None:
+    script_path = Path(raw)
+    if not script_path.is_absolute():
+        script_path = Path.cwd() / script_path
+    try:
+        resolved = script_path.resolve(strict=True)
+    except OSError:
+        return None
+
+    candidates: list[Path] = []
+    if resolved.parent.name == "scripts":
+        candidates.append(resolved.parent.parent)
+    candidates.append(resolved.parent)
+    for candidate in candidates:
+        try:
+            root = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if valid_scherzo_core_checkout(root):
+            return root
+    return None
+
+
+def append_valid_core_candidate(candidates: list[Path], candidate: Path) -> None:
+    try:
+        root = candidate.resolve(strict=True)
+    except OSError:
+        return
+    if not valid_scherzo_core_checkout(root):
+        return
+    if root not in candidates:
+        candidates.append(root)
+
+
+def core_candidates_from_repo_links() -> list[Path]:
+    raw_repo = env_value("SCHERZO_REPO_ROOT")
+    if raw_repo is None:
+        return []
+    try:
+        repo_root = Path(raw_repo).resolve(strict=True)
+    except OSError:
+        return []
+
+    candidates: list[Path] = []
+    try:
+        scripts_target = (repo_root / "scripts").resolve(strict=True)
+    except OSError:
+        scripts_target = None
+    if scripts_target is not None:
+        candidate = (
+            scripts_target.parent
+            if scripts_target.name == "scripts"
+            else scripts_target
+        )
+        append_valid_core_candidate(candidates, candidate)
+
+    try:
+        workflows_target = (
+            repo_root / ".scherzo" / "workflows"
+        ).resolve(strict=True)
+    except OSError:
+        workflows_target = None
+    if workflows_target is not None and workflows_target.name == "workflows":
+        workflows_parent = workflows_target.parent
+        if workflows_parent.name == ".scherzo":
+            append_valid_core_candidate(candidates, workflows_parent.parent)
+
+    return candidates
+
+
+def scherzo_core_checkout_for_bridge() -> Path:
+    candidates: list[Path] = []
+    for env_name in ["SCHERZO_DRIVER_SCRIPT", "SCHERZO_WORKSPACE_DRIVER"]:
+        raw = env_value(env_name)
+        if raw is None:
+            continue
+        candidate = candidate_core_from_script_path(raw)
+        if candidate is not None:
+            append_valid_core_candidate(candidates, candidate)
+    for candidate in core_candidates_from_repo_links():
+        append_valid_core_candidate(candidates, candidate)
+    if candidates:
+        return candidates[0]
+    fail(
+        "portable symlink bridge needed but could not locate a Scherzo core "
+        "checkout from SCHERZO_DRIVER_SCRIPT, SCHERZO_WORKSPACE_DRIVER, or "
+        "SCHERZO_REPO_ROOT"
+    )
+
+
+def portable_link_uses_bridge(
+    workspace_path: Path,
+    rel: str,
+    suffix: str,
+) -> bool:
+    link = workspace_path / Path(rel)
+    if not link.is_symlink():
+        return False
+    try:
+        raw_target = os.readlink(link)
+    except OSError as exc:
+        fail(f"portable symlink preflight failed: could not read {link}: {exc}")
+
+    target_path = Path(raw_target)
+    target_abs = lexical_absolute(
+        target_path if target_path.is_absolute() else link.parent / target_path
+    )
+    expected_abs = lexical_absolute(
+        workspace_path.parent / PORTABLE_SCHERZO_BRIDGE_NAME / Path(suffix)
+    )
+    uses_bridge = not target_path.is_absolute() and target_abs == expected_abs
+    if not uses_bridge and not link.exists():
+        fail(
+            "portable symlink preflight failed before review lanes: "
+            f"{rel} in {workspace_path} is broken; target {raw_target!r} "
+            f"resolves to {target_abs}, not expected sibling bridge path "
+            f"{expected_abs}"
+        )
+    return uses_bridge
+
+
+def portable_bridge_link_rels(workspace_path: Path) -> list[str]:
+    rels: list[str] = []
+    for rel, suffix in PORTABLE_SCHERZO_LINKS:
+        if portable_link_uses_bridge(workspace_path, rel, suffix):
+            rels.append(rel)
+    return rels
+
+
+def ensure_scherzo_bridge_path(bridge: Path, core_checkout: Path) -> None:
+    if bridge.is_symlink():
+        try:
+            current = bridge.resolve(strict=True)
+        except OSError:
+            fail(
+                f"portable symlink bridge collision: {bridge} is a broken symlink"
+            )
+        if current != core_checkout:
+            fail(
+                "portable symlink bridge collision: "
+                f"{bridge} points to {current}, expected {core_checkout}"
+            )
+        return
+    if bridge.exists():
+        fail(
+            "portable symlink bridge collision: "
+            f"{bridge} exists and is not a symlink to {core_checkout}"
+        )
+    try:
+        os.symlink(str(core_checkout), str(bridge), target_is_directory=True)
+    except FileExistsError:
+        ensure_scherzo_bridge_path(bridge, core_checkout)
+    except OSError as exc:
+        fail(
+            "could not create portable symlink bridge "
+            f"{bridge} -> {core_checkout}: {exc}"
+        )
+
+
+def verify_portable_bridge_links(
+    workspace_path: Path,
+    core_checkout: Path,
+    bridge_rels: list[str],
+) -> None:
+    for rel in bridge_rels:
+        link = workspace_path / Path(rel)
+        try:
+            actual = link.resolve(strict=True)
+        except OSError as exc:
+            fail(
+                "portable symlink preflight failed before review lanes: "
+                f"{rel} in {workspace_path} still does not resolve after "
+                f"creating/verifying {workspace_path.parent / PORTABLE_SCHERZO_BRIDGE_NAME}: {exc}"
+            )
+        try:
+            expected = (core_checkout / Path(rel)).resolve(strict=True)
+        except OSError as exc:
+            fail(
+                "portable symlink bridge target is not a complete Scherzo core "
+                f"checkout: {core_checkout / Path(rel)} is missing: {exc}"
+            )
+        if actual != expected:
+            fail(
+                "portable symlink preflight failed before review lanes: "
+                f"{rel} in {workspace_path} resolved to {actual}, expected {expected}"
+            )
+
+
+def ensure_portable_scherzo_bridge(workspace_path: Path) -> None:
+    bridge_rels = portable_bridge_link_rels(workspace_path)
+    if not bridge_rels:
+        return
+    core_checkout = scherzo_core_checkout_for_bridge()
+    bridge = workspace_path.parent / PORTABLE_SCHERZO_BRIDGE_NAME
+    ensure_scherzo_bridge_path(bridge, core_checkout)
+    verify_portable_bridge_links(workspace_path, core_checkout, bridge_rels)
+
+
 def first_existing_revision(repo_root: Path, candidates: list[str]) -> str | None:
     for candidate in candidates:
         if revision_exists(repo_root, candidate):
@@ -428,6 +639,8 @@ def verify_current_workspace(workspace_path: Path) -> None:
     current_root = run_jj_root(workspace_path)
     if current_root != str(workspace_path):
         fail(f"jj root does not match workspace path: expected {workspace_path}, got {current_root}")
+
+    ensure_portable_scherzo_bridge(workspace_path)
 
     status = run_backend_stream(["jj", "status", "--color=never"], cwd=workspace_path)
     if status != 0:
@@ -533,6 +746,8 @@ def forget_workspace_children(base: Path) -> None:
     if not base.is_dir():
         return
     for target in sorted(base.iterdir()):
+        if target.is_symlink():
+            continue
         if target.is_dir() and (target / ".jj").is_dir():
             forget_workspace_at(target)
 

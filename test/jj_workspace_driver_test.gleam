@@ -23,6 +23,14 @@ fn reset_dir(path: String) -> Nil {
   Nil
 }
 
+fn tmp_fixture_dir(name: String) -> String {
+  let base = case path.env("TMPDIR") {
+    Some(value) -> value
+    None -> "/tmp"
+  }
+  base <> "/scherzo-" <> name
+}
+
 fn absolute(value: String) -> String {
   path.absolute(value) |> result_unwrap(value)
 }
@@ -50,6 +58,21 @@ fn chmod_executable(path: String) -> Nil {
     )
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
+}
+
+fn assert_symlink_target(link: String, target: String) -> Nil {
+  let artifact =
+    command_step.run(
+      "readlink_symlink",
+      "test -L " <> shell_quote(link) <> " && readlink " <> shell_quote(link),
+      ".",
+      5000,
+      [],
+      limits(),
+    )
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.trim(artifact.stdout) == target
 }
 
 fn write_fake_jj(path: String) -> Nil {
@@ -91,6 +114,11 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  target=\n"
         <> "  for arg in \"$@\"; do target=$arg; done\n"
         <> "  mkdir -p \"$target/.jj\" || exit 1\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_PORTABLE_LINKS:-}\" = 1 ]; then\n"
+        <> "    mkdir -p \"$target/.scherzo\" || exit 1\n"
+        <> "    ln -s ../scherzo/scripts \"$target/scripts\" || exit 1\n"
+        <> "    ln -s ../../scherzo/.scherzo/workflows \"$target/.scherzo/workflows\" || exit 1\n"
+        <> "  fi\n"
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = root ]; then pwd -P; exit 0; fi\n"
@@ -586,6 +614,77 @@ pub fn jj_driver_derived_workspace_uses_source_at_and_skips_base_fetch_test() {
   assert string.contains(logged, "--revision @")
 }
 
+pub fn jj_driver_lifecycle_create_bridges_portable_scherzo_symlinks_test() {
+  let dir = tmp_fixture_dir("jj-workspace-driver-portable-symlinks")
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+  let bridge = absolute(dir <> "/workspaces/scherzo")
+  let assert Ok(core_checkout) = path.realpath(".")
+
+  let artifact =
+    run_jj(
+      "jj_driver_portable_symlink_bridge",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_JJ_WORKSPACE_BASE", "@"),
+        #("SCHERZO_FAKE_JJ_PORTABLE_LINKS", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert_symlink_target(bridge, core_checkout)
+  assert simplifile.is_directory(bridge) == Ok(True)
+  assert simplifile.is_directory(workspace <> "/scripts") == Ok(True)
+  assert simplifile.is_file(
+      workspace
+      <> "/.scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json",
+    )
+    == Ok(True)
+  let assert [_, _, "root", "root", "status --color=never"] = log_lines(log)
+
+  let lane = absolute(dir <> "/workspaces/correctness")
+  let lane_artifact =
+    run_jj(
+      "jj_driver_portable_symlink_bridge_lane",
+      "lifecycle create",
+      fake_env(lane, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_SOURCE_WORKSPACE_PATH", workspace),
+        #("SCHERZO_FAKE_JJ_PORTABLE_LINKS", "1"),
+      ]),
+    )
+
+  assert_exit(lane_artifact, 0)
+  assert simplifile.is_file(
+      lane
+      <> "/.scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json",
+    )
+    == Ok(True)
+}
+
+pub fn jj_driver_lifecycle_create_fails_when_portable_bridge_collides_test() {
+  let dir = tmp_fixture_dir("jj-workspace-driver-portable-symlink-collision")
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+  let bridge = absolute(dir <> "/workspaces/scherzo")
+  let assert Ok(Nil) = simplifile.create_directory_all(bridge)
+
+  let artifact =
+    run_jj(
+      "jj_driver_portable_symlink_collision",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_JJ_WORKSPACE_BASE", "@"),
+        #("SCHERZO_FAKE_JJ_PORTABLE_LINKS", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stderr, "portable symlink bridge collision")
+  assert string.contains(artifact.stderr, bridge)
+  assert !string.contains(log_text(log), "status --color=never")
+}
+
 pub fn jj_driver_refresh_base_uses_jj_specific_aliases_test() {
   let dir = "test/tmp/jj-workspace-driver-refresh-aliases"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
@@ -923,6 +1022,49 @@ pub fn jj_driver_lifecycle_before_step_verifies_workspace_test() {
 
   assert_exit(artifact, 0)
   assert log_lines(log) == ["root", "root", "status --color=never"]
+}
+
+pub fn jj_driver_lifecycle_before_step_reports_broken_portable_symlink_test() {
+  let dir = tmp_fixture_dir("jj-workspace-driver-before-step-broken-symlink")
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+  let assert Ok(Nil) =
+    path.symlink("../not-scherzo/scripts", workspace <> "/scripts")
+
+  let artifact =
+    run_jj(
+      "jj_driver_before_step_broken_symlink",
+      "lifecycle before-step",
+      fake_env(workspace, bin, log, []),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stderr, "portable symlink preflight failed")
+  assert string.contains(artifact.stderr, "scripts")
+  assert string.contains(artifact.stderr, "before review lanes")
+  assert log_lines(log) == ["root", "root"]
+}
+
+pub fn jj_driver_lifecycle_remove_skips_portable_scherzo_bridge_test() {
+  let dir = tmp_fixture_dir("jj-workspace-driver-remove-portable-bridge")
+  let #(_, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let core_checkout = absolute(dir <> "/core")
+  let bridge = run_root <> "/workspaces/scherzo"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+  let assert Ok(Nil) = simplifile.create_directory_all(core_checkout <> "/.jj")
+  let assert Ok(Nil) = path.symlink(core_checkout, bridge)
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_skips_portable_bridge",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [#("SCHERZO_RUN_ROOT", run_root)]),
+    )
+
+  assert_exit(artifact, 0)
+  assert log_lines(log) == ["root", "workspace forget"]
 }
 
 pub fn jj_driver_lifecycle_remove_forgets_run_workspaces_test() {
