@@ -15,6 +15,7 @@ import scherzo/linear
 import scherzo/linear_triage
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/poll_jitter
 import scherzo/path
 import scherzo/result_artifact
 import scherzo/runtime_bundle
@@ -390,6 +391,54 @@ fn base_dependencies(
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
+}
+
+pub fn daemon_schedules_jittered_recurring_poll_after_immediate_tick_test() {
+  let workflow_path = write_workflow("test/tmp/daemon-poll-jitter", 1)
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([]) },
+    )
+  let log_subject = process.new_subject()
+  let log_fields_subject = process.new_subject()
+  let timer_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      logger: fn(_, event, fields, _) {
+        process.send(log_fields_subject, #(event, fields))
+        Ok(Nil)
+      },
+      send_after: fn(_, delay_ms, message) {
+        process.send(timer_subject, #(delay_ms, message))
+        daemon.TestTimer(delay_ms)
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert process.receive(timer_subject, within: 1000)
+    == Ok(#(0, daemon.PollTick(1)))
+  process.send(started.data, daemon.PollTick(1))
+
+  let assert Ok(#(delay_ms, daemon.PollTick(2))) =
+    process.receive(timer_subject, within: 1000)
+  let jitter_bound_ms = poll_jitter.jitter_bound_ms(1000)
+  assert delay_ms > 0
+  assert delay_ms >= 1000 - jitter_bound_ms
+  assert delay_ms <= 1000 + jitter_bound_ms
+
+  let assert Ok(fields) =
+    wait_for_log_fields(log_fields_subject, "next_poll_scheduled", 20)
+  let field_map = dict.from_list(fields)
+  assert dict.get(field_map, "generation") == Ok("2")
+  assert dict.get(field_map, "polling_interval_ms") == Ok("1000")
+  assert dict.get(field_map, "polling_jitter_bound_ms")
+    == Ok(int_to_string(jitter_bound_ms))
+  assert dict.get(field_map, "next_poll_delay_ms")
+    == Ok(int_to_string(delay_ms))
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
 fn disabled_linear_commands() -> linear.CommandClient {
@@ -909,6 +958,25 @@ fn wait_for_event_result(
   quiet_attempts: Int,
 ) -> Result(List(String), List(String)) {
   wait_for_event_result_loop(subject, event, quiet_attempts, [])
+}
+
+fn wait_for_log_fields(
+  subject: process.Subject(#(String, List(#(String, String)))),
+  event: String,
+  quiet_attempts: Int,
+) -> Result(List(#(String, String)), Nil) {
+  case quiet_attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case process.receive(subject, within: 500) {
+        Ok(#(received, fields)) ->
+          case received == event {
+            True -> Ok(fields)
+            False -> wait_for_log_fields(subject, event, quiet_attempts - 1)
+          }
+        Error(_) -> wait_for_log_fields(subject, event, quiet_attempts - 1)
+      }
+  }
 }
 
 fn wait_for_event_result_loop(

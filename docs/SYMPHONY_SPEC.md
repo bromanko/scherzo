@@ -575,7 +575,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
-- `polling.interval_ms`: integer, default `30000`
+- `polling.interval_ms`: integer, default `30000`; recurring daemon polls add bounded jitter of 10% of this value, with a 1 ms floor, and the computed delay is always positive
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
@@ -697,9 +697,12 @@ Distinct terminal reasons are important because retry logic and logs differ.
 ### 8.1 Poll Loop
 
 At startup, the service validates config, performs startup cleanup, schedules an immediate tick, and
-then repeats every `polling.interval_ms`.
+then repeats around `polling.interval_ms` with bounded jitter. The jitter bound is 10% of
+`polling.interval_ms`, with a 1 ms floor, and the computed delay is always positive. This reduces
+aligned Linear API bursts when multiple Scherzo daemons run across repositories or instances.
 
-The effective poll interval SHOULD be updated when workflow config changes are re-applied.
+The effective poll interval SHOULD be updated when workflow config changes are re-applied. Operators
+SHOULD be able to observe the effective next poll delay in logs or status output.
 
 Tick sequence:
 

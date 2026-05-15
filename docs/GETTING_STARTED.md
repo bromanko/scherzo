@@ -129,6 +129,10 @@ tracker:
 polling:
   interval_ms: 30000
 
+# Daemon mode runs one immediate startup poll, then schedules recurring Linear polls at
+# interval_ms plus bounded jitter. The jitter bound is 10% of interval_ms, with a 1 ms
+# floor, and the effective delay is always positive.
+
 workspace:
   # Relative to .scherzo/scherzo.yaml, so this becomes .scherzo/workspaces/.
   root: workspaces
@@ -669,6 +673,7 @@ Before daemon mode:
 - Enable handoff or establish a manual policy that removes completed issues from dispatch states.
 - Keep an operator watching the first several runs.
 - Run only one Scherzo instance per Linear project and canonical workspace root.
+- For multi-repo or multi-instance operations, rely on the built-in poll jitter; it spreads recurring Linear requests around `polling.interval_ms` and logs `next_poll_scheduled` with the effective next delay.
 
 Set `agent.max_concurrent_agents: 0` to pause new dispatch while keeping daemon reload and reconciliation alive.
 
