@@ -169,7 +169,10 @@ pub fn to_legacy_issue(
           let TaskLabel(name: name, ..) = label
           name
         }),
-        blocked_by: list.filter_map(blockers, task_ref_to_legacy_blocker),
+        blocked_by: case blockers_complete {
+          True -> []
+          False -> list.filter_map(blockers, task_ref_to_legacy_blocker)
+        },
         blocked_by_complete: blockers_complete,
         created_at: created_at,
         updated_at: updated_at,

@@ -1,6 +1,8 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import scherzo/agent/types as agent_types
 import scherzo/task
+import scherzo/tracker/issue as tracker_issue
 
 pub type TrackerAdapter {
   TrackerAdapter(
@@ -81,6 +83,7 @@ pub type RemoteCommandFetch {
   RemoteCommandFetch(
     task_refs: List(task.TaskRef),
     since_event_ids: List(String),
+    limit_per_task: Int,
   )
 }
 
@@ -130,11 +133,39 @@ pub type LinkCapability {
   )
 }
 
+pub type ParkReport {
+  ParkReport(
+    task: task.TaskRef,
+    issue_identifier: String,
+    reason: String,
+    release_policy: Option(String),
+    run_id: Option(String),
+  )
+}
+
 pub type HandoffEvent {
   HandoffClaim(task: task.TaskRef, workspace_path: String, run_id: String)
   HandoffSuccess(task: task.TaskRef, run_id: String, summary: String)
   HandoffFailure(task: task.TaskRef, run_id: String, reason: String)
   HandoffPark(task: task.TaskRef, reason: String, release_policy: String)
+  LegacyHandoffClaim(
+    issue: tracker_issue.Issue,
+    workspace_path: String,
+    run_id: String,
+  )
+  LegacyHandoffSuccess(
+    issue: tracker_issue.Issue,
+    success: agent_types.WorkerSuccess,
+    run_id: String,
+    workflow_id: String,
+  )
+  LegacyHandoffFailure(
+    issue: tracker_issue.Issue,
+    failure: agent_types.WorkerFailure,
+    run_id: String,
+    workflow_id: String,
+  )
+  LegacyHandoffPark(report: ParkReport)
 }
 
 pub type HandoffCapability {
@@ -145,12 +176,19 @@ pub type ScheduledFailurePublication {
   ScheduledFailurePublication(
     job_id: String,
     workflow_id: String,
+    due_at_ms: Int,
     run_id: String,
+    attempt: Int,
+    max_attempts: Int,
+    reason: String,
+    run_root: Option(String),
+    session_id: Option(String),
     dedupe_key: String,
     title: String,
     body: String,
     labels: List(String),
     target_state_name: Option(String),
+    previous_task_remote_id: Option(String),
   )
 }
 

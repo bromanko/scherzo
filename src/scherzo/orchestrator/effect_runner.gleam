@@ -1,33 +1,32 @@
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/error
-import scherzo/handoff
-import scherzo/linear
-import scherzo/linear_triage
 import scherzo/orchestrator/effects/interpreter as transition_interpreter
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
 import scherzo/orchestrator/transition_types
-import scherzo/scheduled_failure_reporter
+import scherzo/task
 import scherzo/tracker
+import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
 pub type Effect {
   FetchCandidates(generation: Int, client: tracker.Client)
-  FetchLinearCommands(
+  FetchRemoteCommands(
     generation: Int,
-    issue_ids: List(String),
+    task_refs: List(task.TaskRef),
     candidates: List(tracker_issue.Issue),
     dispatch_after: Bool,
-    client: linear.CommandClient,
-    limit_per_issue: Int,
+    capability: adapter.RemoteCommandCapability,
+    limit_per_task: Int,
   )
   RefreshRunning(generation: Int, ids: List(String), client: tracker.Client)
   RefreshRetry(issue_id: String, generation: Int, client: tracker.Client)
@@ -40,7 +39,7 @@ pub type Effect {
     issue: tracker_issue.Issue,
     workspace_path: String,
     run_id: String,
-    client: handoff.Client,
+    capability: adapter.HandoffCapability,
   )
   ReportSuccess(
     issue_id: String,
@@ -48,7 +47,7 @@ pub type Effect {
     success: agent_types.WorkerSuccess,
     run_id: String,
     workflow_id: String,
-    client: handoff.Client,
+    capability: adapter.HandoffCapability,
   )
   ReportFailure(
     issue_id: String,
@@ -56,26 +55,30 @@ pub type Effect {
     failure: agent_types.WorkerFailure,
     run_id: String,
     workflow_id: String,
-    client: handoff.Client,
+    capability: adapter.HandoffCapability,
   )
-  ReportPark(report: handoff.ParkReport, client: handoff.Client)
-  PostLinearCommandAck(
-    issue_id: String,
-    source_comment_id: String,
+  ReportPark(report: adapter.ParkReport, capability: adapter.HandoffCapability)
+  PostRemoteCommandAck(
+    backend_kind: String,
+    task_remote_id: String,
+    event_id: String,
     body: String,
-    client: linear.CommandClient,
+    outbox_kind: String,
+    capability: adapter.RemoteCommandCapability,
   )
   ReportInvalidWorkflow(
     issue: tracker_issue.Issue,
     violation: workflow_policy.IssueWorkflowViolation,
     violation_fingerprint: String,
     reporting_policy_fingerprint: String,
-    client: linear_triage.TriageClient,
+    contract_config: config_types.LinearContractConfig,
+    comments: Option(adapter.CommentCapability),
+    state_transitions: Option(adapter.StateTransitionCapability),
   )
   ReportScheduledFailure(
     generation: Int,
-    request: scheduled_failure_reporter.FailureReportRequest,
-    client: scheduled_failure_reporter.Client,
+    publication: adapter.ScheduledFailurePublication,
+    capability: adapter.ScheduledFailureCapability,
   )
   CleanupWorkspace(
     root: String,
@@ -93,16 +96,23 @@ pub type DispatchClaimValidationError {
   DispatchValidationIdMismatch(expected: String, actual: String)
 }
 
+pub type InvalidWorkflowReportOutcome {
+  InvalidWorkflowReportNoop
+  InvalidWorkflowReportComment
+  InvalidWorkflowReportState
+  InvalidWorkflowReportCommentAndState
+}
+
 pub type EffectResult {
   CandidateFetchFinished(
     Int,
     Result(List(tracker_issue.Issue), error.TrackerError),
   )
-  LinearCommandFetchFinished(
+  RemoteCommandFetchFinished(
     Int,
     List(tracker_issue.Issue),
     Bool,
-    Result(List(linear.LinearComment), error.TrackerError),
+    Result(List(adapter.RemoteCommandEvent), error.TrackerError),
   )
   RunningRefreshFinished(
     Int,
@@ -122,23 +132,23 @@ pub type EffectResult {
   HandoffSuccessFinished(String, String, Result(Nil, error.TrackerError))
   HandoffFailureFinished(String, String, Result(Nil, error.TrackerError))
   HandoffParkFinished(String, Result(Nil, error.TrackerError))
-  LinearCommandAckFinished(String, String, Result(Nil, error.TrackerError))
+  RemoteCommandAckFinished(
+    backend_kind: String,
+    task_remote_id: String,
+    event_id: String,
+    outbox_kind: String,
+    result: Result(Nil, error.TrackerError),
+  )
   InvalidWorkflowReportFinished(
     issue_id: String,
     violation_fingerprint: String,
     reporting_policy_fingerprint: String,
-    result: Result(
-      linear_triage.InvalidWorkflowReportOutcome,
-      error.TrackerError,
-    ),
+    result: Result(InvalidWorkflowReportOutcome, error.TrackerError),
   )
   ScheduledFailureReportFinished(
     generation: Int,
-    request: scheduled_failure_reporter.FailureReportRequest,
-    result: Result(
-      scheduled_failure_reporter.FailureReportOutcome,
-      error.TrackerError,
-    ),
+    publication: adapter.ScheduledFailurePublication,
+    result: Result(adapter.ScheduledFailureReceipt, error.TrackerError),
   )
   CleanupFinished(String, Result(Nil, error.WorkspaceError))
 }
@@ -179,7 +189,7 @@ pub fn reply_snapshot(
       mark_poll_in_flight: fn(data, _) { data },
       schedule_next_poll: fn(data) { data },
       fetch_candidates: fn(data, _) { data },
-      fetch_linear_commands: fn(data, _, _, _, _) { data },
+      fetch_remote_commands: fn(data, _, _, _, _) { data },
       begin_dispatch_validation: fn(data, _, _) { data },
       reserve_session_sequence: fn(data, _) { data },
       claim_issue: fn(data, _, _, _) { data },
@@ -200,7 +210,7 @@ pub fn reply_snapshot(
       report_worker_failure: fn(data, _, _) { data },
       cleanup_workspace: fn(data, _) { data },
       park_issue: fn(data, _, _) { data },
-      replay_linear_command_ack: fn(data, _, _, _) { data },
+      replay_remote_command_ack: fn(data, _, _, _, _, _) { data },
       report_park: fn(data, _) { data },
       stop_worker: fn(data, _, _) { data },
       stop_worker_after_issue_refresh: fn(data, _, _) { data },
@@ -223,7 +233,7 @@ pub fn reply_snapshot(
         )
       },
       finish_operator_command: fn(data, _, _) { #(data, []) },
-      post_linear_command_ack: fn(data, _, _, _) { data },
+      post_remote_command_ack: fn(data, _, _, _, _, _) { data },
       report_park_effect: fn(data, _, _, _, _, _) { data },
     )
   let transition_runner.RunResult(exhausted: _, ..) =
@@ -340,7 +350,7 @@ pub fn shutdown(handle: Handle, timeout_ms: Int) -> Result(Nil, Nil) {
 pub fn effect_kind(effect: Effect) -> String {
   case effect {
     FetchCandidates(_, _) -> "fetch_candidates"
-    FetchLinearCommands(_, _, _, _, _, _) -> "fetch_linear_commands"
+    FetchRemoteCommands(_, _, _, _, _, _) -> "fetch_remote_commands"
     RefreshRunning(_, _, _) -> "refresh_running"
     RefreshRetry(_, _, _) -> "refresh_retry"
     ValidateDispatchClaim(_, _, _) -> "validate_dispatch_claim"
@@ -348,8 +358,8 @@ pub fn effect_kind(effect: Effect) -> String {
     ReportSuccess(_, _, _, _, _, _) -> "report_success"
     ReportFailure(_, _, _, _, _, _) -> "report_failure"
     ReportPark(_, _) -> "report_park"
-    PostLinearCommandAck(_, _, _, _) -> "post_linear_command_ack"
-    ReportInvalidWorkflow(_, _, _, _, _) -> "report_invalid_workflow"
+    PostRemoteCommandAck(_, _, _, _, _, _) -> "post_remote_command_ack"
+    ReportInvalidWorkflow(_, _, _, _, _, _, _) -> "report_invalid_workflow"
     ReportScheduledFailure(_, _, _) -> "report_scheduled_failure"
     CleanupWorkspace(_, _, _, _) -> "cleanup_workspace"
   }
@@ -519,23 +529,209 @@ fn normalize_dispatch_claim_validation(
   }
 }
 
+fn adapter_result(
+  result: Result(a, adapter.TrackerError),
+) -> Result(a, error.TrackerError) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(err) -> Error(adapter_error_to_tracker_error(err))
+  }
+}
+
+fn adapter_error_to_tracker_error(
+  err: adapter.TrackerError,
+) -> error.TrackerError {
+  error.LinearApiRequest(adapter_error_message(err))
+}
+
+fn adapter_error_message(err: adapter.TrackerError) -> String {
+  case err {
+    adapter.Unauthorized(message) -> message
+    adapter.NotFound(ref) -> "task not found: " <> ref.remote_id
+    adapter.Transient(message) -> message
+    adapter.Permanent(message) -> message
+    adapter.UnsupportedCapability(capability) ->
+      "unsupported tracker capability: " <> capability
+    adapter.DecodeFailed(message) -> message
+  }
+}
+
+fn post_remote_command_ack(
+  capability: adapter.RemoteCommandCapability,
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
+  body: String,
+) -> Result(Nil, adapter.TrackerError) {
+  let event =
+    adapter.RemoteCommandEvent(
+      event_id: event_id,
+      task: task.TaskRef(
+        backend_kind: backend_kind,
+        remote_id: task_remote_id,
+        key: None,
+        url: None,
+      ),
+      author_id: "",
+      body: "",
+      command_name: "",
+      excerpt: "",
+      observed_at_ms: 0,
+    )
+  use _ <- try_adapter(
+    capability.post_ack(adapter.RemoteCommandAck(event: event, body: body)),
+  )
+  Ok(Nil)
+}
+
+fn report_invalid_workflow(
+  issue: tracker_issue.Issue,
+  violation: workflow_policy.IssueWorkflowViolation,
+  contract_config: config_types.LinearContractConfig,
+  comments: Option(adapter.CommentCapability),
+  state_transitions: Option(adapter.StateTransitionCapability),
+) -> Result(InvalidWorkflowReportOutcome, error.TrackerError) {
+  let comment_enabled = contract_config.comment_on_invalid_workflow
+  let state_id = normalized_optional(contract_config.invalid_workflow_state_id)
+  case comment_enabled, state_id {
+    False, None -> Ok(InvalidWorkflowReportNoop)
+    True, None -> {
+      use Nil <- try_tracker_adapter(post_invalid_workflow_comment(
+        issue,
+        violation,
+        contract_config,
+        comments,
+      ))
+      Ok(InvalidWorkflowReportComment)
+    }
+    False, Some(state_id) -> {
+      use Nil <- try_tracker_adapter(transition_invalid_workflow_state(
+        issue,
+        state_id,
+        state_transitions,
+      ))
+      Ok(InvalidWorkflowReportState)
+    }
+    True, Some(state_id) -> {
+      use Nil <- try_tracker_adapter(post_invalid_workflow_comment(
+        issue,
+        violation,
+        contract_config,
+        comments,
+      ))
+      use Nil <- try_tracker_adapter(transition_invalid_workflow_state(
+        issue,
+        state_id,
+        state_transitions,
+      ))
+      Ok(InvalidWorkflowReportCommentAndState)
+    }
+  }
+}
+
+fn post_invalid_workflow_comment(
+  issue: tracker_issue.Issue,
+  violation: workflow_policy.IssueWorkflowViolation,
+  contract_config: config_types.LinearContractConfig,
+  comments: Option(adapter.CommentCapability),
+) -> Result(Nil, adapter.TrackerError) {
+  case comments {
+    None -> Error(adapter.UnsupportedCapability("comments"))
+    Some(comments) -> {
+      let body =
+        workflow_policy.violation_comment(
+          issue.identifier,
+          violation,
+          contract_config,
+        )
+      use _ <- try_adapter(
+        comments.post_or_update(adapter.CommentRequest(
+          task: task.from_legacy_issue(issue).ref,
+          body: body,
+          mode: adapter.CreateOnly,
+        )),
+      )
+      Ok(Nil)
+    }
+  }
+}
+
+fn transition_invalid_workflow_state(
+  issue: tracker_issue.Issue,
+  state_id: String,
+  state_transitions: Option(adapter.StateTransitionCapability),
+) -> Result(Nil, adapter.TrackerError) {
+  case state_transitions {
+    None -> Error(adapter.UnsupportedCapability("state_transitions"))
+    Some(state_transitions) -> {
+      use _ <- try_adapter(
+        state_transitions.transition(adapter.StateTransitionRequest(
+          task: task.from_legacy_issue(issue).ref,
+          target_state_id: Some(state_id),
+          target_state_name: state_id,
+          reason: "invalid_workflow",
+        )),
+      )
+      Ok(Nil)
+    }
+  }
+}
+
+fn normalized_optional(value: Option(String)) -> Option(String) {
+  case value {
+    Some(value) -> {
+      case string.trim(value) == "" {
+        True -> None
+        False -> Some(value)
+      }
+    }
+    None -> None
+  }
+}
+
+fn try_adapter(
+  result: Result(a, adapter.TrackerError),
+  next: fn(a) -> Result(b, adapter.TrackerError),
+) -> Result(b, adapter.TrackerError) {
+  case result {
+    Ok(value) -> next(value)
+    Error(err) -> Error(err)
+  }
+}
+
+fn try_tracker_adapter(
+  result: Result(a, adapter.TrackerError),
+  next: fn(a) -> Result(b, error.TrackerError),
+) -> Result(b, error.TrackerError) {
+  case result {
+    Ok(value) -> next(value)
+    Error(err) -> Error(adapter_error_to_tracker_error(err))
+  }
+}
+
 fn run_side_effect(effect: Effect) -> EffectResult {
   case effect {
     FetchCandidates(generation, client) ->
       CandidateFetchFinished(generation, client.fetch_candidate_issues())
-    FetchLinearCommands(
+    FetchRemoteCommands(
       generation,
-      issue_ids,
+      task_refs,
       candidates,
       dispatch_after,
-      client,
-      limit_per_issue,
+      capability,
+      limit_per_task,
     ) ->
-      LinearCommandFetchFinished(
+      RemoteCommandFetchFinished(
         generation,
         candidates,
         dispatch_after,
-        client.fetch_comments(issue_ids, limit_per_issue),
+        adapter_result(
+          capability.fetch_events(adapter.RemoteCommandFetch(
+            task_refs: task_refs,
+            since_event_ids: [],
+            limit_per_task: limit_per_task,
+          )),
+        ),
       )
     RefreshRunning(generation, ids, client) ->
       RunningRefreshFinished(generation, client.fetch_issue_states_by_ids(ids))
@@ -554,46 +750,96 @@ fn run_side_effect(effect: Effect) -> EffectResult {
           client.fetch_issue_states_by_ids([issue_id]),
         ),
       )
-    ClaimIssue(issue, _workspace_path, run_id, client) ->
-      HandoffClaimFinished(issue.id, run_id, client.claim_issue(issue, run_id))
-    ReportSuccess(issue_id, issue, success, run_id, workflow_id, client) ->
+    ClaimIssue(issue, workspace_path, run_id, capability) ->
+      HandoffClaimFinished(
+        issue.id,
+        run_id,
+        adapter_result(
+          capability.report(adapter.LegacyHandoffClaim(
+            issue,
+            workspace_path,
+            run_id,
+          )),
+        ),
+      )
+    ReportSuccess(issue_id, issue, success, run_id, workflow_id, capability) ->
       HandoffSuccessFinished(
         issue_id,
         run_id,
-        client.report_success_for_workflow(issue, success, run_id, workflow_id),
+        adapter_result(
+          capability.report(adapter.LegacyHandoffSuccess(
+            issue,
+            success,
+            run_id,
+            workflow_id,
+          )),
+        ),
       )
-    ReportFailure(issue_id, issue, failure, run_id, workflow_id, client) ->
+    ReportFailure(issue_id, issue, failure, run_id, workflow_id, capability) ->
       HandoffFailureFinished(
         issue_id,
         run_id,
-        client.report_failure_for_workflow(issue, failure, run_id, workflow_id),
+        adapter_result(
+          capability.report(adapter.LegacyHandoffFailure(
+            issue,
+            failure,
+            run_id,
+            workflow_id,
+          )),
+        ),
       )
-    ReportPark(report, client) ->
-      HandoffParkFinished(report.issue_id, client.report_park(report))
-    PostLinearCommandAck(issue_id, source_comment_id, body, client) ->
-      LinearCommandAckFinished(
-        issue_id,
-        source_comment_id,
-        client.post_ack(issue_id, body),
+    ReportPark(report, capability) ->
+      HandoffParkFinished(
+        report.task.remote_id,
+        adapter_result(capability.report(adapter.LegacyHandoffPark(report))),
+      )
+    PostRemoteCommandAck(
+      backend_kind,
+      task_remote_id,
+      event_id,
+      body,
+      outbox_kind,
+      capability,
+    ) ->
+      RemoteCommandAckFinished(
+        backend_kind,
+        task_remote_id,
+        event_id,
+        outbox_kind,
+        adapter_result(post_remote_command_ack(
+          capability,
+          backend_kind,
+          task_remote_id,
+          event_id,
+          body,
+        )),
       )
     ReportInvalidWorkflow(
       issue,
       violation,
       violation_fingerprint,
       reporting_policy_fingerprint,
-      client,
+      contract_config,
+      comments,
+      state_transitions,
     ) ->
       InvalidWorkflowReportFinished(
         issue.id,
         violation_fingerprint,
         reporting_policy_fingerprint,
-        client.report_invalid_workflow(issue, violation),
+        report_invalid_workflow(
+          issue,
+          violation,
+          contract_config,
+          comments,
+          state_transitions,
+        ),
       )
-    ReportScheduledFailure(generation, request, client) ->
+    ReportScheduledFailure(generation, publication, capability) ->
       ScheduledFailureReportFinished(
         generation,
-        request,
-        client.report_failure(request),
+        publication,
+        adapter_result(capability.publish(publication)),
       )
     CleanupWorkspace(root, workspace_path, hooks, cleanup) ->
       CleanupFinished(workspace_path, cleanup(root, workspace_path, hooks))

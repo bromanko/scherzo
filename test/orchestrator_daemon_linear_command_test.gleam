@@ -19,7 +19,10 @@ import scherzo/session/name as session_name
 import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/record
+import scherzo/task
 import scherzo/tracker
+import scherzo/tracker/adapter
+import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
@@ -515,6 +518,78 @@ fn expect_string_contains_all(text: String, fragments: List(String)) -> Nil {
   }
 }
 
+fn adapter_from_clients(
+  tracker_client: tracker.Client,
+  linear_command_client: linear.CommandClient,
+) -> adapter.TrackerAdapter {
+  adapter.TrackerAdapter(
+    ..adapter_legacy.adapter_from_legacy_client(tracker_client, "linear"),
+    comments: Some(
+      adapter.CommentCapability(post_or_update: fn(request) {
+        Ok(adapter.CommentReceipt(
+          id: "comment",
+          task: request.task,
+          url: None,
+          created: True,
+        ))
+      }),
+    ),
+    remote_commands: Some(
+      adapter.RemoteCommandCapability(
+        fetch_events: fn(request) {
+          let issue_ids = list.map(request.task_refs, fn(ref) { ref.remote_id })
+          use comments <- try_test_tracker(linear_command_client.fetch_comments(
+            issue_ids,
+            request.limit_per_task,
+          ))
+          Ok(
+            list.map(comments, fn(comment) {
+              adapter.RemoteCommandEvent(
+                event_id: comment.id,
+                task: task.TaskRef(
+                  backend_kind: "linear",
+                  remote_id: comment.issue_id,
+                  key: None,
+                  url: None,
+                ),
+                author_id: comment.author.id,
+                body: comment.body,
+                command_name: "",
+                excerpt: comment.body,
+                observed_at_ms: comment.created_at_ms,
+              )
+            }),
+          )
+        },
+        post_ack: fn(ack) {
+          let adapter.RemoteCommandAck(event: event, body: body) = ack
+          use Nil <- try_test_tracker(linear_command_client.post_ack(
+            event.task.remote_id,
+            body,
+          ))
+          Ok(adapter.CommentReceipt(
+            id: event.event_id,
+            task: event.task,
+            url: None,
+            created: True,
+          ))
+        },
+      ),
+    ),
+  )
+}
+
+fn try_test_tracker(
+  result: Result(a, error.TrackerError),
+  next: fn(a) -> Result(b, adapter.TrackerError),
+) -> Result(b, adapter.TrackerError) {
+  case result {
+    Ok(value) -> next(value)
+    Error(error.LinearApiRequest(message)) -> Error(adapter.Permanent(message))
+    Error(_) -> Error(adapter.Permanent("tracker error"))
+  }
+}
+
 fn dependencies(
   tracker_client: tracker.Client,
   linear_command_client: linear.CommandClient,
@@ -531,12 +606,8 @@ fn dependencies(
   ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
-    make_tracker: fn(_) { tracker_client },
-    make_handoff: fn(_, _) { handoff.disabled_client() },
-    make_linear_commands: fn(_) { linear_command_client },
-    make_triage: fn(_, _) { linear_triage.disabled_client() },
-    make_scheduled_failure_reporter: fn(_) {
-      scheduled_failure_reporter.disabled_client()
+    make_tracker_adapter: fn(_) {
+      adapter_from_clients(tracker_client, linear_command_client)
     },
     workflow_run_dependencies: workflow_deps_from_agent(agent_runner),
     cleanup: fn(_, _, _) { Ok(Nil) },
@@ -556,8 +627,12 @@ fn dependencies(
 
 fn log_value(event: String, fields: List(#(String, String))) -> String {
   case event {
-    "linear_operator_command" ->
-      event <> ":" <> field(fields, "command") <> ":" <> field(fields, "status")
+    "linear_operator_command" | "remote_operator_command" ->
+      "linear_operator_command:"
+      <> field(fields, "command")
+      <> ":"
+      <> field(fields, "status")
+    "remote_command_ack_failed" -> "linear_command_ack_failed"
     _ -> event
   }
 }
@@ -720,15 +795,12 @@ pub fn park_command_suppresses_invalid_workflow_triage_test() {
   let linear_server =
     start_linear_server(fetch_subject, ack_subject, ack_target_subject)
   let deps =
-    daemon.RuntimeDependencies(
-      ..dependencies(
-        tracker_with(candidate),
-        linear_client(linear_server),
-        log_subject,
-        unused_agent,
-      ),
-      make_triage: fn(_, _) { fake_triage(triage_subject) },
-    )
+    daemon.RuntimeDependencies(..dependencies(
+      tracker_with(candidate),
+      linear_client(linear_server),
+      log_subject,
+      unused_agent,
+    ))
   process.send(
     linear_server,
     SetNext([
@@ -931,21 +1003,25 @@ pub fn completed_unacked_command_replays_ack_without_reapplying_test() {
       issue_fingerprint: "",
       observed_updated_at_ms: 100,
     ),
-    record.LinearCommandSeen(
-      comment_id: "c-replay",
-      issue_id: "issue-1",
+    record.RemoteCommandSeen(
+      backend_kind: "linear",
+      event_id: "c-replay",
+      task_remote_id: "issue-1",
+      task_key: None,
       author_id: "user-1",
       command_name: "park",
       excerpt: "hold",
     ),
-    record.LinearCommandStarted(
-      comment_id: "c-replay",
-      issue_id: "issue-1",
+    record.RemoteCommandStarted(
+      backend_kind: "linear",
+      event_id: "c-replay",
+      task_remote_id: "issue-1",
       command_name: "park",
     ),
-    record.LinearCommandCompleted(
-      comment_id: "c-replay",
-      issue_id: "issue-1",
+    record.RemoteCommandCompleted(
+      backend_kind: "linear",
+      event_id: "c-replay",
+      task_remote_id: "issue-1",
       status: "applied",
       message_excerpt: "issue parked",
     ),
@@ -982,30 +1058,34 @@ pub fn startup_ack_outbox_replay_suppresses_duplicate_receipt_ack_test() {
   let workspace_root = effective_workspace_root(workflow_dir)
   let harness = linear_command_harness(workflow_dir)
   append_ledger_bodies_for_root(workspace_root, [
-    record.LinearCommandSeen(
-      comment_id: "c-replay",
-      issue_id: "issue-1",
+    record.RemoteCommandSeen(
+      backend_kind: "linear",
+      event_id: "c-replay",
+      task_remote_id: "issue-1",
+      task_key: None,
       author_id: "user-1",
       command_name: "park",
       excerpt: "hold",
     ),
-    record.LinearCommandStarted(
-      comment_id: "c-replay",
-      issue_id: "issue-1",
+    record.RemoteCommandStarted(
+      backend_kind: "linear",
+      event_id: "c-replay",
+      task_remote_id: "issue-1",
       command_name: "park",
     ),
-    record.LinearCommandCompleted(
-      comment_id: "c-replay",
-      issue_id: "issue-1",
+    record.RemoteCommandCompleted(
+      backend_kind: "linear",
+      event_id: "c-replay",
+      task_remote_id: "issue-1",
       status: "applied",
       message_excerpt: "issue parked",
     ),
     record.OutboxPendingV2(
       outbox_id: "c-replay",
       issue_id: "issue-1",
-      outbox_kind: "linear_command_ack",
-      dedupe_key: "linear_command_ack:c-replay",
-      payload_json: "{\"type\":\"linear_command_ack\",\"source_comment_id\":\"c-replay\",\"body\":\"pending ack\"}",
+      outbox_kind: "remote_command_ack",
+      dedupe_key: "remote_command_ack:linear:c-replay",
+      payload_json: "{\"type\":\"remote_command_ack\",\"backend_kind\":\"linear\",\"event_id\":\"c-replay\",\"task_remote_id\":\"issue-1\",\"body\":\"pending ack\"}",
     ),
   ])
   let assert Ok(started) =
@@ -1034,30 +1114,34 @@ pub fn linear_command_ack_outbox_survives_recovery_test() {
   let workspace_root = effective_workspace_root(workflow_dir)
   let harness = linear_command_harness(workflow_dir)
   append_ledger_bodies_for_root(workspace_root, [
-    record.LinearCommandSeen(
-      comment_id: "comment-1",
-      issue_id: "issue-1",
+    record.RemoteCommandSeen(
+      backend_kind: "linear",
+      event_id: "comment-1",
+      task_remote_id: "issue-1",
+      task_key: None,
       author_id: "user-1",
       command_name: "retry",
       excerpt: "/scherzo retry",
     ),
-    record.LinearCommandStarted(
-      comment_id: "comment-1",
-      issue_id: "issue-1",
+    record.RemoteCommandStarted(
+      backend_kind: "linear",
+      event_id: "comment-1",
+      task_remote_id: "issue-1",
       command_name: "retry",
     ),
-    record.LinearCommandCompleted(
-      comment_id: "comment-1",
-      issue_id: "issue-1",
+    record.RemoteCommandCompleted(
+      backend_kind: "linear",
+      event_id: "comment-1",
+      task_remote_id: "issue-1",
       status: "applied",
       message_excerpt: "Retry queued",
     ),
     record.OutboxPendingV2(
       outbox_id: "comment-1",
       issue_id: "issue-1",
-      outbox_kind: "linear_command_ack",
-      dedupe_key: "linear_command_ack:comment-1",
-      payload_json: "{\"type\":\"linear_command_ack\",\"body\":\"Retry queued\"}",
+      outbox_kind: "remote_command_ack",
+      dedupe_key: "remote_command_ack:linear:comment-1",
+      payload_json: "{\"type\":\"remote_command_ack\",\"backend_kind\":\"linear\",\"event_id\":\"comment-1\",\"task_remote_id\":\"issue-1\",\"body\":\"Retry queued\"}",
     ),
   ])
   let assert Ok(started) =
@@ -1094,16 +1178,19 @@ pub fn started_uncompleted_command_gets_unknown_ack_without_reapplying_test() {
   let workspace_root = effective_workspace_root(workflow_dir)
   let harness = linear_command_harness(workflow_dir)
   append_ledger_bodies_for_root(workspace_root, [
-    record.LinearCommandSeen(
-      comment_id: "c-unknown",
-      issue_id: "issue-1",
+    record.RemoteCommandSeen(
+      backend_kind: "linear",
+      event_id: "c-unknown",
+      task_remote_id: "issue-1",
+      task_key: None,
       author_id: "user-1",
       command_name: "park",
       excerpt: "hold",
     ),
-    record.LinearCommandStarted(
-      comment_id: "c-unknown",
-      issue_id: "issue-1",
+    record.RemoteCommandStarted(
+      backend_kind: "linear",
+      event_id: "c-unknown",
+      task_remote_id: "issue-1",
       command_name: "park",
     ),
   ])
@@ -1209,22 +1296,22 @@ fn command_record_kinds(
   records
   |> list.filter_map(fn(ledger_record) {
     case ledger_record.body {
-      record.LinearCommandSeen(comment_id: id, ..) ->
+      record.RemoteCommandSeen(event_id: id, ..) ->
         case id == comment_id {
           True -> Ok("seen")
           False -> Error(Nil)
         }
-      record.LinearCommandStarted(comment_id: id, ..) ->
+      record.RemoteCommandStarted(event_id: id, ..) ->
         case id == comment_id {
           True -> Ok("started")
           False -> Error(Nil)
         }
-      record.LinearCommandCompleted(comment_id: id, ..) ->
+      record.RemoteCommandCompleted(event_id: id, ..) ->
         case id == comment_id {
           True -> Ok("completed")
           False -> Error(Nil)
         }
-      record.LinearCommandAcked(comment_id: id, ..) ->
+      record.RemoteCommandAcked(event_id: id, ..) ->
         case id == comment_id {
           True -> Ok("acked")
           False -> Error(Nil)

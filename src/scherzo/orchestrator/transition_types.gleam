@@ -4,9 +4,6 @@ import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/linear_parser
-import scherzo/handoff
-import scherzo/linear
-
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/review_lane_preflight
@@ -16,6 +13,7 @@ import scherzo/session/reason as session_reason
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/state/recovery
+import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 
@@ -38,7 +36,7 @@ pub type Message {
     retry_timers: List(recovery.RecoveredRetry),
     cleanup_workspaces: List(recovery.CleanupRequest),
     outbox_to_replay: List(recovery.OutboxReplay),
-    park_reports: List(handoff.ParkReport),
+    park_reports: List(adapter.ParkReport),
     warnings: List(String),
     secrets: List(String),
   )
@@ -56,38 +54,43 @@ pub type Message {
     result: Result(List(tracker_issue.Issue), String),
     context: DispatchContext,
   )
-  LinearCommandSubmitted(
-    comment: linear.LinearComment,
+  RemoteCommandSubmitted(
+    event: adapter.RemoteCommandEvent,
     parsed: linear_parser.ParsedLinearCommand,
     safe_excerpt: String,
   )
-  LinearCommandApplied(
-    comment_id: String,
-    issue_id: String,
+  RemoteCommandApplied(
+    backend_kind: String,
+    event_id: String,
+    task_remote_id: String,
     command_name: String,
     result: command.CommandResult,
     message_excerpt: String,
     ack_body: Option(String),
   )
-  LinearCommandAckRequested(
-    issue_id: String,
-    source_comment_id: String,
+  RemoteCommandAckRequested(
+    backend_kind: String,
+    task_remote_id: String,
+    event_id: String,
     body: String,
     outbox_recorded: Bool,
+    outbox_kind: String,
   )
-  LinearCommandAckFinished(
-    issue_id: String,
-    source_comment_id: String,
+  RemoteCommandAckFinished(
+    backend_kind: String,
+    task_remote_id: String,
+    event_id: String,
+    outbox_kind: String,
     result: Result(Nil, String),
   )
-  RetryPendingLinearCommandAcks
+  RetryPendingRemoteCommandAcks
   OperatorCommandSubmitted(
     request: effects_types.OperatorCommandRequest,
     context: DispatchContext,
     issue_resolution: OperatorIssueResolution,
     parked_issue_resolution: ParkedIssueResolution,
   )
-  LinearCommandPhaseFinished(
+  RemoteCommandPhaseFinished(
     candidates: List(tracker_issue.Issue),
     dispatch_after: Bool,
     context: DispatchContext,
@@ -215,7 +218,13 @@ pub type WorkerDownResolution {
 }
 
 pub type PendingLinearCommandAck {
-  PendingLinearCommandAck(issue_id: String, body: String, outbox_recorded: Bool)
+  PendingLinearCommandAck(
+    backend_kind: String,
+    task_remote_id: String,
+    body: String,
+    outbox_recorded: Bool,
+    outbox_kind: String,
+  )
 }
 
 pub type OperatorIssueResolution {

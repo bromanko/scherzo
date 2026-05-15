@@ -116,12 +116,19 @@ pub fn fake_adapter_comment_transition_and_scheduled_failure_seams_test() {
     publish(adapter.ScheduledFailurePublication(
       job_id: "nightly",
       workflow_id: "nightly",
+      due_at_ms: 0,
       run_id: "run-1",
+      attempt: 1,
+      max_attempts: 1,
+      reason: "workflow failed",
+      run_root: None,
+      session_id: None,
       dedupe_key: "scheduled-job:nightly",
       title: "Nightly failed",
       body: "workflow failed",
       labels: ["job:nightly"],
       target_state_name: Some("Triage"),
+      previous_task_remote_id: None,
     ))
   assert failure_receipt
     == adapter.ScheduledFailureReceipt(

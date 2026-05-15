@@ -20,6 +20,8 @@ import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/tracker
+import scherzo/tracker/adapter
+import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
@@ -161,14 +163,9 @@ fn dependencies(
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     ..daemon.default_dependencies(),
-    make_tracker: fn(_) {
-      tracker.Client(
-        fetch_candidate_issues: fn() { Ok([]) },
-        fetch_issues_by_states: fn(_) { Ok([]) },
-        fetch_issue_states_by_ids: fn(_) { Ok([]) },
-      )
+    make_tracker_adapter: fn(_) {
+      adapter_legacy.adapter_from_legacy_client(empty_tracker(), "linear")
     },
-    make_handoff: fn(_, _) { handoff.disabled_client() },
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, fields, _) {
       process.send(log_subject, control_log_value(event, fields))
@@ -184,9 +181,12 @@ fn dependencies_with_tracker(
   log_subject: process.Subject(String),
   tracker_client: tracker.Client,
 ) -> daemon.RuntimeDependencies {
-  daemon.RuntimeDependencies(..dependencies(log_subject), make_tracker: fn(_) {
-    tracker_client
-  })
+  daemon.RuntimeDependencies(
+    ..dependencies(log_subject),
+    make_tracker_adapter: fn(_) {
+      adapter_legacy.adapter_from_legacy_client(tracker_client, "linear")
+    },
+  )
 }
 
 fn in_process_dependencies(
@@ -207,13 +207,64 @@ fn in_process_dependencies(
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     ..dependencies_with_tracker(log_subject, tracker_client),
-    make_handoff: fn(_, _) { handoff_client },
+    make_tracker_adapter: fn(_) {
+      adapter.TrackerAdapter(
+        ..adapter_legacy.adapter_from_legacy_client(tracker_client, "linear"),
+        handoff: Some(test_handoff_capability(handoff_client)),
+      )
+    },
     workflow_run_dependencies: workflow_deps_from_agent(agent_runner),
     start_event_hub: fn() { Ok(hub_subject) },
     make_control_token: fn() { Ok("test-token") },
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
+}
+
+fn test_handoff_capability(
+  client: handoff.Client,
+) -> adapter.HandoffCapability {
+  adapter.HandoffCapability(report: fn(event) {
+    case event {
+      adapter.LegacyHandoffClaim(issue, _, run_id) ->
+        map_tracker_nil(client.claim_issue(issue, run_id))
+      adapter.LegacyHandoffSuccess(issue, success, run_id, workflow_id) ->
+        map_tracker_nil(client.report_success_for_workflow(
+          issue,
+          success,
+          run_id,
+          workflow_id,
+        ))
+      adapter.LegacyHandoffFailure(issue, failure, run_id, workflow_id) ->
+        map_tracker_nil(client.report_failure_for_workflow(
+          issue,
+          failure,
+          run_id,
+          workflow_id,
+        ))
+      adapter.LegacyHandoffPark(report) ->
+        map_tracker_nil(
+          client.report_park(handoff.ParkReport(
+            issue_id: report.task.remote_id,
+            issue_identifier: report.issue_identifier,
+            reason: report.reason,
+            release_policy: report.release_policy,
+            run_id: report.run_id,
+          )),
+        )
+      _ -> Ok(Nil)
+    }
+  })
+}
+
+fn map_tracker_nil(
+  result: Result(Nil, error.TrackerError),
+) -> Result(Nil, adapter.TrackerError) {
+  case result {
+    Ok(Nil) -> Ok(Nil)
+    Error(error.LinearApiRequest(message)) -> Error(adapter.Permanent(message))
+    Error(_) -> Error(adapter.Permanent("tracker error"))
+  }
 }
 
 fn workflow_deps_from_agent(
@@ -451,7 +502,14 @@ pub fn daemon_park_and_unpark_commands_mutate_runtime_state_test() {
   let deps =
     daemon.RuntimeDependencies(
       ..dependencies_with_tracker(log_subject, tracker_client),
-      make_handoff: fn(_, _) { park_reporting_handoff(park_subject) },
+      make_tracker_adapter: fn(_) {
+        adapter.TrackerAdapter(
+          ..adapter_legacy.adapter_from_legacy_client(tracker_client, "linear"),
+          handoff: Some(
+            test_handoff_capability(park_reporting_handoff(park_subject)),
+          ),
+        )
+      },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let assert Ok(path) = process.receive(log_subject, within: 1000)
