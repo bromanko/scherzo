@@ -305,11 +305,50 @@ def json_pointer(parts: Any) -> str:
     return "/" + "/".join(rendered) if rendered else ""
 
 
-def load_submission(path: Path) -> dict[str, Any]:
+def load_submission(path: Path, lane_id: str) -> dict[str, Any]:
     value = load_json(path)
     if not isinstance(value, dict):
         raise ContractError("review_lane_submission_shape_invalid", "provider submission must be a JSON object")
-    return value
+    return unwrap_structured_output_artifact(value, lane_id)
+
+
+def unwrap_structured_output_artifact(value: dict[str, Any], lane_id: str) -> dict[str, Any]:
+    """Accept Scherzo's persisted structured-output wrapper and return its payload.
+
+    Agent steps persist captured tool arguments as a runner-owned
+    ``structured_output`` artifact whose top-level object contains Scherzo
+    metadata and a model-owned ``payload`` object. Review-lane materialization
+    validates only the model-owned provider submission, so real workflow runs
+    must unwrap this artifact before applying the provider contract.
+    """
+    if value.get("artifact_type") != "structured_output":
+        return value
+
+    metadata = lane_metadata(lane_id)
+    wrapper_errors: list[str] = []
+    if value.get("schema_version") != 1:
+        wrapper_errors.append("schema_version must be 1")
+    if value.get("format") != "json":
+        wrapper_errors.append("format must be json")
+    if value.get("step_id") != metadata["step_id"]:
+        wrapper_errors.append(f"step_id must be {metadata['step_id']}")
+    if value.get("artifact_name") != metadata["artifact_name"]:
+        wrapper_errors.append(f"artifact_name must be {metadata['artifact_name']}")
+    if value.get("source_type") != "pi_tool_call":
+        wrapper_errors.append("source_type must be pi_tool_call")
+    if value.get("source_tool_name") != "submit_review_lane_draft":
+        wrapper_errors.append("source_tool_name must be submit_review_lane_draft")
+
+    payload = value.get("payload")
+    if not isinstance(payload, dict):
+        wrapper_errors.append("payload must be a JSON object")
+
+    if wrapper_errors:
+        raise ContractError(
+            "review_lane_structured_output_artifact_invalid",
+            "invalid structured-output artifact for review-lane materialization: " + "; ".join(wrapper_errors),
+        )
+    return payload
 
 
 def validate_model_owned_submission(submission: dict[str, Any], lane_id: str) -> None:
@@ -353,7 +392,7 @@ def materialize_submission(
     output_path: Path,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    submission = load_submission(submission_path)
+    submission = load_submission(submission_path, lane_id)
     validate_model_owned_submission(submission, lane_id)
     artifact = {
         "$schema": CONTRACT_SCHEMA_REF,
