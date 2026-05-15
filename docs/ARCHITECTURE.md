@@ -19,8 +19,8 @@ section points you there.
 Runtime flow:
 
 ```text
-Linear issues
-  -> src/scherzo/linear.gleam tracker client
+Tracker tasks (Linear issues in the production adapter today)
+  -> src/scherzo/tracker/linear_adapter.gleam and legacy Linear tracker client
   -> src/scherzo/runtime_bundle.gleam routing by workflow label
   -> YAML workflow DAG in .scherzo/workflows/ or examples/workflows/
   -> src/scherzo/orchestrator/daemon.gleam poll/retry/control actor
@@ -28,7 +28,7 @@ Linear issues
   -> command steps via src/scherzo/command_step.gleam
      or agent steps via src/scherzo/agent/* + src/scherzo/pi/*
   -> session events in src/scherzo/session/hub.gleam
-  -> handoff/Linear comments via src/scherzo/handoff.gleam
+  -> handoff/tracker comments, currently Linear comments
   -> durable state under workspace.root/.scherzo-state/
 ```
 
@@ -37,7 +37,7 @@ Startup/recovery flow:
 ```text
 scherzo main -> orchestrator service -> runtime_bundle.load
   -> ledger.replay + projection fold
-  -> refresh ledger-known Linear issues
+  -> refresh ledger-known tasks, currently Linear issues
   -> state/recovery.plan + workflow candidate finalization
   -> append recovery records with fsync
   -> start EventHub, control server, effect runner, poll scheduler
@@ -61,7 +61,7 @@ scripts/scherzoctl / scherzo ctl
 | --- | --- | --- |
 | CLI/service startup | `src/scherzo/main.gleam`, `src/scherzo/orchestrator/service.gleam`, `src/scherzo/runtime_bundle.gleam` | CLI modes, doctor, once/daemon startup, config/workflow bundle loading. |
 | Config types/resolution | `src/scherzo/config.gleam`, `src/scherzo/config/types.gleam`, `src/scherzo/model_config.gleam` | YAML orchestrator config is resolved to typed `EffectiveConfig`/`OrchestratorConfig`; runtime `.md` workflows are no longer supported. |
-| Linear/tracker/handoff | `src/scherzo/tracker.gleam`, `src/scherzo/linear.gleam`, `src/scherzo/handoff.gleam`, `src/scherzo/linear_*` | Linear GraphQL transport, issue normalization, board contract checks, comments/state changes, attachments. |
+| Task/tracker adapter/handoff | `src/scherzo/task.gleam`, `src/scherzo/tracker/adapter.gleam`, `src/scherzo/tracker/linear_adapter.gleam`, `src/scherzo/tracker.gleam`, `src/scherzo/linear.gleam`, `src/scherzo/handoff.gleam`, `src/scherzo/linear_*` | Backend-neutral task model and capability contract, Linear GraphQL transport, issue compatibility normalization, board contract checks, comments/state changes, attachments. |
 | Workflow DAGs | `src/scherzo/workflow_dag.gleam`, `src/scherzo/workflow_scheduler.gleam`, `src/scherzo/workflow_run.gleam`, `src/scherzo/workflow_fingerprint.gleam`, `src/scherzo/workspace_run.gleam` | Parse/validate YAML DAGs, schedule ready steps, prepare step workspaces, execute agent/command steps, checkpoint durable facts. |
 | Orchestrator | `src/scherzo/orchestrator/daemon.gleam`, `core.gleam`, `state.gleam`, `effect_runner.gleam`, `worker_registry.gleam`, `workflow_reloader.gleam`, `control_command_handler.gleam` | Daemon actor owns polling, retry timers, claims, running sessions, reload, side-effect queue, and local controls. `core.gleam` is the pure policy layer. |
 | Agent/pi execution | `src/scherzo/agent/run_attempt.gleam`, `turn_loop.gleam`, `operator_control.gleam`, `worker_command.gleam`, `src/scherzo/pi/client.gleam`, `protocol.gleam`, `command.gleam` | Launch pi RPC, send prompts/abort/UI responses, stream turn records, record token/session observations. |
@@ -119,17 +119,18 @@ scripts/scherzoctl / scherzo ctl
 
 - `orchestrator/daemon.gleam` is the side-effecting actor. Keep pure decisions
   in `orchestrator/core.gleam` where possible.
-- Candidate dispatch preconditions include required issue fields, active and
-  non-terminal state, no running/claimed worker for the issue, not parked,
+- Candidate dispatch preconditions include required task fields, active and
+  non-terminal state, no running/claimed worker for the task, not parked,
   blockers satisfied, workflow-policy satisfied, global concurrency, and
   per-state concurrency.
 - `agent.max_concurrent_agents: 0` pauses new dispatch while daemon reload and
   reconciliation remain alive.
-- Dispatch validates the issue with a fresh tracker read before claim/handoff.
-- Claims, handoff comments, Linear command acknowledgements, invalid-workflow
+- Dispatch validates the task with a fresh tracker read before claim/handoff.
+- Claims, handoff comments, remote command acknowledgements, invalid-workflow
   reports, tracker refreshes, and orchestrator cleanup effects run through
   `effect_runner.gleam`; workflow-run cleanup is part of
-  `workflow_run.gleam` dependencies.
+  `workflow_run.gleam` dependencies. Some compatibility paths still use Linear
+  names; see `docs/runbooks/tracker-adapters.md` for the current coupling map.
 - The daemon owns session registration in the EventHub and command-subject
   routing for active workflow step sessions.
 - Retry counters and max-session parking must remain durable through the ledger;
@@ -157,16 +158,17 @@ scripts/scherzoctl / scherzo ctl
   bounded excerpts, bounded/redacted outbox payloads, artifact refs, and
   recovery facts. Do not store API keys, raw pi JSON, full prompts, or full
   Linear comment bodies.
-- Startup recovery replays ledger state, refreshes known Linear issue ids in
-  chunks of 50, plans retry/park/outbox/cleanup recovery, finalizes active
-  workflow candidates, and appends recovery records with fsync before polling.
+- Startup recovery replays ledger state, refreshes known task ids in chunks of
+  50, plans retry/park/outbox/cleanup recovery, finalizes active workflow
+  candidates, and appends recovery records with fsync before polling. Current
+  durable records keep issue-shaped fields for Linear compatibility.
 - Live Erlang ports and live pi streams do not survive restart. A current pi
   session id after restart is not proof that the previous process resumed.
 - Interrupted command steps are unsafe to retry automatically. Interrupted agent
   steps may be rerun, or continued only when step-scoped session persistence is
   enabled and the exact workspace/session facts validate.
-- Workflow recovery parks rather than silently resumes when the issue is
-  unavailable, the selected workflow is unavailable, workflow/issue fingerprint
+- Workflow recovery parks rather than silently resumes when the task is
+  unavailable, the selected workflow is unavailable, workflow/task fingerprint
   drift is detected, artifact recovery fails, or workspace safety checks fail.
 
 ### Control protocol and operator commands
@@ -182,10 +184,11 @@ scripts/scherzoctl / scherzo ctl
 - Mutating local commands (`pause`, `resume`, `reload`, `retry`, `park`,
   `unpark`, `abort`, `stop-after-turn`, `prompt`, `ui respond`) enter the daemon
   as `OperatorCommand` values and must return explicit `CommandResult` statuses.
-- Linear comment commands are optional (`linear_commands.enabled`). They are
-  authorized by explicit Linear user id allowlist, parsed from one command line
-  outside fenced code blocks, and tracked durably with seen/started/completed/
-  acked receipts.
+- Remote task comments can provide operator commands when the adapter supports
+  them. The current production path is Linear comment commands
+  (`linear_commands.enabled`), authorized by explicit Linear user id allowlist,
+  parsed from one command line outside fenced code blocks, and tracked durably
+  with seen/started/completed/acked receipts.
 
 ### FFI boundary
 
@@ -212,7 +215,7 @@ and add tests that exercise the public Gleam wrapper, not just the Erlang helper
 ## Schema-change checklist
 
 Use this checklist for ledger, projection snapshot, artifact, control protocol,
-config, workflow YAML, or Linear payload shape changes.
+config, workflow YAML, tracker task shape, or Linear payload shape changes.
 
 1. Identify the owning module:
    - Ledger records: `src/scherzo/state/record.gleam`.
@@ -253,7 +256,7 @@ Use direnv-backed commands from the repository root.
 | `direnv exec . scherzo-test-contract` | Shell-heavy helper-script, workflow, renderer, and workspace-driver contract coverage excluded from the default unit loop. SelfCI runs this suite for the final dogfood gate. |
 | `direnv exec . scherzo-test-local-integration` | Workspace drivers, jj workspace behavior, local integration paths. |
 | `direnv exec . scherzo-test-real-pi-validation` | Real pi/session-persistence changes only; requires pi, credentials, network, and time. |
-| `LINEAR_API_KEY=... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` | Real-board readiness after config, workflow, Linear contract, workspace lifecycle, or pi launch changes. |
+| `LINEAR_API_KEY=... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` | Real-board readiness after config, workflow, tracker/Linear contract, workspace lifecycle, or pi launch changes. |
 | `direnv exec . selfci check --base main@origin --candidate @ --print-output` | Canonical final gate for Scherzo dogfood implementation workflows and broad changes. |
 
 SelfCI vs direct checks:
@@ -347,20 +350,20 @@ Touch:
 - `src/scherzo/orchestrator/effect_runner.gleam` for async side effects
 - `src/scherzo/orchestrator/worker_registry.gleam` for session/worker routing
 - `src/scherzo/orchestrator/workflow_reloader.gleam` for reload behavior
-- `src/scherzo/handoff.gleam` and `src/scherzo/linear*.gleam` for Linear writes
+- `src/scherzo/tracker/adapter.gleam`, `src/scherzo/tracker/linear_adapter.gleam`, `src/scherzo/handoff.gleam`, and `src/scherzo/linear*.gleam` for tracker/Linear writes
 - Ledger/checkpoint modules if the transition must survive restart
 
 Must preserve:
 
 - Pure dispatch logic remains testable in `core.gleam`.
 - A claim/dispatch cannot start for inactive, terminal, parked, blocked,
-  duplicate running/claimed, over-capacity, or workflow-invalid issues.
+  duplicate running/claimed, over-capacity, or workflow-invalid tasks.
 - Refresh/claim validation happens before dispatch side effects.
 - Retry/session counters are durable and do not double-count the same recovered
   interrupted run.
 - Parking release policy is explicit: operator parks require unpark; auto-unpark
-  compares issue fingerprints.
-- Handoff and Linear side effects are auditable but not exactly-once; preserve
+  compares task fingerprints.
+- Handoff and tracker side effects are auditable but not exactly-once; preserve
   dedupe/source ids when adding new outbox-like behavior.
 - Shutdown removes the control file, stops workers, stops effect runner, and
   releases the instance lock on graceful path.
@@ -402,7 +405,7 @@ Must preserve:
 - Projection snapshots encode/decode the full projected state.
 - Artifact writes happen before step-finished records reference them.
 - Pending outbox replay requires bounded v2 payloads.
-- Recovery refreshes Linear state before dispatching from local facts.
+- Recovery refreshes tracker task state before dispatching from local facts.
 - Unsafe interrupted command steps and drifted workflows park instead of silently
   rerunning/resuming.
 - Cleanup is conservative, path-safe, symlink-safe, dry-run-first, and writes
@@ -422,10 +425,11 @@ Run tests:
 - `test/state_local_artifacts_test.gleam`
 - `test/ctl_test.gleam` for offline state/cleanup CLI changes
 
-## If changing Linear tracker, handoff, or control protocol
+## If changing tracker adapters, Linear integration, handoff, or control protocol
 
 Touch:
 
+- `src/scherzo/task.gleam`, `src/scherzo/tracker/adapter.gleam`, and `src/scherzo/tracker/linear_adapter.gleam`
 - `src/scherzo/linear.gleam`, `src/scherzo/linear_*`
 - `src/scherzo/handoff.gleam`, `src/scherzo/handoff_format.gleam`
 - `src/scherzo/linear_contract.gleam`, `src/scherzo/linear_triage.gleam`
@@ -442,8 +446,9 @@ Touch:
 
 Must preserve:
 
-- Tracker reads normalize Linear data into `tracker/issue.gleam` and do not leak
-  raw GraphQL details into orchestrator policy.
+- Tracker reads normalize task data through the adapter boundary and preserve
+  Linear `tracker/issue.gleam` compatibility without leaking raw GraphQL details
+  into orchestrator policy.
 - Handoff can be disabled and must honor configured comment/state booleans.
 - Linear attachment fallback remains safe for non-HTTPS or changed bodyData
   shapes.
@@ -452,7 +457,8 @@ Must preserve:
 - Mutating commands return stable status strings and bounded/redacted messages.
 - Linear command comments require explicit user-id authorization and durable
   receipts; completed-but-unacked commands are acknowledged after restart
-  without reapplying the command.
+  without reapplying the command. Future remote-command adapters must preserve
+  the same authorization, dedupe, and acknowledgement invariants.
 
 Run tests:
 
@@ -582,6 +588,7 @@ Run checks:
 - `docs/plans/local-control-api-and-scherzoctl.md` and
   `docs/plans/mutating-operator-controls.md`: history for local control.
 - `docs/plans/linear-command-transport.md`: history for Linear comment commands.
+- `docs/runbooks/tracker-adapters.md`: current tracker adapter capability matrix and remaining Linear compatibility surfaces.
 - `docs/plans/hardening-02-local-durable-state-ledger.md` and
   `docs/plans/hardening-03-single-instance-crash-recovery.md`: ledger/recovery
   history.

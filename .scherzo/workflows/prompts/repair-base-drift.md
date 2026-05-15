@@ -1,9 +1,9 @@
-Repair base drift for Scherzo's implementation workflow on Linear issue {{ issue.identifier }}: {{ issue.title }}.
+Repair base drift for Scherzo's implementation workflow on task {{ issue.identifier }}: {{ issue.title }}.
 
-Issue URL:
+Task URL:
 {{ issue.url }}
 
-Issue labels:
+Task labels:
 {% for label in issue.labels %}
 - {{ label }}
 {% endfor %}

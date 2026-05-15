@@ -1,6 +1,6 @@
-Prepare the final implementation report for Linear issue {{ issue.identifier }}: {{ issue.title }}.
+Prepare the final implementation report for task {{ issue.identifier }}: {{ issue.title }}.
 
-Issue description:
+Task description:
 {{ issue.description }}
 
 Implementation summary:

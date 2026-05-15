@@ -49,15 +49,15 @@ export LINEAR_API_KEY=lin_api_...
 export LINEAR_DEFAULT_PROJECT=Scherzo
 # Optional. Defaults to openai-codex/gpt-5.5:xhigh for workflow:research.
 export SCHERZO_RESEARCH_PI_MODEL=openai-codex/gpt-5.5:xhigh
-# Optional. Defaults to openai-codex/gpt-5.5:xhigh for workflow:execplan, workflow:execplan-revision, and workflow:execplan-implementation.
+# Optional. Defaults to openai-codex/gpt-5.5:xhigh for ExecPlan v1/v2 drafting, revision, and implementation workflows.
 export SCHERZO_EXECPLAN_PI_MODEL=openai-codex/gpt-5.5:xhigh
-# Optional. Git remote used by workflow:implementation, workflow:execplan, workflow:execplan-revision, workflow:execplan-implementation, and workflow:merge-conflict-resolution.
+# Optional. Git remote used by implementation, ExecPlan v1/v2, and merge-conflict workflows that publish PRs.
 export SCHERZO_PR_REMOTE=origin
-# Optional. PR base used by workflow:implementation, workflow:execplan, workflow:execplan-implementation, and branch-targeted workflow:merge-conflict-resolution runs.
+# Optional. PR base used by implementation, ExecPlan v1/v2 implementation, and branch-targeted merge-conflict runs.
 export SCHERZO_PR_BASE=main
 # Optional. Defaults to the owner/repo inferred from SCHERZO_PR_REMOTE.
 export SCHERZO_PR_REPO=bromanko/scherzo
-# Optional. State for follow-up issues created by workflow:execplan. Defaults to Backlog so implementation waits for plan PR merge.
+# Optional. State for follow-up tasks created by workflow:execplan. Defaults to Backlog so implementation waits for plan PR merge.
 export SCHERZO_EXECPLAN_IMPLEMENTATION_STATE=Backlog
 # Optional. Defaults to the repository root inferred from .scherzo/scherzo.yaml.
 export SCHERZO_REPO_ROOT=$(pwd)
@@ -66,7 +66,7 @@ export SCHERZO_ORIGIN_SYNC_REMOTE=origin
 export SCHERZO_ORIGIN_SYNC_BRANCH=main
 ```
 
-The checked-in `tracker.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository. The `dogfood-jj` driver profile can infer the repository root from `.scherzo/scherzo.yaml`, while setting `SCHERZO_REPO_ROOT` makes the driver command independent of the current directory layout.
+The checked-in `tracker.linear.project_slug` targets the Linear project `scherzo-f6f4bc92d6d7`. `SCHERZO_REPO_ROOT` is optional for checked-in workflows in this repository. The `dogfood-jj` driver profile can infer the repository root from `.scherzo/scherzo.yaml`, while setting `SCHERZO_REPO_ROOT` makes the driver command independent of the current directory layout.
 
 ### Scherzo agent devenv profile
 
@@ -143,13 +143,16 @@ direnv exec . devenv shell -P scherzo-agent scherzo-agent-run
 - `Duplicate`
 - `Triage`
 
-The project must also make these issue labels assignable:
+The Linear project must also make these workflow labels assignable:
 
 - `workflow:research`
 - `workflow:implementation`
 - `workflow:execplan`
 - `workflow:execplan-revision`
 - `workflow:execplan-implementation`
+- `workflow:execplan-v2`
+- `workflow:execplan-revision-v2`
+- `workflow:execplan-implementation-v2`
 - `workflow:merge-conflict-resolution`
 - `needs-workflow`
 - `needs-clarification`
@@ -157,26 +160,31 @@ The project must also make these issue labels assignable:
 Run the contract check after changing workflow labels, states, or team membership:
 
 ```sh
-LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check linear-contract .scherzo/scherzo.yaml
+LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check tracker-contract .scherzo/scherzo.yaml
 ```
+
+`linear-contract` remains a compatibility alias for the Linear adapter.
 
 ## Dogfood workflows
 
 The checked-in workflows are:
 
 - `workflow:research` — investigates with `openai-codex/gpt-5.5:xhigh`, writes `research-findings.md`, verifies the file, and uses that Markdown as the inline Linear result text.
-- `workflow:implementation` — fetches Linear ticket context directly, implements without requiring an ExecPlan, detects changed files across the full workflow diff, generates a local schema-versioned review brief under `$SCHERZO_RUN_ROOT/artifacts/review/`, runs repo-local staged review lanes through `scripts/scherzo-review`, validates format and tests through direnv, publishes a final jj bookmark as a GitHub PR, and lets Scherzo delete the workspace only after publication. If the workflow stops before publication, a `.scherzo-keep-workspace` marker keeps the run directory for operator recovery instead of deleting unpushed work.
-- `workflow:execplan` — uses workflow-packaged ExecPlan guidance with `openai-codex/gpt-5.5:xhigh` to draft a single checked-in Markdown ExecPlan source file at `docs/plans/<plan>.md`, adversarially review it, incorporate the review, push a jj bookmark, open a ready GitHub PR, and create or reuse a follow-up `workflow:execplan-implementation` Linear issue in `Backlog`. The final validation and publish commands print `PRIMARY_PLAN_ARTIFACT=...`, `PLAN_MARKDOWN_PATH=...`, and `PLAN_PATH=...` pointing at the checked-in `docs/plans/*.md` file. HTML previews are derived viewer artifacts only and are not authoritative workflow output. The follow-up issue references the Markdown plan path and PR but stays out of Scherzo's active `Todo`/`In Progress` dispatch states until a human merges the plan PR and moves the implementation issue to `Todo`.
-- `workflow:execplan-revision` — finds an existing ExecPlan PR referenced by a human-friendly Linear issue phrase such as `Revise PR #51`, fetches the latest PR head, collects top-level/review/inline GitHub feedback, revises only the plan file, pushes the existing PR branch, and posts one concise PR acknowledgement.
+- `workflow:implementation` — fetches Linear-backed task context directly, implements without requiring an ExecPlan, detects changed files across the full workflow diff, generates a local schema-versioned review brief under `$SCHERZO_RUN_ROOT/artifacts/review/`, runs repo-local staged review lanes through `scripts/scherzo-review`, validates format and tests through direnv, publishes a final jj bookmark as a GitHub PR, and lets Scherzo delete the workspace only after publication. If the workflow stops before publication, a `.scherzo-keep-workspace` marker keeps the run directory for operator recovery instead of deleting unpushed work.
+- `workflow:execplan` — uses workflow-packaged ExecPlan guidance with `openai-codex/gpt-5.5:xhigh` to draft a single checked-in Markdown ExecPlan source file at `docs/plans/<plan>.md`, adversarially review it, incorporate the review, push a jj bookmark, open a ready GitHub PR, and create or reuse a follow-up `workflow:execplan-implementation` Linear-backed task in `Backlog`. The final validation and publish commands print `PRIMARY_PLAN_ARTIFACT=...`, `PLAN_MARKDOWN_PATH=...`, and `PLAN_PATH=...` pointing at the checked-in `docs/plans/*.md` file. HTML previews are derived viewer artifacts only and are not authoritative workflow output. The follow-up task references the Markdown plan path and PR but stays out of Scherzo's active `Todo`/`In Progress` dispatch states until a human merges the plan PR and moves the implementation task to `Todo`.
+- `workflow:execplan-revision` — finds an existing ExecPlan PR referenced by a human-friendly Linear-backed task phrase such as `Revise PR #51`, fetches the latest PR head, collects top-level/review/inline GitHub feedback, revises only the plan file, pushes the existing PR branch, and posts one concise PR acknowledgement.
 - `workflow:execplan-implementation` — finds exactly one referenced ExecPlan under `docs/plans/` (`.md` for new Markdown source plans, with legacy `.html` still accepted for older plans), implements it in an isolated jj workspace using the same shared implementation helper as `workflow:implementation`, detects changed files across the full workflow diff, verifies plan completion, generates a local schema-versioned review brief under `$SCHERZO_RUN_ROOT/artifacts/review/`, runs repo-local staged review lanes through `scripts/scherzo-review`, validates format and tests through direnv, publishes a final jj bookmark as a GitHub PR, and lets Scherzo delete the workspace only after publication. If the workflow stops before publication, a `.scherzo-keep-workspace` marker keeps the run directory for operator recovery instead of deleting unpushed work.
-- `workflow:merge-conflict-resolution` — manually resolves merge conflicts for one same-repository GitHub PR or branch referenced by a Linear issue. The issue should include an unambiguous target such as `Resolve conflicts for PR #51`, `bromanko/scherzo#51`, a full GitHub PR URL, or `Branch: feature/name`. The workflow creates a merge commit from the target branch and the configured base branch, lets the agent edit only files that jj reports as conflicted, fails if non-conflicted tracked files change or ambiguity requires a behavior choice, validates through direnv, and fast-forwards the target branch only after validation passes.
+- `workflow:execplan-v2` — drafts a concise human-reviewable ExecPlan v2 Markdown review document under `docs/plans/`, retains the mechanical implementation pack as a structured Scherzo artifact, publishes only the review surface for humans, and creates or reuses a Linear-backed implementation task in `Backlog` that references the retained bundle.
+- `workflow:execplan-revision-v2` — consumes a task containing `Bundle ref:` / `Bundle sha256:` plus actionable feedback, validates the retained ExecPlan v2 bundle, revises the review document and implementation pack only when needed, and emits a superseding retained bundle.
+- `workflow:execplan-implementation-v2` — validates a retained ExecPlan v2 bundle from task context, implements from the prepared review document plus implementation pack, fails closed if they conflict, publishes a PR, and emits a retained `code_change_bundle` artifact.
+- `workflow:merge-conflict-resolution` — manually resolves merge conflicts for one same-repository GitHub PR or branch referenced by a Linear-backed task. The task should include an unambiguous target such as `Resolve conflicts for PR #51`, `bromanko/scherzo#51`, a full GitHub PR URL, or `Branch: feature/name`. The workflow creates a merge commit from the target branch and the configured base branch, lets the agent edit only files that jj reports as conflicted, fails if non-conflicted tracked files change or ambiguity requires a behavior choice, validates through direnv, and fast-forwards the target branch only after validation passes.
 - scheduled `origin-sync` — every 15 minutes, runs `scripts/scherzo-jj-origin-sync` from the repository root. It always fetches `origin`, rebases the local root stack onto `main@origin` only when the working-copy change `@` has no file changes, skips successfully when `@` is dirty, and fails for existing or newly-created jj conflicts so the scheduled failure reporter can surface manual attention.
 
 Use the research workflow for the first supervised run:
 
 ```sh
-direnv exec . gleam run -- --linear-smoke .scherzo/scherzo.yaml
-direnv exec . gleam run -- --linear-contract-check .scherzo/scherzo.yaml
+direnv exec . gleam run -- --tracker-smoke .scherzo/scherzo.yaml
+direnv exec . gleam run -- --tracker-contract-check .scherzo/scherzo.yaml
 direnv exec . gleam run -- --pi-probe .scherzo/scherzo.yaml
 LINEAR_API_KEY=$LINEAR_API_KEY SCHERZO_REPO_ROOT=$(pwd) \
   direnv exec . scherzo-start .scherzo/scherzo.yaml
@@ -187,7 +195,7 @@ In another terminal, supervise through the local control API:
 ```sh
 scripts/scherzoctl ps
 scripts/scherzoctl attach <session-id>
-scripts/scherzoctl prompt <session-id> "Please produce a Linear-ready result summary."
+scripts/scherzoctl prompt <session-id> "Please produce a task-ready result summary."
 ```
 
-For the first run, create or select one Linear issue in an active state with exactly one workflow label such as `workflow:research`, `workflow:implementation`, `workflow:execplan`, `workflow:execplan-revision`, `workflow:execplan-implementation`, or `workflow:merge-conflict-resolution`. Use `workflow:implementation` for focused tickets whose title, description, labels, and recent comments are enough to implement directly. For revision issues, reference the PR in the title, description, or a comment with text like `Revise PR #51`, `bromanko/scherzo#51`, or a full GitHub PR URL; bare `#51` is intentionally not enough. For ExecPlan implementation issues, reference exactly one checked-in plan path such as `docs/plans/LIV-123-example.md` in the title, description, or a comment. For merge-conflict issues, reference exactly one same-repository PR or branch in the title, description, or a comment with text like `Resolve conflicts for PR #51`, `bromanko/scherzo#51`, a full GitHub PR URL, or `Branch: feature/name`; if the agent cannot resolve conflicts without choosing behavior, the workflow fails and leaves the workspace retained for operator recovery. The ExecPlan authoring workflow creates its follow-up implementation issue in `Backlog`; after the plan PR is merged and the plan exists on the workflow base branch, move that issue to `Todo` to make it eligible for dispatch. Handoff moves claimed issues to `In Progress`, successful issues to `Done`, and failed issues to `Triage` using checked Linear state IDs, and success comments include the workflow result inline rather than as a Markdown attachment. Invalid workflow-label issues are also commented on and moved to `Triage`; adding exactly one configured `workflow:*` label and moving the issue back to `Todo` makes it eligible for dispatch. Keep `linear_commands.enabled: false`; use `scherzoctl` until the operator loop feels boring.
+For the first run, create or select one Linear-backed task in an active state with exactly one workflow label such as `workflow:research`, `workflow:implementation`, `workflow:execplan`, `workflow:execplan-revision`, `workflow:execplan-implementation`, `workflow:execplan-v2`, `workflow:execplan-revision-v2`, `workflow:execplan-implementation-v2`, or `workflow:merge-conflict-resolution`. Use `workflow:implementation` for focused tasks whose title, description, labels, and recent comments are enough to implement directly. For revision tasks, reference the PR in the title, description, or a comment with text like `Revise PR #51`, `bromanko/scherzo#51`, or a full GitHub PR URL; bare `#51` is intentionally not enough. For ExecPlan implementation tasks, reference exactly one checked-in plan path such as `docs/plans/LIV-123-example.md` in the title, description, or a comment. For ExecPlan v2 implementation tasks, keep the generated `Bundle ref:` and `Bundle sha256:` lines intact. For merge-conflict tasks, reference exactly one same-repository PR or branch in the title, description, or a comment with text like `Resolve conflicts for PR #51`, `bromanko/scherzo#51`, a full GitHub PR URL, or `Branch: feature/name`; if the agent cannot resolve conflicts without choosing behavior, the workflow fails and leaves the workspace retained for operator recovery. The ExecPlan authoring workflows create their follow-up implementation Linear tasks in `Backlog`; after the plan PR is merged and the plan exists on the workflow base branch, move that task to `Todo` to make it eligible for dispatch. Handoff moves claimed tasks to `In Progress`, successful tasks to `Done`, and failed tasks to `Triage` using checked Linear state IDs, and success comments include the workflow result inline rather than as a Markdown attachment. Invalid workflow-label tasks are also commented on and moved to `Triage`; adding exactly one configured `workflow:*` label and moving the task back to `Todo` makes it eligible for dispatch. Keep `linear_commands.enabled: false`; use `scherzoctl` until the operator loop feels boring.

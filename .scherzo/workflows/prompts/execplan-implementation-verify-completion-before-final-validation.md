@@ -1,6 +1,6 @@
-Verify final ExecPlan completion before final validation and publish for Scherzo's `workflow:execplan-implementation` workflow on Linear issue {{ issue.identifier }}: {{ issue.title }}.
+Verify final ExecPlan completion before final validation and publish for Scherzo's `workflow:execplan-implementation` workflow on task {{ issue.identifier }}: {{ issue.title }}.
 
-Issue URL:
+Task URL:
 {{ issue.url }}
 
 Plan preparation output (contains the authoritative `PLAN_PATH`):

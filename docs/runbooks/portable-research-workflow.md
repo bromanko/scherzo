@@ -1,6 +1,6 @@
 # Portable research workflow
 
-The portable research workflow lets an operator run a Scherzo research issue in any repository that can provide one workspace-driver capability: `assert-only`. The workflow asks the agent to write exactly one file, `research-findings.md`, then a command step asks the configured workspace driver to prove that this file is the only produced artifact before Scherzo streams the file as the workflow result.
+The portable research workflow lets an operator run a Scherzo research task in any repository that can provide one workspace-driver capability: `assert-only`. The workflow asks the agent to write exactly one file, `research-findings.md`, then a command step asks the configured workspace driver to prove that this file is the only produced artifact before Scherzo streams the file as the workflow result.
 
 ## Terms
 
@@ -63,13 +63,13 @@ For a jj workspace, `scripts/scherzo-workspace-jj` implements `assert-only` from
 
 Research commands can write files even when the agent only meant to inspect behavior. Common examples include language build caches, dependency downloads, generated indexes, snapshots, coverage output, temporary metadata, and lockfile updates. The prompt tells agents to avoid commands likely to write those files unless they are necessary.
 
-If `assert-only` fails, inspect the driver's diagnostic. Remove only artifacts you recognize as generated side effects. Do not remove source files or repository metadata to force the assertion to pass. If your workflow runner supports retrying the final command step, clean up the side effects and retry the collection step. Otherwise, rerun the issue from a clean workspace.
+If `assert-only` fails, inspect the driver's diagnostic. Remove only artifacts you recognize as generated side effects. Do not remove source files or repository metadata to force the assertion to pass. If your workflow runner supports retrying the final command step, clean up the side effects and retry the collection step. Otherwise, rerun the task from a clean workspace.
 
 If a command would be useful but would create artifacts that cannot be cleaned safely, the agent should skip it and record the skipped command under `Issues encountered` in `research-findings.md`.
 
 ## Validation before adoption
 
-Before routing real issues to the workflow, run a small manual check in a disposable workspace. Resolve the configured command the same way the example workflow does, then call the resolved path:
+Before routing real tasks to the workflow, run a small manual check in a disposable workspace. Resolve the configured command the same way the example workflow does, then call the resolved path:
 
     driver_command=${SCHERZO_WORKSPACE_DRIVER:?SCHERZO_WORKSPACE_DRIVER is required}
     case "$driver_command" in
@@ -93,6 +93,6 @@ Before routing real issues to the workflow, run a small manual check in a dispos
 1. Run `"$driver" describe --json`; expect version `1` metadata that includes `assert-only`.
 2. Create only `research-findings.md` and run `"$driver" assert-only --path research-findings.md`; expect exit code 0.
 3. Add `unexpected-artifact.txt` and run the same command; expect a nonzero exit and a diagnostic naming the unexpected artifact or changed-file set.
-4. Remove the unexpected file and run the workflow against a low-risk issue; expect the terminal result to be the contents of `research-findings.md`.
+4. Remove the unexpected file and run the workflow against a low-risk task; expect the terminal result to be the contents of `research-findings.md`.
 
 This workflow is safe to roll back by reverting the workflow YAML, prompt, and profile changes. It does not change stored tracker state or repository data beyond the temporary workflow workspace.

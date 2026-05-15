@@ -52,7 +52,7 @@ steps:
   - id: verify_plan_completion
     kind: agent
     depends_on: [analyze_changes]
-    prompt: prompts/execplan-implementation-verify-completion.md
+    prompt: prompts/execplan-implementation-v2-verify-completion.md
     workspace: main
 
   - id: gate_plan_completion

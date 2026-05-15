@@ -3,9 +3,9 @@
 
 The checked-in dogfood workflows have two implementation contracts:
 
-* workflow:implementation implements directly from the Linear ticket context.
+* workflow:implementation implements directly from task context fetched from Linear.
 * workflow:execplan-implementation implements a checked-in ExecPlan referenced by
-  the Linear issue.
+  the source task.
 
 This helper keeps the common mechanics in one place: fetching source context,
 recording the starting jj parent, retaining failed run workspaces until a PR is
@@ -68,14 +68,14 @@ def usage() -> None:
 Run from a Scherzo jj workflow workspace root.
 
 prepare --source execplan
-              Fetch the Linear issue, prefer an explicit Plan/Plan path field,
-              otherwise find exactly one docs/plans/*.md or legacy
+              Fetch the Linear-backed source task, prefer an explicit Plan/Plan
+              path field, otherwise find exactly one docs/plans/*.md or legacy
               docs/plans/*.html path, record the starting jj parent, and mark
               the run for retention until a PR is safely published.
 prepare --source ticket
-              Fetch the Linear issue, write a ticket-context brief under tmp/,
-              record the starting jj parent, and mark the run for retention
-              until a PR is safely published.
+              Fetch the Linear-backed source task, write a task-context brief
+              under tmp/, record the starting jj parent, and mark the run for
+              retention until a PR is safely published.
 analyze       Diff from the recorded starting parent to @, detect review-
               relevant languages/files, and print review metadata.
 plan-completion-context
@@ -105,8 +105,8 @@ extract-plan <text-file> [repo-root]
 languages <file-list>
               Detect review-relevant languages from a newline-separated list.
 ticket-brief <issue-json>
-              Render a ticket-context Markdown brief from a saved Linear issue
-              JSON object and print it to stdout.
+              Render a task-context Markdown brief from a saved Linear issue
+              JSON object and print it to stdout. This helper is Linear-only.
 """,
         file=sys.stderr,
     )
@@ -1535,7 +1535,7 @@ def render_ticket_brief(issue: dict[str, Any]) -> str:
     comments_truncated = issue.get("comments", {}).get("pageInfo", {}).get("hasNextPage") is True
 
     lines = [
-        f"# Ticket context for {identifier}: {title}",
+        f"# Task context for {identifier}: {title}",
         "",
         "## Metadata",
         "",
@@ -2275,12 +2275,12 @@ def implementation_subject(title: str, fallback: str) -> str:
 
 def format_issue_line(issue_identifier: str, issue_title: str, issue_url: str) -> str:
     if issue_identifier and issue_title and issue_url:
-        return f"Issue: [{issue_identifier}: {issue_title}]({issue_url})"
+        return f"Task: [{issue_identifier}: {issue_title}]({issue_url})"
     if issue_identifier and issue_title:
-        return f"Issue: {issue_identifier}: {issue_title}"
+        return f"Task: {issue_identifier}: {issue_title}"
     if issue_identifier:
-        return f"Issue: {issue_identifier}"
-    return "Issue: Linear issue"
+        return f"Task: {issue_identifier}"
+    return "Task: Linear issue"
 
 
 def current_validation_result() -> dict[str, Any]:
@@ -2334,7 +2334,7 @@ def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, st
         else "Implement: " + subject
     )
     body = (
-        "Implements a Linear issue through Scherzo's `workflow:execplan-implementation` dogfood workflow.\n\n"
+        "Implements a task through Scherzo's `workflow:execplan-implementation` dogfood workflow. The source task is fetched from Linear today.\n\n"
         f"{format_issue_line(issue_identifier, issue_title, issue_url)}\n\n"
         f"Source ExecPlan: `{plan_path}`\n\n"
         + validation_body_section()
@@ -2342,20 +2342,19 @@ def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, st
     )
     return branch_prefix, description, pr_title, body
 
-
 def ticket_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, str]:
     slug = ticket_slug(metadata)
-    issue_identifier = metadata.get("issue_identifier") or "Linear issue"
+    issue_identifier = metadata.get("issue_identifier") or "task"
     issue_title = metadata.get("issue_title") or "Untitled"
     issue_url = metadata.get("issue_url") or ""
     branch_prefix = "scherzo/implementation"
     description = f"feat: implement {sanitize_ref_part(issue_identifier) or slug}"
     pr_title = f"Implement {issue_identifier}: {issue_title}"
-    linear_issue_line = format_issue_line(issue_identifier, issue_title, issue_url)
+    task_line = format_issue_line(issue_identifier, issue_title, issue_url)
     body = (
-        "Implements a Linear ticket through Scherzo's `workflow:implementation` dogfood workflow.\n\n"
-        f"{linear_issue_line}\n\n"
-        "Source: Linear ticket title, description, labels, and recent comments. No ExecPlan is required for this workflow.\n\n"
+        "Implements a task through Scherzo's `workflow:implementation` dogfood workflow. The source task is fetched from Linear today.\n\n"
+        f"{task_line}\n\n"
+        "Source: task title, description, labels, and recent comments fetched from Linear. No ExecPlan is required for this workflow.\n\n"
         + validation_body_section()
         + "This PR is ready for human acceptance.\n"
     )
@@ -2472,9 +2471,9 @@ def publish_command_legacy() -> None:
     if source_kind == "execplan":
         print(f"Implemented `{metadata['plan_path']}` and published the result for human acceptance.")
     else:
-        issue_identifier = metadata.get("issue_identifier") or "Linear issue"
+        issue_identifier = metadata.get("issue_identifier") or "task"
         issue_title = metadata.get("issue_title") or "Untitled"
-        print(f"Implemented Linear issue `{issue_identifier}: {issue_title}` and published the result for human acceptance.")
+        print(f"Implemented task `{issue_identifier}: {issue_title}` and published the result for human acceptance.")
     print("")
     print("## Pull request")
     print(f"PR_URL={pr_url}")
@@ -2616,9 +2615,9 @@ def publish_command() -> None:
     if source_kind == "execplan":
         print(f"Implemented `{metadata['plan_path']}` and published the result for human acceptance.")
     else:
-        issue_identifier = metadata.get("issue_identifier") or "Linear issue"
+        issue_identifier = metadata.get("issue_identifier") or "task"
         issue_title = metadata.get("issue_title") or "Untitled"
-        print(f"Implemented Linear issue `{issue_identifier}: {issue_title}` and published the result for human acceptance.")
+        print(f"Implemented task `{issue_identifier}: {issue_title}` and published the result for human acceptance.")
     print("")
     print("## Pull request")
     print(f"PR_URL={pr_url}")

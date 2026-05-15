@@ -1,6 +1,6 @@
 You are running the adversarial review step for Scherzo's `workflow:execplan` workflow.
 
-Linear issue:
+Task:
 
 - Identifier: {{ issue.identifier }}
 - Title: {{ issue.title }}
@@ -36,7 +36,7 @@ Workflow contract:
 - Keep the review bounded: read the embedded review standard and the plan, then inspect only directly relevant repository files needed to verify serious concerns.
 - Do not edit the plan during this step.
 - Write the full review to `tmp/execplan-review.md`. `tmp/` is intentionally ignored and must not be part of the PR.
-- If there are no material issues, the review should still contain the required review format and a READY verdict.
+- If there are no material findings, the review should still contain the required review format and a READY verdict.
 
 Workflow-packaged adversarial ExecPlan review standard:
 
@@ -56,31 +56,31 @@ Workflow-packaged adversarial ExecPlan review standard:
 
       ### Problem Framing and User Value
 
-      <findings or "No issues found.">
+      <findings or "No findings.">
 
       ### Strategy and Architecture
 
-      <findings or "No issues found.">
+      <findings or "No findings.">
 
       ### Risks, Failure Modes, and Safety
 
-      <findings or "No issues found.">
+      <findings or "No findings.">
 
       ### Executability
 
-      <findings or "No issues found.">
+      <findings or "No findings.">
 
       ### Testing and Falsifiability
 
-      <findings or "No issues found.">
+      <findings or "No findings.">
 
       ### Validation and Rollout
 
-      <findings or "No issues found.">
+      <findings or "No findings.">
 
       ### Format Compliance
 
-      <findings or "No issues found.">
+      <findings or "No findings.">
 
       ### Verdict
 

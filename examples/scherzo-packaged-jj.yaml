@@ -1,9 +1,11 @@
 version: 1
 tracker:
   kind: linear
-  endpoint: https://api.linear.app/graphql
-  api_key: "$LINEAR_API_KEY"
-  project_slug: YOUR_PROJECT_SLUG
+  credentials:
+    api_key_env: LINEAR_API_KEY
+  linear:
+    endpoint: https://api.linear.app/graphql
+    project_slug: YOUR_PROJECT_SLUG
   active_states: [Todo, In Progress]
   dispatch_states: [Todo]
   terminal_states: [Closed, Cancelled, Canceled, Duplicate, Done]

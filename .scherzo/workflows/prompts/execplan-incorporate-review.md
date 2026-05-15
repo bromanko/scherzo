@@ -1,6 +1,6 @@
 You are running the review-incorporation step for Scherzo's `workflow:execplan` workflow.
 
-Linear issue:
+Task:
 
 - Identifier: {{ issue.identifier }}
 - Title: {{ issue.title }}

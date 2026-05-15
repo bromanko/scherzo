@@ -445,7 +445,7 @@ def source_issue_from_submission_or_env(payload: dict[str, Any]) -> dict[str, st
         if identifier and title and url:
             return {"identifier": identifier, "title": title, "url": url}
     identifier = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "LIV-UNKNOWN").strip() or "LIV-UNKNOWN"
-    title = os.environ.get("SCHERZO_ISSUE_TITLE", "Untitled source issue").strip() or "Untitled source issue"
+    title = os.environ.get("SCHERZO_ISSUE_TITLE", "Untitled source task").strip() or "Untitled source task"
     url = os.environ.get("SCHERZO_ISSUE_URL", f"https://linear.app/living-systems/issue/{identifier}").strip()
     return {"identifier": identifier, "title": title, "url": url}
 
@@ -581,7 +581,7 @@ def slug(value: str) -> str:
     value = value.lower()
     value = re.sub(r"[^a-z0-9._-]+", "-", value)
     value = re.sub(r"-+", "-", value).strip("-")
-    return value or "issue"
+    return value or "task"
 
 
 def issue_context_text() -> str:
@@ -609,7 +609,7 @@ def source_issue_from_context_or_env(default: dict[str, Any] | None = None) -> d
     if default:
         return {
             "identifier": str(default.get("identifier") or "LIV-UNKNOWN"),
-            "title": str(default.get("title") or "Untitled source issue"),
+            "title": str(default.get("title") or "Untitled source task"),
             "url": str(default.get("url") or "https://linear.app/living-systems/issue/LIV-UNKNOWN"),
         }
     return source_issue_from_submission_or_env({})
@@ -682,7 +682,7 @@ def publish_review_doc(args: list[str]) -> None:
     title_text = f"ExecPlan v2: {source_issue['identifier']} {source_issue['title']}"
     body_text = (
         f"Adds a concise ExecPlan v2 review document.\n\nReview doc: `{review_meta['path']}`\n\n"
-        f"Source issue: {source_issue['url']}\n\n"
+        f"Source task: {source_issue['url']}\n\n"
         "Implementation details are retained in Scherzo artifacts rather than checked in.\n"
     )
     tmp = Path("tmp")
@@ -785,7 +785,7 @@ def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str,
         f"Bundle sha256: {bundle_sha}\n"
         f"Review doc: {review_path}\n"
         f"Implementation pack sha256: {pack_sha}\n\n"
-        "Use `workflow:execplan-implementation-v2` after the review doc PR is merged and a human moves this issue to Todo. "
+        "Use `workflow:execplan-implementation-v2` after the review doc PR is merged and a human moves this task to Todo. "
         "If this body says `pending`, use the follow-up helper comment with the final bundle hash.\n"
     )
     tmp = Path("tmp") / "execplan-v2-handoff-body.md"
@@ -808,7 +808,7 @@ def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str,
         "--json",
     ])
     if proc.returncode != 0:
-        fail("failed to create Linear implementation handoff issue: " + (proc.stderr.strip() or proc.stdout.strip()))
+        fail("failed to create Linear implementation handoff task: " + (proc.stderr.strip() or proc.stdout.strip()))
     data = json.loads(proc.stdout)
     return {
         "issue_identifier": str(data.get("identifier") or data.get("id") or source_issue["identifier"] + "-IMPL"),
@@ -831,7 +831,7 @@ def annotate_handoff_issue(handoff: dict[str, str], bundle_ref: str, bundle_sha:
     )
     proc = run_proc(["linear", "issue", "comment", "add", identifier, "--body", body])
     if proc.returncode != 0:
-        fail("failed to annotate Linear implementation handoff issue: " + (proc.stderr.strip() or proc.stdout.strip()))
+        fail("failed to annotate Linear implementation handoff task: " + (proc.stderr.strip() or proc.stdout.strip()))
 
 
 def materialize_bundle(args: list[str]) -> None:
@@ -910,7 +910,7 @@ def parse_bundle_ref_and_sha(text: str) -> tuple[str, str]:
     ref_match = BUNDLE_REF_RE.search(text)
     sha_match = BUNDLE_SHA_RE.search(text)
     if not ref_match or not sha_match:
-        fail("issue context must contain `Bundle ref:` and `Bundle sha256:` lines")
+        fail("task context must contain `Bundle ref:` and `Bundle sha256:` lines")
     return ref_match.group(1), sha_match.group(1)
 
 

@@ -1,6 +1,6 @@
-You are reviewing the implementation produced by Scherzo's `workflow:execplan-implementation` workflow for Linear issue {{ issue.identifier }}: {{ issue.title }}.
+You are reviewing the implementation produced by Scherzo's `workflow:execplan-implementation` workflow for task {{ issue.identifier }}: {{ issue.title }}.
 
-Issue URL:
+Task URL:
 {{ issue.url }}
 
 Plan preparation output (contains the authoritative `PLAN_PATH`):

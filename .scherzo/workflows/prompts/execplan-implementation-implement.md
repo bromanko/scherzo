@@ -1,6 +1,6 @@
-You are running Scherzo's `workflow:execplan-implementation` workflow for Linear issue {{ issue.identifier }}: {{ issue.title }}.
+You are running Scherzo's `workflow:execplan-implementation` workflow for task {{ issue.identifier }}: {{ issue.title }}.
 
-Issue URL:
+Task URL:
 {{ issue.url }}
 
 Plan preparation output (contains the authoritative `PLAN_PATH`):
@@ -8,7 +8,7 @@ Plan preparation output (contains the authoritative `PLAN_PATH`):
 
 Workflow contract:
 
-- This workflow implements an existing ExecPlan referenced by the Linear issue. The generated Linear issue is only a handoff; `PLAN_PATH` from the preparation output is authoritative.
+- This workflow implements an existing ExecPlan referenced by the source task. When the source task is a Linear issue, the generated Linear issue is only a handoff; `PLAN_PATH` from the preparation output is authoritative.
 - You are already inside a dedicated workflow workspace prepared by Scherzo; do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
 - Use `$SCHERZO_WORKSPACE_DRIVER status --human` for source-control inspection.
 - Follow the workflow-packaged ExecPlan implementation standard in this prompt. Do not require a local Pi skill file; all guidance needed for this workflow step is embedded below.

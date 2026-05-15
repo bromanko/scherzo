@@ -1,6 +1,6 @@
-You are running Scherzo's `workflow:execplan` workflow for this Linear issue.
+You are running Scherzo's `workflow:execplan` workflow for this task.
 
-Linear issue:
+Task:
 
 - Identifier: {{ issue.identifier }}
 - Title: {{ issue.title }}
@@ -15,20 +15,20 @@ Description:
 
 Workflow contract:
 
-- This workflow turns a sufficiently detailed Linear ticket into a checked-in Markdown ExecPlan proposal.
+- This workflow turns a sufficiently detailed task into a checked-in Markdown ExecPlan proposal.
 - You are already inside a dedicated workflow workspace prepared by Scherzo; do not create, forget, finish, switch, push, or otherwise manage workflow workspaces.
 - Use `$SCHERZO_WORKSPACE_DRIVER status --human` for source-control inspection.
 - Follow the workflow-packaged ExecPlan authoring standard in this prompt. Do not require a local Pi skill file; all guidance needed for this workflow step is embedded below.
 - Inspect the current repository with the smallest useful scope required to make the plan accurate and self-contained.
-- The ticket should contain enough information to draft the plan. Prefer recording `[CLARIFY]` items over exhaustive discovery when details are ambiguous.
+- The task should contain enough information to draft the plan. Prefer recording `[CLARIFY]` items over exhaustive discovery when details are ambiguous.
 - Do not read existing `docs/plans/*` files except to avoid filename collisions; use the embedded required Markdown structure for the plan content requirements.
-- Do not implement the ticket. Do not edit source code, tests, config, or existing docs except for the one new plan artifact.
+- Do not implement the task. Do not edit source code, tests, config, or existing docs except for the one new plan artifact.
 - Create exactly one self-contained Markdown ExecPlan source file under `docs/plans/`.
 - Name the file `docs/plans/{{ issue.identifier }}-<short-kebab-title>.md`, using a lowercase title slug.
 - Do not create a tracked `docs/plans/*.html` file. HTML is a derived viewer artifact only, not the source of truth. If a local preview is useful, render it outside the tracked plan path or under ignored `tmp/`.
 - Author the final tracked artifact directly as Markdown. The plan must start with a level-1 `#` title, contain the required living-document sections, contain a Progress checklist, and include `## Open Questions and Clarifications Needed`.
 - The plan must be self-contained and portable. Use repository-relative paths only; never write absolute local paths, even as examples or negative test data. Do not include literal prefixes such as `/Users/`, `/home/`, `/private/`, or `/var/folders/`; use placeholders like `<absolute-local-path>` when discussing forbidden path shapes.
-- If the ticket lacks information needed to close a design choice, still produce the best plan you can. Mark uncertainty with `[CLARIFY]` and include it in `## Open Questions and Clarifications Needed`.
+- If the task lacks information needed to close a design choice, still produce the best plan you can. Mark uncertainty with `[CLARIFY]` and include it in `## Open Questions and Clarifications Needed`.
 - Include `## Open Questions and Clarifications Needed` even when there are no open questions; write `None.` in that case.
 - Keep the plan suitable for review in a PR. It should be detailed enough to implement later, but it must not start implementation now.
 
@@ -59,7 +59,7 @@ Dogfood time budget:
 Drafting process:
 
 1. Follow the workflow-packaged ExecPlan authoring standard above.
-2. Restate the problem from the Linear ticket in operator/user terms.
+2. Restate the problem from the task in operator/user terms.
 3. Inspect only the repository files needed to make file paths, commands, existing behavior, and validation steps credible.
 4. Write the plan content as the single `docs/plans/{{ issue.identifier }}-<short-kebab-title>.md` Markdown source artifact.
 5. Run `repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan" validate docs/plans/{{ issue.identifier }}-<short-kebab-title>.md` if practical; otherwise rely on the following validation step.

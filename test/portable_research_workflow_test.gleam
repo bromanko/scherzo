@@ -164,7 +164,7 @@ pub fn example_research_workflow_is_driver_portable_test() {
 
 pub fn example_research_prompt_is_tracker_and_vcs_neutral_test() {
   let prompt = read_file("examples/workflows/prompts/research.md")
-  assert_contains(prompt, "issue {{ issue.identifier }}")
+  assert_contains(prompt, "task {{ issue.identifier }}")
   assert_contains(prompt, "dedicated workflow workspace")
   assert_contains(prompt, "research-findings.md")
   assert_contains(prompt, "## Brief summary")

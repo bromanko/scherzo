@@ -1,6 +1,6 @@
 version: 1
 id: implementation
-description: Implement an issue, run tests, review in parallel workspaces, apply feedback, and validate.
+description: Implement a task, run tests, review in parallel workspaces, apply feedback, and validate.
 max_parallel_steps: 4
 steps:
   - id: implement

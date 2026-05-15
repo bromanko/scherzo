@@ -1,6 +1,6 @@
 version: 1
 id: github-pr-conflict-scout
-description: Scan open same-repository GitHub pull requests and enqueue merge-conflict resolver issues.
+description: Scan open same-repository GitHub pull requests and enqueue Linear merge-conflict resolver issues.
 workspace_profile: dogfood-jj
 max_parallel_steps: 1
 steps:
