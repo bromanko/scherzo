@@ -8,7 +8,7 @@ tracker:
   dispatch_states: [Todo]
   terminal_states: [Canceled, Duplicate, Done]
 polling:
-  interval_ms: 30000
+  interval_ms: 60000
 workspace:
   # Paths are resolved relative to .scherzo/scherzo.yaml. Runtime workspaces
   # land under repo-root/.scherzo/workspaces/<workflow>/<issue>/<run>/.
