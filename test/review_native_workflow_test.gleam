@@ -42,12 +42,13 @@ fn lane_spec(
 fn lane_schema_path(step_id: String) -> String {
   case step_id {
     "lane_test_quality" ->
-      "docs/schemas/review-lane-draft.test-quality.v1.schema.json"
+      ".scherzo/workflows/schemas/review-lane-draft.test-quality.v1.schema.json"
     "lane_idioms_maintainability" ->
-      "docs/schemas/review-lane-draft.idioms-maintainability.v1.schema.json"
+      ".scherzo/workflows/schemas/review-lane-draft.idioms-maintainability.v1.schema.json"
     "lane_security_performance" ->
-      "docs/schemas/review-lane-draft.security-performance.v1.schema.json"
-    _ -> "docs/schemas/review-lane-draft.correctness.v1.schema.json"
+      ".scherzo/workflows/schemas/review-lane-draft.security-performance.v1.schema.json"
+    _ ->
+      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json"
   }
 }
 
@@ -161,6 +162,26 @@ fn valid_review_lane_draft_json() -> String {
   "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"generated_at_utc\":\"2026-05-11T00:00:00Z\",\"producer\":{\"name\":\"review-native-workflow-test\",\"version\":\"1\",\"mode\":\"native\"},\"lane\":{\"id\":\"correctness\",\"name\":\"Correctness reviewer\",\"category\":\"correctness\",\"version\":\"1\"},\"input_refs\":[],\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"inspected_diff\":true,\"used_repository_relative_paths\":true},\"remote_mutations\":\"none\"}"
 }
 
+fn workflow_schema_files() -> List(String) {
+  [
+    "review-artifacts.v1.schema.json",
+    "review-lane-draft.v1.schema.json",
+    "review-lane-draft.correctness.v1.schema.json",
+    "review-lane-draft.test-quality.v1.schema.json",
+    "review-lane-draft.idioms-maintainability.v1.schema.json",
+    "review-lane-draft.security-performance.v1.schema.json",
+  ]
+}
+
+fn review_workflow_paths() -> List(String) {
+  [
+    ".scherzo/workflows/review-native.yml",
+    ".scherzo/workflows/review-native-contract-spike.yml",
+    ".scherzo/workflows/implementation.yaml",
+    ".scherzo/workflows/execplan-implementation.yaml",
+  ]
+}
+
 fn validate_result(
   spec: workflow_dag.StructuredOutputSpec,
   result: result_artifact.ResultArtifact,
@@ -188,6 +209,23 @@ fn validate_result(
       [],
     ),
   )
+}
+
+pub fn review_schema_files_are_packaged_with_workflows_test() {
+  let assert Ok(False) = simplifile.is_directory("docs/schemas")
+  let assert Ok(True) = simplifile.is_directory(".scherzo/workflows/schemas")
+
+  list.each(workflow_schema_files(), fn(name) {
+    let assert Ok(True) =
+      simplifile.is_file(".scherzo/workflows/schemas/" <> name)
+    Nil
+  })
+
+  list.each(review_workflow_paths(), fn(path) {
+    let assert Ok(contents) = simplifile.read(path)
+    assert_contains(contents, ".scherzo/workflows/schemas/")
+    assert_not_contains(contents, "docs/schemas/")
+  })
 }
 
 pub fn review_native_lane_steps_use_submit_structured_output_tool_source_test() {

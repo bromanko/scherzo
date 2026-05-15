@@ -2,7 +2,7 @@
 
 Scherzo's staged code-review workflow passes machine-readable artifacts between review steps. This contract is intentionally separate from the Scherzo daemon runtime: review artifacts are local workflow files for agents and operators to inspect, not durable daemon state and not Linear or GitHub comments.
 
-The aggregate JSON Schema lives at [`docs/schemas/review-artifacts.v1.schema.json`](schemas/review-artifacts.v1.schema.json). Native structured-output review lanes also use the focused [`docs/schemas/review-lane-draft.v1.schema.json`](schemas/review-lane-draft.v1.schema.json) validator before their semantic consistency check. All artifacts use `schema_version: 1` and an `artifact_type` discriminator.
+The aggregate JSON Schema lives at [`.scherzo/workflows/schemas/review-artifacts.v1.schema.json`](../.scherzo/workflows/schemas/review-artifacts.v1.schema.json). Native structured-output review lanes also use the focused [`.scherzo/workflows/schemas/review-lane-draft.v1.schema.json`](../.scherzo/workflows/schemas/review-lane-draft.v1.schema.json) validator before their semantic consistency check. All artifacts use `schema_version: 1` and an `artifact_type` discriminator.
 
 ## ExecPlan PR review previews
 
@@ -49,7 +49,7 @@ Required fields:
 
 ### `ReviewLaneDraft`
 
-A `ReviewLaneDraft` is the native agent structured-output submission captured from the `submit_review_lane_draft` tool call before evidence verification normalizes it into a lane result. The checked-in native review workflows validate this payload with `type: json_schema`, `path: docs/schemas/review-lane-draft.v1.schema.json`, and a retained command validator for cross-field semantic checks such as unique draft finding ids and evidence-request links.
+A `ReviewLaneDraft` is the native agent structured-output submission captured from the `submit_review_lane_draft` tool call before evidence verification normalizes it into a lane result. The checked-in native review workflows validate this payload with `type: json_schema`, `path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json`, and a retained command validator for cross-field semantic checks such as unique draft finding ids and evidence-request links.
 
 Required fields:
 

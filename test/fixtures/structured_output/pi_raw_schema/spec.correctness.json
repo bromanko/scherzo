@@ -6,7 +6,7 @@
   "label": "Review Lane Draft",
   "parameters_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://github.com/bromanko/scherzo/docs/schemas/review-lane-draft.correctness.v1.schema.json",
+    "$id": "https://github.com/bromanko/scherzo/.scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
     "title": "Scherzo correctness review lane draft v1",
     "description": "Structured-output contract for the native correctness review lane.",
     "type": "object",
@@ -591,7 +591,7 @@
       }
     }
   },
-  "parameters_schema_path": "docs/schemas/review-lane-draft.correctness.v1.schema.json",
+  "parameters_schema_path": ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
   "parameters_schema_sha256": "d088756fc873e9191aa7b50e1334dfbc41a66c00dfe41d0c0492a8dc20b1fa03",
   "prompt_guidelines": [
     "Call submit_structured_output exactly once.",

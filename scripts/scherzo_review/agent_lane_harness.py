@@ -239,14 +239,14 @@ def _language_for_path(path: str) -> str:
 
 def _subsystem_for_path(path: str) -> str:
     lower = path.lower()
+    if lower.startswith(".scherzo/workflows/schemas/"):
+        return "artifact schema contract"
     if lower.startswith("src/"):
         return "scherzo runtime source"
     if lower.startswith("test/"):
         return "tests"
     if lower.startswith("scripts/"):
         return "workflow helper scripts"
-    if lower.startswith("docs/schemas/"):
-        return "artifact schema documentation"
     if lower.startswith("docs/"):
         return "documentation"
     if lower.startswith("examples/"):

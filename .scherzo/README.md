@@ -21,7 +21,7 @@ The repo `.gitignore` intentionally ignores runtime `.scherzo/*` state while all
 
 ## Workflow-packaged guidance and portability
 
-`workflow:execplan` must not depend on a consuming repository's personal or repo-local Pi skill installation. Its draft, review, and review-incorporation prompts embed the required ExecPlan authoring and adversarial review guidance directly in the workflow prompt files under `.scherzo/workflows/prompts/`. A clean consuming repository that points `.scherzo/scherzo.yaml` at this workflow bundle can therefore prepare those prompts without committing local ExecPlan skill files.
+ExecPlan-family workflows must not depend on a consuming repository's personal or repo-local Pi skill installation. The draft, review, review-incorporation, revision, and implementation prompts embed the required ExecPlan authoring, adversarial review, living-document, and implementation guidance directly in the workflow prompt files under `.scherzo/workflows/prompts/`. Review-lane JSON Schemas live under `.scherzo/workflows/schemas/` with the workflow bundle, not under `docs/`, so consuming repositories can use the workflows without copying a separate schema directory. A clean consuming repository that points `.scherzo/scherzo.yaml` at this workflow bundle can therefore prepare those prompts without committing local ExecPlan skill files.
 
 Command steps that need Scherzo helpers should resolve the configured repository root before invoking scripts, for example:
 

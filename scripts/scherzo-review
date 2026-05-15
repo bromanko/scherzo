@@ -29,7 +29,7 @@ from typing import Any
 from scherzo_review import agent_lane_harness
 
 SCHEMA_VERSION = 1
-CONTRACT_SCHEMA_REF = "docs/schemas/review-artifacts.v1.schema.json"
+CONTRACT_SCHEMA_REF = ".scherzo/workflows/schemas/review-artifacts.v1.schema.json"
 DEFAULT_OUTPUT_DIR = Path("tmp/scherzo-review-dry-run")
 DEFAULT_LANE_OUTPUT_DIR = Path("tmp/scherzo-review-lanes")
 DEFAULT_SYNTHESIS_OUTPUT_DIR = Path("tmp/scherzo-review-synthesis")
@@ -342,18 +342,16 @@ def language_for_path(path: str) -> str:
 
 def subsystem_for_path(path: str) -> str:
     lower = path.lower()
+    if lower.startswith(".scherzo/workflows/schemas/"):
+        return "artifact schema contract"
     if lower.startswith(".scherzo/workflows/"):
         return "dogfood workflow"
-    if lower.startswith(".pi/skills/"):
-        return "pi review skills"
     if lower.startswith("src/"):
         return "scherzo runtime source"
     if lower.startswith("test/"):
         return "tests"
     if lower.startswith("scripts/"):
         return "workflow helper scripts"
-    if lower.startswith("docs/schemas/"):
-        return "artifact schema documentation"
     if lower.startswith("docs/"):
         return "documentation"
     if lower.startswith("examples/workflows/"):
@@ -515,7 +513,7 @@ def summarize_change(files: list[DiffFile], source: dict[str, Any]) -> str:
 def infer_acceptance_criteria(files: list[DiffFile]) -> list[str]:
     subsystems = set(primary_subsystems(files))
     criteria: list[str] = []
-    if "artifact schema documentation" in subsystems:
+    if "artifact schema contract" in subsystems:
         criteria.append(
             "Review artifacts should declare schema_version 1 and follow the documented contract."
         )
@@ -577,7 +575,7 @@ def build_risk_profile(files: list[DiffFile]) -> dict[str, Any]:
             level = "medium"
         risk_areas.append("tooling or dependency surface changed")
 
-    if has_path(files, lambda p: p.startswith("docs/schemas/")):
+    if has_path(files, lambda p: p.startswith(".scherzo/workflows/schemas/")):
         risk_areas.append("artifact schema contract changed")
 
     if not risk_areas:
@@ -634,7 +632,7 @@ def suggested_review_lanes(files: list[DiffFile]) -> list[dict[str, str]]:
     if has_path(files, lambda p: p.startswith("scripts/") or p.startswith(".scherzo/workflows/")):
         add("workflow-contract-review", "Workflow contract review", "Workflow scripts or DAG prompts changed.")
 
-    if has_path(files, lambda p: p.startswith("docs/schemas/") or "review-artifact" in p):
+    if has_path(files, lambda p: p.startswith(".scherzo/workflows/schemas/") or "review-artifact" in p):
         add("artifact-contract-review", "Artifact contract review", "Review artifact schema or documentation changed.")
 
     if has_path(files, lambda p: p.startswith("scripts/") or "linear" in p or "github" in p or "token" in p or "secret" in p):
@@ -2311,7 +2309,7 @@ def json_schema_validate_review_lane_draft_fixture(fixture: dict[str, Any]) -> l
         [
             "scripts/scherzo-json-schema-validate",
             "--schema",
-            "docs/schemas/review-lane-draft.v1.schema.json",
+            ".scherzo/workflows/schemas/review-lane-draft.v1.schema.json",
             "--draft",
             "2020-12",
         ],

@@ -618,14 +618,14 @@ pub fn pi_tool_call_source_still_runs_downstream_json_schema_after_acceptance_te
       require_single: True,
       reject_sibling_tool_calls: True,
       parameters_schema_path: Some(
-        "docs/schemas/review-lane-draft.correctness.v1.schema.json",
+        ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
       ),
     )
   let spec =
     json_schema_review_spec(
       source,
       True,
-      "docs/schemas/review-lane-draft.correctness.v1.schema.json",
+      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
     )
   let result =
     result_artifact.from_final_response_with_tool_calls(

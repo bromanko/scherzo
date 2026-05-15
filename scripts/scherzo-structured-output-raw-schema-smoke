@@ -12,7 +12,7 @@ try:
 except Exception as exc:
     raise SystemExit(f"jsonschema_unavailable:{exc}")
 root = Path('test/fixtures/structured_output/pi_raw_schema')
-schema = json.loads(Path('docs/schemas/review-lane-draft.correctness.v1.schema.json').read_text())
+schema = json.loads(Path('.scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json').read_text())
 valid = json.loads((root / 'valid-review-lane.arguments.json').read_text())
 jsonschema.Draft202012Validator(schema).validate(valid)
 for name in [
@@ -29,7 +29,7 @@ for name in [
     raise SystemExit(f'invalid_fixture_accepted:{name}')
 spec = json.loads((root / 'spec.correctness.json').read_text())
 assert spec['tool_name'] == 'submit_structured_output'
-assert spec['parameters_schema_path'] == 'docs/schemas/review-lane-draft.correctness.v1.schema.json'
+assert spec['parameters_schema_path'] == '.scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json'
 assert spec['parameters_schema'].get('type') == 'object'
 assert spec['require_single'] is True
 assert spec['reject_sibling_tool_calls'] is True

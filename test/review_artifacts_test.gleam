@@ -60,11 +60,11 @@ pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
         <> " #!/usr/bin/env sh\n"
         <> "+echo review\n"
         <> " echo done\n"
-        <> "diff --git a/docs/schemas/example.json b/docs/schemas/example.json\n"
+        <> "diff --git a/.scherzo/workflows/schemas/example.json b/.scherzo/workflows/schemas/example.json\n"
         <> "new file mode 100644\n"
         <> "index 0000000..3333333\n"
         <> "--- /dev/null\n"
-        <> "+++ b/docs/schemas/example.json\n"
+        <> "+++ b/.scherzo/workflows/schemas/example.json\n"
         <> "@@ -0,0 +1,3 @@\n"
         <> "+{\n"
         <> "+  \"schema_version\": 1\n"
@@ -98,7 +98,7 @@ pub fn dry_run_writes_schema_valid_review_brief_and_lane_result_test() {
   assert string.contains(brief, "\"schema_version\": 1")
   assert string.contains(brief, "\"implementation_summary\"")
   assert string.contains(brief, "\"workflow helper scripts\"")
-  assert string.contains(brief, "\"artifact schema documentation\"")
+  assert string.contains(brief, "\"artifact schema contract\"")
   assert string.contains(brief, "\"artifact-contract-review\"")
   assert string.contains(brief, "\"status\": \"passed\"")
   assert string.contains(brief, "did not post PR comments")

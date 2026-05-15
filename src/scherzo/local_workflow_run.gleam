@@ -465,7 +465,10 @@ fn review_lane_draft_json_with_artifact_type(
 ) -> String {
   let #(findings, notes, requests) = draft_parts(lane_id, scenario_id)
   json.object([
-    #("$schema", json.string("docs/schemas/review-artifacts.v1.schema.json")),
+    #(
+      "$schema",
+      json.string(".scherzo/workflows/schemas/review-artifacts.v1.schema.json"),
+    ),
     #("schema_version", json.int(1)),
     #("artifact_type", json.string(artifact_type)),
     #("generated_at_utc", json.string("2026-05-09T00:00:00Z")),

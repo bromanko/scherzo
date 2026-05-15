@@ -397,12 +397,12 @@ pub fn parses_on_failure_continue_test() {
 
 pub fn rejects_generic_pi_tool_call_without_matching_json_schema_validator_test() {
   let missing =
-    "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_structured_output\n        parameters_schema_path: docs/schemas/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [schema_version, artifact_type]\n"
+    "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_structured_output\n        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [schema_version, artifact_type]\n"
   assert error_code(missing)
     == "structured_output_parameters_schema_missing_json_schema_validator"
 
   let mismatched =
-    "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_structured_output\n        parameters_schema_path: docs/schemas/review-lane-draft.correctness.v1.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: docs/schemas/review-lane-draft.v1.schema.json\n      schema:\n        required: [schema_version, artifact_type]\n"
+    "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_structured_output\n        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json\n      schema:\n        required: [schema_version, artifact_type]\n"
   assert error_code(mismatched)
     == "structured_output_parameters_schema_path_mismatch"
 }
@@ -410,10 +410,12 @@ pub fn rejects_generic_pi_tool_call_without_matching_json_schema_validator_test(
 pub fn accepts_generic_pi_tool_call_with_matching_json_schema_validator_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_structured_output\n        parameters_schema_path: docs/schemas/review-lane-draft.correctness.v1.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: docs/schemas/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [schema_version, artifact_type]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_structured_output\n        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
   let assert [step] = dag.steps
   let assert workflow_dag.AgentStep(_, Some(spec)) = step.kind
   assert structured_output_source.parameters_schema_path(spec.source)
-    == Some("docs/schemas/review-lane-draft.correctness.v1.schema.json")
+    == Some(
+      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
+    )
 }

@@ -1,9 +1,12 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/hash
 import scherzo/json_value
 import scherzo/path as scherzo_path
 import scherzo/structured_output_json_schema
+import scherzo/structured_output_metadata
+import scherzo/structured_output_source
 import scherzo/structured_output_validator
 import scherzo/workflow_dag
 import simplifile
@@ -170,7 +173,9 @@ pub fn json_schema_rejects_invalid_payload_with_instance_path_test() {
 
 pub fn review_lane_draft_schema_rejects_absolute_input_ref_paths_test() {
   let validator =
-    schema_validator("docs/schemas/review-lane-draft.v1.schema.json")
+    schema_validator(
+      ".scherzo/workflows/schemas/review-lane-draft.v1.schema.json",
+    )
   let assert Ok(contents) =
     simplifile.read(
       "test/fixtures/review-lane-draft-tool/absolute-path.arguments.json",
@@ -198,7 +203,9 @@ pub fn review_lane_draft_schema_rejects_absolute_input_ref_paths_test() {
 
 pub fn review_lane_draft_schema_rejects_env_placeholder_input_ref_paths_test() {
   let validator =
-    schema_validator("docs/schemas/review-lane-draft.v1.schema.json")
+    schema_validator(
+      ".scherzo/workflows/schemas/review-lane-draft.v1.schema.json",
+    )
   let assert Ok(contents) =
     simplifile.read(
       "test/fixtures/review-lane-draft-tool/absolute-path.arguments.json",
@@ -276,8 +283,69 @@ pub fn json_schema_rejects_absolute_or_traversal_paths_test() {
   assert traversal_error.code == "structured_output_json_schema_config_error"
 }
 
-pub fn json_schema_rejects_symlink_escape_before_helper_test() {
-  let root = "test/tmp/structured-output-json-schema-symlink"
+pub fn json_schema_accepts_repo_local_symlinked_workflow_schema_test() {
+  let #(repo, schema_path, _) =
+    setup_symlinked_workflow_schema_fixture(
+      "test/tmp/structured-output-json-schema-workflow-symlink-validator",
+    )
+  let assert Ok(helper_path) =
+    scherzo_path.absolute("scripts/scherzo-json-schema-validate")
+  let validator = schema_validator(schema_path)
+  let #(valid_result, missing_required_result) =
+    with_env(helper_env, helper_path, fn() {
+      #(
+        structured_output_json_schema.run_json_schema_validator(
+          validator,
+          valid_payload(),
+          context_with_repo(validator, repo),
+          [],
+        ),
+        structured_output_json_schema.run_json_schema_validator(
+          validator,
+          json_value.JObject([]),
+          context_with_repo(validator, repo),
+          [],
+        ),
+      )
+    })
+
+  assert valid_result == Ok(structured_output_validator.ValidatorPass)
+  let assert Error(error) = missing_required_result
+  assert error.code == "structured_output_json_schema_rejected"
+}
+
+pub fn json_schema_hashes_repo_local_symlinked_workflow_schema_contents_test() {
+  let #(repo, schema_path, schema_contents) =
+    setup_symlinked_workflow_schema_fixture(
+      "test/tmp/structured-output-json-schema-workflow-symlink-metadata",
+    )
+  let validator = schema_validator(schema_path)
+
+  let metadata =
+    structured_output_metadata.from_spec(
+      workflow_dag.StructuredOutputSpec(
+        artifact_name: "review_lane_draft",
+        required: True,
+        source: structured_output_source.FinalResponseSource,
+        format: workflow_dag.StructuredJson,
+        schema: workflow_dag.StructuredObjectSchema(["schema_version"]),
+        validators: [validator],
+        validation_retries: 1,
+      ),
+      repo,
+    )
+  let assert [
+    structured_output_metadata.JsonSchemaValidationMetadata(
+      schema_sha256: schema_sha256,
+      ..,
+    ),
+  ] = metadata.validators
+  assert schema_sha256 == hash.sha256_hex(schema_contents)
+}
+
+pub fn json_schema_rejects_non_workflow_schema_symlink_escape_before_helper_test() {
+  let root =
+    "test/tmp/structured-output-json-schema-non-workflow-schema-symlink"
   let repo = root <> "/repo"
   let outside = root <> "/outside"
   reset_dir(root)
@@ -285,7 +353,7 @@ pub fn json_schema_rejects_symlink_escape_before_helper_test() {
   let assert Ok(Nil) = simplifile.create_directory_all(outside)
   let outside_schema = outside <> "/escaped.schema.json"
   let assert Ok(Nil) =
-    simplifile.write(outside_schema, "{\"type\":\"object\"}\n")
+    simplifile.write(outside_schema, symlinked_workflow_schema_contents())
   let assert Ok(absolute_target) = scherzo_path.absolute(outside_schema)
   let assert Ok(Nil) =
     scherzo_path.symlink(
@@ -305,6 +373,41 @@ pub fn json_schema_rejects_symlink_escape_before_helper_test() {
   assert error.code == "structured_output_json_schema_config_error"
   assert !error.retryable
   assert string.contains(error.message, "outside the repository")
+}
+
+fn setup_symlinked_workflow_schema_fixture(
+  root: String,
+) -> #(String, String, String) {
+  let repo = root <> "/repo"
+  let shared_schemas = root <> "/sibling-scherzo/.scherzo/workflows/schemas"
+  let schema_path = symlinked_workflow_schema_path()
+  let schema_contents = symlinked_workflow_schema_contents()
+  reset_dir(root)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(repo <> "/.scherzo/workflows")
+  let assert Ok(Nil) = simplifile.create_directory_all(shared_schemas)
+  let assert Ok(Nil) =
+    simplifile.write(
+      shared_schemas <> "/" <> symlinked_workflow_schema_filename(),
+      schema_contents,
+    )
+  let assert Ok(absolute_target) = scherzo_path.absolute(shared_schemas)
+  let assert Ok(Nil) =
+    scherzo_path.symlink(absolute_target, repo <> "/.scherzo/workflows/schemas")
+  #(repo, schema_path, schema_contents)
+}
+
+fn symlinked_workflow_schema_path() -> String {
+  ".scherzo/workflows/schemas/" <> symlinked_workflow_schema_filename()
+}
+
+fn symlinked_workflow_schema_filename() -> String {
+  "review-lane-draft.correctness.v1.schema.json"
+}
+
+fn symlinked_workflow_schema_contents() -> String {
+  "{\"type\":\"object\",\"properties\":{\"schema_version\":{\"type\":\"integer\"}},"
+  <> "\"required\":[\"schema_version\"]}\n"
 }
 
 pub fn json_schema_redacts_secret_in_diagnostics_test() {
@@ -414,7 +517,9 @@ fn review_lane_payload_with_lane(lane_id: String) -> json_value.JsonValue {
 
 pub fn review_lane_base_schema_rejects_unknown_lane_id_test() {
   let validator =
-    schema_validator("docs/schemas/review-lane-draft.v1.schema.json")
+    schema_validator(
+      ".scherzo/workflows/schemas/review-lane-draft.v1.schema.json",
+    )
   let assert Error(error) =
     structured_output_json_schema.run_json_schema_validator(
       validator,
@@ -430,7 +535,7 @@ pub fn review_lane_base_schema_rejects_unknown_lane_id_test() {
 pub fn review_lane_overlay_schema_accepts_matching_and_rejects_wrong_lane_test() {
   let correctness =
     schema_validator(
-      "docs/schemas/review-lane-draft.correctness.v1.schema.json",
+      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
     )
   assert structured_output_json_schema.run_json_schema_validator(
       correctness,
@@ -450,15 +555,15 @@ pub fn review_lane_overlay_schema_accepts_matching_and_rejects_wrong_lane_test()
 
   let overlays = [
     #(
-      "docs/schemas/review-lane-draft.test-quality.v1.schema.json",
+      ".scherzo/workflows/schemas/review-lane-draft.test-quality.v1.schema.json",
       "test-quality",
     ),
     #(
-      "docs/schemas/review-lane-draft.idioms-maintainability.v1.schema.json",
+      ".scherzo/workflows/schemas/review-lane-draft.idioms-maintainability.v1.schema.json",
       "idioms-maintainability",
     ),
     #(
-      "docs/schemas/review-lane-draft.security-performance.v1.schema.json",
+      ".scherzo/workflows/schemas/review-lane-draft.security-performance.v1.schema.json",
       "security-performance",
     ),
   ]

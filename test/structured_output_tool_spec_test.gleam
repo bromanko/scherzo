@@ -82,7 +82,9 @@ fn json_object_field_loop(
 
 pub fn structured_output_tool_spec_builds_raw_schema_spec_test() {
   let assert Ok(tool_spec) =
-    build("docs/schemas/review-lane-draft.correctness.v1.schema.json")
+    build(
+      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
+    )
 
   assert tool_spec.workflow_id == "review-native"
   assert tool_spec.run_id == "run-1"
@@ -91,7 +93,7 @@ pub fn structured_output_tool_spec_builds_raw_schema_spec_test() {
   assert tool_spec.artifact_name == "review_lane_draft"
   assert tool_spec.tool_name == "submit_structured_output"
   assert tool_spec.parameters_schema_path
-    == "docs/schemas/review-lane-draft.correctness.v1.schema.json"
+    == ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json"
   assert string.length(tool_spec.parameters_schema_sha256) == 64
   let assert json_value.JObject(_) = tool_spec.parameters_schema
   assert json_object_field(tool_spec.parameters_schema, "type")
@@ -183,7 +185,9 @@ pub fn structured_output_tool_spec_writes_retained_path_test() {
   let run_root = "test/tmp/structured-output-tool-spec-write/run-root"
   let _ = simplifile.delete(run_root)
   let assert Ok(tool_spec) =
-    build("docs/schemas/review-lane-draft.correctness.v1.schema.json")
+    build(
+      ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
+    )
   let assert Ok(written) =
     structured_output_tool_spec.write(tool_spec, run_root)
 

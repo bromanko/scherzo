@@ -49,6 +49,23 @@ fn local_pi_config_terms() -> List(String) {
   ]
 }
 
+fn execplan_prompt_paths() -> List(String) {
+  [
+    ".scherzo/workflows/prompts/execplan-draft.md",
+    ".scherzo/workflows/prompts/execplan-repair-validation.md",
+    ".scherzo/workflows/prompts/execplan-review.md",
+    ".scherzo/workflows/prompts/execplan-incorporate-review.md",
+    ".scherzo/workflows/prompts/execplan-revision.md",
+    ".scherzo/workflows/prompts/execplan-implementation-implement.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-review.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
+  ]
+}
+
 fn env(name: String) -> Option(String) {
   case name {
     "LINEAR_API_KEY" -> Some("linearkey")
@@ -230,6 +247,23 @@ pub fn workflow_execplan_embeds_guidance_and_avoids_repo_local_skills_test() {
   )
 }
 
+pub fn execplan_family_prompts_do_not_reference_repo_local_skill_files_test() {
+  list.each(execplan_prompt_paths(), fn(path) {
+    let prompt = read_file(path)
+    assert_not_contains(prompt, ".pi/skills")
+    assert_not_contains_any(prompt, local_pi_config_terms())
+    assert_not_contains(prompt, "`scripts/scherzo-")
+    assert_not_contains(prompt, "python3 scripts/scherzo-")
+    assert_not_contains(prompt, "run scripts/scherzo-")
+    assert_not_contains(prompt, "Run scripts/scherzo-")
+    assert_not_contains(prompt, "use scripts/scherzo-")
+    assert_not_contains(prompt, "Use scripts/scherzo-")
+  })
+
+  let assert Ok(False) = simplifile.is_directory(".pi/skills/exec-plan")
+  let assert Ok(False) = simplifile.is_directory(".pi/skills/exec-plan-review")
+}
+
 pub fn workflow_execplan_prompt_bundle_loads_without_repo_local_skills_test() {
   let dir = "test/tmp/execplan-consumer-no-skills"
   reset_dir(dir)
@@ -357,9 +391,10 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
 
   list.each([implementation_prompt, execplan_prompt], fn(prompt) {
     assert_contains(prompt, "REVIEW_FINAL_ARTIFACT_PATH")
-    assert_contains(prompt, "scripts/scherzo-review")
+    assert_contains(prompt, "\"$repo_root/scripts/scherzo-review\"")
     assert_contains(prompt, "Do not invoke local pi slash commands")
     assert_not_contains(prompt, "`/review")
+    assert_not_contains(prompt, "`scripts/scherzo-review")
     assert_not_contains(prompt, ".pi/skills/gleam")
     assert_not_contains(prompt, "gleam-review")
   })
@@ -517,15 +552,15 @@ pub fn execplan_prompts_use_bounded_plan_context_and_safe_html_edits_test() {
   )
   assert_contains(
     implementation_prompt,
-    "scripts/scherzo-execplan-html section",
+    "\"$repo_root/scripts/scherzo-execplan-html\" section",
   )
   assert_contains(
     implementation_prompt,
-    "scripts/scherzo-implementation plan-brief --check",
+    "\"$repo_root/scripts/scherzo-implementation\" plan-brief --check",
   )
   assert_contains(
     implementation_prompt,
-    "scripts/scherzo-implementation plan-brief --refresh-if-stale",
+    "\"$repo_root/scripts/scherzo-implementation\" plan-brief --refresh-if-stale",
   )
   assert_contains(implementation_prompt, "full plan remains authoritative")
   assert_contains(
@@ -541,13 +576,16 @@ pub fn execplan_prompts_use_bounded_plan_context_and_safe_html_edits_test() {
   assert_contains(verifier_prompt, "PLAN_INDEX_PATH")
   assert_contains(
     verifier_prompt,
-    "scripts/scherzo-implementation plan-brief --check",
+    "\"$repo_root/scripts/scherzo-implementation\" plan-brief --check",
   )
   assert_contains(
     verifier_prompt,
-    "scripts/scherzo-implementation plan-brief --refresh-if-stale",
+    "\"$repo_root/scripts/scherzo-implementation\" plan-brief --refresh-if-stale",
   )
-  assert_contains(verifier_prompt, "scripts/scherzo-execplan-html section")
+  assert_contains(
+    verifier_prompt,
+    "\"$repo_root/scripts/scherzo-execplan-html\" section",
+  )
   assert_contains(verifier_prompt, "full plan remains authoritative fallback")
 
   assert_contains(
@@ -587,6 +625,8 @@ pub fn workflow_docs_explain_packaged_guidance_and_validation_test() {
   assert_contains(docs, "## Workflow-packaged guidance and portability")
   assert_contains(docs, "embed the required ExecPlan authoring")
   assert_contains(docs, "without committing local ExecPlan skill files")
+  assert_contains(docs, ".scherzo/workflows/schemas/")
+  assert_contains(docs, "without copying a separate schema directory")
   assert_contains(docs, "repo_root=${SCHERZO_REPO_ROOT:-$(cd")
   assert_contains(docs, "\"$repo_root/scripts/scherzo-execplan\" validate")
   assert_contains(docs, "workflow portability validation")

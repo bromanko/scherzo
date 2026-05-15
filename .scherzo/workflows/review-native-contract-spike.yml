@@ -15,14 +15,14 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_structured_output
-        parameters_schema_path: docs/schemas/review-lane-draft.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_draft_schema
           type: json_schema
-          path: docs/schemas/review-lane-draft.v1.schema.json
+          path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
           draft: "2020-12"
         - name: review_lane_semantics
           type: command
@@ -60,14 +60,14 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_structured_output
-        parameters_schema_path: docs/schemas/review-lane-draft.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_draft_schema
           type: json_schema
-          path: docs/schemas/review-lane-draft.v1.schema.json
+          path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
           draft: "2020-12"
         - name: review_lane_semantics
           type: command
@@ -105,14 +105,14 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_structured_output
-        parameters_schema_path: docs/schemas/review-lane-draft.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_draft_schema
           type: json_schema
-          path: docs/schemas/review-lane-draft.v1.schema.json
+          path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
           draft: "2020-12"
         - name: review_lane_semantics
           type: command
