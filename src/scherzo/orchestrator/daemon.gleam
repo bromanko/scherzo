@@ -495,7 +495,7 @@ pub fn start(
   let runtime = startup_recovery.runtime
   use event_hub <- try_startup(dependencies.start_event_hub() |> map_hub_error)
   let builder =
-    actor.new_with_initialiser(1000, fn(subject) {
+    actor.new_with_initialiser(10_000, fn(subject) {
       case
         start_control_plane(
           dependencies,
