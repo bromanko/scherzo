@@ -1,0 +1,587 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bromanko/scherzo/.scherzo/workflows/schemas/review-lane-draft.test-quality.v1.schema.json",
+  "title": "Scherzo test-quality review lane draft v1",
+  "description": "Structured-output contract for the native test-quality review lane.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "generated_at_utc",
+    "producer",
+    "lane",
+    "input_refs",
+    "draft_findings",
+    "review_notes",
+    "evidence_requests",
+    "self_check",
+    "remote_mutations"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "artifact_type": {
+      "const": "review_lane_draft"
+    },
+    "generated_at_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        }
+      }
+    },
+    "lane": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "category",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "const": "test-quality"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "input_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ArtifactReference"
+      }
+    },
+    "draft_findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DraftFinding"
+      }
+    },
+    "review_notes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ReviewNote"
+      }
+    },
+    "evidence_requests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EvidenceRequest"
+      }
+    },
+    "self_check": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "remote_mutations": {
+      "const": "none"
+    }
+  },
+  "$defs": {
+    "RepoRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^/"
+          },
+          {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          {
+            "pattern": "^\\$(\\{[A-Za-z_][A-Za-z0-9_]*\\}|[A-Za-z_][A-Za-z0-9_]*)([\\\\/]|$)"
+          },
+          {
+            "pattern": "^[A-Za-z]:[\\\\/]"
+          },
+          {
+            "pattern": "^<absolute-local-path>"
+          }
+        ]
+      }
+    },
+    "ArtifactHeader": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "artifact_type"
+      ],
+      "properties": {
+        "$schema": {
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "artifact_type": {
+          "type": "string"
+        },
+        "generated_at_utc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "mode": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "ReviewLaneMetadata": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "category",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [
+            "correctness",
+            "test-quality",
+            "idioms-maintainability",
+            "security-performance"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ArtifactReference": {
+      "type": "object",
+      "required": [
+        "artifact_type",
+        "path"
+      ],
+      "properties": {
+        "artifact_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/$defs/RepoRelativePath"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": true
+    },
+    "LocationReference": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "end_line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff_hunk": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "SafeLocationReference": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/RepoRelativePath"
+        },
+        "start_line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "end_line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff_hunk": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "ReviewNote": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "category",
+        "severity",
+        "locations",
+        "summary",
+        "details",
+        "suggested_action"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "risk_note",
+            "coverage_note",
+            "review_note",
+            "follow_up_test"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "correctness",
+            "maintainability",
+            "security",
+            "performance",
+            "testing",
+            "workflow",
+            "documentation",
+            "artifact_contract",
+            "other"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "locations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LocationReference"
+          }
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "details": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suggested_action": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "DraftFinding": {
+      "type": "object",
+      "required": [
+        "draft_finding_id",
+        "title",
+        "claim",
+        "severity",
+        "proposed_blocking",
+        "locations",
+        "evidence_request_ids"
+      ],
+      "properties": {
+        "draft_finding_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "proposed_blocking": {
+          "type": "boolean"
+        },
+        "locations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SafeLocationReference"
+          }
+        },
+        "evidence_request_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "suggested_fix": {
+          "type": "string"
+        },
+        "details": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "EvidenceTarget": {
+      "type": "object",
+      "properties": {
+        "test_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fixture_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_path": {
+          "$ref": "#/$defs/RepoRelativePath"
+        },
+        "changed_file_path": {
+          "$ref": "#/$defs/RepoRelativePath"
+        },
+        "static_scan_rule": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "EvidenceRequest": {
+      "type": "object",
+      "required": [
+        "request_id",
+        "draft_finding_id",
+        "evidence_key",
+        "claim",
+        "expected_observation",
+        "target"
+      ],
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "draft_finding_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_observation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "$ref": "#/$defs/EvidenceTarget"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ReviewLaneDraft": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ArtifactHeader"
+        },
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "generated_at_utc",
+            "producer",
+            "lane",
+            "input_refs",
+            "draft_findings",
+            "review_notes",
+            "evidence_requests",
+            "self_check",
+            "remote_mutations"
+          ],
+          "properties": {
+            "artifact_type": {
+              "const": "review_lane_draft"
+            },
+            "producer": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "lane": {
+              "$ref": "#/$defs/ReviewLaneMetadata"
+            },
+            "input_refs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ArtifactReference"
+              }
+            },
+            "draft_findings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DraftFinding"
+              }
+            },
+            "review_notes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReviewNote"
+              }
+            },
+            "evidence_requests": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/EvidenceRequest"
+              }
+            },
+            "self_check": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "remote_mutations": {
+              "const": "none"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  }
+}
