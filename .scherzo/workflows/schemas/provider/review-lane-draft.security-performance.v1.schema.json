@@ -27,7 +27,10 @@
           "title": { "type": "string", "minLength": 1 },
           "claim": { "type": "string", "minLength": 1 },
           "category": { "type": "string", "minLength": 1 },
-          "severity": { "type": "string", "minLength": 1 },
+          "severity": {
+            "type": "string",
+            "pattern": "^(info|low|medium|high|critical)$"
+          },
           "proposed_blocking": { "type": "boolean" },
           "locations": {
             "type": "array",
@@ -72,9 +75,18 @@
         ],
         "properties": {
           "id": { "type": "string", "minLength": 1 },
-          "kind": { "type": "string", "minLength": 1 },
-          "category": { "type": "string", "minLength": 1 },
-          "severity": { "type": "string", "minLength": 1 },
+          "kind": {
+            "type": "string",
+            "pattern": "^(risk_note|coverage_note|review_note|follow_up_test)$"
+          },
+          "category": {
+            "type": "string",
+            "pattern": "^(correctness|maintainability|security|performance|testing|workflow|documentation|artifact_contract|other)$"
+          },
+          "severity": {
+            "type": "string",
+            "pattern": "^(info|low|medium|high|critical)$"
+          },
           "locations": {
             "type": "array",
             "items": {

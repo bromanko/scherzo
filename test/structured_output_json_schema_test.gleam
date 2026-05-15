@@ -579,3 +579,52 @@ pub fn review_lane_overlay_schema_accepts_matching_and_rejects_wrong_lane_test()
       == Ok(structured_output_validator.ValidatorPass)
   })
 }
+
+fn provider_review_lane_schema_paths() -> List(String) {
+  [
+    ".scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json",
+    ".scherzo/workflows/schemas/provider/review-lane-draft.test-quality.v1.schema.json",
+    ".scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json",
+    ".scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json",
+  ]
+}
+
+fn provider_review_lane_submission_with_note_kind(
+  kind: String,
+) -> json_value.JsonValue {
+  let contents =
+    "{\"draft_findings\":[],\"review_notes\":[{\"id\":\"note-1\",\"kind\":\""
+    <> kind
+    <> "\",\"category\":\"testing\",\"severity\":\"info\",\"locations\":[],\"summary\":\"No findings.\",\"details\":\"No concrete test findings were identified.\",\"suggested_action\":\"Proceed.\"}],\"evidence_requests\":[],\"self_check\":{\"summary\":\"ok\"}}"
+  let assert Ok(value) = json_value.parse(contents)
+  value
+}
+
+pub fn provider_review_lane_schemas_accept_canonical_review_note_kind_test() {
+  list.each(provider_review_lane_schema_paths(), fn(schema_path) {
+    let validator = schema_validator(schema_path)
+    assert structured_output_json_schema.run_json_schema_validator(
+        validator,
+        provider_review_lane_submission_with_note_kind("review_note"),
+        context(validator),
+        [],
+      )
+      == Ok(structured_output_validator.ValidatorPass)
+  })
+}
+
+pub fn provider_review_lane_schemas_reject_noncanonical_review_note_kind_test() {
+  list.each(provider_review_lane_schema_paths(), fn(schema_path) {
+    let validator = schema_validator(schema_path)
+    let assert Error(error) =
+      structured_output_json_schema.run_json_schema_validator(
+        validator,
+        provider_review_lane_submission_with_note_kind("review_summary"),
+        context(validator),
+        [],
+      )
+
+    assert error.code == "structured_output_json_schema_rejected"
+    assert string.contains(error.diagnostic_summary, "/review_notes/0/kind")
+  })
+}

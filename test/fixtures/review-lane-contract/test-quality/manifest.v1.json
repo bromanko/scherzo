@@ -18,13 +18,13 @@
       "fixture": "unexpected-runner-metadata.arguments.json"
     },
     {
-      "code": "review_lane_submission_canonical_validation_failed",
+      "code": "review_lane_submission_shape_invalid",
       "contains": "severity",
       "expect": "fail",
       "fixture": "invalid-severity.arguments.json"
     },
     {
-      "code": "review_lane_submission_canonical_validation_failed",
+      "code": "review_lane_submission_shape_invalid",
       "contains": "category",
       "expect": "fail",
       "fixture": "invalid-category.arguments.json"
