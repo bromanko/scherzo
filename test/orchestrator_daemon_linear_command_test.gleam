@@ -8,12 +8,9 @@ import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config/types as config_types
 import scherzo/error
-import scherzo/handoff
 import scherzo/linear
-import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/state as orchestrator_state
-import scherzo/scheduled_failure_reporter
 import scherzo/session/hub
 import scherzo/session/name as session_name
 import scherzo/session/tokens as session_tokens
@@ -26,7 +23,6 @@ import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
-import scherzo/workflow_policy
 import scherzo/workflow_run
 import simplifile
 import test_async
@@ -366,16 +362,6 @@ fn pop_ack_result(
     [] -> #(Ok(Nil), [])
     [result, ..rest] -> #(result, rest)
   }
-}
-
-fn fake_triage(subject: process.Subject(String)) -> linear_triage.TriageClient {
-  linear_triage.TriageClient(report_invalid_workflow: fn(issue, violation) {
-    process.send(
-      subject,
-      "triage:" <> issue.id <> ":" <> workflow_policy.violation_code(violation),
-    )
-    Ok(linear_triage.InvalidWorkflowReportNoop)
-  })
 }
 
 fn linear_client(
@@ -795,12 +781,12 @@ pub fn park_command_suppresses_invalid_workflow_triage_test() {
   let linear_server =
     start_linear_server(fetch_subject, ack_subject, ack_target_subject)
   let deps =
-    daemon.RuntimeDependencies(..dependencies(
+    dependencies(
       tracker_with(candidate),
       linear_client(linear_server),
       log_subject,
       unused_agent,
-    ))
+    )
   process.send(
     linear_server,
     SetNext([

@@ -1,10 +1,8 @@
 import gleam/erlang/process
 import gleam/option.{Some}
 import gleam/string
-import scherzo/handoff
 import scherzo/instance_lock
 import scherzo/lifecycle
-import scherzo/linear
 import scherzo/log
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/service
@@ -278,12 +276,6 @@ fn empty_tracker() -> tracker.Client {
     fetch_issues_by_states: fn(_) { Ok([]) },
     fetch_issue_states_by_ids: fn(_) { Ok([]) },
   )
-}
-
-fn empty_command_client() -> linear.CommandClient {
-  linear.CommandClient(fetch_comments: fn(_, _) { Ok([]) }, post_ack: fn(_, _) {
-    Ok(Nil)
-  })
 }
 
 fn daemon_log_value(event: String, fields: List(log.Field)) -> String {

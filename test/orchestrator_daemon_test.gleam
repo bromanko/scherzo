@@ -9,10 +9,7 @@ import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/control/command
 import scherzo/error
-import scherzo/handoff
 import scherzo/handoff_format
-import scherzo/linear
-import scherzo/linear_triage
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/poll_jitter
@@ -38,7 +35,6 @@ import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_fingerprint
-import scherzo/workflow_policy
 import scherzo/workflow_run
 import scherzo/workspace_run
 import simplifile
@@ -590,12 +586,6 @@ fn try_adapter_tracker(
   }
 }
 
-fn disabled_linear_commands() -> linear.CommandClient {
-  linear.CommandClient(fetch_comments: fn(_, _) { Ok([]) }, post_ack: fn(_, _) {
-    Ok(Nil)
-  })
-}
-
 type TestClockMessage {
   GetNow(process.Subject(Int))
   SetNow(Int)
@@ -1016,16 +1006,6 @@ fn crashing_command_ready_workflow_run_dependencies(
       panic as "yaml agent crashed"
     },
   )
-}
-
-fn fake_triage(subject: process.Subject(String)) -> linear_triage.TriageClient {
-  linear_triage.TriageClient(report_invalid_workflow: fn(issue, violation) {
-    process.send(
-      subject,
-      "triage:" <> issue.id <> ":" <> workflow_policy.violation_code(violation),
-    )
-    Ok(linear_triage.InvalidWorkflowReportNoop)
-  })
 }
 
 fn prompt_until_queued(
@@ -1700,8 +1680,7 @@ pub fn daemon_ignores_unlabeled_non_dispatch_state_candidate_test() {
     )
   let log_subject = process.new_subject()
   let triage_subject = process.new_subject()
-  let deps =
-    daemon.RuntimeDependencies(..base_dependencies(client, log_subject))
+  let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
@@ -1735,8 +1714,7 @@ pub fn daemon_ignores_workflow_labeled_non_dispatch_state_candidate_test() {
     )
   let log_subject = process.new_subject()
   let triage_subject = process.new_subject()
-  let deps =
-    daemon.RuntimeDependencies(..base_dependencies(client, log_subject))
+  let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
@@ -1793,8 +1771,7 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
     )
   let log_subject = process.new_subject()
   let triage_subject = process.new_subject()
-  let deps =
-    daemon.RuntimeDependencies(..base_dependencies(client, log_subject))
+  let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
@@ -1838,8 +1815,7 @@ pub fn daemon_final_validation_blocks_new_dependency_test() {
     )
   let log_subject = process.new_subject()
   let claim_subject = process.new_subject()
-  let deps =
-    daemon.RuntimeDependencies(..base_dependencies(client, log_subject))
+  let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))

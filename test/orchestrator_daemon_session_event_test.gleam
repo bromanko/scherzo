@@ -7,13 +7,9 @@ import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config/types as config_types
 import scherzo/error
-import scherzo/handoff
-import scherzo/linear
-import scherzo/linear_triage
 import scherzo/orchestrator/daemon
 import scherzo/path
 import scherzo/result_artifact
-import scherzo/scheduled_failure_reporter
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/name as session_name
@@ -244,12 +240,6 @@ fn dependencies(
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
-}
-
-fn disabled_linear_commands() -> linear.CommandClient {
-  linear.CommandClient(fetch_comments: fn(_, _) { Ok([]) }, post_ack: fn(_, _) {
-    Ok(Nil)
-  })
 }
 
 pub fn daemon_records_session_summary_and_replay_events_test() {

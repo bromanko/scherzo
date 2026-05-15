@@ -8,9 +8,6 @@ import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/linear_parser
-import scherzo/handoff
-import scherzo/linear
-
 import scherzo/orchestrator/effects/interpreter
 import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_runner
