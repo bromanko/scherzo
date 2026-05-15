@@ -1112,7 +1112,22 @@ def publish_change(root: Path, args: list[str]) -> None:
     describe = run_jj_proc(root, ["describe", "-m", title_text])
     if describe.returncode != 0:
         json_failure(status="publication_failed", failure_code="describe_failed", message=(describe.stderr or describe.stdout or "jj describe failed").strip())
-    bookmark = run_jj_proc(root, ["bookmark", "set", branch, "--revision", "@"])
+    bookmark_args = ["bookmark", "set"]
+    if values.get("target-branch"):
+        # Merge-conflict resolution publishes intentionally retarget an existing
+        # PR branch. Ensure jj treats the selected remote bookmark as the
+        # tracking source, then allow replacing stale local resolver bookmarks.
+        # The subsequent git push remains non-force and remote fast-forward-safe.
+        track = run_jj_proc(root, ["bookmark", "track", branch, f"--remote={remote}"])
+        if track.returncode != 0:
+            json_failure(
+                status="publication_failed",
+                failure_code="bookmark_track_failed",
+                message=(track.stderr or track.stdout or "jj bookmark track failed").strip(),
+            )
+        bookmark_args.append("--allow-backwards")
+    bookmark_args.extend([branch, "--revision", "@"])
+    bookmark = run_jj_proc(root, bookmark_args)
     if bookmark.returncode != 0:
         json_failure(status="publication_failed", failure_code="bookmark_failed", message=(bookmark.stderr or bookmark.stdout or "jj bookmark failed").strip())
     push_args = ["git", "push", "--remote", remote, "--bookmark", branch]

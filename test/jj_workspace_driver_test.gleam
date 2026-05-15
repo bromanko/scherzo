@@ -109,6 +109,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = bookmark ] && [ \"$2\" = track ]; then exit 0; fi\n"
         <> "if [ \"$1\" = bookmark ] && [ \"$2\" = set ]; then exit 0; fi\n"
         <> "if [ \"$1\" = rebase ]; then exit 0; fi\n"
         <> "if [ \"$1\" = resolve ] && [ \"$2\" = --list ]; then exit 0; fi\n"
@@ -663,6 +664,38 @@ pub fn jj_driver_publish_remote_legacy_fallback_test() {
 
   assert_exit(artifact, 0)
   assert string.contains(log_text(log), "git push --remote fork")
+}
+
+pub fn jj_driver_publish_target_branch_allows_stale_local_bookmark_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-target-branch"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_target_branch",
+      "publish-change --kind merge-conflict --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --target-branch feature/pr --target-pr 198 --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  let logged = log_text(log)
+  assert string.contains(logged, "bookmark track feature/pr --remote=origin")
+  assert string.contains(
+    logged,
+    "bookmark set --allow-backwards feature/pr --revision @",
+  )
+  assert string.contains(
+    logged,
+    "git push --remote origin --bookmark feature/pr",
+  )
 }
 
 pub fn jj_driver_missing_gh_fails_only_publish_change_test() {
