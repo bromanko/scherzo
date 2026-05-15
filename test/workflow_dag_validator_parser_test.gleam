@@ -3,7 +3,9 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/path
 import scherzo/structured_output_source
+import scherzo/workflow_contract
 import scherzo/workflow_dag
+import simplifile
 
 fn parse_ok(source: String) -> workflow_dag.WorkflowDag {
   let assert Ok(dag) = workflow_dag.parse(source)
@@ -236,4 +238,29 @@ pub fn legacy_review_validator_lowers_to_command_validator_test() {
         env: [],
       ),
     ]
+}
+
+pub fn v2_execplan_workflows_parse_before_routing_test() {
+  let workflow_paths = [
+    ".scherzo/workflows/execplan-v2.yaml",
+    ".scherzo/workflows/execplan-revision-v2.yaml",
+    ".scherzo/workflows/execplan-implementation-v2.yaml",
+  ]
+
+  list.each(workflow_paths, fn(path) {
+    let assert Ok(source) = simplifile.read(path)
+    let dag = parse_ok(source)
+    assert string.contains(dag.id, "v2")
+    assert !string.contains(source, "docs/schemas/")
+    assert string.contains(source, ".scherzo/workflows/schemas/")
+      || path == ".scherzo/workflows/execplan-implementation-v2.yaml"
+  })
+
+  let assert Ok(drafting_source) =
+    simplifile.read(".scherzo/workflows/execplan-v2.yaml")
+  let drafting = parse_ok(drafting_source)
+  let assert Some(contract) = drafting.contract
+  let assert [implementation_pack, exec_plan_bundle] = contract.outputs
+  assert implementation_pack.type_ == workflow_contract.ImplementationPack
+  assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
 }

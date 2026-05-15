@@ -82,11 +82,12 @@ The design has four parts:
 - [x] 2026-05-15: Confirmed Scherzo already records workflow contract input/output manifests under `.scherzo-state/artifacts/runs/<run-id>/` and can retain structured JSON outputs with refs and SHA-256 hashes.
 - [x] 2026-05-15: Incorporated review feedback: removed the self-referential bundle hash, specified v2 publication, dynamic artifact discovery, retained-ref lookup, unchanged-revision review surface semantics, and code-change artifact retention.
 - [x] 2026-05-15: Incorporated follow-up review feedback: moved all new v2 schemas into `.scherzo/workflows/schemas/`, fixed implementation handoff state to Backlog, made revision issues human-created/updated, and limited v2 `supporting_context` to formal mapped outputs.
-- [ ] Add v2 schemas and fixtures.
-- [ ] Add v2 helper commands and tests.
-- [ ] Add v2 contract types and manifest retention tests.
-- [ ] Add v2 workflow YAML files and prompts.
-- [ ] Dogfood the v2 drafting and implementation flow on one small issue.
+- [x] 2026-05-15T20:34Z: Added v2 canonical schemas, provider submission schemas, and fixture artifacts under `.scherzo/workflows/schemas/` and `test/fixtures/execplan_v2/`.
+- [x] 2026-05-15T20:34Z: Added `scripts/scherzo-execplan-v2` with review-doc validation, pack materialization, bundle validation/materialization, revision preparation/materialization, implementation preparation, conflict gating, and code-change bundle materialization.
+- [x] 2026-05-15T20:34Z: Added explicit `exec_plan_bundle`, `implementation_pack`, and `code_change_bundle` workflow contract types, JSON retention behavior, and manifest tests.
+- [x] 2026-05-15T20:34Z: Added v2 workflow YAML files, v2 prompts, routing/config entries, workflow parser/fingerprint tests, and helper fixture tests.
+- [x] 2026-05-15T20:47Z: Expanded v2 helper tests to cover missing and mismatched review docs, missing and mismatched implementation packs, review-doc discovery failure, latest structured-output discovery, offline publish-context materialization, and unchanged revision reuse.
+- [x] 2026-05-15T21:18Z: Amended the pre-merge completion scope so live dogfooding is a post-merge rollout follow-up, because the current daemon base cannot dispatch the new v2 labels until this implementation PR lands. Pre-merge acceptance is covered by helper fixture tests, workflow parser/fingerprint tests, manifest-retention tests, and SelfCI.
 
 ## Surprises & Discoveries
 
@@ -95,6 +96,10 @@ The design has four parts:
 - Repository schema precedent is split: current production review-lane workflows point at `docs/schemas/provider/`, while the workflow package also contains `.scherzo/workflows/schemas/`. The v2 plan uses `.scherzo/workflows/schemas/` for both canonical and provider schemas so the new workflows are self-contained and do not add more schema files under `docs/`.
 - The current implementation helper already has strong plan-path extraction and plan-brief mechanics for v1. V2 should not overload those semantics; it should add a separate bundle preparation path.
 - A bundle cannot store the SHA-256 of its own canonical bytes without defining a separate hash domain. This plan keeps the bundle's final hash outside the bundle artifact.
+- Implementation note: the checked-in config tests sort `linear_contract.workflow_labels`, so adding the v2 labels required updating the expected sorted allow-list in `test/github_pr_conflict_scout_config_test.gleam`.
+  Evidence: `direnv exec . gleam test` first failed only on the old label inventory and source guardrail baselines, then passed after updating those tests for the intentional v2 additions.
+- Implementation note: the source guardrail tracks large production modules by exact line-count baseline. Adding three workflow contract variants intentionally grew `src/scherzo/workflow_contract.gleam` and `src/scherzo/workflow_run.gleam`, so `test/source_guardrail_test.gleam` was updated with the new baselines rather than hiding the growth.
+  Evidence: `direnv exec . gleam test` reported `1297 passed, no failures` after the baseline update.
 
 ## Decision Log
 
@@ -111,10 +116,11 @@ The design has four parts:
 - 2026-05-15: Put v2 implementation handoff issues in the same default state as v1, `Backlog`, rather than adding an experimental state.
 - 2026-05-15: Do not pre-create v2 revision template issues. A human creates or updates a Linear issue with `workflow:execplan-revision-v2` when a bundle needs revision.
 - 2026-05-15: Accept v2 `supporting_context` only through formal Scherzo mapped outputs. Helpers must not parse arbitrary artifact refs from Linear issue text in the MVP; deterministic ingestion of Linear attachments or URLs requires a future explicit snapshot step.
+- 2026-05-15: Keep v2 helper functionality in a separate Python entry point, `scripts/scherzo-execplan-v2`, rather than modifying v1 helper command semantics. The v2 implementation prepare command writes compatibility metadata for `scripts/scherzo-implementation` so existing refresh, analyze, validation, and publish mechanics can be reused without changing v1 workflows.
 
 ## Outcomes & Retrospective
 
-Not started. Fill this in after the v2 workflows have been implemented and at least one dogfood run has completed.
+Implementation milestone completed on 2026-05-15T20:34Z. The repository now contains the v2 artifact schemas, helper, fixtures, contract types, workflow YAML, prompts, routing entries, and tests. `direnv exec . gleam test` passes locally. On 2026-05-15T20:47Z, helper tests were expanded for the stale/missing artifact, structured-output discovery, publish-context, and unchanged-revision paths; `direnv exec . gleam test` reported `1306 passed, no failures`. On 2026-05-15T21:18Z, the operator amended the completion scope: live one-issue v2 dogfooding is deferred to post-merge rollout, because the active daemon cannot route the new v2 labels until this implementation PR is merged. The pre-merge deliverable is complete when SelfCI and the deterministic v2 contract/fixture tests pass and the PR is available for review.
 
 ## Context and Orientation
 
@@ -169,7 +175,7 @@ In scope:
 - Add deterministic helper support in `scripts/scherzo-execplan-v2`.
 - Extend workflow contract types so v2 artifacts are retained as first-class JSON outputs.
 - Add tests for bundle validation, stale-pack rejection, revision supersession, and implementation output generation.
-- Dogfood the v2 flow on one small issue after implementation.
+- Document the post-merge v2 dogfood path and rollback expectations so operators can run one small issue after the v2 routes are merged.
 
 Out of scope:
 
@@ -188,7 +194,7 @@ Out of scope:
 3. **Drafting workflow.** Add `execplan-v2.yaml` and prompts that produce a concise checked-in review doc plus retained `implementation_pack` and `exec_plan_bundle` outputs. Verification: a local workflow parse/fingerprint test covers the YAML and a fixture command run emits valid artifacts.
 4. **Revision workflow.** Add `execplan-revision-v2.yaml` and helper paths that transform a previous bundle and feedback into a superseding bundle, including unchanged revisions. Verification: tests assert supersession metadata and hash carry-forward for unchanged revisions.
 5. **Implementation workflow.** Add `execplan-implementation-v2.yaml` and preparation/output generation helpers that validate the bundle before implementation and emit a `code_change_bundle` after publication. Verification: stale or missing review docs fail before agent steps, and code-change bundle fixture generation validates.
-6. **Dogfood and rollback readiness.** Run v2 on one small issue without disrupting v1, then document the observed result in this plan. Verification: v2 PR and implementation PR are produced, and removing v2 labels/routes would fully disable the experiment.
+6. **Dogfood and rollback readiness.** Ship v2 behind new labels with a documented post-merge one-issue dogfood path and rollback by removing the v2 labels/routes. Verification before this PR lands is deterministic: parser/fingerprint tests cover the new workflows, helper fixture tests cover bundle and code-change artifacts, and current v1 routes remain unchanged. Live dogfood evidence is a post-merge rollout follow-up once the daemon can dispatch the new labels.
 
 ## Plan of Work
 
@@ -559,8 +565,8 @@ Finally, dogfood on one small issue. Keep v1 labels available throughout and do 
       - `direnv exec . scripts/scherzo-execplan-v2 validate-review-doc --path test/fixtures/execplan_v2/review-doc.valid.md`
     - Expected: all commands exit zero except negative tests that intentionally assert nonzero behavior.
 
-21. Dogfood v2 on one small issue.
-    - Create or choose a small issue whose implementation can be a docs-only or test-only change.
+21. Document the post-merge dogfood checklist.
+    - After this implementation PR is merged and the daemon has reloaded the new routes, create or choose a small issue whose implementation can be a docs-only or test-only change.
     - Label it only with `workflow:execplan-v2`.
     - Confirm the v2 draft PR contains only one checked-in human review doc under `docs/plans/`.
     - Confirm `.scherzo-state/artifacts/runs/<run-id>/outputs.v1.json` lists `implementation_pack` and `exec_plan_bundle` outputs with JSON refs and hashes.
@@ -568,6 +574,7 @@ Finally, dogfood on one small issue. Keep v1 labels available throughout and do 
     - Confirm the generated implementation issue starts in `Backlog`, then move it to `Todo` with only `workflow:execplan-implementation-v2` when ready to run.
     - Confirm implementation fails closed if the bundle hash is edited, then restore the correct hash and rerun or retry.
     - Confirm a successful implementation emits a `code_change_bundle` output.
+    - Record the run id, artifact refs, and PR URLs as a follow-up note or plan update after the live rollout run.
 
 22. Update this plan's living sections.
     - Mark milestones complete as they land.
@@ -628,7 +635,7 @@ Acceptance criteria for this issue map to implementation outcomes as follows:
 - **Exact schema names and locations specified.** Canonical schemas are `.scherzo/workflows/schemas/exec-plan-bundle.v2.schema.json`, `.scherzo/workflows/schemas/implementation-pack.v2.schema.json`, and `.scherzo/workflows/schemas/code-change-bundle.v2.schema.json`; provider submission schemas are `.scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json` and `.scherzo/workflows/schemas/exec-plan-revision-submission.v2.schema.json`. V2 does not add schema files under `docs/`.
 - **Outputs materialized and retained.** V2 workflows expose contract outputs retained as run artifacts: `runs/<run-id>/outputs/implementation_pack.json`, `runs/<run-id>/outputs/exec_plan_bundle.json`, and `runs/<run-id>/outputs/code_change_bundle.json`. Workflow manifests record refs, hashes, bytes, media type, and source; the bundle's own hash is never stored inside the bundle body.
 - **Publication path is deterministic.** `publish-review-doc` owns v2 review-doc PR creation/reuse and writes `tmp/scherzo-execplan-v2-publish-context.json`; v2 does not call the v1 `scripts/scherzo-execplan create-pr` path.
-- **Dogfood one small issue without disrupting current workflows.** V2 labels and routes are added in parallel; current labels remain unchanged. The implementation handoff issue is created in `Backlog`, then moved by a human when ready. The plan includes a one-issue dogfood path and rollback by removing v2 labels/routes.
+- **Dogfood readiness without disrupting current workflows.** V2 labels and routes are added in parallel; current labels remain unchanged. The implementation handoff issue is created in `Backlog`, then moved by a human when ready. Pre-merge validation proves the route, artifact, and helper contracts with tests; the one-issue live dogfood run is explicitly a post-merge rollout step once the daemon can dispatch the new labels.
 - **Tests cover required failure modes.** The plan requires tests for bundle validation, stale-pack rejection, revision supersession, and implementation output generation.
 
 The final implementation should also pass this ExecPlan validation command for the plan file itself when run from any workflow workspace:

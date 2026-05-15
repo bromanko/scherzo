@@ -1,0 +1,50 @@
+{
+  "artifact_type": "exec_plan_bundle",
+  "bundle_id": "fixture-bundle-liv-314",
+  "implementation_handoff": {
+    "bundle_ref": "runs/run-1/outputs/exec_plan_bundle.json",
+    "issue_identifier": "LIV-315",
+    "issue_url": "https://linear.app/living-systems/issue/LIV-315/implement-fixture-v2-execplan-bundle",
+    "workflow_label": "workflow:execplan-implementation-v2"
+  },
+  "implementation_pack": {
+    "bytes": 2167,
+    "derived_from_review_doc_sha256": "482a8c94bd2d5e5ba027ef6dc77799e595d614aebd59ded45ad152375aae6e26",
+    "ref": "runs/run-1/outputs/implementation_pack.json",
+    "schema": ".scherzo/workflows/schemas/implementation-pack.v2.schema.json",
+    "sha256": "5e3a24e5f6f33f1c79919c31e16ddc5601dcfe4a8b842f118b9d15ca87c4f173"
+  },
+  "review_doc": {
+    "bytes": 1770,
+    "path": "test/fixtures/execplan_v2/review-doc.valid.md",
+    "sha256": "482a8c94bd2d5e5ba027ef6dc77799e595d614aebd59ded45ad152375aae6e26"
+  },
+  "review_surface": {
+    "branch": "execplan-v2/liv-314",
+    "pr_url": "https://github.com/living-systems/scherzo/pull/314",
+    "source_bundle_ref": null,
+    "status": "published"
+  },
+  "revision": {
+    "number": 1,
+    "status": "created",
+    "supersedes": null
+  },
+  "schema_version": 2,
+  "source_issue": {
+    "identifier": "LIV-314",
+    "title": "Fixture v2 ExecPlan bundle",
+    "url": "https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle"
+  },
+  "validation": [
+    {
+      "name": "fixture",
+      "status": "passed"
+    }
+  ],
+  "workflow": {
+    "run_id": "run-1",
+    "workflow_fingerprint": "fixture-fingerprint",
+    "workflow_id": "execplan-v2"
+  }
+}

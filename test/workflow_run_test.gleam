@@ -4042,6 +4042,36 @@ pub fn contracted_final_response_output_is_retained_as_markdown_test() {
   assert blob == "# ExecPlan\n"
 }
 
+pub fn contracted_execplan_v2_step_field_outputs_are_retained_as_json_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-execplan-v2-json-outputs"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: execplan-v2\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize\n        field: stdout\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: echo '{\"schema_version\":2}'\n",
+    )
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      workflow_run.Dependencies(..deps(subject, None), checkpoint: checkpoint),
+    )
+
+  let manifest = read_output_manifest(root, "run-1")
+  assert output_named(manifest.outputs, "exec_plan_bundle").ref
+    == Some("runs/run-1/outputs/exec_plan_bundle.json")
+  assert output_named(manifest.outputs, "implementation_pack").ref
+    == Some("runs/run-1/outputs/implementation_pack.json")
+  assert output_named(manifest.outputs, "code_change_bundle").ref
+    == Some("runs/run-1/outputs/code_change_bundle.json")
+}
+
 pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-structured-inline-output"
