@@ -1,7 +1,18 @@
+import gleam/int
 import gleam/option.{type Option, None, Some}
+import scherzo/orchestrator/poll_jitter
 
 pub opaque type State(timer) {
   State(generation: Int, in_flight: Option(Int), timer: Option(timer))
+}
+
+pub opaque type JitteredDelay {
+  JitteredDelay(
+    generation: Int,
+    interval_ms: Int,
+    jitter_bound_ms: Int,
+    delay_ms: Int,
+  )
 }
 
 pub fn start(schedule_initial: fn(Int) -> timer) -> State(timer) {
@@ -46,6 +57,59 @@ pub fn schedule_next(
     in_flight: None,
     timer: Some(schedule(generation)),
   )
+}
+
+pub fn schedule_next_jittered(
+  state: State(timer),
+  interval_ms: Int,
+  seed: String,
+  schedule: fn(Int, Int) -> timer,
+  cancel: fn(timer) -> Nil,
+) -> #(State(timer), JitteredDelay) {
+  let generation = state.generation + 1
+  let delay =
+    JitteredDelay(
+      generation: generation,
+      interval_ms: interval_ms,
+      jitter_bound_ms: poll_jitter.jitter_bound_ms(interval_ms),
+      delay_ms: poll_jitter.delay_ms(interval_ms, seed, generation),
+    )
+  let state =
+    schedule_next(
+      state,
+      fn(generation) { schedule(generation, delay.delay_ms) },
+      cancel,
+    )
+  #(state, delay)
+}
+
+pub fn schedule_next_jittered_message(
+  state: State(timer),
+  interval_ms: Int,
+  seed: String,
+  target: target,
+  make_message: fn(Int) -> message,
+  send_after: fn(target, Int, message) -> timer,
+  cancel: fn(timer) -> Nil,
+) -> #(State(timer), JitteredDelay) {
+  schedule_next_jittered(
+    state,
+    interval_ms,
+    seed,
+    fn(generation, delay_ms) {
+      send_after(target, delay_ms, make_message(generation))
+    },
+    cancel,
+  )
+}
+
+pub fn jitter_log_fields(delay: JitteredDelay) -> List(#(String, String)) {
+  [
+    #("generation", int.to_string(delay.generation)),
+    #("polling_interval_ms", int.to_string(delay.interval_ms)),
+    #("polling_jitter_bound_ms", int.to_string(delay.jitter_bound_ms)),
+    #("next_poll_delay_ms", int.to_string(delay.delay_ms)),
+  ]
 }
 
 pub fn cancel_all(

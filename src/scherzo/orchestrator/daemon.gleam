@@ -3891,19 +3891,20 @@ fn transition_schedule_recovered_retry_timer(
 }
 
 fn schedule_next_poll(state: State) -> State {
-  let poll =
-    poll_scheduler.schedule_next(
+  let #(poll, delay) =
+    poll_scheduler.schedule_next_jittered_message(
       state.poll,
-      fn(generation) {
-        state.dependencies.send_after(
-          state.subject,
-          state.workflow.effective.polling.interval_ms,
-          PollTick(generation),
-        )
-      },
+      state.workflow.effective.polling.interval_ms,
+      state.workflow.effective.workspace.root,
+      state.subject,
+      PollTick,
+      state.dependencies.send_after,
       state.dependencies.cancel_timer,
     )
-  State(..state, poll: poll)
+  let state = State(..state, poll: poll)
+  let fields = poll_scheduler.jitter_log_fields(delay)
+  log_state(state, "info", "next_poll_scheduled", fields)
+  state
 }
 
 fn evaluate_scheduled_jobs(state: State) -> State {
