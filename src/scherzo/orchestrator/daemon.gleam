@@ -18,9 +18,6 @@ import scherzo/control/linear_parser
 import scherzo/control/linear_transport
 import scherzo/control/server as control_server
 import scherzo/error
-import scherzo/handoff
-import scherzo/linear
-import scherzo/linear_triage
 import scherzo/log
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
@@ -39,7 +36,6 @@ import scherzo/orchestrator/worker_registry
 import scherzo/orchestrator/workflow_reloader
 import scherzo/orchestrator/yaml_step_session
 import scherzo/runtime_bundle
-import scherzo/scheduled_failure_reporter
 import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/name as session_name
@@ -52,8 +48,12 @@ import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/step_artifact
+import scherzo/task
 import scherzo/tracker
+import scherzo/tracker/adapter
+import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
+import scherzo/tracker/linear_adapter
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
@@ -159,7 +159,7 @@ type StartupRecovery {
     retry_timers: List(recovery.RecoveredRetry),
     cleanup_workspaces: List(recovery.CleanupRequest),
     outbox_to_replay: List(recovery.OutboxReplay),
-    park_reports: List(handoff.ParkReport),
+    park_reports: List(adapter.ParkReport),
     command_receipts: Dict(String, projection.CommandReceiptState),
     recovery_by_issue: Dict(String, session_event.RecoveryInfo),
     warnings: List(String),
@@ -169,16 +169,8 @@ type StartupRecovery {
 
 pub type RuntimeDependencies {
   RuntimeDependencies(
-    make_tracker: fn(config_types.TrackerConfig) -> tracker.Client,
-    make_handoff: fn(config_types.TrackerConfig, config_types.HandoffConfig) ->
-      handoff.Client,
-    make_linear_commands: fn(config_types.TrackerConfig) -> linear.CommandClient,
-    make_triage: fn(
-      config_types.TrackerConfig,
-      config_types.LinearContractConfig,
-    ) -> linear_triage.TriageClient,
-    make_scheduled_failure_reporter: fn(config_types.TrackerConfig) ->
-      scheduled_failure_reporter.Client,
+    make_tracker_adapter: fn(config_types.EffectiveConfig) ->
+      adapter.TrackerAdapter,
     workflow_run_dependencies: workflow_run.Dependencies,
     cleanup: fn(String, String, config_types.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
@@ -200,10 +192,7 @@ type State {
     subject: process.Subject(Message),
     workflow: workflow_reloader.State,
     tracker_client: tracker.Client,
-    handoff_client: handoff.Client,
-    linear_command_client: linear.CommandClient,
-    triage_client: linear_triage.TriageClient,
-    scheduled_failure_reporter: scheduled_failure_reporter.Client,
+    tracker_adapter: adapter.TrackerAdapter,
     linear_command_state: linear_transport.TransportState,
     pending_linear_command_acks: Dict(
       String,
@@ -242,17 +231,7 @@ type State {
 
 pub fn default_dependencies() -> RuntimeDependencies {
   RuntimeDependencies(
-    make_tracker: linear.real_client,
-    make_handoff: fn(tracker_config, handoff_config) {
-      handoff.linear_client(
-        tracker_config,
-        handoff_config,
-        linear.http_transport,
-      )
-    },
-    make_linear_commands: linear.real_command_client,
-    make_triage: linear_triage.real_triage_client,
-    make_scheduled_failure_reporter: scheduled_failure_reporter.real_client,
+    make_tracker_adapter: linear_adapter.real,
     workflow_run_dependencies: workflow_run.default_dependencies(),
     cleanup: workspace.cleanup_stored_path,
     logger: fn(_level, _event, _fields, _secrets) { Ok(Nil) },
@@ -302,6 +281,91 @@ fn emit_runtime_log(
     Ok(Nil) -> Nil
     Error(Nil) -> Nil
   }
+}
+
+fn validate_tracker_capabilities(
+  tracker_adapter: adapter.TrackerAdapter,
+  orchestrator: config_types.OrchestratorConfig,
+) -> Result(Nil, StartupError) {
+  let requirements = tracker_requirements(orchestrator)
+  case adapter.validate_required_capabilities(tracker_adapter, requirements) {
+    Ok(Nil) -> Ok(Nil)
+    Error(errors) ->
+      Error(StartupError(
+        "tracker_capability_missing",
+        errors
+          |> list.map(adapter.capability_validation_error_message)
+          |> string.join(with: "\n"),
+      ))
+  }
+}
+
+fn tracker_requirements(
+  orchestrator: config_types.OrchestratorConfig,
+) -> adapter.TrackerRequirements {
+  let effective = orchestrator.effective
+  adapter.TrackerRequirements(
+    remote_commands_enabled: effective.linear_commands.enabled,
+    remote_commands_config_path: Some("linear_commands.enabled"),
+    handoff_comments_enabled: handoff_comments_enabled(effective.handoff),
+    handoff_state_moves_enabled: handoff_state_moves_enabled(effective.handoff),
+    handoff_config_path: Some("handoff.states"),
+    workflow_label_paths: workflow_label_paths(orchestrator.routing),
+    scheduled_failure_paths: scheduled_failure_paths(
+      orchestrator.scheduled_jobs,
+    ),
+    readiness_checks_enabled: False,
+    smoke_checks_enabled: False,
+  )
+}
+
+fn handoff_comments_enabled(handoff: config_types.HandoffConfig) -> Bool {
+  handoff.enabled
+  && {
+    handoff.comment_on_claim
+    || handoff.comment_on_success
+    || handoff.comment_on_failure
+    || handoff.comment_on_park
+  }
+}
+
+fn handoff_state_moves_enabled(handoff: config_types.HandoffConfig) -> Bool {
+  handoff.enabled
+  && {
+    option_is_some(handoff.claim_state_id)
+    || option_is_some(handoff.success_state_id)
+    || option_is_some(handoff.failure_state_id)
+    || option_is_some(handoff.completion_states)
+  }
+}
+
+fn option_is_some(value: Option(a)) -> Bool {
+  case value {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+fn workflow_label_paths(routing: config_types.RoutingConfig) -> List(String) {
+  case routing.workflow_label_prefix == "" {
+    True -> []
+    False ->
+      routing.workflows
+      |> dict.keys
+      |> list.map(fn(id) { "workflows." <> id <> ".label" })
+  }
+}
+
+fn scheduled_failure_paths(
+  jobs: List(config_types.ScheduledJobConfig),
+) -> List(String) {
+  jobs
+  |> list.filter_map(fn(job) {
+    case job.on_failure.linear.enabled {
+      True -> Ok("scheduled_jobs." <> job.id <> ".on_failure")
+      False -> Error(Nil)
+    }
+  })
 }
 
 fn start_control_plane(
@@ -410,15 +474,12 @@ pub fn start(
   )
   let workflow = workflow_reloader.from_bundle(workflow_path, bundle)
   let effective = bundle.effective
-  let tracker_client = dependencies.make_tracker(effective.tracker)
-  let handoff_client =
-    dependencies.make_handoff(effective.tracker, effective.handoff)
-  let linear_command_client =
-    dependencies.make_linear_commands(effective.tracker)
-  let triage_client =
-    dependencies.make_triage(effective.tracker, effective.linear_contract)
-  let scheduled_failure_reporter =
-    dependencies.make_scheduled_failure_reporter(effective.tracker)
+  let tracker_adapter = dependencies.make_tracker_adapter(effective)
+  use Nil <- try_startup(validate_tracker_capabilities(
+    tracker_adapter,
+    bundle.orchestrator,
+  ))
+  let tracker_client = adapter_legacy.legacy_client(tracker_adapter)
   let secrets = config.resolved_secrets(effective)
   use startup_recovery <- try_startup(load_startup_recovery(
     bundle,
@@ -489,10 +550,7 @@ pub fn start(
                       subject: subject,
                       workflow: workflow,
                       tracker_client: tracker_client,
-                      handoff_client: handoff_client,
-                      linear_command_client: linear_command_client,
-                      triage_client: triage_client,
-                      scheduled_failure_reporter: scheduled_failure_reporter,
+                      tracker_adapter: tracker_adapter,
                       linear_command_state: linear_command_state,
                       pending_linear_command_acks: dict.new(),
                       in_flight_linear_command_acks: dict.new(),
@@ -999,7 +1057,7 @@ fn scheduled_job_by_id(
 
 fn startup_park_reports(
   records: List(record.LedgerRecord),
-) -> List(handoff.ParkReport) {
+) -> List(adapter.ParkReport) {
   let run_ids = startup_park_report_run_ids(records)
   startup_park_reports_loop(records, run_ids, [], [])
 }
@@ -1008,8 +1066,8 @@ fn startup_park_reports_loop(
   records: List(record.LedgerRecord),
   run_ids: Dict(String, String),
   seen_issue_ids: List(String),
-  reports: List(handoff.ParkReport),
-) -> List(handoff.ParkReport) {
+  reports: List(adapter.ParkReport),
+) -> List(adapter.ParkReport) {
   case records {
     [] -> list.reverse(reports)
     [ledger_record, ..rest] ->
@@ -1052,18 +1110,23 @@ fn add_startup_park_report(
   rest: List(record.LedgerRecord),
   run_ids: Dict(String, String),
   seen_issue_ids: List(String),
-  reports: List(handoff.ParkReport),
+  reports: List(adapter.ParkReport),
   issue_id: String,
   issue_identifier: String,
   reason_text: String,
   release_policy: Option(String),
-) -> List(handoff.ParkReport) {
+) -> List(adapter.ParkReport) {
   case list.contains(seen_issue_ids, issue_id) {
     True -> startup_park_reports_loop(rest, run_ids, seen_issue_ids, reports)
     False ->
       startup_park_reports_loop(rest, run_ids, [issue_id, ..seen_issue_ids], [
-        handoff.ParkReport(
-          issue_id: issue_id,
+        adapter.ParkReport(
+          task: task.TaskRef(
+            backend_kind: "linear",
+            remote_id: issue_id,
+            key: Some(issue_identifier),
+            url: None,
+          ),
           issue_identifier: issue_identifier,
           reason: reason_text,
           release_policy: release_policy,
@@ -2073,7 +2136,7 @@ fn apply_shell_operator_command(
     | command.ParkIssue(_, _)
     | command.UnparkIssue(_) ->
       case request.source {
-        transition_effects.LinearOperatorCommand(_, _, _, _) ->
+        transition_effects.RemoteOperatorCommand(_, _, _, _, _) ->
           apply_operator_command_to_state(
             state,
             operator_command,
@@ -2103,31 +2166,33 @@ fn finish_operator_command_effect(
       log_operator_result(state, result, [])
       #(state, [])
     }
-    transition_effects.LinearOperatorCommand(
-      comment_id,
-      issue_id,
+    transition_effects.RemoteOperatorCommand(
+      backend_kind,
+      event_id,
+      task_remote_id,
       command_name,
       excerpt,
     ) -> {
       let completion =
-        linear_command_completion_for_result(
+        remote_command_completion_for_result(
           state,
-          comment_id,
-          issue_id,
+          event_id,
+          task_remote_id,
           command_name,
           excerpt,
           request.operator_command,
           result,
         )
-      log_state(state, "info", "linear_operator_command", [
-        #("comment_id", comment_id),
+      log_state(state, "info", "remote_operator_command", [
+        #("event_id", event_id),
         #("command", result.command),
         #("status", command.status_to_string(result.status)),
       ])
       #(state, [
-        transition_types.LinearCommandApplied(
-          comment_id: comment_id,
-          issue_id: issue_id,
+        transition_types.RemoteCommandApplied(
+          backend_kind: backend_kind,
+          event_id: event_id,
+          task_remote_id: task_remote_id,
           command_name: command_name,
           result: completion.result,
           message_excerpt: completion.message_excerpt,
@@ -2138,15 +2203,15 @@ fn finish_operator_command_effect(
   }
 }
 
-fn linear_command_completion_for_result(
+fn remote_command_completion_for_result(
   state: State,
-  comment_id: String,
-  issue_id: String,
+  event_id: String,
+  task_remote_id: String,
   _command_name: String,
   excerpt: String,
   operator_command: command.OperatorCommand,
   result: command.CommandResult,
-) -> transition_effects.LinearCommandCompletion {
+) -> transition_effects.RemoteCommandCompletion {
   let ack_result =
     command_result_with_display_target(state, operator_command, result)
   let message_excerpt =
@@ -2159,10 +2224,10 @@ fn linear_command_completion_for_result(
   {
     True ->
       Some(linear_transport.result_ack_body(
-        comment_id,
+        event_id,
         linear_parser.ParsedLinearCommand(
-          source_issue_id: issue_id,
-          source_comment_id: comment_id,
+          source_issue_id: task_remote_id,
+          source_comment_id: event_id,
           command: operator_command,
           excerpt: excerpt,
         ),
@@ -2171,7 +2236,7 @@ fn linear_command_completion_for_result(
       ))
     False -> None
   }
-  transition_effects.LinearCommandCompletion(
+  transition_effects.RemoteCommandCompletion(
     result: ack_result,
     message_excerpt: message_excerpt,
     ack_body: ack_body,
@@ -2776,25 +2841,13 @@ fn apply_reloaded_workflow(
       poll_interval_ms: effective.polling.interval_ms,
       max_concurrent_agents: effective.agent.max_concurrent_agents,
     )
+  let tracker_adapter = state.dependencies.make_tracker_adapter(effective)
   let state =
     State(
       ..state,
       workflow: workflow,
-      tracker_client: state.dependencies.make_tracker(effective.tracker),
-      handoff_client: state.dependencies.make_handoff(
-        effective.tracker,
-        effective.handoff,
-      ),
-      linear_command_client: state.dependencies.make_linear_commands(
-        effective.tracker,
-      ),
-      triage_client: state.dependencies.make_triage(
-        effective.tracker,
-        effective.linear_contract,
-      ),
-      scheduled_failure_reporter: state.dependencies.make_scheduled_failure_reporter(
-        effective.tracker,
-      ),
+      tracker_client: adapter_legacy.legacy_client(tracker_adapter),
+      tracker_adapter: tracker_adapter,
       runtime: runtime,
     )
   let state = refresh_scheduled_next_due_after_reload(state)
@@ -2884,38 +2937,38 @@ fn handle_candidate_fetch_finished(
   ])
 }
 
-fn handle_linear_command_fetch_finished(
+fn handle_remote_command_fetch_finished(
   state: State,
   generation: Int,
   candidates: List(tracker_issue.Issue),
   dispatch_after: Bool,
-  result: Result(List(linear.LinearComment), error.TrackerError),
+  result: Result(List(adapter.RemoteCommandEvent), error.TrackerError),
 ) -> State {
   case poll_result_is_stale(state, generation) {
     True -> state
     False -> {
       let state = case result {
         Error(err) -> {
-          log_state(state, "warn", "linear_command_fetch_failed", [
+          log_state(state, "warn", "remote_command_fetch_failed", [
             #("error", error.tracker_code(err)),
           ])
           state
         }
-        Ok(comments) -> linear_comments_to_transition(state, comments)
+        Ok(events) -> remote_events_to_transition(state, events)
       }
-      finish_linear_command_phase(state, candidates, dispatch_after)
+      finish_remote_command_phase(state, candidates, dispatch_after)
     }
   }
 }
 
-fn finish_linear_command_phase(
+fn finish_remote_command_phase(
   state: State,
   candidates: List(tracker_issue.Issue),
   dispatch_after: Bool,
 ) -> State {
   run_transition_messages(state, [
-    transition_types.RetryPendingLinearCommandAcks,
-    transition_types.LinearCommandPhaseFinished(
+    transition_types.RetryPendingRemoteCommandAcks,
+    transition_types.RemoteCommandPhaseFinished(
       candidates,
       dispatch_after,
       transition_dispatch_context(state),
@@ -2923,30 +2976,30 @@ fn finish_linear_command_phase(
   ])
 }
 
-fn linear_comments_to_transition(
+fn remote_events_to_transition(
   state: State,
-  comments: List(linear.LinearComment),
+  events: List(adapter.RemoteCommandEvent),
 ) -> State {
   let #(transport_state, actions) =
-    linear_transport.process_comments(
+    linear_transport.process_remote_events(
       state.linear_command_state,
       state.workflow.effective.linear_commands,
-      comments,
+      events,
       worker_registry.issue_sessions(state.registry),
     )
   let state = State(..state, linear_command_state: transport_state)
-  fold_linear_transport_actions(state, actions)
+  fold_remote_transport_actions(state, actions)
 }
 
-fn fold_linear_transport_actions(
+fn fold_remote_transport_actions(
   state: State,
-  actions: List(linear_transport.TransportAction),
+  actions: List(linear_transport.RemoteTransportAction),
 ) -> State {
   case actions {
     [] -> state
     [action, ..rest] ->
-      fold_linear_transport_actions(
-        linear_transport_action_to_transition(state, action),
+      fold_remote_transport_actions(
+        remote_transport_action_to_transition(state, action),
         rest,
       )
   }
@@ -2992,18 +3045,26 @@ fn operator_command_targets_session(
   }
 }
 
-fn linear_transport_action_to_transition(
+fn remote_transport_action_to_transition(
   state: State,
-  action: linear_transport.TransportAction,
+  action: linear_transport.RemoteTransportAction,
 ) -> State {
   case action {
-    linear_transport.SubmitCommand(comment, parsed) ->
-      linear_submit_to_transition(state, comment, parsed)
-    linear_transport.PostAck(issue_id, source_comment_id, body) ->
-      linear_ack_to_transition(state, issue_id, source_comment_id, body, False)
-    linear_transport.LogIgnored(reason, comment_id) -> {
-      log_state(state, "info", "linear_command_ignored", [
-        #("comment_id", comment_id),
+    linear_transport.SubmitRemoteCommand(event, parsed) ->
+      remote_submit_to_transition(state, event, parsed)
+    linear_transport.PostRemoteAck(backend_kind, task_remote_id, event_id, body) ->
+      remote_ack_to_transition(
+        state,
+        backend_kind,
+        task_remote_id,
+        event_id,
+        body,
+        False,
+        "remote_command_ack",
+      )
+    linear_transport.LogRemoteIgnored(reason, event_id) -> {
+      log_state(state, "info", "remote_command_ignored", [
+        #("event_id", event_id),
         #("reason", reason),
       ])
       state
@@ -3011,16 +3072,16 @@ fn linear_transport_action_to_transition(
   }
 }
 
-fn linear_submit_to_transition(
+fn remote_submit_to_transition(
   state: State,
-  comment: linear.LinearComment,
+  event: adapter.RemoteCommandEvent,
   parsed: linear_parser.ParsedLinearCommand,
 ) -> State {
   run_transition_messages(state, [
-    transition_types.LinearCommandSubmitted(
-      comment: comment,
+    transition_types.RemoteCommandSubmitted(
+      event: event,
       parsed: parsed,
-      safe_excerpt: safe_linear_command_excerpt(
+      safe_excerpt: safe_remote_command_excerpt(
         parsed.excerpt,
         state.workflow.secrets,
       ),
@@ -3028,42 +3089,54 @@ fn linear_submit_to_transition(
   ])
 }
 
-fn linear_ack_to_transition(
+fn remote_ack_to_transition(
   state: State,
-  issue_id: String,
-  source_comment_id: String,
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
   body: String,
   outbox_recorded: Bool,
+  outbox_kind: String,
 ) -> State {
   run_transition_messages(state, [
-    transition_types.LinearCommandAckRequested(
-      issue_id: issue_id,
-      source_comment_id: source_comment_id,
+    transition_types.RemoteCommandAckRequested(
+      backend_kind: backend_kind,
+      task_remote_id: task_remote_id,
+      event_id: event_id,
       body: body,
       outbox_recorded: outbox_recorded,
+      outbox_kind: outbox_kind,
     ),
   ])
 }
 
-fn post_linear_command_ack_shell(
+fn post_remote_command_ack_shell(
   state: State,
-  issue_id: String,
-  source_comment_id: String,
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
   body: String,
+  outbox_kind: String,
 ) -> State {
-  enqueue_side_effect(
-    state,
-    effect_runner.PostLinearCommandAck(
-      issue_id: issue_id,
-      source_comment_id: source_comment_id,
-      body: body,
-      client: state.linear_command_client,
-    ),
-  )
+  case state.tracker_adapter.remote_commands {
+    Some(capability) ->
+      enqueue_side_effect(
+        state,
+        effect_runner.PostRemoteCommandAck(
+          backend_kind: backend_kind,
+          task_remote_id: task_remote_id,
+          event_id: event_id,
+          body: body,
+          outbox_kind: outbox_kind,
+          capability: capability,
+        ),
+      )
+    None -> state
+  }
 }
 
-fn safe_linear_command_excerpt(value: String, secrets: List(String)) -> String {
-  log.redact("linear_command_receipt", value, secrets)
+fn safe_remote_command_excerpt(value: String, secrets: List(String)) -> String {
+  log.redact("remote_command_receipt", value, secrets)
   |> log.truncate(record.max_excerpt_chars)
 }
 
@@ -3072,7 +3145,7 @@ fn result_message_excerpt(
   secrets: List(String),
 ) -> String {
   case result.message {
-    Some(message) -> safe_linear_command_excerpt(message, secrets)
+    Some(message) -> safe_remote_command_excerpt(message, secrets)
     None -> ""
   }
 }
@@ -3215,24 +3288,28 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
         ),
       )
     },
-    fetch_linear_commands: fn(
+    fetch_remote_commands: fn(
       state,
       generation,
-      issue_ids,
+      task_refs,
       candidates,
       dispatch_after,
     ) {
-      enqueue_side_effect(
-        state,
-        effect_runner.FetchLinearCommands(
-          generation: generation,
-          issue_ids: issue_ids,
-          candidates: candidates,
-          dispatch_after: dispatch_after,
-          client: state.linear_command_client,
-          limit_per_issue: state.workflow.effective.linear_commands.poll_limit_per_issue,
-        ),
-      )
+      case state.tracker_adapter.remote_commands {
+        Some(capability) ->
+          enqueue_side_effect(
+            state,
+            effect_runner.FetchRemoteCommands(
+              generation: generation,
+              task_refs: task_refs,
+              candidates: candidates,
+              dispatch_after: dispatch_after,
+              capability: capability,
+              limit_per_task: state.workflow.effective.linear_commands.poll_limit_per_issue,
+            ),
+          )
+        None -> finish_remote_command_phase(state, candidates, dispatch_after)
+      }
     },
     begin_dispatch_validation: fn(state, issue_id, generation) {
       enqueue_side_effect(
@@ -3252,7 +3329,7 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
           issue: issue,
           workspace_path: workspace_path,
           run_id: run_id,
-          client: state.handoff_client,
+          capability: require_handoff_capability(state),
         ),
       )
     },
@@ -3270,7 +3347,9 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
           violation: violation,
           violation_fingerprint: violation_fingerprint,
           reporting_policy_fingerprint: reporting_policy_fingerprint,
-          client: state.triage_client,
+          contract_config: state.workflow.effective.linear_contract,
+          comments: state.tracker_adapter.comments,
+          state_transitions: state.tracker_adapter.state_transitions,
         ),
       )
     },
@@ -3307,7 +3386,7 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
     report_worker_failure: transition_report_worker_failure,
     cleanup_workspace: transition_cleanup_workspace,
     park_issue: transition_park_issue,
-    replay_linear_command_ack: transition_replay_linear_command_ack,
+    replay_remote_command_ack: transition_replay_remote_command_ack,
     report_park: transition_report_park,
     stop_worker: transition_stop_worker,
     stop_worker_after_issue_refresh: transition_stop_worker_after_issue_refresh,
@@ -3321,8 +3400,22 @@ fn transition_shell(state: State) -> transition_interpreter.ShellState(State) {
     set_operator_paused: set_operator_paused,
     apply_operator_command: apply_shell_operator_command,
     finish_operator_command: finish_operator_command_effect,
-    post_linear_command_ack: fn(state, issue_id, source_comment_id, body) {
-      post_linear_command_ack_shell(state, issue_id, source_comment_id, body)
+    post_remote_command_ack: fn(
+      state,
+      backend_kind,
+      task_remote_id,
+      event_id,
+      body,
+      outbox_kind,
+    ) {
+      post_remote_command_ack_shell(
+        state,
+        backend_kind,
+        task_remote_id,
+        event_id,
+        body,
+        outbox_kind,
+      )
     },
     report_park_effect: fn(
       state,
@@ -3493,7 +3586,7 @@ fn transition_report_worker_success(
       success: success,
       run_id: identity.run_id,
       workflow_id: identity.workflow_id,
-      client: state.handoff_client,
+      capability: require_handoff_capability(state),
     ),
   )
 }
@@ -3511,7 +3604,7 @@ fn transition_report_worker_failure(
       failure: failure,
       run_id: identity.run_id,
       workflow_id: identity.workflow_id,
-      client: state.handoff_client,
+      capability: require_handoff_capability(state),
     ),
   )
 }
@@ -3532,27 +3625,37 @@ fn transition_cleanup_workspace(state: State, workspace_path: String) -> State {
   }
 }
 
-fn transition_replay_linear_command_ack(
+fn transition_replay_remote_command_ack(
   state: State,
-  issue_id: String,
-  source_comment_id: String,
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
   body: String,
+  outbox_kind: String,
 ) -> State {
   let state =
     State(
       ..state,
       linear_command_state: linear_transport.mark_processed(
         state.linear_command_state,
-        source_comment_id,
+        event_id,
       ),
     )
-  linear_ack_to_transition(state, issue_id, source_comment_id, body, True)
+  remote_ack_to_transition(
+    state,
+    backend_kind,
+    task_remote_id,
+    event_id,
+    body,
+    True,
+    outbox_kind,
+  )
 }
 
-fn transition_report_park(state: State, report: handoff.ParkReport) -> State {
+fn transition_report_park(state: State, report: adapter.ParkReport) -> State {
   enqueue_side_effect(
     state,
-    effect_runner.ReportPark(report, state.handoff_client),
+    effect_runner.ReportPark(report, require_handoff_capability(state)),
   )
 }
 
@@ -3610,8 +3713,13 @@ fn enqueue_parked_entry_report(
   enqueue_side_effect(
     state,
     effect_runner.ReportPark(
-      handoff.ParkReport(
-        issue_id: parked.issue_id,
+      adapter.ParkReport(
+        task: task.TaskRef(
+          backend_kind: state.tracker_adapter.kind,
+          remote_id: parked.issue_id,
+          key: Some(parked.identifier),
+          url: None,
+        ),
         issue_identifier: parked.identifier,
         reason: reason_text,
         release_policy: Some(park_release_policy_to_string(
@@ -3619,7 +3727,7 @@ fn enqueue_parked_entry_report(
         )),
         run_id: source_run_id,
       ),
-      state.handoff_client,
+      require_handoff_capability(state),
     ),
   )
 }
@@ -5383,8 +5491,8 @@ fn begin_scheduled_failure_report_for_job(
     }
     True, Some(triage_state) -> {
       let generation = state.next_scheduled_report_generation
-      let request =
-        scheduled_failure_reporter.FailureReportRequest(
+      let publication =
+        adapter.ScheduledFailurePublication(
           job_id: job.id,
           workflow_id: workflow_id,
           due_at_ms: due_at_ms,
@@ -5394,21 +5502,34 @@ fn begin_scheduled_failure_report_for_job(
           reason: reason,
           run_root: run_root,
           session_id: session_id,
-          dedupe_key: scheduled_failure_reporter.dedupe_key(job.id),
-          triage_state: triage_state,
-          configured_labels: linear_config.labels,
-          previous_issue_id: scheduled_failure_issue_id_for_state(state, job.id),
+          dedupe_key: scheduled_failure_dedupe_key(job.id),
+          title: "Scheduled workflow failure: " <> job.id,
+          body: reason,
+          labels: linear_config.labels,
+          target_state_name: Some(triage_state),
+          previous_task_remote_id: scheduled_failure_issue_id_for_state(
+            state,
+            job.id,
+          ),
         )
-      enqueue_side_effect(
-        State(..state, next_scheduled_report_generation: generation + 1),
-        effect_runner.ReportScheduledFailure(
-          generation: generation,
-          request: request,
-          client: state.scheduled_failure_reporter,
-        ),
-      )
+      case state.tracker_adapter.scheduled_failures {
+        Some(capability) ->
+          enqueue_side_effect(
+            State(..state, next_scheduled_report_generation: generation + 1),
+            effect_runner.ReportScheduledFailure(
+              generation: generation,
+              publication: publication,
+              capability: capability,
+            ),
+          )
+        None -> state
+      }
     }
   }
+}
+
+fn scheduled_failure_dedupe_key(job_id: String) -> String {
+  "scheduled-job:" <> job_id
 }
 
 fn scheduled_failure_issue_id_for_state(
@@ -5571,72 +5692,74 @@ fn start_scheduled_retry_now(
 fn handle_scheduled_failure_report_finished(
   state: State,
   generation: Int,
-  request: scheduled_failure_reporter.FailureReportRequest,
-  result: Result(
-    scheduled_failure_reporter.FailureReportOutcome,
-    error.TrackerError,
-  ),
+  publication: adapter.ScheduledFailurePublication,
+  result: Result(adapter.ScheduledFailureReceipt, error.TrackerError),
 ) -> State {
   case result {
-    Ok(outcome) ->
-      handle_scheduled_failure_report_success(state, request, outcome)
+    Ok(receipt) ->
+      handle_scheduled_failure_report_success(state, publication, receipt)
     Error(err) ->
-      handle_scheduled_failure_report_failure(state, generation, request, err)
+      handle_scheduled_failure_report_failure(
+        state,
+        generation,
+        publication,
+        err,
+      )
   }
 }
 
 fn handle_scheduled_failure_report_success(
   state: State,
-  request: scheduled_failure_reporter.FailureReportRequest,
-  outcome: scheduled_failure_reporter.FailureReportOutcome,
+  publication: adapter.ScheduledFailurePublication,
+  receipt: adapter.ScheduledFailureReceipt,
 ) -> State {
-  case scheduled_failure_reporter.issue_id(outcome) {
-    None -> state
-    Some(issue_id) -> {
-      log_state(state, "info", "scheduled_failure_reported", [
-        #("job_id", request.job_id),
-        #("run_id", request.run_id),
-        #("linear_issue_id", issue_id),
-        #("action", scheduled_failure_reporter.action(outcome)),
-      ])
-      let _ =
-        append_ledger_bodies(
-          State(
-            ..state,
-            scheduled_report_retries: dict.delete(
-              state.scheduled_report_retries,
-              request.run_id,
-            ),
-          ),
-          [
-            record.ScheduledFailureReported(
-              request.job_id,
-              request.workflow_id,
-              request.due_at_ms,
-              request.run_id,
-              request.attempt,
-              request.dedupe_key,
-              issue_id,
-              scheduled_failure_reporter.action(outcome),
-            ),
-          ],
-          "scheduled_failure_report_append_failed",
-        )
+  let issue_id = receipt.task.remote_id
+  let action = case receipt.created {
+    True -> "created"
+    False -> "updated"
+  }
+  log_state(state, "info", "scheduled_failure_reported", [
+    #("job_id", publication.job_id),
+    #("run_id", publication.run_id),
+    #("linear_issue_id", issue_id),
+    #("action", action),
+  ])
+  let _ =
+    append_ledger_bodies(
       State(
         ..state,
         scheduled_report_retries: dict.delete(
           state.scheduled_report_retries,
-          request.run_id,
+          publication.run_id,
         ),
-      )
-    }
-  }
+      ),
+      [
+        record.ScheduledFailureReported(
+          publication.job_id,
+          publication.workflow_id,
+          publication.due_at_ms,
+          publication.run_id,
+          publication.attempt,
+          publication.dedupe_key,
+          issue_id,
+          action,
+        ),
+      ],
+      "scheduled_failure_report_append_failed",
+    )
+  State(
+    ..state,
+    scheduled_report_retries: dict.delete(
+      state.scheduled_report_retries,
+      publication.run_id,
+    ),
+  )
 }
 
 fn handle_scheduled_failure_report_failure(
   state: State,
   generation: Int,
-  request: scheduled_failure_reporter.FailureReportRequest,
+  publication: adapter.ScheduledFailurePublication,
   err: error.TrackerError,
 ) -> State {
   let delay_ms =
@@ -5649,11 +5772,11 @@ fn handle_scheduled_failure_report_failure(
     state.dependencies.send_after(
       state.subject,
       delay_ms,
-      ScheduledReportRetryTick(request.run_id, generation),
+      ScheduledReportRetryTick(publication.run_id, generation),
     )
   log_state(state, "warn", "scheduled_failure_report_failed", [
-    #("job_id", request.job_id),
-    #("run_id", request.run_id),
+    #("job_id", publication.job_id),
+    #("run_id", publication.run_id),
     #("error", error.tracker_code(err)),
   ])
   let _ =
@@ -5661,12 +5784,12 @@ fn handle_scheduled_failure_report_failure(
       state,
       [
         record.ScheduledFailureReportFailed(
-          request.job_id,
-          request.workflow_id,
-          request.due_at_ms,
-          request.run_id,
-          request.attempt,
-          request.dedupe_key,
+          publication.job_id,
+          publication.workflow_id,
+          publication.due_at_ms,
+          publication.run_id,
+          publication.attempt,
+          publication.dedupe_key,
           error.tracker_code(err),
           tracker_error_message(err),
           next_retry_at_ms,
@@ -5679,10 +5802,10 @@ fn handle_scheduled_failure_report_failure(
     ..state,
     scheduled_report_retries: dict.insert(
       state.scheduled_report_retries,
-      request.run_id,
+      publication.run_id,
       ScheduledReportRetryStart(
-        job_id: request.job_id,
-        run_id: request.run_id,
+        job_id: publication.job_id,
+        run_id: publication.run_id,
         generation: generation,
         timer: timer,
       ),
@@ -5919,13 +6042,13 @@ fn handle_side_effect_result(
   case result {
     effect_runner.CandidateFetchFinished(generation, result) ->
       handle_candidate_fetch_finished(state, generation, result)
-    effect_runner.LinearCommandFetchFinished(
+    effect_runner.RemoteCommandFetchFinished(
       generation,
       candidates,
       dispatch_after,
       result,
     ) ->
-      handle_linear_command_fetch_finished(
+      handle_remote_command_fetch_finished(
         state,
         generation,
         candidates,
@@ -5951,8 +6074,21 @@ fn handle_side_effect_result(
       handle_handoff_failure_finished(state, issue_id, result)
     effect_runner.HandoffParkFinished(issue_id, result) ->
       handle_handoff_park_finished(state, issue_id, result)
-    effect_runner.LinearCommandAckFinished(issue_id, comment_id, result) ->
-      handle_linear_command_ack_finished(state, issue_id, comment_id, result)
+    effect_runner.RemoteCommandAckFinished(
+      backend_kind,
+      task_remote_id,
+      event_id,
+      outbox_kind,
+      result,
+    ) ->
+      handle_remote_command_ack_finished(
+        state,
+        backend_kind,
+        task_remote_id,
+        event_id,
+        outbox_kind,
+        result,
+      )
     effect_runner.InvalidWorkflowReportFinished(
       issue_id,
       violation_fingerprint,
@@ -5988,7 +6124,7 @@ fn crash_result_for_effect(
         generation,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.FetchLinearCommands(
+    effect_runner.FetchRemoteCommands(
       generation,
       _,
       candidates,
@@ -5996,7 +6132,7 @@ fn crash_result_for_effect(
       _,
       _,
     ) ->
-      effect_runner.LinearCommandFetchFinished(
+      effect_runner.RemoteCommandFetchFinished(
         generation,
         candidates,
         dispatch_after,
@@ -6043,13 +6179,22 @@ fn crash_result_for_effect(
       )
     effect_runner.ReportPark(report, _) ->
       effect_runner.HandoffParkFinished(
-        report.issue_id,
+        report.task.remote_id,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.PostLinearCommandAck(issue_id, source_comment_id, _, _) ->
-      effect_runner.LinearCommandAckFinished(
-        issue_id,
-        source_comment_id,
+    effect_runner.PostRemoteCommandAck(
+      backend_kind,
+      task_remote_id,
+      event_id,
+      _,
+      outbox_kind,
+      _,
+    ) ->
+      effect_runner.RemoteCommandAckFinished(
+        backend_kind,
+        task_remote_id,
+        event_id,
+        outbox_kind,
         Error(error.LinearApiRequest(reason)),
       )
     effect_runner.ReportInvalidWorkflow(
@@ -6058,6 +6203,8 @@ fn crash_result_for_effect(
       violation_fingerprint,
       reporting_policy_fingerprint,
       _,
+      _,
+      _,
     ) ->
       effect_runner.InvalidWorkflowReportFinished(
         issue.id,
@@ -6065,10 +6212,10 @@ fn crash_result_for_effect(
         reporting_policy_fingerprint,
         Error(error.LinearApiRequest(reason)),
       )
-    effect_runner.ReportScheduledFailure(generation, request, _) ->
+    effect_runner.ReportScheduledFailure(generation, publication, _) ->
       effect_runner.ScheduledFailureReportFinished(
         generation,
-        request,
+        publication,
         Error(error.LinearApiRequest(reason)),
       )
     effect_runner.CleanupWorkspace(_, workspace_path, _, _) ->
@@ -6244,10 +6391,12 @@ fn handle_handoff_park_finished(
   }
 }
 
-fn handle_linear_command_ack_finished(
+fn handle_remote_command_ack_finished(
   state: State,
-  issue_id: String,
-  comment_id: String,
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
+  outbox_kind: String,
   result: Result(Nil, error.TrackerError),
 ) -> State {
   let result = case result {
@@ -6255,9 +6404,11 @@ fn handle_linear_command_ack_finished(
     Error(err) -> Error(error.tracker_code(err))
   }
   run_transition_messages(state, [
-    transition_types.LinearCommandAckFinished(
-      issue_id: issue_id,
-      source_comment_id: comment_id,
+    transition_types.RemoteCommandAckFinished(
+      backend_kind: backend_kind,
+      task_remote_id: task_remote_id,
+      event_id: event_id,
+      outbox_kind: outbox_kind,
       result: result,
     ),
   ])
@@ -6268,10 +6419,10 @@ fn handle_invalid_workflow_report_finished(
   issue_id: String,
   violation_fingerprint: String,
   reporting_policy_fingerprint: String,
-  result: Result(linear_triage.InvalidWorkflowReportOutcome, error.TrackerError),
+  result: Result(effect_runner.InvalidWorkflowReportOutcome, error.TrackerError),
 ) -> State {
   case result {
-    Ok(linear_triage.InvalidWorkflowReportNoop) -> {
+    Ok(effect_runner.InvalidWorkflowReportNoop) -> {
       log_state(state, "info", "invalid_workflow_report_noop", [
         #("issue_id", issue_id),
         #("violation_fingerprint", violation_fingerprint),
@@ -6322,13 +6473,13 @@ fn handle_invalid_workflow_report_finished(
 }
 
 fn invalid_workflow_outcome_to_string(
-  outcome: linear_triage.InvalidWorkflowReportOutcome,
+  outcome: effect_runner.InvalidWorkflowReportOutcome,
 ) -> String {
   case outcome {
-    linear_triage.InvalidWorkflowReportNoop -> "noop"
-    linear_triage.InvalidWorkflowReportComment -> "comment"
-    linear_triage.InvalidWorkflowReportState -> "state"
-    linear_triage.InvalidWorkflowReportCommentAndState -> "comment_and_state"
+    effect_runner.InvalidWorkflowReportNoop -> "noop"
+    effect_runner.InvalidWorkflowReportComment -> "comment"
+    effect_runner.InvalidWorkflowReportState -> "state"
+    effect_runner.InvalidWorkflowReportCommentAndState -> "comment_and_state"
   }
 }
 
@@ -6360,6 +6511,13 @@ fn handle_cleanup_finished(
       ])
       state
     }
+  }
+}
+
+fn require_handoff_capability(state: State) -> adapter.HandoffCapability {
+  case state.tracker_adapter.handoff {
+    Some(capability) -> capability
+    None -> adapter.HandoffCapability(report: fn(_) { Ok(Nil) })
   }
 }
 
@@ -6466,14 +6624,19 @@ fn enqueue_park_report(
   enqueue_side_effect(
     state,
     effect_runner.ReportPark(
-      handoff.ParkReport(
-        issue_id: issue_id,
+      adapter.ParkReport(
+        task: task.TaskRef(
+          backend_kind: state.tracker_adapter.kind,
+          remote_id: issue_id,
+          key: Some(issue_identifier),
+          url: None,
+        ),
         issue_identifier: issue_identifier,
         reason: reason,
         release_policy: Some(release_policy),
         run_id: source_run_id,
       ),
-      state.handoff_client,
+      require_handoff_capability(state),
     ),
   )
 }

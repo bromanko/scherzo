@@ -1,31 +1,32 @@
 import gleam/option.{type Option}
 import scherzo/control/command
 import scherzo/control/linear_parser
-import scherzo/linear
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/linear_commands
 import scherzo/orchestrator/transitions/operator
 import scherzo/state/ledger
 import scherzo/state/recovery
+import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 
 pub type OperatorCallbacks =
   operator.Callbacks
 
-pub fn handle_linear_submitted(
+pub fn handle_remote_submitted(
   state: transition_types.State,
-  comment: linear.LinearComment,
+  event: adapter.RemoteCommandEvent,
   parsed: linear_parser.ParsedLinearCommand,
   safe_excerpt: String,
 ) -> transition_types.Outcome {
-  linear_commands.handle_submitted(state, comment, parsed, safe_excerpt)
+  linear_commands.handle_submitted(state, event, parsed, safe_excerpt)
 }
 
-pub fn handle_linear_applied(
+pub fn handle_remote_applied(
   state: transition_types.State,
-  comment_id: String,
-  issue_id: String,
+  backend_kind: String,
+  event_id: String,
+  task_remote_id: String,
   command_name: String,
   result: command.CommandResult,
   message_excerpt: String,
@@ -33,8 +34,9 @@ pub fn handle_linear_applied(
 ) -> transition_types.Outcome {
   linear_commands.handle_applied(
     state,
-    comment_id,
-    issue_id,
+    backend_kind,
+    event_id,
+    task_remote_id,
     command_name,
     result,
     message_excerpt,
@@ -42,37 +44,45 @@ pub fn handle_linear_applied(
   )
 }
 
-pub fn request_linear_ack(
+pub fn request_remote_ack(
   state: transition_types.State,
-  issue_id: String,
-  source_comment_id: String,
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
   body: String,
   outbox_recorded: Bool,
+  outbox_kind: String,
 ) -> transition_types.Outcome {
   linear_commands.request_ack(
     state,
-    issue_id,
-    source_comment_id,
+    backend_kind,
+    task_remote_id,
+    event_id,
     body,
     outbox_recorded,
+    outbox_kind,
   )
 }
 
-pub fn handle_linear_ack_finished(
+pub fn handle_remote_ack_finished(
   state: transition_types.State,
-  issue_id: String,
-  source_comment_id: String,
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
+  outbox_kind: String,
   result: Result(Nil, String),
 ) -> transition_types.Outcome {
   linear_commands.handle_ack_finished(
     state,
-    issue_id,
-    source_comment_id,
+    backend_kind,
+    task_remote_id,
+    event_id,
+    outbox_kind,
     result,
   )
 }
 
-pub fn retry_pending_linear_acks(
+pub fn retry_pending_remote_acks(
   state: transition_types.State,
 ) -> transition_types.Outcome {
   linear_commands.retry_pending_acks(state)
@@ -84,7 +94,7 @@ pub fn startup_outbox_replay_effects(
   linear_commands.startup_outbox_replay_effects(outbox_to_replay)
 }
 
-pub fn handle_linear_apply_continuation(
+pub fn handle_remote_apply_continuation(
   state: transition_types.State,
   correlation_id: String,
   request: effects_types.OperatorCommandRequest,
@@ -98,54 +108,62 @@ pub fn handle_linear_apply_continuation(
   )
 }
 
-pub fn handle_linear_enqueue_continuation(
+pub fn handle_remote_enqueue_continuation(
   state: transition_types.State,
   correlation_id: String,
-  issue_id: String,
-  source_comment_id: String,
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
   body: String,
+  outbox_kind: String,
   result: Result(Nil, ledger.LedgerError),
 ) -> transition_types.Outcome {
   linear_commands.handle_enqueue_continuation(
     state,
     correlation_id,
-    issue_id,
-    source_comment_id,
+    backend_kind,
+    task_remote_id,
+    event_id,
     body,
+    outbox_kind,
     result,
   )
 }
 
-pub fn handle_linear_publish_continuation(
+pub fn handle_remote_publish_continuation(
   state: transition_types.State,
   correlation_id: String,
-  issue_id: String,
-  source_comment_id: String,
+  backend_kind: String,
+  task_remote_id: String,
+  event_id: String,
   body: String,
+  outbox_kind: String,
   result: Result(Nil, ledger.LedgerError),
 ) -> transition_types.Outcome {
   linear_commands.handle_publish_continuation(
     state,
     correlation_id,
-    issue_id,
-    source_comment_id,
+    backend_kind,
+    task_remote_id,
+    event_id,
     body,
+    outbox_kind,
     result,
   )
 }
 
-pub fn handle_linear_remove_continuation(
+pub fn handle_remote_remove_continuation(
   state: transition_types.State,
   correlation_id: String,
-  issue_id: String,
-  source_comment_id: String,
+  task_remote_id: String,
+  event_id: String,
   result: Result(Nil, ledger.LedgerError),
 ) -> transition_types.Outcome {
   linear_commands.handle_remove_continuation(
     state,
     correlation_id,
-    issue_id,
-    source_comment_id,
+    task_remote_id,
+    event_id,
     result,
   )
 }

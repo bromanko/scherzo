@@ -2,8 +2,6 @@ import gleam/list
 import gleam/option.{type Option, None}
 import scherzo/agent/types as agent_types
 import scherzo/control/command
-import scherzo/handoff
-
 import scherzo/log
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/reason
@@ -11,6 +9,8 @@ import scherzo/orchestrator/state as orchestrator_state
 import scherzo/orchestrator/transition_types
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
+import scherzo/task
+import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
@@ -30,10 +30,10 @@ pub opaque type ShellState(shell) {
     mark_poll_in_flight: fn(shell, Int) -> shell,
     schedule_next_poll: fn(shell) -> shell,
     fetch_candidates: fn(shell, Int) -> shell,
-    fetch_linear_commands: fn(
+    fetch_remote_commands: fn(
       shell,
       Int,
-      List(String),
+      List(task.TaskRef),
       List(tracker_issue.Issue),
       Bool,
     ) -> shell,
@@ -74,8 +74,9 @@ pub opaque type ShellState(shell) {
     cleanup_workspace: fn(shell, String) -> shell,
     park_issue: fn(shell, orchestrator_state.ParkedEntry, Option(String)) ->
       shell,
-    replay_linear_command_ack: fn(shell, String, String, String) -> shell,
-    report_park: fn(shell, handoff.ParkReport) -> shell,
+    replay_remote_command_ack: fn(shell, String, String, String, String, String) ->
+      shell,
+    report_park: fn(shell, adapter.ParkReport) -> shell,
     stop_worker: fn(
       shell,
       effects_types.WorkerIdentity,
@@ -107,7 +108,8 @@ pub opaque type ShellState(shell) {
       effects_types.OperatorCommandRequest,
       command.CommandResult,
     ) -> #(shell, List(transition_types.Message)),
-    post_linear_command_ack: fn(shell, String, String, String) -> shell,
+    post_remote_command_ack: fn(shell, String, String, String, String, String) ->
+      shell,
     report_park_effect: fn(
       shell,
       String,
@@ -144,7 +146,7 @@ pub fn new_shell_state(
     mark_poll_in_flight: fn(started_workers, _) { started_workers },
     schedule_next_poll: fn(started_workers) { started_workers },
     fetch_candidates: fn(started_workers, _) { started_workers },
-    fetch_linear_commands: fn(started_workers, _, _, _, _) { started_workers },
+    fetch_remote_commands: fn(started_workers, _, _, _, _) { started_workers },
     begin_dispatch_validation: fn(started_workers, _, _) { started_workers },
     reserve_session_sequence: fn(started_workers, _) { started_workers },
     claim_issue: fn(started_workers, _, _, _) { started_workers },
@@ -167,7 +169,9 @@ pub fn new_shell_state(
     report_worker_failure: fn(started_workers, _, _) { started_workers },
     cleanup_workspace: fn(started_workers, _) { started_workers },
     park_issue: fn(started_workers, _, _) { started_workers },
-    replay_linear_command_ack: fn(started_workers, _, _, _) { started_workers },
+    replay_remote_command_ack: fn(started_workers, _, _, _, _, _) {
+      started_workers
+    },
     report_park: fn(started_workers, _) { started_workers },
     stop_worker: fn(started_workers, _, _) { started_workers },
     stop_worker_after_issue_refresh: fn(started_workers, _, _) {
@@ -196,7 +200,9 @@ pub fn new_shell_state(
     finish_operator_command: fn(started_workers, _, _) {
       #(started_workers, [])
     },
-    post_linear_command_ack: fn(started_workers, _, _, _) { started_workers },
+    post_remote_command_ack: fn(started_workers, _, _, _, _, _) {
+      started_workers
+    },
     report_park_effect: fn(started_workers, _, _, _, _, _) { started_workers },
   )
 }
@@ -214,10 +220,10 @@ pub fn new_production_shell_state(
   mark_poll_in_flight mark_poll_in_flight: fn(shell, Int) -> shell,
   schedule_next_poll schedule_next_poll: fn(shell) -> shell,
   fetch_candidates fetch_candidates: fn(shell, Int) -> shell,
-  fetch_linear_commands fetch_linear_commands: fn(
+  fetch_remote_commands fetch_remote_commands: fn(
     shell,
     Int,
-    List(String),
+    List(task.TaskRef),
     List(tracker_issue.Issue),
     Bool,
   ) -> shell,
@@ -280,13 +286,15 @@ pub fn new_production_shell_state(
     orchestrator_state.ParkedEntry,
     Option(String),
   ) -> shell,
-  replay_linear_command_ack replay_linear_command_ack: fn(
+  replay_remote_command_ack replay_remote_command_ack: fn(
     shell,
     String,
     String,
     String,
+    String,
+    String,
   ) -> shell,
-  report_park report_park: fn(shell, handoff.ParkReport) -> shell,
+  report_park report_park: fn(shell, adapter.ParkReport) -> shell,
   stop_worker stop_worker: fn(
     shell,
     effects_types.WorkerIdentity,
@@ -333,8 +341,10 @@ pub fn new_production_shell_state(
     effects_types.OperatorCommandRequest,
     command.CommandResult,
   ) -> #(shell, List(transition_types.Message)),
-  post_linear_command_ack post_linear_command_ack: fn(
+  post_remote_command_ack post_remote_command_ack: fn(
     shell,
+    String,
+    String,
     String,
     String,
     String,
@@ -358,7 +368,7 @@ pub fn new_production_shell_state(
     mark_poll_in_flight: mark_poll_in_flight,
     schedule_next_poll: schedule_next_poll,
     fetch_candidates: fetch_candidates,
-    fetch_linear_commands: fetch_linear_commands,
+    fetch_remote_commands: fetch_remote_commands,
     begin_dispatch_validation: begin_dispatch_validation,
     reserve_session_sequence: reserve_session_sequence,
     claim_issue: claim_issue,
@@ -379,7 +389,7 @@ pub fn new_production_shell_state(
     report_worker_failure: report_worker_failure,
     cleanup_workspace: cleanup_workspace,
     park_issue: park_issue,
-    replay_linear_command_ack: replay_linear_command_ack,
+    replay_remote_command_ack: replay_remote_command_ack,
     report_park: report_park,
     stop_worker: stop_worker,
     stop_worker_after_issue_refresh: stop_worker_after_issue_refresh,
@@ -393,7 +403,7 @@ pub fn new_production_shell_state(
     set_operator_paused: set_operator_paused,
     apply_operator_command: apply_operator_command,
     finish_operator_command: finish_operator_command,
-    post_linear_command_ack: post_linear_command_ack,
+    post_remote_command_ack: post_remote_command_ack,
     report_park_effect: report_park_effect,
   )
 }
@@ -487,17 +497,17 @@ fn apply_loop(
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }
-        effects_types.FetchLinearCommands(
+        effects_types.FetchRemoteCommands(
           generation,
-          issue_ids,
+          task_refs,
           candidates,
           dispatch_after,
         ) -> {
           let data =
-            shell.fetch_linear_commands(
+            shell.fetch_remote_commands(
               shell.data,
               generation,
-              issue_ids,
+              task_refs,
               candidates,
               dispatch_after,
             )
@@ -647,13 +657,21 @@ fn apply_loop(
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
         }
-        effects_types.ReplayLinearCommandAck(issue_id, source_comment_id, body) -> {
+        effects_types.ReplayRemoteCommandAck(
+          backend_kind,
+          task_remote_id,
+          event_id,
+          body,
+          outbox_kind,
+        ) -> {
           let data =
-            shell.replay_linear_command_ack(
+            shell.replay_remote_command_ack(
               shell.data,
-              issue_id,
-              source_comment_id,
+              backend_kind,
+              task_remote_id,
+              event_id,
               body,
+              outbox_kind,
             )
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)
@@ -739,13 +757,21 @@ fn apply_loop(
             list.append(list.reverse(new_follow_ups), follow_up_messages),
           )
         }
-        effects_types.PostLinearCommandAck(issue_id, source_comment_id, body) -> {
+        effects_types.PostRemoteCommandAck(
+          backend_kind,
+          task_remote_id,
+          event_id,
+          body,
+          outbox_kind,
+        ) -> {
           let data =
-            shell.post_linear_command_ack(
+            shell.post_remote_command_ack(
               shell.data,
-              issue_id,
-              source_comment_id,
+              backend_kind,
+              task_remote_id,
+              event_id,
               body,
+              outbox_kind,
             )
           let shell = ShellState(..shell, data: data)
           apply_loop(shell, rest, follow_up_messages)

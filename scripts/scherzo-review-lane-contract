@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     check_schema.add_argument("--schema", required=True)
     check_schema.set_defaults(func=command_check_schema)
 
-    materialize = subparsers.add_parser("materialize", help="Materialize one captured provider submission into a canonical ReviewLaneDraft.")
+    materialize = subparsers.add_parser("materialize", help="Materialize one captured provider submission or Scherzo structured-output artifact into a canonical ReviewLaneDraft.")
     materialize.add_argument("--lane", required=True, choices=contract.lane_ids())
     materialize.add_argument("--submission", required=True)
     materialize.add_argument("--prepare-dir", required=True)

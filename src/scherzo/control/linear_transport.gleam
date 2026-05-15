@@ -9,6 +9,7 @@ import scherzo/linear
 import scherzo/linear_comment_format as comment_format
 import scherzo/log
 import scherzo/state/projection
+import scherzo/tracker/adapter
 
 pub type TransportState {
   TransportState(
@@ -25,6 +26,20 @@ pub type TransportAction {
   )
   PostAck(issue_id: String, source_comment_id: String, body: String)
   LogIgnored(reason: String, comment_id: String)
+}
+
+pub type RemoteTransportAction {
+  SubmitRemoteCommand(
+    event: adapter.RemoteCommandEvent,
+    parsed: linear_parser.ParsedLinearCommand,
+  )
+  PostRemoteAck(
+    backend_kind: String,
+    task_remote_id: String,
+    event_id: String,
+    body: String,
+  )
+  LogRemoteIgnored(reason: String, event_id: String)
 }
 
 type ReceiptHandling {
@@ -77,6 +92,73 @@ pub fn process_comments(
   case config.enabled {
     False -> #(state, [])
     True -> process_loop(state, config, comments, issue_sessions, 0, [])
+  }
+}
+
+pub fn process_remote_events(
+  state: TransportState,
+  config: config_types.LinearCommandConfig,
+  events: List(adapter.RemoteCommandEvent),
+  issue_sessions: Dict(String, String),
+) -> #(TransportState, List(RemoteTransportAction)) {
+  let comments = list.map(events, remote_event_to_linear_comment)
+  let lookup = remote_event_lookup(events, dict.new())
+  let #(state, actions) =
+    process_comments(state, config, comments, issue_sessions)
+  #(state, list.filter_map(actions, remote_transport_action(lookup)))
+}
+
+fn remote_event_to_linear_comment(
+  event: adapter.RemoteCommandEvent,
+) -> linear.LinearComment {
+  linear.LinearComment(
+    id: event.event_id,
+    issue_id: event.task.remote_id,
+    body: event.body,
+    created_at_ms: event.observed_at_ms,
+    updated_at_ms: event.observed_at_ms,
+    author: linear.LinearCommentAuthor(
+      id: event.author_id,
+      email: None,
+      name: None,
+    ),
+  )
+}
+
+fn remote_event_lookup(
+  events: List(adapter.RemoteCommandEvent),
+  acc: Dict(String, adapter.RemoteCommandEvent),
+) -> Dict(String, adapter.RemoteCommandEvent) {
+  case events {
+    [] -> acc
+    [event, ..rest] ->
+      remote_event_lookup(rest, dict.insert(acc, event.event_id, event))
+  }
+}
+
+fn remote_transport_action(
+  lookup: Dict(String, adapter.RemoteCommandEvent),
+) -> fn(TransportAction) -> Result(RemoteTransportAction, Nil) {
+  fn(action) {
+    case action {
+      SubmitCommand(comment, parsed) ->
+        case dict.get(lookup, comment.id) {
+          Ok(event) -> Ok(SubmitRemoteCommand(event, parsed))
+          Error(_) -> Error(Nil)
+        }
+      PostAck(issue_id, event_id, body) ->
+        case dict.get(lookup, event_id) {
+          Ok(event) ->
+            Ok(PostRemoteAck(
+              event.task.backend_kind,
+              event.task.remote_id,
+              event_id,
+              body,
+            ))
+          Error(_) -> Ok(PostRemoteAck("linear", issue_id, event_id, body))
+        }
+      LogIgnored(reason, event_id) -> Ok(LogRemoteIgnored(reason, event_id))
+    }
   }
 }
 

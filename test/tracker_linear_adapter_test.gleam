@@ -3,8 +3,10 @@ import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/handoff
 import scherzo/linear
 import scherzo/scheduled_failure_reporter as reporter
 import scherzo/task
@@ -31,6 +33,20 @@ fn tracker_config() -> config_types.TrackerConfig {
     active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
     dispatch_states: issue_state.list_from_strings(["Todo"]),
     terminal_states: issue_state.list_from_strings(["Done"]),
+  )
+}
+
+fn effective_config() -> config_types.EffectiveConfig {
+  config_types.EffectiveConfig(
+    tracker: tracker_config(),
+    polling: config.default_polling_config(),
+    workspace: config_types.WorkspaceConfig(root: "."),
+    hooks: config.default_hooks_config(),
+    agent: config.default_agent_config(),
+    pi: config.default_pi_config(),
+    handoff: config.default_handoff_config(),
+    linear_contract: config.default_linear_contract_config(),
+    linear_commands: config.default_linear_command_config(),
   )
 }
 
@@ -121,11 +137,15 @@ pub fn linear_adapter_scheduled_failure_preserves_dedupe_marker_test() {
   let phases = process.new_subject()
   let linear_tracker =
     linear_adapter.from_dependencies(
-      tracker_config(),
+      effective_config(),
       linear_adapter.Dependencies(
         transport: fn(_) {
           Error(error.LinearApiRequest("unexpected Linear transport call"))
         },
+        command_client: linear.command_client(tracker_config(), fn(_) {
+          Error(error.LinearApiRequest("unexpected Linear transport call"))
+        }),
+        handoff_client: handoff.disabled_client(),
         scheduled_failure_client: reporter.client(scheduled_failure_backend(
           phases,
         )),
@@ -169,12 +189,19 @@ fn scheduled_publication(
   tracker_adapter.ScheduledFailurePublication(
     job_id: "nightly",
     workflow_id: "nightly",
+    due_at_ms: 0,
     run_id: run_id,
+    attempt: 1,
+    max_attempts: 1,
+    reason: "workflow_command_failed:inspect: command exited 1",
+    run_root: None,
+    session_id: None,
     dedupe_key: reporter.dedupe_key("nightly"),
     title: "Nightly failed",
     body: "workflow_command_failed:inspect: command exited 1",
     labels: ["job:nightly"],
     target_state_name: Some("Triage"),
+    previous_task_remote_id: None,
   )
 }
 

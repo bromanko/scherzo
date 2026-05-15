@@ -5,7 +5,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/error
-import scherzo/handoff
 import scherzo/log
 
 import scherzo/orchestrator/core
@@ -21,6 +20,8 @@ import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/state/recovery
+import scherzo/task
+import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
@@ -60,51 +61,61 @@ pub fn handle(
       handle_running_refresh_completed(state, generation, poll, result, context)
     transition_types.CandidateFetchCompleted(generation, poll, result, context) ->
       handle_candidate_fetch_completed(state, generation, poll, result, context)
-    transition_types.LinearCommandSubmitted(comment, parsed, safe_excerpt) ->
-      commands.handle_linear_submitted(state, comment, parsed, safe_excerpt)
-    transition_types.LinearCommandApplied(
-      comment_id,
-      issue_id,
+    transition_types.RemoteCommandSubmitted(event, parsed, safe_excerpt) ->
+      commands.handle_remote_submitted(state, event, parsed, safe_excerpt)
+    transition_types.RemoteCommandApplied(
+      backend_kind,
+      event_id,
+      task_remote_id,
       command_name,
       result,
       message_excerpt,
       ack_body,
     ) ->
-      commands.handle_linear_applied(
+      commands.handle_remote_applied(
         state,
-        comment_id,
-        issue_id,
+        backend_kind,
+        event_id,
+        task_remote_id,
         command_name,
         result,
         message_excerpt,
         ack_body,
       )
-    transition_types.LinearCommandAckRequested(
-      issue_id,
-      source_comment_id,
+    transition_types.RemoteCommandAckRequested(
+      backend_kind,
+      task_remote_id,
+      event_id,
       body,
       outbox_recorded,
+      outbox_kind,
     ) ->
-      commands.request_linear_ack(
+      commands.request_remote_ack(
         state,
-        issue_id,
-        source_comment_id,
+        backend_kind,
+        task_remote_id,
+        event_id,
         body,
         outbox_recorded,
+        outbox_kind,
       )
-    transition_types.LinearCommandAckFinished(
-      issue_id,
-      source_comment_id,
+    transition_types.RemoteCommandAckFinished(
+      backend_kind,
+      task_remote_id,
+      event_id,
+      outbox_kind,
       result,
     ) ->
-      commands.handle_linear_ack_finished(
+      commands.handle_remote_ack_finished(
         state,
-        issue_id,
-        source_comment_id,
+        backend_kind,
+        task_remote_id,
+        event_id,
+        outbox_kind,
         result,
       )
-    transition_types.RetryPendingLinearCommandAcks ->
-      commands.retry_pending_linear_acks(state)
+    transition_types.RetryPendingRemoteCommandAcks ->
+      commands.retry_pending_remote_acks(state)
     transition_types.OperatorCommandSubmitted(
       request,
       context,
@@ -119,7 +130,7 @@ pub fn handle(
         parked_issue_resolution,
         operator_callbacks(),
       )
-    transition_types.LinearCommandPhaseFinished(
+    transition_types.RemoteCommandPhaseFinished(
       candidates,
       dispatch_after,
       context,
@@ -217,7 +228,7 @@ fn handle_startup_recovery_applied(
   retry_timers: List(recovery.RecoveredRetry),
   cleanup_workspaces: List(recovery.CleanupRequest),
   outbox_to_replay: List(recovery.OutboxReplay),
-  park_reports: List(handoff.ParkReport),
+  park_reports: List(adapter.ParkReport),
   warnings: List(String),
   secrets: List(String),
 ) -> transition_types.Outcome {
@@ -297,7 +308,7 @@ fn startup_cleanup_effects(
 }
 
 fn startup_park_report_effects(
-  park_reports: List(handoff.ParkReport),
+  park_reports: List(adapter.ParkReport),
 ) -> List(effects_types.Effect) {
   list.map(park_reports, effects_types.ReportPark)
 }
@@ -516,13 +527,13 @@ fn finish_candidate_phase(
   dispatch_after: Bool,
   context: transition_types.DispatchContext,
 ) -> transition_types.Outcome {
-  let issue_ids = observed_issue_ids(state, context, candidates)
-  case context.effective.linear_commands.enabled && issue_ids != [] {
+  let task_refs = observed_task_refs(state, context, candidates)
+  case context.effective.linear_commands.enabled && task_refs != [] {
     True ->
       transition_types.Outcome(state: state, effects: [
-        effects_types.FetchLinearCommands(
+        effects_types.FetchRemoteCommands(
           generation,
-          issue_ids,
+          task_refs,
           candidates,
           dispatch_after,
         ),
@@ -1517,37 +1528,53 @@ fn handle_ledger_append_completed(
         result,
         claim_callbacks(),
       )
-    effects_types.ApplyLinearCommand(request) ->
-      commands.handle_linear_apply_continuation(
+    effects_types.ApplyRemoteCommand(request) ->
+      commands.handle_remote_apply_continuation(
         state,
         correlation_id,
         request,
         result,
       )
-    effects_types.EnqueueLinearCommandAck(issue_id, source_comment_id, body) ->
-      commands.handle_linear_enqueue_continuation(
+    effects_types.EnqueueRemoteCommandAck(
+      backend_kind,
+      task_remote_id,
+      event_id,
+      body,
+      outbox_kind,
+    ) ->
+      commands.handle_remote_enqueue_continuation(
         state,
         correlation_id,
-        issue_id,
-        source_comment_id,
+        backend_kind,
+        task_remote_id,
+        event_id,
         body,
+        outbox_kind,
         result,
       )
-    effects_types.PublishLinearCommandAck(issue_id, source_comment_id, body) ->
-      commands.handle_linear_publish_continuation(
+    effects_types.PublishRemoteCommandAck(
+      backend_kind,
+      task_remote_id,
+      event_id,
+      body,
+      outbox_kind,
+    ) ->
+      commands.handle_remote_publish_continuation(
         state,
         correlation_id,
-        issue_id,
-        source_comment_id,
+        backend_kind,
+        task_remote_id,
+        event_id,
         body,
+        outbox_kind,
         result,
       )
-    effects_types.RemoveLinearCommandAck(issue_id, source_comment_id) ->
-      commands.handle_linear_remove_continuation(
+    effects_types.RemoveRemoteCommandAck(task_remote_id, event_id) ->
+      commands.handle_remote_remove_continuation(
         state,
         correlation_id,
-        issue_id,
-        source_comment_id,
+        task_remote_id,
+        event_id,
         result,
       )
     effects_types.ReportParkAfterLedger(
@@ -2840,15 +2867,36 @@ fn active_issues(
   )
 }
 
-fn observed_issue_ids(
+fn observed_task_refs(
   state: transition_types.State,
   context: transition_types.DispatchContext,
   candidates: List(tracker_issue.Issue),
-) -> List(String) {
-  active_issue_ids(state, context)
-  |> append_unique_list(dict.keys(state.runtime.retry_attempts))
-  |> append_unique_list(dict.keys(state.runtime.parked))
-  |> append_unique_list(list.map(candidates, fn(issue) { issue.id }))
+) -> List(task.TaskRef) {
+  active_issues(state, context)
+  |> append_unique_issues(candidates)
+  |> list.map(fn(issue) { task.from_legacy_issue(issue).ref })
+  |> append_issue_id_refs(dict.keys(state.runtime.retry_attempts))
+  |> append_issue_id_refs(dict.keys(state.runtime.parked))
+}
+
+fn append_issue_id_refs(
+  existing: List(task.TaskRef),
+  issue_ids: List(String),
+) -> List(task.TaskRef) {
+  list.fold(issue_ids, existing, fn(acc, issue_id) {
+    case list.any(acc, fn(ref) { ref.remote_id == issue_id }) {
+      True -> acc
+      False ->
+        list.append(acc, [
+          task.TaskRef(
+            backend_kind: "linear",
+            remote_id: issue_id,
+            key: None,
+            url: None,
+          ),
+        ])
+    }
+  })
 }
 
 fn append_unique_list(

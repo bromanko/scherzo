@@ -2,8 +2,10 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/config as config_defaults
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/handoff
 import scherzo/linear
 import scherzo/scheduled_failure_reporter
 import scherzo/smoke
@@ -14,24 +16,52 @@ import scherzo/tracker/state as issue_state
 pub type Dependencies {
   Dependencies(
     transport: linear.Transport,
+    command_client: linear.CommandClient,
+    handoff_client: handoff.Client,
     scheduled_failure_client: scheduled_failure_reporter.Client,
   )
 }
 
-pub fn real(config: config_types.TrackerConfig) -> adapter.TrackerAdapter {
-  from_tracker_config(config, linear.http_transport)
+pub fn real(effective: config_types.EffectiveConfig) -> adapter.TrackerAdapter {
+  from_effective_config(effective, linear.http_transport)
 }
 
 pub fn from_tracker_config(
   config: config_types.TrackerConfig,
   transport: linear.Transport,
 ) -> adapter.TrackerAdapter {
+  from_effective_config(
+    config_types.EffectiveConfig(
+      tracker: config,
+      polling: config_defaults.default_polling_config(),
+      workspace: config_types.WorkspaceConfig(root: "."),
+      hooks: config_defaults.default_hooks_config(),
+      agent: config_defaults.default_agent_config(),
+      pi: config_defaults.default_pi_config(),
+      handoff: config_defaults.default_handoff_config(),
+      linear_contract: config_defaults.default_linear_contract_config(),
+      linear_commands: config_defaults.default_linear_command_config(),
+    ),
+    transport,
+  )
+}
+
+pub fn from_effective_config(
+  effective: config_types.EffectiveConfig,
+  transport: linear.Transport,
+) -> adapter.TrackerAdapter {
   from_dependencies(
-    config,
+    effective,
     Dependencies(
       transport: transport,
+      command_client: linear.command_client(effective.tracker, transport),
+      handoff_client: handoff.linear_client(
+        effective.tracker,
+        effective.handoff,
+        transport,
+      ),
       scheduled_failure_client: scheduled_failure_reporter.real_client_with_transport(
-        config,
+        effective.tracker,
         transport,
       ),
     ),
@@ -39,11 +69,14 @@ pub fn from_tracker_config(
 }
 
 pub fn from_dependencies(
-  config: config_types.TrackerConfig,
+  effective: config_types.EffectiveConfig,
   dependencies: Dependencies,
 ) -> adapter.TrackerAdapter {
+  let config = effective.tracker
   let Dependencies(
     transport: transport,
+    command_client: command_client,
+    handoff_client: handoff_client,
     scheduled_failure_client: scheduled_failure_client,
   ) = dependencies
 
@@ -52,11 +85,11 @@ pub fn from_dependencies(
     display_name: "Linear",
     task_source: task_source_capability(config, transport),
     comments: Some(comment_capability(config, transport)),
-    remote_commands: None,
+    remote_commands: Some(remote_command_capability(command_client)),
     state_transitions: Some(state_transition_capability(config, transport)),
     routing_metadata: Some(routing_metadata_capability()),
     links: None,
-    handoff: None,
+    handoff: Some(handoff_capability(handoff_client)),
     scheduled_failures: Some(scheduled_failure_capability(
       scheduled_failure_client,
     )),
@@ -200,6 +233,105 @@ fn update_comment(
   ))
 }
 
+fn remote_command_capability(
+  client: linear.CommandClient,
+) -> adapter.RemoteCommandCapability {
+  adapter.RemoteCommandCapability(
+    fetch_events: fn(request) { fetch_remote_command_events(client, request) },
+    post_ack: fn(ack) { post_remote_command_ack(client, ack) },
+  )
+}
+
+fn fetch_remote_command_events(
+  client: linear.CommandClient,
+  request: adapter.RemoteCommandFetch,
+) -> Result(List(adapter.RemoteCommandEvent), adapter.TrackerError) {
+  use issue_ids <- try_adapter_result(linear_remote_ids(request.task_refs))
+  use comments <- try_adapter(client.fetch_comments(
+    issue_ids,
+    request.limit_per_task,
+  ))
+  Ok(list.map(comments, linear_comment_to_remote_command_event))
+}
+
+fn linear_comment_to_remote_command_event(
+  comment: linear.LinearComment,
+) -> adapter.RemoteCommandEvent {
+  adapter.RemoteCommandEvent(
+    event_id: comment.id,
+    task: linear_task_ref(comment.issue_id, None),
+    author_id: comment.author.id,
+    body: comment.body,
+    command_name: "",
+    excerpt: comment.body,
+    observed_at_ms: comment.created_at_ms,
+  )
+}
+
+fn post_remote_command_ack(
+  client: linear.CommandClient,
+  ack: adapter.RemoteCommandAck,
+) -> Result(adapter.CommentReceipt, adapter.TrackerError) {
+  let adapter.RemoteCommandAck(event: event, body: body) = ack
+  let adapter.RemoteCommandEvent(event_id: event_id, task: task_ref, ..) = event
+  use issue_id <- try_adapter_result(require_linear_ref(task_ref))
+  use Nil <- try_adapter(client.post_ack(issue_id, body))
+  Ok(adapter.CommentReceipt(
+    id: event_id,
+    task: task_ref,
+    url: task_ref.url,
+    created: True,
+  ))
+}
+
+fn handoff_capability(client: handoff.Client) -> adapter.HandoffCapability {
+  adapter.HandoffCapability(report: fn(event) { report_handoff(client, event) })
+}
+
+fn report_handoff(
+  client: handoff.Client,
+  event: adapter.HandoffEvent,
+) -> Result(Nil, adapter.TrackerError) {
+  case event {
+    adapter.LegacyHandoffClaim(issue, _workspace_path, run_id) ->
+      try_adapter(client.claim_issue(issue, run_id), fn(_) { Ok(Nil) })
+    adapter.LegacyHandoffSuccess(issue, success, run_id, workflow_id) ->
+      try_adapter(
+        client.report_success_for_workflow(issue, success, run_id, workflow_id),
+        fn(_) { Ok(Nil) },
+      )
+    adapter.LegacyHandoffFailure(issue, failure, run_id, workflow_id) ->
+      try_adapter(
+        client.report_failure_for_workflow(issue, failure, run_id, workflow_id),
+        fn(_) { Ok(Nil) },
+      )
+    adapter.LegacyHandoffPark(report) -> {
+      let adapter.ParkReport(
+        task: task_ref,
+        issue_identifier: issue_identifier,
+        reason: reason,
+        release_policy: release_policy,
+        run_id: run_id,
+      ) = report
+      use issue_id <- try_adapter_result(require_linear_ref(task_ref))
+      try_adapter(
+        client.report_park(handoff.ParkReport(
+          issue_id: issue_id,
+          issue_identifier: issue_identifier,
+          reason: reason,
+          release_policy: release_policy,
+          run_id: run_id,
+        )),
+        fn(_) { Ok(Nil) },
+      )
+    }
+    adapter.HandoffClaim(_, _, _)
+    | adapter.HandoffSuccess(_, _, _)
+    | adapter.HandoffFailure(_, _, _)
+    | adapter.HandoffPark(_, _, _) -> Ok(Nil)
+  }
+}
+
 fn state_transition_capability(
   config: config_types.TrackerConfig,
   transport: linear.Transport,
@@ -221,7 +353,13 @@ fn transition_state(
     ..,
   ) = request
   use issue_id <- try_adapter_result(require_linear_ref(task_ref))
-  use state_id <- try_adapter_result(require_state_id(target_state_id))
+  use state_id <- try_adapter_result(resolve_state_id(
+    config,
+    transport,
+    issue_id,
+    target_state_id,
+    target_state_name,
+  ))
   use Nil <- try_adapter(update_linear_issue_state(
     config,
     transport,
@@ -264,17 +402,17 @@ fn publish_scheduled_failure(
     client.report_failure(scheduled_failure_reporter.FailureReportRequest(
       job_id: publication.job_id,
       workflow_id: publication.workflow_id,
-      due_at_ms: 0,
+      due_at_ms: publication.due_at_ms,
       run_id: publication.run_id,
-      attempt: 1,
-      max_attempts: 1,
-      reason: publication.body,
-      run_root: None,
-      session_id: None,
+      attempt: publication.attempt,
+      max_attempts: publication.max_attempts,
+      reason: publication.reason,
+      run_root: publication.run_root,
+      session_id: publication.session_id,
       dedupe_key: publication.dedupe_key,
       triage_state: target_state_name,
       configured_labels: publication.labels,
-      previous_issue_id: None,
+      previous_issue_id: publication.previous_task_remote_id,
     )),
   )
   scheduled_failure_receipt(outcome)
@@ -396,24 +534,61 @@ fn require_linear_ref(
   }
 }
 
-fn require_state_id(
-  value: Option(String),
+fn resolve_state_id(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  state_id: Option(String),
+  state_name: String,
 ) -> Result(String, adapter.TrackerError) {
+  case normalized_optional(state_id) {
+    Some(value) -> Ok(value)
+    None -> resolve_state_name(config, transport, issue_id, state_name)
+  }
+}
+
+fn resolve_state_name(
+  config: config_types.TrackerConfig,
+  transport: linear.Transport,
+  issue_id: String,
+  state_name: String,
+) -> Result(String, adapter.TrackerError) {
+  let state_name = string.trim(state_name)
+  case state_name == "" {
+    True ->
+      Error(adapter.Permanent(
+        "Linear state transitions require target_state_id or target_state_name",
+      ))
+    False -> {
+      use request <- try_adapter(linear.build_issue_team_states_request(
+        config,
+        issue_id,
+      ))
+      use response <- try_adapter(transport(request))
+      use states <- try_adapter(linear.parse_issue_team_states_response(
+        response,
+      ))
+      case linear.resolve_state_name(states, state_name) {
+        Ok(state_id) -> Ok(state_id)
+        Error(linear.StateNameNotFound) ->
+          Error(adapter.Permanent("Linear state not found: " <> state_name))
+        Error(linear.StateNameAmbiguous) ->
+          Error(adapter.Permanent("Linear state ambiguous: " <> state_name))
+      }
+    }
+  }
+}
+
+fn normalized_optional(value: Option(String)) -> Option(String) {
   case value {
     Some(value) -> {
       let value = string.trim(value)
       case value == "" {
-        True ->
-          Error(adapter.Permanent(
-            "Linear state transitions require target_state_id",
-          ))
-        False -> Ok(value)
+        True -> None
+        False -> Some(value)
       }
     }
-    None ->
-      Error(adapter.Permanent(
-        "Linear state transitions require target_state_id",
-      ))
+    None -> None
   }
 }
 
