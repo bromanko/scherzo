@@ -439,7 +439,7 @@ pub fn doctor_linear_smoke_success_reports_counts_test() {
     service.build_doctor_report_with_dependencies(
       doctor.Options(
         path: Some(config_path),
-        checks: ["linear-smoke"],
+        checks: ["tracker-smoke"],
         list_checks: False,
         output: doctor.Human,
       ),
@@ -499,7 +499,7 @@ pub fn doctor_contract_mismatch_reports_failure_test() {
     service.build_doctor_report_with_dependencies(
       doctor.Options(
         path: Some(config_path),
-        checks: ["linear-contract"],
+        checks: ["tracker-contract"],
         list_checks: False,
         output: doctor.Human,
       ),
@@ -816,7 +816,7 @@ pub fn doctor_list_checks_writes_names_without_loading_config_test() {
     process.receive(subject, within: 1000)
   let assert Ok(ListWritten("scheduled-jobs")) =
     process.receive(subject, within: 1000)
-  let assert Ok(ListWritten("linear-contract")) =
+  let assert Ok(ListWritten("tracker-contract")) =
     process.receive(subject, within: 1000)
 }
 

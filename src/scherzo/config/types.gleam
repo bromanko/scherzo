@@ -7,6 +7,16 @@ import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_completion_policy
 
+pub type ConfigWarning {
+  ConfigWarning(event: String, path: String, replacement: String)
+}
+
+pub fn config_warning_message(warning: ConfigWarning) -> String {
+  let ConfigWarning(event: event, path: path, replacement: replacement) =
+    warning
+  event <> " path=" <> path <> " replacement=" <> replacement
+}
+
 pub type TrackerConfig {
   TrackerConfig(
     kind: tracker_kind.TrackerKind,
@@ -568,6 +578,10 @@ pub type EffectiveConfig {
     linear_contract: LinearContractConfig,
     linear_commands: LinearCommandConfig,
   )
+}
+
+pub type ResolveReport {
+  ResolveReport(config: EffectiveConfig, warnings: List(ConfigWarning))
 }
 
 pub fn with_pi_env(

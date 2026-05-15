@@ -527,7 +527,7 @@ fn completion_state_resolution_error(
     <> name
     <> " is "
     <> reason_text
-    <> "; run scherzo doctor --check linear-contract and see docs/runbooks/linear-completion-states.md",
+    <> "; run scherzo doctor --check tracker-contract and see docs/runbooks/linear-completion-states.md",
   )
 }
 

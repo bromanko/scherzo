@@ -10,8 +10,12 @@ pub fn parse_args_default_explicit_and_help_test() {
     == Ok(main.Run(main.Daemon, Some("scherzo.yaml")))
   assert main.parse_args(["--once", "scherzo.yaml"])
     == Ok(main.Run(main.Once, Some("scherzo.yaml")))
+  assert main.parse_args(["--tracker-smoke", "scherzo.yaml"])
+    == Ok(main.Run(main.LinearSmoke, Some("scherzo.yaml")))
   assert main.parse_args(["--linear-smoke", "scherzo.yaml"])
     == Ok(main.Run(main.LinearSmoke, Some("scherzo.yaml")))
+  assert main.parse_args(["--tracker-contract-check", "scherzo.yaml"])
+    == Ok(main.Run(main.LinearContractCheck, Some("scherzo.yaml")))
   assert main.parse_args(["--linear-contract-check", "scherzo.yaml"])
     == Ok(main.Run(main.LinearContractCheck, Some("scherzo.yaml")))
   assert main.parse_args(["--pi-probe", "scherzo.yaml"])
@@ -81,7 +85,7 @@ pub fn parse_args_default_explicit_and_help_test() {
   assert main.parse_args([
       "doctor",
       "--check",
-      "linear-smoke",
+      "tracker-smoke",
       "--check",
       "pi-probe",
       "scherzo.yaml",
@@ -89,7 +93,7 @@ pub fn parse_args_default_explicit_and_help_test() {
     == Ok(
       main.Doctor(doctor.Options(
         Some("scherzo.yaml"),
-        ["linear-smoke", "pi-probe"],
+        ["tracker-smoke", "pi-probe"],
         False,
         doctor.Human,
       )),
@@ -138,11 +142,19 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "doctor --logfmt")
   assert string.contains(
     usage,
-    "workflow-config, linear-contract, linear-smoke",
+    "workflow-config, tracker-contract, tracker-smoke",
   )
   assert string.contains(usage, "--once")
-  assert string.contains(usage, "--linear-smoke")
-  assert string.contains(usage, "--linear-contract-check")
+  assert string.contains(usage, "--tracker-smoke")
+  assert string.contains(
+    usage,
+    "--linear-smoke          Compatibility alias for --tracker-smoke",
+  )
+  assert string.contains(usage, "--tracker-contract-check")
+  assert string.contains(
+    usage,
+    "--linear-contract-check Compatibility alias for --tracker-contract-check",
+  )
   assert string.contains(usage, "--linear-attach-comment-file")
   assert string.contains(usage, "<comment-id> <file.md>")
   assert string.contains(usage, "mutates Linear")

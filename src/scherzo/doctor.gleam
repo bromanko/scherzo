@@ -75,8 +75,8 @@ pub fn check_name_to_string(check: CheckName) -> String {
   case check {
     WorkflowConfig -> "workflow-config"
     ScheduledJobs -> "scheduled-jobs"
-    LinearContract -> "linear-contract"
-    LinearSmoke -> "linear-smoke"
+    LinearContract -> "tracker-contract"
+    LinearSmoke -> "tracker-smoke"
     InstanceLock -> "instance-lock"
     WorkspaceHooks -> "workspace-hooks"
     PiProbe -> "pi-probe"
@@ -87,8 +87,8 @@ pub fn parse_check_name(name: String) -> Result(CheckName, String) {
   case name {
     "workflow-config" -> Ok(WorkflowConfig)
     "scheduled-jobs" -> Ok(ScheduledJobs)
-    "linear-contract" -> Ok(LinearContract)
-    "linear-smoke" -> Ok(LinearSmoke)
+    "tracker-contract" | "linear-contract" -> Ok(LinearContract)
+    "tracker-smoke" | "linear-smoke" -> Ok(LinearSmoke)
     "instance-lock" -> Ok(InstanceLock)
     "workspace-hooks" -> Ok(WorkspaceHooks)
     "pi-probe" -> Ok(PiProbe)
@@ -218,7 +218,7 @@ fn human_pass_body(result: CheckResult) -> String {
       ])
     LinearContract ->
       indent([
-        "Project board matches configured states and labels.",
+        "Tracker contract matches configured states and labels.",
         "Team count: "
           <> field_or(result.fields, "team_count", "?")
           <> ", states: "
@@ -229,7 +229,7 @@ fn human_pass_body(result: CheckResult) -> String {
       ])
     LinearSmoke ->
       indent([
-        "Read-only Linear API check succeeded.",
+        "Read-only tracker API check succeeded.",
         "Candidates: "
           <> field_or(result.fields, "candidate_count", "?")
           <> ", terminal sample: "
@@ -368,8 +368,8 @@ fn check_title(check: CheckName) -> String {
   case check {
     WorkflowConfig -> "Workflow config"
     ScheduledJobs -> "Scheduled jobs"
-    LinearContract -> "Linear contract"
-    LinearSmoke -> "Linear smoke"
+    LinearContract -> "Tracker contract"
+    LinearSmoke -> "Tracker smoke"
     InstanceLock -> "Instance lock"
     WorkspaceHooks -> "Workspace driver migration"
     PiProbe -> "Pi probe"
@@ -383,9 +383,9 @@ fn impact(check: CheckName) -> String {
     ScheduledJobs ->
       "Scheduled jobs may fail before dispatch, create noisy Linear triage issues, or reference Linear issue variables that do not exist for scheduled runs."
     LinearContract ->
-      "Configured Linear states or labels may not match the target board."
+      "Configured tracker states or labels may not match the target board."
     LinearSmoke ->
-      "Scherzo may not be able to read candidate issues from Linear."
+      "Scherzo may not be able to read candidate tasks from the tracker."
     InstanceLock ->
       "Another local Scherzo process may be active, or a stale lock may need operator cleanup."
     WorkspaceHooks ->
@@ -409,14 +409,14 @@ fn remediation(check: CheckName, code: String) -> List(String) {
       "- When Linear reporting is enabled, configure a triage state and let Scherzo ensure reserved scheduled-job dedupe labels.",
     ]
     LinearContract -> [
-      "- Confirm tracker.project_slug points to the expected Linear project.",
+      "- Confirm tracker.linear.project_slug points to the expected Linear project.",
       "- Confirm configured active, terminal, required, and handoff states exist on the board.",
-      "- Run: gleam run -- --linear-contract-check <path-to-scherzo.yaml>",
+      "- Run: gleam run -- --tracker-contract-check <path-to-scherzo.yaml>",
     ]
     LinearSmoke -> [
       "- Confirm LINEAR_API_KEY is valid and can read the Linear project.",
-      "- Confirm tracker.project_slug points to the expected Linear project.",
-      "- Run: gleam run -- --linear-smoke <path-to-scherzo.yaml>",
+      "- Confirm tracker.linear.project_slug points to the expected Linear project.",
+      "- Run: gleam run -- --tracker-smoke <path-to-scherzo.yaml>",
     ]
     InstanceLock -> [
       "- Stop any other Scherzo process using this workspace root.",
@@ -442,11 +442,11 @@ fn append_code_specific_remediation(
   case code {
     "missing_tracker_api_key" ->
       list.append(lines, [
-        "- Set LINEAR_API_KEY or tracker.api_key before rerunning doctor.",
+        "- Set LINEAR_API_KEY, tracker.credentials.api_key_env, or tracker.api_key before rerunning doctor.",
       ])
     "missing_tracker_project_slug" ->
       list.append(lines, [
-        "- Set LINEAR_PROJECT_SLUG or tracker.project_slug before rerunning doctor.",
+        "- Set tracker.linear.project_slug or tracker.project_slug before rerunning doctor.",
       ])
     _ -> lines
   }

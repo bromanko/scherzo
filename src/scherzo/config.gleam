@@ -4,11 +4,11 @@ import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
+import scherzo/config/tracker_config
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
 import scherzo/orchestrator/schedule_core
-import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_completion_policy
 import scherzo/workspace_driver_env
@@ -33,22 +33,12 @@ pub type ReloadResult {
 pub type Env =
   fn(String) -> Option(String)
 
+pub fn config_warning_message(warning: config_types.ConfigWarning) -> String {
+  config_types.config_warning_message(warning)
+}
+
 pub fn default_tracker_config() -> config_types.TrackerConfig {
-  config_types.TrackerConfig(
-    kind: tracker_kind.LinearTracker,
-    endpoint: "https://api.linear.app/graphql",
-    api_key: None,
-    project_slug: None,
-    active_states: issue_state.list_from_strings(["Todo", "In Progress"]),
-    dispatch_states: issue_state.list_from_strings(["Todo"]),
-    terminal_states: issue_state.list_from_strings([
-      "Closed",
-      "Cancelled",
-      "Canceled",
-      "Duplicate",
-      "Done",
-    ]),
-  )
+  tracker_config.default()
 }
 
 pub fn default_polling_config() -> config_types.PollingConfig {
@@ -168,7 +158,16 @@ pub fn resolve_with_env(
   config_path: String,
   env: Env,
 ) -> Result(config_types.EffectiveConfig, error.ConfigError) {
-  resolve_root(root, config_path, env)
+  use report <- result.try(resolve_with_env_report(root, config_path, env))
+  Ok(report.config)
+}
+
+pub fn resolve_with_env_report(
+  root: yay.Node,
+  config_path: String,
+  env: Env,
+) -> Result(config_types.ResolveReport, error.ConfigError) {
+  resolve_root_report(root, config_path, env)
 }
 
 pub fn resolve_root(
@@ -176,7 +175,17 @@ pub fn resolve_root(
   config_path: String,
   env: Env,
 ) -> Result(config_types.EffectiveConfig, error.ConfigError) {
-  use tracker <- result.try(resolve_tracker(root, env))
+  use report <- result.try(resolve_root_report(root, config_path, env))
+  Ok(report.config)
+}
+
+pub fn resolve_root_report(
+  root: yay.Node,
+  config_path: String,
+  env: Env,
+) -> Result(config_types.ResolveReport, error.ConfigError) {
+  use tracker_result <- result.try(tracker_config.resolve(root, env))
+  let #(tracker, tracker_warnings) = tracker_result
   use polling <- result.try(resolve_polling(root))
   use workspace <- result.try(resolve_workspace(root, config_path, env))
   use hooks <- result.try(resolve_hooks(root))
@@ -185,16 +194,19 @@ pub fn resolve_root(
   use linear_contract <- result.try(resolve_linear_contract(root))
   use handoff <- result.try(resolve_handoff(root, linear_contract.enabled))
   use linear_commands <- result.try(resolve_linear_commands(root))
-  Ok(config_types.EffectiveConfig(
-    tracker:,
-    polling:,
-    workspace:,
-    hooks:,
-    agent:,
-    pi:,
-    handoff:,
-    linear_contract:,
-    linear_commands:,
+  Ok(config_types.ResolveReport(
+    config: config_types.EffectiveConfig(
+      tracker:,
+      polling:,
+      workspace:,
+      hooks:,
+      agent:,
+      pi:,
+      handoff:,
+      linear_contract:,
+      linear_commands:,
+    ),
+    warnings: tracker_warnings,
   ))
 }
 
@@ -296,116 +308,6 @@ pub fn resolved_secrets(config: config_types.EffectiveConfig) -> List(String) {
   case config.tracker.api_key {
     Some(value) -> [value]
     None -> []
-  }
-}
-
-fn resolve_tracker(
-  root: yay.Node,
-  env: Env,
-) -> Result(config_types.TrackerConfig, error.ConfigError) {
-  let tracker_node = get_map(root, "tracker")
-  let kind =
-    get_required_string(
-      tracker_node,
-      "kind",
-      error.UnsupportedTrackerKind("missing"),
-    )
-  use kind <- result.try(kind)
-  let normalized_kind = kind |> string.trim |> string.lowercase
-  case tracker_kind.from_string(normalized_kind) {
-    Ok(kind) -> {
-      let endpoint =
-        get_string(tracker_node, "endpoint")
-        |> option.unwrap("https://api.linear.app/graphql")
-      use endpoint <- result.try(validate_https_endpoint(endpoint))
-      let active_state_strings =
-        get_string_list(tracker_node, "active_states")
-        |> list_default(["Todo", "In Progress"])
-      let active_states = issue_state.list_from_strings(active_state_strings)
-      use dispatch_state_strings <- result.try(get_required_string_list_strict(
-        tracker_node,
-        "dispatch_states",
-        "tracker.dispatch_states",
-      ))
-      use dispatch_states <- result.try(resolve_dispatch_states(
-        active_states,
-        dispatch_state_strings,
-      ))
-      let terminal_states =
-        get_string_list(tracker_node, "terminal_states")
-        |> list_default(["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
-      let raw_api_key = get_string(tracker_node, "api_key")
-      let api_key =
-        resolve_optional_env(raw_api_key, env)
-        |> option.lazy_or(fn() { env("LINEAR_API_KEY") })
-      let project_slug =
-        get_string(tracker_node, "project_slug")
-        |> resolve_optional_env(env)
-      use project_slug <- result.try(required_option(
-        project_slug,
-        error.MissingTrackerProjectSlug,
-      ))
-      use api_key <- result.try(required_option(
-        api_key,
-        error.MissingTrackerApiKey,
-      ))
-      Ok(config_types.TrackerConfig(
-        kind: kind,
-        endpoint: endpoint,
-        api_key: Some(api_key),
-        project_slug: Some(project_slug),
-        active_states: active_states,
-        dispatch_states: dispatch_states,
-        terminal_states: issue_state.list_from_strings(terminal_states),
-      ))
-    }
-    Error(_) -> Error(error.UnsupportedTrackerKind(normalized_kind))
-  }
-}
-
-fn resolve_dispatch_states(
-  active_states: List(issue_state.IssueState),
-  raw_dispatch_states: List(String),
-) -> Result(List(issue_state.IssueState), error.ConfigError) {
-  case raw_dispatch_states {
-    [] ->
-      Error(error.InvalidConfig(
-        "tracker.dispatch_states must contain at least one state",
-      ))
-    _ -> canonicalize_dispatch_states(active_states, raw_dispatch_states, [])
-  }
-}
-
-fn canonicalize_dispatch_states(
-  active_states: List(issue_state.IssueState),
-  raw_dispatch_states: List(String),
-  acc: List(issue_state.IssueState),
-) -> Result(List(issue_state.IssueState), error.ConfigError) {
-  case raw_dispatch_states {
-    [] -> Ok(list.reverse(acc))
-    [raw, ..rest] -> {
-      let candidate = issue_state.from_string_unchecked(raw)
-      case issue_state.canonicalize_against(active_states, candidate) {
-        Ok(canonical) ->
-          canonicalize_dispatch_states(active_states, rest, [canonical, ..acc])
-        Error(_) ->
-          Error(error.InvalidConfig(
-            "tracker.dispatch_states must be a subset of tracker.active_states; invalid dispatch state "
-            <> issue_state.to_string(candidate)
-            <> ". Remove it from dispatch_states or add it to active_states only if it is truly lifecycle-active.",
-          ))
-      }
-    }
-  }
-}
-
-fn validate_https_endpoint(
-  endpoint: String,
-) -> Result(String, error.ConfigError) {
-  let endpoint = string.trim(endpoint)
-  case string.starts_with(string.lowercase(endpoint), "https://") {
-    True -> Ok(endpoint)
-    False -> Error(error.InvalidConfig("tracker.endpoint must use https://"))
   }
 }
 
@@ -718,7 +620,7 @@ fn resolve_completion_state_policy(
       case linear_contract_enabled {
         False ->
           Error(error.InvalidConfig(
-            "handoff.completion_states requires linear_contract.enabled: true so scherzo doctor --check linear-contract can validate configured Linear states",
+            "handoff.completion_states requires linear_contract.enabled: true so scherzo doctor --check tracker-contract can validate configured Linear states",
           ))
         True -> {
           use policy <- result.try(read_completion_state_policy(node))
@@ -787,7 +689,7 @@ fn reject_completion_state_unsupported_keys(
     Some(_) ->
       Error(error.InvalidConfig(
         path
-        <> ".unresolved_state_policy is unsupported; unresolved Linear states must be fixed with scherzo doctor --check linear-contract",
+        <> ".unresolved_state_policy is unsupported; unresolved Linear states must be fixed with scherzo doctor --check tracker-contract",
       ))
     None -> Ok(Nil)
   }
@@ -2027,21 +1929,6 @@ fn reject_schedule_payload_entries(
         False -> reject_schedule_payload_entries(rest)
       }
     [_, ..rest] -> reject_schedule_payload_entries(rest)
-  }
-}
-
-fn get_required_string_list_strict(
-  node: yay.Node,
-  key: String,
-  path: String,
-) -> Result(List(String), error.ConfigError) {
-  case get_node(node, key) {
-    None ->
-      Error(error.InvalidConfig(
-        path <> " is required; add dispatch_states: [Todo] under tracker",
-      ))
-    Some(yay.NodeSeq(values)) -> read_string_values(values, path, [])
-    Some(_) -> Error(error.InvalidConfig(path <> " must be a string list"))
   }
 }
 
