@@ -576,7 +576,7 @@ pub fn unresolved_policy_state_name_skips_update_with_diagnostic_test() {
   test_async.assert_no_extra_message_within(subject, 20)
   assert string.contains(comment, "run-missing-state")
   assert string.contains(lookup, "ScherzoIssueTeamStates")
-  assert string.contains(message, "scherzo doctor --check linear-contract")
+  assert string.contains(message, "scherzo doctor --check tracker-contract")
   assert string.contains(message, "docs/runbooks/linear-completion-states.md")
 }
 
@@ -606,7 +606,7 @@ pub fn ambiguous_policy_state_name_skips_update_with_diagnostic_test() {
   let assert Ok(_) = process.receive(subject, within: 100)
   test_async.assert_no_extra_message_within(subject, 20)
   assert string.contains(message, "ambiguous")
-  assert string.contains(message, "scherzo doctor --check linear-contract")
+  assert string.contains(message, "scherzo doctor --check tracker-contract")
 }
 
 pub fn cancellation_failure_policy_leaves_state_unchanged_test() {

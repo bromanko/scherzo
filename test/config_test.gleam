@@ -211,6 +211,66 @@ pub fn flat_linear_tracker_config_aliases_still_parse_test() {
     == ["Done", "Canceled"]
 }
 
+pub fn nested_linear_tracker_config_parses_test() {
+  let front =
+    "tracker:\n  kind: linear\n  credentials:\n    api_key_env: LINEAR_API_KEY\n  linear:\n    endpoint: https://api.linear.app/graphql\n    project_slug: example-project\n  active_states: [Todo, In Progress]\n  dispatch_states: [Todo]\n  terminal_states: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
+  let assert Ok(report) =
+    config.resolve_with_env_report(
+      definition(front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let configured = report.config
+
+  assert report.warnings == []
+  assert configured.tracker.kind == tracker_kind.LinearTracker
+  assert configured.tracker.endpoint == "https://api.linear.app/graphql"
+  assert configured.tracker.api_key == Some("linearkey")
+  assert configured.tracker.project_slug == Some("example-project")
+  assert issue_state.to_strings(configured.tracker.active_states)
+    == ["Todo", "In Progress"]
+  assert issue_state.to_strings(configured.tracker.dispatch_states) == ["Todo"]
+  assert issue_state.to_strings(configured.tracker.terminal_states)
+    == ["Done", "Canceled"]
+}
+
+pub fn nested_tracker_config_takes_precedence_over_flat_aliases_test() {
+  let front =
+    "tracker:\n  kind: linear\n  endpoint: https://flat.linear.test/graphql\n  api_key: \"$OTHER_VAR\"\n  project_slug: flat-project\n  credentials:\n    api_key_env: LINEAR_API_KEY\n  linear:\n    endpoint: https://nested.linear.test/graphql\n    project_slug: nested-project\n  active_states: [Todo, In Progress]\n  dispatch_states: [Todo]\n  terminal_states: [Done, Canceled]\nhooks:\n  before_run: test -d .git\n"
+  let assert Ok(report) =
+    config.resolve_with_env_report(
+      definition(front),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+  let configured = report.config
+
+  assert configured.tracker.endpoint == "https://nested.linear.test/graphql"
+  assert configured.tracker.api_key == Some("linearkey")
+  assert configured.tracker.project_slug == Some("nested-project")
+  assert report.warnings
+    == [
+      config_types.ConfigWarning(
+        event: "legacy_tracker_field_ignored",
+        path: "tracker.api_key",
+        replacement: "tracker.credentials.api_key_env",
+      ),
+      config_types.ConfigWarning(
+        event: "legacy_tracker_field_ignored",
+        path: "tracker.endpoint",
+        replacement: "tracker.linear.endpoint",
+      ),
+      config_types.ConfigWarning(
+        event: "legacy_tracker_field_ignored",
+        path: "tracker.project_slug",
+        replacement: "tracker.linear.project_slug",
+      ),
+    ]
+  let assert [first_warning, ..] = report.warnings
+  assert config.config_warning_message(first_warning)
+    == "legacy_tracker_field_ignored path=tracker.api_key replacement=tracker.credentials.api_key_env"
+}
+
 fn workspace_driver_env_front(env_body: String) -> String {
   minimal_front()
   <> "workspace:\n  root: test/tmp/workspaces\n  default_profile: isolated\n  profiles:\n    isolated:\n      driver:\n        command: scripts/scherzo-workspace-jj\n        lifecycle: [create, before-step]\n        timeout_ms: 60000\n"
@@ -635,7 +695,7 @@ pub fn handoff_completion_states_reject_invalid_config_test() {
   assert string.contains(contract_disabled, "linear_contract.enabled")
   assert string.contains(
     contract_disabled,
-    "scherzo doctor --check linear-contract",
+    "scherzo doctor --check tracker-contract",
   )
 
   let unsupported =

@@ -773,7 +773,7 @@ fn format_diagnostic(diagnostic: ContractDiagnostic) -> String {
       <> quote(id)
       <> " remediation="
       <> quote(
-        "run scherzo doctor --check linear-contract and see docs/runbooks/linear-completion-states.md",
+        "run scherzo doctor --check tracker-contract and see docs/runbooks/linear-completion-states.md",
       )
     AmbiguousCompletionStateName(team_key, name, source) ->
       "ambiguous_completion_state_name team="
@@ -784,7 +784,7 @@ fn format_diagnostic(diagnostic: ContractDiagnostic) -> String {
       <> quote(name)
       <> " remediation="
       <> quote(
-        "run scherzo doctor --check linear-contract and see docs/runbooks/linear-completion-states.md",
+        "run scherzo doctor --check tracker-contract and see docs/runbooks/linear-completion-states.md",
       )
   }
 }
