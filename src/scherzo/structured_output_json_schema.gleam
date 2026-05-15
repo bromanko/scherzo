@@ -92,7 +92,7 @@ fn validate_schema_declaration(
         schema_path,
         secrets,
       ))
-      validate_schema_path_resolved(context, schema_path, secrets)
+      validate_schema_path_candidate(context, schema_path, secrets)
     }
   }
 }
@@ -119,11 +119,43 @@ fn validate_schema_path_string(
   }
 }
 
-fn validate_schema_path_resolved(
+// Structured-output JSON Schemas are checked lexically first so absolute
+// paths and parent traversal remain rejected before invoking the helper.
+// The dogfood/workspace-sharing contract intentionally allows schemas below
+// docs/schemas/ to resolve through repository-local symlinks to shared schema
+// directories. Other schema paths keep the older resolved-target confinement.
+fn validate_schema_path_candidate(
   context: structured_output_validator.ValidatorContext,
   schema_path: String,
   secrets: List(String),
 ) -> Result(Nil, structured_output_validator.ValidatorFailure) {
+  use resolved_repository_root <- result.try(resolve_repository_root(
+    context,
+    secrets,
+  ))
+  use candidate_path <- result.try(validate_schema_path_lexically_confined(
+    context,
+    schema_path,
+    secrets,
+  ))
+
+  case repo_local_shared_schema_path(schema_path) {
+    True -> Ok(Nil)
+    False ->
+      validate_schema_path_resolved(
+        context,
+        schema_path,
+        candidate_path,
+        resolved_repository_root,
+        secrets,
+      )
+  }
+}
+
+fn resolve_repository_root(
+  context: structured_output_validator.ValidatorContext,
+  secrets: List(String),
+) -> Result(String, structured_output_validator.ValidatorFailure) {
   case path.realpath(context.repository_root) {
     Error(Nil) ->
       Error(failure(
@@ -136,40 +168,112 @@ fn validate_schema_path_resolved(
         False,
         secrets,
       ))
-    Ok(repository_root) -> {
-      let candidate = path.join(context.repository_root, schema_path)
-      case path.realpath(candidate) {
-        Error(Nil) ->
+    Ok(repository_root) -> Ok(repository_root)
+  }
+}
+
+fn validate_schema_path_lexically_confined(
+  context: structured_output_validator.ValidatorContext,
+  schema_path: String,
+  secrets: List(String),
+) -> Result(String, structured_output_validator.ValidatorFailure) {
+  let candidate = path.join(context.repository_root, schema_path)
+  case path.absolute(context.repository_root), path.absolute(candidate) {
+    Ok(repository_root), Ok(candidate_path) ->
+      case
+        path.contains(
+          strip_trailing_current_dir(repository_root),
+          candidate_path,
+        )
+      {
+        True -> Ok(candidate_path)
+        False ->
           Error(failure(
             context,
             "structured_output_json_schema_config_error",
-            "schema file not found or could not be resolved: " <> schema_path,
+            "schema path is not lexically confined to the repository: "
+              <> schema_path,
             False,
-            "schema_file=" <> schema_path,
+            "schema_file="
+              <> schema_path
+              <> " candidate_schema_path="
+              <> candidate_path
+              <> " repository_root="
+              <> repository_root,
             False,
             False,
             secrets,
           ))
-        Ok(resolved_schema_path) ->
-          case path.contains(repository_root, resolved_schema_path) {
-            True -> Ok(Nil)
-            False ->
-              Error(failure(
-                context,
-                "structured_output_json_schema_config_error",
-                "schema path resolves outside the repository: " <> schema_path,
-                False,
-                "schema_file="
-                  <> schema_path
-                  <> " resolved_schema_path="
-                  <> resolved_schema_path,
-                False,
-                False,
-                secrets,
-              ))
-          }
       }
-    }
+    _, _ ->
+      Error(failure(
+        context,
+        "structured_output_json_schema_config_error",
+        "could not normalize schema path for JSON Schema validation: "
+          <> schema_path,
+        False,
+        "schema_file=" <> schema_path,
+        False,
+        False,
+        secrets,
+      ))
+  }
+}
+
+fn validate_schema_path_resolved(
+  context: structured_output_validator.ValidatorContext,
+  schema_path: String,
+  candidate_path: String,
+  repository_root: String,
+  secrets: List(String),
+) -> Result(Nil, structured_output_validator.ValidatorFailure) {
+  case path.realpath(candidate_path) {
+    Error(Nil) ->
+      Error(failure(
+        context,
+        "structured_output_json_schema_config_error",
+        "schema file not found or could not be resolved: " <> schema_path,
+        False,
+        "schema_file=" <> schema_path,
+        False,
+        False,
+        secrets,
+      ))
+    Ok(resolved_schema_path) ->
+      case path.contains(repository_root, resolved_schema_path) {
+        True -> Ok(Nil)
+        False ->
+          Error(failure(
+            context,
+            "structured_output_json_schema_config_error",
+            "schema path resolves outside the repository: " <> schema_path,
+            False,
+            "schema_file="
+              <> schema_path
+              <> " resolved_schema_path="
+              <> resolved_schema_path
+              <> " repository_root="
+              <> repository_root,
+            False,
+            False,
+            secrets,
+          ))
+      }
+  }
+}
+
+fn repo_local_shared_schema_path(schema_path: String) -> Bool {
+  string.starts_with(schema_path, "docs/schemas/")
+}
+
+fn strip_trailing_current_dir(value: String) -> String {
+  case value == "/." {
+    True -> "/"
+    False ->
+      case string.ends_with(value, "/.") {
+        True -> string.drop_end(value, 2)
+        False -> value
+      }
   }
 }
 
