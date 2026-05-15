@@ -663,6 +663,127 @@ pub fn linear_command_status_transitions_replace_previous_status_test() {
   )) = dict.get(after_acked.commands, "comment-replace")
 }
 
+pub fn remote_command_records_project_to_command_receipts_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "remote-1",
+        100,
+        record.RemoteCommandSeen(
+          backend_kind: "linear",
+          event_id: "comment-remote",
+          task_remote_id: "issue-command",
+          task_key: Some("LIV-266"),
+          author_id: "user-1",
+          command_name: "retry",
+          excerpt: "/scherzo retry",
+        ),
+      ),
+      record.with_id(
+        "remote-2",
+        200,
+        record.RemoteCommandStarted(
+          backend_kind: "linear",
+          event_id: "comment-remote",
+          task_remote_id: "issue-command",
+          command_name: "retry",
+        ),
+      ),
+      record.with_id(
+        "remote-3",
+        300,
+        record.RemoteCommandCompleted(
+          backend_kind: "linear",
+          event_id: "comment-remote",
+          task_remote_id: "issue-command",
+          status: "applied",
+          message_excerpt: "retry queued",
+        ),
+      ),
+      record.with_id(
+        "remote-4",
+        400,
+        record.RemoteCommandAcked(
+          backend_kind: "linear",
+          event_id: "comment-remote",
+          task_remote_id: "issue-command",
+        ),
+      ),
+    ])
+
+  let assert projection.CommandReceiptCompleted(
+    issue_id: "issue-command",
+    author_id: "user-1",
+    command_name: "retry",
+    excerpt: "/scherzo retry",
+    result_status: "applied",
+    message_excerpt: "retry queued",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+    completed_at_ms: 300,
+    acked_at_ms: Some(400),
+  ) = projection.command_receipt(folded, "comment-remote")
+}
+
+pub fn mixed_linear_and_remote_command_records_do_not_duplicate_receipts_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "linear-1",
+        100,
+        record.LinearCommandSeen(
+          comment_id: "comment-1",
+          issue_id: "issue-1",
+          author_id: "user-1",
+          command_name: "retry",
+          excerpt: "/scherzo retry",
+        ),
+      ),
+      record.with_id(
+        "linear-2",
+        200,
+        record.LinearCommandStarted(
+          comment_id: "comment-1",
+          issue_id: "issue-1",
+          command_name: "retry",
+        ),
+      ),
+      record.with_id(
+        "linear-3",
+        300,
+        record.LinearCommandCompleted(
+          comment_id: "comment-1",
+          issue_id: "issue-1",
+          status: "ok",
+          message_excerpt: "Retry queued",
+        ),
+      ),
+      record.with_id(
+        "remote-4",
+        400,
+        record.RemoteCommandAcked(
+          backend_kind: "linear",
+          event_id: "comment-1",
+          task_remote_id: "issue-1",
+        ),
+      ),
+    ])
+
+  assert list.length(dict.keys(folded.command_receipts)) == 1
+  let assert projection.CommandReceiptCompleted(
+    issue_id: "issue-1",
+    author_id: "user-1",
+    command_name: "retry",
+    excerpt: "/scherzo retry",
+    result_status: "ok",
+    message_excerpt: "Retry queued",
+    seen_at_ms: 100,
+    started_at_ms: 200,
+    completed_at_ms: 300,
+    acked_at_ms: Some(400),
+  ) = projection.command_receipt(folded, "comment-1")
+}
+
 pub fn linear_command_receipt_projection_tracks_lifecycle_test() {
   let records = [
     record.with_id(

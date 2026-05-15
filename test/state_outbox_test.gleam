@@ -1,4 +1,4 @@
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import scherzo/state/outbox
 
 pub fn decode_payload_returns_typed_invalid_error_test() {
@@ -16,6 +16,9 @@ pub fn linear_command_ack_payload_decodes_and_replays_test() {
     kind: "linear_command_ack",
     body: "ack",
     source_comment_id: Some("comment-1"),
+    backend_kind: None,
+    event_id: None,
+    task_remote_id: None,
   )) =
     outbox.decode_payload(
       "{\"type\":\"linear_command_ack\",\"source_comment_id\":\"comment-1\",\"body\":\"ack\"}",
@@ -23,6 +26,29 @@ pub fn linear_command_ack_payload_decodes_and_replays_test() {
 
   let assert Ok(Nil) =
     outbox.recovery_replay_error("linear_command_ack", "linear_command_ack")
+}
+
+pub fn remote_command_ack_payload_decodes_and_replays_test() {
+  let assert Ok(outbox.Payload(
+    kind: "remote_command_ack",
+    body: "ack",
+    source_comment_id: None,
+    backend_kind: Some("linear"),
+    event_id: Some("comment-1"),
+    task_remote_id: Some("issue-1"),
+  )) =
+    outbox.decode_payload(
+      outbox.remote_command_ack_payload(
+        "linear",
+        "comment-1",
+        "issue-1",
+        "ack",
+        [],
+      ),
+    )
+
+  let assert Ok(Nil) =
+    outbox.recovery_replay_error("remote_command_ack", "remote_command_ack")
 }
 
 pub fn replay_kind_mismatch_returns_typed_error_with_stable_code_test() {

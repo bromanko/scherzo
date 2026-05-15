@@ -374,6 +374,12 @@ pub fn old_workflow_checkpoint_records_recover_active_candidate_test() {
       workflow_fingerprint: "wf-old",
       issue_id: "issue-1",
       issue_identifier: "LIV-266",
+      task_ref: record.TaskRefFields(
+        task_backend_kind: "linear",
+        task_remote_id: "issue-1",
+        task_key: Some("LIV-266"),
+        task_url: None,
+      ),
       issue_fingerprint: "fp-old",
       observed_updated_at_ms: 10,
       run_root: "test/tmp/run-root",

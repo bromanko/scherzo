@@ -9,6 +9,35 @@ pub const schema_version = 2
 
 pub const max_excerpt_chars = 500
 
+pub type TaskRefFields {
+  TaskRefFields(
+    task_backend_kind: String,
+    task_remote_id: String,
+    task_key: Option(String),
+    task_url: Option(String),
+  )
+}
+
+pub fn linear_task_ref_fields(
+  task_remote_id: String,
+  task_key: Option(String),
+  task_url: Option(String),
+) -> TaskRefFields {
+  TaskRefFields(
+    task_backend_kind: "linear",
+    task_remote_id: task_remote_id,
+    task_key: task_key,
+    task_url: task_url,
+  )
+}
+
+pub fn legacy_linear_task_ref_fields(
+  issue_id: String,
+  issue_identifier: String,
+) -> TaskRefFields {
+  linear_task_ref_fields(issue_id, Some(issue_identifier), None)
+}
+
 pub type LedgerRecord {
   LedgerRecord(record_id: String, at_ms: Int, body: RecordBody)
 }
@@ -38,10 +67,30 @@ pub type RecordBody {
     observed_updated_at_ms: Int,
     run_root: String,
   )
+  WorkflowRunStartedWithTask(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    issue_id: String,
+    issue_identifier: String,
+    task_ref: TaskRefFields,
+    issue_fingerprint: String,
+    observed_updated_at_ms: Int,
+    run_root: String,
+  )
   WorkflowRunFinished(
     run_id: String,
     workflow_id: String,
     issue_id: String,
+    outcome: String,
+    token_total: Int,
+    turns: Int,
+  )
+  WorkflowRunFinishedWithTask(
+    run_id: String,
+    workflow_id: String,
+    issue_id: String,
+    task_ref: TaskRefFields,
     outcome: String,
     token_total: Int,
     turns: Int,
@@ -90,6 +139,20 @@ pub type RecordBody {
     run_id: String,
     issue_id: String,
     issue_identifier: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    step_id: String,
+    workspace_name: String,
+    attempt_index: Int,
+    workspace_path: String,
+    session_id: String,
+    session_file: String,
+  )
+  StepAttemptPiSessionRecordedWithTask(
+    run_id: String,
+    issue_id: String,
+    issue_identifier: String,
+    task_ref: TaskRefFields,
     workflow_id: String,
     workflow_fingerprint: String,
     step_id: String,
@@ -182,6 +245,33 @@ pub type RecordBody {
     message_excerpt: String,
   )
   LinearCommandAcked(comment_id: String, issue_id: String)
+  RemoteCommandSeen(
+    backend_kind: String,
+    event_id: String,
+    task_remote_id: String,
+    task_key: Option(String),
+    author_id: String,
+    command_name: String,
+    excerpt: String,
+  )
+  RemoteCommandStarted(
+    backend_kind: String,
+    event_id: String,
+    task_remote_id: String,
+    command_name: String,
+  )
+  RemoteCommandCompleted(
+    backend_kind: String,
+    event_id: String,
+    task_remote_id: String,
+    status: String,
+    message_excerpt: String,
+  )
+  RemoteCommandAcked(
+    backend_kind: String,
+    event_id: String,
+    task_remote_id: String,
+  )
   ScheduledJobDue(
     job_id: String,
     workflow_id: String,
@@ -330,6 +420,10 @@ type RecordFields {
     workflow_fingerprint: Option(String),
     issue_id: Option(String),
     issue_identifier: Option(String),
+    task_backend_kind: Option(String),
+    task_remote_id: Option(String),
+    task_key: Option(String),
+    task_url: Option(String),
     workspace_path: Option(String),
     workspace_name: Option(String),
     run_root: Option(String),
@@ -359,6 +453,8 @@ type RecordFields {
     source_run_id: Option(String),
     release_policy: Option(String),
     issue_fingerprint: Option(String),
+    backend_kind: Option(String),
+    event_id: Option(String),
     comment_id: Option(String),
     author_id: Option(String),
     command_name: Option(String),
@@ -415,13 +511,17 @@ pub fn kind(body: RecordBody) -> String {
     RunFinished(..) -> "run_finished"
     RunInterrupted(..) -> "run_interrupted"
     WorkflowRunStarted(..) -> "workflow_run_started"
+    WorkflowRunStartedWithTask(..) -> "workflow_run_started"
     WorkflowRunFinished(..) -> "workflow_run_finished"
+    WorkflowRunFinishedWithTask(..) -> "workflow_run_finished"
     WorkflowRunInterrupted(..) -> "workflow_run_interrupted"
     WorkflowRunSuperseded(..) -> "workflow_run_superseded"
     StepAttemptPrepared(..) -> "step_attempt_prepared"
     StepAttemptStarted(..) -> "step_attempt_started"
     StepAttemptContinuationStarted(..) -> "step_attempt_continuation_started"
     StepAttemptPiSessionRecorded(..) -> "step_attempt_pi_session_recorded"
+    StepAttemptPiSessionRecordedWithTask(..) ->
+      "step_attempt_pi_session_recorded"
     StepAttemptFinished(..) -> "step_attempt_finished"
     StepAttemptInterrupted(..) -> "step_attempt_interrupted"
     StepAttemptSuperseded(..) -> "step_attempt_superseded"
@@ -436,6 +536,10 @@ pub fn kind(body: RecordBody) -> String {
     LinearCommandStarted(..) -> "linear_command_started"
     LinearCommandCompleted(..) -> "linear_command_completed"
     LinearCommandAcked(..) -> "linear_command_acked"
+    RemoteCommandSeen(..) -> "remote_command_seen"
+    RemoteCommandStarted(..) -> "remote_command_started"
+    RemoteCommandCompleted(..) -> "remote_command_completed"
+    RemoteCommandAcked(..) -> "remote_command_acked"
     ScheduledJobDue(..) -> "scheduled_job_due"
     ScheduledJobSkipped(..) -> "scheduled_job_skipped"
     ScheduledRunPending(..) -> "scheduled_run_pending"
@@ -537,6 +641,30 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
       #("run_root", json.string(run_root)),
     ]
+    WorkflowRunStartedWithTask(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      issue_id,
+      issue_identifier,
+      task_ref,
+      issue_fingerprint,
+      observed_updated_at_ms,
+      run_root,
+    ) ->
+      [
+        #("run_id", json.string(run_id)),
+        #("workflow_id", json.string(workflow_id)),
+        #("workflow_fingerprint", json.string(workflow_fingerprint)),
+        #("issue_id", json.string(issue_id)),
+        #("issue_identifier", json.string(issue_identifier)),
+      ]
+      |> append_json_entries(task_ref_entries(task_ref))
+      |> append_json_entries([
+        #("issue_fingerprint", json.string(issue_fingerprint)),
+        #("observed_updated_at_ms", json.int(observed_updated_at_ms)),
+        #("run_root", json.string(run_root)),
+      ])
     WorkflowRunFinished(
       run_id,
       workflow_id,
@@ -552,6 +680,26 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("token_total", json.int(token_total)),
       #("turns", json.int(turns)),
     ]
+    WorkflowRunFinishedWithTask(
+      run_id,
+      workflow_id,
+      issue_id,
+      task_ref,
+      outcome,
+      token_total,
+      turns,
+    ) ->
+      [
+        #("run_id", json.string(run_id)),
+        #("workflow_id", json.string(workflow_id)),
+        #("issue_id", json.string(issue_id)),
+      ]
+      |> append_json_entries(task_ref_entries(task_ref))
+      |> append_json_entries([
+        #("outcome", json.string(outcome)),
+        #("token_total", json.int(token_total)),
+        #("turns", json.int(turns)),
+      ])
     WorkflowRunInterrupted(run_id, workflow_id, issue_id, reason) -> [
       #("run_id", json.string(run_id)),
       #("workflow_id", json.string(workflow_id)),
@@ -647,6 +795,36 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("session_id", json.string(session_id)),
       #("session_file", json.string(session_file)),
     ]
+    StepAttemptPiSessionRecordedWithTask(
+      run_id,
+      issue_id,
+      issue_identifier,
+      task_ref,
+      workflow_id,
+      workflow_fingerprint,
+      step_id,
+      workspace_name,
+      attempt_index,
+      workspace_path,
+      session_id,
+      session_file,
+    ) ->
+      [
+        #("run_id", json.string(run_id)),
+        #("issue_id", json.string(issue_id)),
+        #("issue_identifier", json.string(issue_identifier)),
+      ]
+      |> append_json_entries(task_ref_entries(task_ref))
+      |> append_json_entries([
+        #("workflow_id", json.string(workflow_id)),
+        #("workflow_fingerprint", json.string(workflow_fingerprint)),
+        #("step_id", json.string(step_id)),
+        #("workspace_name", json.string(workspace_name)),
+        #("attempt_index", json.int(attempt_index)),
+        #("workspace_path", json.string(workspace_path)),
+        #("session_id", json.string(session_id)),
+        #("session_file", json.string(session_file)),
+      ])
     StepAttemptFinished(
       run_id,
       workflow_id,
@@ -773,6 +951,47 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
     LinearCommandAcked(comment_id, issue_id) -> [
       #("comment_id", json.string(comment_id)),
       #("issue_id", json.string(issue_id)),
+    ]
+    RemoteCommandSeen(
+      backend_kind,
+      event_id,
+      task_remote_id,
+      task_key,
+      author_id,
+      command_name,
+      excerpt,
+    ) -> [
+      #("backend_kind", json.string(backend_kind)),
+      #("event_id", json.string(event_id)),
+      #("task_remote_id", json.string(task_remote_id)),
+      #("task_key", option_string_to_json(task_key)),
+      #("author_id", json.string(author_id)),
+      #("command_name", json.string(command_name)),
+      #("excerpt", json.string(excerpt)),
+    ]
+    RemoteCommandStarted(backend_kind, event_id, task_remote_id, command_name) -> [
+      #("backend_kind", json.string(backend_kind)),
+      #("event_id", json.string(event_id)),
+      #("task_remote_id", json.string(task_remote_id)),
+      #("command_name", json.string(command_name)),
+    ]
+    RemoteCommandCompleted(
+      backend_kind,
+      event_id,
+      task_remote_id,
+      status,
+      message_excerpt,
+    ) -> [
+      #("backend_kind", json.string(backend_kind)),
+      #("event_id", json.string(event_id)),
+      #("task_remote_id", json.string(task_remote_id)),
+      #("status", json.string(status)),
+      #("message_excerpt", json.string(message_excerpt)),
+    ]
+    RemoteCommandAcked(backend_kind, event_id, task_remote_id) -> [
+      #("backend_kind", json.string(backend_kind)),
+      #("event_id", json.string(event_id)),
+      #("task_remote_id", json.string(task_remote_id)),
     ]
     ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger) ->
       scheduled_base_entries(job_id, workflow_id, due_at_ms, run_id)
@@ -1005,6 +1224,17 @@ fn option_string_to_json(value: Option(String)) -> json.Json {
   }
 }
 
+fn task_ref_entries(task_ref: TaskRefFields) -> List(#(String, json.Json)) {
+  let TaskRefFields(task_backend_kind, task_remote_id, task_key, task_url) =
+    task_ref
+  [
+    #("task_backend_kind", json.string(task_backend_kind)),
+    #("task_remote_id", json.string(task_remote_id)),
+    #("task_key", option_string_to_json(task_key)),
+    #("task_url", option_string_to_json(task_url)),
+  ]
+}
+
 fn fields_to_record(fields: RecordFields) -> Result(LedgerRecord, DecodeError) {
   case fields.schema_version != schema_version {
     True -> Error(UnsupportedVersion(fields.schema_version))
@@ -1078,16 +1308,32 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         "observed_updated_at_ms",
       ))
       use run_root <- result.try(required_string(fields.run_root, "run_root"))
-      Ok(WorkflowRunStarted(
-        run_id,
-        workflow_id,
-        workflow_fingerprint,
-        issue_id,
-        issue_identifier,
-        issue_fingerprint,
-        observed_updated_at_ms,
-        run_root,
-      ))
+      use task_ref <- result.try(optional_task_ref_fields(fields))
+      case task_ref {
+        Some(task_ref) ->
+          Ok(WorkflowRunStartedWithTask(
+            run_id,
+            workflow_id,
+            workflow_fingerprint,
+            issue_id,
+            issue_identifier,
+            task_ref,
+            issue_fingerprint,
+            observed_updated_at_ms,
+            run_root,
+          ))
+        None ->
+          Ok(WorkflowRunStarted(
+            run_id,
+            workflow_id,
+            workflow_fingerprint,
+            issue_id,
+            issue_identifier,
+            issue_fingerprint,
+            observed_updated_at_ms,
+            run_root,
+          ))
+      }
     }
     "workflow_run_finished" -> {
       use run_id <- result.try(required_string(fields.run_id, "run_id"))
@@ -1102,14 +1348,28 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         "token_total",
       ))
       use turns <- result.try(required_int(fields.turns, "turns"))
-      Ok(WorkflowRunFinished(
-        run_id,
-        workflow_id,
-        issue_id,
-        outcome,
-        token_total,
-        turns,
-      ))
+      use task_ref <- result.try(optional_task_ref_fields(fields))
+      case task_ref {
+        Some(task_ref) ->
+          Ok(WorkflowRunFinishedWithTask(
+            run_id,
+            workflow_id,
+            issue_id,
+            task_ref,
+            outcome,
+            token_total,
+            turns,
+          ))
+        None ->
+          Ok(WorkflowRunFinished(
+            run_id,
+            workflow_id,
+            issue_id,
+            outcome,
+            token_total,
+            turns,
+          ))
+      }
     }
     "workflow_run_interrupted" -> {
       use run_id <- result.try(required_string(fields.run_id, "run_id"))
@@ -1257,19 +1517,38 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         fields.session_file,
         "session_file",
       ))
-      Ok(StepAttemptPiSessionRecorded(
-        run_id,
-        issue_id,
-        issue_identifier,
-        workflow_id,
-        workflow_fingerprint,
-        step_id,
-        workspace_name,
-        attempt_index,
-        workspace_path,
-        session_id,
-        session_file,
-      ))
+      use task_ref <- result.try(optional_task_ref_fields(fields))
+      case task_ref {
+        Some(task_ref) ->
+          Ok(StepAttemptPiSessionRecordedWithTask(
+            run_id,
+            issue_id,
+            issue_identifier,
+            task_ref,
+            workflow_id,
+            workflow_fingerprint,
+            step_id,
+            workspace_name,
+            attempt_index,
+            workspace_path,
+            session_id,
+            session_file,
+          ))
+        None ->
+          Ok(StepAttemptPiSessionRecorded(
+            run_id,
+            issue_id,
+            issue_identifier,
+            workflow_id,
+            workflow_fingerprint,
+            step_id,
+            workspace_name,
+            attempt_index,
+            workspace_path,
+            session_id,
+            session_file,
+          ))
+      }
     }
     "step_attempt_finished" -> {
       use run_id <- result.try(required_string(fields.run_id, "run_id"))
@@ -1527,6 +1806,88 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       ))
       use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
       Ok(LinearCommandAcked(comment_id, issue_id))
+    }
+    "remote_command_seen" -> {
+      use backend_kind <- result.try(required_string(
+        fields.backend_kind,
+        "backend_kind",
+      ))
+      use event_id <- result.try(required_string(fields.event_id, "event_id"))
+      use task_remote_id <- result.try(required_string(
+        fields.task_remote_id,
+        "task_remote_id",
+      ))
+      use author_id <- result.try(required_string(fields.author_id, "author_id"))
+      use command_name <- result.try(required_string(
+        fields.command_name,
+        "command_name",
+      ))
+      use excerpt <- result.try(required_string(fields.excerpt, "excerpt"))
+      Ok(RemoteCommandSeen(
+        backend_kind,
+        event_id,
+        task_remote_id,
+        fields.task_key,
+        author_id,
+        command_name,
+        excerpt,
+      ))
+    }
+    "remote_command_started" -> {
+      use backend_kind <- result.try(required_string(
+        fields.backend_kind,
+        "backend_kind",
+      ))
+      use event_id <- result.try(required_string(fields.event_id, "event_id"))
+      use task_remote_id <- result.try(required_string(
+        fields.task_remote_id,
+        "task_remote_id",
+      ))
+      use command_name <- result.try(required_string(
+        fields.command_name,
+        "command_name",
+      ))
+      Ok(RemoteCommandStarted(
+        backend_kind,
+        event_id,
+        task_remote_id,
+        command_name,
+      ))
+    }
+    "remote_command_completed" -> {
+      use backend_kind <- result.try(required_string(
+        fields.backend_kind,
+        "backend_kind",
+      ))
+      use event_id <- result.try(required_string(fields.event_id, "event_id"))
+      use task_remote_id <- result.try(required_string(
+        fields.task_remote_id,
+        "task_remote_id",
+      ))
+      use status <- result.try(required_string(fields.status, "status"))
+      use message_excerpt <- result.try(required_string(
+        fields.message_excerpt,
+        "message_excerpt",
+      ))
+      Ok(RemoteCommandCompleted(
+        backend_kind,
+        event_id,
+        task_remote_id,
+        status,
+        message_excerpt,
+      ))
+    }
+    "remote_command_acked" -> {
+      use backend_kind <- result.try(required_string(
+        fields.backend_kind,
+        "backend_kind",
+      ))
+      use event_id <- result.try(required_string(fields.event_id, "event_id"))
+      use task_remote_id <- result.try(required_string(
+        fields.task_remote_id,
+        "task_remote_id",
+      ))
+      Ok(RemoteCommandAcked(backend_kind, event_id, task_remote_id))
     }
     "scheduled_job_due" -> {
       use base <- result.try(required_scheduled_base(fields))
@@ -1853,6 +2214,26 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use task_backend_kind <- decode.optional_field(
+    "task_backend_kind",
+    None,
+    decode.optional(decode.string),
+  )
+  use task_remote_id <- decode.optional_field(
+    "task_remote_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use task_key <- decode.optional_field(
+    "task_key",
+    None,
+    decode.optional(decode.string),
+  )
+  use task_url <- decode.optional_field(
+    "task_url",
+    None,
+    decode.optional(decode.string),
+  )
   use workspace_path <- decode.optional_field(
     "workspace_path",
     None,
@@ -1991,6 +2372,16 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
   )
   use issue_fingerprint <- decode.optional_field(
     "issue_fingerprint",
+    None,
+    decode.optional(decode.string),
+  )
+  use backend_kind <- decode.optional_field(
+    "backend_kind",
+    None,
+    decode.optional(decode.string),
+  )
+  use event_id <- decode.optional_field(
+    "event_id",
     None,
     decode.optional(decode.string),
   )
@@ -2139,6 +2530,10 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     workflow_fingerprint: workflow_fingerprint,
     issue_id: issue_id,
     issue_identifier: issue_identifier,
+    task_backend_kind: task_backend_kind,
+    task_remote_id: task_remote_id,
+    task_key: task_key,
+    task_url: task_url,
     workspace_path: workspace_path,
     workspace_name: workspace_name,
     run_root: run_root,
@@ -2168,6 +2563,8 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     source_run_id: source_run_id,
     release_policy: release_policy,
     issue_fingerprint: issue_fingerprint,
+    backend_kind: backend_kind,
+    event_id: event_id,
     comment_id: comment_id,
     author_id: author_id,
     command_name: command_name,
@@ -2196,6 +2593,29 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     error_message: error_message,
     next_retry_at_ms: next_retry_at_ms,
   ))
+}
+
+fn optional_task_ref_fields(
+  fields: RecordFields,
+) -> Result(Option(TaskRefFields), DecodeError) {
+  case fields.task_backend_kind, fields.task_remote_id {
+    Some(task_backend_kind), Some(task_remote_id) ->
+      Ok(
+        Some(TaskRefFields(
+          task_backend_kind: task_backend_kind,
+          task_remote_id: task_remote_id,
+          task_key: fields.task_key,
+          task_url: fields.task_url,
+        )),
+      )
+    None, None ->
+      case fields.task_key, fields.task_url {
+        None, None -> Ok(None)
+        _, _ -> Error(InvalidRecord("missing task_backend_kind"))
+      }
+    None, Some(_) -> Error(InvalidRecord("missing task_backend_kind"))
+    Some(_), None -> Error(InvalidRecord("missing task_remote_id"))
+  }
 }
 
 fn required_string(
@@ -2255,6 +2675,38 @@ fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
         status,
         safe_excerpt(message_excerpt, secrets),
       )
+    RemoteCommandSeen(
+      backend_kind,
+      event_id,
+      task_remote_id,
+      task_key,
+      author_id,
+      command_name,
+      excerpt,
+    ) ->
+      RemoteCommandSeen(
+        backend_kind,
+        event_id,
+        task_remote_id,
+        task_key,
+        author_id,
+        command_name,
+        safe_excerpt(excerpt, secrets),
+      )
+    RemoteCommandCompleted(
+      backend_kind,
+      event_id,
+      task_remote_id,
+      status,
+      message_excerpt,
+    ) ->
+      RemoteCommandCompleted(
+        backend_kind,
+        event_id,
+        task_remote_id,
+        status,
+        safe_excerpt(message_excerpt, secrets),
+      )
     OutboxPendingV2(outbox_id, issue_id, outbox_kind, dedupe_key, payload_json) ->
       OutboxPendingV2(
         outbox_id,
@@ -2304,6 +2756,34 @@ fn redact_body(body: RecordBody, secrets: List(String)) -> RecordBody {
         run_id,
         issue_id,
         issue_identifier,
+        workflow_id,
+        workflow_fingerprint,
+        step_id,
+        workspace_name,
+        attempt_index,
+        "[redacted workspace path]",
+        session_id,
+        "[redacted pi session file]",
+      )
+    StepAttemptPiSessionRecordedWithTask(
+      run_id,
+      issue_id,
+      issue_identifier,
+      task_ref,
+      workflow_id,
+      workflow_fingerprint,
+      step_id,
+      workspace_name,
+      attempt_index,
+      _,
+      session_id,
+      _,
+    ) ->
+      StepAttemptPiSessionRecordedWithTask(
+        run_id,
+        issue_id,
+        issue_identifier,
+        task_ref,
         workflow_id,
         workflow_fingerprint,
         step_id,

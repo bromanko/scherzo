@@ -16,6 +16,7 @@ pub type Projection {
   Projection(
     runs: Dict(String, RunStatus),
     workflow_runs: Dict(String, WorkflowRunStatus),
+    workflow_task_refs: Dict(String, record.TaskRefFields),
     step_attempts: Dict(String, StepAttemptStatus),
     retries: Dict(String, RetryStatus),
     parked_issues: Dict(String, ParkedIssue),
@@ -366,6 +367,10 @@ type WorkflowRunSnapshot {
   WorkflowRunSnapshot(run_id: String, status: WorkflowRunStatus)
 }
 
+type WorkflowTaskRefSnapshot {
+  WorkflowTaskRefSnapshot(run_id: String, task_ref: record.TaskRefFields)
+}
+
 type StepAttemptSnapshot {
   StepAttemptSnapshot(key: String, status: StepAttemptStatus)
 }
@@ -402,6 +407,7 @@ type SnapshotFields {
   SnapshotFields(
     runs: List(RunSnapshot),
     workflow_runs: List(WorkflowRunSnapshot),
+    workflow_task_refs: List(WorkflowTaskRefSnapshot),
     step_attempts: List(StepAttemptSnapshot),
     retries: List(RetrySnapshot),
     parked_issues: List(ParkedSnapshot),
@@ -424,6 +430,7 @@ pub fn new() -> Projection {
   Projection(
     runs: dict.new(),
     workflow_runs: dict.new(),
+    workflow_task_refs: dict.new(),
     step_attempts: dict.new(),
     retries: dict.new(),
     parked_issues: dict.new(),
@@ -508,6 +515,44 @@ pub fn apply(
             at_ms,
           ),
         ),
+        workflow_task_refs: dict.insert(
+          projection.workflow_task_refs,
+          run_id,
+          record.legacy_linear_task_ref_fields(issue_id, issue_identifier),
+        ),
+      )
+    record.WorkflowRunStartedWithTask(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      issue_id,
+      issue_identifier,
+      task_ref,
+      issue_fingerprint,
+      observed_updated_at_ms,
+      run_root,
+    ) ->
+      Projection(
+        ..projection,
+        workflow_runs: dict.insert(
+          projection.workflow_runs,
+          run_id,
+          WorkflowRunActive(
+            workflow_id,
+            workflow_fingerprint,
+            issue_id,
+            issue_identifier,
+            issue_fingerprint,
+            observed_updated_at_ms,
+            run_root,
+            at_ms,
+          ),
+        ),
+        workflow_task_refs: dict.insert(
+          projection.workflow_task_refs,
+          run_id,
+          task_ref,
+        ),
       )
     record.WorkflowRunFinished(
       run_id,
@@ -532,6 +577,43 @@ pub fn apply(
             at_ms,
             run_root,
           ),
+        ),
+        workflow_task_refs: preserve_or_insert_workflow_task_ref(
+          projection.workflow_task_refs,
+          run_id,
+          record.linear_task_ref_fields(issue_id, None, None),
+        ),
+      )
+    }
+    record.WorkflowRunFinishedWithTask(
+      run_id,
+      workflow_id,
+      issue_id,
+      task_ref,
+      outcome,
+      token_total,
+      turns,
+    ) -> {
+      let run_root = workflow_run_root(projection, run_id)
+      Projection(
+        ..projection,
+        workflow_runs: dict.insert(
+          projection.workflow_runs,
+          run_id,
+          WorkflowRunFinished(
+            workflow_id,
+            issue_id,
+            outcome,
+            token_total,
+            turns,
+            at_ms,
+            run_root,
+          ),
+        ),
+        workflow_task_refs: dict.insert(
+          projection.workflow_task_refs,
+          run_id,
+          task_ref,
         ),
       )
     }
@@ -758,8 +840,8 @@ pub fn apply(
     }
     record.StepAttemptPiSessionRecorded(
       run_id,
-      _,
-      _,
+      issue_id,
+      issue_identifier,
       workflow_id,
       _,
       step_id,
@@ -768,118 +850,47 @@ pub fn apply(
       workspace_path,
       session_id,
       session_file,
-    ) -> {
-      let key = step_attempt_key(run_id, step_id, attempt_index)
-      let status = case dict.get(projection.step_attempts, key) {
-        Ok(StepAttemptRunning(
-          workflow_id: status_workflow_id,
-          workspace_name: status_workspace_name,
-          workspace_path: status_workspace_path,
-          run_root: run_root,
-          source_workspace_name: source_workspace_name,
-          source_workspace_path: source_workspace_path,
-          operator_session_id: operator_session_id,
-          external_session_ref: external_session_ref,
-          continuation_capable: continuation_capable,
-          pi_session_fact_count: count,
-          started_at_ms: started_at_ms,
-          ..,
-        )) -> {
-          let #(pi_session_id, pi_session_file, fact_count) =
-            session_fact_values(
-              status_workflow_id,
-              status_workspace_name,
-              status_workspace_path,
-              workflow_id,
-              workspace_name,
-              workspace_path,
-              session_id,
-              session_file,
-              count,
-            )
-          StepAttemptRunning(
-            run_id,
-            status_workflow_id,
-            step_id,
-            attempt_index,
-            status_workspace_name,
-            status_workspace_path,
-            run_root,
-            source_workspace_name,
-            source_workspace_path,
-            operator_session_id,
-            external_session_ref,
-            continuation_capable,
-            pi_session_id,
-            pi_session_file,
-            fact_count,
-            started_at_ms,
-          )
-        }
-        Ok(StepAttemptInterruptedStatus(
-          workflow_id: status_workflow_id,
-          workspace_name: status_workspace_name,
-          workspace_path: status_workspace_path,
-          run_root: run_root,
-          reason: reason,
-          continuation_capable: continuation_capable,
-          pi_session_fact_count: count,
-          interrupted_at_ms: interrupted_at_ms,
-          ..,
-        )) -> {
-          let #(pi_session_id, pi_session_file, fact_count) =
-            session_fact_values(
-              status_workflow_id,
-              status_workspace_name,
-              status_workspace_path,
-              workflow_id,
-              workspace_name,
-              workspace_path,
-              session_id,
-              session_file,
-              count,
-            )
-          StepAttemptInterruptedStatus(
-            run_id,
-            status_workflow_id,
-            step_id,
-            attempt_index,
-            status_workspace_name,
-            status_workspace_path,
-            run_root,
-            reason,
-            continuation_capable,
-            pi_session_id,
-            pi_session_file,
-            fact_count,
-            interrupted_at_ms,
-          )
-        }
-        _ ->
-          StepAttemptRunning(
-            run_id,
-            workflow_id,
-            step_id,
-            attempt_index,
-            workspace_name,
-            workspace_path,
-            "",
-            None,
-            None,
-            "",
-            None,
-            True,
-            Some(session_id),
-            Some(session_file),
-            1,
-            at_ms,
-          )
-      }
-      Projection(
-        ..projection,
-        step_attempts: dict.insert(projection.step_attempts, key, status),
+    ) ->
+      apply_step_attempt_pi_session_recorded(
+        projection,
+        at_ms,
+        run_id,
+        workflow_id,
+        step_id,
+        workspace_name,
+        attempt_index,
+        workspace_path,
+        session_id,
+        session_file,
+        record.legacy_linear_task_ref_fields(issue_id, issue_identifier),
       )
-    }
+    record.StepAttemptPiSessionRecordedWithTask(
+      run_id,
+      _,
+      _,
+      task_ref,
+      workflow_id,
+      _,
+      step_id,
+      workspace_name,
+      attempt_index,
+      workspace_path,
+      session_id,
+      session_file,
+    ) ->
+      apply_step_attempt_pi_session_recorded(
+        projection,
+        at_ms,
+        run_id,
+        workflow_id,
+        step_id,
+        workspace_name,
+        attempt_index,
+        workspace_path,
+        session_id,
+        session_file,
+        task_ref,
+      )
     record.StepAttemptFinished(
       run_id,
       workflow_id,
@@ -1231,6 +1242,114 @@ pub fn apply(
         ),
       )
     }
+    record.RemoteCommandSeen(
+      _,
+      event_id,
+      task_remote_id,
+      _,
+      author_id,
+      command_name,
+      excerpt,
+    ) -> {
+      let receipt =
+        seen_receipt(
+          projection.command_receipts,
+          event_id,
+          task_remote_id,
+          author_id,
+          command_name,
+          excerpt,
+          at_ms,
+        )
+      Projection(
+        ..projection,
+        commands: dict.insert(
+          projection.commands,
+          event_id,
+          CommandSeen(task_remote_id, author_id, command_name, excerpt, at_ms),
+        ),
+        command_receipts: dict.insert(
+          projection.command_receipts,
+          event_id,
+          receipt,
+        ),
+      )
+    }
+    record.RemoteCommandStarted(_, event_id, task_remote_id, command_name) -> {
+      let receipt =
+        started_receipt(
+          projection.command_receipts,
+          event_id,
+          task_remote_id,
+          command_name,
+          at_ms,
+        )
+      Projection(
+        ..projection,
+        commands: dict.insert(
+          projection.commands,
+          event_id,
+          CommandStarted(task_remote_id, command_name, at_ms),
+        ),
+        command_receipts: dict.insert(
+          projection.command_receipts,
+          event_id,
+          receipt,
+        ),
+      )
+    }
+    record.RemoteCommandCompleted(
+      _,
+      event_id,
+      task_remote_id,
+      status,
+      message_excerpt,
+    ) -> {
+      let receipt =
+        completed_receipt(
+          projection.command_receipts,
+          event_id,
+          task_remote_id,
+          status,
+          message_excerpt,
+          at_ms,
+        )
+      Projection(
+        ..projection,
+        commands: dict.insert(
+          projection.commands,
+          event_id,
+          CommandCompleted(task_remote_id, status, message_excerpt, at_ms),
+        ),
+        command_receipts: dict.insert(
+          projection.command_receipts,
+          event_id,
+          receipt,
+        ),
+      )
+    }
+    record.RemoteCommandAcked(_, event_id, task_remote_id) -> {
+      let receipt =
+        acked_receipt(
+          projection.command_receipts,
+          event_id,
+          task_remote_id,
+          at_ms,
+        )
+      Projection(
+        ..projection,
+        commands: dict.insert(
+          projection.commands,
+          event_id,
+          CommandAcked(task_remote_id, at_ms),
+        ),
+        command_receipts: dict.insert(
+          projection.command_receipts,
+          event_id,
+          receipt,
+        ),
+      )
+    }
     record.ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger) ->
       update_scheduled_job(
         projection,
@@ -1506,6 +1625,136 @@ pub fn scheduled_status_for(
 
 pub fn scheduled_statuses(projection: Projection) -> List(ScheduledJobStatus) {
   dict.values(projection.scheduled_jobs)
+}
+
+fn apply_step_attempt_pi_session_recorded(
+  projection: Projection,
+  at_ms: Int,
+  run_id: String,
+  workflow_id: String,
+  step_id: String,
+  workspace_name: String,
+  attempt_index: Int,
+  workspace_path: String,
+  session_id: String,
+  session_file: String,
+  task_ref: record.TaskRefFields,
+) -> Projection {
+  let key = step_attempt_key(run_id, step_id, attempt_index)
+  let status = case dict.get(projection.step_attempts, key) {
+    Ok(StepAttemptRunning(
+      workflow_id: status_workflow_id,
+      workspace_name: status_workspace_name,
+      workspace_path: status_workspace_path,
+      run_root: run_root,
+      source_workspace_name: source_workspace_name,
+      source_workspace_path: source_workspace_path,
+      operator_session_id: operator_session_id,
+      external_session_ref: external_session_ref,
+      continuation_capable: continuation_capable,
+      pi_session_fact_count: count,
+      started_at_ms: started_at_ms,
+      ..,
+    )) -> {
+      let #(pi_session_id, pi_session_file, fact_count) =
+        session_fact_values(
+          status_workflow_id,
+          status_workspace_name,
+          status_workspace_path,
+          workflow_id,
+          workspace_name,
+          workspace_path,
+          session_id,
+          session_file,
+          count,
+        )
+      StepAttemptRunning(
+        run_id,
+        status_workflow_id,
+        step_id,
+        attempt_index,
+        status_workspace_name,
+        status_workspace_path,
+        run_root,
+        source_workspace_name,
+        source_workspace_path,
+        operator_session_id,
+        external_session_ref,
+        continuation_capable,
+        pi_session_id,
+        pi_session_file,
+        fact_count,
+        started_at_ms,
+      )
+    }
+    Ok(StepAttemptInterruptedStatus(
+      workflow_id: status_workflow_id,
+      workspace_name: status_workspace_name,
+      workspace_path: status_workspace_path,
+      run_root: run_root,
+      reason: reason,
+      continuation_capable: continuation_capable,
+      pi_session_fact_count: count,
+      interrupted_at_ms: interrupted_at_ms,
+      ..,
+    )) -> {
+      let #(pi_session_id, pi_session_file, fact_count) =
+        session_fact_values(
+          status_workflow_id,
+          status_workspace_name,
+          status_workspace_path,
+          workflow_id,
+          workspace_name,
+          workspace_path,
+          session_id,
+          session_file,
+          count,
+        )
+      StepAttemptInterruptedStatus(
+        run_id,
+        status_workflow_id,
+        step_id,
+        attempt_index,
+        status_workspace_name,
+        status_workspace_path,
+        run_root,
+        reason,
+        continuation_capable,
+        pi_session_id,
+        pi_session_file,
+        fact_count,
+        interrupted_at_ms,
+      )
+    }
+    _ ->
+      StepAttemptRunning(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        workspace_name,
+        workspace_path,
+        "",
+        None,
+        None,
+        "",
+        None,
+        True,
+        Some(session_id),
+        Some(session_file),
+        1,
+        at_ms,
+      )
+  }
+  Projection(
+    ..projection,
+    step_attempts: dict.insert(projection.step_attempts, key, status),
+    workflow_task_refs: preserve_or_insert_workflow_task_ref(
+      projection.workflow_task_refs,
+      run_id,
+      task_ref,
+    ),
+  )
 }
 
 fn update_scheduled_job(
@@ -2302,6 +2551,17 @@ fn add_one(value: Int) -> Int {
   value + 1
 }
 
+fn preserve_or_insert_workflow_task_ref(
+  refs: Dict(String, record.TaskRefFields),
+  run_id: String,
+  fallback: record.TaskRefFields,
+) -> Dict(String, record.TaskRefFields) {
+  case dict.has_key(refs, run_id) {
+    True -> refs
+    False -> dict.insert(refs, run_id, fallback)
+  }
+}
+
 fn workflow_run_root(projection: Projection, run_id: String) -> String {
   case dict.get(projection.workflow_runs, run_id) {
     Ok(WorkflowRunActive(run_root: run_root, ..)) -> run_root
@@ -2316,6 +2576,9 @@ pub fn known_issue_ids(projection: Projection) -> List(String) {
   []
   |> append_unique_strings(run_issue_ids(projection.runs))
   |> append_unique_strings(workflow_run_issue_ids(projection.workflow_runs))
+  |> append_unique_strings(workflow_task_ref_issue_ids(
+    projection.workflow_task_refs,
+  ))
   |> append_unique_strings(dict.keys(projection.retries))
   |> append_unique_strings(dict.keys(projection.parked_issues))
   |> append_unique_strings(command_issue_ids(projection.commands))
@@ -2359,6 +2622,13 @@ pub fn counter_has_source_run(
   }
 }
 
+pub fn workflow_task_ref(
+  projection: Projection,
+  run_id: String,
+) -> Result(record.TaskRefFields, Nil) {
+  dict.get(projection.workflow_task_refs, run_id)
+}
+
 pub fn command_receipt(
   projection: Projection,
   comment_id: String,
@@ -2395,6 +2665,13 @@ pub fn to_json(projection: Projection) -> json.Json {
       json.array(
         dict.to_list(projection.workflow_runs),
         of: workflow_run_entry_to_json,
+      ),
+    ),
+    #(
+      "workflow_task_refs",
+      json.array(
+        dict.to_list(projection.workflow_task_refs),
+        of: workflow_task_ref_entry_to_json,
       ),
     ),
     #(
@@ -2480,6 +2757,12 @@ fn decode_current_snapshot(contents: String) -> Result(Projection, String) {
           |> list.map(fn(entry) {
             let WorkflowRunSnapshot(run_id, status) = entry
             #(run_id, status)
+          })
+          |> dict.from_list,
+        workflow_task_refs: fields.workflow_task_refs
+          |> list.map(fn(entry) {
+            let WorkflowTaskRefSnapshot(run_id, task_ref) = entry
+            #(run_id, task_ref)
           })
           |> dict.from_list,
         step_attempts: fields.step_attempts
@@ -2662,6 +2945,25 @@ fn workflow_run_entry_to_json(
         #("run_root", json.string(run_root)),
       ])
   }
+}
+
+fn workflow_task_ref_entry_to_json(
+  entry: #(String, record.TaskRefFields),
+) -> json.Json {
+  let #(run_id, task_ref) = entry
+  let record.TaskRefFields(
+    task_backend_kind,
+    task_remote_id,
+    task_key,
+    task_url,
+  ) = task_ref
+  json.object([
+    #("run_id", json.string(run_id)),
+    #("task_backend_kind", json.string(task_backend_kind)),
+    #("task_remote_id", json.string(task_remote_id)),
+    #("task_key", option_string_to_json(task_key)),
+    #("task_url", option_string_to_json(task_url)),
+  ])
 }
 
 fn step_attempt_entry_to_json(
@@ -3179,6 +3481,11 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     [],
     decode.list(of: workflow_run_snapshot_decoder()),
   )
+  use workflow_task_refs <- decode.optional_field(
+    "workflow_task_refs",
+    [],
+    decode.list(of: workflow_task_ref_snapshot_decoder()),
+  )
   use step_attempts <- decode.optional_field(
     "step_attempts",
     [],
@@ -3227,6 +3534,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
       decode.success(SnapshotFields(
         runs,
         workflow_runs,
+        workflow_task_refs,
         step_attempts,
         retries,
         parked_issues,
@@ -3239,7 +3547,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
       ))
     False ->
       decode.failure(
-        SnapshotFields([], [], [], [], [], [], [], [], [], [], []),
+        SnapshotFields([], [], [], [], [], [], [], [], [], [], [], []),
         expected: "SnapshotFields",
       )
   }
@@ -3383,6 +3691,33 @@ fn workflow_run_snapshot_decoder() -> decode.Decoder(WorkflowRunSnapshot) {
         expected: "WorkflowRunSnapshot",
       )
   }
+}
+
+fn workflow_task_ref_snapshot_decoder() -> decode.Decoder(
+  WorkflowTaskRefSnapshot,
+) {
+  use run_id <- decode.field("run_id", decode.string)
+  use task_backend_kind <- decode.field("task_backend_kind", decode.string)
+  use task_remote_id <- decode.field("task_remote_id", decode.string)
+  use task_key <- decode.optional_field(
+    "task_key",
+    None,
+    decode.optional(decode.string),
+  )
+  use task_url <- decode.optional_field(
+    "task_url",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(WorkflowTaskRefSnapshot(
+    run_id,
+    record.TaskRefFields(
+      task_backend_kind: task_backend_kind,
+      task_remote_id: task_remote_id,
+      task_key: task_key,
+      task_url: task_url,
+    ),
+  ))
 }
 
 fn step_attempt_snapshot_decoder() -> decode.Decoder(StepAttemptSnapshot) {
@@ -4125,6 +4460,14 @@ fn workflow_run_issue_ids(
       WorkflowRunSuperseded(issue_id: issue_id, ..) -> issue_id
     }
   })
+}
+
+fn workflow_task_ref_issue_ids(
+  task_refs: Dict(String, record.TaskRefFields),
+) -> List(String) {
+  task_refs
+  |> dict.values
+  |> list.map(fn(task_ref) { task_ref.task_remote_id })
 }
 
 fn command_issue_ids(commands: Dict(String, CommandStatus)) -> List(String) {
