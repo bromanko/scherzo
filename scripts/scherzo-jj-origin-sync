@@ -1,0 +1,111 @@
+#!/bin/sh
+set -eu
+
+fail() {
+  printf 'scherzo-jj-origin-sync: %s\n' "$*" >&2
+  exit 1
+}
+
+remote=${SCHERZO_ORIGIN_SYNC_REMOTE:-origin}
+branch=${SCHERZO_ORIGIN_SYNC_BRANCH:-main}
+destination=${SCHERZO_ORIGIN_SYNC_DESTINATION:-${branch}@${remote}}
+stack_revset=${SCHERZO_ORIGIN_SYNC_REBASE_REVSET:-${destination}..@}
+
+[ -n "$remote" ] || fail "SCHERZO_ORIGIN_SYNC_REMOTE must not be empty"
+[ -n "$branch" ] || fail "SCHERZO_ORIGIN_SYNC_BRANCH must not be empty"
+[ -n "$destination" ] || fail "SCHERZO_ORIGIN_SYNC_DESTINATION must not be empty"
+[ -n "$stack_revset" ] || fail "SCHERZO_ORIGIN_SYNC_REBASE_REVSET must not be empty"
+
+repo_root=${SCHERZO_REPO_ROOT:-}
+if [ -z "$repo_root" ]; then
+  if [ -n "${SCHERZO_CONFIG_DIR:-}" ]; then
+    repo_root=$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P) \
+      || fail "could not resolve repository root from SCHERZO_CONFIG_DIR"
+  else
+    repo_root=$(jj root 2>/dev/null) \
+      || fail "SCHERZO_REPO_ROOT is unset and jj root failed"
+  fi
+fi
+
+[ -d "$repo_root" ] || fail "repository root is not a directory: $repo_root"
+cd "$repo_root" || fail "could not enter repository root: $repo_root"
+[ -d .jj ] || fail "repository root is not a jj working copy: $repo_root"
+
+printf 'ORIGIN_SYNC_REMOTE=%s\n' "$remote"
+printf 'ORIGIN_SYNC_BRANCH=%s\n' "$branch"
+printf 'ORIGIN_SYNC_DESTINATION=%s\n' "$destination"
+printf 'ORIGIN_SYNC_REBASE_REVSET=%s\n' "$stack_revset"
+
+printf 'ORIGIN_SYNC_STEP=fetch\n'
+fetch_attempt=1
+while ! jj git fetch --remote "$remote"; do
+  case "$fetch_attempt" in
+    1)
+      printf 'ORIGIN_SYNC_STEP=fetch_retry\n'
+      sleep 2
+      fetch_attempt=2
+      ;;
+    *)
+      printf 'ORIGIN_SYNC_STATUS=fetch_failed\n'
+      exit 1
+      ;;
+  esac
+done
+
+if ! jj log -r "$destination" --no-graph -T commit_id --color=never >/dev/null 2>&1; then
+  printf 'ORIGIN_SYNC_STATUS=destination_missing\n'
+  printf 'ORIGIN_SYNC_MESSAGE=destination revision not found after fetch: %s\n' "$destination"
+  exit 1
+fi
+
+printf 'ORIGIN_SYNC_STEP=inspect_working_copy\n'
+if ! current_conflicts=$(jj log -r 'conflicts() & (@)' --no-graph -T 'change_id.short() ++ "\n"' --color=never); then
+  printf 'ORIGIN_SYNC_STATUS=conflict_inspection_failed\n'
+  exit 1
+fi
+
+if [ -n "$current_conflicts" ]; then
+  printf 'ORIGIN_SYNC_STATUS=blocked_existing_conflicts\n'
+  printf 'ORIGIN_SYNC_MESSAGE=fetch completed; current working-copy change already has jj conflicts and needs manual attention\n'
+  printf 'ORIGIN_SYNC_CONFLICTED_CHANGES:\n'
+  printf '%s\n' "$current_conflicts"
+  exit 1
+fi
+
+if ! changed_files=$(jj diff -r @ --name-only --color=never); then
+  printf 'ORIGIN_SYNC_STATUS=working_copy_inspection_failed\n'
+  exit 1
+fi
+
+if [ -n "$changed_files" ]; then
+  printf 'ORIGIN_SYNC_STATUS=skipped_dirty_working_copy\n'
+  printf 'ORIGIN_SYNC_MESSAGE=fetch completed; skipped auto-rebase because @ has file changes\n'
+  printf 'ORIGIN_SYNC_CHANGED_FILES:\n'
+  printf '%s\n' "$changed_files"
+  exit 0
+fi
+
+printf 'ORIGIN_SYNC_STEP=rebase\n'
+if ! jj rebase -r "$stack_revset" -d "$destination" --color=never; then
+  printf 'ORIGIN_SYNC_STATUS=rebase_failed\n'
+  printf 'ORIGIN_SYNC_MESSAGE=jj rebase failed; inspect jj op log and consider jj undo\n'
+  exit 1
+fi
+
+conflict_revset="conflicts() & (${destination}..@)"
+if ! conflicted_changes=$(jj log -r "$conflict_revset" --no-graph -T 'change_id.short() ++ "\n"' --color=never); then
+  printf 'ORIGIN_SYNC_STATUS=conflict_inspection_failed\n'
+  printf 'ORIGIN_SYNC_MESSAGE=rebase completed but conflict inspection failed; inspect jj status manually\n'
+  exit 1
+fi
+
+if [ -n "$conflicted_changes" ]; then
+  printf 'ORIGIN_SYNC_STATUS=rebased_with_conflicts\n'
+  printf 'ORIGIN_SYNC_MESSAGE=auto-rebase completed but left jj conflicts; inspect jj status or run jj undo\n'
+  printf 'ORIGIN_SYNC_CONFLICTED_CHANGES:\n'
+  printf '%s\n' "$conflicted_changes"
+  exit 1
+fi
+
+printf 'ORIGIN_SYNC_STATUS=rebased_clean\n'
+printf 'ORIGIN_SYNC_MESSAGE=fetch completed and empty working-copy stack was rebased onto %s\n' "$destination"

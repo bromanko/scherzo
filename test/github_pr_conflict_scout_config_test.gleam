@@ -52,3 +52,29 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
       "research",
     ]
 }
+
+pub fn checked_in_origin_sync_schedule_loads_test() {
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(".scherzo/scherzo.yaml"), env)
+
+  assert dict.has_key(bundle.orchestrator.routing.workflows, "origin-sync")
+  let assert Ok(dag) = dict.get(bundle.workflows, "origin-sync")
+  assert dag.id == "origin-sync"
+  assert dag.workspace_profile == Some("noop")
+  let assert [step] = dag.steps
+  assert step.id == "sync_origin"
+  assert step.workspace.name == "main"
+  let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
+  assert timeout_ms == Some(300_000)
+  assert run
+    == "repo_root=${SCHERZO_REPO_ROOT:-$(cd \"$SCHERZO_CONFIG_DIR/..\" && pwd -P)}; \"$repo_root/scripts/scherzo-jj-origin-sync\""
+
+  let assert Ok(job) =
+    list.find(bundle.orchestrator.scheduled_jobs, fn(job) {
+      job.id == "origin-sync"
+    })
+  assert job.workflow == "origin-sync"
+  assert job.enabled == True
+  assert job.every_ms == 900_000
+  assert job.catch_up == False
+}

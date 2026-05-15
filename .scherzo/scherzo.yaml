@@ -22,6 +22,11 @@ workspace:
         command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"
         lifecycle: [create, before-step, after-step, remove]
         timeout_ms: 60000
+    noop:
+      driver:
+        command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop"
+        lifecycle: [create, before-step, after-step, remove]
+        timeout_ms: 60000
 agent:
   # Allow up to four dogfood agents to run in parallel. Set to 0 to pause new
   # dispatch while preserving workflow reload and running-worker reconciliation.
@@ -97,6 +102,9 @@ handoff:
       github-pr-conflict-scout:
         produces_reviewable_artifacts: false
         requires_review: false
+      origin-sync:
+        produces_reviewable_artifacts: false
+        requires_review: false
 routing:
   workflow_label_prefix: "workflow:"
   require_exactly_one_workflow_label: true
@@ -108,6 +116,7 @@ routing:
     execplan-implementation: workflows/execplan-implementation.yaml
     merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
     github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
+    origin-sync: workflows/origin-sync.yaml
 scheduled_jobs:
   - id: github-pr-conflict-scout
     workflow: github-pr-conflict-scout
@@ -121,6 +130,19 @@ scheduled_jobs:
         state: Triage
         labels:
           - job:github-pr-conflict-scout
+        dedupe: open_issue_per_job
+  - id: origin-sync
+    workflow: origin-sync
+    enabled: true
+    every: 15m
+    overlap: skip
+    catch_up: false
+    on_failure:
+      linear:
+        enabled: true
+        state: Triage
+        labels:
+          - job:origin-sync
         dedupe: open_issue_per_job
 artifact_limits:
   command_stream_max_chars: 20000
