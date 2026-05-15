@@ -22,6 +22,7 @@ import scherzo/session/tokens as session_tokens
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/tracker
+import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
@@ -226,12 +227,8 @@ fn dependencies(
   ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
-    make_tracker: fn(_) { client },
-    make_handoff: fn(_, _) { handoff.disabled_client() },
-    make_linear_commands: fn(_) { disabled_linear_commands() },
-    make_triage: fn(_, _) { linear_triage.disabled_client() },
-    make_scheduled_failure_reporter: fn(_) {
-      scheduled_failure_reporter.disabled_client()
+    make_tracker_adapter: fn(_) {
+      adapter_legacy.adapter_from_legacy_client(client, "linear")
     },
     workflow_run_dependencies: workflow_deps_from_agent(agent_runner),
     cleanup: fn(_, _, _) { Ok(Nil) },

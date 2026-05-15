@@ -12,6 +12,7 @@ import scherzo/path
 import scherzo/session/hub
 import scherzo/signal
 import scherzo/tracker
+import scherzo/tracker/adapter_legacy
 import simplifile
 import test_async
 
@@ -88,9 +89,9 @@ fn daemon_dependencies(
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     ..daemon.default_dependencies(),
-    make_tracker: fn(_) { empty_tracker() },
-    make_handoff: fn(_, _) { handoff.disabled_client() },
-    make_linear_commands: fn(_) { empty_command_client() },
+    make_tracker_adapter: fn(_) {
+      adapter_legacy.adapter_from_legacy_client(empty_tracker(), "linear")
+    },
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, fields, _) {
       process.send(log_subject, daemon_log_value(event, fields))

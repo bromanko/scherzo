@@ -1,8 +1,6 @@
 import gleam/option.{type Option}
 import scherzo/agent/types as agent_types
 import scherzo/control/command
-import scherzo/handoff
-
 import scherzo/log
 import scherzo/orchestrator/reason
 import scherzo/orchestrator/state as orchestrator_state
@@ -10,6 +8,8 @@ import scherzo/session/event as session_event
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
 import scherzo/state/record
+import scherzo/task
+import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_policy
 
@@ -21,9 +21,9 @@ pub type Effect {
   MarkPollInFlight(generation: Int)
   ScheduleNextPoll
   FetchCandidates(generation: Int)
-  FetchLinearCommands(
+  FetchRemoteCommands(
     generation: Int,
-    issue_ids: List(String),
+    task_refs: List(task.TaskRef),
     candidates: List(tracker_issue.Issue),
     dispatch_after: Bool,
   )
@@ -66,12 +66,14 @@ pub type Effect {
     parked: orchestrator_state.ParkedEntry,
     source_run_id: Option(String),
   )
-  ReplayLinearCommandAck(
-    issue_id: String,
-    source_comment_id: String,
+  ReplayRemoteCommandAck(
+    backend_kind: String,
+    task_remote_id: String,
+    event_id: String,
     body: String,
+    outbox_kind: String,
   )
-  ReportPark(report: handoff.ParkReport)
+  ReportPark(report: adapter.ParkReport)
   StopWorker(identity: WorkerIdentity, reason: session_reason.WorkerExitReason)
   StopWorkerAfterIssueRefresh(
     identity: WorkerIdentity,
@@ -96,10 +98,12 @@ pub type Effect {
     request: OperatorCommandRequest,
     result: command.CommandResult,
   )
-  PostLinearCommandAck(
-    issue_id: String,
-    source_comment_id: String,
+  PostRemoteCommandAck(
+    backend_kind: String,
+    task_remote_id: String,
+    event_id: String,
     body: String,
+    outbox_kind: String,
   )
   ReportParkEffect(
     issue_id: String,
@@ -128,18 +132,22 @@ pub type LedgerPolicy {
 pub type LedgerContinuation {
   NoLedgerContinuation
   SpawnClaimedWorker(issue_id: String, run_id: String, session_id: String)
-  ApplyLinearCommand(request: OperatorCommandRequest)
-  EnqueueLinearCommandAck(
-    issue_id: String,
-    source_comment_id: String,
+  ApplyRemoteCommand(request: OperatorCommandRequest)
+  EnqueueRemoteCommandAck(
+    backend_kind: String,
+    task_remote_id: String,
+    event_id: String,
     body: String,
+    outbox_kind: String,
   )
-  PublishLinearCommandAck(
-    issue_id: String,
-    source_comment_id: String,
+  PublishRemoteCommandAck(
+    backend_kind: String,
+    task_remote_id: String,
+    event_id: String,
     body: String,
+    outbox_kind: String,
   )
-  RemoveLinearCommandAck(issue_id: String, source_comment_id: String)
+  RemoveRemoteCommandAck(task_remote_id: String, event_id: String)
   ReportParkAfterLedger(
     issue_id: String,
     issue_identifier: String,
@@ -151,9 +159,10 @@ pub type LedgerContinuation {
 
 pub type OperatorCommandSource {
   LocalOperatorCommand
-  LinearOperatorCommand(
-    comment_id: String,
-    issue_id: String,
+  RemoteOperatorCommand(
+    backend_kind: String,
+    event_id: String,
+    task_remote_id: String,
     command_name: String,
     excerpt: String,
   )
@@ -167,8 +176,8 @@ pub type OperatorCommandRequest {
   )
 }
 
-pub type LinearCommandCompletion {
-  LinearCommandCompletion(
+pub type RemoteCommandCompletion {
+  RemoteCommandCompletion(
     result: command.CommandResult,
     message_excerpt: String,
     ack_body: Option(String),

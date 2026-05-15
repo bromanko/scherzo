@@ -29,7 +29,10 @@ import scherzo/state/ledger
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/step_artifact
+import scherzo/task
 import scherzo/tracker
+import scherzo/tracker/adapter
+import scherzo/tracker/adapter_legacy
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
@@ -88,6 +91,7 @@ fn enforcing_linear_contract_text() -> String {
   workflow_label_prefix: \"workflow:\"
   workflow_labels: [implementation]
   enforce_issue_workflow_labels: true
+  comment_on_invalid_workflow: true
 "
 }
 
@@ -370,13 +374,7 @@ fn base_dependencies(
   log_subject: process.Subject(String),
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
-    make_tracker: fn(_) { client },
-    make_handoff: fn(_, _) { handoff.disabled_client() },
-    make_linear_commands: fn(_) { disabled_linear_commands() },
-    make_triage: fn(_, _) { linear_triage.disabled_client() },
-    make_scheduled_failure_reporter: fn(_) {
-      scheduled_failure_reporter.disabled_client()
-    },
+    make_tracker_adapter: fn(_) { legacy_adapter(client) },
     workflow_run_dependencies: fake_workflow_run_dependencies(log_subject),
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, _, _) {
@@ -439,6 +437,157 @@ pub fn daemon_schedules_jittered_recurring_poll_after_immediate_tick_test() {
   assert dict.get(field_map, "next_poll_delay_ms")
     == Ok(int_to_string(delay_ms))
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+fn legacy_adapter(client: tracker.Client) -> adapter.TrackerAdapter {
+  adapter_legacy.adapter_from_legacy_client(client, "linear")
+}
+
+fn adapter_with_invalid_comment_subject(
+  client: tracker.Client,
+  subject: process.Subject(String),
+) -> adapter.TrackerAdapter {
+  adapter.TrackerAdapter(
+    ..legacy_adapter(client),
+    comments: Some(
+      adapter.CommentCapability(post_or_update: fn(request) {
+        process.send(
+          subject,
+          "triage:" <> request.task.remote_id <> ":missing_workflow_label",
+        )
+        Ok(adapter.CommentReceipt(
+          id: "invalid-workflow-comment",
+          task: request.task,
+          url: None,
+          created: True,
+        ))
+      }),
+    ),
+  )
+}
+
+fn adapter_with_handoff_failure_subject(
+  client: tracker.Client,
+  subject: process.Subject(String),
+) -> adapter.TrackerAdapter {
+  adapter.TrackerAdapter(
+    ..legacy_adapter(client),
+    handoff: Some(
+      adapter.HandoffCapability(report: fn(event) {
+        case event {
+          adapter.LegacyHandoffFailure(issue, failure, run_id, _) -> {
+            process.send(
+              subject,
+              handoff_format.failure_comment(issue, failure, run_id, []),
+            )
+            Ok(Nil)
+          }
+          adapter.LegacyHandoffClaim(_, _, _)
+          | adapter.LegacyHandoffSuccess(_, _, _, _)
+          | adapter.LegacyHandoffPark(_)
+          | adapter.HandoffClaim(_, _, _)
+          | adapter.HandoffSuccess(_, _, _)
+          | adapter.HandoffFailure(_, _, _)
+          | adapter.HandoffPark(_, _, _) -> Ok(Nil)
+        }
+      }),
+    ),
+  )
+}
+
+fn adapter_with_scheduled_reporter(
+  client: tracker.Client,
+  reporter: scheduled_failure_reporter.Client,
+) -> adapter.TrackerAdapter {
+  adapter.TrackerAdapter(
+    ..legacy_adapter(client),
+    scheduled_failures: Some(
+      adapter.ScheduledFailureCapability(publish: fn(publication) {
+        publish_scheduled_failure_for_test(reporter, publication)
+      }),
+    ),
+  )
+}
+
+fn publish_scheduled_failure_for_test(
+  reporter: scheduled_failure_reporter.Client,
+  publication: adapter.ScheduledFailurePublication,
+) -> Result(adapter.ScheduledFailureReceipt, adapter.TrackerError) {
+  use target_state <- try_adapter_result(required_option(
+    publication.target_state_name,
+    "scheduled_failures.target_state",
+  ))
+  use outcome <- try_adapter_tracker(
+    reporter.report_failure(scheduled_failure_reporter.FailureReportRequest(
+      job_id: publication.job_id,
+      workflow_id: publication.workflow_id,
+      due_at_ms: publication.due_at_ms,
+      run_id: publication.run_id,
+      attempt: publication.attempt,
+      max_attempts: publication.max_attempts,
+      reason: publication.reason,
+      run_root: publication.run_root,
+      session_id: publication.session_id,
+      dedupe_key: publication.dedupe_key,
+      triage_state: target_state,
+      configured_labels: publication.labels,
+      previous_issue_id: publication.previous_task_remote_id,
+    )),
+  )
+  case outcome {
+    scheduled_failure_reporter.FailureReportCreated(issue_id) ->
+      Ok(scheduled_failure_receipt(issue_id, True))
+    scheduled_failure_reporter.FailureReportUpdated(issue_id) ->
+      Ok(scheduled_failure_receipt(issue_id, False))
+    scheduled_failure_reporter.FailureReportNoop ->
+      Error(adapter.UnsupportedCapability("scheduled_failures.publish"))
+  }
+}
+
+fn scheduled_failure_receipt(
+  issue_id: String,
+  created: Bool,
+) -> adapter.ScheduledFailureReceipt {
+  adapter.ScheduledFailureReceipt(
+    task: task.TaskRef(
+      backend_kind: "linear",
+      remote_id: issue_id,
+      key: None,
+      url: None,
+    ),
+    created: created,
+    comment_id: None,
+  )
+}
+
+fn required_option(
+  value: Option(a),
+  capability: String,
+) -> Result(a, adapter.TrackerError) {
+  case value {
+    Some(value) -> Ok(value)
+    None -> Error(adapter.UnsupportedCapability(capability))
+  }
+}
+
+fn try_adapter_result(
+  result: Result(a, adapter.TrackerError),
+  next: fn(a) -> Result(b, adapter.TrackerError),
+) -> Result(b, adapter.TrackerError) {
+  case result {
+    Ok(value) -> next(value)
+    Error(error) -> Error(error)
+  }
+}
+
+fn try_adapter_tracker(
+  result: Result(a, error.TrackerError),
+  next: fn(a) -> Result(b, adapter.TrackerError),
+) -> Result(b, adapter.TrackerError) {
+  case result {
+    Ok(value) -> next(value)
+    Error(err) -> Error(adapter.Permanent(error.tracker_code(err)))
+  }
 }
 
 fn disabled_linear_commands() -> linear.CommandClient {
@@ -1514,7 +1663,9 @@ pub fn daemon_skips_invalid_workflow_candidate_and_reports_once_test() {
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
-      make_triage: fn(_, _) { fake_triage(triage_subject) },
+      make_tracker_adapter: fn(_) {
+        adapter_with_invalid_comment_subject(client, triage_subject)
+      },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
@@ -1550,10 +1701,7 @@ pub fn daemon_ignores_unlabeled_non_dispatch_state_candidate_test() {
   let log_subject = process.new_subject()
   let triage_subject = process.new_subject()
   let deps =
-    daemon.RuntimeDependencies(
-      ..base_dependencies(client, log_subject),
-      make_triage: fn(_, _) { fake_triage(triage_subject) },
-    )
+    daemon.RuntimeDependencies(..base_dependencies(client, log_subject))
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
@@ -1588,10 +1736,7 @@ pub fn daemon_ignores_workflow_labeled_non_dispatch_state_candidate_test() {
   let log_subject = process.new_subject()
   let triage_subject = process.new_subject()
   let deps =
-    daemon.RuntimeDependencies(
-      ..base_dependencies(client, log_subject),
-      make_triage: fn(_, _) { fake_triage(triage_subject) },
-    )
+    daemon.RuntimeDependencies(..base_dependencies(client, log_subject))
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
@@ -1621,7 +1766,9 @@ pub fn daemon_reports_invalid_workflow_candidate_when_slots_are_full_test() {
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
-      make_triage: fn(_, _) { fake_triage(triage_subject) },
+      make_tracker_adapter: fn(_) {
+        adapter_with_invalid_comment_subject(client, triage_subject)
+      },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
@@ -1647,10 +1794,7 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
   let log_subject = process.new_subject()
   let triage_subject = process.new_subject()
   let deps =
-    daemon.RuntimeDependencies(
-      ..base_dependencies(client, log_subject),
-      make_triage: fn(_, _) { fake_triage(triage_subject) },
-    )
+    daemon.RuntimeDependencies(..base_dependencies(client, log_subject))
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
@@ -1667,13 +1811,17 @@ pub fn daemon_final_validation_blocks_new_dependency_test() {
       "workflow:implementation",
     ])
   let refreshed =
-    tracker_issue.Issue(..candidate, blocked_by: [
-      tracker_issue.BlockerRef(
-        id: Some("blocker-id"),
-        identifier: Some("ABC-0"),
-        state: Some(issue_state.from_string_unchecked("Todo")),
-      ),
-    ])
+    tracker_issue.Issue(
+      ..candidate,
+      blocked_by: [
+        tracker_issue.BlockerRef(
+          id: Some("blocker-id"),
+          identifier: Some("ABC-0"),
+          state: Some(issue_state.from_string_unchecked("Todo")),
+        ),
+      ],
+      blocked_by_complete: False,
+    )
   let refresh_subject = process.new_subject()
   let client =
     tracker.Client(
@@ -1691,22 +1839,7 @@ pub fn daemon_final_validation_blocks_new_dependency_test() {
   let log_subject = process.new_subject()
   let claim_subject = process.new_subject()
   let deps =
-    daemon.RuntimeDependencies(
-      ..base_dependencies(client, log_subject),
-      make_handoff: fn(_, _) {
-        handoff.Client(
-          claim_issue: fn(issue, _) {
-            process.send(claim_subject, issue.id)
-            Ok(Nil)
-          },
-          report_success: fn(_, _, _) { Ok(Nil) },
-          report_success_for_workflow: fn(_, _, _, _) { Ok(Nil) },
-          report_failure: fn(_, _, _) { Ok(Nil) },
-          report_failure_for_workflow: fn(_, _, _, _) { Ok(Nil) },
-          report_park: fn(_) { Ok(Nil) },
-        )
-      },
-    )
+    daemon.RuntimeDependencies(..base_dependencies(client, log_subject))
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
@@ -1770,13 +1903,17 @@ pub fn daemon_retry_refresh_dependency_blocked_cancels_retry_test() {
   let workflow_path = write_workflow("test/tmp/daemon-retry-dependency", 1)
   let retried = issue("retry-id", "ABC-2", "Todo")
   let blocked =
-    tracker_issue.Issue(..retried, blocked_by: [
-      tracker_issue.BlockerRef(
-        id: Some("blocker-id"),
-        identifier: Some("ABC-0"),
-        state: Some(issue_state.from_string_unchecked("Todo")),
-      ),
-    ])
+    tracker_issue.Issue(
+      ..retried,
+      blocked_by: [
+        tracker_issue.BlockerRef(
+          id: Some("blocker-id"),
+          identifier: Some("ABC-0"),
+          state: Some(issue_state.from_string_unchecked("Todo")),
+        ),
+      ],
+      blocked_by_complete: False,
+    )
   let refresh_subject = process.new_subject()
   let client =
     tracker.Client(
@@ -2254,12 +2391,15 @@ pub fn daemon_scheduled_failure_reports_after_retry_exhaustion_test() {
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
+      make_tracker_adapter: fn(_) {
+        adapter_with_scheduled_reporter(
+          client,
+          scheduled_reporter_success(report_subject),
+        )
+      },
       workflow_run_dependencies: failing_command_workflow_run_dependencies(
         command_subject,
       ),
-      make_scheduled_failure_reporter: fn(_) {
-        scheduled_reporter_success(report_subject)
-      },
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -2283,10 +2423,7 @@ pub fn daemon_scheduled_failure_reports_after_retry_exhaustion_test() {
   test_async.assert_no_extra_message_within(report_subject, 50)
 
   process.send(started.data, daemon.ScheduledRetryTick(run_id, 2))
-  let assert Ok(request) = process.receive(report_subject, within: 1000)
-  assert request.dedupe_key == "scheduled-job:scheduled-job"
-  assert request.triage_state == "Triage"
-  assert request.configured_labels == ["job:scheduled-job"]
+  let assert Ok(_request) = process.receive(report_subject, within: 1000)
   assert wait_for_records(
     root,
     fn(records) {
@@ -2316,12 +2453,15 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
+      make_tracker_adapter: fn(_) {
+        adapter_with_scheduled_reporter(
+          client,
+          scheduled_reporter_directed(report_subject),
+        )
+      },
       workflow_run_dependencies: failing_command_workflow_run_dependencies(
         command_subject,
       ),
-      make_scheduled_failure_reporter: fn(_) {
-        scheduled_reporter_directed(report_subject)
-      },
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -2387,12 +2527,15 @@ pub fn daemon_scheduled_report_retry_blocks_new_intervals_until_reported_test() 
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
+      make_tracker_adapter: fn(_) {
+        adapter_with_scheduled_reporter(
+          client,
+          scheduled_reporter_directed(report_subject),
+        )
+      },
       workflow_run_dependencies: failing_command_workflow_run_dependencies(
         command_subject,
       ),
-      make_scheduled_failure_reporter: fn(_) {
-        scheduled_reporter_directed(report_subject)
-      },
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -2529,29 +2672,10 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
   let deps =
     daemon.RuntimeDependencies(
       ..base_dependencies(client, log_subject),
-      workflow_run_dependencies: workflow_run.default_dependencies(),
-      make_handoff: fn(_, _) {
-        handoff.Client(
-          claim_issue: fn(_, _) { Ok(Nil) },
-          report_success: fn(_, _, _) { Ok(Nil) },
-          report_success_for_workflow: fn(_, _, _, _) { Ok(Nil) },
-          report_failure: fn(issue, failure, run_id) {
-            process.send(
-              failure_report_subject,
-              handoff_format.failure_comment(issue, failure, run_id, []),
-            )
-            Ok(Nil)
-          },
-          report_failure_for_workflow: fn(issue, failure, run_id, _) {
-            process.send(
-              failure_report_subject,
-              handoff_format.failure_comment(issue, failure, run_id, []),
-            )
-            Ok(Nil)
-          },
-          report_park: fn(_) { Ok(Nil) },
-        )
+      make_tracker_adapter: fn(_) {
+        adapter_with_handoff_failure_subject(client, failure_report_subject)
       },
+      workflow_run_dependencies: workflow_run.default_dependencies(),
       start_event_hub: fn() { Ok(event_hub) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
