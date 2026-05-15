@@ -8,6 +8,7 @@ import scherzo/hash
 import scherzo/model_config
 import scherzo/path as scherzo_path
 import scherzo/structured_output_source
+import scherzo/workflow_contract
 import scherzo/workflow_dag
 import scherzo/workspace_driver_env
 import scherzo/workspace_profile
@@ -253,15 +254,22 @@ fn dag_to_json_with_schema_root(
         ),
       ])
   }
-  json.object(
+  let fields =
     list.append(prefix, [
       #("max_parallel_steps", json.int(dag.max_parallel_steps)),
       #(
         "steps",
         json.array(sorted_steps(dag.steps), of: step_to_json(_, schema_root)),
       ),
-    ]),
-  )
+    ])
+  let fields = case dag.contract {
+    None -> fields
+    Some(contract) ->
+      list.append(fields, [
+        #("contract", workflow_contract.contract_to_canonical_json(contract)),
+      ])
+  }
+  json.object(fields)
 }
 
 fn sorted_steps(

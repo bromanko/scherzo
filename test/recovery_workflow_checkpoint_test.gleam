@@ -139,13 +139,22 @@ fn write_artifact(
   step_id: String,
   artifact: step_artifact.StepArtifact,
 ) -> artifact_store.ArtifactRef {
+  write_artifact_attempt(scenario, step_id, 1, artifact)
+}
+
+fn write_artifact_attempt(
+  scenario: RecoveryScenario,
+  step_id: String,
+  attempt_index: Int,
+  artifact: step_artifact.StepArtifact,
+) -> artifact_store.ArtifactRef {
   let assert Ok(stored) =
     artifact_store.write_step_artifact(
       scenario.store,
       scenario.run_id,
       "workflow-alpha",
       step_id,
-      1,
+      attempt_index,
       artifact,
     )
   stored
@@ -224,6 +233,26 @@ fn given_step_finished(
   stored: artifact_store.ArtifactRef,
   workspace_name: String,
 ) -> record.LedgerRecord {
+  given_step_finished_attempt(
+    scenario,
+    sequence,
+    step_id,
+    1,
+    status,
+    stored,
+    workspace_name,
+  )
+}
+
+fn given_step_finished_attempt(
+  scenario: RecoveryScenario,
+  sequence: Int,
+  step_id: String,
+  attempt_index: Int,
+  status: String,
+  stored: artifact_store.ArtifactRef,
+  workspace_name: String,
+) -> record.LedgerRecord {
   record.new(
     sequence,
     sequence,
@@ -231,7 +260,7 @@ fn given_step_finished(
       scenario.run_id,
       "workflow-alpha",
       step_id,
-      1,
+      attempt_index,
       status,
       stored.ref,
       stored.sha256,
@@ -239,6 +268,27 @@ fn given_step_finished(
       workspace_path(scenario, workspace_name),
       0,
       0,
+    ),
+  )
+}
+
+fn given_step_superseded(
+  scenario: RecoveryScenario,
+  sequence: Int,
+  step_id: String,
+  attempt_index: Int,
+  superseded_by_attempt_index: Int,
+) -> record.LedgerRecord {
+  record.new(
+    sequence,
+    sequence,
+    record.StepAttemptSuperseded(
+      scenario.run_id,
+      "workflow-alpha",
+      step_id,
+      attempt_index,
+      superseded_by_attempt_index,
+      "retry_accepted",
     ),
   )
 }
@@ -383,6 +433,8 @@ pub fn old_workflow_checkpoint_records_recover_active_candidate_test() {
       issue_fingerprint: "fp-old",
       observed_updated_at_ms: 10,
       run_root: "test/tmp/run-root",
+      contract_input_manifest: None,
+      contract_output_manifest: None,
       attempts: [
         projection.StepAttemptRunning(
           run_id: "run-1",
@@ -406,12 +458,102 @@ fn decode_checkpoint_record(line: String) -> record.LedgerRecord {
   decoded
 }
 
+pub fn workflow_checkpoint_candidates_carry_contract_manifest_refs_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "workflow-started",
+        1,
+        record.WorkflowRunStarted(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-1",
+          issue_id: "issue-1",
+          issue_identifier: "LIV-1",
+          issue_fingerprint: "issue-fp",
+          observed_updated_at_ms: 1,
+          run_root: "test/tmp/run-root",
+        ),
+      ),
+      record.with_id(
+        "inputs",
+        2,
+        record.WorkflowRunInputsRecorded(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-1",
+          artifact_ref: "runs/run-1/inputs.v1.json",
+          artifact_sha256: "sha-in",
+          artifact_bytes: 10,
+        ),
+      ),
+      record.with_id(
+        "outputs",
+        3,
+        record.WorkflowRunOutputsRecorded(
+          run_id: "run-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-1",
+          artifact_ref: "runs/run-1/outputs.v1.json",
+          artifact_sha256: "sha-out",
+          artifact_bytes: 20,
+        ),
+      ),
+    ])
+
+  let assert [candidate] = recovery.workflow_candidates(folded)
+  let assert Some(input_manifest) = candidate.contract_input_manifest
+  assert input_manifest.ref == "runs/run-1/inputs.v1.json"
+  let assert Some(output_manifest) = candidate.contract_output_manifest
+  assert output_manifest.sha256 == "sha-out"
+}
+
 pub fn workflow_recovery_restores_finished_artifacts_test() {
   let setup = finished_a_running_b("test/tmp/recovery-workflow-artifact")
   let resumption = expect_single_resumption(setup.finalized)
 
   expect_recovered_artifact(resumption, "a", setup.artifact)
   assert setup.finalized.warnings == []
+}
+
+pub fn workflow_recovery_uses_final_attempt_artifact_and_ignores_superseded_test() {
+  let scenario =
+    recovery_scenario("test/tmp/recovery-workflow-final-attempt", "run-1")
+  ensure_workspace(scenario, "main")
+  let superseded_artifact = command_artifact("a", 0, "superseded", "")
+  let final_artifact = command_artifact("a", 0, "accepted", "")
+  let superseded_stored =
+    write_artifact_attempt(scenario, "a", 1, superseded_artifact)
+  let final_stored = write_artifact_attempt(scenario, "a", 2, final_artifact)
+  let folded =
+    projection.fold([
+      given_workflow_started(scenario, 1),
+      given_step_finished_attempt(
+        scenario,
+        2,
+        "a",
+        1,
+        "completed",
+        superseded_stored,
+        "main",
+      ),
+      given_step_superseded(scenario, 3, "a", 1, 2),
+      given_step_finished_attempt(
+        scenario,
+        4,
+        "a",
+        2,
+        "completed",
+        final_stored,
+        "main",
+      ),
+    ])
+
+  let finalized = finalize_resume(scenario, folded, agent_dag())
+  let resumption = expect_single_resumption(finalized)
+
+  expect_recovered_artifact(resumption, "a", final_artifact)
+  expect_next_attempt(resumption, "a", 3)
 }
 
 pub fn workflow_recovery_restores_finished_workspace_metadata_test() {

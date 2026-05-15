@@ -2,6 +2,7 @@ import gleam/option.{None, Some}
 import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/structured_output_source
+import scherzo/workflow_contract
 import scherzo/workflow_dag
 
 fn parse_ok(source: String) -> workflow_dag.WorkflowDag {
@@ -24,6 +25,7 @@ pub fn parses_minimal_workflow_dag_test() {
   assert dag.workspace_profile == None
   assert dag.workspace_capabilities == []
   assert dag.max_parallel_steps == 1
+  assert dag.contract == None
   let assert [step] = dag.steps
   assert step.id == "main"
   assert step.depends_on == []
@@ -418,4 +420,55 @@ pub fn accepts_generic_pi_tool_call_with_matching_json_schema_validator_test() {
     == Some(
       ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
     )
+}
+
+pub fn validates_contract_output_step_sources_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\nsteps:\n  - id: collect_findings\n    kind: command\n    run: printf '# Findings'\n",
+    )
+  let assert Some(contract) = dag.contract
+  let assert [output] = contract.outputs
+  assert output.source
+    == Some(workflow_contract.StepField(
+      "collect_findings",
+      workflow_contract.Stdout,
+    ))
+}
+
+pub fn rejects_contract_output_unknown_step_test() {
+  assert error_code(
+      "version: 1\nid: research\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: missing\n        field: stdout\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo ok\n",
+    )
+    == "contract_output_unknown_step"
+}
+
+pub fn rejects_contract_final_response_on_command_test() {
+  assert error_code(
+      "version: 1\nid: research\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: final_response\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo ok\n",
+    )
+    == "contract_output_field_invalid_for_step"
+}
+
+pub fn validates_contract_structured_output_sources_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\nsteps:\n  - id: summarize_change\n    kind: agent\n    prompt: prompts/summarize.md\n    structured_output:\n      artifact_name: code_change\n",
+    )
+  let assert Some(contract) = dag.contract
+  let assert [structured, inline] = contract.outputs
+  assert structured.source
+    == Some(workflow_contract.StructuredOutput(
+      "summarize_change",
+      "code_change",
+    ))
+  assert inline.source
+    == Some(workflow_contract.InlineJson("summarize_change", "code_change"))
+}
+
+pub fn rejects_contract_structured_output_missing_artifact_test() {
+  assert error_code(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\nsteps:\n  - id: summarize_change\n    kind: agent\n    prompt: prompts/summarize.md\n    structured_output:\n      artifact_name: other_change\n",
+    )
+    == "contract_output_structured_artifact_missing"
 }

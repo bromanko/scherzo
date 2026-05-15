@@ -814,3 +814,46 @@ pub fn workflow_fingerprint_changes_for_generic_pi_tool_call_schema_contract_tes
     "parameters_schema_path",
   )
 }
+
+pub fn workflow_fingerprint_changes_for_contract_type_test() {
+  let exec_plan =
+    parse(
+      "version: 1\nid: draft\ncontract:\n  version: 1\n  outputs:\n    exec_plan:\n      type: exec_plan\n      source:\n        step: draft_execplan\n        field: final_response\nsteps:\n  - id: draft_execplan\n    kind: agent\n    prompt: prompts/draft.md\n",
+    )
+  let markdown =
+    parse(
+      "version: 1\nid: draft\ncontract:\n  version: 1\n  outputs:\n    exec_plan:\n      type: document.markdown\n      source:\n        step: draft_execplan\n        field: final_response\nsteps:\n  - id: draft_execplan\n    kind: agent\n    prompt: prompts/draft.md\n",
+    )
+  assert workflow_fingerprint.for_dag("draft", exec_plan)
+    != workflow_fingerprint.for_dag("draft", markdown)
+}
+
+pub fn workflow_fingerprint_contract_map_order_is_stable_test() {
+  let first =
+    parse(
+      "version: 1\nid: research\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\n    attachments: artifact[]\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo findings\n",
+    )
+  let reordered =
+    parse(
+      "version: 1\nid: research\ncontract:\n  outputs:\n    findings:\n      source:\n        field: stdout\n        step: collect_findings\n      type: document.markdown\n  inputs:\n    attachments: artifact[]\n    prompt:\n      source: issue_context\n      type: text\n  version: 1\nsteps:\n  - run: echo findings\n    kind: command\n    id: collect_findings\n",
+    )
+  assert workflow_fingerprint.for_dag("research", first)
+    == workflow_fingerprint.for_dag("research", reordered)
+}
+
+pub fn workflow_fingerprint_changes_for_contract_source_kind_test() {
+  let issue_context =
+    parse(
+      "version: 1\nid: research\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo findings\n",
+    )
+  let scheduled_context =
+    parse(
+      "version: 1\nid: research\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: scheduled_context\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo findings\n",
+    )
+  assert workflow_fingerprint.for_dag("research", issue_context)
+    != workflow_fingerprint.for_dag("research", scheduled_context)
+  assert string.contains(
+    workflow_fingerprint.canonical_input(issue_context),
+    "issue_context",
+  )
+}

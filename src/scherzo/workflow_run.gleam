@@ -11,6 +11,7 @@ import scherzo/agent/worker_command
 import scherzo/command_step
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/json_value
 import scherzo/log
 import scherzo/model_config
 import scherzo/orchestrator/schedule_core
@@ -28,12 +29,15 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
+import scherzo/workflow_contract
+import scherzo/workflow_contract_manifest as contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workflow_scheduler
 import scherzo/workflow_structured_retry
 import scherzo/workspace_profile
 import scherzo/workspace_run
+import simplifile
 
 pub type WorkflowRunSuccess {
   WorkflowRunSuccess(
@@ -79,6 +83,33 @@ pub type StepAttemptContext {
   StepAttemptContext(step_id: String, next_attempt: Int)
 }
 
+pub type ContractRunValues {
+  ContractRunValues(
+    inputs: Dict(String, contract_manifest.ManifestValue),
+    context: Dict(String, contract_manifest.ManifestValue),
+  )
+}
+
+pub type ScheduledInvocationContext {
+  ScheduledInvocationContext(
+    job_id: String,
+    workflow_id: String,
+    due_at: String,
+    started_at: String,
+    run_id: String,
+    attempt: Int,
+  )
+}
+
+pub type RunInvocation {
+  RunInvocation(
+    run_id: String,
+    workflow_fingerprint: String,
+    supplied_contract_values: ContractRunValues,
+    scheduled_context: Option(ScheduledInvocationContext),
+  )
+}
+
 pub type RecoveredRunContext {
   RecoveredRunContext(
     workflow_id: String,
@@ -94,11 +125,13 @@ pub type RecoveredRunContext {
     turns: Int,
     warnings: List(String),
     pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+    contract_inputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
+    contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
   )
 }
 
 pub type RunContext {
-  FreshRun(run_id: String)
+  FreshRun(RunInvocation)
   RecoveredRun(RecoveredRunContext)
 }
 
@@ -193,6 +226,8 @@ pub type ResumeState {
     next_attempt_indexes: Dict(String, Int),
     run_root: Option(String),
     pi_session_continuations: Dict(String, workflow_attempt.PiContinuation),
+    contract_inputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
+    contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
   )
 }
 
@@ -325,6 +360,10 @@ fn effective_config_secrets(
   }
 }
 
+pub fn empty_contract_run_values() -> ContractRunValues {
+  ContractRunValues(inputs: dict.new(), context: dict.new())
+}
+
 pub fn execute(
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
@@ -334,13 +373,43 @@ pub fn execute(
   run_id: String,
   dependencies: Dependencies,
 ) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  execute_with_contract_values(
+    issue,
+    dag,
+    orchestrator,
+    tracker_client,
+    secrets,
+    run_id,
+    empty_contract_run_values(),
+    dependencies,
+  )
+}
+
+pub fn execute_with_contract_values(
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  run_id: String,
+  supplied_contract_values: ContractRunValues,
+  dependencies: Dependencies,
+) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
   execute_with_context(
     issue,
     dag,
     orchestrator,
     tracker_client,
     secrets,
-    FreshRun(run_id),
+    FreshRun(RunInvocation(
+      run_id: run_id,
+      workflow_fingerprint: workflow_attempt.workflow_fingerprint(
+        dag,
+        orchestrator,
+      ),
+      supplied_contract_values: supplied_contract_values,
+      scheduled_context: None,
+    )),
     dependencies,
   )
 }
@@ -360,7 +429,22 @@ pub fn execute_scheduled(
     orchestrator,
     tracker_client,
     secrets,
-    FreshRun(scheduled.run_id),
+    FreshRun(RunInvocation(
+      run_id: scheduled.run_id,
+      workflow_fingerprint: workflow_attempt.workflow_fingerprint(
+        dag,
+        orchestrator,
+      ),
+      supplied_contract_values: empty_contract_run_values(),
+      scheduled_context: Some(ScheduledInvocationContext(
+        job_id: scheduled.job_id,
+        workflow_id: scheduled.workflow_id,
+        due_at: schedule_core.iso_utc(scheduled.due_at_ms),
+        started_at: schedule_core.iso_utc(scheduled.started_at_ms),
+        run_id: scheduled.run_id,
+        attempt: scheduled.attempt,
+      )),
+    )),
     scheduled_dependencies(scheduled, dependencies),
   )
 }
@@ -387,7 +471,10 @@ pub fn execute_with_resume(
     secrets,
     RecoveredRun(RecoveredRunContext(
       workflow_id: dag.id,
-      workflow_fingerprint: "",
+      workflow_fingerprint: workflow_attempt.workflow_fingerprint(
+        dag,
+        orchestrator,
+      ),
       run_id: run_id,
       run_root: run_root_value,
       scheduler_statuses: scheduler_state.statuses,
@@ -399,6 +486,8 @@ pub fn execute_with_resume(
       turns: 0,
       warnings: [],
       pi_session_continuations: resume.pi_session_continuations,
+      contract_inputs_recorded: resume.contract_inputs_recorded,
+      contract_outputs_recorded: resume.contract_outputs_recorded,
     )),
     dependencies,
   )
@@ -557,28 +646,64 @@ pub fn execute_with_context(
     Ok(profile) -> {
       let secrets = profile_redaction_secrets(profile, secrets)
       case context {
-        FreshRun(run_id) ->
-          loop(
-            issue,
-            dag,
-            orchestrator,
-            tracker_client,
-            secrets,
-            run_id,
-            False,
-            dependencies,
-            workflow_scheduler.init(dag),
-            dict.new(),
-            dict.new(),
-            None,
-            dict.new(),
-            session_tokens.zero_token_totals(),
-            None,
-            0,
-            True,
-            dict.new(),
-            profile,
-          )
+        FreshRun(invocation) ->
+          case
+            record_inputs_if_contracted(
+              issue,
+              dag,
+              orchestrator,
+              invocation,
+              dependencies,
+              profile,
+            )
+          {
+            Error(reason) -> {
+              ignore_secondary_checkpoint_result(
+                dependencies.checkpoint.workflow_finished(
+                  workflow_checkpoint.WorkflowFinished(
+                    run_id: invocation.run_id,
+                    workflow_id: dag.id,
+                    issue_id: issue.id,
+                    task_ref: task_ref(issue),
+                    outcome: "failed_fatal",
+                    token_total: 0,
+                    turns: 0,
+                  ),
+                ),
+              )
+              Error(WorkflowRunFailure(
+                reason: reason,
+                agent_reason: None,
+                artifacts: dict.new(),
+                run_root: None,
+                failed_step_id: None,
+              ))
+            }
+            Ok(Nil) ->
+              loop(
+                issue,
+                dag,
+                orchestrator,
+                tracker_client,
+                secrets,
+                invocation.run_id,
+                invocation.workflow_fingerprint,
+                None,
+                False,
+                dependencies,
+                workflow_scheduler.init(dag),
+                dict.new(),
+                dict.new(),
+                None,
+                dict.new(),
+                session_tokens.zero_token_totals(),
+                None,
+                0,
+                True,
+                dict.new(),
+                profile,
+              )
+          }
         RecoveredRun(recovered) ->
           case recovered.workflow_id != dag.id {
             True ->
@@ -591,45 +716,81 @@ pub fn execute_with_context(
               ))
             False ->
               case
-                workflow_scheduler.init_with_statuses(
+                record_recovered_inputs_if_contracted(
+                  issue,
                   dag,
-                  recovered.scheduler_statuses,
+                  orchestrator,
+                  recovered,
+                  dependencies,
+                  profile,
                 )
               {
-                Error(reason) ->
+                Error(reason) -> {
+                  ignore_secondary_checkpoint_result(
+                    dependencies.checkpoint.workflow_finished(
+                      workflow_checkpoint.WorkflowFinished(
+                        run_id: recovered.run_id,
+                        workflow_id: dag.id,
+                        issue_id: issue.id,
+                        task_ref: task_ref(issue),
+                        outcome: "failed_fatal",
+                        token_total: recovered.token_totals.total,
+                        turns: recovered.turns,
+                      ),
+                    ),
+                  )
                   Error(WorkflowRunFailure(
-                    reason: "workflow_recovery_invalid:" <> reason,
+                    reason: reason,
                     agent_reason: None,
                     artifacts: recovered.artifacts,
                     run_root: Some(recovered.run_root),
                     failed_step_id: None,
                   ))
-                Ok(scheduler_state) -> {
-                  let cleanup_allowed =
-                    workflow_scheduler.outcome(dag, scheduler_state)
-                    != workflow_scheduler.WorkflowInProgress
-                  loop(
-                    issue,
-                    dag,
-                    orchestrator,
-                    tracker_client,
-                    secrets,
-                    recovered.run_id,
-                    True,
-                    dependencies,
-                    scheduler_state,
-                    recovered.artifacts,
-                    recovered.prepared_workspaces,
-                    Some(recovered.run_root),
-                    recovered.step_attempts,
-                    recovered.token_totals,
-                    recovered.final_issue,
-                    recovered.turns,
-                    cleanup_allowed,
-                    recovered.pi_session_continuations,
-                    profile,
-                  )
                 }
+                Ok(Nil) ->
+                  case
+                    workflow_scheduler.init_with_statuses(
+                      dag,
+                      recovered.scheduler_statuses,
+                    )
+                  {
+                    Error(reason) ->
+                      Error(WorkflowRunFailure(
+                        reason: "workflow_recovery_invalid:" <> reason,
+                        agent_reason: None,
+                        artifacts: recovered.artifacts,
+                        run_root: Some(recovered.run_root),
+                        failed_step_id: None,
+                      ))
+                    Ok(scheduler_state) -> {
+                      let cleanup_allowed =
+                        workflow_scheduler.outcome(dag, scheduler_state)
+                        != workflow_scheduler.WorkflowInProgress
+                      loop(
+                        issue,
+                        dag,
+                        orchestrator,
+                        tracker_client,
+                        secrets,
+                        recovered.run_id,
+                        recovered.workflow_fingerprint,
+                        recovered.contract_outputs_recorded,
+                        True,
+                        dependencies,
+                        scheduler_state,
+                        recovered.artifacts,
+                        recovered.prepared_workspaces,
+                        Some(recovered.run_root),
+                        recovered.step_attempts,
+                        recovered.token_totals,
+                        recovered.final_issue,
+                        recovered.turns,
+                        cleanup_allowed,
+                        recovered.pi_session_continuations,
+                        profile,
+                      )
+                    }
+                  }
               }
           }
       }
@@ -650,6 +811,718 @@ fn run_context_run_root(context: RunContext) -> Option(String) {
   case context {
     FreshRun(_) -> None
     RecoveredRun(recovered) -> Some(recovered.run_root)
+  }
+}
+
+fn record_recovered_inputs_if_contracted(
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  recovered: RecoveredRunContext,
+  dependencies: Dependencies,
+  profile: config_types.WorkspaceHookProfile,
+) -> Result(Nil, String) {
+  case recovered.contract_inputs_recorded, dag.contract {
+    Some(_), _ | _, None -> Ok(Nil)
+    None, Some(contract) ->
+      case recovered_steps_started(recovered) {
+        False ->
+          record_inputs_if_contracted(
+            issue,
+            dag,
+            orchestrator,
+            RunInvocation(
+              run_id: recovered.run_id,
+              workflow_fingerprint: recovered.workflow_fingerprint,
+              supplied_contract_values: empty_contract_run_values(),
+              scheduled_context: None,
+            ),
+            dependencies,
+            profile,
+          )
+        True -> {
+          let diagnostic = "recovered_after_steps_started"
+          let manifest =
+            contract_manifest.ContractInputManifest(
+              run_id: recovered.run_id,
+              workflow_id: dag.id,
+              workflow_fingerprint: recovered.workflow_fingerprint,
+              inputs: list.map(
+                contract.inputs,
+                recovered_input_value(diagnostic),
+              ),
+              context: list.map(
+                contract.context,
+                recovered_context_value(diagnostic),
+              ),
+              diagnostics: [diagnostic],
+            )
+          write_recorded_input_manifest(manifest, dependencies)
+        }
+      }
+  }
+}
+
+fn recovered_steps_started(recovered: RecoveredRunContext) -> Bool {
+  dict.size(recovered.artifacts) > 0
+  || dict.size(recovered.prepared_workspaces) > 0
+  || dict.size(recovered.step_attempts) > 0
+}
+
+fn recovered_input_value(
+  diagnostic: String,
+) -> fn(workflow_contract.InputSpec) -> contract_manifest.NamedManifestValue {
+  fn(spec: workflow_contract.InputSpec) {
+    contract_manifest.NamedManifestValue(
+      name: spec.name,
+      value: contract_manifest.absent(spec.type_, Some(diagnostic)),
+    )
+  }
+}
+
+fn recovered_context_value(
+  diagnostic: String,
+) -> fn(workflow_contract.ContextSpec) -> contract_manifest.NamedManifestValue {
+  fn(spec: workflow_contract.ContextSpec) {
+    contract_manifest.NamedManifestValue(
+      name: spec.name,
+      value: contract_manifest.absent(spec.type_, Some(diagnostic)),
+    )
+  }
+}
+
+fn write_recorded_input_manifest(
+  manifest: contract_manifest.ContractInputManifest,
+  dependencies: Dependencies,
+) -> Result(Nil, String) {
+  let contents = contract_manifest.input_manifest_to_string(manifest)
+  use written <- result.try(
+    dependencies.checkpoint.write_workflow_inputs_manifest(
+      manifest.run_id,
+      contents,
+    )
+    |> result.map_error(workflow_checkpoint.describe_error),
+  )
+  dependencies.checkpoint.workflow_inputs_recorded(
+    workflow_checkpoint.WorkflowContractManifestRecorded(
+      run_id: manifest.run_id,
+      workflow_id: manifest.workflow_id,
+      workflow_fingerprint: manifest.workflow_fingerprint,
+      artifact: written,
+    ),
+  )
+  |> result.map_error(workflow_checkpoint.describe_error)
+}
+
+fn record_inputs_if_contracted(
+  issue: tracker_issue.Issue,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  invocation: RunInvocation,
+  dependencies: Dependencies,
+  profile: config_types.WorkspaceHookProfile,
+) -> Result(Nil, String) {
+  case dag.contract {
+    None -> Ok(Nil)
+    Some(contract) -> {
+      use inputs <- result.try(
+        resolve_contract_inputs(contract.inputs, issue, invocation, []),
+      )
+      use context <- result.try(
+        resolve_contract_context(
+          contract.context,
+          invocation,
+          orchestrator,
+          profile,
+          [],
+        ),
+      )
+      let manifest =
+        contract_manifest.ContractInputManifest(
+          run_id: invocation.run_id,
+          workflow_id: dag.id,
+          workflow_fingerprint: invocation.workflow_fingerprint,
+          inputs: inputs,
+          context: context,
+          diagnostics: [],
+        )
+      write_recorded_input_manifest(manifest, dependencies)
+    }
+  }
+}
+
+fn resolve_contract_inputs(
+  inputs: List(workflow_contract.InputSpec),
+  issue: tracker_issue.Issue,
+  invocation: RunInvocation,
+  acc: List(contract_manifest.NamedManifestValue),
+) -> Result(List(contract_manifest.NamedManifestValue), String) {
+  case inputs {
+    [] -> Ok(list.reverse(acc))
+    [spec, ..rest] -> {
+      use value <- result.try(resolve_contract_input(spec, issue, invocation))
+      resolve_contract_inputs(rest, issue, invocation, [
+        contract_manifest.NamedManifestValue(name: spec.name, value: value),
+        ..acc
+      ])
+    }
+  }
+}
+
+fn resolve_contract_context(
+  context: List(workflow_contract.ContextSpec),
+  invocation: RunInvocation,
+  orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
+  acc: List(contract_manifest.NamedManifestValue),
+) -> Result(List(contract_manifest.NamedManifestValue), String) {
+  case context {
+    [] -> Ok(list.reverse(acc))
+    [spec, ..rest] -> {
+      use value <- result.try(resolve_contract_context_value(
+        spec,
+        invocation,
+        orchestrator,
+        profile,
+      ))
+      resolve_contract_context(rest, invocation, orchestrator, profile, [
+        contract_manifest.NamedManifestValue(name: spec.name, value: value),
+        ..acc
+      ])
+    }
+  }
+}
+
+fn resolve_contract_input(
+  spec: workflow_contract.InputSpec,
+  issue: tracker_issue.Issue,
+  invocation: RunInvocation,
+) -> Result(contract_manifest.ManifestValue, String) {
+  case spec.source {
+    Some(workflow_contract.IssueContext) ->
+      Ok(inline_value(spec.type_, json_value.JString(issue_context_text(issue))))
+    Some(workflow_contract.ScheduledContext) ->
+      case invocation.scheduled_context {
+        Some(scheduled) ->
+          Ok(inline_value(spec.type_, scheduled_context_json(scheduled)))
+        None -> Error("workflow_required_input_missing:" <> spec.name)
+      }
+    Some(workflow_contract.LiteralInput(value)) ->
+      Ok(inline_value(spec.type_, json_value.JString(value)))
+    Some(workflow_contract.MappedOutputSource) ->
+      mapped_contract_value(
+        spec.name,
+        spec.type_,
+        spec.required,
+        invocation.supplied_contract_values.inputs,
+        "input",
+      )
+    None -> optional_or_missing_input(spec)
+  }
+}
+
+fn resolve_contract_context_value(
+  spec: workflow_contract.ContextSpec,
+  invocation: RunInvocation,
+  orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
+) -> Result(contract_manifest.ManifestValue, String) {
+  case spec.source {
+    Some(workflow_contract.WorkspaceDriverBase) ->
+      case workspace_driver_base(orchestrator, profile) {
+        Some(value) -> Ok(inline_value(spec.type_, json_value.JString(value)))
+        None -> optional_or_missing_context(spec)
+      }
+    Some(workflow_contract.LiteralContext(value)) ->
+      Ok(inline_value(spec.type_, json_value.JString(value)))
+    Some(workflow_contract.MappedOutputContext) ->
+      mapped_contract_value(
+        spec.name,
+        spec.type_,
+        spec.required,
+        invocation.supplied_contract_values.context,
+        "context",
+      )
+    None -> optional_or_missing_context(spec)
+  }
+}
+
+fn mapped_contract_value(
+  name: String,
+  expected_type: workflow_contract.ContractType,
+  required: Bool,
+  values: Dict(String, contract_manifest.ManifestValue),
+  kind: String,
+) -> Result(contract_manifest.ManifestValue, String) {
+  case dict.get(values, name) {
+    Ok(value) ->
+      case contract_manifest.type_matches(value, expected_type) {
+        True -> Ok(value)
+        False -> Error("workflow_contract_type_mismatch:" <> name)
+      }
+    Error(Nil) ->
+      case required {
+        True -> Error("workflow_required_" <> kind <> "_missing:" <> name)
+        False ->
+          Ok(contract_manifest.absent(
+            expected_type,
+            Some("optional mapped " <> kind <> " not supplied"),
+          ))
+      }
+  }
+}
+
+fn optional_or_missing_input(
+  spec: workflow_contract.InputSpec,
+) -> Result(contract_manifest.ManifestValue, String) {
+  case spec.required {
+    True -> Error("workflow_required_input_missing:" <> spec.name)
+    False ->
+      Ok(contract_manifest.absent(
+        spec.type_,
+        Some("optional input source absent"),
+      ))
+  }
+}
+
+fn optional_or_missing_context(
+  spec: workflow_contract.ContextSpec,
+) -> Result(contract_manifest.ManifestValue, String) {
+  case spec.required {
+    True -> Error("workflow_required_context_missing:" <> spec.name)
+    False ->
+      Ok(contract_manifest.absent(
+        spec.type_,
+        Some("optional context source absent"),
+      ))
+  }
+}
+
+fn inline_value(
+  type_: workflow_contract.ContractType,
+  value: json_value.JsonValue,
+) -> contract_manifest.ManifestValue {
+  contract_manifest.present_inline_json(type_, value, None)
+}
+
+fn issue_context_text(issue: tracker_issue.Issue) -> String {
+  let description = option.unwrap(issue.description, "")
+  issue.identifier <> "\n" <> issue.title <> "\n\n" <> description
+}
+
+fn scheduled_context_json(
+  scheduled: ScheduledInvocationContext,
+) -> json_value.JsonValue {
+  json_value.JObject([
+    #("job_id", json_value.JString(scheduled.job_id)),
+    #("workflow_id", json_value.JString(scheduled.workflow_id)),
+    #("due_at", json_value.JString(scheduled.due_at)),
+    #("started_at", json_value.JString(scheduled.started_at)),
+    #("run_id", json_value.JString(scheduled.run_id)),
+    #("attempt", json_value.JInt(scheduled.attempt)),
+  ])
+}
+
+fn workspace_driver_base(
+  orchestrator: config_types.OrchestratorConfig,
+  profile: config_types.WorkspaceHookProfile,
+) -> Option(String) {
+  let context = workspace_profile.driver_context(profile, orchestrator)
+  env_lookup(workspace_profile.driver_context_env_vars(context), [
+    "SCHERZO_WORKSPACE_DRIVER_BASE",
+    "SCHERZO_BASE_REF",
+  ])
+}
+
+fn env_lookup(
+  env: List(#(String, String)),
+  names: List(String),
+) -> Option(String) {
+  case names {
+    [] -> None
+    [name, ..rest] ->
+      case list.key_find(env, name) {
+        Ok(value) -> Some(value)
+        Error(Nil) -> env_lookup(env, rest)
+      }
+  }
+}
+
+fn record_outputs_if_contracted(
+  dag: workflow_dag.WorkflowDag,
+  run_id: String,
+  workflow_fingerprint: String,
+  contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
+  dependencies: Dependencies,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+) -> Result(List(String), String) {
+  case dag.contract, contract_outputs_recorded {
+    None, _ -> Ok([])
+    _, Some(_) -> Ok([])
+    Some(contract), None -> {
+      let #(values, diagnostics, missing) =
+        resolve_contract_outputs(
+          contract.outputs,
+          run_id,
+          dependencies,
+          artifacts,
+          [],
+          [],
+          [],
+        )
+      let manifest =
+        contract_manifest.ContractOutputManifest(
+          run_id: run_id,
+          workflow_id: dag.id,
+          workflow_fingerprint: workflow_fingerprint,
+          outputs: values,
+          diagnostics: diagnostics,
+        )
+      let contents = contract_manifest.output_manifest_to_string(manifest)
+      use written <- result.try(
+        dependencies.checkpoint.write_workflow_outputs_manifest(
+          run_id,
+          contents,
+        )
+        |> result.map_error(workflow_checkpoint.describe_error),
+      )
+      use Nil <- result.try(
+        dependencies.checkpoint.workflow_outputs_recorded(
+          workflow_checkpoint.WorkflowContractManifestRecorded(
+            run_id: run_id,
+            workflow_id: dag.id,
+            workflow_fingerprint: workflow_fingerprint,
+            artifact: written,
+          ),
+        )
+        |> result.map_error(workflow_checkpoint.describe_error),
+      )
+      Ok(list.reverse(missing))
+    }
+  }
+}
+
+fn resolve_contract_outputs(
+  outputs: List(workflow_contract.OutputSpec),
+  run_id: String,
+  dependencies: Dependencies,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  acc: List(contract_manifest.NamedManifestValue),
+  diagnostics: List(String),
+  missing: List(String),
+) -> #(List(contract_manifest.NamedManifestValue), List(String), List(String)) {
+  case outputs {
+    [] -> #(list.reverse(acc), list.reverse(diagnostics), missing)
+    [spec, ..rest] -> {
+      let #(value, output_diagnostics, output_missing) =
+        materialize_output(spec, run_id, dependencies, artifacts)
+      let diagnostics =
+        list.append(list.reverse(output_diagnostics), diagnostics)
+      let missing = case output_missing {
+        True -> [spec.name, ..missing]
+        False -> missing
+      }
+      resolve_contract_outputs(
+        rest,
+        run_id,
+        dependencies,
+        artifacts,
+        [
+          contract_manifest.NamedManifestValue(name: spec.name, value: value),
+          ..acc
+        ],
+        diagnostics,
+        missing,
+      )
+    }
+  }
+}
+
+fn materialize_output(
+  spec: workflow_contract.OutputSpec,
+  run_id: String,
+  dependencies: Dependencies,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+) -> #(contract_manifest.ManifestValue, List(String), Bool) {
+  let #(value, diagnostics) = case spec.source {
+    None -> #(
+      contract_manifest.absent(spec.type_, Some("output source absent")),
+      [
+        "workflow_output_source_absent:" <> spec.name,
+      ],
+    )
+    Some(source) ->
+      output_value_from_source(spec, source, run_id, dependencies, artifacts)
+  }
+  case
+    contract_manifest.validate_value(spec.name, value, required: spec.required)
+  {
+    Ok(Nil) -> #(value, diagnostics, False)
+    Error(contract_manifest.ManifestError(_, message)) -> {
+      let diagnostics = [message, ..diagnostics]
+      let missing = spec.required
+      #(value, diagnostics, missing)
+    }
+  }
+}
+
+fn output_value_from_source(
+  spec: workflow_contract.OutputSpec,
+  source: workflow_contract.OutputSource,
+  run_id: String,
+  dependencies: Dependencies,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+) -> #(contract_manifest.ManifestValue, List(String)) {
+  case source {
+    workflow_contract.StepField(step_id, field) ->
+      output_value_from_step_field(
+        spec,
+        run_id,
+        step_id,
+        field,
+        dependencies,
+        artifacts,
+      )
+    workflow_contract.StructuredOutput(step_id, artifact_name) ->
+      output_value_from_structured_output(
+        spec,
+        step_id,
+        artifact_name,
+        artifacts,
+        False,
+      )
+    workflow_contract.InlineJson(step_id, artifact_name) ->
+      output_value_from_structured_output(
+        spec,
+        step_id,
+        artifact_name,
+        artifacts,
+        True,
+      )
+    workflow_contract.StaticUrl(url) -> #(
+      contract_manifest.present_url(spec.type_, url),
+      [],
+    )
+    workflow_contract.StaticGitRef(ref) -> #(
+      contract_manifest.present_git_ref(spec.type_, ref),
+      [],
+    )
+  }
+}
+
+fn output_value_from_step_field(
+  spec: workflow_contract.OutputSpec,
+  run_id: String,
+  step_id: String,
+  field: workflow_contract.OutputField,
+  dependencies: Dependencies,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+) -> #(contract_manifest.ManifestValue, List(String)) {
+  case dict.get(artifacts, step_id) {
+    Error(Nil) ->
+      output_absent(spec, "workflow_output_source_step_missing:" <> step_id)
+    Ok(artifact) -> {
+      case artifact_field_text(artifact, field) {
+        None ->
+          output_absent(
+            spec,
+            "workflow_output_source_field_missing:" <> spec.name,
+          )
+        Some(contents) -> {
+          let #(extension, media_type) = output_extension_and_media(spec.type_)
+          let write =
+            workflow_checkpoint.WorkflowOutputBlobWrite(
+              run_id: run_id,
+              output_name: spec.name,
+              extension: extension,
+              contents: contents,
+            )
+          case dependencies.checkpoint.write_workflow_output_blob(write) {
+            Error(error) ->
+              output_absent(
+                spec,
+                "workflow_output_blob_failed:"
+                  <> workflow_checkpoint.describe_error(error),
+              )
+            Ok(written) -> #(
+              contract_manifest.present_run_artifact(
+                spec.type_,
+                contract_manifest.ArtifactWritten(
+                  ref: written.ref,
+                  sha256: written.sha256,
+                  bytes: written.bytes,
+                ),
+                media_type,
+                Some(step_field_source_json(step_id, field)),
+              ),
+              [],
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+fn output_value_from_structured_output(
+  spec: workflow_contract.OutputSpec,
+  step_id: String,
+  artifact_name: String,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  inline inline: Bool,
+) -> #(contract_manifest.ManifestValue, List(String)) {
+  case dict.get(artifacts, step_id) {
+    Error(Nil) ->
+      output_absent(spec, "workflow_output_source_step_missing:" <> step_id)
+    Ok(artifact) ->
+      case artifact.structured_output {
+        Some(step_artifact.StructuredOutputValid(metadata)) ->
+          case metadata.artifact_name == artifact_name {
+            True ->
+              case inline {
+                True -> inline_structured_output_value(spec, step_id, metadata)
+                False -> #(
+                  contract_manifest.present_run_artifact(
+                    spec.type_,
+                    contract_manifest.ArtifactWritten(
+                      ref: metadata.ref,
+                      sha256: metadata.sha256,
+                      bytes: metadata.bytes,
+                    ),
+                    "application/json",
+                    Some(structured_source_json(step_id, artifact_name)),
+                  ),
+                  [],
+                )
+              }
+            False ->
+              output_absent(
+                spec,
+                "workflow_output_structured_artifact_missing:" <> artifact_name,
+              )
+          }
+        _ ->
+          output_absent(
+            spec,
+            "workflow_output_structured_artifact_missing:" <> artifact_name,
+          )
+      }
+  }
+}
+
+fn inline_structured_output_value(
+  spec: workflow_contract.OutputSpec,
+  step_id: String,
+  metadata: step_artifact.StructuredOutputMetadata,
+) -> #(contract_manifest.ManifestValue, List(String)) {
+  case simplifile.read(metadata.path) {
+    Error(_error) ->
+      output_absent(
+        spec,
+        "workflow_output_inline_json_read_failed:" <> spec.name,
+      )
+    Ok(contents) ->
+      case json_value.parse(contents) {
+        Error(Nil) ->
+          output_absent(
+            spec,
+            "workflow_output_inline_json_decode_failed:" <> spec.name,
+          )
+        Ok(parsed) -> {
+          let value = object_field(parsed, "payload") |> option.unwrap(parsed)
+          #(
+            contract_manifest.present_inline_json(
+              spec.type_,
+              value,
+              Some(structured_source_json(step_id, metadata.artifact_name)),
+            ),
+            [],
+          )
+        }
+      }
+  }
+}
+
+fn output_absent(
+  spec: workflow_contract.OutputSpec,
+  diagnostic: String,
+) -> #(contract_manifest.ManifestValue, List(String)) {
+  #(contract_manifest.absent(spec.type_, Some(diagnostic)), [diagnostic])
+}
+
+fn artifact_field_text(
+  artifact: step_artifact.StepArtifact,
+  field: workflow_contract.OutputField,
+) -> Option(String) {
+  case field {
+    workflow_contract.Stdout -> Some(artifact.stdout)
+    workflow_contract.FinalResponse -> artifact.final_response
+  }
+}
+
+fn output_extension_and_media(
+  type_: workflow_contract.ContractType,
+) -> #(String, String) {
+  case type_ {
+    workflow_contract.DocumentMarkdown | workflow_contract.ExecPlan -> #(
+      ".md",
+      "text/markdown",
+    )
+    workflow_contract.Text | workflow_contract.Url | workflow_contract.GitRef -> #(
+      ".txt",
+      "text/plain",
+    )
+    workflow_contract.CodeChange | workflow_contract.ArtifactList -> #(
+      ".json",
+      "application/json",
+    )
+  }
+}
+
+fn step_field_source_json(
+  step_id: String,
+  field: workflow_contract.OutputField,
+) -> json_value.JsonValue {
+  json_value.JObject([
+    #("step_id", json_value.JString(step_id)),
+    #(
+      "field",
+      json_value.JString(workflow_contract.output_field_to_string(field)),
+    ),
+  ])
+}
+
+fn structured_source_json(
+  step_id: String,
+  artifact_name: String,
+) -> json_value.JsonValue {
+  json_value.JObject([
+    #("step_id", json_value.JString(step_id)),
+    #("artifact_name", json_value.JString(artifact_name)),
+  ])
+}
+
+fn object_field(
+  value: json_value.JsonValue,
+  key: String,
+) -> Option(json_value.JsonValue) {
+  case value {
+    json_value.JObject(entries) -> object_field_entries(entries, key)
+    _ -> None
+  }
+}
+
+fn object_field_entries(
+  entries: List(#(String, json_value.JsonValue)),
+  key: String,
+) -> Option(json_value.JsonValue) {
+  case entries {
+    [] -> None
+    [#(current, value), ..rest] ->
+      case current == key {
+        True -> Some(value)
+        False -> object_field_entries(rest, key)
+      }
   }
 }
 
@@ -710,6 +1583,8 @@ fn loop(
   tracker_client: tracker.Client,
   secrets: List(String),
   run_id: String,
+  workflow_fingerprint: String,
+  contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
   recovered_execution: Bool,
   dependencies: Dependencies,
   scheduler_state: workflow_scheduler.SchedulerState,
@@ -734,50 +1609,92 @@ fn loop(
         )
       let final_issue = option.unwrap(final_issue, issue)
       let workspace_path = option.unwrap(run_root, "")
-      use Nil <- result_try_checkpoint(
-        dependencies.checkpoint.workflow_finished(
-          workflow_checkpoint.WorkflowFinished(
-            run_id: run_id,
-            workflow_id: dag.id,
-            issue_id: issue.id,
-            task_ref: task_ref(issue),
-            outcome: "completed",
-            token_total: tokens.total,
-            turns: turns,
-          ),
-        ),
-        artifacts,
-        run_root,
-        None,
-      )
-      let cleanup_result =
-        cleanup_if_allowed(
-          run_root,
-          orchestrator,
-          profile,
+      case
+        record_outputs_if_contracted(
+          dag,
+          run_id,
+          workflow_fingerprint,
+          contract_outputs_recorded,
           dependencies,
-          cleanup_allowed,
+          artifacts,
         )
-      case cleanup_result {
-        Ok(Nil) -> {
-          Ok(WorkflowRunSuccess(
-            worker_success: agent_types.WorkerSuccess(
-              final_issue: Some(final_issue),
-              final_classification: agent_types.FinalTerminal,
-              workspace_path: workspace_path,
-              tokens: tokens,
-              turns: turns,
-              result: result,
+      {
+        Ok([]) -> {
+          use Nil <- result_try_checkpoint(
+            dependencies.checkpoint.workflow_finished(
+              workflow_checkpoint.WorkflowFinished(
+                run_id: run_id,
+                workflow_id: dag.id,
+                issue_id: issue.id,
+                task_ref: task_ref(issue),
+                outcome: "completed",
+                token_total: tokens.total,
+                turns: turns,
+              ),
             ),
-            artifacts: artifacts,
-            run_root: workspace_path,
-          ))
+            artifacts,
+            run_root,
+            None,
+          )
+          let cleanup_result =
+            cleanup_if_allowed(
+              run_root,
+              orchestrator,
+              profile,
+              dependencies,
+              cleanup_allowed,
+            )
+          case cleanup_result {
+            Ok(Nil) -> {
+              Ok(WorkflowRunSuccess(
+                worker_success: agent_types.WorkerSuccess(
+                  final_issue: Some(final_issue),
+                  final_classification: agent_types.FinalTerminal,
+                  workspace_path: workspace_path,
+                  tokens: tokens,
+                  turns: turns,
+                  result: result,
+                ),
+                artifacts: artifacts,
+                run_root: workspace_path,
+              ))
+            }
+            Error(err) -> {
+              // Completed is checkpointed before cleanup; if cleanup fails, append
+              // a failed terminal record so the final ledger matches the failure.
+              let cleanup_reason =
+                "cleanup_failed:" <> error.workspace_code(err)
+              let terminal_result =
+                dependencies.checkpoint.workflow_finished(
+                  workflow_checkpoint.WorkflowFinished(
+                    run_id: run_id,
+                    workflow_id: dag.id,
+                    issue_id: issue.id,
+                    task_ref: task_ref(issue),
+                    outcome: "failed_fatal",
+                    token_total: tokens.total,
+                    turns: turns,
+                  ),
+                )
+              let reason = case terminal_result {
+                Ok(Nil) -> cleanup_reason
+                Error(checkpoint_error) ->
+                  cleanup_reason
+                  <> "; checkpoint_failed:"
+                  <> workflow_checkpoint.describe_error(checkpoint_error)
+              }
+              Error(WorkflowRunFailure(
+                reason: reason,
+                agent_reason: None,
+                artifacts: artifacts,
+                run_root: run_root,
+                failed_step_id: None,
+              ))
+            }
+          }
         }
-        Error(err) -> {
-          // Completed is checkpointed before cleanup; if cleanup fails, append
-          // a failed terminal record so the final ledger matches the failure.
-          let cleanup_reason = "cleanup_failed:" <> error.workspace_code(err)
-          let terminal_result =
+        Ok([missing, ..]) -> {
+          use Nil <- result_try_checkpoint(
             dependencies.checkpoint.workflow_finished(
               workflow_checkpoint.WorkflowFinished(
                 run_id: run_id,
@@ -788,16 +1705,58 @@ fn loop(
                 token_total: tokens.total,
                 turns: turns,
               ),
-            )
-          let reason = case terminal_result {
-            Ok(Nil) -> cleanup_reason
-            Error(checkpoint_error) ->
-              cleanup_reason
-              <> "; checkpoint_failed:"
-              <> workflow_checkpoint.describe_error(checkpoint_error)
-          }
+            ),
+            artifacts,
+            run_root,
+            None,
+          )
+          let cleanup_suffix =
+            cleanup_failure_suffix(cleanup_if_allowed(
+              run_root,
+              orchestrator,
+              profile,
+              dependencies,
+              cleanup_allowed,
+            ))
           Error(WorkflowRunFailure(
-            reason: reason,
+            reason: "workflow_required_output_missing:"
+              <> missing
+              <> cleanup_suffix,
+            agent_reason: None,
+            artifacts: artifacts,
+            run_root: run_root,
+            failed_step_id: None,
+          ))
+        }
+        Error(reason) -> {
+          use Nil <- result_try_checkpoint(
+            dependencies.checkpoint.workflow_finished(
+              workflow_checkpoint.WorkflowFinished(
+                run_id: run_id,
+                workflow_id: dag.id,
+                issue_id: issue.id,
+                task_ref: task_ref(issue),
+                outcome: "failed_fatal",
+                token_total: tokens.total,
+                turns: turns,
+              ),
+            ),
+            artifacts,
+            run_root,
+            None,
+          )
+          let cleanup_suffix =
+            cleanup_failure_suffix(cleanup_if_allowed(
+              run_root,
+              orchestrator,
+              profile,
+              dependencies,
+              cleanup_allowed,
+            ))
+          Error(WorkflowRunFailure(
+            reason: "workflow_output_manifest_failed:"
+              <> reason
+              <> cleanup_suffix,
             agent_reason: None,
             artifacts: artifacts,
             run_root: run_root,
@@ -807,6 +1766,19 @@ fn loop(
       }
     }
     workflow_scheduler.WorkflowFailed -> {
+      let output_suffix = case
+        record_outputs_if_contracted(
+          dag,
+          run_id,
+          workflow_fingerprint,
+          contract_outputs_recorded,
+          dependencies,
+          artifacts,
+        )
+      {
+        Ok(_) -> ""
+        Error(error) -> "; workflow_output_manifest_failed:" <> error
+      }
       let cleanup_suffix =
         cleanup_failure_suffix(cleanup_if_allowed(
           run_root,
@@ -832,7 +1804,7 @@ fn loop(
         None,
       )
       Error(WorkflowRunFailure(
-        reason: "workflow_step_failed" <> cleanup_suffix,
+        reason: "workflow_step_failed" <> output_suffix <> cleanup_suffix,
         agent_reason: None,
         artifacts: artifacts,
         run_root: run_root,
@@ -939,6 +1911,8 @@ fn loop(
                 tracker_client,
                 secrets,
                 run_id,
+                workflow_fingerprint,
+                contract_outputs_recorded,
                 dependencies,
                 scheduler_state,
                 artifacts,
@@ -1206,6 +2180,8 @@ fn execute_prepared_steps(
   tracker_client: tracker.Client,
   secrets: List(String),
   run_id: String,
+  workflow_fingerprint: String,
+  contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
   dependencies: Dependencies,
   scheduler_state: workflow_scheduler.SchedulerState,
   artifacts: Dict(String, step_artifact.StepArtifact),
@@ -1229,6 +2205,8 @@ fn execute_prepared_steps(
         tracker_client,
         secrets,
         run_id,
+        workflow_fingerprint,
+        contract_outputs_recorded,
         recovered_execution,
         dependencies,
         scheduler_state,
@@ -1297,6 +2275,8 @@ fn execute_prepared_steps(
             tracker_client,
             secrets,
             run_id,
+            workflow_fingerprint,
+            contract_outputs_recorded,
             dependencies,
             scheduler_state,
             artifacts,
@@ -1319,6 +2299,8 @@ fn execute_prepared_steps(
             issue,
             dag,
             run_id,
+            workflow_fingerprint,
+            contract_outputs_recorded,
             orchestrator,
             dependencies,
             artifacts,
@@ -1748,6 +2730,8 @@ fn finish_fatal_batch_result(
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,
   run_id: String,
+  workflow_fingerprint: String,
+  contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
   orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
@@ -1799,6 +2783,23 @@ fn finish_fatal_batch_result(
     Error(error) ->
       "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
   }
+  let output_suffix = case checkpoint_result {
+    Ok(Nil) ->
+      case
+        record_outputs_if_contracted(
+          dag,
+          run_id,
+          workflow_fingerprint,
+          contract_outputs_recorded,
+          dependencies,
+          artifacts,
+        )
+      {
+        Ok(_) -> ""
+        Error(error) -> "; workflow_output_manifest_failed:" <> error
+      }
+    Error(_) -> ""
+  }
   mark_unfinished_siblings_interrupted(
     starts,
     result.step_id,
@@ -1827,7 +2828,7 @@ fn finish_fatal_batch_result(
       cleanup_allowed,
     ))
   Error(WorkflowRunFailure(
-    reason: reason <> cleanup_suffix,
+    reason: reason <> output_suffix <> cleanup_suffix,
     agent_reason: agent_reason_for_artifact(result.artifact),
     artifacts: artifacts,
     run_root: run_root,
@@ -1903,6 +2904,8 @@ fn apply_prepared_results(
   tracker_client: tracker.Client,
   secrets: List(String),
   run_id: String,
+  workflow_fingerprint: String,
+  contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
   dependencies: Dependencies,
   scheduler_state: workflow_scheduler.SchedulerState,
   artifacts: Dict(String, step_artifact.StepArtifact),
@@ -1926,6 +2929,8 @@ fn apply_prepared_results(
         tracker_client,
         secrets,
         run_id,
+        workflow_fingerprint,
+        contract_outputs_recorded,
         recovered_execution,
         dependencies,
         scheduler_state,
@@ -2111,6 +3116,8 @@ fn apply_prepared_results(
                         tracker_client,
                         secrets,
                         run_id,
+                        workflow_fingerprint,
+                        contract_outputs_recorded,
                         dependencies,
                         scheduler_state,
                         artifacts,

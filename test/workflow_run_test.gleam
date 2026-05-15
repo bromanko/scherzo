@@ -11,11 +11,14 @@ import scherzo/command_step
 import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/json_value
 import scherzo/model_config
+import scherzo/orchestrator/schedule_core
 import scherzo/path
 import scherzo/result_artifact
 import scherzo/session/event as session_event
 import scherzo/session/tokens as session_tokens
+import scherzo/state/record
 import scherzo/step_artifact
 import scherzo/template
 import scherzo/tracker
@@ -24,6 +27,8 @@ import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
+import scherzo/workflow_contract
+import scherzo/workflow_contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_run
 import scherzo/workflow_scheduler
@@ -236,6 +241,18 @@ fn reset_dir(path: String) -> Nil {
   let _ = simplifile.delete(path)
   let assert Ok(Nil) = simplifile.create_directory_all(path)
   Nil
+}
+
+fn ledger_records(root: String) -> List(record.LedgerRecord) {
+  let assert Ok(contents) =
+    simplifile.read(root <> "/.scherzo-state/ledger/current.jsonl")
+  contents
+  |> string.split(on: "\n")
+  |> list.filter(fn(line) { string.trim(line) != "" })
+  |> list.map(fn(line) {
+    let assert Ok(decoded) = record.decode_string(line)
+    decoded
+  })
 }
 
 fn fake_pi() -> String {
@@ -842,6 +859,8 @@ fn recovered_context(
     turns: 0,
     warnings: [],
     pi_session_continuations: dict.new(),
+    contract_inputs_recorded: None,
+    contract_outputs_recorded: None,
   )
 }
 
@@ -3632,4 +3651,592 @@ pub fn generic_pi_tool_call_step_generates_spec_env_and_metadata_test() {
   assert string.length(schema_sha) == 64
   let assert Some(receipt_json) = metadata.source_receipt_json
   assert string.contains(receipt_json, "remote_mutations")
+}
+
+pub fn contracted_command_run_records_inputs_before_steps_and_outputs_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-recording"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo findings\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert success.run_root != ""
+  let records = ledger_records(root)
+  let assert [first, second, ..] = records
+  assert record.kind(first.body) == "workflow_run_inputs_recorded"
+  assert record.kind(second.body) == "step_attempt_prepared"
+
+  let assert Ok(input_manifest_text) =
+    simplifile.read(
+      root <> "/.scherzo-state/artifacts/runs/run-1/inputs.v1.json",
+    )
+  let assert Ok(input_manifest) =
+    workflow_contract_manifest.decode_input_manifest(input_manifest_text)
+  assert input_manifest.workflow_id == "implementation"
+  let assert [prompt] = input_manifest.inputs
+  assert prompt.name == "prompt"
+
+  let assert Ok(output_manifest_text) =
+    simplifile.read(
+      root <> "/.scherzo-state/artifacts/runs/run-1/outputs.v1.json",
+    )
+  let assert Ok(output_manifest) =
+    workflow_contract_manifest.decode_output_manifest(output_manifest_text)
+  let assert [findings] = output_manifest.outputs
+  assert findings.name == "findings"
+  assert findings.value.status == workflow_contract_manifest.Present
+  assert findings.value.ref == Some("runs/run-1/outputs/findings.md")
+}
+
+pub fn contracted_mapped_input_missing_fails_before_prepare_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-missing-input"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    exec_plan:\n      type: exec_plan\n      source: mapped_output\nsteps:\n  - id: implement\n    kind: command\n    run: echo should-not-run\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  assert failure.reason == "workflow_required_input_missing:exec_plan"
+  assert process.receive(subject, within: 20) == Error(Nil)
+}
+
+pub fn contracted_existing_mismatched_input_manifest_fails_before_prepare_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-mismatched-input-manifest"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\nsteps:\n  - id: implement\n    kind: command\n    run: echo should-not-run\n",
+    )
+  let fingerprint = workflow_attempt.workflow_fingerprint(dag, orchestrator())
+  let stale_manifest =
+    workflow_contract_manifest.ContractInputManifest(
+      run_id: "run-1",
+      workflow_id: "implementation",
+      workflow_fingerprint: fingerprint,
+      inputs: [],
+      context: [],
+      diagnostics: ["stale-manifest"],
+    )
+  let artifact_dir = root <> "/.scherzo-state/artifacts/runs/run-1"
+  let assert Ok(Nil) = simplifile.create_directory_all(artifact_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      artifact_dir <> "/inputs.v1.json",
+      workflow_contract_manifest.input_manifest_to_string(stale_manifest),
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  assert string.contains(
+    failure.reason,
+    "existing_input_manifest_mismatch:runs/run-1/inputs.v1.json",
+  )
+  assert process.receive(subject, within: 20) == Error(Nil)
+}
+
+fn read_input_manifest(
+  root: String,
+  run_id: String,
+) -> workflow_contract_manifest.ContractInputManifest {
+  let assert Ok(text) =
+    simplifile.read(
+      root <> "/.scherzo-state/artifacts/runs/" <> run_id <> "/inputs.v1.json",
+    )
+  let assert Ok(manifest) =
+    workflow_contract_manifest.decode_input_manifest(text)
+  manifest
+}
+
+fn read_output_manifest(
+  root: String,
+  run_id: String,
+) -> workflow_contract_manifest.ContractOutputManifest {
+  let assert Ok(text) =
+    simplifile.read(
+      root <> "/.scherzo-state/artifacts/runs/" <> run_id <> "/outputs.v1.json",
+    )
+  let assert Ok(manifest) =
+    workflow_contract_manifest.decode_output_manifest(text)
+  manifest
+}
+
+fn output_named(
+  outputs: List(workflow_contract_manifest.NamedManifestValue),
+  name: String,
+) -> workflow_contract_manifest.ManifestValue {
+  let assert Ok(output) =
+    outputs
+    |> list.find(fn(output) { output.name == name })
+  output.value
+}
+
+pub fn contracted_mapped_input_can_be_supplied_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-supplied-input"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    exec_plan:\n      type: exec_plan\n      source: mapped_output\nsteps:\n  - id: implement\n    kind: command\n    run: echo runs\n",
+    )
+  let supplied =
+    workflow_run.ContractRunValues(
+      inputs: dict.from_list([
+        #(
+          "exec_plan",
+          workflow_contract_manifest.present_run_artifact(
+            workflow_contract.ExecPlan,
+            workflow_contract_manifest.ArtifactWritten(
+              ref: "runs/upstream/outputs/exec_plan.md",
+              sha256: "abc",
+              bytes: 12,
+            ),
+            "text/markdown",
+            None,
+          ),
+        ),
+      ]),
+      context: dict.new(),
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute_with_contract_values(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      supplied,
+      dependencies,
+    )
+  assert receive_event(subject) == "prepare:implement:main:"
+}
+
+pub fn contracted_scheduled_context_records_metadata_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-scheduled-context"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: scheduled-repair\ncontract:\n  version: 1\n  inputs:\n    scheduled:\n      type: text\n      source: scheduled_context\nsteps:\n  - id: repair\n    kind: command\n    run: echo repair\n",
+    )
+  let scheduled =
+    schedule_core.ScheduledRunContext(
+      job_id: "nightly-repair",
+      workflow_id: "scheduled-repair",
+      due_at_ms: 1_800_000,
+      started_at_ms: 1_860_000,
+      run_id: "run-scheduled",
+      attempt: 2,
+      trigger: "automatic",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute_scheduled(
+      scheduled,
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      dependencies,
+    )
+
+  let manifest = read_input_manifest(root, "run-scheduled")
+  let assert [scheduled_input] = manifest.inputs
+  assert scheduled_input.name == "scheduled"
+  let assert Some(value) = scheduled_input.value.value
+  let value_text = json.to_string(json_value.to_json(value))
+  assert string.contains(value_text, "nightly-repair")
+  assert string.contains(value_text, "run-scheduled")
+  assert !string.contains(value_text, "ABC-123")
+}
+
+pub fn contracted_optional_workspace_driver_base_records_absent_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-optional-driver-base"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  context:\n    base_ref:\n      type: git_ref\n      required: false\n      source: workspace_driver_base\nsteps:\n  - id: implement\n    kind: command\n    run: echo implement\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let manifest = read_input_manifest(root, "run-1")
+  let assert [base_ref] = manifest.context
+  assert base_ref.name == "base_ref"
+  assert base_ref.value.status == workflow_contract_manifest.Absent
+}
+
+pub fn contracted_required_final_response_output_missing_fails_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-missing-required-output"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    workspace: main\n",
+    )
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(subject, None, False, checkpoint),
+    )
+
+  assert failure.reason == "workflow_required_output_missing:findings"
+  let manifest = read_output_manifest(root, "run-1")
+  let assert [findings] = manifest.outputs
+  assert findings.value.status == workflow_contract_manifest.Absent
+  assert string.contains(
+    string.join(manifest.diagnostics, with: "\n"),
+    "findings is required but absent",
+  )
+}
+
+pub fn contracted_step_failure_keeps_terminal_reason_and_records_output_diagnostics_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-step-failure-output-diagnostics"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect\n        field: stdout\nsteps:\n  - id: fail\n    kind: command\n    run: exit 1\n  - id: collect\n    kind: command\n    depends_on: [fail]\n    run: echo findings\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, Some("fail")),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  let manifest = read_output_manifest(root, "run-1")
+  let assert [findings] = manifest.outputs
+  assert findings.value.status == workflow_contract_manifest.Absent
+  assert string.contains(
+    string.join(manifest.diagnostics, with: "\n"),
+    "workflow_output_source_step_missing:collect",
+  )
+}
+
+pub fn contracted_final_response_output_is_retained_as_markdown_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-final-response-output"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    exec_plan:\n      type: exec_plan\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    workspace: main\n",
+    )
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(
+        subject,
+        Some("# ExecPlan\n"),
+        False,
+        checkpoint,
+      ),
+    )
+
+  let manifest = read_output_manifest(root, "run-1")
+  let assert [exec_plan] = manifest.outputs
+  assert exec_plan.value.ref == Some("runs/run-1/outputs/exec_plan.md")
+  let assert Ok(blob) =
+    simplifile.read(
+      root <> "/.scherzo-state/artifacts/runs/run-1/outputs/exec_plan.md",
+    )
+  assert blob == "# ExecPlan\n"
+}
+
+pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-structured-inline-output"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    artifact_change:\n      type: code_change\n      source:\n        step: review_json\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: review_json\n        inline_json: code_change\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      schema:\n        required: [branch]\n",
+    )
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(
+        subject,
+        Some("{\"branch\":\"feature/liv-294\"}"),
+        False,
+        checkpoint,
+      ),
+    )
+
+  let manifest = read_output_manifest(root, "run-1")
+  let artifact_change = output_named(manifest.outputs, "artifact_change")
+  assert artifact_change.status == workflow_contract_manifest.Present
+  assert artifact_change.ref_kind
+    == Some(workflow_contract_manifest.RunArtifact)
+  let inline_change = output_named(manifest.outputs, "inline_change")
+  assert inline_change.status == workflow_contract_manifest.Present
+  assert inline_change.ref_kind
+    == Some(workflow_contract_manifest.InlineJsonRef)
+  let assert Some(value) = inline_change.value
+  assert string.contains(
+    json.to_string(json_value.to_json(value)),
+    "feature/liv-294",
+  )
+}
+
+pub fn contracted_optional_missing_output_allows_success_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-optional-missing-output"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    notes:\n      type: document.markdown\n      required: false\n      source:\n        step: write\n        field: final_response\nsteps:\n  - id: write\n    kind: agent\n    prompt: write prompt\n    workspace: main\n",
+    )
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(subject, None, False, checkpoint),
+    )
+
+  let manifest = read_output_manifest(root, "run-1")
+  let assert [notes] = manifest.outputs
+  assert notes.value.status == workflow_contract_manifest.Absent
+}
+
+pub fn contracted_recovery_with_started_attempt_records_recovery_input_manifest_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-recovery-started-attempt"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\nsteps:\n  - id: collect\n    kind: command\n    run: echo findings\n",
+    )
+  let resume =
+    workflow_run.ResumeState(
+      artifacts: dict.new(),
+      workspaces: dict.new(),
+      next_attempt_indexes: dict.from_list([#("collect", 1)]),
+      run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+      pi_session_continuations: dict.new(),
+      contract_inputs_recorded: None,
+      contract_outputs_recorded: None,
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+      resume,
+    )
+
+  let records = ledger_records(root)
+  let assert [first, ..] = records
+  assert record.kind(first.body) == "workflow_run_inputs_recorded"
+  let input_manifest = read_input_manifest(root, "run-1")
+  assert input_manifest.diagnostics == ["recovered_after_steps_started"]
+}
+
+pub fn contracted_recovery_records_missing_inputs_once_and_preserves_outputs_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-recovery-idempotence"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    prompt:\n      type: text\n      source: issue_context\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect\n        field: stdout\nsteps:\n  - id: collect\n    kind: command\n    run: echo findings\n",
+    )
+  let artifact =
+    step_artifact.from_command_result(
+      "collect",
+      0,
+      "# Accepted\n",
+      "",
+      False,
+      [],
+      orchestrator().artifact_limits,
+    )
+  let recorded =
+    workflow_checkpoint.ArtifactWritten(
+      ref: "runs/run-1/outputs.v1.json",
+      sha256: "already-recorded",
+      bytes: 1,
+    )
+  let resume =
+    workflow_run.ResumeState(
+      artifacts: dict.from_list([#("collect", artifact)]),
+      workspaces: dict.new(),
+      next_attempt_indexes: dict.new(),
+      run_root: Some("test/tmp/workflow-run/workspaces/implementation/ABC-123"),
+      pi_session_continuations: dict.new(),
+      contract_inputs_recorded: None,
+      contract_outputs_recorded: None,
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+      resume,
+    )
+  let output_manifest = read_output_manifest(root, "run-1")
+  let assert [findings] = output_manifest.outputs
+  assert findings.value.ref == Some("runs/run-1/outputs/findings.md")
+  let assert Ok(blob) =
+    simplifile.read(
+      root <> "/.scherzo-state/artifacts/runs/run-1/outputs/findings.md",
+    )
+  assert blob == "# Accepted\n"
+  let input_manifest = read_input_manifest(root, "run-1")
+  assert input_manifest.diagnostics == ["recovered_after_steps_started"]
+
+  let resume =
+    workflow_run.ResumeState(
+      ..resume,
+      contract_inputs_recorded: Some(recorded),
+      contract_outputs_recorded: Some(recorded),
+    )
+  let assert Ok(_) =
+    workflow_run.execute_with_resume(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+      resume,
+    )
+  let contract_records =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_run_inputs_recorded"
+      || record.kind(ledger_record.body) == "workflow_run_outputs_recorded"
+    })
+  assert list.length(contract_records) == 2
 }

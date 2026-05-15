@@ -1,7 +1,10 @@
+import gleam/bit_array
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/hash
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
@@ -9,6 +12,7 @@ import scherzo/state/record
 import scherzo/step_artifact
 import scherzo/structured_output_metadata
 import scherzo/workflow_attempt
+import scherzo/workflow_contract_manifest
 import scherzo/workflow_identity
 import scherzo/workspace_run
 
@@ -59,6 +63,24 @@ pub type WorkflowFinished {
   )
 }
 
+pub type WorkflowContractManifestRecorded {
+  WorkflowContractManifestRecorded(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    artifact: ArtifactWritten,
+  )
+}
+
+pub type WorkflowOutputBlobWrite {
+  WorkflowOutputBlobWrite(
+    run_id: String,
+    output_name: String,
+    extension: String,
+    contents: String,
+  )
+}
+
 pub type StepFinished {
   StepFinished(
     run_id: String,
@@ -92,6 +114,16 @@ pub type Writer {
       Result(ArtifactWritten, CheckpointError),
     write_structured_output_artifact: fn(StructuredOutputWrite) ->
       Result(StructuredArtifactWritten, CheckpointError),
+    write_workflow_inputs_manifest: fn(String, String) ->
+      Result(ArtifactWritten, CheckpointError),
+    workflow_inputs_recorded: fn(WorkflowContractManifestRecorded) ->
+      Result(Nil, CheckpointError),
+    write_workflow_outputs_manifest: fn(String, String) ->
+      Result(ArtifactWritten, CheckpointError),
+    workflow_outputs_recorded: fn(WorkflowContractManifestRecorded) ->
+      Result(Nil, CheckpointError),
+    write_workflow_output_blob: fn(WorkflowOutputBlobWrite) ->
+      Result(ArtifactWritten, CheckpointError),
     step_finished: fn(StepFinished, ArtifactWritten) ->
       Result(Nil, CheckpointError),
     step_interrupted: fn(String, String, String, Int, String) ->
@@ -127,6 +159,33 @@ pub fn noop_writer() -> Writer {
           <> workflow_identity.safe_component(write.artifact_name, "artifact")
           <> ".json",
         path: "noop-structured-output-artifact.json",
+        sha256: "noop",
+        bytes: 0,
+      ))
+    },
+    write_workflow_inputs_manifest: fn(run_id, _contents) {
+      Ok(ArtifactWritten(
+        ref: "noop/" <> run_id <> "/inputs.v1.json",
+        sha256: "noop",
+        bytes: 0,
+      ))
+    },
+    workflow_inputs_recorded: fn(_) { Ok(Nil) },
+    write_workflow_outputs_manifest: fn(run_id, _contents) {
+      Ok(ArtifactWritten(
+        ref: "noop/" <> run_id <> "/outputs.v1.json",
+        sha256: "noop",
+        bytes: 0,
+      ))
+    },
+    workflow_outputs_recorded: fn(_) { Ok(Nil) },
+    write_workflow_output_blob: fn(write) {
+      Ok(ArtifactWritten(
+        ref: "noop/"
+          <> write.run_id
+          <> "/outputs/"
+          <> workflow_identity.safe_component(write.output_name, "output")
+          <> write.extension,
         sha256: "noop",
         bytes: 0,
       ))
@@ -265,6 +324,97 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
         CheckpointArtifactFailed(describe_artifact_error(error))
       })
     },
+    write_workflow_inputs_manifest: fn(run_id, contents) {
+      use existing <- result.try(existing_input_record(workspace_root, run_id))
+      case existing {
+        Some(artifact) -> Ok(artifact)
+        None ->
+          case reusable_input_manifest(store, run_id, contents) {
+            Ok(Some(artifact)) -> Ok(artifact)
+            Ok(None) ->
+              artifact_store.write_input_manifest(store, run_id, contents)
+              |> result.map(artifact_ref_to_written)
+              |> result.map_error(fn(error) {
+                CheckpointArtifactFailed(describe_artifact_error(error))
+              })
+            Error(error) -> Error(error)
+          }
+      }
+    },
+    workflow_inputs_recorded: fn(recorded) {
+      use existing <- result.try(existing_input_record(
+        workspace_root,
+        recorded.run_id,
+      ))
+      case existing {
+        Some(_) -> Ok(Nil)
+        None ->
+          append_body(
+            workspace_root,
+            now_ms,
+            record.WorkflowRunInputsRecorded(
+              recorded.run_id,
+              recorded.workflow_id,
+              recorded.workflow_fingerprint,
+              recorded.artifact.ref,
+              recorded.artifact.sha256,
+              recorded.artifact.bytes,
+            ),
+          )
+      }
+    },
+    write_workflow_outputs_manifest: fn(run_id, contents) {
+      use existing <- result.try(existing_output_record(workspace_root, run_id))
+      case existing {
+        Some(artifact) -> Ok(artifact)
+        None ->
+          case reusable_output_manifest(store, run_id, contents) {
+            Ok(Some(artifact)) -> Ok(artifact)
+            Ok(None) ->
+              artifact_store.write_output_manifest(store, run_id, contents)
+              |> result.map(artifact_ref_to_written)
+              |> result.map_error(fn(error) {
+                CheckpointArtifactFailed(describe_artifact_error(error))
+              })
+            Error(error) -> Error(error)
+          }
+      }
+    },
+    workflow_outputs_recorded: fn(recorded) {
+      use existing <- result.try(existing_output_record(
+        workspace_root,
+        recorded.run_id,
+      ))
+      case existing {
+        Some(_) -> Ok(Nil)
+        None ->
+          append_body(
+            workspace_root,
+            now_ms,
+            record.WorkflowRunOutputsRecorded(
+              recorded.run_id,
+              recorded.workflow_id,
+              recorded.workflow_fingerprint,
+              recorded.artifact.ref,
+              recorded.artifact.sha256,
+              recorded.artifact.bytes,
+            ),
+          )
+      }
+    },
+    write_workflow_output_blob: fn(write) {
+      artifact_store.write_output_blob(
+        store,
+        write.run_id,
+        write.output_name,
+        write.extension,
+        write.contents,
+      )
+      |> result.map(artifact_ref_to_written)
+      |> result.map_error(fn(error) {
+        CheckpointArtifactFailed(describe_artifact_error(error))
+      })
+    },
     step_finished: fn(finished, artifact_ref) {
       append_body(
         workspace_root,
@@ -337,6 +487,161 @@ fn workflow_finished_body(finished: WorkflowFinished) -> record.RecordBody {
         finished.token_total,
         finished.turns,
       )
+  }
+}
+
+fn artifact_ref_to_written(ref: artifact_store.ArtifactRef) -> ArtifactWritten {
+  ArtifactWritten(ref: ref.ref, sha256: ref.sha256, bytes: ref.bytes)
+}
+
+fn artifact_from_contents(ref: String, contents: String) -> ArtifactWritten {
+  ArtifactWritten(
+    ref: ref,
+    sha256: hash.sha256_hex(contents),
+    bytes: bit_array.byte_size(bit_array.from_string(contents)),
+  )
+}
+
+fn existing_input_record(
+  workspace_root: String,
+  run_id: String,
+) -> Result(Option(ArtifactWritten), CheckpointError) {
+  existing_manifest_record(workspace_root, run_id, input_record_artifact)
+}
+
+fn existing_output_record(
+  workspace_root: String,
+  run_id: String,
+) -> Result(Option(ArtifactWritten), CheckpointError) {
+  existing_manifest_record(workspace_root, run_id, output_record_artifact)
+}
+
+fn existing_manifest_record(
+  workspace_root: String,
+  run_id: String,
+  selector: fn(record.RecordBody, String) -> Option(ArtifactWritten),
+) -> Result(Option(ArtifactWritten), CheckpointError) {
+  use ledger_path <- result.try(
+    ledger.path_for_workspace_root(workspace_root)
+    |> result.map_error(fn(error) {
+      CheckpointAppendFailed(describe_ledger_error(error))
+    }),
+  )
+  use read <- result.try(
+    ledger.read_records(ledger_path)
+    |> result.map_error(fn(error) {
+      CheckpointAppendFailed(describe_ledger_error(error))
+    }),
+  )
+  Ok(
+    list.fold(read.records, None, fn(found, ledger_record) {
+      case selector(ledger_record.body, run_id) {
+        Some(artifact) -> Some(artifact)
+        None -> found
+      }
+    }),
+  )
+}
+
+fn input_record_artifact(
+  body: record.RecordBody,
+  run_id: String,
+) -> Option(ArtifactWritten) {
+  case body {
+    record.WorkflowRunInputsRecorded(
+      run_id: recorded_run_id,
+      artifact_ref: ref,
+      artifact_sha256: sha,
+      artifact_bytes: bytes,
+      ..,
+    )
+      if recorded_run_id == run_id
+    -> Some(ArtifactWritten(ref: ref, sha256: sha, bytes: bytes))
+    _ -> None
+  }
+}
+
+fn output_record_artifact(
+  body: record.RecordBody,
+  run_id: String,
+) -> Option(ArtifactWritten) {
+  case body {
+    record.WorkflowRunOutputsRecorded(
+      run_id: recorded_run_id,
+      artifact_ref: ref,
+      artifact_sha256: sha,
+      artifact_bytes: bytes,
+      ..,
+    )
+      if recorded_run_id == run_id
+    -> Some(ArtifactWritten(ref: ref, sha256: sha, bytes: bytes))
+    _ -> None
+  }
+}
+
+fn reusable_input_manifest(
+  store: artifact_store.Store,
+  run_id: String,
+  desired: String,
+) -> Result(Option(ArtifactWritten), CheckpointError) {
+  let ref = artifact_store.input_manifest_ref(run_id)
+  case artifact_store.read_artifact_unverified(store, ref) {
+    Error(artifact_store.MissingStepArtifact(_)) -> Ok(None)
+    Error(error) ->
+      Error(CheckpointArtifactFailed(describe_artifact_error(error)))
+    Ok(existing) -> {
+      let existing_sha = hash.sha256_hex(existing)
+      let desired_sha = hash.sha256_hex(desired)
+      case
+        workflow_contract_manifest.decode_input_manifest(existing),
+        workflow_contract_manifest.decode_input_manifest(desired)
+      {
+        Ok(existing_manifest), Ok(desired_manifest)
+          if existing_manifest.run_id == desired_manifest.run_id
+          && existing_manifest.workflow_id == desired_manifest.workflow_id
+          && existing_manifest.workflow_fingerprint
+          == desired_manifest.workflow_fingerprint
+          && existing_sha == desired_sha
+        -> Ok(Some(artifact_from_contents(ref, existing)))
+        _, _ ->
+          Error(CheckpointArtifactFailed(
+            "existing_input_manifest_mismatch:" <> ref,
+          ))
+      }
+    }
+  }
+}
+
+fn reusable_output_manifest(
+  store: artifact_store.Store,
+  run_id: String,
+  desired: String,
+) -> Result(Option(ArtifactWritten), CheckpointError) {
+  let ref = artifact_store.output_manifest_ref(run_id)
+  case artifact_store.read_artifact_unverified(store, ref) {
+    Error(artifact_store.MissingStepArtifact(_)) -> Ok(None)
+    Error(error) ->
+      Error(CheckpointArtifactFailed(describe_artifact_error(error)))
+    Ok(existing) -> {
+      let existing_sha = hash.sha256_hex(existing)
+      let desired_sha = hash.sha256_hex(desired)
+      case
+        workflow_contract_manifest.decode_output_manifest(existing),
+        workflow_contract_manifest.decode_output_manifest(desired)
+      {
+        Ok(existing_manifest), Ok(desired_manifest)
+          if existing_manifest.run_id == desired_manifest.run_id
+          && existing_manifest.workflow_id == desired_manifest.workflow_id
+          && existing_manifest.workflow_fingerprint
+          == desired_manifest.workflow_fingerprint
+          && existing_sha == desired_sha
+        -> Ok(Some(artifact_from_contents(ref, existing)))
+        _, _ ->
+          Error(CheckpointArtifactFailed(
+            "existing_output_manifest_mismatch:" <> ref,
+          ))
+      }
+    }
   }
 }
 

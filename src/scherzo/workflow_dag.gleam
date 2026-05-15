@@ -7,6 +7,7 @@ import gleam/string
 import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/structured_output_source
+import scherzo/workflow_contract
 import scherzo/workflow_dag_validator_parser
 import yay
 
@@ -18,6 +19,7 @@ pub type WorkflowDag {
     workspace_capabilities: List(config_types.WorkspaceCapability),
     max_parallel_steps: Int,
     steps: List(WorkflowStep),
+    contract: Option(workflow_contract.Contract),
   )
 }
 
@@ -110,6 +112,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
       use workspace_capabilities <- result.try(read_workspace_capabilities(root))
       use max_parallel_steps <- result.try(read_max_parallel_steps(root))
       use steps <- result.try(read_steps(root))
+      use contract <- result.try(read_contract(root))
       let dag =
         WorkflowDag(
           id: id,
@@ -118,6 +121,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
           workspace_capabilities: workspace_capabilities,
           max_parallel_steps: max_parallel_steps,
           steps: steps,
+          contract: contract,
         )
       validate(dag)
     }
@@ -205,6 +209,7 @@ fn validate(dag: WorkflowDag) -> Result(WorkflowDag, DagError) {
   use _ <- result.try(validate_workspace_sources(dag.steps))
   use _ <- result.try(validate_structured_output_schema_paths(dag.steps))
   use _ <- result.try(validate_single_terminal_sink(dag.steps))
+  use _ <- result.try(validate_contract_sources(dag))
   Ok(dag)
 }
 
@@ -306,6 +311,16 @@ fn read_steps(root: yay.Node) -> Result(List(WorkflowStep), DagError) {
     Some(_) -> Error(DagError("steps_not_list", "steps must be a list"))
     None -> Error(DagError("missing_steps", "steps is required"))
   }
+}
+
+fn read_contract(
+  root: yay.Node,
+) -> Result(Option(workflow_contract.Contract), DagError) {
+  workflow_contract.parse(root)
+  |> result.map_error(fn(error) {
+    let workflow_contract.ContractError(code, message) = error
+    DagError(code, message)
+  })
 }
 
 fn read_step_list(
@@ -1096,6 +1111,139 @@ fn validate_single_terminal_sink(
   }
 }
 
+fn validate_contract_sources(dag: WorkflowDag) -> Result(Nil, DagError) {
+  case dag.contract {
+    None -> Ok(Nil)
+    Some(contract) -> validate_contract_outputs(contract.outputs, dag.steps)
+  }
+}
+
+fn validate_contract_outputs(
+  outputs: List(workflow_contract.OutputSpec),
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
+  case outputs {
+    [] -> Ok(Nil)
+    [output, ..rest] -> {
+      use Nil <- result.try(validate_contract_output(output, steps))
+      validate_contract_outputs(rest, steps)
+    }
+  }
+}
+
+fn validate_contract_output(
+  output: workflow_contract.OutputSpec,
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
+  case output.source {
+    None -> Ok(Nil)
+    Some(workflow_contract.StaticUrl(_))
+    | Some(workflow_contract.StaticGitRef(_)) -> Ok(Nil)
+    Some(workflow_contract.StepField(step_id, field)) ->
+      validate_contract_step_field(output.name, step_id, field, steps)
+    Some(workflow_contract.StructuredOutput(step_id, artifact_name))
+    | Some(workflow_contract.InlineJson(step_id, artifact_name)) ->
+      validate_contract_structured_output(
+        output.name,
+        step_id,
+        artifact_name,
+        steps,
+      )
+  }
+}
+
+fn validate_contract_step_field(
+  output_name: String,
+  step_id: String,
+  field: workflow_contract.OutputField,
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
+  case step_by_id_in_steps(steps, step_id) {
+    Error(Nil) -> contract_unknown_step_error(output_name, step_id)
+    Ok(step) ->
+      case field, step.kind {
+        workflow_contract.Stdout, CommandStep(..) -> Ok(Nil)
+        workflow_contract.FinalResponse, AgentStep(..) -> Ok(Nil)
+        _, _ ->
+          Error(DagError(
+            "contract_output_field_invalid_for_step",
+            "contract output "
+              <> output_name
+              <> " source field "
+              <> workflow_contract.output_field_to_string(field)
+              <> " is not valid for step "
+              <> step_id,
+          ))
+      }
+  }
+}
+
+fn validate_contract_structured_output(
+  output_name: String,
+  step_id: String,
+  artifact_name: String,
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
+  case step_by_id_in_steps(steps, step_id) {
+    Error(Nil) -> contract_unknown_step_error(output_name, step_id)
+    Ok(step) ->
+      case step.kind {
+        AgentStep(_, Some(spec)) ->
+          case spec.artifact_name == artifact_name {
+            True -> Ok(Nil)
+            False ->
+              contract_structured_missing_error(
+                output_name,
+                step_id,
+                artifact_name,
+              )
+          }
+        _ ->
+          contract_structured_missing_error(output_name, step_id, artifact_name)
+      }
+  }
+}
+
+fn contract_unknown_step_error(
+  output_name: String,
+  step_id: String,
+) -> Result(Nil, DagError) {
+  Error(DagError(
+    "contract_output_unknown_step",
+    "contract output " <> output_name <> " references unknown step " <> step_id,
+  ))
+}
+
+fn contract_structured_missing_error(
+  output_name: String,
+  step_id: String,
+  artifact_name: String,
+) -> Result(Nil, DagError) {
+  Error(DagError(
+    "contract_output_structured_artifact_missing",
+    "contract output "
+      <> output_name
+      <> " references missing structured output "
+      <> artifact_name
+      <> " on step "
+      <> step_id,
+  ))
+}
+
+fn step_by_id_in_steps(
+  steps: List(WorkflowStep),
+  step_id: String,
+) -> Result(WorkflowStep, Nil) {
+  case steps {
+    [] -> Error(Nil)
+    [step, ..rest] ->
+      case step.id == step_id {
+        True -> Ok(step)
+        False -> step_by_id_in_steps(rest, step_id)
+      }
+  }
+}
+
 fn terminal_steps(steps: List(WorkflowStep)) -> List(WorkflowStep) {
   steps
   |> list.filter(fn(step) { !has_dependent(steps, step.id) })
@@ -1229,7 +1377,7 @@ fn get_node(node: yay.Node, key: String) -> Option(yay.Node) {
     yay.NodeMap(pairs) ->
       case list.key_find(pairs, yay.NodeStr(key)) {
         Ok(value) -> Some(value)
-        Error(_) -> None
+        Error(Nil) -> None
       }
     _ -> None
   }

@@ -99,6 +99,25 @@ steps:
 "
 }
 
+fn implementation_workflow_with_invalid_contract_text() -> String {
+  "version: 1
+id: implementation
+contract:
+  version: 1
+  outputs:
+    findings:
+      type: document.markdown
+      source:
+        step: missing_step
+        field: stdout
+steps:
+  - id: implement
+    kind: agent
+    prompt: prompts/task.md
+    workspace: main
+"
+}
+
 fn write_workflow_file(dir: String, contents: String) -> Nil {
   let assert Ok(Nil) = simplifile.write(workflow_file_path(dir), contents)
   Nil
@@ -222,6 +241,27 @@ pub fn workflow_reloader_invalid_routed_workflow_keeps_last_known_good_and_names
       assert step.id == "implement"
     }
     _ -> panic as "expected invalid routed workflow reload outcome"
+  }
+}
+
+pub fn workflow_reloader_invalid_contract_keeps_last_known_good_bundle_test() {
+  let dir = "test/tmp/workflow-reloader-invalid-contract"
+  let path = write_workflow(dir, 1000)
+  let state = load_state(path)
+  write_workflow_file(dir, implementation_workflow_with_invalid_contract_text())
+
+  case workflow_reloader.reload_if_changed(state) {
+    workflow_reloader.Invalid(next, reason, message) -> {
+      assert next.effective.polling.interval_ms == 1000
+      assert next.reload_state.current_status == config.CurrentInvalid(reason)
+      assert !config.can_dispatch(next.reload_state)
+      assert string.contains(message, "missing_step")
+      let assert Ok(dag) = dict.get(next.bundle.workflows, "implementation")
+      let assert [step] = dag.steps
+      assert step.id == "implement"
+      assert dag.contract == None
+    }
+    _ -> panic as "expected invalid contract reload outcome"
   }
 }
 

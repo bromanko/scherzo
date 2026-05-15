@@ -277,6 +277,56 @@ pub fn structured_output_artifact_ref(
   <> ".json"
 }
 
+pub fn input_manifest_ref(run_id: String) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/inputs.v1.json"
+}
+
+pub fn output_manifest_ref(run_id: String) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/outputs.v1.json"
+}
+
+pub fn output_blob_ref(
+  run_id: String,
+  output_name: String,
+  extension: String,
+) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/outputs/"
+  <> workflow_identity.safe_component(output_name, "output")
+  <> extension
+}
+
+pub fn write_input_manifest(
+  store: Store,
+  run_id: String,
+  contents: String,
+) -> Result(ArtifactRef, ArtifactError) {
+  write_ref(store, input_manifest_ref(run_id), contents)
+}
+
+pub fn write_output_manifest(
+  store: Store,
+  run_id: String,
+  contents: String,
+) -> Result(ArtifactRef, ArtifactError) {
+  write_ref(store, output_manifest_ref(run_id), contents)
+}
+
+pub fn write_output_blob(
+  store: Store,
+  run_id: String,
+  output_name: String,
+  extension: String,
+  contents: String,
+) -> Result(ArtifactRef, ArtifactError) {
+  write_ref(store, output_blob_ref(run_id, output_name, extension), contents)
+}
+
 pub fn context_recovery_artifact_ref(
   run_id: String,
   step_id: String,
@@ -341,6 +391,33 @@ pub fn read_artifact_unverified(
   ref: String,
 ) -> Result(String, ArtifactError) {
   read_artifact_contents(store, ref)
+}
+
+fn write_ref(
+  store: Store,
+  ref: String,
+  contents: String,
+) -> Result(ArtifactRef, ArtifactError) {
+  use final_path <- result.try(resolve_ref_for_write(store, ref))
+  use Nil <- result.try(ensure_parent(final_path))
+  use Nil <- result.try(
+    write_atomic(final_path, contents)
+    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
+  )
+  use final <- result.try(
+    simplifile.read(final_path)
+    |> result.replace_error(MissingStepArtifact(ref)),
+  )
+  let sha = hash.sha256_hex(final)
+  case final == contents {
+    True ->
+      Ok(ArtifactRef(
+        ref: ref,
+        sha256: sha,
+        bytes: bit_array.byte_size(bit_array.from_string(final)),
+      ))
+    False -> Error(CorruptStepArtifact(ref))
+  }
 }
 
 fn stored_to_string(stored: StoredArtifact) -> String {

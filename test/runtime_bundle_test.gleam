@@ -749,3 +749,24 @@ pub fn rejects_escaping_prompt_paths_test() {
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   assert code == "invalid_prompt_path"
 }
+
+pub fn invalid_workflow_contract_rejects_bundle_load_test() {
+  let dir = "test/tmp/runtime-bundle-invalid-contract"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: missing\n        field: stdout\nsteps:\n  - id: collect_findings\n    kind: command\n    run: echo ok\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  kind: linear\n  api_key: linearkey\n  project_slug: TEST\n  dispatch_states: [Todo]\nworkspace:\n  root: workspaces\nrouting:\n  workflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "contract_output_unknown_step"
+  assert string.contains(message, "unknown step missing")
+}

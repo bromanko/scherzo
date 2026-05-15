@@ -4,6 +4,23 @@ description: Investigate an issue, write one Markdown findings artifact, verify 
 workspace_profile: noop
 workspace_capabilities: [assert-only]
 max_parallel_steps: 1
+contract:
+  version: 1
+  inputs:
+    prompt:
+      type: text
+      required: true
+      source: issue_context
+    attachments:
+      type: artifact[]
+      required: false
+  outputs:
+    findings:
+      type: document.markdown
+      required: true
+      source:
+        step: collect_findings
+        field: stdout
 steps:
   - id: research
     kind: agent

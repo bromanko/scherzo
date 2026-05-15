@@ -436,6 +436,38 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "WorkflowRunInputsRecorded",
+      "workflow_run_inputs_recorded",
+      record.with_id(
+        "record-workflow-run-inputs-recorded",
+        1004,
+        record.WorkflowRunInputsRecorded(
+          run_id: "workflow-run-1",
+          workflow_id: "research",
+          workflow_fingerprint: "fp",
+          artifact_ref: "runs/workflow-run-1/inputs.v1.json",
+          artifact_sha256: "abc",
+          artifact_bytes: 123,
+        ),
+      ),
+    ),
+    LedgerExample(
+      "WorkflowRunOutputsRecorded",
+      "workflow_run_outputs_recorded",
+      record.with_id(
+        "record-workflow-run-outputs-recorded",
+        1004,
+        record.WorkflowRunOutputsRecorded(
+          run_id: "workflow-run-1",
+          workflow_id: "research",
+          workflow_fingerprint: "fp",
+          artifact_ref: "runs/workflow-run-1/outputs.v1.json",
+          artifact_sha256: "def",
+          artifact_bytes: 456,
+        ),
+      ),
+    ),
+    LedgerExample(
       "WorkflowRunInterrupted",
       "workflow_run_interrupted",
       record.with_id(
@@ -1222,6 +1254,8 @@ fn projection_fixture_projection() -> projection.Projection {
         ),
       ),
     ]),
+    workflow_input_manifests: dict.new(),
+    workflow_output_manifests: dict.new(),
     step_attempts: dict.from_list([
       #(
         "workflow-run-1:implement:1",

@@ -17,6 +17,8 @@ pub type Projection {
     runs: Dict(String, RunStatus),
     workflow_runs: Dict(String, WorkflowRunStatus),
     workflow_task_refs: Dict(String, record.TaskRefFields),
+    workflow_input_manifests: Dict(String, WorkflowContractManifestRef),
+    workflow_output_manifests: Dict(String, WorkflowContractManifestRef),
     step_attempts: Dict(String, StepAttemptStatus),
     retries: Dict(String, RetryStatus),
     parked_issues: Dict(String, ParkedIssue),
@@ -80,6 +82,17 @@ pub type WorkflowRunStatus {
     reason: String,
     superseded_at_ms: Int,
     run_root: String,
+  )
+}
+
+pub type WorkflowContractManifestRef {
+  WorkflowContractManifestRef(
+    workflow_id: String,
+    workflow_fingerprint: String,
+    artifact_ref: String,
+    artifact_sha256: String,
+    artifact_bytes: Int,
+    recorded_at_ms: Int,
   )
 }
 
@@ -403,11 +416,20 @@ type KnownWorkspaceSnapshot {
   KnownWorkspaceSnapshot(issue_id: String, workspace: KnownWorkspace)
 }
 
+type WorkflowContractManifestSnapshot {
+  WorkflowContractManifestSnapshot(
+    run_id: String,
+    manifest: WorkflowContractManifestRef,
+  )
+}
+
 type SnapshotFields {
   SnapshotFields(
     runs: List(RunSnapshot),
     workflow_runs: List(WorkflowRunSnapshot),
     workflow_task_refs: List(WorkflowTaskRefSnapshot),
+    workflow_input_manifests: List(WorkflowContractManifestSnapshot),
+    workflow_output_manifests: List(WorkflowContractManifestSnapshot),
     step_attempts: List(StepAttemptSnapshot),
     retries: List(RetrySnapshot),
     parked_issues: List(ParkedSnapshot),
@@ -431,6 +453,8 @@ pub fn new() -> Projection {
     runs: dict.new(),
     workflow_runs: dict.new(),
     workflow_task_refs: dict.new(),
+    workflow_input_manifests: dict.new(),
+    workflow_output_manifests: dict.new(),
     step_attempts: dict.new(),
     retries: dict.new(),
     parked_issues: dict.new(),
@@ -617,6 +641,52 @@ pub fn apply(
         ),
       )
     }
+    record.WorkflowRunInputsRecorded(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      artifact_ref,
+      artifact_sha256,
+      artifact_bytes,
+    ) ->
+      Projection(
+        ..projection,
+        workflow_input_manifests: dict.insert(
+          projection.workflow_input_manifests,
+          run_id,
+          WorkflowContractManifestRef(
+            workflow_id,
+            workflow_fingerprint,
+            artifact_ref,
+            artifact_sha256,
+            artifact_bytes,
+            at_ms,
+          ),
+        ),
+      )
+    record.WorkflowRunOutputsRecorded(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      artifact_ref,
+      artifact_sha256,
+      artifact_bytes,
+    ) ->
+      Projection(
+        ..projection,
+        workflow_output_manifests: dict.insert(
+          projection.workflow_output_manifests,
+          run_id,
+          WorkflowContractManifestRef(
+            workflow_id,
+            workflow_fingerprint,
+            artifact_ref,
+            artifact_sha256,
+            artifact_bytes,
+            at_ms,
+          ),
+        ),
+      )
     record.WorkflowRunInterrupted(run_id, workflow_id, issue_id, reason) -> {
       let run_root = workflow_run_root(projection, run_id)
       Projection(
@@ -2450,6 +2520,26 @@ pub fn has_workflow_run(projection: Projection, run_id: String) -> Bool {
   dict.has_key(projection.workflow_runs, run_id)
 }
 
+pub fn workflow_input_manifest(
+  projection: Projection,
+  run_id: String,
+) -> Option(WorkflowContractManifestRef) {
+  case dict.get(projection.workflow_input_manifests, run_id) {
+    Ok(manifest) -> Some(manifest)
+    Error(Nil) -> None
+  }
+}
+
+pub fn workflow_output_manifest(
+  projection: Projection,
+  run_id: String,
+) -> Option(WorkflowContractManifestRef) {
+  case dict.get(projection.workflow_output_manifests, run_id) {
+    Ok(manifest) -> Some(manifest)
+    Error(Nil) -> None
+  }
+}
+
 fn latest_finished_workspace(
   statuses: List(StepAttemptStatus),
   best: Option(StepAttemptStatus),
@@ -2675,6 +2765,20 @@ pub fn to_json(projection: Projection) -> json.Json {
       ),
     ),
     #(
+      "workflow_input_manifests",
+      json.array(
+        dict.to_list(projection.workflow_input_manifests),
+        of: workflow_contract_manifest_entry_to_json,
+      ),
+    ),
+    #(
+      "workflow_output_manifests",
+      json.array(
+        dict.to_list(projection.workflow_output_manifests),
+        of: workflow_contract_manifest_entry_to_json,
+      ),
+    ),
+    #(
       "step_attempts",
       json.array(
         dict.to_list(projection.step_attempts),
@@ -2763,6 +2867,18 @@ fn decode_current_snapshot(contents: String) -> Result(Projection, String) {
           |> list.map(fn(entry) {
             let WorkflowTaskRefSnapshot(run_id, task_ref) = entry
             #(run_id, task_ref)
+          })
+          |> dict.from_list,
+        workflow_input_manifests: fields.workflow_input_manifests
+          |> list.map(fn(entry) {
+            let WorkflowContractManifestSnapshot(run_id, manifest) = entry
+            #(run_id, manifest)
+          })
+          |> dict.from_list,
+        workflow_output_manifests: fields.workflow_output_manifests
+          |> list.map(fn(entry) {
+            let WorkflowContractManifestSnapshot(run_id, manifest) = entry
+            #(run_id, manifest)
           })
           |> dict.from_list,
         step_attempts: fields.step_attempts
@@ -2963,6 +3079,21 @@ fn workflow_task_ref_entry_to_json(
     #("task_remote_id", json.string(task_remote_id)),
     #("task_key", option_string_to_json(task_key)),
     #("task_url", option_string_to_json(task_url)),
+  ])
+}
+
+fn workflow_contract_manifest_entry_to_json(
+  entry: #(String, WorkflowContractManifestRef),
+) -> json.Json {
+  let #(run_id, manifest) = entry
+  json.object([
+    #("run_id", json.string(run_id)),
+    #("workflow_id", json.string(manifest.workflow_id)),
+    #("workflow_fingerprint", json.string(manifest.workflow_fingerprint)),
+    #("artifact_ref", json.string(manifest.artifact_ref)),
+    #("artifact_sha256", json.string(manifest.artifact_sha256)),
+    #("artifact_bytes", json.int(manifest.artifact_bytes)),
+    #("recorded_at_ms", json.int(manifest.recorded_at_ms)),
   ])
 }
 
@@ -3486,6 +3617,16 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     [],
     decode.list(of: workflow_task_ref_snapshot_decoder()),
   )
+  use workflow_input_manifests <- decode.optional_field(
+    "workflow_input_manifests",
+    [],
+    decode.list(of: workflow_contract_manifest_snapshot_decoder()),
+  )
+  use workflow_output_manifests <- decode.optional_field(
+    "workflow_output_manifests",
+    [],
+    decode.list(of: workflow_contract_manifest_snapshot_decoder()),
+  )
   use step_attempts <- decode.optional_field(
     "step_attempts",
     [],
@@ -3535,6 +3676,8 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         runs,
         workflow_runs,
         workflow_task_refs,
+        workflow_input_manifests,
+        workflow_output_manifests,
         step_attempts,
         retries,
         parked_issues,
@@ -3547,7 +3690,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
       ))
     False ->
       decode.failure(
-        SnapshotFields([], [], [], [], [], [], [], [], [], [], [], []),
+        SnapshotFields([], [], [], [], [], [], [], [], [], [], [], [], [], []),
         expected: "SnapshotFields",
       )
   }
@@ -3716,6 +3859,32 @@ fn workflow_task_ref_snapshot_decoder() -> decode.Decoder(
       task_remote_id: task_remote_id,
       task_key: task_key,
       task_url: task_url,
+    ),
+  ))
+}
+
+fn workflow_contract_manifest_snapshot_decoder() -> decode.Decoder(
+  WorkflowContractManifestSnapshot,
+) {
+  use run_id <- decode.field("run_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use workflow_fingerprint <- decode.field(
+    "workflow_fingerprint",
+    decode.string,
+  )
+  use artifact_ref <- decode.field("artifact_ref", decode.string)
+  use artifact_sha256 <- decode.field("artifact_sha256", decode.string)
+  use artifact_bytes <- decode.field("artifact_bytes", decode.int)
+  use recorded_at_ms <- decode.field("recorded_at_ms", decode.int)
+  decode.success(WorkflowContractManifestSnapshot(
+    run_id,
+    WorkflowContractManifestRef(
+      workflow_id,
+      workflow_fingerprint,
+      artifact_ref,
+      artifact_sha256,
+      artifact_bytes,
+      recorded_at_ms,
     ),
   ))
 }

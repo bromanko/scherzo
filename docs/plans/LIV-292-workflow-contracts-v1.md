@@ -48,13 +48,15 @@ The most likely false assumption is that all required outputs can be inferred fr
 
 - [x] (2026-05-14 00:00Z) Drafted this ExecPlan from Linear issue LIV-292 and current repository inspection.
 - [x] (2026-05-14 01:00Z) Incorporated adversarial review findings by closing the source grammar, runtime invocation, terminal sequencing, recovery, validation, and concrete-step gaps.
-- [ ] Add the v1 contract parser and data model without changing runtime behavior.
-- [ ] Add contract fingerprinting, config reload validation, and focused parser tests.
-- [ ] Record actual run inputs at workflow start and append a ledger record that references the retained input manifest.
-- [ ] Materialize and record actual named outputs at workflow finish and append a ledger record that references the retained output manifest.
-- [ ] Add compatibility-validation helpers for future explicit workflow-to-workflow mappings.
-- [ ] Update example workflow YAML files and tests to demonstrate research, ExecPlan drafting, and implementation contracts.
-- [ ] Run format, test, lint, and ExecPlan validation commands and record the final outcome.
+- [x] (2026-05-14 02:10Z) Added the v1 contract parser and data model without changing runtime behavior for workflows that omit `contract`.
+- [x] (2026-05-14 02:20Z) Added contract fingerprinting, load/reload validation coverage, and focused parser tests.
+- [x] (2026-05-14 02:35Z) Recorded actual run inputs at workflow start and appended a ledger record that references the retained input manifest.
+- [x] (2026-05-14 02:50Z) Materialized and recorded actual named outputs at workflow finish and appended a ledger record that references the retained output manifest.
+- [x] (2026-05-14 03:00Z) Added compatibility-validation helpers for future explicit workflow-to-workflow mappings.
+- [x] (2026-05-14 03:10Z) Updated `examples/workflows/research.yaml` and tests to demonstrate the v1 contract shape without adding graph orchestration.
+- [x] (2026-05-14 03:20Z) Ran format, test, lint, and ExecPlan validation commands and recorded the final outcome.
+- [x] (2026-05-14 04:10Z) Applied plan-completion feedback by carrying contract manifest refs through projection and recovery, making manifest recording idempotent, adding missing runtime/recovery/reload tests, and rerunning the unit suite.
+- [x] (2026-05-14 04:35Z) Completed follow-up validation repair by enforcing manifest schema headers and exact content hashes during manifest reuse, recognizing recovered started attempts as post-side-effect input recovery, refreshing projection/source guardrail fixtures, and rerunning format, tests, and lint gates.
 
 ## Surprises & Discoveries
 
@@ -63,6 +65,15 @@ The most likely false assumption is that all required outputs can be inferred fr
 
 - Observation: Retained run artifacts already use stable relative refs under `runs/<run-id>/...`, which is a good base for v1 contract manifests.
   Evidence: `src/scherzo/state/artifact_store.gleam` builds refs such as `runs/<run_id>/<step_id>/attempt-<n>.json` and `runs/<run_id>/<step_id>/attempt-<n>/structured/<artifact_name>.json`.
+
+- Observation: The source-size guardrail is strict for `src/scherzo/workflow_run.gleam`, so runtime contract additions had to stay within the updated baseline rather than adding a new helper module or broad refactor.
+  Evidence: `direnv exec . gleam test` failed while `workflow_run.gleam` exceeded its source baseline, then passed after reducing the workflow-run line count to stay below the checked-in baseline.
+
+- Observation: Plan-completion verification exposed that treating manifest ledger records as projection no-ops was too weak for restart safety.
+  Evidence: Recovery now carries `workflow_run_inputs_recorded` and `workflow_run_outputs_recorded` artifact refs into `ResumeState`, and `direnv exec . gleam test` passes with recovery/idempotence coverage.
+
+- Observation: Full-suite validation caught bookkeeping gaps in the follow-up repair: projection snapshots now serialize empty contract-manifest maps, and the intentional projection/workflow-run growth exceeded the checked-in source guardrail baselines.
+  Evidence: The first full `direnv exec . gleam test` run failed on `projection_snapshot_golden_fixture_decodes_and_reencodes_test` and `source_guardrail_matches_checked_in_baseline_test`; after updating the fixture and baselines and adding final-attempt plus started-attempt recovery coverage, the suite passed with 1411 tests.
 
 ## Decision Log
 
@@ -98,9 +109,25 @@ The most likely false assumption is that all required outputs can be inferred fr
   Rationale: The schema version already represents the JSON envelope and decoder family; append-only record kinds are covered by fixture and decoder updates. Rollback to a binary that cannot decode the new records requires a pre-deployment state snapshot or a forward-compatible decoder.
   Date: 2026-05-14
 
+- Decision: Projection stores input/output manifest artifact refs for recovery while operator-facing UI state still avoids presenting a new contract surface in v1.
+  Rationale: Recovery must know when manifest records already exist to avoid duplicate or overwritten evidence. Keeping the stored refs out of current UI rendering preserves the additive rollout and avoids a broad terminal/control surface change.
+  Date: 2026-05-14
+
+- Decision: The checkpoint ledger writer treats existing contract manifest files and ledger records as idempotent evidence for a run id.
+  Rationale: Recovery can encounter a manifest file without its ledger record or a ledger record from an earlier recovery attempt. Reusing a decoded same-run manifest and suppressing duplicate recorded records prevents overwrites and duplicate contract evidence.
+  Date: 2026-05-14
+
+- Decision: Contract manifest reuse validates `schema_version`, `artifact_type`, and the exact content hash before accepting an existing manifest for runtime or recovery reuse.
+  Rationale: The recovery/idempotence rule allows appending a missing ledger record for an existing manifest file only after verifying it is the expected v1 workflow-contract manifest shape and the same bytes the runtime would otherwise write, not merely any JSON object with matching run fields.
+  Date: 2026-05-14
+
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Implemented v1 workflow contracts as an optional workflow YAML feature. Workflows can now declare typed named inputs, execution context, and outputs; contract content participates in workflow fingerprints; invalid contract references fail loading/reload validation; contracted runs retain `inputs.v1.json` and `outputs.v1.json` manifests and append ledger records that point at those artifacts. The research example now demonstrates a required issue prompt input and required Markdown findings output, while existing workflows without `contract` remain valid.
+
+Validation passed with `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, `direnv exec . gleam run -m scherzo_lint`, and `scripts/scherzo-execplan validate docs/plans/LIV-292-workflow-contracts-v1.md`. The lint commands still report the repository's existing warning inventory and no errors.
+
+Plan-completion feedback was applied after the initial implementation. Recovery now remembers existing input and output manifest ledger refs, writes a single recovery input manifest when steps already started before input recording, skips duplicate terminal output manifests, and reuses verified same-run manifest files instead of overwriting them. Manifest decoders now reject wrong `schema_version` or `artifact_type` headers before a manifest can be reused, and manifest reuse requires the existing file hash to match the manifest the runtime would otherwise write. Additional tests cover scheduled context, optional workspace driver context, missing required outputs, terminal precedence for step failure, final-response/structured/inline outputs, optional missing outputs, recovery duplicate prevention, started-attempt input recovery, final accepted-attempt provenance, invalid contract reload safety, manifest-header rejection, and mismatched existing-manifest rejection. The full follow-up validation `direnv exec . gleam test` passed with 1411 tests.
 
 ## Context and Orientation
 
