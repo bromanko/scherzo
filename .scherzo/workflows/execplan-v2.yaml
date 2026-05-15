@@ -1,0 +1,107 @@
+version: 1
+id: execplan-v2
+description: Draft a concise ExecPlan v2 review doc, retain the mechanical implementation pack, publish the review surface, and emit an exec_plan_bundle.
+workspace_profile: dogfood-jj
+workspace_capabilities: [status, diff, changed-files, publish-change]
+max_parallel_steps: 1
+contract:
+  version: 1
+  inputs:
+    brief:
+      type: text
+      required: true
+      source: issue_context
+    supporting_context:
+      type: artifact[]
+      required: false
+      source: mapped_output
+  outputs:
+    implementation_pack:
+      type: implementation_pack
+      source:
+        step: materialize_pack
+        field: stdout
+    exec_plan_bundle:
+      type: exec_plan_bundle
+      source:
+        step: materialize_bundle
+        field: stdout
+steps:
+  - id: draft_review_doc_and_pack
+    kind: agent
+    prompt: prompts/execplan-v2-draft.md
+    workspace: main
+    structured_output:
+      format: json
+      artifact_name: implementation_pack_submission
+      source:
+        type: pi_tool_call
+        tool_name: submit_implementation_pack_submission
+        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: implementation_pack_submission_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json
+          draft: "2020-12"
+
+  - id: validate_review_doc
+    kind: command
+    depends_on: [draft_review_doc_and_pack]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" validate-review-doc --discover-changed-review-doc --write-path tmp/execplan-v2-review-doc.path'
+    workspace: main
+
+  - id: review_plan
+    kind: agent
+    depends_on: [validate_review_doc]
+    prompt: prompts/execplan-v2-review.md
+    workspace: main
+
+  - id: incorporate_review
+    kind: agent
+    depends_on: [review_plan]
+    prompt: prompts/execplan-v2-incorporate-review.md
+    workspace: main
+    structured_output:
+      format: json
+      artifact_name: implementation_pack_submission
+      source:
+        type: pi_tool_call
+        tool_name: submit_implementation_pack_submission
+        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: implementation_pack_submission_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json
+          draft: "2020-12"
+
+  - id: validate_review_doc_after_review
+    kind: command
+    depends_on: [incorporate_review]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; review_doc_path=$(cat tmp/execplan-v2-review-doc.path); "$repo_root/scripts/scherzo-execplan-v2" validate-review-doc --path "$review_doc_path"'
+    workspace: main
+
+  - id: materialize_pack
+    kind: command
+    depends_on: [validate_review_doc_after_review]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" materialize-pack --review-doc-path-file tmp/execplan-v2-review-doc.path --submission-step incorporate_review --submission-artifact implementation_pack_submission --output tmp/execplan-v2-implementation-pack.json'
+    workspace: main
+
+  - id: publish_review_doc
+    kind: command
+    depends_on: [materialize_pack]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" publish-review-doc --review-doc-path-file tmp/execplan-v2-review-doc.path --publish-context tmp/scherzo-execplan-v2-publish-context.json'
+    timeout_ms: 300000
+    workspace: main
+
+  - id: materialize_bundle
+    kind: command
+    depends_on: [publish_review_doc]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" materialize-bundle --review-doc-path-file tmp/execplan-v2-review-doc.path --pack tmp/execplan-v2-implementation-pack.json --publish-context tmp/scherzo-execplan-v2-publish-context.json --output tmp/execplan-v2-bundle.json'
+    timeout_ms: 300000
+    workspace: main

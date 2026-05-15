@@ -301,10 +301,7 @@ pub fn checked_in_merge_conflict_workflow_is_routed_and_guarded_test() {
     config,
     "merge-conflict-resolution: workflows/merge-conflict-resolution.yaml",
   )
-  assert string.contains(
-    config,
-    "execplan-implementation, merge-conflict-resolution",
-  )
+  assert string.contains(config, "merge-conflict-resolution]")
   assert string.contains(workflow, "id: merge-conflict-resolution")
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" prepare")
   assert string.contains(workflow, "scripts/scherzo-merge-conflict\" validate")

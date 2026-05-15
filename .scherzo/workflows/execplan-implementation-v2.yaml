@@ -1,0 +1,96 @@
+version: 1
+id: execplan-implementation-v2
+description: Validate an ExecPlan v2 bundle, implement from the prepared review doc and implementation pack, publish a PR, and emit a code_change_bundle.
+workspace_profile: dogfood-jj
+workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]
+max_parallel_steps: 1
+contract:
+  version: 1
+  inputs:
+    exec_plan_bundle:
+      type: exec_plan_bundle
+      required: true
+      source: issue_context
+  outputs:
+    code_change_bundle:
+      type: code_change_bundle
+      source:
+        step: materialize_code_change_bundle
+        field: stdout
+steps:
+  - id: prepare_bundle
+    kind: command
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" implementation-prepare --from-issue-context'
+    timeout_ms: 300000
+    workspace: main
+
+  - id: refresh_base_before_implementation
+    kind: command
+    depends_on: [prepare_bundle]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" refresh-base --stage before-implementation'
+    timeout_ms: 300000
+    workspace: main
+
+  - id: implement_plan
+    kind: agent
+    depends_on: [refresh_base_before_implementation]
+    prompt: prompts/execplan-implementation-v2-implement.md
+    workspace: main
+
+  - id: gate_no_conflict
+    kind: command
+    depends_on: [implement_plan]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" gate-no-conflict'
+    workspace: main
+
+  - id: analyze_changes
+    kind: command
+    depends_on: [gate_no_conflict]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" analyze'
+    workspace: main
+
+  - id: verify_plan_completion
+    kind: agent
+    depends_on: [analyze_changes]
+    prompt: prompts/execplan-implementation-verify-completion.md
+    workspace: main
+
+  - id: gate_plan_completion
+    kind: command
+    depends_on: [verify_plan_completion]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" gate-plan-completion'
+    workspace: main
+
+  - id: refresh_base_before_validation
+    kind: command
+    depends_on: [gate_plan_completion]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" refresh-base --stage before-validation'
+    timeout_ms: 300000
+    on_failure: continue
+    workspace: main
+
+  - id: final_validate
+    kind: command
+    depends_on: [refresh_base_before_validation]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" validate'
+    timeout_ms: 1200000
+    workspace: main
+
+  - id: final_plan_completion_gate
+    kind: command
+    depends_on: [final_validate]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" gate-plan-completion --final'
+    workspace: main
+
+  - id: publish_pr
+    kind: command
+    depends_on: [final_plan_completion_gate]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" publish'
+    timeout_ms: 300000
+    workspace: main
+
+  - id: materialize_code_change_bundle
+    kind: command
+    depends_on: [publish_pr]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" materialize-code-change-bundle --bundle tmp/execplan-v2-bundle.json --output tmp/execplan-v2-code-change-bundle.json'
+    workspace: main

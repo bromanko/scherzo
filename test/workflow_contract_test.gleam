@@ -33,6 +33,12 @@ pub fn parses_contract_type_strings_test() {
     == Ok(workflow_contract.DocumentMarkdown)
   assert workflow_contract.type_from_string("exec_plan")
     == Ok(workflow_contract.ExecPlan)
+  assert workflow_contract.type_from_string("exec_plan_bundle")
+    == Ok(workflow_contract.ExecPlanBundle)
+  assert workflow_contract.type_from_string("implementation_pack")
+    == Ok(workflow_contract.ImplementationPack)
+  assert workflow_contract.type_from_string("code_change_bundle")
+    == Ok(workflow_contract.CodeChangeBundle)
   assert workflow_contract.type_from_string("git_ref")
     == Ok(workflow_contract.GitRef)
   assert workflow_contract.type_from_string("url") == Ok(workflow_contract.Url)
@@ -130,13 +136,16 @@ pub fn rejects_invalid_input_context_sources_test() {
 pub fn parses_output_sources_test() {
   let contract =
     parse_contract(minimal_contract(
-      "  outputs:\n    stdout_doc:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft_execplan\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\n    pr:\n      type: url\n      source:\n        type: url\n        value: https://example.invalid/pr/1\n    branch:\n      type: git_ref\n      source:\n        type: git_ref\n        value: feature/liv-292\n",
+      "  outputs:\n    stdout_doc:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft_execplan\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\n    bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\n    pack:\n      type: implementation_pack\n      source:\n        step: materialize_pack\n        field: stdout\n    code_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize_code_change_bundle\n        field: stdout\n    pr:\n      type: url\n      source:\n        type: url\n        value: https://example.invalid/pr/1\n    branch:\n      type: git_ref\n      source:\n        type: git_ref\n        value: feature/liv-292\n",
     ))
   let assert [
     stdout_doc,
     final_plan,
     structured_change,
     inline_change,
+    bundle,
+    pack,
+    code_bundle,
     pr,
     branch,
   ] = contract.outputs
@@ -157,6 +166,9 @@ pub fn parses_output_sources_test() {
     ))
   assert inline_change.source
     == Some(workflow_contract.InlineJson("summarize_change", "code_change"))
+  assert bundle.type_ == workflow_contract.ExecPlanBundle
+  assert pack.type_ == workflow_contract.ImplementationPack
+  assert code_bundle.type_ == workflow_contract.CodeChangeBundle
   assert pr.source
     == Some(workflow_contract.StaticUrl("https://example.invalid/pr/1"))
   assert branch.source

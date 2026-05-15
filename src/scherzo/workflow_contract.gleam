@@ -20,6 +20,9 @@ pub type ContractType {
   ArtifactList
   DocumentMarkdown
   ExecPlan
+  ExecPlanBundle
+  ImplementationPack
+  CodeChangeBundle
   GitRef
   Url
   CodeChange
@@ -115,6 +118,9 @@ pub fn type_to_string(type_: ContractType) -> String {
     ArtifactList -> "artifact[]"
     DocumentMarkdown -> "document.markdown"
     ExecPlan -> "exec_plan"
+    ExecPlanBundle -> "exec_plan_bundle"
+    ImplementationPack -> "implementation_pack"
+    CodeChangeBundle -> "code_change_bundle"
     GitRef -> "git_ref"
     Url -> "url"
     CodeChange -> "code_change"
@@ -127,6 +133,9 @@ pub fn type_from_string(raw: String) -> Result(ContractType, ContractError) {
     "artifact[]" -> Ok(ArtifactList)
     "document.markdown" -> Ok(DocumentMarkdown)
     "exec_plan" -> Ok(ExecPlan)
+    "exec_plan_bundle" -> Ok(ExecPlanBundle)
+    "implementation_pack" -> Ok(ImplementationPack)
+    "code_change_bundle" -> Ok(CodeChangeBundle)
     "git_ref" -> Ok(GitRef)
     "url" -> Ok(Url)
     "code_change" -> Ok(CodeChange)
@@ -1090,7 +1099,15 @@ fn option_string_to_json(value: Option(String)) -> json.Json {
 
 fn appendable_source(source: ContractType) -> Bool {
   case source {
-    DocumentMarkdown | ExecPlan | Text | Url | GitRef | CodeChange -> True
+    DocumentMarkdown
+    | ExecPlan
+    | ExecPlanBundle
+    | ImplementationPack
+    | CodeChangeBundle
+    | Text
+    | Url
+    | GitRef
+    | CodeChange -> True
     ArtifactList -> True
   }
 }
