@@ -3558,7 +3558,7 @@ fn unsetenv(name: String) -> Nil
 fn generic_tool_call_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_lane_submission\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: docs/schemas/provider/review-lane-draft.correctness.v1.schema.json\n        require_single: true\n        reject_sibling_tool_calls: true\n      validators:\n        - name: review_lane_submission_shape\n          type: json_schema\n          path: docs/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_lane_submission\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n        require_single: true\n        reject_sibling_tool_calls: true\n      validators:\n        - name: review_lane_submission_shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n",
     )
   dag
 }
@@ -3645,7 +3645,7 @@ pub fn generic_pi_tool_call_step_generates_spec_env_and_metadata_test() {
   assert metadata.source_tool_name == Some("submit_review_lane_draft")
   assert metadata.source_parameters_schema_path
     == Some(
-      "docs/schemas/provider/review-lane-draft.correctness.v1.schema.json",
+      ".scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json",
     )
   let assert Some(schema_sha) = metadata.source_parameters_schema_sha256
   assert string.length(schema_sha) == 64

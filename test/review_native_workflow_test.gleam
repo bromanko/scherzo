@@ -42,12 +42,13 @@ fn lane_spec(
 fn lane_schema_path(step_id: String) -> String {
   case step_id {
     "lane_test_quality" ->
-      "docs/schemas/provider/review-lane-draft.test-quality.v1.schema.json"
+      ".scherzo/workflows/schemas/provider/review-lane-draft.test-quality.v1.schema.json"
     "lane_idioms_maintainability" ->
-      "docs/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json"
+      ".scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json"
     "lane_security_performance" ->
-      "docs/schemas/provider/review-lane-draft.security-performance.v1.schema.json"
-    _ -> "docs/schemas/provider/review-lane-draft.correctness.v1.schema.json"
+      ".scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json"
+    _ ->
+      ".scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json"
   }
 }
 
@@ -207,7 +208,8 @@ fn validate_result(
 
 pub fn review_schema_files_are_packaged_with_workflows_test() {
   let assert Ok(True) = simplifile.is_directory(".scherzo/workflows/schemas")
-  let assert Ok(True) = simplifile.is_directory("docs/schemas/provider")
+  let assert Ok(True) =
+    simplifile.is_directory(".scherzo/workflows/schemas/provider")
 
   list.each(workflow_schema_files(), fn(name) {
     let assert Ok(True) =
@@ -216,15 +218,16 @@ pub fn review_schema_files_are_packaged_with_workflows_test() {
   })
 
   list.each(provider_schema_files(), fn(name) {
-    let assert Ok(True) = simplifile.is_file("docs/schemas/provider/" <> name)
+    let assert Ok(True) =
+      simplifile.is_file(".scherzo/workflows/schemas/provider/" <> name)
     Nil
   })
 
   list.each(provider_review_workflow_paths(), fn(path) {
     let assert Ok(contents) = simplifile.read(path)
     assert_contains(contents, "submit_review_lane_draft")
-    assert_contains(contents, "docs/schemas/provider/")
-    assert_not_contains(contents, "docs/schemas/review-lane-draft")
+    assert_contains(contents, ".scherzo/workflows/schemas/provider/")
+    assert_not_contains(contents, "docs/schemas/")
   })
 
   let assert Ok(contract_spike) =

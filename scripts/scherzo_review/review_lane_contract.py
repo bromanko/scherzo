@@ -90,7 +90,7 @@ LANES: dict[str, dict[str, str]] = {
         "name": "Correctness reviewer",
         "category": "correctness",
         "version": "1",
-        "provider_schema": "docs/schemas/provider/review-lane-draft.correctness.v1.schema.json",
+        "provider_schema": ".scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json",
     },
     "test-quality": {
         "id": "test-quality",
@@ -99,7 +99,7 @@ LANES: dict[str, dict[str, str]] = {
         "name": "Test-quality reviewer",
         "category": "testing",
         "version": "1",
-        "provider_schema": "docs/schemas/provider/review-lane-draft.test-quality.v1.schema.json",
+        "provider_schema": ".scherzo/workflows/schemas/provider/review-lane-draft.test-quality.v1.schema.json",
     },
     "idioms-maintainability": {
         "id": "idioms-maintainability",
@@ -108,7 +108,7 @@ LANES: dict[str, dict[str, str]] = {
         "name": "Idioms / maintainability reviewer",
         "category": "maintainability",
         "version": "1",
-        "provider_schema": "docs/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json",
+        "provider_schema": ".scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json",
     },
     "security-performance": {
         "id": "security-performance",
@@ -117,7 +117,7 @@ LANES: dict[str, dict[str, str]] = {
         "name": "Security / performance risk reviewer",
         "category": "security-performance",
         "version": "1",
-        "provider_schema": "docs/schemas/provider/review-lane-draft.security-performance.v1.schema.json",
+        "provider_schema": ".scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json",
     },
 }
 

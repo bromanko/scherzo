@@ -74,7 +74,7 @@ fn is_review_lane_structured_output(
     Some(schema_path) ->
       string.starts_with(
         schema_path,
-        "docs/schemas/provider/review-lane-draft.",
+        ".scherzo/workflows/schemas/provider/review-lane-draft.",
       )
     _ -> False
   }

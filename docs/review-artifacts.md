@@ -2,7 +2,7 @@
 
 Scherzo's staged code-review workflow passes machine-readable artifacts between review steps. This contract is intentionally separate from the Scherzo daemon runtime: review artifacts are local workflow files for agents and operators to inspect, not durable daemon state and not Linear or GitHub comments.
 
-The aggregate JSON Schema lives at [`.scherzo/workflows/schemas/review-artifacts.v1.schema.json`](../.scherzo/workflows/schemas/review-artifacts.v1.schema.json). Native structured-output review lanes use a two-layer contract: provider-facing tool argument schemas under [`docs/schemas/provider/`](schemas/provider/) accept only model-owned submission fields, then Scherzo materializes those submissions into canonical [`.scherzo/workflows/schemas/review-lane-draft.v1.schema.json`](../.scherzo/workflows/schemas/review-lane-draft.v1.schema.json) artifacts and runs local semantic consistency checks. All retained artifacts use `schema_version: 1` and an `artifact_type` discriminator.
+The aggregate JSON Schema lives at [`.scherzo/workflows/schemas/review-artifacts.v1.schema.json`](../.scherzo/workflows/schemas/review-artifacts.v1.schema.json). Native structured-output review lanes use a two-layer contract: provider-facing tool argument schemas under [`.scherzo/workflows/schemas/provider/`](../.scherzo/workflows/schemas/provider/) accept only model-owned submission fields, then Scherzo materializes those submissions into canonical [`.scherzo/workflows/schemas/review-lane-draft.v1.schema.json`](../.scherzo/workflows/schemas/review-lane-draft.v1.schema.json) artifacts and runs local semantic consistency checks. All retained artifacts use `schema_version: 1` and an `artifact_type` discriminator.
 
 ## ExecPlan PR review previews
 
@@ -51,12 +51,12 @@ Required fields:
 
 A `ReviewLaneSubmission` is the provider-facing object passed as the `submit_review_lane_draft` tool arguments by a native review lane. It is not a retained artifact. It deliberately contains only model-owned fields so provider tool schemas stay small and provider-compatible: `draft_findings`, `review_notes`, `evidence_requests`, and `self_check`. The model must not include `schema_version`, `artifact_type`, `generated_at_utc`, `producer`, `lane`, `input_refs`, `remote_mutations`, or `$schema`; Scherzo injects those fields after capture.
 
-Provider schemas live at:
+Provider schemas live with the workflow bundle at:
 
-- `docs/schemas/provider/review-lane-draft.correctness.v1.schema.json`
-- `docs/schemas/provider/review-lane-draft.test-quality.v1.schema.json`
-- `docs/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json`
-- `docs/schemas/provider/review-lane-draft.security-performance.v1.schema.json`
+- `.scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json`
+- `.scherzo/workflows/schemas/provider/review-lane-draft.test-quality.v1.schema.json`
+- `.scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json`
+- `.scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json`
 
 These provider schemas are Pi tool parameter schemas only. They intentionally avoid provider-hostile JSON Schema keywords such as `$ref`, `$defs`, `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and union-style `type` arrays. They do not replace canonical artifact validation.
 
@@ -245,7 +245,7 @@ Operators can check one schema or one captured submission directly:
 
 ```sh
 scripts/scherzo-review-lane-contract check-schema \
-  --schema docs/schemas/provider/review-lane-draft.correctness.v1.schema.json
+  --schema .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json
 
 scripts/scherzo-review-lane-contract materialize \
   --lane correctness \

@@ -63,14 +63,14 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_review_lane_draft
-        parameters_schema_path: docs/schemas/provider/review-lane-draft.correctness.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_submission_shape
           type: json_schema
-          path: docs/schemas/provider/review-lane-draft.correctness.v1.schema.json
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json
           draft: "2020-12"
       schema:
         type: object
@@ -94,14 +94,14 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_review_lane_draft
-        parameters_schema_path: docs/schemas/provider/review-lane-draft.test-quality.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.test-quality.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_submission_shape
           type: json_schema
-          path: docs/schemas/provider/review-lane-draft.test-quality.v1.schema.json
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.test-quality.v1.schema.json
           draft: "2020-12"
       schema:
         type: object
@@ -125,14 +125,14 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_review_lane_draft
-        parameters_schema_path: docs/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_submission_shape
           type: json_schema
-          path: docs/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json
           draft: "2020-12"
       schema:
         type: object
@@ -156,14 +156,14 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_review_lane_draft
-        parameters_schema_path: docs/schemas/provider/review-lane-draft.security-performance.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_submission_shape
           type: json_schema
-          path: docs/schemas/provider/review-lane-draft.security-performance.v1.schema.json
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json
           draft: "2020-12"
       schema:
         type: object
