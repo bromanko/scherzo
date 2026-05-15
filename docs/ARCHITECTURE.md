@@ -247,9 +247,10 @@ Use direnv-backed commands from the repository root.
 
 | Command | When to run |
 | --- | --- |
-| `direnv exec . gleam test` | Default fast deterministic unit suite; run for normal source changes and before handoff when cheap. |
+| `direnv exec . gleam test` | Default deterministic unit suite; run for normal source changes and before handoff when cheap. |
 | `direnv exec . gleam format --check src test` | Source/test formatting check. Docs-only changes normally do not need it, but SelfCI runs it. |
 | `direnv exec . scherzo-test-unit` | Explicit alias for the default unit suite. |
+| `direnv exec . scherzo-test-contract` | Shell-heavy helper-script, workflow, renderer, and workspace-driver contract coverage excluded from the default unit loop. SelfCI runs this suite for the final dogfood gate. |
 | `direnv exec . scherzo-test-local-integration` | Workspace drivers, jj workspace behavior, local integration paths. |
 | `direnv exec . scherzo-test-real-pi-validation` | Real pi/session-persistence changes only; requires pi, credentials, network, and time. |
 | `LINEAR_API_KEY=... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` | Real-board readiness after config, workflow, Linear contract, workspace lifecycle, or pi launch changes. |
@@ -512,8 +513,9 @@ Run tests:
 
 Touch:
 
-- `gleam.toml`, `test/test_suite_contract_test.gleam`
-- `scripts/scherzo-test-unit`, `scripts/scherzo-test-local-integration`,
+- `gleam.toml`, `test/scherzo_test.gleam`, `test/test_suite_contract_test.gleam`
+- `scripts/scherzo-test-unit`, `scripts/scherzo-test-contract`,
+  `scripts/scherzo-test-local-integration`,
   `scripts/scherzo-test-real-pi-validation`
 - `.config/selfci/ci.sh` if present in the target tree
 - `README.md` test-suite and SelfCI sections
@@ -521,8 +523,10 @@ Touch:
 
 Must preserve:
 
-- `direnv exec . gleam test` remains deterministic, fast, and free of real
+- `direnv exec . gleam test` remains deterministic, unit-scoped, and free of real
   Linear/pi/network dependencies.
+- Shell-heavy contract coverage stays explicit via `scherzo-test-contract` and is
+  included in SelfCI rather than the default unit loop.
 - Local integration and real-pi suites stay opt-in explicit suites.
 - SelfCI remains the final gate used by Scherzo implementation workflows.
 - Test fixtures do not require secrets.
@@ -530,7 +534,7 @@ Must preserve:
 Run tests:
 
 - `direnv exec . gleam test`
-- The specific suite wrapper being changed
+- The specific suite wrapper being changed, for example `direnv exec . scherzo-test-contract`
 - `direnv exec . selfci check --base main@origin --candidate @ --print-output`
   when SelfCI or Nix/devenv behavior changes
 

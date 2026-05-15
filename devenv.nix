@@ -41,6 +41,7 @@ in
 
   scripts."scherzo-start".exec = projectScript "scherzo-start";
   scripts."scherzo-test-unit".exec = projectScript "scherzo-test-unit";
+  scripts."scherzo-test-contract".exec = projectScript "scherzo-test-contract";
   scripts."scherzo-test-local-integration".exec = projectScript "scherzo-test-local-integration";
   scripts."scherzo-test-real-pi-validation".exec = projectScript "scherzo-test-real-pi-validation";
 

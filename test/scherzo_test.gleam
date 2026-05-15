@@ -4,8 +4,10 @@ import gleam/result
 import gleam/string
 
 // gleeunit.main runs every *_test function under test/. Scherzo keeps
-// explicit integration suites under test/ so they compile with the project, but
+// explicit non-unit suites under test/ so they compile with the project, but
 // filters them out of the default unit run unless a suite is requested.
+const contract_prefix = "contract/"
+
 const local_integration_prefix = "local_integration/"
 
 const real_pi_validation_prefix = "real_pi_validation/"
@@ -14,6 +16,7 @@ pub fn main() -> Nil {
   case args() {
     [] -> run_suite(Unit)
     ["unit"] | ["--suite", "unit"] -> run_suite(Unit)
+    ["contract"] | ["--suite", "contract"] -> run_suite(Contract)
     ["local-integration"] | ["--suite", "local-integration"] ->
       run_suite(LocalIntegration)
     ["real-pi-validation"] | ["--suite", "real-pi-validation"] ->
@@ -32,6 +35,7 @@ pub fn main() -> Nil {
 
 type Suite {
   Unit
+  Contract
   LocalIntegration
   RealPiValidation
   All
@@ -73,25 +77,46 @@ fn run_suite(suite: Suite) -> Nil {
 fn file_belongs_to_suite(path: String, suite: Suite) -> Bool {
   case suite {
     Unit -> is_unit_file(path)
+    Contract -> is_contract_file(path)
     LocalIntegration -> string.starts_with(path, local_integration_prefix)
     RealPiValidation -> string.starts_with(path, real_pi_validation_prefix)
     All -> True
   }
 }
 
-fn is_unit_file(path: String) -> Bool {
-  !string.starts_with(path, local_integration_prefix)
+pub fn is_unit_file(path: String) -> Bool {
+  !is_contract_file(path)
+  && !string.starts_with(path, local_integration_prefix)
   && !string.starts_with(path, real_pi_validation_prefix)
 }
 
+pub fn is_contract_file(path: String) -> Bool {
+  string.starts_with(path, contract_prefix)
+  || list.contains(contract_test_files(), path)
+}
+
+pub fn contract_test_files() -> List(String) {
+  [
+    "execplan_implementation_helper_test.gleam",
+    "execplan_html_renderer_test.gleam",
+    "jj_workspace_driver_test.gleam",
+    "merge_conflict_helper_test.gleam",
+    "review_artifacts_test.gleam",
+    "workspace_driver_contract_test.gleam",
+    "workspace_driver_discovery_test.gleam",
+    "workspace_driver_lifecycle_test.gleam",
+  ]
+}
+
 fn test_usage() -> String {
-  "Usage: gleam test [-- --suite unit|local-integration|real-pi-validation|all]\n"
-  <> "Default with no suite runs the fast deterministic unit suite."
+  "Usage: gleam test [-- --suite unit|contract|local-integration|real-pi-validation|all]\n"
+  <> "Default with no suite runs the deterministic unit suite. Contract runs shell-heavy script/workflow/driver coverage."
 }
 
 fn suite_name(suite: Suite) -> String {
   case suite {
     Unit -> "unit"
+    Contract -> "contract"
     LocalIntegration -> "local-integration"
     RealPiValidation -> "real-pi-validation"
     All -> "all"
