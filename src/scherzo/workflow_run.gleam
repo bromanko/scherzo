@@ -740,6 +740,7 @@ fn loop(
             run_id: run_id,
             workflow_id: dag.id,
             issue_id: issue.id,
+            task_ref: task_ref(issue),
             outcome: "completed",
             token_total: tokens.total,
             turns: turns,
@@ -782,6 +783,7 @@ fn loop(
                 run_id: run_id,
                 workflow_id: dag.id,
                 issue_id: issue.id,
+                task_ref: task_ref(issue),
                 outcome: "failed_fatal",
                 token_total: tokens.total,
                 turns: turns,
@@ -819,6 +821,7 @@ fn loop(
             run_id: run_id,
             workflow_id: dag.id,
             issue_id: issue.id,
+            task_ref: task_ref(issue),
             outcome: "failed_fatal",
             token_total: tokens.total,
             turns: turns,
@@ -1808,6 +1811,7 @@ fn finish_fatal_batch_result(
         run_id: run_id,
         workflow_id: dag.id,
         issue_id: issue.id,
+        task_ref: task_ref(issue),
         outcome: "failed_fatal",
         token_total: result.tokens.total,
         turns: result.turns,
@@ -3298,6 +3302,14 @@ fn cleanup_if_needed(
   }
 }
 
+fn task_ref(issue: tracker_issue.Issue) -> Option(workflow_checkpoint.TaskRef) {
+  workflow_checkpoint.linear_task_ref_for_issue(
+    issue.id,
+    issue.identifier,
+    issue.url,
+  )
+}
+
 fn mark_workflow_failed_terminal(
   dependencies: Dependencies,
   run_id: String,
@@ -3312,6 +3324,7 @@ fn mark_workflow_failed_terminal(
         run_id: run_id,
         workflow_id: workflow_id,
         issue_id: issue_id,
+        task_ref: None,
         outcome: "failed_fatal",
         token_total: token_total,
         turns: turns,

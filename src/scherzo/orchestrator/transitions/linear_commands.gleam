@@ -150,10 +150,8 @@ fn startup_outbox_replay_entry_effects(
             error,
           )
         Ok(Nil) -> {
-          let source_comment_id = case payload.source_comment_id {
-            Some(source_comment_id) -> source_comment_id
-            None -> outbox_id
-          }
+          let source_comment_id = outbox_ack_event_id(outbox_id, payload)
+          let issue_id = outbox_ack_issue_id(issue_id, payload)
           [
             effects_types.Log("info", "outbox_replay_enqueued", [
               #("outbox_id", outbox_id),
@@ -168,6 +166,21 @@ fn startup_outbox_replay_entry_effects(
           ]
         }
       }
+  }
+}
+
+fn outbox_ack_event_id(outbox_id: String, payload: outbox.Payload) -> String {
+  case payload.kind, payload.event_id, payload.source_comment_id {
+    "remote_command_ack", Some(event_id), _ -> event_id
+    _, _, Some(source_comment_id) -> source_comment_id
+    _, _, None -> outbox_id
+  }
+}
+
+fn outbox_ack_issue_id(issue_id: String, payload: outbox.Payload) -> String {
+  case payload.kind, payload.task_remote_id {
+    "remote_command_ack", Some(task_remote_id) -> task_remote_id
+    _, _ -> issue_id
   }
 }
 

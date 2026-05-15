@@ -1,5 +1,6 @@
 import gleam/option.{Some}
 import gleam/string
+import legacy_ledger_fixtures
 import scherzo/state/record
 
 pub fn encodes_and_decodes_run_records_test() {
@@ -257,6 +258,107 @@ pub fn encodes_and_decodes_linear_command_records_test() {
   ))
 }
 
+pub fn decodes_new_task_workflow_records_without_schema_bump_test() {
+  assert record.schema_version == 2
+
+  let started_line =
+    legacy_ledger_fixtures.workflow_run_started_with_task_v2("new-1", 2)
+  let finished_line =
+    legacy_ledger_fixtures.workflow_run_finished_with_task_v2("new-2", 4)
+
+  let assert Ok(started) = record.decode_string(started_line)
+  let assert Ok(finished) = record.decode_string(finished_line)
+
+  assert started.body
+    == record.WorkflowRunStartedWithTask(
+      run_id: "run-1",
+      workflow_id: "execplan",
+      workflow_fingerprint: "wf-new",
+      issue_id: "issue-1",
+      issue_identifier: "LIV-266",
+      task_ref: record.TaskRefFields(
+        task_backend_kind: "linear",
+        task_remote_id: "issue-1",
+        task_key: Some("LIV-266"),
+        task_url: Some("https://linear.app/living-systems/issue/LIV-266"),
+      ),
+      issue_fingerprint: "fp-new",
+      observed_updated_at_ms: 20,
+      run_root: "test/tmp/run-root",
+    )
+  assert finished.body
+    == record.WorkflowRunFinishedWithTask(
+      run_id: "run-1",
+      workflow_id: "execplan",
+      issue_id: "issue-1",
+      task_ref: record.TaskRefFields(
+        task_backend_kind: "linear",
+        task_remote_id: "issue-1",
+        task_key: Some("LIV-266"),
+        task_url: Some("https://linear.app/living-systems/issue/LIV-266"),
+      ),
+      outcome: "success",
+      token_total: 10,
+      turns: 2,
+    )
+  assert record.to_string(started) == started_line
+  assert record.to_string(finished) == finished_line
+}
+
+pub fn encodes_and_decodes_remote_command_records_test() {
+  let seen =
+    decode_record(legacy_ledger_fixtures.remote_command_seen_v2("cmd-new-1", 9))
+  let started =
+    decode_record(legacy_ledger_fixtures.remote_command_started_v2(
+      "cmd-new-2",
+      10,
+    ))
+  let completed =
+    decode_record(legacy_ledger_fixtures.remote_command_completed_v2(
+      "cmd-new-3",
+      11,
+      "ok",
+      "Retry queued",
+    ))
+  let acked =
+    decode_record(legacy_ledger_fixtures.remote_command_acked_v2(
+      "cmd-new-4",
+      12,
+    ))
+
+  assert seen.body
+    == record.RemoteCommandSeen(
+      backend_kind: "linear",
+      event_id: "comment-1",
+      task_remote_id: "issue-1",
+      task_key: Some("LIV-266"),
+      author_id: "user-1",
+      command_name: "retry",
+      excerpt: "/scherzo retry",
+    )
+  assert started.body
+    == record.RemoteCommandStarted(
+      backend_kind: "linear",
+      event_id: "comment-1",
+      task_remote_id: "issue-1",
+      command_name: "retry",
+    )
+  assert completed.body
+    == record.RemoteCommandCompleted(
+      backend_kind: "linear",
+      event_id: "comment-1",
+      task_remote_id: "issue-1",
+      status: "ok",
+      message_excerpt: "Retry queued",
+    )
+  assert acked.body
+    == record.RemoteCommandAcked(
+      backend_kind: "linear",
+      event_id: "comment-1",
+      task_remote_id: "issue-1",
+    )
+}
+
 pub fn encodes_and_decodes_scheduled_records_test() {
   assert_roundtrip(record.with_id(
     "scheduled-due-1",
@@ -471,6 +573,11 @@ pub fn invalid_top_level_record_shape_is_rejected_test() {
     "{\"schema_version\":2,\"record_id\":\"bad-at\",\"at_ms\":\"soon\",\"kind\":\"run_started\",\"run_id\":\"run-1\",\"issue_id\":\"issue-1\",\"issue_identifier\":\"SCH-1\",\"workspace_path\":\"work\"}"
   let assert Error(record.InvalidRecord("invalid ledger record shape")) =
     record.decode_string(wrong_at_ms_type)
+}
+
+fn decode_record(line: String) -> record.LedgerRecord {
+  let assert Ok(decoded) = record.decode_string(line)
+  decoded
 }
 
 fn assert_roundtrip(ledger_record: record.LedgerRecord) -> Nil {

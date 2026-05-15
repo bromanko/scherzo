@@ -4234,12 +4234,17 @@ fn workflow_run_started_body_for_claim(
         )
         |> result.map_error(fn(err) { error.workspace_code(err) }),
       )
-      Ok(record.WorkflowRunStarted(
+      Ok(record.WorkflowRunStartedWithTask(
         pending.run_id,
         dag.id,
         fingerprint,
         pending.issue.id,
         pending.issue.identifier,
+        record.linear_task_ref_fields(
+          pending.issue.id,
+          Some(pending.issue.identifier),
+          pending.issue.url,
+        ),
         core.issue_fingerprint(pending.issue),
         observed_updated_at_ms(pending.issue),
         run_root,

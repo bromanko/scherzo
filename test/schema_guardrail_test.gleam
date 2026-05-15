@@ -374,6 +374,30 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "WorkflowRunStartedWithTask",
+      "workflow_run_started",
+      record.with_id(
+        "record-workflow-run-started-with-task",
+        1003,
+        record.WorkflowRunStartedWithTask(
+          run_id: "workflow-run-1-task",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-fingerprint",
+          issue_id: "issue-1",
+          issue_identifier: "LIV-1",
+          task_ref: record.TaskRefFields(
+            task_backend_kind: "linear",
+            task_remote_id: "issue-1",
+            task_key: Some("LIV-1"),
+            task_url: Some("https://linear.app/living-systems/issue/LIV-1"),
+          ),
+          issue_fingerprint: "issue-fingerprint",
+          observed_updated_at_ms: 999,
+          run_root: ".scherzo/workflows/implementation/run-1",
+        ),
+      ),
+    ),
+    LedgerExample(
       "WorkflowRunFinished",
       "workflow_run_finished",
       record.with_id(
@@ -383,6 +407,28 @@ fn ledger_examples() -> List(LedgerExample) {
           run_id: "workflow-run-1",
           workflow_id: "implementation",
           issue_id: "issue-1",
+          outcome: "success",
+          token_total: 100,
+          turns: 5,
+        ),
+      ),
+    ),
+    LedgerExample(
+      "WorkflowRunFinishedWithTask",
+      "workflow_run_finished",
+      record.with_id(
+        "record-workflow-run-finished-with-task",
+        1004,
+        record.WorkflowRunFinishedWithTask(
+          run_id: "workflow-run-1-task",
+          workflow_id: "implementation",
+          issue_id: "issue-1",
+          task_ref: record.TaskRefFields(
+            task_backend_kind: "linear",
+            task_remote_id: "issue-1",
+            task_key: Some("LIV-1"),
+            task_url: Some("https://linear.app/living-systems/issue/LIV-1"),
+          ),
           outcome: "success",
           token_total: 100,
           turns: 5,
@@ -479,6 +525,33 @@ fn ledger_examples() -> List(LedgerExample) {
           run_id: "workflow-run-1",
           issue_id: "issue-1",
           issue_identifier: "LIV-1",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-fingerprint",
+          step_id: "implement",
+          workspace_name: "implementation",
+          attempt_index: 1,
+          workspace_path: ".scherzo/workspaces/implementation",
+          session_id: "pi-session-1",
+          session_file: ".scherzo/sessions/pi-session-1.json",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "StepAttemptPiSessionRecordedWithTask",
+      "step_attempt_pi_session_recorded",
+      record.with_id(
+        "record-step-attempt-pi-session-recorded-with-task",
+        1010,
+        record.StepAttemptPiSessionRecordedWithTask(
+          run_id: "workflow-run-1-task",
+          issue_id: "issue-1",
+          issue_identifier: "LIV-1",
+          task_ref: record.TaskRefFields(
+            task_backend_kind: "linear",
+            task_remote_id: "issue-1",
+            task_key: Some("LIV-1"),
+            task_url: Some("https://linear.app/living-systems/issue/LIV-1"),
+          ),
           workflow_id: "implementation",
           workflow_fingerprint: "wf-fingerprint",
           step_id: "implement",
@@ -691,6 +764,65 @@ fn ledger_examples() -> List(LedgerExample) {
         "record-linear-command-acked",
         1024,
         record.LinearCommandAcked(comment_id: "comment-1", issue_id: "issue-1"),
+      ),
+    ),
+    LedgerExample(
+      "RemoteCommandSeen",
+      "remote_command_seen",
+      record.with_id(
+        "record-remote-command-seen",
+        1021,
+        record.RemoteCommandSeen(
+          backend_kind: "linear",
+          event_id: "comment-1",
+          task_remote_id: "issue-1",
+          task_key: Some("LIV-1"),
+          author_id: "user-1",
+          command_name: "retry",
+          excerpt: "/scherzo retry",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "RemoteCommandStarted",
+      "remote_command_started",
+      record.with_id(
+        "record-remote-command-started",
+        1022,
+        record.RemoteCommandStarted(
+          backend_kind: "linear",
+          event_id: "comment-1",
+          task_remote_id: "issue-1",
+          command_name: "retry",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "RemoteCommandCompleted",
+      "remote_command_completed",
+      record.with_id(
+        "record-remote-command-completed",
+        1023,
+        record.RemoteCommandCompleted(
+          backend_kind: "linear",
+          event_id: "comment-1",
+          task_remote_id: "issue-1",
+          status: "accepted",
+          message_excerpt: "queued retry",
+        ),
+      ),
+    ),
+    LedgerExample(
+      "RemoteCommandAcked",
+      "remote_command_acked",
+      record.with_id(
+        "record-remote-command-acked",
+        1024,
+        record.RemoteCommandAcked(
+          backend_kind: "linear",
+          event_id: "comment-1",
+          task_remote_id: "issue-1",
+        ),
       ),
     ),
     LedgerExample(
@@ -1076,6 +1208,17 @@ fn projection_fixture_projection() -> projection.Projection {
           observed_updated_at_ms: 999,
           run_root: ".scherzo/workflows/implementation/run-1",
           started_at_ms: 1003,
+        ),
+      ),
+    ]),
+    workflow_task_refs: dict.from_list([
+      #(
+        "workflow-run-1",
+        record.TaskRefFields(
+          task_backend_kind: "linear",
+          task_remote_id: "issue-1",
+          task_key: Some("LIV-1"),
+          task_url: None,
         ),
       ),
     ]),

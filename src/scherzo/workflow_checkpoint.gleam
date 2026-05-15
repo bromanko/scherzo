@@ -1,6 +1,7 @@
 import gleam/int
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
@@ -10,6 +11,9 @@ import scherzo/structured_output_metadata
 import scherzo/workflow_attempt
 import scherzo/workflow_identity
 import scherzo/workspace_run
+
+pub type TaskRef =
+  record.TaskRefFields
 
 pub type CheckpointError {
   CheckpointAppendFailed(String)
@@ -48,6 +52,7 @@ pub type WorkflowFinished {
     run_id: String,
     workflow_id: String,
     issue_id: String,
+    task_ref: Option(record.TaskRefFields),
     outcome: String,
     token_total: Int,
     turns: Int,
@@ -135,18 +140,7 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
   let store = artifact_store.new(workspace_root)
   Writer(
     workflow_finished: fn(finished) {
-      append_body(
-        workspace_root,
-        now_ms,
-        record.WorkflowRunFinished(
-          finished.run_id,
-          finished.workflow_id,
-          finished.issue_id,
-          finished.outcome,
-          finished.token_total,
-          finished.turns,
-        ),
-      )
+      append_body(workspace_root, now_ms, workflow_finished_body(finished))
     },
     step_prepared: fn(run_id, workflow_id, step_id, workspace) {
       append_body(
@@ -211,10 +205,14 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
       append_body(
         workspace_root,
         now_ms,
-        record.StepAttemptPiSessionRecorded(
+        record.StepAttemptPiSessionRecordedWithTask(
           observation.run_id,
           observation.issue_id,
           observation.issue_identifier,
+          record.legacy_linear_task_ref_fields(
+            observation.issue_id,
+            observation.issue_identifier,
+          ),
           observation.workflow_id,
           observation.workflow_fingerprint,
           observation.step_id,
@@ -300,6 +298,46 @@ pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
       )
     },
   )
+}
+
+pub fn linear_task_ref_for_issue(
+  issue_id: String,
+  issue_identifier: String,
+  issue_url: Option(String),
+) -> Option(record.TaskRefFields) {
+  case string.trim(issue_id) == "" {
+    True -> None
+    False ->
+      Some(record.linear_task_ref_fields(
+        issue_id,
+        Some(issue_identifier),
+        issue_url,
+      ))
+  }
+}
+
+fn workflow_finished_body(finished: WorkflowFinished) -> record.RecordBody {
+  case finished.task_ref {
+    Some(task_ref) ->
+      record.WorkflowRunFinishedWithTask(
+        finished.run_id,
+        finished.workflow_id,
+        finished.issue_id,
+        task_ref,
+        finished.outcome,
+        finished.token_total,
+        finished.turns,
+      )
+    None ->
+      record.WorkflowRunFinished(
+        finished.run_id,
+        finished.workflow_id,
+        finished.issue_id,
+        finished.outcome,
+        finished.token_total,
+        finished.turns,
+      )
+  }
 }
 
 pub fn step_outcome(
