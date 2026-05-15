@@ -230,6 +230,49 @@ pub fn scout_conflicted_same_repo_pr_creates_resolver_issue_test() {
   assert artifact.stderr == ""
 }
 
+pub fn scout_max_open_prs_caps_fixture_scan_test() {
+  let fixture =
+    write_fixture(
+      "test/tmp/github-pr-conflict-scout-max-open-prs",
+      "{\n"
+        <> "  \"observed_at\": \""
+        <> observed_at
+        <> "\",\n"
+        <> "  \"github\": {\n"
+        <> "    \"pulls\": ["
+        <> safe_pr_json(123, "feature/first-conflict")
+        <> ","
+        <> safe_pr_json(124, "feature/second-conflict")
+        <> "],\n"
+        <> "    \"details\": {\n"
+        <> "      \"123\": {\"mergeable\": false, \"mergeable_state\": \"dirty\", \"base\": {\"sha\": \"base-sha\"}, \"head\": {\"sha\": \"head-sha\"}},\n"
+        <> "      \"124\": {\"mergeable\": false, \"mergeable_state\": \"dirty\", \"base\": {\"sha\": \"base-sha-2\"}, \"head\": {\"sha\": \"head-sha-2\"}}\n"
+        <> "    }\n"
+        <> "  },\n"
+        <> "  \"linear\": "
+        <> linear_project_with_issues("[]")
+        <> "\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_scout("scan-fixture " <> fixture <> " --max-open-prs 1 --json-summary")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "max_open_prs_reached")
+  assert string.contains(artifact.stdout, "Resolve merge conflicts for PR #123")
+  assert !string.contains(
+    artifact.stdout,
+    "Resolve merge conflicts for PR #124",
+  )
+  assert !string.contains(
+    artifact.stdout,
+    "github-pr-conflict:bromanko/scherzo#124",
+  )
+  assert artifact.stderr == ""
+}
+
 pub fn scout_existing_dispatchable_marker_updates_or_noops_test() {
   let issue =
     existing_issue(

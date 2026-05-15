@@ -44,6 +44,7 @@ class Options:
     workflow_label: str
     json_summary: bool
     skip_local_preflight: bool
+    max_open_prs: int | None
     observed_at: str | None = None
 
 
@@ -267,6 +268,15 @@ def scan_with_clients(
     raw_pulls = github_client.list_open_pulls()
     if not isinstance(raw_pulls, list):
         raise ScoutError("malformed GitHub PR payload: list response must be an array")
+    if options.max_open_prs is not None and len(raw_pulls) > options.max_open_prs:
+        summary["warnings"].append(
+            {
+                "reason": "max_open_prs_reached",
+                "max_open_prs": options.max_open_prs,
+                "open_prs_seen": len(raw_pulls),
+            }
+        )
+        raw_pulls = raw_pulls[: options.max_open_prs]
 
     safe_prs: list[SafePullRequest] = []
     for raw in raw_pulls:
@@ -636,8 +646,9 @@ def discover_origin_url() -> str | None:
 
 
 class ProductionGithubClient:
-    def __init__(self, repo: str) -> None:
+    def __init__(self, repo: str, max_open_prs: int | None = None) -> None:
         self.repo = repo
+        self.max_open_prs = max_open_prs
         self.base = "https://api.github.com"
         self.token = os.environ.get("GITHUB_TOKEN", "").strip() or os.environ.get(
             "GH_TOKEN", ""
@@ -647,16 +658,20 @@ class ProductionGithubClient:
         pulls: list[Any] = []
         page = 1
         owner, repo_name = self.repo.split("/", 1)
-        while True:
+        remaining = self.max_open_prs
+        while remaining is None or remaining > 0:
+            per_page = min(100, remaining) if remaining is not None else 100
             path = f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}/pulls"
             query = urllib.parse.urlencode(
-                {"state": "open", "per_page": "100", "page": str(page)}
+                {"state": "open", "per_page": str(per_page), "page": str(page)}
             )
             response = self.get_json(f"{path}?{query}")
             if not isinstance(response, list):
                 raise ScoutError("malformed GitHub PR payload: list response must be an array")
             pulls.extend(response)
-            if len(response) < 100:
+            if remaining is not None:
+                remaining -= len(response)
+            if len(response) < per_page:
                 break
             page += 1
         return pulls
@@ -959,6 +974,22 @@ def add_common_scan_args(parser: argparse.ArgumentParser, *, fixture: bool) -> N
     parser.add_argument("--workflow-label", default=DEFAULT_WORKFLOW_LABEL)
     parser.add_argument("--json-summary", action="store_true")
     parser.add_argument("--skip-local-preflight", action="store_true")
+    parser.add_argument(
+        "--max-open-prs",
+        type=positive_int,
+        default=None,
+        help="scan at most this many open PRs during one run",
+    )
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def options_from_args(args: argparse.Namespace, observed_at: str | None = None) -> Options:
@@ -969,13 +1000,14 @@ def options_from_args(args: argparse.Namespace, observed_at: str | None = None) 
         workflow_label=args.workflow_label,
         json_summary=args.json_summary,
         skip_local_preflight=args.skip_local_preflight,
+        max_open_prs=args.max_open_prs,
         observed_at=observed_at,
     )
 
 
 def run_scan(args: argparse.Namespace) -> dict[str, Any]:
     options = options_from_args(args)
-    github = ProductionGithubClient(options.repo)
+    github = ProductionGithubClient(options.repo, max_open_prs=options.max_open_prs)
     return scan_with_clients(
         options,
         github,

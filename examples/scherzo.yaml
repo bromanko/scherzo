@@ -71,11 +71,17 @@ routing:
   workflows:
     research: workflows/research.yaml
     implementation: workflows/implementation.yaml
-    pr-conflict-repair: workflows/pr-conflict-repair.yaml
+    merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
+    github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
 scheduled_jobs:
-  - id: pr-conflict-repair
-    workflow: pr-conflict-repair
-    enabled: true
+  # Disabled by default because the scout can create Linear resolver issues.
+  # Set SCHERZO_GITHUB_REPO and SCHERZO_LINEAR_PROJECT_SLUG, then flip to true.
+  # The scout scans up to SCHERZO_CONFLICT_MAX_OPEN_PRS open PRs (default 100),
+  # defaults to GitHub-only detection, and should use
+  # SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT=true only for known-small repositories.
+  - id: github-pr-conflict-scout
+    workflow: github-pr-conflict-scout
+    enabled: false
     every: 15m
     overlap: skip
     catch_up: false
@@ -84,7 +90,7 @@ scheduled_jobs:
         enabled: true
         state: Triage
         labels:
-          - job:pr-conflict-repair
+          - job:github-pr-conflict-scout
         dedupe: open_issue_per_job
 artifact_limits:
   command_stream_max_chars: 20000
@@ -93,7 +99,9 @@ artifact_limits:
 linear_contract:
   enabled: false
   workflow_label_prefix: "workflow:"
-  workflow_labels: [research, implementation]
+  # Only trusted operators or automation should be able to apply
+  # merge-conflict-resolution; that workflow can publish validated fixes.
+  workflow_labels: [research, implementation, merge-conflict-resolution]
   support_labels: [needs-workflow, needs-clarification]
   required_states:
     todo: Todo

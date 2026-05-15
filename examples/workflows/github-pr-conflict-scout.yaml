@@ -1,0 +1,31 @@
+version: 1
+id: github-pr-conflict-scout
+description: Scan open same-repository GitHub pull requests and enqueue merge-conflict resolver issues.
+workspace_profile: noop
+max_parallel_steps: 1
+steps:
+  - id: scan_open_prs
+    kind: command
+    run: |
+      set -eu
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      : "${SCHERZO_GITHUB_REPO:?set SCHERZO_GITHUB_REPO to owner/repo, for example octo-org/octo-repo}"
+      linear_project_slug=${SCHERZO_LINEAR_PROJECT_SLUG:-${LINEAR_PROJECT_SLUG:-}}
+      if test -z "$linear_project_slug"; then
+        echo "set SCHERZO_LINEAR_PROJECT_SLUG or LINEAR_PROJECT_SLUG to your Linear project slug" >&2
+        exit 64
+      fi
+      cd "$repo_root"
+      max_open_prs=${SCHERZO_CONFLICT_MAX_OPEN_PRS:-100}
+      set -- "$repo_root/scripts/scherzo-github-pr-conflict-scout" scan \
+        --repo "$SCHERZO_GITHUB_REPO" \
+        --linear-project-slug "$linear_project_slug" \
+        --create-state "${SCHERZO_CONFLICT_CREATE_STATE:-Todo}" \
+        --workflow-label "${SCHERZO_CONFLICT_WORKFLOW_LABEL:-workflow:merge-conflict-resolution}" \
+        --max-open-prs "$max_open_prs"
+      if test "${SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT:-false}" != "true"; then
+        set -- "$@" --skip-local-preflight
+      fi
+      "$@"
+    timeout_ms: 300000
+    workspace: main

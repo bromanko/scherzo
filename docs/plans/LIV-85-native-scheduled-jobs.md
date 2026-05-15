@@ -758,73 +758,9 @@ For a single job, print detailed fields:
 
 `doctor [job]` validates schedule config and template context. It can run online through the daemon for current loaded config or offline by loading `scherzo.yaml` if no control file is present. The minimum checks are: job exists, enabled workflow exists, interval is valid, unsupported fields are absent, Linear failure config is complete when enabled, reserved dedupe labels can be created or found when Linear reporting is enabled, and the scheduled workflow does not reference `issue.*`.
 
-## Worked Example: PR Conflict Repair Every 15 Minutes
+## Worked Example: GitHub PR Conflict Scout Every 15 Minutes
 
-Add this example to `examples/scherzo.yaml` after `routing.workflows` once implementation is complete:
-
-    routing:
-      workflow_label_prefix: "workflow:"
-      require_exactly_one_workflow_label: true
-      workflows:
-        research: workflows/research.yaml
-        implementation: workflows/implementation.yaml
-        pr-conflict-repair: workflows/pr-conflict-repair.yaml
-
-    scheduled_jobs:
-      - id: pr-conflict-repair
-        workflow: pr-conflict-repair
-        enabled: true
-        every: 15m
-        overlap: skip
-        catch_up: false
-        on_failure:
-          linear:
-            enabled: true
-            state: Triage
-            labels:
-              - scherzo:scheduled
-              - job:pr-conflict-repair
-            dedupe: open_issue_per_job
-
-The workflow file `workflows/pr-conflict-repair.yaml` should keep work details out of the schedule:
-
-    version: 1
-    id: pr-conflict-repair
-    description: Detect and repair PR merge conflicts on a fixed cadence.
-    max_parallel_steps: 1
-    steps:
-      - id: inspect
-        kind: command
-        run: ./scripts/pr-conflict-repair-inspect.sh
-        timeout_ms: 300000
-      - id: repair
-        kind: agent
-        depends_on: [inspect]
-        prompt: prompts/pr-conflict-repair.md
-
-The prompt file should use scheduled context variables, not issue variables:
-
-    You are running Scherzo scheduled job {{ scheduled_job.id }}.
-
-    Workflow: {{ scheduled_job.workflow }}
-    Due at: {{ schedule.due_at }}
-    Started at: {{ schedule.started_at }}
-    Run ID: {{ run.id }}
-    Attempt: {{ run.attempt }}
-
-    Inspect the repository and repair merge conflicts reported by the inspect step.
-    This job may be retried for the same due interval, so make all changes idempotent.
-    If there is no conflict to repair, report success concisely and stop.
-
-At due time `2026-05-05T12:00:00Z`, the automatic logical run ID is:
-
-    schedule-pr-conflict-repair-20260505T120000Z
-
-If the inspect command fails on all retry attempts, Scherzo records local failure history and creates or updates one Linear issue titled:
-
-    Scherzo scheduled job failed: pr-conflict-repair
-
-If the 12:15 run succeeds, Scherzo records local success only. It does not create or update Linear.
+The original draft example for this plan used a placeholder `pr-conflict-repair` workflow. That example has been superseded by the checked-in GitHub PR conflict scout flow: `github-pr-conflict-scout` runs on the schedule, invokes `scripts/scherzo-github-pr-conflict-scout`, and creates issue-dispatched resolver work for `merge-conflict-resolution`. See `examples/scherzo.yaml` and `docs/runbooks/scheduled-jobs.md` for the current runnable example.
 
 
 ## Milestones
