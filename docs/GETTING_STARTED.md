@@ -5,6 +5,7 @@ This guide is for humans and coding agents adapting Scherzo to a different repos
 Keep this guide practical and use the normative specs when you need exact contracts:
 
 - [Workspace Driver Specification](specs/WORKSPACE_DRIVER_SPEC.md)
+- [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md)
 - [Structured Output Validator Specification](specs/STRUCTURED_OUTPUT_VALIDATOR_SPEC.md)
 
 ## Recommended adaptation order
@@ -32,7 +33,7 @@ Before configuring Scherzo for a repository, collect these inputs.
 - The workflow labels you want to route, usually labels with the `workflow:` prefix such as `workflow:research` and `workflow:implementation`.
 - Whether Scherzo should post comments or move states during handoff. Start with handoff disabled until `doctor` and a single `--once` run are understood.
 
-See [Tracker adapters](runbooks/tracker-adapters.md) for the adapter capability matrix and the compatibility aliases that still use Linear or issue vocabulary.
+See the [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md) for the normative adapter contract and [Tracker adapters](runbooks/tracker-adapters.md) for operator guidance, the capability matrix, and the compatibility aliases that still use Linear or issue vocabulary.
 
 ### `pi` and model/provider credentials
 

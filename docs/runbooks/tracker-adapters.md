@@ -1,5 +1,7 @@
 # Tracker adapters operator runbook
 
+This runbook is operator guidance for configuring and checking tracker adapters. The normative implementation contract lives in the [Tracker Adapter Specification](../specs/TRACKER_ADAPTER_SPEC.md); use that spec for required data model, capability, startup-validation, idempotency, and recovery semantics.
+
 Scherzo uses **task** as the backend-neutral word for a unit of work from an external task system. A Linear issue is the production task type today. A **tracker adapter** is the Scherzo boundary that reads tasks and performs optional task-system side effects such as comments, state transitions, remote commands, and scheduled failure publication.
 
 Linear remains the only production adapter in this repository. Jira and Trello are follow-up backends, not supported runtime choices. The `test-memory` adapter is a test fixture used to prove the adapter contract without importing Linear code.
@@ -49,7 +51,7 @@ LINEAR_API_KEY=lin_api_... scherzo doctor \
 
 ## Capability matrix
 
-The matrix describes capabilities exposed through the checked-in tracker adapter boundary, not every helper that exists elsewhere in the repository.
+The matrix summarizes current operator readiness. The normative capability definitions and operation contracts are in the [Tracker Adapter Specification](../specs/TRACKER_ADAPTER_SPEC.md); this runbook intentionally does not duplicate the whole contract.
 
 | Adapter | Status | task_source | comments | remote_commands | state_transitions | routing_metadata | links | handoff | scheduled_failures | readiness | smoke | attachments | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
