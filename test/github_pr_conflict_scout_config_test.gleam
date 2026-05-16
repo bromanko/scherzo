@@ -62,11 +62,17 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
   assert step.workspace.name == "main"
   let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
   assert timeout_ms == Some(300_000)
-  let expected_run =
-    "repo_root=${SCHERZO_REPO_ROOT:-$(cd \"$SCHERZO_CONFIG_DIR/..\" && pwd -P)}; \"$repo_root/scripts/scherzo-github-pr-conflict-scout\" scan "
-    <> "--repo bromanko/scherzo --linear-project-slug scherzo-f6f4bc92d6d7 "
-    <> "--create-state Todo --workflow-label workflow:merge-conflict-resolution"
-  assert run == expected_run
+  assert_contains(run, "scripts/scherzo-github-pr-conflict-scout")
+  assert_contains(run, "--repo \"$SCHERZO_GITHUB_REPO\"")
+  assert_contains(run, "--linear-project-slug \"$linear_project_slug\"")
+  assert_contains(run, "SCHERZO_CONFLICT_MAX_OPEN_PRS")
+  assert_contains(run, "SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT")
+  assert_contains(
+    run,
+    "--workflow-label \"${SCHERZO_CONFLICT_WORKFLOW_LABEL:-workflow:merge-conflict-resolution}\"",
+  )
+  assert_not_contains(run, "bromanko/scherzo")
+  assert_not_contains(run, "scherzo-f6f4bc92d6d7")
 
   let assert Ok(job) =
     list.find(bundle.orchestrator.scheduled_jobs, fn(job) {
@@ -160,7 +166,8 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
     resolver.workspace_capabilities,
     config_types.WorkspacePublishChange,
   )
-  let assert [prepare, resolve, validate, publish] = resolver.steps
+  let assert [prepare, resolve, validate, project_validation, publish] =
+    resolver.steps
   let prepare_run =
     assert_command_step(
       prepare,
@@ -195,16 +202,28 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
       "validate_resolution",
       ["resolve_conflicts"],
       Some("main"),
-      1_200_000,
+      300_000,
       "scripts/scherzo-merge-conflict\" validate",
     )
   assert_contains(validate_run, "repo_root=")
+
+  let project_validation_run =
+    assert_command_step(
+      project_validation,
+      "project_validation",
+      ["validate_resolution"],
+      Some("main"),
+      1_200_000,
+      "run-project-validation",
+    )
+  assert_contains(project_validation_run, "repo-local validation")
+  assert_not_contains(project_validation_run, "SCHERZO_WORKSPACE_DRIVER")
 
   let publish_run =
     assert_command_step(
       publish,
       "publish_resolution",
-      ["validate_resolution"],
+      ["project_validation"],
       Some("main"),
       300_000,
       "scripts/scherzo-merge-conflict\" publish",

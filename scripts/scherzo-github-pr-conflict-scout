@@ -23,8 +23,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-DEFAULT_REPO = "bromanko/scherzo"
-DEFAULT_PROJECT_SLUG = "scherzo-f6f4bc92d6d7"
 DEFAULT_CREATE_STATE = "Todo"
 DEFAULT_WORKFLOW_LABEL = "workflow:merge-conflict-resolution"
 ACTIVE_DEDUPE_STATES = {"Todo", "In Progress"}
@@ -967,9 +965,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def env_default(*names: str) -> str | None:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return None
+
+
 def add_common_scan_args(parser: argparse.ArgumentParser, *, fixture: bool) -> None:
-    parser.add_argument("--repo", default=DEFAULT_REPO)
-    parser.add_argument("--linear-project-slug", default=DEFAULT_PROJECT_SLUG)
+    parser.add_argument(
+        "--repo",
+        default=env_default("SCHERZO_GITHUB_REPO", "GITHUB_REPOSITORY"),
+        help="GitHub owner/repo to scan. Defaults to SCHERZO_GITHUB_REPO or GITHUB_REPOSITORY.",
+    )
+    parser.add_argument(
+        "--linear-project-slug",
+        default=env_default("SCHERZO_LINEAR_PROJECT_SLUG", "LINEAR_PROJECT_SLUG"),
+        help="Linear project slug for resolver issues. Defaults to SCHERZO_LINEAR_PROJECT_SLUG or LINEAR_PROJECT_SLUG.",
+    )
     parser.add_argument("--create-state", default=DEFAULT_CREATE_STATE)
     parser.add_argument("--workflow-label", default=DEFAULT_WORKFLOW_LABEL)
     parser.add_argument("--json-summary", action="store_true")
@@ -993,9 +1007,19 @@ def positive_int(value: str) -> int:
 
 
 def options_from_args(args: argparse.Namespace, observed_at: str | None = None) -> Options:
+    repo = (args.repo or "").strip()
+    if not repo:
+        raise ScoutError(
+            "set --repo, SCHERZO_GITHUB_REPO, or GITHUB_REPOSITORY to the GitHub owner/repo to scan"
+        )
+    linear_project_slug = (args.linear_project_slug or "").strip()
+    if not linear_project_slug:
+        raise ScoutError(
+            "set --linear-project-slug, SCHERZO_LINEAR_PROJECT_SLUG, or LINEAR_PROJECT_SLUG"
+        )
     return Options(
-        repo=args.repo,
-        linear_project_slug=args.linear_project_slug,
+        repo=repo,
+        linear_project_slug=linear_project_slug,
         create_state=args.create_state,
         workflow_label=args.workflow_label,
         json_summary=args.json_summary,

@@ -57,7 +57,7 @@ Process:
 }
 ```
 
-6. The workflow validation step runs the final project validation.
+6. Later deterministic workflow command steps run the repo-local final project validation.
 7. Write `tmp/scherzo-merge-conflict-resolution.md` when conflicts were resolved, with this exact structure:
 
 ```markdown
