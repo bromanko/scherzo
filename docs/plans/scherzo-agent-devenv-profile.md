@@ -16,7 +16,7 @@ This plan must not commit any secret. It must not require operators to put GitHu
 
 The plan assumes the operator has already created a GitHub agent account, can provision a fine-grained GitHub token, can make SSH authentication for that account available through the operator's system SSH configuration or agent, and can provision a Linear API key whose activity should be attributed to the agent actor in Linear. Those account-management steps happen outside this repository. This repository should only make it easy to consume those credentials safely.
 
-The GitHub token must be scoped to the `bromanko/scherzo` repository. It needs read access for metadata and pull requests, and write access for pull requests and issue comments so `gh pr create`, `gh pr view`, feedback collection, and `gh pr comment` can work. It does not need to be used for git transport because `jj git push` should use SSH through a dedicated host alias such as `github-scherzo-agent`.
+The GitHub token must be scoped to the `scherzo-systems/scherzo` repository. It needs read access for metadata and pull requests, and write access for pull requests and issue comments so `gh pr create`, `gh pr view`, feedback collection, and `gh pr comment` can work. It does not need to be used for git transport because `jj git push` should use SSH through a dedicated host alias such as `github-scherzo-agent`.
 
 The Linear API key must be issued for the Linear agent identity that should appear on issue comments, issue state transitions, and any other Linear activity performed by Scherzo. The checked-in `.scherzo/scherzo.yaml` reads `tracker.api_key` from `$LINEAR_API_KEY`, and `scripts/scherzo-execplan-revision` also reads `LINEAR_API_KEY` when it looks up the Linear issue that references a PR. The profile must therefore derive `LINEAR_API_KEY` from an agent-specific source variable, not inherit a personal `LINEAR_API_KEY` from the outer shell.
 
@@ -30,7 +30,7 @@ The profile will read secrets and machine-specific values from environment varia
 
 The generated jj config file must be the last path in `JJ_CONFIG`, after any pre-existing `JJ_CONFIG` value, because later jj config files override earlier ones. This preserves any intentionally supplied non-identity config while ensuring `[user] name` and `[user] email` come from `.scherzo/jj-agent.toml`.
 
-The profile will not rewrite or mutate existing remotes automatically. Instead, documentation and the verification script require an explicit `scherzo-agent` remote whose SSH URL uses a dedicated host alias such as `git@github-scherzo-agent:bromanko/scherzo.git` or `ssh://git@github-scherzo-agent/bromanko/scherzo.git`. The host alias lives in the operator's personal `~/.ssh/config` and may point at 1Password's SSH agent, a hardware key, or any other local SSH setup. This is proportionate because it avoids surprising changes to the operator's normal `origin` remote, avoids storing any key path in the repository, and still makes the Scherzo workflow scripts use the agent remote through `SCHERZO_PR_REMOTE=scherzo-agent`.
+The profile will not rewrite or mutate existing remotes automatically. Instead, documentation and the verification script require an explicit `scherzo-agent` remote whose SSH URL uses a dedicated host alias such as `git@github-scherzo-agent:scherzo-systems/scherzo.git` or `ssh://git@github-scherzo-agent/scherzo-systems/scherzo.git`. The host alias lives in the operator's personal `~/.ssh/config` and may point at 1Password's SSH agent, a hardware key, or any other local SSH setup. This is proportionate because it avoids surprising changes to the operator's normal `origin` remote, avoids storing any key path in the repository, and still makes the Scherzo workflow scripts use the agent remote through `SCHERZO_PR_REMOTE=scherzo-agent`.
 
 ## Alternatives Considered
 
@@ -98,7 +98,7 @@ The main external-service risk is that GitHub CLI, SSH verification, or Linear v
   Evidence: `jj help -k config` documents `JJ_CONFIG` as a path or path list and states that config settings loaded later override earlier settings.
 
 - Observation: SSH remote URLs can use a host alias, so the repository remote can select a system SSH configuration entry such as `github-scherzo-agent` without naming a private key file in this repository.
-  Evidence: SSH-style Git URLs use the host portion before the colon or slash, for example `git@github-scherzo-agent:bromanko/scherzo.git`; `ssh` resolves that host through the operator's SSH config, where 1Password or another agent can supply the key.
+  Evidence: SSH-style Git URLs use the host portion before the colon or slash, for example `git@github-scherzo-agent:scherzo-systems/scherzo.git`; `ssh` resolves that host through the operator's SSH config, where 1Password or another agent can supply the key.
 
 - Observation: `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT` can validate the exported agent commit identity in this jj workspace even though plain `git rev-parse --show-toplevel` does not see a `.git` checkout.
   Evidence: `scherzo-agent-env-check` printed `git author: Scherzo Agent <agent@example.invalid>` and `git committer: Scherzo Agent <agent@example.invalid>` while the repository is being operated through jj.
@@ -201,7 +201,7 @@ The operator must provide these local values before the live agent run can succe
 
 The token values are secret. The GitHub login, email, and SSH host alias are account-specific or machine-specific. Put them in `.env.local` or export them in the shell; do not commit secrets. The SSH host alias itself is not secret; the key selection and any 1Password agent socket configuration belong in the operator's system SSH configuration, not in this repository.
 
-The token should be a fine-grained GitHub token for `bromanko/scherzo`. Configure repository permissions with metadata read access, pull request read/write access, and issue read/write access. SSH, not the token, is responsible for git push access, so configure the `github-scherzo-agent` SSH host alias to authenticate as the GitHub agent account and grant that account write access to the repository.
+The token should be a fine-grained GitHub token for `scherzo-systems/scherzo`. Configure repository permissions with metadata read access, pull request read/write access, and issue read/write access. SSH, not the token, is responsible for git push access, so configure the `github-scherzo-agent` SSH host alias to authenticate as the GitHub agent account and grant that account write access to the repository.
 
 `LINEAR_API_KEY` remains the existing Scherzo runtime variable name because `.scherzo/scherzo.yaml` already references `$LINEAR_API_KEY`. The profile should derive it from `SCHERZO_AGENT_LINEAR_API_KEY`, unset inherited `LINEAR_API_KEY` when the agent source key is missing, and require the agent source key before `scherzo-agent-run` starts Scherzo.
 
@@ -232,7 +232,7 @@ Each script should duplicate a small POSIX shell prelude rather than introducing
 `prepare_agent_env` should set these defaults before exporting anything:
 
     SCHERZO_AGENT_PR_REMOTE defaults to scherzo-agent
-    SCHERZO_AGENT_PR_REPO defaults to bromanko/scherzo
+    SCHERZO_AGENT_PR_REPO defaults to scherzo-systems/scherzo
     SCHERZO_AGENT_GIT_NAME defaults to Scherzo Agent
     SCHERZO_AGENT_SSH_HOST defaults to github-scherzo-agent
     SCHERZO_REPO_ROOT defaults to $PWD
@@ -267,7 +267,7 @@ When generating `.scherzo/jj-agent.toml`, reject agent names or emails containin
 
 When setting `JJ_CONFIG`, preserve any pre-existing `JJ_CONFIG` path list first and append `$PWD/.scherzo/jj-agent.toml` last using the Unix path separator `:`. This ensures the agent identity overrides earlier user config while preserving intentionally supplied non-identity jj settings.
 
-`remote_url` should prefer `jj git remote list --color=never` and fall back to `git remote get-url` only if needed. `require_agent_remote` should fail unless the selected remote exists, is SSH-based, and uses the expected SSH host alias. For the default `SCHERZO_AGENT_SSH_HOST=github-scherzo-agent`, accepted URL shapes are `git@github-scherzo-agent:bromanko/scherzo.git` and `ssh://git@github-scherzo-agent/bromanko/scherzo.git`. It should reject `https://github.com/...` and `git@github.com:...` with a remediation message that tells the operator to add or update the `scherzo-agent` remote rather than changing `origin`.
+`remote_url` should prefer `jj git remote list --color=never` and fall back to `git remote get-url` only if needed. `require_agent_remote` should fail unless the selected remote exists, is SSH-based, and uses the expected SSH host alias. For the default `SCHERZO_AGENT_SSH_HOST=github-scherzo-agent`, accepted URL shapes are `git@github-scherzo-agent:scherzo-systems/scherzo.git` and `ssh://git@github-scherzo-agent/scherzo-systems/scherzo.git`. It should reject `https://github.com/...` and `git@github.com:...` with a remediation message that tells the operator to add or update the `scherzo-agent` remote rather than changing `origin`.
 
 `scherzo-agent-env-check` should not contact GitHub or Linear. It should call `prepare_agent_env`, generate or verify `.scherzo/jj-agent.toml` when `SCHERZO_AGENT_GIT_EMAIL` is present, print non-secret effective values, print whether the GitHub token, expected GitHub login, Linear key, and SSH host alias are configured, print the resolved `gh`, `jj`, and `curl` commands, run `git var GIT_AUTHOR_IDENT`, run `git var GIT_COMMITTER_IDENT`, and run `jj config get user.name` and `jj config get user.email`. It must not print token values, token prefixes, or token suffixes. If the email is missing, it should print a clear remediation and exit nonzero after reporting other non-secret status.
 
@@ -287,7 +287,7 @@ Edit `.scherzo/README.md`. In the required environment section, add a short subs
 
 Then explain the one-time remote command:
 
-    jj git remote add scherzo-agent git@github-scherzo-agent:bromanko/scherzo.git
+    jj git remote add scherzo-agent git@github-scherzo-agent:scherzo-systems/scherzo.git
 
 Also explain the verification and run commands:
 
@@ -315,7 +315,7 @@ Do not edit `.gitignore` unless implementation discovers that `.scherzo/jj-agent
     SCHERZO_AGENT_GIT_EMAIL=agent@example.invalid \
     direnv exec . devenv shell -P scherzo-agent scherzo-agent-env-check
 
-Expect output that says the GitHub token and Linear key are configured without printing `dummy-token` or `dummy-linear-token`, shows `SCHERZO_PR_REMOTE=scherzo-agent`, shows `SCHERZO_PR_REPO=bromanko/scherzo`, shows `GH_CONFIG_DIR=.scherzo/gh-agent` or an equivalent repo-root-resolved value, shows the jj config file as the last `JJ_CONFIG` entry, and shows git and jj identity values containing `Scherzo Agent` and `agent@example.invalid`.
+Expect output that says the GitHub token and Linear key are configured without printing `dummy-token` or `dummy-linear-token`, shows `SCHERZO_PR_REMOTE=scherzo-agent`, shows `SCHERZO_PR_REPO=scherzo-systems/scherzo`, shows `GH_CONFIG_DIR=.scherzo/gh-agent` or an equivalent repo-root-resolved value, shows the jj config file as the last `JJ_CONFIG` entry, and shows git and jj identity values containing `Scherzo Agent` and `agent@example.invalid`.
 
 6. Extend `devenv.nix` with `scripts.scherzo-agent-whoami.exec`. Reuse the same prelude, require `SCHERZO_AGENT_GITHUB_TOKEN`, `SCHERZO_AGENT_GITHUB_LOGIN`, `SCHERZO_AGENT_LINEAR_API_KEY`, `SCHERZO_AGENT_GIT_EMAIL`, an SSH-based `SCHERZO_AGENT_PR_REMOTE`, and a remote host matching `SCHERZO_AGENT_SSH_HOST`, then add the `gh api user`, GitHub repository access, Linear viewer, remote, git identity, jj identity, and SSH authentication checks described in the Plan of Work.
 
@@ -329,9 +329,9 @@ Expect output that says the GitHub token and Linear key are configured without p
 
 11. If real agent credentials are available, add them to `.env.local` without committing the file. Include `SCHERZO_AGENT_GITHUB_TOKEN`, `SCHERZO_AGENT_GITHUB_LOGIN`, `SCHERZO_AGENT_LINEAR_API_KEY`, `SCHERZO_AGENT_GIT_EMAIL`, and, if the default is not correct, `SCHERZO_AGENT_SSH_HOST`. Ensure the `SCHERZO_AGENT_SSH_HOST` host alias in the operator's SSH config authenticates as the GitHub agent account and that the account has repository write access. Ensure the Linear API key belongs to the Linear actor that should appear in Scherzo issue activity.
 
-12. If the remote is not present, run `jj git remote add scherzo-agent git@github-scherzo-agent:bromanko/scherzo.git` from the repository root. If it already exists, inspect it with `jj git remote list --color=never` and ensure the `scherzo-agent` URL is SSH-based and uses the host configured by `SCHERZO_AGENT_SSH_HOST`.
+12. If the remote is not present, run `jj git remote add scherzo-agent git@github-scherzo-agent:scherzo-systems/scherzo.git` from the repository root. If it already exists, inspect it with `jj git remote list --color=never` and ensure the `scherzo-agent` URL is SSH-based and uses the host configured by `SCHERZO_AGENT_SSH_HOST`.
 
-13. Run `direnv exec . devenv shell -P scherzo-agent scherzo-agent-whoami`. Expect the GitHub CLI login and SSH authentication output to match `SCHERZO_AGENT_GITHUB_LOGIN`, the target remote to be `scherzo-agent`, the repository access check to print `bromanko/scherzo`, the read-only Linear viewer check to print the agent Linear actor without printing the key, and git/jj identity output to match the agent name and email.
+13. Run `direnv exec . devenv shell -P scherzo-agent scherzo-agent-whoami`. Expect the GitHub CLI login and SSH authentication output to match `SCHERZO_AGENT_GITHUB_LOGIN`, the target remote to be `scherzo-agent`, the repository access check to print `scherzo-systems/scherzo`, the read-only Linear viewer check to print the agent Linear actor without printing the key, and git/jj identity output to match the agent name and email.
 
 14. Do not start a live daemon unless the operator is ready for Scherzo to poll Linear and dispatch work. When ready, run `direnv exec . devenv shell -P scherzo-agent scherzo-agent-run`.
 
@@ -367,7 +367,7 @@ The profile itself is falsified if any of these checks fail:
 - `scherzo-agent-whoami` succeeds when the SSH authentication output from `ssh -T git@$SCHERZO_AGENT_SSH_HOST` does not contain both `successfully authenticated` and `SCHERZO_AGENT_GITHUB_LOGIN`.
 - `scherzo-agent-run` starts Scherzo when `SCHERZO_AGENT_LINEAR_API_KEY` is missing, or when `LINEAR_API_KEY` was inherited instead of derived from the agent source key. It should fail before `gleam run`.
 
-The live identity check requires real credentials and network access. With real credentials, `gh api user --jq .login` must print the configured agent login, not the human login. The repository access check must identify `bromanko/scherzo`. The Linear viewer query must return the intended Linear agent actor, not the human operator. The SSH check must show GitHub accepted the configured host alias for the same login. These observations prove the profile is using the agent account for GitHub API, Linear API, and SSH git operations.
+The live identity check requires real credentials and network access. With real credentials, `gh api user --jq .login` must print the configured agent login, not the human login. The repository access check must identify `scherzo-systems/scherzo`. The Linear viewer query must return the intended Linear agent actor, not the human operator. The SSH check must show GitHub accepted the configured host alias for the same login. These observations prove the profile is using the agent account for GitHub API, Linear API, and SSH git operations.
 
 ## Validation and Acceptance
 
@@ -392,7 +392,7 @@ With dummy values, this command succeeds without leaking either token:
 The expected output includes non-secret lines like:
 
     SCHERZO_PR_REMOTE=scherzo-agent
-    SCHERZO_PR_REPO=bromanko/scherzo
+    SCHERZO_PR_REPO=scherzo-systems/scherzo
     SCHERZO_AGENT_SSH_HOST=github-scherzo-agent
     GH_TOKEN=configured
     GITHUB_TOKEN=configured
@@ -407,7 +407,7 @@ With real values and an SSH remote, this command identifies the GitHub agent acc
 
     direnv exec . devenv shell -P scherzo-agent scherzo-agent-whoami
 
-The expected output includes the agent GitHub login from `gh`, the configured repository name `bromanko/scherzo`, the Linear viewer actor for the agent key, the agent git author and committer identity, the agent jj identity, the `scherzo-agent` remote URL using `github-scherzo-agent`, and an SSH authentication success for `SCHERZO_AGENT_GITHUB_LOGIN`. It must not include a personal GitHub login, personal Linear actor, or personal email.
+The expected output includes the agent GitHub login from `gh`, the configured repository name `scherzo-systems/scherzo`, the Linear viewer actor for the agent key, the agent git author and committer identity, the agent jj identity, the `scherzo-agent` remote URL using `github-scherzo-agent`, and an SSH authentication success for `SCHERZO_AGENT_GITHUB_LOGIN`. It must not include a personal GitHub login, personal Linear actor, or personal email.
 
 When the operator starts Scherzo with:
 
@@ -436,7 +436,7 @@ A safe `.env.local` example uses variable names but not real secrets:
     SCHERZO_AGENT_GIT_EMAIL=agent-email@example.invalid
     SCHERZO_AGENT_SSH_HOST=github-scherzo-agent
 
-The fine-grained GitHub token should be limited to `bromanko/scherzo` and allow metadata read, pull request read/write, and issue read/write. The SSH host alias should authenticate as the same GitHub agent account and have repository write access for git pushes. The Linear API key should belong to the Linear agent actor that should appear on Scherzo issue comments, claim transitions, success transitions, and failure transitions.
+The fine-grained GitHub token should be limited to `scherzo-systems/scherzo` and allow metadata read, pull request read/write, and issue read/write. The SSH host alias should authenticate as the same GitHub agent account and have repository write access for git pushes. The Linear API key should belong to the Linear agent actor that should appear on Scherzo issue comments, claim transitions, success transitions, and failure transitions.
 
 A local jj identity file generated by the scripts should look like this:
 
@@ -455,7 +455,7 @@ The one-time SSH host alias can live in the operator's `~/.ssh/config`, where 1P
 
 The one-time remote setup should look like this when listed:
 
-    scherzo-agent git@github-scherzo-agent:bromanko/scherzo.git
+    scherzo-agent git@github-scherzo-agent:scherzo-systems/scherzo.git
 
 The profile scripts should leave `GIT_SSH_COMMAND` unset by default so the host alias decides which key or agent is used.
 
@@ -489,7 +489,7 @@ The local environment interface is:
     SCHERZO_AGENT_GIT_EMAIL         required for env-check, live checks, and runs
     SCHERZO_AGENT_SSH_HOST          optional, defaults to github-scherzo-agent
     SCHERZO_AGENT_PR_REMOTE         optional, defaults to scherzo-agent
-    SCHERZO_AGENT_PR_REPO           optional, defaults to bromanko/scherzo
+    SCHERZO_AGENT_PR_REPO           optional, defaults to scherzo-systems/scherzo
 
 The exported Scherzo and tool interface is:
 

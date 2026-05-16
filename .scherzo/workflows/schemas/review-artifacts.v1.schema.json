@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/bromanko/scherzo/.scherzo/workflows/schemas/review-artifacts.v1.schema.json",
+  "$id": "https://github.com/scherzo-systems/scherzo/.scherzo/workflows/schemas/review-artifacts.v1.schema.json",
   "title": "Scherzo review artifacts v1",
   "description": "Shared artifact contract for staged Scherzo code-review workflows.",
   "oneOf": [

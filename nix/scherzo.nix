@@ -291,7 +291,7 @@ stdenvNoCC.mkDerivation {
 
   meta = {
     description = manifest.description or "Linear/pi orchestration daemon";
-    homepage = "https://github.com/bromanko/scherzo";
+    homepage = "https://github.com/scherzo-systems/scherzo";
     mainProgram = "scherzo";
     platforms = lib.platforms.unix;
   };

@@ -364,7 +364,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "  scripts/scherzo-execplan-review 123\n"
             "  scripts/scherzo-execplan-review open 123 --no-open\n"
             "  scripts/scherzo-execplan-review review 123 --no-open\n"
-            "  scripts/scherzo-execplan-review 123 --repo bromanko/scherzo\n"
+            "  scripts/scherzo-execplan-review 123 --repo scherzo-systems/scherzo\n"
             "\nMarkdown sources are rendered to temporary HTML viewers; inline review comments target the source path."
 
         ),

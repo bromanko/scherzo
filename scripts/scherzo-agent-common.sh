@@ -66,7 +66,7 @@ prepare_agent_env() {
     SCHERZO_AGENT_PR_REMOTE=scherzo-agent
   fi
   if [ -z "$SCHERZO_AGENT_PR_REPO" ]; then
-    SCHERZO_AGENT_PR_REPO=bromanko/scherzo
+    SCHERZO_AGENT_PR_REPO=scherzo-systems/scherzo
   fi
   if [ -z "$SCHERZO_AGENT_GIT_NAME" ]; then
     SCHERZO_AGENT_GIT_NAME="Scherzo Agent"

@@ -125,7 +125,7 @@ scripts/scherzo-review dry-run --from main@origin --to @ --output-dir tmp/review
 scripts/scherzo-review dry-run --diff-file /path/to/pr.diff --output-dir tmp/review-dry-run
 
 # GitHub PR diff. This uses read-only gh pr diff/view calls only.
-scripts/scherzo-review dry-run --pr 74 --repo bromanko/scherzo --output-dir tmp/review-dry-run
+scripts/scherzo-review dry-run --pr 74 --repo scherzo-systems/scherzo --output-dir tmp/review-dry-run
 ```
 
 The command writes:

@@ -5,9 +5,9 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 
 ## Purpose / Big Picture
 
-Scherzo operators should not have to notice that an open GitHub pull request is blocked by merge conflicts, manually create a Linear issue, and then wait for the existing merge-conflict workflow to pick it up. After this change, the running Scherzo daemon has one scheduled job that periodically scans open pull requests in `bromanko/scherzo`, skips unsafe targets such as forks and drafts, detects likely merge conflicts, and creates or refreshes exactly one dispatchable Linear issue for each conflicted same-repository pull request.
+Scherzo operators should not have to notice that an open GitHub pull request is blocked by merge conflicts, manually create a Linear issue, and then wait for the existing merge-conflict workflow to pick it up. After this change, the running Scherzo daemon has one scheduled job that periodically scans open pull requests in `scherzo-systems/scherzo`, skips unsafe targets such as forks and drafts, detects likely merge conflicts, and creates or refreshes exactly one dispatchable Linear issue for each conflicted same-repository pull request.
 
-The visible behavior is simple. A same-repository pull request such as `https://github.com/bromanko/scherzo/pull/123` that needs conflict repair causes one Linear issue in `Todo` whose title or description names PR #123, whose body contains the stable marker `github-pr-conflict:bromanko/scherzo#123`, and whose only workflow label is `workflow:merge-conflict-resolution`. The existing `.scherzo/workflows/merge-conflict-resolution.yaml` workflow remains the resolver. The new scheduled scout only discovers conflicted PRs and enqueues resolver-shaped Linear issues.
+The visible behavior is simple. A same-repository pull request such as `https://github.com/scherzo-systems/scherzo/pull/123` that needs conflict repair causes one Linear issue in `Todo` whose title or description names PR #123, whose body contains the stable marker `github-pr-conflict:scherzo-systems/scherzo#123`, and whose only workflow label is `workflow:merge-conflict-resolution`. The existing `.scherzo/workflows/merge-conflict-resolution.yaml` workflow remains the resolver. The new scheduled scout only discovers conflicted PRs and enqueues resolver-shaped Linear issues.
 
 When no pull request needs conflict repair, the scheduled run exits successfully without creating or updating Linear issues and without printing noisy output. When the scout itself fails, Scherzo's native scheduled-job failure reporting creates or updates the normal scheduled-failure triage issue for the scout job, separate from any resolver issues.
 
@@ -15,7 +15,7 @@ When no pull request needs conflict repair, the scheduled run exits successfully
 
 Scherzo already has an issue-driven merge-conflict resolver. The resolver is intentionally narrow: it reads one Linear issue, extracts one PR or branch target, prepares a local merge, lets an agent resolve the materialized conflicts, validates the result, and publishes the repair. That workflow should not be changed into a repository-wide discovery process, because it is safer and easier to reason about when each resolver run has exactly one target.
 
-The missing operator capability is discovery and enqueueing. GitHub can have many open PRs, some may be forks, some may be drafts, and some may be temporarily blocked by checks rather than true merge conflicts. The scout must therefore be conservative. It only scans `bromanko/scherzo`, only considers open non-draft pull requests whose head repository equals their base repository, and only creates Linear work when GitHub metadata or a local merge preflight gives enough evidence of a merge conflict. It must never push branches, modify PRs, invoke pi, or run `scripts/scherzo-merge-conflict` itself.
+The missing operator capability is discovery and enqueueing. GitHub can have many open PRs, some may be forks, some may be drafts, and some may be temporarily blocked by checks rather than true merge conflicts. The scout must therefore be conservative. It only scans `scherzo-systems/scherzo`, only considers open non-draft pull requests whose head repository equals their base repository, and only creates Linear work when GitHub metadata or a local merge preflight gives enough evidence of a merge conflict. It must never push branches, modify PRs, invoke pi, or run `scripts/scherzo-merge-conflict` itself.
 
 This plan refreshes the earlier stale plan for LIV-124. The native scheduler work that was previously uncertain is now present in the current tree, so this plan treats scheduled-job runtime as existing infrastructure. The implementation scope is the product-specific scout script, the command-only scheduled workflow, dogfood configuration, and tests that prove the scout is safe and idempotent.
 
@@ -41,7 +41,7 @@ A fourth alternative is to dedupe against any Linear issue that has the PR marke
 
 The first risk is accidentally creating duplicate Linear issues every 15 minutes. The scheduled job uses `overlap: skip`, the script searches for the stable marker before creating, and the script updates or no-ops an existing `Todo` or `In Progress` marker issue instead of creating another. Tests must prove that a repeated scan for PR #123 produces one create on the first run and either one update or a no-op on later runs.
 
-The second risk is unsafe work on forks, deleted-head PRs, or cross-repository branches. The script must skip any PR whose base repo is not `bromanko/scherzo`, whose head repo is missing, or whose head repo differs from the base repo. Fixture tests must cover draft PRs, fork PRs, cross-repository PRs, and `head.repo: null` deleted-head cases.
+The second risk is unsafe work on forks, deleted-head PRs, or cross-repository branches. The script must skip any PR whose base repo is not `scherzo-systems/scherzo`, whose head repo is missing, or whose head repo differs from the base repo. Fixture tests must cover draft PRs, fork PRs, cross-repository PRs, and `head.repo: null` deleted-head cases.
 
 The third risk is false-positive conflict detection. The script may create expensive resolver work if it treats a merely blocked PR as conflicted. The script must treat `mergeable_state: dirty` as conflicted, must treat clearly mergeable states as clean when `mergeable` is true, and must run local preflight for unknown or non-dirty negative states. If preflight cannot run, the script must skip that PR with `preflight_unavailable` rather than create uncertain work.
 
@@ -184,7 +184,7 @@ Implement `scripts/scherzo-github-pr-conflict-scout` as an executable Python 3 s
 The script must expose these CLI shapes:
 
     scripts/scherzo-github-pr-conflict-scout scan \
-      --repo bromanko/scherzo \
+      --repo scherzo-systems/scherzo \
       --linear-project-slug scherzo-f6f4bc92d6d7 \
       --create-state Todo \
       --workflow-label workflow:merge-conflict-resolution
@@ -203,7 +203,7 @@ Implement local merge preflight without modifying the working tree. Create a tem
 
 Implement Linear mutation planning. Do not read `LINEAR_API_KEY` or contact Linear until at least one PR has been classified as conflicted. Read `LINEAR_API_KEY`, falling back to `SCHERZO_AGENT_LINEAR_API_KEY` if present, and fail with `Linear API key is required to create merge-conflict issues` if neither is set. Fetch the Linear project by slug using the same contract-style query pattern as `src/scherzo/linear.gleam`: project id, teams, team states, team labels, and workspace labels. Use the first project team. Find the state named by `--create-state`, which is `Todo` in the scheduled workflow. Find an existing label named exactly `workflow:merge-conflict-resolution`; do not create this workflow label automatically.
 
-Search candidate Linear issues in the project with the workflow label and state type not in `completed`, `canceled`, or `duplicate`, paginating until `pageInfo.hasNextPage` is false. Filter client-side for descriptions or titles containing the marker `github-pr-conflict:bromanko/scherzo#<number>`. A dispatchable dedupe match has state name `Todo` or `In Progress` and the workflow label. If any dispatchable matches exist, choose an `In Progress` match first when present, otherwise choose the oldest `Todo` match by `createdAt`. Update its description only if the generated description differs; otherwise record a no-op. If only non-dispatchable marker issues exist, add their identifiers to `historical_marker_issues_ignored` and create a new `Todo` issue.
+Search candidate Linear issues in the project with the workflow label and state type not in `completed`, `canceled`, or `duplicate`, paginating until `pageInfo.hasNextPage` is false. Filter client-side for descriptions or titles containing the marker `github-pr-conflict:scherzo-systems/scherzo#<number>`. A dispatchable dedupe match has state name `Todo` or `In Progress` and the workflow label. If any dispatchable matches exist, choose an `In Progress` match first when present, otherwise choose the oldest `Todo` match by `createdAt`. Update its description only if the generated description differs; otherwise record a no-op. If only non-dispatchable marker issues exist, add their identifiers to `historical_marker_issues_ignored` and create a new `Todo` issue.
 
 Generated resolver issue titles must be `Resolve merge conflicts for PR #<number>`. Generated descriptions must include the marker on its own line, the GitHub PR URL, repository, base branch, head branch, base SHA when known, head SHA when known, detection source (`github:dirty` or `local-preflight`), observation time in UTC ISO-8601, and a sentence saying that Scherzo's `workflow:merge-conflict-resolution` resolver should handle the repair. Created issues must have `labelIds` containing exactly the id for `workflow:merge-conflict-resolution`.
 
@@ -242,7 +242,7 @@ Add `test/github_pr_conflict_scout_config_test.gleam`. Load `.scherzo/scherzo.ya
 
 4. Add a test named `scout_default_noop_is_silent_test`. It runs the same fixture without `--json-summary` and asserts exit code 0, empty stdout, and empty stderr.
 
-5. Add a test named `scout_conflicted_same_repo_pr_creates_resolver_issue_test`. The fixture has one open non-draft PR #123 with `base.repo.full_name` and `head.repo.full_name` both `bromanko/scherzo`; PR detail has `mergeable_state: dirty`; Linear has the project, `Todo` state, and workflow label id but no existing marker issue. Assert stdout contains one create action, `Resolve merge conflicts for PR #123`, `https://github.com/bromanko/scherzo/pull/123`, `github-pr-conflict:bromanko/scherzo#123`, `workflow-label-id`, and does not contain any support label id.
+5. Add a test named `scout_conflicted_same_repo_pr_creates_resolver_issue_test`. The fixture has one open non-draft PR #123 with `base.repo.full_name` and `head.repo.full_name` both `scherzo-systems/scherzo`; PR detail has `mergeable_state: dirty`; Linear has the project, `Todo` state, and workflow label id but no existing marker issue. Assert stdout contains one create action, `Resolve merge conflicts for PR #123`, `https://github.com/scherzo-systems/scherzo/pull/123`, `github-pr-conflict:scherzo-systems/scherzo#123`, `workflow-label-id`, and does not contain any support label id.
 
 6. Add a test named `scout_existing_dispatchable_marker_updates_or_noops_test`. The fixture has the same conflicted PR and an existing `Todo` issue with the workflow label and the marker in its description. Use a stale description so the expected action is update. Assert there is one update for that issue id and no create action.
 
@@ -336,7 +336,7 @@ The implementation is accepted when the full validation commands pass and these 
 
 A fixture with no PRs exits zero, prints nothing by default, and does not contact the fixture Linear client.
 
-A fixture with one safe PR #123 whose detail has `mergeable_state: dirty` plans one Linear create in `Todo`, with title `Resolve merge conflicts for PR #123`, description containing `https://github.com/bromanko/scherzo/pull/123` and `github-pr-conflict:bromanko/scherzo#123`, and label ids exactly `[workflow-label-id]` in the fixture.
+A fixture with one safe PR #123 whose detail has `mergeable_state: dirty` plans one Linear create in `Todo`, with title `Resolve merge conflicts for PR #123`, description containing `https://github.com/scherzo-systems/scherzo/pull/123` and `github-pr-conflict:scherzo-systems/scherzo#123`, and label ids exactly `[workflow-label-id]` in the fixture.
 
 A fixture with an existing `Todo` marker issue plans an update or no-op for that issue and no create.
 
@@ -373,17 +373,17 @@ The scheduled job should use this workflow command shape:
 
     repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
     "$repo_root/scripts/scherzo-github-pr-conflict-scout" scan \
-      --repo bromanko/scherzo \
+      --repo scherzo-systems/scherzo \
       --linear-project-slug scherzo-f6f4bc92d6d7 \
       --create-state Todo \
       --workflow-label workflow:merge-conflict-resolution
 
 A generated resolver issue description should have this shape, with actual SHAs and timestamps filled in when available:
 
-    github-pr-conflict:bromanko/scherzo#123
+    github-pr-conflict:scherzo-systems/scherzo#123
 
-    GitHub PR: https://github.com/bromanko/scherzo/pull/123
-    Repository: bromanko/scherzo
+    GitHub PR: https://github.com/scherzo-systems/scherzo/pull/123
+    Repository: scherzo-systems/scherzo
     Base branch: main
     Head branch: feature/conflicted-change
     Base SHA: <sha or ->

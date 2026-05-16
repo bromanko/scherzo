@@ -72,7 +72,7 @@ inputs:
   nixpkgs:
     url: github:NixOS/nixpkgs/nixos-25.11
   scherzo:
-    url: github:bromanko/scherzo
+    url: github:scherzo-systems/scherzo
 ```
 
 ```nix

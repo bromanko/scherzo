@@ -59,12 +59,12 @@ pub fn extract_target_accepts_local_pr_reference_test() {
     simplifile.write(text_path, "Please resolve conflicts for PR #51.\n")
 
   let artifact =
-    run_helper("extract-target " <> text_path <> " bromanko/scherzo")
+    run_helper("extract-target " <> text_path <> " scherzo-systems/scherzo")
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "TARGET_KIND=pr")
-  assert string.contains(artifact.stdout, "REPO=bromanko/scherzo")
+  assert string.contains(artifact.stdout, "REPO=scherzo-systems/scherzo")
   assert string.contains(artifact.stdout, "PR_NUMBER=51")
 }
 
@@ -77,20 +77,22 @@ pub fn extract_target_prefers_issue_fields_over_diagnostic_comments_test() {
       text_path,
       "{\n"
         <> "  \"title\": \"Resolve conflicts for PR #31\",\n"
-        <> "  \"description\": \"https://github.com/bromanko/scherzo/pull/31\\n\",\n"
+        <> "  \"description\": \"https://github.com/scherzo-systems/scherzo/pull/31\\n\",\n"
         <> "  \"comments\": {\"nodes\": [\n"
-        <> "    {\"createdAt\": \"2026-05-05T01:31:05.807Z\", \"body\": \"Parent commit: Merge pull request #29 from bromanko/scherzo/old\", \"user\": {\"name\": \"Bromanko Agent\"}}\n"
+        <> "    {\"createdAt\": \"2026-05-05T01:31:05.807Z\", \"body\": \"Parent commit: Merge pull request #29 from scherzo-systems/scherzo/old\", \"user\": {\"name\": \"Bromanko Agent\"}}\n"
         <> "  ]}\n"
         <> "}\n",
     )
 
   let artifact =
-    run_helper("extract-target-issue " <> text_path <> " bromanko/scherzo")
+    run_helper(
+      "extract-target-issue " <> text_path <> " scherzo-systems/scherzo",
+    )
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "TARGET_KIND=pr")
-  assert string.contains(artifact.stdout, "REPO=bromanko/scherzo")
+  assert string.contains(artifact.stdout, "REPO=scherzo-systems/scherzo")
   assert string.contains(artifact.stdout, "PR_NUMBER=31")
 }
 
@@ -102,12 +104,12 @@ pub fn extract_target_accepts_explicit_branch_line_test() {
     simplifile.write(text_path, "Branch: feature/conflicted-branch\n")
 
   let artifact =
-    run_helper("extract-target " <> text_path <> " bromanko/scherzo")
+    run_helper("extract-target " <> text_path <> " scherzo-systems/scherzo")
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "TARGET_KIND=branch")
-  assert string.contains(artifact.stdout, "REPO=bromanko/scherzo")
+  assert string.contains(artifact.stdout, "REPO=scherzo-systems/scherzo")
   assert string.contains(artifact.stdout, "BRANCH=feature/conflicted-branch")
 }
 
@@ -122,7 +124,7 @@ pub fn extract_target_rejects_ambiguous_pr_and_branch_test() {
     )
 
   let artifact =
-    run_helper("extract-target " <> text_path <> " bromanko/scherzo")
+    run_helper("extract-target " <> text_path <> " scherzo-systems/scherzo")
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
@@ -390,7 +392,7 @@ pub fn validate_accepts_prepare_metadata_with_jj_conflict_status_suffix_test() {
       dir <> "/tmp/scherzo-merge-conflict.json",
       "{\n"
         <> "  \"linear_issue_identifier\": \"LIV-123\",\n"
-        <> "  \"repo\": \"bromanko/scherzo\",\n"
+        <> "  \"repo\": \"scherzo-systems/scherzo\",\n"
         <> "  \"remote\": \"origin\",\n"
         <> "  \"target_kind\": \"branch\",\n"
         <> "  \"head_branch\": \"feature/conflicted-branch\",\n"
@@ -476,7 +478,7 @@ fn write_validation_fixture(dir: String, safe_contents: String) -> Nil {
       dir <> "/tmp/scherzo-merge-conflict.json",
       "{\n"
         <> "  \"linear_issue_identifier\": \"LIV-123\",\n"
-        <> "  \"repo\": \"bromanko/scherzo\",\n"
+        <> "  \"repo\": \"scherzo-systems/scherzo\",\n"
         <> "  \"remote\": \"origin\",\n"
         <> "  \"target_kind\": \"branch\",\n"
         <> "  \"head_branch\": \"feature/conflicted-branch\",\n"
@@ -502,7 +504,7 @@ fn write_no_conflicts_validation_fixture(dir: String) -> Nil {
       dir <> "/tmp/scherzo-merge-conflict.json",
       "{\n"
         <> "  \"linear_issue_identifier\": \"LIV-123\",\n"
-        <> "  \"repo\": \"bromanko/scherzo\",\n"
+        <> "  \"repo\": \"scherzo-systems/scherzo\",\n"
         <> "  \"remote\": \"origin\",\n"
         <> "  \"target_kind\": \"branch\",\n"
         <> "  \"head_branch\": \"feature/conflicted-branch\",\n"

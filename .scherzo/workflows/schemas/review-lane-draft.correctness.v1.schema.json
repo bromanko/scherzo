@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/bromanko/scherzo/.scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
+  "$id": "https://github.com/scherzo-systems/scherzo/.scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
   "title": "Scherzo correctness review lane draft v1",
   "description": "Structured-output contract for the native correctness review lane.",
   "type": "object",

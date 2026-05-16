@@ -34,7 +34,7 @@ fn run_scout(command: String) -> step_artifact.StepArtifact {
     "github-pr-conflict-scout",
     "scripts/scherzo-github-pr-conflict-scout "
       <> command
-      <> " --repo bromanko/scherzo --linear-project-slug test-project",
+      <> " --repo scherzo-systems/scherzo --linear-project-slug test-project",
     ".",
     10_000,
     [],
@@ -88,12 +88,12 @@ fn safe_pr_json(number: Int, head_branch: String) -> String {
   <> "  \"number\": "
   <> number_string
   <> ",\n"
-  <> "  \"html_url\": \"https://github.com/bromanko/scherzo/pull/"
+  <> "  \"html_url\": \"https://github.com/scherzo-systems/scherzo/pull/"
   <> number_string
   <> "\",\n"
   <> "  \"draft\": false,\n"
-  <> "  \"base\": {\"repo\": {\"full_name\": \"bromanko/scherzo\"}, \"ref\": \"main\", \"sha\": \"base-sha\"},\n"
-  <> "  \"head\": {\"repo\": {\"full_name\": \"bromanko/scherzo\"}, \"ref\": \""
+  <> "  \"base\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \"main\", \"sha\": \"base-sha\"},\n"
+  <> "  \"head\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \""
   <> head_branch
   <> "\", \"sha\": \"head-sha\"}\n"
   <> "}"
@@ -163,10 +163,10 @@ fn state_type(name: String) -> String {
 }
 
 fn generated_description(detection: String) -> String {
-  "github-pr-conflict:bromanko/scherzo#123\n"
+  "github-pr-conflict:scherzo-systems/scherzo#123\n"
   <> "\n"
-  <> "GitHub PR: https://github.com/bromanko/scherzo/pull/123\n"
-  <> "Repository: bromanko/scherzo\n"
+  <> "GitHub PR: https://github.com/scherzo-systems/scherzo/pull/123\n"
+  <> "Repository: scherzo-systems/scherzo\n"
   <> "PR base ref: main\n"
   <> "PR head ref: feature/conflicted-change\n"
   <> "Base SHA: base-sha\n"
@@ -221,7 +221,7 @@ pub fn scout_uses_environment_configuration_when_flags_are_omitted_test() {
 
   let artifact =
     run_scout_raw(
-      "env SCHERZO_GITHUB_REPO=bromanko/scherzo "
+      "env SCHERZO_GITHUB_REPO=scherzo-systems/scherzo "
       <> "SCHERZO_LINEAR_PROJECT_SLUG=test-project "
       <> "scripts/scherzo-github-pr-conflict-scout scan-fixture "
       <> fixture
@@ -233,7 +233,7 @@ pub fn scout_uses_environment_configuration_when_flags_are_omitted_test() {
   assert string.contains(artifact.stdout, "\"created\": [")
   assert string.contains(
     artifact.stdout,
-    "github-pr-conflict:bromanko/scherzo#123",
+    "github-pr-conflict:scherzo-systems/scherzo#123",
   )
   assert artifact.stderr == ""
 }
@@ -275,7 +275,7 @@ pub fn scout_requires_project_slug_configuration_when_flags_and_env_are_missing_
       <> "-u SCHERZO_LINEAR_PROJECT_SLUG -u LINEAR_PROJECT_SLUG "
       <> "scripts/scherzo-github-pr-conflict-scout scan-fixture "
       <> fixture
-      <> " --repo bromanko/scherzo",
+      <> " --repo scherzo-systems/scherzo",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -301,11 +301,11 @@ pub fn scout_conflicted_same_repo_pr_creates_resolver_issue_test() {
   assert string.contains(artifact.stdout, "Resolve merge conflicts for PR #123")
   assert string.contains(
     artifact.stdout,
-    "https://github.com/bromanko/scherzo/pull/123",
+    "https://github.com/scherzo-systems/scherzo/pull/123",
   )
   assert string.contains(
     artifact.stdout,
-    "github-pr-conflict:bromanko/scherzo#123",
+    "github-pr-conflict:scherzo-systems/scherzo#123",
   )
   assert string.contains(
     artifact.stdout,
@@ -355,7 +355,7 @@ pub fn scout_max_open_prs_caps_fixture_scan_test() {
   )
   assert !string.contains(
     artifact.stdout,
-    "github-pr-conflict:bromanko/scherzo#124",
+    "github-pr-conflict:scherzo-systems/scherzo#124",
   )
   assert artifact.stderr == ""
 }
@@ -366,7 +366,7 @@ pub fn scout_existing_dispatchable_marker_updates_or_noops_test() {
       "existing-issue-id",
       "LIV-500",
       "Todo",
-      "github-pr-conflict:bromanko/scherzo#123\n\nStale body.\n",
+      "github-pr-conflict:scherzo-systems/scherzo#123\n\nStale body.\n",
     )
   let fixture =
     write_fixture(
@@ -416,7 +416,7 @@ pub fn scout_ignores_triage_marker_and_creates_dispatchable_issue_test() {
       "triage-issue-id",
       "LIV-502",
       "Triage",
-      "github-pr-conflict:bromanko/scherzo#123\n\nOld triage copy.\n",
+      "github-pr-conflict:scherzo-systems/scherzo#123\n\nOld triage copy.\n",
     )
   let fixture =
     write_fixture(
@@ -445,10 +445,10 @@ pub fn scout_skips_unsafe_prs_test() {
         <> "\",\n"
         <> "  \"github\": {\n"
         <> "    \"pulls\": [\n"
-        <> "      {\"number\": 201, \"html_url\": \"https://github.com/bromanko/scherzo/pull/201\", \"draft\": true, \"base\": {\"repo\": {\"full_name\": \"bromanko/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": {\"full_name\": \"bromanko/scherzo\"}, \"ref\": \"draft\"}},\n"
-        <> "      {\"number\": 202, \"html_url\": \"https://github.com/bromanko/scherzo/pull/202\", \"draft\": false, \"base\": {\"repo\": {\"full_name\": \"bromanko/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": {\"full_name\": \"someone/fork\"}, \"ref\": \"fork\"}},\n"
-        <> "      {\"number\": 203, \"html_url\": \"https://github.com/bromanko/scherzo/pull/203\", \"draft\": false, \"base\": {\"repo\": {\"full_name\": \"bromanko/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": {\"full_name\": \"bromanko/other\"}, \"ref\": \"cross\"}},\n"
-        <> "      {\"number\": 204, \"html_url\": \"https://github.com/bromanko/scherzo/pull/204\", \"draft\": false, \"base\": {\"repo\": {\"full_name\": \"bromanko/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": null, \"ref\": \"deleted\"}}\n"
+        <> "      {\"number\": 201, \"html_url\": \"https://github.com/scherzo-systems/scherzo/pull/201\", \"draft\": true, \"base\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \"draft\"}},\n"
+        <> "      {\"number\": 202, \"html_url\": \"https://github.com/scherzo-systems/scherzo/pull/202\", \"draft\": false, \"base\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": {\"full_name\": \"someone/fork\"}, \"ref\": \"fork\"}},\n"
+        <> "      {\"number\": 203, \"html_url\": \"https://github.com/scherzo-systems/scherzo/pull/203\", \"draft\": false, \"base\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": {\"full_name\": \"bromanko/other\"}, \"ref\": \"cross\"}},\n"
+        <> "      {\"number\": 204, \"html_url\": \"https://github.com/scherzo-systems/scherzo/pull/204\", \"draft\": false, \"base\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": null, \"ref\": \"deleted\"}}\n"
         <> "    ]\n"
         <> "  },\n"
         <> "  \"linear\": {\"fail_if_called\": true}\n"
@@ -532,7 +532,7 @@ pub fn scout_malformed_github_payload_fails_test() {
       "test/tmp/github-pr-conflict-scout-malformed",
       "{\n"
         <> "  \"github\": {\n"
-        <> "    \"pulls\": [{\"number\": \"123\", \"html_url\": \"https://github.com/bromanko/scherzo/pull/123\", \"draft\": false, \"base\": {\"repo\": {\"full_name\": \"bromanko/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": {\"full_name\": \"bromanko/scherzo\"}, \"ref\": \"feature\"}}]\n"
+        <> "    \"pulls\": [{\"number\": \"123\", \"html_url\": \"https://github.com/scherzo-systems/scherzo/pull/123\", \"draft\": false, \"base\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \"main\"}, \"head\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \"feature\"}}]\n"
         <> "  },\n"
         <> "  \"linear\": {\"fail_if_called\": true}\n"
         <> "}\n",

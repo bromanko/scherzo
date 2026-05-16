@@ -321,7 +321,7 @@ def choose_pr_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     if not candidates:
         fail(
             "no GitHub PR reference found on the Linear issue. Add a human-friendly "
-            "reference such as 'Revise PR #51', 'bromanko/scherzo#51', or a full "
+            "reference such as 'Revise PR #51', 'scherzo-systems/scherzo#51', or a full "
             "https://github.com/<owner>/<repo>/pull/<number> URL."
         )
     if len(candidates) > 1:

@@ -71,7 +71,7 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
     run,
     "--workflow-label \"${SCHERZO_CONFLICT_WORKFLOW_LABEL:-workflow:merge-conflict-resolution}\"",
   )
-  assert_not_contains(run, "bromanko/scherzo")
+  assert_not_contains(run, "scherzo-systems/scherzo")
   assert_not_contains(run, "scherzo-f6f4bc92d6d7")
 
   let assert Ok(job) =

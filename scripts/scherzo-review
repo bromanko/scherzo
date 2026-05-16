@@ -7282,8 +7282,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     legacy_pr_smoke.add_argument(
         "--repo",
-        default="bromanko/scherzo",
-        help="GitHub owner/repo to read historical PRs from (default: bromanko/scherzo).",
+        default="scherzo-systems/scherzo",
+        help="GitHub owner/repo to read historical PRs from (default: scherzo-systems/scherzo).",
     )
     legacy_pr_smoke.add_argument(
         "--pr",
