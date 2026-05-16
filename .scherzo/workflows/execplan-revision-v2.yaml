@@ -63,7 +63,7 @@ steps:
   - id: materialize_pack
     kind: command
     depends_on: [validate_review_doc_after_revision]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan-v2" materialize-pack --review-doc-path-file tmp/execplan-v2-review-doc.path --submission-step revise_plan --submission-artifact implementation_pack_submission --output tmp/execplan-v2-implementation-pack.json'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$repo_root/scripts/scherzo-execplan-v2" materialize-pack --review-doc-path-file tmp/execplan-v2-review-doc.path --submission-step revise_plan --submission-artifact implementation_pack_submission --output tmp/execplan-v2-implementation-pack.json'
     workspace: main
 
   - id: publish_review_doc

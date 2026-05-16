@@ -324,9 +324,38 @@ def read_review_doc_path_file(path: Path) -> Path:
     return Path(value)
 
 
+def run_root() -> Path | None:
+    value = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    return Path(value) if value else None
+
+
 def run_artifact_dir() -> Path | None:
     value = os.environ.get("SCHERZO_RUN_ARTIFACT_DIR", "").strip()
     return Path(value) if value else None
+
+
+def unique_paths(paths: Iterable[Path]) -> list[Path]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key not in seen:
+            unique.append(path)
+            seen.add(key)
+    return unique
+
+
+def run_root_artifact_roots() -> list[Path]:
+    root = run_root()
+    if root is None:
+        return []
+    workspace_root = (root / "../../..").resolve()
+    return unique_paths(
+        [
+            root / ".scherzo-state" / "artifacts",
+            workspace_root / ".scherzo-state" / "artifacts",
+        ]
+    )
 
 
 def artifact_roots(*, artifact_root: str | None = None, repo_root_arg: str | None = None) -> list[Path]:
@@ -336,20 +365,14 @@ def artifact_roots(*, artifact_root: str | None = None, repo_root_arg: str | Non
     run_dir = run_artifact_dir()
     if run_dir is not None:
         roots.append(run_dir.parent)
+    roots.extend(run_root_artifact_roots())
     env_root = os.environ.get("SCHERZO_REPO_ROOT", "").strip()
     if env_root:
         roots.append(Path(env_root) / ".scherzo-state" / "artifacts")
     roots.append(Path.cwd() / ".scherzo-state" / "artifacts")
     if repo_root_arg:
         roots.append(Path(repo_root_arg) / "test" / "fixtures" / "execplan_v2" / "artifacts")
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = str(root)
-        if key not in seen:
-            unique.append(root)
-            seen.add(key)
-    return unique
+    return unique_paths(roots)
 
 
 def validate_artifact_ref(ref: str) -> None:
@@ -371,7 +394,7 @@ def resolve_artifact_ref(ref: str, *, artifact_root: str | None = None, repo_roo
         if candidate.exists():
             return candidate
     fail(
-        f"could not resolve artifact ref {ref}; tried artifact roots from --artifact-root, SCHERZO_RUN_ARTIFACT_DIR parent, SCHERZO_REPO_ROOT, .scherzo-state/artifacts, and test fixtures: {', '.join(tried)}",
+        f"could not resolve artifact ref {ref}; tried artifact roots from --artifact-root, SCHERZO_RUN_ARTIFACT_DIR parent, SCHERZO_RUN_ROOT, SCHERZO_REPO_ROOT, .scherzo-state/artifacts, and test fixtures: {', '.join(tried)}",
         code=code,
     )
 
@@ -382,16 +405,18 @@ def structured_artifact_candidates(step: str, artifact_name: str) -> list[Path]:
     if run_dir is not None:
         roots.append(run_dir)
     run_id = os.environ.get("SCHERZO_RUN_ID", "").strip()
+    if run_id:
+        roots.extend(root / "runs" / run_id for root in run_root_artifact_roots())
     env_root = os.environ.get("SCHERZO_REPO_ROOT", "").strip()
     if run_id and env_root:
         roots.append(Path(env_root) / ".scherzo-state" / "artifacts" / "runs" / run_id)
     if run_id:
         roots.append(Path.cwd() / ".scherzo-state" / "artifacts" / "runs" / run_id)
     candidates: list[Path] = []
-    for root in roots:
+    for root in unique_paths(roots):
         pattern = str(root / step / "attempt-*" / "structured" / f"{artifact_name}.json")
         candidates.extend(Path(path) for path in glob.glob(pattern))
-    return sorted(candidates)
+    return sorted(unique_paths(candidates))
 
 
 def attempt_number(path: Path) -> int:
