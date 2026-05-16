@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/json_value
@@ -344,4 +345,67 @@ pub fn structured_output_tool_spec_requires_generic_schema_path_test() {
     )),
     "structured_output_tool_spec_missing_schema_path",
   )
+}
+
+pub fn structured_output_tool_spec_builds_every_workflow_parameters_schema_test() {
+  workflow_files(".scherzo/workflows")
+  |> list.each(validate_workflow_parameters_schemas)
+}
+
+fn workflow_files(root: String) -> List(String) {
+  let assert Ok(entries) = simplifile.read_directory(root)
+
+  entries
+  |> list.sort(by: string.compare)
+  |> list.fold([], fn(paths, entry) {
+    let path = root <> "/" <> entry
+    let assert Ok(is_directory) = simplifile.is_directory(path)
+
+    case is_directory {
+      True -> list.append(workflow_files(path), paths)
+      False ->
+        case string.ends_with(path, ".yaml") || string.ends_with(path, ".yml") {
+          True -> [path, ..paths]
+          False -> paths
+        }
+    }
+  })
+}
+
+fn validate_workflow_parameters_schemas(path: String) -> Nil {
+  let assert Ok(contents) = simplifile.read(path)
+  let assert Ok(dag) = workflow_dag.parse(contents)
+
+  dag.steps
+  |> list.each(fn(step) {
+    case step.kind {
+      workflow_dag.AgentStep(_, Some(spec)) ->
+        validate_structured_output_parameters_schema(dag.id, step.id, spec)
+      _ -> Nil
+    }
+  })
+}
+
+fn validate_structured_output_parameters_schema(
+  workflow_id: String,
+  step_id: String,
+  spec: workflow_dag.StructuredOutputSpec,
+) -> Nil {
+  case structured_output_source.parameters_schema_path(spec.source) {
+    Some(_) -> {
+      let assert Ok(_) =
+        structured_output_tool_spec.for_step(
+          structured_output_tool_spec.BuildInput(
+            workflow_id: workflow_id,
+            run_id: "schema-guardrail",
+            step_id: step_id,
+            attempt_index: 1,
+            repository_root: ".",
+            spec: spec,
+          ),
+        )
+      Nil
+    }
+    None -> Nil
+  }
 }
