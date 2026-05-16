@@ -255,7 +255,7 @@ Use direnv-backed commands from the repository root.
 | `direnv exec . scherzo-test-unit` | Explicit alias for the default unit suite. |
 | `direnv exec . scherzo-test-contract` | Shell-heavy helper-script, workflow, renderer, and workspace-driver contract coverage excluded from the default unit loop. SelfCI runs this suite for the final dogfood gate. |
 | `direnv exec . scherzo-test-local-integration` | Workspace drivers, jj workspace behavior, local integration paths. |
-| `direnv exec . scherzo-test-real-pi-validation` | Real pi/session-persistence changes only; requires pi, credentials, network, and time. |
+| `direnv exec . scherzo-test-real-pi-validation` | Real pi/session-persistence changes only; uses the devenv-provided pi and requires credentials, network, and time. |
 | `LINEAR_API_KEY=... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` | Real-board readiness after config, workflow, tracker/Linear contract, workspace lifecycle, or pi launch changes. |
 | `direnv exec . selfci check --base main@origin --candidate @ --print-output` | Canonical final gate for Scherzo dogfood implementation workflows and broad changes. |
 

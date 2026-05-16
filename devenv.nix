@@ -1,6 +1,8 @@
-{ pkgs, ... }:
+{ inputs, pkgs, ... }:
 
 let
+  llmAgentsPackages = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
+
   linearCli = pkgs.callPackage ./nix/linear-cli.nix { };
 
   linearCommand =
@@ -28,6 +30,7 @@ in
     pkgs.git
     pkgs.jq
     pkgs.selfci
+    llmAgentsPackages.pi
     (linearCommand "linear")
     (linearCommand "lc")
   ];

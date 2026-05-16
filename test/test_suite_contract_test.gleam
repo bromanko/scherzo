@@ -21,7 +21,7 @@ pub fn explicit_test_suites_are_documented_test() {
   assert string.contains(readme, "scherzo-test-real-pi-validation")
   assert string.contains(readme, "Every PR")
   assert string.contains(readme, "required dependencies")
-  assert string.contains(readme, "pi` on `PATH")
+  assert string.contains(readme, "devenv-provided `pi`")
   assert string.contains(readme, "SelfCI runs the unit and contract suites")
 
   assert string.contains(test_readme, "gleam test -- --suite contract")
