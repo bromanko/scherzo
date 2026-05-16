@@ -1732,6 +1732,54 @@ pub fn legacy_pr_smoke_rejects_scenario_environment_test() {
   assert string.contains(artifact.stderr, "SCHERZO_NATIVE_REVIEW_SCENARIO")
 }
 
+pub fn legacy_pr_smoke_reports_retired_standalone_workflow_test() {
+  let dir = "test/tmp/legacy-pr-smoke-retired"
+  reset_dir(dir)
+  let artifact =
+    run_command(
+      "env -u SCHERZO_NATIVE_REVIEW_SCENARIO -u SCHERZO_STAGED_REVIEW_AGENT_BACKEND -u SCHERZO_REVIEW_AGENT_BACKEND scripts/scherzo-review legacy-pr-smoke --pr 116 --output-dir "
+      <> dir,
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stderr, "legacy-pr-smoke is retired")
+  assert string.contains(artifact.stderr, "implementation")
+  assert string.contains(artifact.stderr, "execplan-implementation")
+  assert string.contains(artifact.stderr, "execplan-implementation-v2")
+  assert string.contains(
+    artifact.stderr,
+    "scripts/scherzo-review-lane-contract offline",
+  )
+  let assert Ok(False) =
+    simplifile.is_file(dir <> "/legacy-pr-smoke-manifest.v1.json")
+}
+
+pub fn native_preflight_reports_retired_standalone_workflow_test() {
+  let dir = "test/tmp/native-preflight-retired"
+  reset_dir(dir)
+  let artifact =
+    run_command("scripts/scherzo-review native-preflight --output-dir " <> dir)
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stderr, "native-preflight is retired")
+  assert string.contains(
+    artifact.stderr,
+    ".scherzo/workflows/implementation.yaml",
+  )
+  assert string.contains(
+    artifact.stderr,
+    ".scherzo/workflows/execplan-implementation.yaml",
+  )
+  assert string.contains(
+    artifact.stderr,
+    ".scherzo/workflows/execplan-implementation-v2.yaml",
+  )
+  let assert Ok(False) =
+    simplifile.is_file(dir <> "/preflight-manifest.v1.json")
+}
+
 pub fn native_preflight_requires_runner_provenance_test() {
   let dir = "test/tmp/native-preflight-provenance"
   reset_dir(dir)

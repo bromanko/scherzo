@@ -40,7 +40,7 @@ fn build(
   structured_output_tool_spec.ToolSpecError,
 ) {
   structured_output_tool_spec.for_step(structured_output_tool_spec.BuildInput(
-    workflow_id: "review-native",
+    workflow_id: "implementation",
     run_id: "run-1",
     step_id: "lane_correctness",
     attempt_index: 2,
@@ -97,7 +97,7 @@ pub fn structured_output_tool_spec_builds_provider_schema_spec_test() {
       ".scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json",
     )
 
-  assert tool_spec.workflow_id == "review-native"
+  assert tool_spec.workflow_id == "implementation"
   assert tool_spec.run_id == "run-1"
   assert tool_spec.step_id == "lane_correctness"
   assert tool_spec.attempt_index == 2
@@ -336,7 +336,7 @@ pub fn structured_output_tool_spec_requires_generic_schema_path_test() {
     )
   assert_error_code(
     structured_output_tool_spec.for_step(structured_output_tool_spec.BuildInput(
-      workflow_id: "review-native",
+      workflow_id: "implementation",
       run_id: "run-1",
       step_id: "lane_correctness",
       attempt_index: 1,

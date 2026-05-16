@@ -3,9 +3,8 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Type, type Static } from "typebox";
 
 export const SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME = "submit_review_lane_draft";
-export const REVIEW_LANE_DRAFT_WORKFLOW_IDS = ["implementation", "execplan-implementation", "review-native", "review-native-contract-spike"] as const;
+export const REVIEW_LANE_DRAFT_WORKFLOW_IDS = ["implementation", "execplan-implementation", "execplan-implementation-v2"] as const;
 const nativeReviewLaneStepIds = ["lane_correctness", "lane_test_quality", "lane_idioms_maintainability", "lane_security_performance"] as const;
-const contractSpikeStepIds = ["valid_lane", "malformed_lane", "failed_lane"] as const;
 const allowedLaneIds = ["correctness", "test-quality", "idioms-maintainability", "security-performance"] as const;
 const allowedReviewNoteKinds = ["risk_note", "coverage_note", "review_note", "follow_up_test"] as const;
 const allowedReviewNoteCategories = [
@@ -101,10 +100,8 @@ function allowedStepIdsForWorkflow(workflowId: string): readonly string[] {
 	switch (workflowId) {
 		case "implementation":
 		case "execplan-implementation":
-		case "review-native":
+		case "execplan-implementation-v2":
 			return nativeReviewLaneStepIds;
-		case "review-native-contract-spike":
-			return contractSpikeStepIds;
 		default:
 			return [];
 	}
@@ -120,10 +117,6 @@ export function expectedLaneIdForStepId(stepId = process.env.SCHERZO_STEP_ID || 
 			return "idioms-maintainability";
 		case "lane_security_performance":
 			return "security-performance";
-		case "valid_lane":
-		case "malformed_lane":
-		case "failed_lane":
-			return null;
 		default:
 			return null;
 	}

@@ -38,7 +38,7 @@ DEFAULT_NATIVE_OUTPUT_DIR = Path("tmp/scherzo-review-native")
 DEFAULT_NATIVE_PREFLIGHT_OUTPUT_DIR = Path("tmp/scherzo-review-native-preflight")
 DEFAULT_EXTENSION_SCHEMA_SMOKE_OUTPUT_DIR = Path("tmp/scherzo-review-extension-smoke")
 DEFAULT_LEGACY_PR_SMOKE_OUTPUT_DIR = Path("tmp/native-review-legacy-pr-smoke")
-LEGACY_PR_SMOKE_WORKFLOW_PATH = ".scherzo/workflows/review-native.yml"
+LEGACY_PR_SMOKE_WORKFLOW_PATH = ".scherzo/workflows/implementation.yaml"
 LEGACY_PR_SMOKE_FORBIDDEN_ENV_VARS = [
     "SCHERZO_NATIVE_REVIEW_SCENARIO",
     "SCHERZO_STAGED_REVIEW_AGENT_BACKEND",
@@ -2533,7 +2533,7 @@ def pi_advertisement_probe(workflow_id: str, step_id: str | None = None) -> dict
 def run_pi_advertisement_check(extension_dir: Path) -> dict[str, Any]:
     if not (extension_dir / "index.ts").exists():
         raise ReviewError(f"extension index.ts does not exist: {extension_dir / 'index.ts'}")
-    active = pi_advertisement_probe("review-native-contract-spike", "valid_lane")
+    active = pi_advertisement_probe("implementation", "lane_correctness")
     inactive = pi_advertisement_probe("unrelated-workflow")
     active_payload = active["payload"]
     inactive_payload = inactive["payload"]
@@ -4013,54 +4013,12 @@ def require_review_lane_pi_tool_provenance(provenance: list[dict[str, Any]], *, 
 
 
 def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
-    contract_dir = output_dir / "contract-spike"
-    run_root = contract_dir / "native-run"
-    summary, command_text = run_native_workflow_runner(
-        workflow_path=".scherzo/workflows/review-native-contract-spike.yml",
-        run_root=run_root,
-        run_id="native-contract-spike",
-        scenario_id="contract-spike",
-        log_dir=contract_dir / "logs",
+    raise ReviewError(
+        "standalone native review contract spike has been retired; "
+        "run scripts/scherzo-review-lane-contract offline against the routed "
+        "implementation, execplan-implementation, and "
+        "execplan-implementation-v2 workflows instead"
     )
-    valid_step = summary_step(summary, "valid_lane")
-    malformed_step = summary_step(summary, "malformed_lane")
-    failed_step = summary_step(summary, "failed_lane")
-    inspect_step = summary_step(summary, "inspect_contract")
-    workflow_path = Path(".scherzo/workflows/review-native-contract-spike.yml")
-    assertions = {
-        "valid_structured_output": step_structured_status(valid_step) == "valid" and bool(step_structured_path(valid_step)),
-        "valid_tool_call_source": step_structured_source_type(valid_step, workflow_path, "valid_lane") == "pi_tool_call"
-        and step_structured_source_tool_name(valid_step, workflow_path, "valid_lane") in ("submit_structured_output", "submit_review_lane_draft"),
-        "malformed_tool_call_continued": step_structured_status(malformed_step) == "error"
-        and step_structured_source_type(malformed_step, workflow_path, "malformed_lane") == "pi_tool_call",
-        "missing_tool_call_continued": step_structured_status(failed_step) == "error"
-        and step_structured_source_type(failed_step, workflow_path, "failed_lane") == "pi_tool_call",
-        "downstream_command_ran": inspect_step.get("status") == "success",
-    }
-    failed = [name for name, passed in assertions.items() if not passed]
-    if failed:
-        raise ReviewError("native contract spike failed assertion(s): " + ", ".join(failed))
-    contract_summary = run_root / "artifacts/review-native-contract/contract-summary.txt"
-    return {
-        "status": "passed",
-        "workflow_path": ".scherzo/workflows/review-native-contract-spike.yml",
-        "native_runner_command": command_text,
-        "run_root": str(run_root),
-        "run_summary_path": str(run_root / "native-runner-summary.v1.json"),
-        "contract_summary_path": str(contract_summary),
-        "assertions": assertions,
-        "structured_output_paths": {
-            "valid_lane": step_structured_path(valid_step),
-        },
-        "failure_metadata": {
-            "malformed_lane_status": step_structured_status(malformed_step),
-            "malformed_lane_failure_code": malformed_step.get("failure_code"),
-            "malformed_lane_structured_output_retry": step_structured_retry(malformed_step),
-            "missing_tool_call_lane_status": step_structured_status(failed_step),
-            "missing_tool_call_lane_failure_code": failed_step.get("failure_code"),
-            "missing_tool_call_lane_structured_output_retry": step_structured_retry(failed_step),
-        },
-    }
 
 
 def native_dirty_tree_checks(run_root: Path, scenario: dict[str, Any]) -> dict[str, Any]:
@@ -4092,7 +4050,7 @@ def run_native_preflight_scenario(scenario: dict[str, Any], output_dir: Path) ->
     diff_path = run_root / "input.diff"
     diff_path.write_text(str(scenario.get("diff", "")))
     summary, command_text = run_native_workflow_runner(
-        workflow_path=".scherzo/workflows/review-native.yml",
+        workflow_path=LEGACY_PR_SMOKE_WORKFLOW_PATH,
         run_root=run_root,
         run_id="native-" + re.sub(r"[^A-Za-z0-9_.-]+", "-", scenario_id),
         scenario_id=scenario_id,
@@ -4132,7 +4090,7 @@ def run_native_preflight_scenario(scenario: dict[str, Any], output_dir: Path) ->
             "artifact_path": str(lane_result_path),
             "native_step_id": step_id,
         })
-        workflow_path = Path(".scherzo/workflows/review-native.yml")
+        workflow_path = Path(LEGACY_PR_SMOKE_WORKFLOW_PATH)
         provenance.append({
             "scenario_id": scenario_id,
             "lane_id": lane_id,
@@ -4205,7 +4163,7 @@ def run_native_preflight_scenario(scenario: dict[str, Any], output_dir: Path) ->
         "readiness_required": bool(scenario.get("readiness_required", scenario_id in {"pr-80", "inverted-auth-control-condition", "static-suspicion", "no-findings"})),
         "assertions": assertions,
         "native_runner_command": command_text,
-        "workflow_path": ".scherzo/workflows/review-native.yml",
+        "workflow_path": LEGACY_PR_SMOKE_WORKFLOW_PATH,
         "run_root": str(run_root),
         "run_summary_path": str(run_root / "native-runner-summary.v1.json"),
         "brief_path": str(brief_path),
@@ -4232,13 +4190,13 @@ def evaluate_native_cutover_readiness(manifest: dict[str, Any]) -> dict[str, Any
     if manifest.get("failed_scenario_count") != 0:
         reasons.append("failed_scenario_count must be 0")
     runner_command = str(manifest.get("native_runner_command") or "")
-    if "gleam run -- workflow run .scherzo/workflows/review-native.yml" not in runner_command:
-        reasons.append("native_runner_command must invoke Scherzo workflow run for review-native.yml")
+    if "gleam run -- workflow run " + LEGACY_PR_SMOKE_WORKFLOW_PATH not in runner_command:
+        reasons.append(
+            "native_runner_command must invoke Scherzo workflow run for "
+            + LEGACY_PR_SMOKE_WORKFLOW_PATH
+        )
     if "not exposed" in runner_command or "simulated" in runner_command:
         reasons.append("native_runner_command must not describe a missing or simulated runner")
-    contract = manifest.get("contract_spike")
-    if not isinstance(contract, dict) or contract.get("status") != "passed":
-        reasons.append("native structured-output contract spike must pass through the workflow runner")
     scenarios = manifest.get("scenarios", []) if isinstance(manifest.get("scenarios"), list) else []
     scenario_ids = {str(scenario.get("id")) for scenario in scenarios if isinstance(scenario, dict)}
     for required in ["pr-80", "inverted-auth-control-condition", "static-suspicion", "malformed-agent-output", "lane-failure", "no-findings", "lane-mutates-worktree"]:
@@ -4268,7 +4226,7 @@ def evaluate_native_cutover_readiness(manifest: dict[str, Any]) -> dict[str, Any
                 reasons.append(f"scenario {sid} lane {lane_id} source_tool_name was not submit_structured_output or submit_review_lane_draft")
             if not isinstance(item.get("review_local_validation"), dict):
                 reasons.append(f"scenario {sid} lane {lane_id} missing review-local validation record")
-            if "gleam run -- workflow run .scherzo/workflows/review-native.yml" not in str(item.get("runner_invocation") or ""):
+            if "gleam run -- workflow run " + LEGACY_PR_SMOKE_WORKFLOW_PATH not in str(item.get("runner_invocation") or ""):
                 reasons.append(f"scenario {sid} lane {lane_id} missing native runner invocation")
             if not item.get("run_summary_path"):
                 reasons.append(f"scenario {sid} lane {lane_id} missing native runner summary path")
@@ -4292,97 +4250,13 @@ def validate_native_cutover_ready(manifest: dict[str, Any]) -> None:
 
 
 def native_preflight_command(args: argparse.Namespace) -> None:
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    selected = set(args.scenario or [])
-    scenarios = native_preflight_scenarios()
-    if selected:
-        known = {str(scenario["id"]) for scenario in scenarios}
-        unknown = selected - known
-        if unknown:
-            raise ReviewError("unknown native preflight scenario(s): " + ", ".join(sorted(unknown)))
-        scenarios = [scenario for scenario in scenarios if str(scenario["id"]) in selected]
-    started_at = now_utc()
-    results: list[dict[str, Any]] = []
-    failures: list[str] = []
-    lane_runs: list[dict[str, Any]] = []
-    provenance: list[dict[str, Any]] = []
-    contract_spike: dict[str, Any] | None = None
-    try:
-        contract_spike = run_native_contract_spike(output_dir)
-    except Exception as exc:
-        failures.append(f"contract-spike: {exc}")
-        failure_dir = output_dir / "contract-spike" / "logs"
-        failure_dir.mkdir(parents=True, exist_ok=True)
-        (failure_dir / "native-contract-spike-failure.log").write_text(str(exc) + "\n")
-    for scenario in scenarios:
-        scenario_id = str(scenario["id"])
-        try:
-            result = run_native_preflight_scenario(scenario, output_dir)
-            results.append(result)
-            lane_runs.extend([run for run in result.get("lane_runs", []) if isinstance(run, dict)])
-            provenance.extend([item for item in result.get("native_lane_step_provenance", []) if isinstance(item, dict)])
-        except Exception as exc:
-            failures.append(f"{scenario_id}: {exc}")
-            failure_dir = output_dir / scenario_id / "logs"
-            failure_dir.mkdir(parents=True, exist_ok=True)
-            (failure_dir / "native-preflight-failure.log").write_text(str(exc) + "\n")
-            results.append({
-                "id": scenario_id,
-                "status": "failed",
-                "description": scenario.get("description"),
-                "readiness_required": bool(scenario.get("readiness_required", False)),
-                "error": str(exc),
-            })
-    completed_at = now_utc()
-    runner_commands = [str(result.get("native_runner_command")) for result in results if isinstance(result.get("native_runner_command"), str)]
-    native_runner_command = runner_commands[0] if runner_commands else ""
-    manifest = {
-        "$schema": CONTRACT_SCHEMA_REF,
-        "schema_version": SCHEMA_VERSION,
-        "artifact_type": "preflight_manifest",
-        "generated_at_utc": completed_at,
-        "started_at_utc": started_at,
-        "status": "failed" if failures else "passed",
-        "agent_backend": "native",
-        "execution_mode": "native",
-        "native_runner_command": native_runner_command,
-        "native_runner_commands": runner_commands,
-        "contract_spike": contract_spike or {"status": "failed"},
-        "workflow_path": ".scherzo/workflows/review-native.yml",
-        "remote_mutations": "none",
-        "coverage": [
-            "PR #80-inspired staged review precision regression",
-            "inverted auth/control-condition with same-finding reproduction evidence",
-            "static correctness suspicion downgrade",
-            "malformed native structured output containment",
-            "native lane failure containment",
-            "no-finding native review",
-            "tracked-file mutation containment",
-        ],
-        "scenario_count": len(scenarios),
-        "passed_scenario_count": len([result for result in results if result.get("status") == "passed"]),
-        "failed_scenario_count": len(failures),
-        "lane_runs": lane_runs,
-        "native_lane_step_provenance": provenance,
-        "scenarios": results,
-    }
-    manifest["cutover_readiness"] = evaluate_native_cutover_readiness(manifest)
-    manifest_path = output_dir / "preflight-manifest.v1.json"
-    write_json(manifest_path, manifest)
-    validate_preflight_manifest(manifest)
-    if failures:
-        raise ReviewError("native review preflight failed; see " + str(manifest_path) + ": " + "; ".join(failures))
-    print("REVIEW_NATIVE_PREFLIGHT=ok")
-    print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
-    print(f"REVIEW_PREFLIGHT_ARTIFACT_DIR={output_dir}")
-    print(f"REVIEW_PREFLIGHT_MANIFEST_PATH={manifest_path}")
-    print(f"REVIEW_PREFLIGHT_SCENARIOS={len(scenarios)}")
-    print(
-        "REVIEW_NATIVE_PREFLIGHT "
-        f"status=passed manifest={manifest_path} source_type=pi_tool_call source_tool_name=submit_structured_output"
+    raise ReviewError(
+        "native-preflight is retired because the standalone native review workflows "
+        "were removed; run scripts/scherzo-review-lane-contract offline for "
+        ".scherzo/workflows/implementation.yaml, "
+        ".scherzo/workflows/execplan-implementation.yaml, and "
+        ".scherzo/workflows/execplan-implementation-v2.yaml instead"
     )
-    print("REVIEW_REMOTE_MUTATIONS=none")
 
 
 def curated_legacy_prs() -> list[dict[str, Any]]:
@@ -4958,6 +4832,12 @@ def legacy_pr_smoke_command(args: argparse.Namespace) -> None:
     if int(args.summary_finding_limit) < 0:
         raise ReviewError("--summary-finding-limit must be >= 0")
     require_legacy_pr_smoke_safe_environment()
+    raise ReviewError(
+        "legacy-pr-smoke is retired with the standalone native review workflow; "
+        "validate routed implementation, execplan-implementation, and "
+        "execplan-implementation-v2 review contracts with "
+        "scripts/scherzo-review-lane-contract offline instead"
+    )
     workflow_provenance = inspect_native_review_workflow_lanes(Path(LEGACY_PR_SMOKE_WORKFLOW_PATH))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -7392,13 +7272,13 @@ def build_parser() -> argparse.ArgumentParser:
     extension_schema_smoke.add_argument(
         "--verify-pi-advertisement",
         action="store_true",
-        help="Also prove the tool is active only in review-native workflow scopes.",
+        help="Also prove the tool is active only in routed implementation review workflow scopes.",
     )
     extension_schema_smoke.set_defaults(func=extension_schema_smoke_command)
 
     legacy_pr_smoke = subparsers.add_parser(
         "legacy-pr-smoke",
-        help="Run real native Scherzo staged review against curated historical GitHub PR diffs.",
+        help="Retired historical PR smoke for the removed standalone native review workflow; --list-curated remains available.",
     )
     legacy_pr_smoke.add_argument(
         "--repo",
@@ -7500,7 +7380,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     native_preflight = subparsers.add_parser(
         "native-preflight",
-        help="Run native review preflight scenarios and validate native lane artifact provenance.",
+        help="Retired standalone native-review workflow preflight; use review-lane contract checks against routed implementation workflows.",
     )
     native_preflight.add_argument(
         "--output-dir",
