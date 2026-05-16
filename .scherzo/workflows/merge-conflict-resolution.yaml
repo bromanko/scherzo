@@ -1,6 +1,6 @@
 version: 1
 id: merge-conflict-resolution
-description: Manually resolve merge conflicts on a same-repository PR or branch without intentional functionality changes.
+description: Manually resolve merge conflicts on a same-repository GitHub PR or branch without intentional functionality changes.
 workspace_profile: dogfood-jj
 workspace_capabilities: [status, diff, changed-files, publish-change]
 max_parallel_steps: 1
@@ -23,6 +23,26 @@ steps:
     kind: command
     depends_on: [resolve_conflicts]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" validate'
+    timeout_ms: 300000
+    workspace:
+      name: main
+      from: main
+
+  - id: project_validation
+    kind: command
+    depends_on: [validate_resolution]
+    run: |
+      set -eu
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      # Repo-local validation for Scherzo dogfood. The helper runs the command
+      # with workflow-run-scoped Scherzo variables scrubbed, then records the
+      # successful project-validation marker for publish.
+      "$repo_root/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c '
+        direnv allow .
+        rm -rf test/tmp
+        direnv exec . gleam format --check src test
+        direnv exec . gleam test
+      '
     timeout_ms: 1200000
     workspace:
       name: main
@@ -30,7 +50,7 @@ steps:
 
   - id: publish_resolution
     kind: command
-    depends_on: [validate_resolution]
+    depends_on: [project_validation]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" publish'
     timeout_ms: 300000
     workspace:

@@ -1,6 +1,6 @@
 version: 1
 id: merge-conflict-resolution
-description: Resolve merge conflicts on a same-repository PR or branch without intentional functionality changes.
+description: Resolve merge conflicts on a same-repository GitHub PR or branch without intentional functionality changes.
 workspace_profile: isolated
 workspace_capabilities: [status, diff, changed-files, publish-change]
 max_parallel_steps: 1
@@ -23,6 +23,28 @@ steps:
     kind: command
     depends_on: [resolve_conflicts]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" validate'
+    timeout_ms: 300000
+    workspace:
+      name: main
+      from: main
+
+  - id: project_validation
+    kind: command
+    depends_on: [validate_resolution]
+    run: |
+      set -eu
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      # Replace the example validation command with repo-local validation such as
+      # `npm test`, `cargo test`, or a project script. The generic helper has
+      # already checked conflict markers, non-conflicted file drift, and the
+      # required resolution summary. The helper below runs the command with
+      # workflow-run-scoped Scherzo variables scrubbed and records success.
+      if test -z "${SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND:-}"; then
+        echo "configure repo-local project validation commands in workflows/merge-conflict-resolution.yaml" >&2
+        echo "or set SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND for this example bundle" >&2
+        exit 64
+      fi
+      "$repo_root/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c "$SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND"
     timeout_ms: 1200000
     workspace:
       name: main
@@ -30,7 +52,7 @@ steps:
 
   - id: publish_resolution
     kind: command
-    depends_on: [validate_resolution]
+    depends_on: [project_validation]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-merge-conflict" publish'
     timeout_ms: 300000
     workspace:

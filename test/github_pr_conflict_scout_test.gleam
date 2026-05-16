@@ -32,7 +32,20 @@ fn write_fixture(dir: String, body: String) -> String {
 fn run_scout(command: String) -> step_artifact.StepArtifact {
   command_step.run(
     "github-pr-conflict-scout",
-    "scripts/scherzo-github-pr-conflict-scout " <> command,
+    "scripts/scherzo-github-pr-conflict-scout "
+      <> command
+      <> " --repo bromanko/scherzo --linear-project-slug test-project",
+    ".",
+    10_000,
+    [],
+    limits(),
+  )
+}
+
+fn run_scout_raw(command: String) -> step_artifact.StepArtifact {
+  command_step.run(
+    "github-pr-conflict-scout",
+    command,
     ".",
     10_000,
     [],
@@ -197,6 +210,80 @@ pub fn scout_default_noop_is_silent_test() {
   assert artifact.exit_code == Some(0)
   assert artifact.stdout == ""
   assert artifact.stderr == ""
+}
+
+pub fn scout_uses_environment_configuration_when_flags_are_omitted_test() {
+  let fixture =
+    write_fixture(
+      "test/tmp/github-pr-conflict-scout-env-config",
+      safe_dirty_fixture(linear_project_with_issues("[]")),
+    )
+
+  let artifact =
+    run_scout_raw(
+      "env SCHERZO_GITHUB_REPO=bromanko/scherzo "
+      <> "SCHERZO_LINEAR_PROJECT_SLUG=test-project "
+      <> "scripts/scherzo-github-pr-conflict-scout scan-fixture "
+      <> fixture
+      <> " --json-summary",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "\"created\": [")
+  assert string.contains(
+    artifact.stdout,
+    "github-pr-conflict:bromanko/scherzo#123",
+  )
+  assert artifact.stderr == ""
+}
+
+pub fn scout_requires_repo_configuration_when_flags_and_env_are_missing_test() {
+  let fixture =
+    write_fixture(
+      "test/tmp/github-pr-conflict-scout-missing-repo",
+      noop_fixture(),
+    )
+
+  let artifact =
+    run_scout_raw(
+      "env -u SCHERZO_GITHUB_REPO -u GITHUB_REPOSITORY "
+      <> "-u SCHERZO_LINEAR_PROJECT_SLUG -u LINEAR_PROJECT_SLUG "
+      <> "scripts/scherzo-github-pr-conflict-scout scan-fixture "
+      <> fixture
+      <> " --linear-project-slug test-project",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(
+    artifact.stderr,
+    "set --repo, SCHERZO_GITHUB_REPO, or GITHUB_REPOSITORY",
+  )
+}
+
+pub fn scout_requires_project_slug_configuration_when_flags_and_env_are_missing_test() {
+  let fixture =
+    write_fixture(
+      "test/tmp/github-pr-conflict-scout-missing-project",
+      noop_fixture(),
+    )
+
+  let artifact =
+    run_scout_raw(
+      "env -u SCHERZO_GITHUB_REPO -u GITHUB_REPOSITORY "
+      <> "-u SCHERZO_LINEAR_PROJECT_SLUG -u LINEAR_PROJECT_SLUG "
+      <> "scripts/scherzo-github-pr-conflict-scout scan-fixture "
+      <> fixture
+      <> " --repo bromanko/scherzo",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(
+    artifact.stderr,
+    "set --linear-project-slug, SCHERZO_LINEAR_PROJECT_SLUG, or LINEAR_PROJECT_SLUG",
+  )
 }
 
 pub fn scout_conflicted_same_repo_pr_creates_resolver_issue_test() {

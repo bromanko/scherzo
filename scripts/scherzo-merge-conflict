@@ -38,11 +38,12 @@ PR_COMMENT_PATH = RUN_STATE_DIR / "scherzo-merge-conflict-pr-comment.md"
 RETENTION_MARKER = ".scherzo-keep-workspace"
 CONFLICT_MARKER_RE = re.compile(r"^(<<<<<<<|>>>>>>>|%%%%%%%|\+{7}|\\{7})", re.MULTILINE)
 JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
+WORKFLOW_CONTEXT_ENV_PREFIX = "SCHERZO_"
 
 
 def usage() -> None:
     print(
-        """Usage: scherzo-merge-conflict <prepare|validate|publish|extract-target>
+        """Usage: scherzo-merge-conflict <prepare|validate|validation-status|run-project-validation|record-project-validation|publish|extract-target>
 
 Run from a Scherzo jj workflow workspace root.
 
@@ -51,16 +52,26 @@ prepare       Find exactly one PR or branch reference on the Linear issue,
               commit, record the conflict set, and retain the run until publish.
 validate      Require conflicts to be resolved, ensure non-conflicted tracked
               files are unchanged except for a manifest of mechanical fallout
-              repairs, require a resolution summary, and run project validation
-              when conflicts were resolved.
+              repairs, and require a resolution summary when conflicts existed.
+validation-status
+              Print the validated resolution status. Workflow YAML can use this
+              to skip repo-local project validation when prepare found no conflicts.
+run-project-validation -- <command> [args...]
+              Run a repo-local validation command with Scherzo workflow context
+              scrubbed, then record project validation as passed.
+record-project-validation
+              Mark repo-local workflow project validation as passed after the
+              configured validation command step succeeds.
 publish       Fast-forward the target branch with the validated merge commit,
               or no-op when prepare found no conflicts.
 
 Test helper:
 extract-target <text-file> [repo]
               Extract one PR or branch target from a text fixture and print it.
+              If repo is omitted, use SCHERZO_PR_REPO, SCHERZO_GITHUB_REPO, or GITHUB_REPOSITORY.
 extract-target-issue <json-file> [repo]
               Extract one PR or branch target from an issue JSON fixture and print it.
+              If repo is omitted, use SCHERZO_PR_REPO, SCHERZO_GITHUB_REPO, or GITHUB_REPOSITORY.
 """,
         file=sys.stderr,
     )
@@ -426,7 +437,7 @@ def choose_target_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         fail(
             "no GitHub PR or branch reference found on the Linear issue. Add one "
             "unambiguous target such as 'Resolve conflicts for PR #51', "
-            "'bromanko/scherzo#51', a full GitHub PR URL, or a line like "
+            "'owner/repo#51', a full GitHub PR URL, or a line like "
             "'Branch: feature/conflicted-branch'."
         )
 
@@ -945,84 +956,21 @@ def validate_resolution_guard() -> tuple[str, list[dict[str, str]]]:
     return "no_conflicts", []
 
 
-def parse_validate_args(args: list[str]) -> bool:
+def parse_validate_args(args: list[str]) -> None:
     if not args:
-        return False
+        return
+    # Compatibility with older workflow YAML and tests. Project validation now
+    # lives in repo-local workflow command steps, so this flag has no effect.
     if args == ["--skip-project-validation"]:
-        return True
+        return
     usage()
     sys.exit(2)
 
 
-def project_validation_skipped_by_env() -> bool:
-    return os.environ.get("SCHERZO_MERGE_CONFLICT_SKIP_PROJECT_VALIDATION", "").lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-
-
-def validation_env() -> dict[str, str]:
-    env = os.environ.copy()
-    # Project validation runs the repository test suite, and some tests execute
-    # Scherzo helper scripts against fixture directories. Workflow-run-scoped
-    # settings must not leak into those nested helper invocations; otherwise
-    # fixtures can infer the outer Scherzo run's issue/run/workspace, use the
-    # outer workspace driver/base configuration, or publish against the outer
-    # workflow remote instead of their own temporary test context.
-    for key in [
-        "SCHERZO_CONFIG_DIR",
-        "SCHERZO_ISSUE_ID",
-        "SCHERZO_ISSUE_IDENTIFIER",
-        "SCHERZO_JJ_WORKSPACE_BASE",
-        "SCHERZO_JJ_WORKSPACE_BASE_BRANCH",
-        "SCHERZO_JJ_WORKSPACE_FETCH_BASE",
-        "SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE",
-        "SCHERZO_JJ_WORKSPACE_REMOTE",
-        "SCHERZO_PR_BASE",
-        "SCHERZO_PR_REMOTE",
-        "SCHERZO_PR_REPO",
-        "SCHERZO_REPO_ROOT",
-        "SCHERZO_RUN_ID",
-        "SCHERZO_RUN_ROOT",
-        "SCHERZO_SOURCE_WORKSPACE_PATH",
-        "SCHERZO_WORKFLOW_ID",
-        "SCHERZO_WORKSPACE_CAPABILITIES",
-        "SCHERZO_WORKSPACE_DRIVER",
-        "SCHERZO_WORKSPACE_NAME",
-        "SCHERZO_WORKSPACE_PATH",
-        "SCHERZO_WORKSPACE_PROFILE",
-        "SCHERZO_WORKSPACE_ROOT",
-    ]:
-        env.pop(key, None)
-    return env
-
-
-def run_project_validation() -> list[str]:
-    require_command("direnv")
-    commands = [
-        ["direnv", "allow", "."],
-        ["rm", "-rf", "test/tmp"],
-        ["direnv", "exec", ".", "gleam", "format", "--check", "src", "test"],
-        ["direnv", "exec", ".", "gleam", "test"],
-    ]
-    env = validation_env()
-    for command in commands:
-        run_and_print(command, env=env)
-    return [" ".join(command) for command in commands]
-
-
 def validate_command(args: list[str]) -> None:
-    skip_project_validation = parse_validate_args(args) or project_validation_skipped_by_env()
+    parse_validate_args(args)
     status, mechanical_edits = validate_resolution_guard()
-    commands: list[str] = []
-    if status == "resolved" and not skip_project_validation:
-        commands = run_project_validation()
-        project_validation = "passed"
-    elif status == "resolved":
-        project_validation = "skipped"
-    else:
-        project_validation = "not_needed"
+    project_validation = "external_required" if status == "resolved" else "not_needed"
 
     write_json(
         VALIDATION_PATH,
@@ -1030,7 +978,7 @@ def validate_command(args: list[str]) -> None:
             "status": "passed",
             "resolution_status": status,
             "project_validation": project_validation,
-            "commands": commands,
+            "commands": [],
             "mechanical_non_conflicted_edits": mechanical_edits,
         },
     )
@@ -1038,6 +986,63 @@ def validate_command(args: list[str]) -> None:
     print(f"RESOLUTION_STATUS={status}")
     print(f"PROJECT_VALIDATION={project_validation}")
     print(f"MECHANICAL_NON_CONFLICTED_EDITS={len(mechanical_edits)}")
+
+
+def project_validation_env() -> dict[str, str]:
+    env = os.environ.copy()
+    # Repo-local validation often runs tests that execute Scherzo helper scripts
+    # against fixtures. Workflow-run-scoped settings must not leak into those
+    # nested helper invocations; otherwise fixture helpers can infer or publish
+    # against the outer workflow context.
+    for key in list(env):
+        if key.startswith(WORKFLOW_CONTEXT_ENV_PREFIX):
+            env.pop(key, None)
+    return env
+
+
+def validation_status_command(args: list[str]) -> None:
+    if args:
+        usage()
+        sys.exit(2)
+    validation = ensure_validation_passed()
+    print(validation.get("resolution_status") or "unknown")
+
+
+def record_project_validation(validation: dict[str, Any], commands: list[str] | None = None) -> None:
+    if validation.get("resolution_status") == "resolved":
+        validation["project_validation"] = "passed"
+        if commands is not None:
+            validation["commands"] = commands
+    else:
+        validation["project_validation"] = "not_needed"
+    write_json(VALIDATION_PATH, validation)
+    print(f"PROJECT_VALIDATION={validation['project_validation']}")
+
+
+def record_project_validation_command(args: list[str]) -> None:
+    if args:
+        usage()
+        sys.exit(2)
+    record_project_validation(ensure_validation_passed())
+
+
+def run_project_validation_command(args: list[str]) -> None:
+    if args[:1] == ["--"]:
+        args = args[1:]
+    if not args:
+        usage()
+        sys.exit(2)
+
+    validation = ensure_validation_passed()
+    if validation.get("resolution_status") != "resolved":
+        record_project_validation(validation)
+        return
+
+    run_and_print(args, env=project_validation_env())
+    record_project_validation(
+        validation,
+        commands=["repo-local workflow project validation"],
+    )
 
 
 def ensure_validation_passed() -> dict[str, Any]:
@@ -1102,6 +1107,14 @@ def publish_command() -> None:
         require_command("jj")
     metadata = load_json(METADATA_PATH)
     validation = ensure_validation_passed()
+    if (
+        validation.get("resolution_status") == "resolved"
+        and validation.get("project_validation") != "passed"
+    ):
+        fail(
+            "repo-local project validation has not been recorded; run the "
+            "project_validation workflow step before publish"
+        )
 
     conflicted: list[str] = metadata.get("conflicted_files", [])
     if not conflicted:
@@ -1214,12 +1227,25 @@ def print_target(target: dict[str, Any]) -> None:
         print(f"BRANCH={target['branch']}")
 
 
+def configured_repo(args: list[str]) -> str:
+    if len(args) == 2:
+        return args[1]
+    for name in ["SCHERZO_PR_REPO", "SCHERZO_GITHUB_REPO", "GITHUB_REPOSITORY"]:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    fail(
+        "missing GitHub repository; pass owner/repo or set SCHERZO_PR_REPO, "
+        "SCHERZO_GITHUB_REPO, or GITHUB_REPOSITORY"
+    )
+
+
 def extract_target_command(args: list[str]) -> None:
     if len(args) not in {1, 2}:
         usage()
         sys.exit(2)
     text = Path(args[0]).read_text()
-    repo = args[1] if len(args) == 2 else "bromanko/scherzo"
+    repo = configured_repo(args)
     issue = {"title": "", "description": text, "comments": {"nodes": []}}
     target = choose_target_candidate(extract_target_candidates(issue, repo))
     print_target(target)
@@ -1230,7 +1256,7 @@ def extract_target_issue_command(args: list[str]) -> None:
         usage()
         sys.exit(2)
     issue = json.loads(Path(args[0]).read_text())
-    repo = args[1] if len(args) == 2 else "bromanko/scherzo"
+    repo = configured_repo(args)
     target = choose_target_candidate(extract_target_candidates(issue, repo))
     print_target(target)
 
@@ -1242,6 +1268,12 @@ def main(argv: list[str]) -> int:
         prepare_command()
     elif command == "validate":
         validate_command(args)
+    elif command == "validation-status":
+        validation_status_command(args)
+    elif command == "run-project-validation":
+        run_project_validation_command(args)
+    elif command == "record-project-validation":
+        record_project_validation_command(args)
     elif command == "publish" and not args:
         publish_command()
     elif command == "extract-target":
