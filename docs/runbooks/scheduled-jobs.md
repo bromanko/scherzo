@@ -1,20 +1,23 @@
 # Scheduled jobs operator runbook
 
-Scherzo scheduled jobs run configured workflow DAGs on fixed intervals without creating a tracker task for successful intervals. Use them for recurring maintenance workflows that should be quiet when healthy and visible when they need human attention. The production failure-reporting adapter is Linear today, so terminal failures can create or update a Linear issue.
+Scherzo scheduled jobs run configured workflow DAGs on fixed intervals without creating a tracker task for successful intervals. Use them for recurring maintenance workflows that should be quiet when healthy and visible when they need human attention. The production failure-reporting adapter is Linear today, so terminal failures can create or update a Linear issue through the tracker adapter.
 
 ## MVP configuration shape
 
 Add `scheduled_jobs` at the top level of `scherzo.yaml`. The MVP supports fixed intervals only, skips overlaps, does not catch up missed intervals, and does not support schedule-level `input`, `vars`, or payload blobs. Put job-specific details in workflow YAML, prompt files, scripts, environment, or repository config.
 
+This current conflict-management example schedules the GitHub PR conflict scout. The scout discovers conflicted same-repository PRs and creates normal resolver issues labeled `workflow:merge-conflict-resolution`; the resolver remains an issue-dispatched workflow and is not itself scheduled.
+
 ```yaml
 routing:
   workflows:
-    pr-conflict-repair: workflows/pr-conflict-repair.yaml
+    merge-conflict-resolution: workflows/merge-conflict-resolution.yaml
+    github-pr-conflict-scout: workflows/github-pr-conflict-scout.yaml
 
 scheduled_jobs:
-  - id: pr-conflict-repair
-    workflow: pr-conflict-repair
-    enabled: true
+  - id: github-pr-conflict-scout
+    workflow: github-pr-conflict-scout
+    enabled: false
     every: 15m
     overlap: skip
     catch_up: false
@@ -23,29 +26,51 @@ scheduled_jobs:
         enabled: true
         state: Triage
         labels:
-          - job:pr-conflict-repair
+          - job:github-pr-conflict-scout
         dedupe: open_issue_per_job
 ```
 
+Start public or copied configs with `enabled: false` until `SCHERZO_GITHUB_REPO`, the Linear project slug, GitHub credentials if needed, and the resolver workflow label are configured. If tracker workflow-label enforcement is enabled, include `merge-conflict-resolution` in `linear_contract.workflow_labels` but do not include `github-pr-conflict-scout`; scheduled workflows are started by `scheduled_jobs`, not tracker labels. Only trusted operators or automation should be able to apply the resolver workflow label because that workflow can publish the validated conflict resolution. The checked-in example config uses the same shape in `examples/scherzo.yaml`.
+
+The public example defaults to GitHub API conflict detection, caps each run at `SCHERZO_CONFLICT_MAX_OPEN_PRS` open PRs (`100` by default), and passes `--skip-local-preflight` so scheduled intervals do not perform per-PR git fetch/merge preflight by default. For known-small repositories where local merge preflight is acceptable, set `SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT=true`; the command changes to `repo_root` first so the helper can read the repository origin before it performs temporary-directory git preflight work.
+
 When `on_failure.linear.enabled: true`, the scheduler also applies reserved Linear labels `scherzo:scheduled` and `scherzo:scheduled-job:<job-id>` and writes the marker `<!-- scherzo-dedupe: scheduled-job:<job-id> -->` into the failure task body/comments. Do not rely on configured labels for dedupe.
 
-## Workflow and prompt shape
+## Workflow and command shape
 
-The scheduled workflow is a normal workflow DAG. Scheduled prompts and command templates may use scheduled context variables and must not reference `issue.*` because no tracker task exists for successful scheduled intervals.
+The scheduled workflow is a normal workflow DAG. Scheduled prompts and command templates may use scheduled context variables and must not reference `issue.*` because no tracker task exists for successful scheduled intervals. The conflict scout is command-only and invokes the checked-in `scripts/scherzo-github-pr-conflict-scout` helper.
 
 ```yaml
 version: 1
-id: pr-conflict-repair
+id: github-pr-conflict-scout
+description: Scan open same-repository GitHub pull requests and enqueue merge-conflict resolver issues.
+workspace_profile: noop
+max_parallel_steps: 1
 steps:
-  - id: inspect
+  - id: scan_open_prs
     kind: command
-    run: ./scripts/pr-conflict-repair-inspect.sh
+    run: |
+      set -eu
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      : "${SCHERZO_GITHUB_REPO:?set SCHERZO_GITHUB_REPO to owner/repo}"
+      linear_project_slug=${SCHERZO_LINEAR_PROJECT_SLUG:-${LINEAR_PROJECT_SLUG:-}}
+      if test -z "$linear_project_slug"; then
+        echo "set SCHERZO_LINEAR_PROJECT_SLUG or LINEAR_PROJECT_SLUG" >&2
+        exit 64
+      fi
+      cd "$repo_root"
+      max_open_prs=${SCHERZO_CONFLICT_MAX_OPEN_PRS:-100}
+      set -- "$repo_root/scripts/scherzo-github-pr-conflict-scout" scan \
+        --repo "$SCHERZO_GITHUB_REPO" \
+        --linear-project-slug "$linear_project_slug" \
+        --create-state "${SCHERZO_CONFLICT_CREATE_STATE:-Todo}" \
+        --workflow-label "${SCHERZO_CONFLICT_WORKFLOW_LABEL:-workflow:merge-conflict-resolution}" \
+        --max-open-prs "$max_open_prs"
+      if test "${SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT:-false}" != "true"; then
+        set -- "$@" --skip-local-preflight
+      fi
+      "$@"
     timeout_ms: 300000
-    workspace: main
-  - id: repair
-    kind: agent
-    depends_on: [inspect]
-    prompt: prompts/pr-conflict-repair.md
     workspace: main
 ```
 
@@ -58,16 +83,16 @@ Start with `enabled: false` or `on_failure.linear.enabled: false` while validati
 After reload or daemon start, inspect local state:
 
 ```sh
-scherzoctl schedules status pr-conflict-repair
-scherzoctl schedules history pr-conflict-repair
-scherzoctl schedules doctor pr-conflict-repair
+scherzoctl schedules status github-pr-conflict-scout
+scherzoctl schedules history github-pr-conflict-scout
+scherzoctl schedules doctor github-pr-conflict-scout
 ```
 
 Force a safe manual run only when dispatch is not paused and the same job is not already pending, active, or retrying:
 
 ```sh
-scherzoctl schedules run pr-conflict-repair --now
-scherzoctl schedules logs pr-conflict-repair --last
+scherzoctl schedules run github-pr-conflict-scout --now
+scherzoctl schedules logs github-pr-conflict-scout --last
 ```
 
 ## Failure triage
