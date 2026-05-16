@@ -178,10 +178,24 @@ fn cap_existing(
 }
 
 fn assistant_messages(records: List(protocol.RpcRecord)) -> List(String) {
+  assistant_messages_loop(records, []) |> list.reverse
+}
+
+fn assistant_messages_loop(
+  records: List(protocol.RpcRecord),
+  acc: List(String),
+) -> List(String) {
   case records {
-    [] -> []
+    [] -> acc
     [record, ..rest] ->
-      list.append(record.assistant_messages, assistant_messages(rest))
+      assistant_messages_loop(rest, prepend_all(record.assistant_messages, acc))
+  }
+}
+
+fn prepend_all(values: List(String), acc: List(String)) -> List(String) {
+  case values {
+    [] -> acc
+    [value, ..rest] -> prepend_all(rest, [value, ..acc])
   }
 }
 

@@ -1,5 +1,4 @@
 import gleam/erlang/process
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -7,6 +6,7 @@ import scherzo/agent/auto_retry
 import scherzo/agent/context_exhaustion
 import scherzo/agent/operator_control
 import scherzo/agent/pi_event
+import scherzo/agent/turn_result_buffer as turn_buffer
 import scherzo/agent/turn_update
 import scherzo/agent/types
 import scherzo/agent/worker_command
@@ -73,7 +73,7 @@ type ActiveCommandState {
     stop_after_turn: Bool,
     pending_ui: Option(operator_control.PendingUi),
     stall_deadline_ms: Int,
-    records: List(protocol.RpcRecord),
+    records: turn_buffer.Buffer,
     pending_auto_retry: auto_retry.State,
   )
 }
@@ -93,7 +93,7 @@ pub fn run_active_turn(
     prompt_queue,
     stop_after_turn,
     pending_ui,
-    turn_records,
+    turn_buffer.from_records(turn_records),
     stall_deadline_ms,
     auto_retry.initial(),
   )
@@ -105,7 +105,7 @@ fn active_turn_loop(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(operator_control.PendingUi),
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
@@ -230,7 +230,7 @@ fn handle_active_command(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(operator_control.PendingUi),
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
 ) -> Result(ActiveCommandState, ActiveTurnFailure) {
@@ -261,7 +261,7 @@ fn interpret_active_effects(
   previous_state: operator_control.State,
   state: operator_control.State,
   effects: List(operator_control.Effect),
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
 ) -> Result(ActiveCommandState, ActiveTurnFailure) {
@@ -341,12 +341,11 @@ fn interpret_active_effects(
             command.UiCancel,
             reply,
           ))
-          let state = active_to_control_state(active_state)
           interpret_active_effects(
             context,
             active_state.session,
-            state,
-            state,
+            active_to_control_state(active_state),
+            active_to_control_state(active_state),
             rest,
             active_state.records,
             active_state.stall_deadline_ms,
@@ -366,12 +365,11 @@ fn interpret_active_effects(
             command.UiValue(value),
             reply,
           ))
-          let state = active_to_control_state(active_state)
           interpret_active_effects(
             context,
             active_state.session,
-            state,
-            state,
+            active_to_control_state(active_state),
+            active_to_control_state(active_state),
             rest,
             active_state.records,
             active_state.stall_deadline_ms,
@@ -387,7 +385,7 @@ fn send_active_ui_response(
   session: client.Session,
   previous_pending_ui: Option(operator_control.PendingUi),
   state: operator_control.State,
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
   request_id: String,
@@ -456,7 +454,7 @@ fn send_active_ui_response(
           context.turn,
         ),
       )
-      let turn_records = list.append(turn_records, skipped)
+      let turn_records = turn_buffer.append_records(turn_records, skipped)
       Ok(active_command_state(
         session,
         state,
@@ -472,7 +470,7 @@ fn active_command_state(
   session: client.Session,
   state: operator_control.State,
   stall_deadline_ms: Int,
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   pending_auto_retry: auto_retry.State,
 ) -> ActiveCommandState {
   ActiveCommandState(
@@ -503,7 +501,7 @@ fn handle_turn_record(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(operator_control.PendingUi),
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
@@ -513,7 +511,7 @@ fn handle_turn_record(
     context.issue_id,
     turn_update.update_from_record(record, context.turn, secrets),
   )
-  let turn_records = list.append(turn_records, [record])
+  let turn_records = turn_buffer.append_record(turn_records, record)
   case retry_event.from_record(record) {
     Some(retry_event.AutoRetryStart(..)) ->
       active_turn_loop(
@@ -528,8 +526,10 @@ fn handle_turn_record(
       )
     Some(retry_event.AutoRetryEnd(success: True, ..)) ->
       case auto_retry.agent_end_seen(pending_auto_retry) {
-        True ->
-          Ok(ActiveTurn(session, prompt_queue, stop_after_turn, turn_records))
+        True -> {
+          let records = turn_buffer.to_records(turn_records)
+          Ok(ActiveTurn(session, prompt_queue, stop_after_turn, records))
+        }
         False ->
           active_turn_loop(
             context,
@@ -621,7 +621,7 @@ fn handle_agent_end_record(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(operator_control.PendingUi),
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   pending_auto_retry: auto_retry.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
   case pending_ui {
@@ -640,8 +640,10 @@ fn handle_agent_end_record(
       )
     None ->
       case pending_auto_retry {
-        auto_retry.NoPendingAutoRetry ->
-          Ok(ActiveTurn(session, prompt_queue, stop_after_turn, turn_records))
+        auto_retry.NoPendingAutoRetry -> {
+          let records = turn_buffer.to_records(turn_records)
+          Ok(ActiveTurn(session, prompt_queue, stop_after_turn, records))
+        }
         auto_retry.PendingAutoRetry(..) ->
           active_turn_loop(
             context,
@@ -728,7 +730,7 @@ fn handle_extension_ui_record(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(operator_control.PendingUi),
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
@@ -800,7 +802,7 @@ fn handle_blocking_ui_policy(
   method: String,
   prompt_queue: List(String),
   stop_after_turn: Bool,
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   stall_deadline_ms: Int,
   pending_auto_retry: auto_retry.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
@@ -855,7 +857,7 @@ fn handle_blocking_ui_policy(
               context.turn,
             ),
           )
-          let turn_records = list.append(turn_records, skipped)
+          let turn_records = turn_buffer.append_records(turn_records, skipped)
           active_turn_loop(
             context,
             session,
@@ -890,8 +892,6 @@ fn handle_blocking_ui_policy(
           created_at_ms: now,
           deadline_ms: now + context.config.pi.ui_request_timeout_ms,
         )
-      let _ = pending_ui.message
-      let _ = pending_ui.created_at_ms
       active_turn_loop(
         context,
         session,
@@ -912,7 +912,7 @@ fn handle_operator_ui_timeout(
   prompt_queue: List(String),
   stop_after_turn: Bool,
   ui: operator_control.PendingUi,
-  turn_records: List(protocol.RpcRecord),
+  turn_records: turn_buffer.Buffer,
   pending_auto_retry: auto_retry.State,
 ) -> Result(ActiveTurn, ActiveTurnFailure) {
   case
@@ -961,7 +961,7 @@ fn handle_operator_ui_timeout(
           context.turn,
         ),
       )
-      let turn_records = list.append(turn_records, skipped)
+      let turn_records = turn_buffer.append_records(turn_records, skipped)
       active_turn_loop(
         context,
         session,

@@ -266,7 +266,12 @@ while IFS= read -r line; do
         jq -cn --arg turns "$prompt_seen" '{type:"agent_end",turns:($turns|tonumber)}'
         continue
       fi
-      if [[ -n "${FAKE_PI_MESSAGE_SECRET:-}" ]]; then
+      if [[ -n "${FAKE_PI_MESSAGE_UPDATE_COUNT:-}" ]]; then
+        fake_pi_text="${FAKE_PI_MESSAGE_UPDATE_TEXT:-POPULATED}"
+        for event_index in $(seq 1 "$FAKE_PI_MESSAGE_UPDATE_COUNT"); do
+          printf '{"type":"message_update","delta":"stream-token-%s"}\n' "$event_index"
+        done
+      elif [[ -n "${FAKE_PI_MESSAGE_SECRET:-}" ]]; then
         fake_pi_text="POPULATED ${FAKE_PI_MESSAGE_SECRET}"
         jq -cn --arg secret "$FAKE_PI_MESSAGE_SECRET" '{type:"message_update",delta:("POPULATED " + $secret),authorization:$secret,nested:{token:$secret}}'
       elif [[ -f POPULATED ]]; then

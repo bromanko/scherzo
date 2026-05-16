@@ -379,6 +379,26 @@ pub fn successful_runner_probes_prompts_and_returns_terminal_state_test() {
     simplifile.is_file(success.workspace_path <> "/AFTER_RUN")
 }
 
+pub fn runner_completes_after_high_volume_streaming_message_updates_test() {
+  let root = "test/tmp/runner-high-volume-message-updates"
+  reset_dir(root)
+  let command = "FAKE_PI_MESSAGE_UPDATE_COUNT=20000 " <> fake_pi()
+
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      config(root, command, False, 1),
+      tracker_returning(issue("Done")),
+      emit,
+    )
+
+  assert success.tokens.total == 3
+  assert success.result.final_response == Some("done")
+  assert success.result.source == "completed_assistant_messages"
+}
+
 pub fn runner_allows_pi_auto_retry_to_succeed_in_same_turn_test() {
   let root = "test/tmp/runner-auto-retry-success"
   reset_dir(root)

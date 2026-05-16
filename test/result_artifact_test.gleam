@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/pi_rpc
@@ -109,6 +110,20 @@ pub fn ignores_tool_call_json_delta_as_final_result_test() {
   assert artifact.source == "none"
 }
 
+pub fn from_records_handles_high_volume_message_update_deltas_test() {
+  let update = decode("{\"type\":\"message_update\",\"delta\":\"token\"}")
+  let final =
+    decode(
+      "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":\"final\"}]}",
+    )
+  let records = list.append(repeat_record(update, 50_000, []), [final])
+
+  let artifact = result_artifact.from_records(records, [], 8000)
+
+  assert artifact.final_response == Some("final")
+  assert artifact.source == "completed_assistant_messages"
+}
+
 pub fn append_combines_turn_results_test() {
   let first =
     result_artifact.from_records(
@@ -197,6 +212,17 @@ pub fn dedupes_repeated_assistant_tool_call_lifecycle_records_test() {
   let artifact = result_artifact.from_records(records, [], 8000)
 
   let assert [_] = artifact.tool_calls
+}
+
+fn repeat_record(
+  record: pi_rpc.RpcRecord,
+  remaining: Int,
+  acc: List(pi_rpc.RpcRecord),
+) -> List(pi_rpc.RpcRecord) {
+  case remaining <= 0 {
+    True -> acc
+    False -> repeat_record(record, remaining - 1, [record, ..acc])
+  }
 }
 
 pub fn keeps_latest_tool_call_snapshot_for_streaming_updates_test() {
