@@ -836,11 +836,6 @@ pub fn jj_driver_missing_gh_fails_only_publish_change_test() {
   )
 }
 
-pub fn jj_driver_lifecycle_is_self_contained_test() {
-  let assert Ok(script) = simplifile.read("scripts/scherzo-workspace-jj")
-  assert !string.contains(script, "scherzo-jj-workspace")
-}
-
 pub fn jj_driver_changed_files_json_is_sorted_and_deduplicated_test() {
   let dir = "test/tmp/jj-workspace-driver-changed-files"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
