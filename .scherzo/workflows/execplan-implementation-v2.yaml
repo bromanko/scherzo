@@ -1,6 +1,6 @@
 version: 1
 id: execplan-implementation-v2
-description: Validate an ExecPlan v2 bundle, implement from the prepared review doc and implementation pack, publish a PR, and emit a code_change_bundle.
+description: Validate an ExecPlan v2 bundle, implement from the prepared review doc and implementation pack, run plan-completion and native review gates, publish a PR, and emit a code_change_bundle.
 workspace_profile: dogfood-jj
 workspace_capabilities: [status, diff, changed-files, baseline, refresh-base, publish-change]
 max_parallel_steps: 1
@@ -35,6 +35,8 @@ steps:
     kind: agent
     depends_on: [refresh_base_before_implementation]
     prompt: prompts/execplan-implementation-v2-implement.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     workspace: main
 
   - id: gate_no_conflict
@@ -55,23 +57,347 @@ steps:
     prompt: prompts/execplan-implementation-v2-verify-completion.md
     workspace: main
 
+  - id: apply_plan_completion_feedback
+    kind: agent
+    depends_on: [verify_plan_completion]
+    prompt: prompts/execplan-implementation-v2-apply-plan-completion-feedback.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
+    workspace: main
+
+  - id: analyze_changes_after_plan_feedback
+    kind: command
+    depends_on: [apply_plan_completion_feedback]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" analyze'
+    workspace: main
+
+  - id: verify_plan_completion_after_feedback
+    kind: agent
+    depends_on: [analyze_changes_after_plan_feedback]
+    prompt: prompts/execplan-implementation-v2-verify-completion-after-feedback.md
+    workspace: main
+
   - id: gate_plan_completion
     kind: command
-    depends_on: [verify_plan_completion]
+    depends_on: [verify_plan_completion_after_feedback]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" gate-plan-completion'
+    workspace: main
+
+  - id: assert_native_review_cutover
+    kind: command
+    depends_on: [gate_plan_completion]
+    run: 'output_dir="$SCHERZO_RUN_ROOT/artifacts/review/cutover_contract"; mkdir -p "$output_dir"; forbidden=""; if [ -n "${SCHERZO_NATIVE_REVIEW_SCENARIO:-}" ]; then forbidden="$forbidden SCHERZO_NATIVE_REVIEW_SCENARIO"; fi; if [ -n "${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_STAGED_REVIEW_AGENT_BACKEND"; fi; if [ -n "${SCHERZO_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_REVIEW_AGENT_BACKEND"; fi; if [ -n "$forbidden" ]; then printf "native implementation review cutover refuses fixture/scenario/heuristic override environment variables:%s\n" "$forbidden" | tee "$output_dir/cutover-contract.txt"; exit 1; fi; printf "native_review_cutover=enabled\nsemantic_review=kind_agent\nstructured_output_source=pi_tool_call/submit_review_lane_draft\nlegacy_backend_env=refused\nnative_review_scenario=refused\nremote_mutations=none\n" > "$output_dir/cutover-contract.txt"; cat "$output_dir/cutover-contract.txt"'
+    workspace: main
+
+  - id: prepare_review
+    kind: command
+    depends_on: [assert_native_review_cutover]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; output_dir="$SCHERZO_RUN_ROOT/artifacts/review/prepare_review"; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then "$repo_root/scripts/scherzo-review" prepare-native --diff-file "$SCHERZO_RUN_ROOT/input.diff" --output-dir "$output_dir" --source-label "execplan-implementation-v2-native"; else "$repo_root/scripts/scherzo-review" prepare-native --from "${SCHERZO_REVIEW_FROM:-@-}" --to "${SCHERZO_REVIEW_TO:-@}" --output-dir "$output_dir" --source-label "execplan-implementation-v2-native"; fi'
+    timeout_ms: 300000
+    workspace: main
+
+  - id: assert_clean_before_lanes
+    kind: command
+    depends_on: [prepare_review]
+    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj log -r @ --no-graph -T commit_id --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes-status.txt"'
+    workspace: main
+
+  - id: lane_correctness
+    kind: agent
+    depends_on: [assert_clean_before_lanes]
+    prompt: prompts/review-native-correctness.md
+    on_failure: continue
+    workspace:
+      name: review-correctness
+      from: main
+    structured_output:
+      format: json
+      artifact_name: correctness_submission
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: review_lane_submission_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json
+          draft: "2020-12"
+      schema:
+        type: object
+        required:
+          - draft_findings
+          - review_notes
+          - evidence_requests
+          - self_check
+
+  - id: lane_test_quality
+    kind: agent
+    depends_on: [assert_clean_before_lanes]
+    prompt: prompts/review-native-test-quality.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
+    on_failure: continue
+    workspace:
+      name: review-test-quality
+      from: main
+    structured_output:
+      format: json
+      artifact_name: test_quality_submission
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.test-quality.v1.schema.json
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: review_lane_submission_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.test-quality.v1.schema.json
+          draft: "2020-12"
+      schema:
+        type: object
+        required:
+          - draft_findings
+          - review_notes
+          - evidence_requests
+          - self_check
+
+  - id: lane_idioms_maintainability
+    kind: agent
+    depends_on: [assert_clean_before_lanes]
+    prompt: prompts/review-native-idioms-maintainability.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
+    on_failure: continue
+    workspace:
+      name: review-idioms-maintainability
+      from: main
+    structured_output:
+      format: json
+      artifact_name: idioms_maintainability_submission
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: review_lane_submission_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json
+          draft: "2020-12"
+      schema:
+        type: object
+        required:
+          - draft_findings
+          - review_notes
+          - evidence_requests
+          - self_check
+
+  - id: lane_security_performance
+    kind: agent
+    depends_on: [assert_clean_before_lanes]
+    prompt: prompts/review-native-security-performance.md
+    on_failure: continue
+    workspace:
+      name: review-security-performance
+      from: main
+    structured_output:
+      format: json
+      artifact_name: security_performance_submission
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json
+        require_single: true
+        reject_sibling_tool_calls: true
+      required: true
+      validators:
+        - name: review_lane_submission_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json
+          draft: "2020-12"
+      schema:
+        type: object
+        required:
+          - draft_findings
+          - review_notes
+          - evidence_requests
+          - self_check
+
+  - id: assert_clean_after_lanes
+    kind: command
+    depends_on: [lane_correctness, lane_test_quality, lane_idioms_maintainability, lane_security_performance]
+    run: 'mkdir -p "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; jj log -r @ --no-graph -T commit_id --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt"; jj status --color=never > "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes-status.txt"; cmp -s "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" || { printf "native review lane mutated the main workspace; commit ids differ; see %s, %s, %s, and %s\n" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/before-lanes-status.txt" "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree/after-lanes-status.txt" >&2; exit 1; }'
+    workspace: main
+
+  - id: materialize_correctness
+    kind: command
+    depends_on: [assert_clean_after_lanes]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/correctness"; mkdir -p "$lane_dir"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; submission_path="$artifact_dir/lane_correctness/attempt-1/structured/correctness_submission.json"; "$repo_root/scripts/scherzo-review-lane-contract" materialize --lane correctness --submission "$submission_path" --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --output "$lane_dir/review-lane-draft.v1.json"'
+    on_failure: continue
+    workspace: main
+
+  - id: materialize_test_quality
+    kind: command
+    depends_on: [assert_clean_after_lanes]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/test-quality"; mkdir -p "$lane_dir"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; submission_path="$artifact_dir/lane_test_quality/attempt-1/structured/test_quality_submission.json"; "$repo_root/scripts/scherzo-review-lane-contract" materialize --lane test-quality --submission "$submission_path" --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --output "$lane_dir/review-lane-draft.v1.json"'
+    on_failure: continue
+    workspace: main
+
+  - id: materialize_idioms_maintainability
+    kind: command
+    depends_on: [assert_clean_after_lanes]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/idioms-maintainability"; mkdir -p "$lane_dir"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; submission_path="$artifact_dir/lane_idioms_maintainability/attempt-1/structured/idioms_maintainability_submission.json"; "$repo_root/scripts/scherzo-review-lane-contract" materialize --lane idioms-maintainability --submission "$submission_path" --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --output "$lane_dir/review-lane-draft.v1.json"'
+    on_failure: continue
+    workspace: main
+
+  - id: materialize_security_performance
+    kind: command
+    depends_on: [assert_clean_after_lanes]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/security-performance"; mkdir -p "$lane_dir"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; submission_path="$artifact_dir/lane_security_performance/attempt-1/structured/security_performance_submission.json"; "$repo_root/scripts/scherzo-review-lane-contract" materialize --lane security-performance --submission "$submission_path" --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --output "$lane_dir/review-lane-draft.v1.json"'
+    on_failure: continue
+    workspace: main
+
+  - id: verify_correctness_evidence
+    kind: command
+    depends_on: [materialize_correctness]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/correctness"; mkdir -p "$lane_dir"; draft_path="$lane_dir/review-lane-draft.v1.json"; "$repo_root/scripts/scherzo-review" verify-evidence --lane correctness --draft "$draft_path" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --diff-file "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch" --changed-files "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/changed-files.v1.json" --validation-status "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/validation-status.v1.json" --context-manifest "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/context-manifest.v1.json" --output-dir "$lane_dir"'
+    on_failure: continue
+    workspace: main
+
+  - id: verify_test_quality_evidence
+    kind: command
+    depends_on: [materialize_test_quality]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/test-quality"; mkdir -p "$lane_dir"; draft_path="$lane_dir/review-lane-draft.v1.json"; "$repo_root/scripts/scherzo-review" verify-evidence --lane test-quality --draft "$draft_path" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --diff-file "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch" --changed-files "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/changed-files.v1.json" --validation-status "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/validation-status.v1.json" --context-manifest "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/context-manifest.v1.json" --output-dir "$lane_dir"'
+    on_failure: continue
+    workspace: main
+
+  - id: verify_idioms_maintainability_evidence
+    kind: command
+    depends_on: [materialize_idioms_maintainability]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/idioms-maintainability"; mkdir -p "$lane_dir"; draft_path="$lane_dir/review-lane-draft.v1.json"; "$repo_root/scripts/scherzo-review" verify-evidence --lane idioms-maintainability --draft "$draft_path" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --diff-file "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch" --changed-files "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/changed-files.v1.json" --validation-status "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/validation-status.v1.json" --context-manifest "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/context-manifest.v1.json" --output-dir "$lane_dir"'
+    on_failure: continue
+    workspace: main
+
+  - id: verify_security_performance_evidence
+    kind: command
+    depends_on: [materialize_security_performance]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/security-performance"; mkdir -p "$lane_dir"; draft_path="$lane_dir/review-lane-draft.v1.json"; "$repo_root/scripts/scherzo-review" verify-evidence --lane security-performance --draft "$draft_path" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --diff-file "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/diff.patch" --changed-files "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/changed-files.v1.json" --validation-status "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/validation-status.v1.json" --context-manifest "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/context-manifest.v1.json" --output-dir "$lane_dir"'
+    on_failure: continue
+    workspace: main
+
+  - id: normalize_correctness
+    kind: command
+    depends_on: [verify_correctness_evidence]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/correctness"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; draft_path="$lane_dir/review-lane-draft.v1.json"; step_artifact="$artifact_dir/lane_correctness/attempt-1.json"; "$repo_root/scripts/scherzo-review" normalize-lane-result --lane correctness --draft "$draft_path" --evidence-ledger "$lane_dir/evidence-ledger.v1.json" --agent-step-metadata "$step_artifact" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --output-dir "$lane_dir"'
+    workspace: main
+
+  - id: normalize_test_quality
+    kind: command
+    depends_on: [verify_test_quality_evidence]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/test-quality"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; draft_path="$lane_dir/review-lane-draft.v1.json"; step_artifact="$artifact_dir/lane_test_quality/attempt-1.json"; "$repo_root/scripts/scherzo-review" normalize-lane-result --lane test-quality --draft "$draft_path" --evidence-ledger "$lane_dir/evidence-ledger.v1.json" --agent-step-metadata "$step_artifact" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --output-dir "$lane_dir"'
+    workspace: main
+
+  - id: normalize_idioms_maintainability
+    kind: command
+    depends_on: [verify_idioms_maintainability_evidence]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/idioms-maintainability"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; draft_path="$lane_dir/review-lane-draft.v1.json"; step_artifact="$artifact_dir/lane_idioms_maintainability/attempt-1.json"; "$repo_root/scripts/scherzo-review" normalize-lane-result --lane idioms-maintainability --draft "$draft_path" --evidence-ledger "$lane_dir/evidence-ledger.v1.json" --agent-step-metadata "$step_artifact" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --output-dir "$lane_dir"'
+    workspace: main
+
+  - id: normalize_security_performance
+    kind: command
+    depends_on: [verify_security_performance_evidence]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; lane_dir="$SCHERZO_RUN_ROOT/artifacts/review/lanes/security-performance"; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; draft_path="$lane_dir/review-lane-draft.v1.json"; step_artifact="$artifact_dir/lane_security_performance/attempt-1.json"; "$repo_root/scripts/scherzo-review" normalize-lane-result --lane security-performance --draft "$draft_path" --evidence-ledger "$lane_dir/evidence-ledger.v1.json" --agent-step-metadata "$step_artifact" --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --output-dir "$lane_dir"'
+    workspace: main
+
+  - id: synthesize_review
+    kind: command
+    depends_on: [normalize_correctness, normalize_test_quality, normalize_idioms_maintainability, normalize_security_performance]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-review" synthesize --brief "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review/review-brief.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/lanes/correctness/review-lane-correctness.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/lanes/test-quality/review-lane-test-quality.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/lanes/idioms-maintainability/review-lane-idioms-maintainability.v1.json" --lane-result "$SCHERZO_RUN_ROOT/artifacts/review/lanes/security-performance/review-lane-security-performance.v1.json" --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review"'
+    workspace: main
+
+  - id: validate_native_review_artifacts
+    kind: command
+    depends_on: [synthesize_review]
+    run: |
+      set -eu
+      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      synthesis="$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/review-synthesis.v1.json"
+      final="$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json"
+      "$repo_root/scripts/scherzo-review" validate --artifact "$synthesis"
+      "$repo_root/scripts/scherzo-review" validate --artifact "$final"
+      python3 - "$final" <<'PY'
+      import json
+      import sys
+
+      final_path = sys.argv[1]
+      with open(final_path, encoding="utf-8") as handle:
+          artifact = json.load(handle)
+      counts = artifact.get("finding_counts") if isinstance(artifact.get("finding_counts"), dict) else {}
+      lane_failed = int(counts.get("lane_failed") or 0)
+      execution_issues = artifact.get("execution_issues") if isinstance(artifact.get("execution_issues"), list) else []
+      if lane_failed or execution_issues:
+          print(
+              "native review infrastructure issue blocks publication: "
+              f"lane_failed={lane_failed} execution_issues={len(execution_issues)}",
+              file=sys.stderr,
+          )
+          sys.exit(1)
+      print("REVIEW_NATIVE_REVIEW_INFRASTRUCTURE=ok")
+      PY
+    workspace: main
+
+  - id: review_changes
+    kind: agent
+    depends_on: [validate_native_review_artifacts]
+    prompt: prompts/execplan-implementation-v2-review.md
+    workspace: main
+
+  - id: apply_review_feedback
+    kind: agent
+    depends_on: [review_changes]
+    prompt: prompts/execplan-implementation-v2-apply-feedback.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     workspace: main
 
   - id: refresh_base_before_validation
     kind: command
-    depends_on: [gate_plan_completion]
+    depends_on: [apply_review_feedback]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" refresh-base --stage before-validation'
     timeout_ms: 300000
     on_failure: continue
     workspace: main
 
-  - id: final_validate
+  - id: validate_after_refresh
     kind: command
     depends_on: [refresh_base_before_validation]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" validate'
+    timeout_ms: 1200000
+    on_failure: continue
+    workspace: main
+
+  - id: repair_base_drift
+    kind: agent
+    depends_on: [validate_after_refresh]
+    prompt: prompts/execplan-implementation-v2-repair-base-drift.md
+    workspace: main
+
+  - id: verify_plan_completion_before_final_validation
+    kind: agent
+    depends_on: [repair_base_drift]
+    prompt: prompts/execplan-implementation-v2-verify-completion-before-final-validation.md
+    workspace: main
+
+  - id: final_validate
+    kind: command
+    depends_on: [verify_plan_completion_before_final_validation]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" validate'
     timeout_ms: 1200000
     workspace: main

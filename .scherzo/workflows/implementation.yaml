@@ -84,6 +84,8 @@ steps:
     kind: agent
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-test-quality.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     on_failure: continue
     workspace:
       name: review-test-quality
@@ -115,6 +117,8 @@ steps:
     kind: agent
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-idioms-maintainability.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     on_failure: continue
     workspace:
       name: review-idioms-maintainability

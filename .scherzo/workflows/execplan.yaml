@@ -21,6 +21,8 @@ steps:
     kind: agent
     depends_on: [validate_draft]
     prompt: prompts/execplan-repair-validation.md
+    model: openai-codex/gpt-5.4-mini
+    thinking: medium
     workspace: main
 
   - id: validate_after_repair
@@ -39,6 +41,8 @@ steps:
     kind: agent
     depends_on: [review_plan]
     prompt: prompts/execplan-incorporate-review.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     workspace: main
 
   - id: final_validate

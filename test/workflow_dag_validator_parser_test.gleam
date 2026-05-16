@@ -256,6 +256,29 @@ pub fn v2_execplan_workflows_parse_before_routing_test() {
       || path == ".scherzo/workflows/execplan-implementation-v2.yaml"
   })
 
+  let assert Ok(implementation_source) =
+    simplifile.read(".scherzo/workflows/execplan-implementation-v2.yaml")
+  let implementation = parse_ok(implementation_source)
+  let implementation_step_ids =
+    list.map(implementation.steps, fn(step) { step.id })
+  list.each(
+    [
+      "assert_native_review_cutover",
+      "prepare_review",
+      "lane_correctness",
+      "lane_test_quality",
+      "lane_idioms_maintainability",
+      "lane_security_performance",
+      "synthesize_review",
+      "validate_native_review_artifacts",
+      "review_changes",
+      "apply_review_feedback",
+    ],
+    fn(step_id) {
+      assert list.contains(implementation_step_ids, step_id)
+    },
+  )
+
   let assert Ok(drafting_source) =
     simplifile.read(".scherzo/workflows/execplan-v2.yaml")
   let drafting = parse_ok(drafting_source)

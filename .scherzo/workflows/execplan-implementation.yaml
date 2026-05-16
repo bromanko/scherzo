@@ -22,6 +22,8 @@ steps:
     kind: agent
     depends_on: [refresh_base_before_implementation]
     prompt: prompts/execplan-implementation-implement.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     workspace: main
 
   - id: analyze_changes
@@ -40,6 +42,8 @@ steps:
     kind: agent
     depends_on: [verify_plan_completion]
     prompt: prompts/execplan-implementation-apply-plan-completion-feedback.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     workspace: main
 
   - id: analyze_changes_after_plan_feedback
@@ -114,6 +118,8 @@ steps:
     kind: agent
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-test-quality.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     on_failure: continue
     workspace:
       name: review-test-quality
@@ -145,6 +151,8 @@ steps:
     kind: agent
     depends_on: [assert_clean_before_lanes]
     prompt: prompts/review-native-idioms-maintainability.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     on_failure: continue
     workspace:
       name: review-idioms-maintainability
@@ -336,6 +344,8 @@ steps:
     kind: agent
     depends_on: [review_changes]
     prompt: prompts/execplan-implementation-apply-feedback.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
     workspace: main
 
   - id: refresh_base_before_validation
