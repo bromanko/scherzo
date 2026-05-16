@@ -1321,7 +1321,9 @@ fn output_value_from_step_field(
   case dict.get(artifacts, step_id) {
     Error(Nil) ->
       output_absent(spec, "workflow_output_source_step_missing:" <> step_id)
-    Ok(artifact) -> {
+    Ok(step_artifact.StepArtifact(status: step_artifact.StepFailed, ..)) ->
+      output_absent(spec, "workflow_output_source_step_failed:" <> step_id)
+    Ok(artifact) ->
       case artifact_field_text(artifact, field) {
         None ->
           output_absent(
@@ -1360,7 +1362,6 @@ fn output_value_from_step_field(
           }
         }
       }
-    }
   }
 }
 
@@ -1371,9 +1372,13 @@ fn output_value_from_structured_output(
   artifacts: Dict(String, step_artifact.StepArtifact),
   inline inline: Bool,
 ) -> #(contract_manifest.ManifestValue, List(String)) {
+  let missing_diagnostic =
+    "workflow_output_structured_artifact_missing:" <> artifact_name
   case dict.get(artifacts, step_id) {
     Error(Nil) ->
       output_absent(spec, "workflow_output_source_step_missing:" <> step_id)
+    Ok(step_artifact.StepArtifact(status: step_artifact.StepFailed, ..)) ->
+      output_absent(spec, "workflow_output_source_step_failed:" <> step_id)
     Ok(artifact) ->
       case artifact.structured_output {
         Some(step_artifact.StructuredOutputValid(metadata)) ->
@@ -1395,17 +1400,9 @@ fn output_value_from_structured_output(
                   [],
                 )
               }
-            False ->
-              output_absent(
-                spec,
-                "workflow_output_structured_artifact_missing:" <> artifact_name,
-              )
+            False -> output_absent(spec, missing_diagnostic)
           }
-        _ ->
-          output_absent(
-            spec,
-            "workflow_output_structured_artifact_missing:" <> artifact_name,
-          )
+        _ -> output_absent(spec, missing_diagnostic)
       }
   }
 }

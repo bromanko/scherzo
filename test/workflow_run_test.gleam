@@ -4006,6 +4006,96 @@ pub fn contracted_step_failure_keeps_terminal_reason_and_records_output_diagnost
   )
 }
 
+pub fn contracted_failed_stdout_source_output_is_absent_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-failed-stdout-output"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: exit 1\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, Some("materialize")),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  let manifest = read_output_manifest(root, "run-1")
+  let assert [implementation_pack] = manifest.outputs
+  assert implementation_pack.name == "implementation_pack"
+  assert implementation_pack.value.status == workflow_contract_manifest.Absent
+  assert implementation_pack.value.ref == None
+  assert implementation_pack.value.bytes == None
+  let assert Error(_) =
+    simplifile.read(
+      root
+      <> "/.scherzo-state/artifacts/runs/run-1/outputs/implementation_pack.json",
+    )
+  assert string.contains(
+    string.join(manifest.diagnostics, with: "\n"),
+    "workflow_output_source_step_failed:materialize",
+  )
+}
+
+pub fn contracted_failed_agent_source_outputs_are_absent_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-failed-agent-source-outputs"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: draft\n        structured_output: code_change\nsteps:\n  - id: draft\n    kind: agent\n    prompt: write prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      schema:\n        required: [branch]\n",
+    )
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      deps_with_structured_agent_response(
+        subject,
+        Some("# Draft plan\n"),
+        False,
+        checkpoint,
+      ),
+    )
+
+  assert string.contains(failure.reason, "structured_output_invalid_json")
+  let manifest = read_output_manifest(root, "run-1")
+  assert output_named(manifest.outputs, "final_plan").status
+    == workflow_contract_manifest.Absent
+  assert output_named(manifest.outputs, "structured_change").status
+    == workflow_contract_manifest.Absent
+  assert string.contains(
+    string.join(manifest.diagnostics, with: "\n"),
+    "workflow_output_source_step_failed:draft",
+  )
+  let assert Error(_) =
+    simplifile.read(
+      root <> "/.scherzo-state/artifacts/runs/run-1/outputs/final_plan.md",
+    )
+  let assert Error(_) =
+    simplifile.read(
+      root
+      <> "/.scherzo-state/artifacts/runs/run-1/outputs/structured_change.json",
+    )
+}
+
 pub fn contracted_final_response_output_is_retained_as_markdown_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-final-response-output"
