@@ -801,6 +801,47 @@ pub fn jj_driver_publish_target_branch_allows_stale_local_bookmark_test() {
   )
 }
 
+pub fn jj_driver_publish_accepts_workflow_kind_tokens_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-kind-token"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_kind_token",
+      "publish-change --kind execplan-v2 --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(artifact.stdout, "\"status\":\"published\"")
+  assert string.contains(log_text(log), "git push --remote origin")
+}
+
+pub fn jj_driver_publish_rejects_invalid_kind_tokens_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-invalid-kind"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_invalid_kind",
+      "publish-change --kind ../bad --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --json",
+      fake_env(workspace, bin, log, []),
+    )
+
+  assert_exit(artifact, 2)
+  assert string.contains(artifact.stderr, "publish-change --kind")
+  assert log_lines(log) == []
+}
+
 pub fn jj_driver_missing_gh_fails_only_publish_change_test() {
   let dir = "test/tmp/jj-workspace-driver-missing-gh"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)

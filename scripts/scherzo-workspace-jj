@@ -30,6 +30,7 @@ USAGE = """Usage:
 
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 REFRESH_STAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+PUBLISH_KIND_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 STATUS_MAP = {
     "A": "added",
     "M": "modified",
@@ -1211,8 +1212,8 @@ def parse_publish_args(args: list[str]) -> dict[str, str]:
         usage_error("publish-change requires --json")
     if values.get("allow-no-changes") not in {"true", "false"}:
         usage_error("--allow-no-changes must be true or false")
-    if values["kind"] not in {"implementation", "execplan", "execplan-revision", "merge-conflict"}:
-        usage_error("unsupported publish-change kind")
+    if not PUBLISH_KIND_RE.match(values["kind"]):
+        usage_error("publish-change --kind must be a lowercase token containing letters, numbers, and hyphens")
     return values
 
 
