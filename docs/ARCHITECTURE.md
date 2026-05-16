@@ -61,7 +61,7 @@ scripts/scherzoctl / scherzo ctl
 | --- | --- | --- |
 | CLI/service startup | `src/scherzo/main.gleam`, `src/scherzo/orchestrator/service.gleam`, `src/scherzo/runtime_bundle.gleam` | CLI modes, doctor, once/daemon startup, config/workflow bundle loading. |
 | Config types/resolution | `src/scherzo/config.gleam`, `src/scherzo/config/types.gleam`, `src/scherzo/model_config.gleam` | YAML orchestrator config is resolved to typed `EffectiveConfig`/`OrchestratorConfig`; runtime `.md` workflows are no longer supported. |
-| Task/tracker adapter/handoff | `src/scherzo/task.gleam`, `src/scherzo/tracker/adapter.gleam`, `src/scherzo/tracker/linear_adapter.gleam`, `src/scherzo/tracker.gleam`, `src/scherzo/linear.gleam`, `src/scherzo/handoff.gleam`, `src/scherzo/linear_*` | Backend-neutral task model and capability contract, Linear GraphQL transport, issue compatibility normalization, board contract checks, comments/state changes, attachments. |
+| Task/tracker adapter/handoff | `src/scherzo/task.gleam`, `src/scherzo/tracker/adapter.gleam`, `src/scherzo/tracker/linear_adapter.gleam`, `src/scherzo/tracker.gleam`, `src/scherzo/linear.gleam`, `src/scherzo/handoff.gleam`, `src/scherzo/linear_*` | Backend-neutral task model and capability contract; see the normative [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md). Linear GraphQL transport, issue compatibility normalization, board contract checks, comments/state changes, attachments. |
 | Workflow DAGs | `src/scherzo/workflow_dag.gleam`, `src/scherzo/workflow_scheduler.gleam`, `src/scherzo/workflow_run.gleam`, `src/scherzo/workflow_fingerprint.gleam`, `src/scherzo/workspace_run.gleam` | Parse/validate YAML DAGs, schedule ready steps, prepare step workspaces, execute agent/command steps, checkpoint durable facts. |
 | Orchestrator | `src/scherzo/orchestrator/daemon.gleam`, `core.gleam`, `state.gleam`, `effect_runner.gleam`, `worker_registry.gleam`, `workflow_reloader.gleam`, `control_command_handler.gleam` | Daemon actor owns polling, retry timers, claims, running sessions, reload, side-effect queue, and local controls. `core.gleam` is the pure policy layer. |
 | Agent/pi execution | `src/scherzo/agent/run_attempt.gleam`, `turn_loop.gleam`, `operator_control.gleam`, `worker_command.gleam`, `src/scherzo/pi/client.gleam`, `protocol.gleam`, `command.gleam` | Launch pi RPC, send prompts/abort/UI responses, stream turn records, record token/session observations. |
@@ -446,9 +446,10 @@ Touch:
 
 Must preserve:
 
-- Tracker reads normalize task data through the adapter boundary and preserve
-  Linear `tracker/issue.gleam` compatibility without leaking raw GraphQL details
-  into orchestrator policy.
+- Tracker reads normalize task data through the adapter boundary defined in
+  `docs/specs/TRACKER_ADAPTER_SPEC.md` and preserve Linear
+  `tracker/issue.gleam` compatibility without leaking raw GraphQL details into
+  orchestrator policy.
 - Handoff can be disabled and must honor configured comment/state booleans.
 - Linear attachment fallback remains safe for non-HTTPS or changed bodyData
   shapes.
@@ -588,7 +589,8 @@ Run checks:
 - `docs/plans/local-control-api-and-scherzoctl.md` and
   `docs/plans/mutating-operator-controls.md`: history for local control.
 - `docs/plans/linear-command-transport.md`: history for Linear comment commands.
-- `docs/runbooks/tracker-adapters.md`: current tracker adapter capability matrix and remaining Linear compatibility surfaces.
+- `docs/specs/TRACKER_ADAPTER_SPEC.md`: normative tracker adapter contract, data model, capabilities, startup validation, and compatibility rules.
+- `docs/runbooks/tracker-adapters.md`: operator guidance for tracker adapters, current capability matrix, and remaining Linear compatibility surfaces.
 - `docs/plans/hardening-02-local-durable-state-ledger.md` and
   `docs/plans/hardening-03-single-instance-crash-recovery.md`: ledger/recovery
   history.
