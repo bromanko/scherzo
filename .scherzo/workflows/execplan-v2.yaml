@@ -37,11 +37,15 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_implementation_pack_submission
-        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/provider/implementation-pack-submission.v2.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
+        - name: implementation_pack_submission_provider_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/implementation-pack-submission.v2.schema.json
+          draft: "2020-12"
         - name: implementation_pack_submission_shape
           type: json_schema
           path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json
@@ -70,11 +74,15 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_implementation_pack_submission
-        parameters_schema_path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/provider/implementation-pack-submission.v2.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
+        - name: implementation_pack_submission_provider_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/implementation-pack-submission.v2.schema.json
+          draft: "2020-12"
         - name: implementation_pack_submission_shape
           type: json_schema
           path: .scherzo/workflows/schemas/implementation-pack-submission.v2.schema.json

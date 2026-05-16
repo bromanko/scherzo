@@ -15,11 +15,15 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_structured_output
-        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
+        - name: review_lane_draft_provider_schema
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.v1.schema.json
+          draft: "2020-12"
         - name: review_lane_draft_schema
           type: json_schema
           path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
@@ -60,11 +64,15 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_structured_output
-        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
+        - name: review_lane_draft_provider_schema
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.v1.schema.json
+          draft: "2020-12"
         - name: review_lane_draft_schema
           type: json_schema
           path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
@@ -105,11 +113,15 @@ steps:
       source:
         type: pi_tool_call
         tool_name: submit_structured_output
-        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
+        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.v1.schema.json
         require_single: true
         reject_sibling_tool_calls: true
       required: true
       validators:
+        - name: review_lane_draft_provider_schema
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/review-lane-draft.v1.schema.json
+          draft: "2020-12"
         - name: review_lane_draft_schema
           type: json_schema
           path: .scherzo/workflows/schemas/review-lane-draft.v1.schema.json
