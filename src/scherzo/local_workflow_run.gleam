@@ -87,9 +87,9 @@ fn map_bundle_error(error: runtime_bundle.BundleError) -> RunError {
 
 fn local_issue(workflow_id: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
-    id: "local-native-review",
-    identifier: "LOCAL-NATIVE-REVIEW",
-    title: "Local native workflow run",
+    id: "local-workflow-run",
+    identifier: "LOCAL-WORKFLOW-RUN",
+    title: "Local workflow run",
     description: None,
     priority: None,
     state: issue_state.todo_state(),
@@ -153,7 +153,7 @@ fn local_orchestrator(run_root: String) -> config_types.OrchestratorConfig {
     routing: config_types.RoutingConfig(
       workflow_label_prefix: "workflow:",
       require_exactly_one_workflow_label: False,
-      default_workflow: Some("review-native"),
+      default_workflow: Some("implementation"),
       workflows: dict.new(),
     ),
     dag_hooks: hooks,

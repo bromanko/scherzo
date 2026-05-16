@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
@@ -126,24 +127,44 @@ pub fn review_lane_contract_still_rejects_metadata_inside_payload_test() {
   )
 }
 
-pub fn review_lane_contract_offline_accepts_migrated_review_workflow_test() {
-  let dir = "test/tmp/review-lane-contract-offline"
-  reset_dir(dir)
+pub fn review_lane_contract_offline_accepts_routed_review_workflows_test() {
+  let workflows = [
+    #("implementation", ".scherzo/workflows/implementation.yaml"),
+    #(
+      "execplan-implementation",
+      ".scherzo/workflows/execplan-implementation.yaml",
+    ),
+    #(
+      "execplan-implementation-v2",
+      ".scherzo/workflows/execplan-implementation-v2.yaml",
+    ),
+  ]
 
-  let artifact =
-    run_contract(
-      "offline --workflow .scherzo/workflows/review-native.yml --fixtures test/fixtures/review-lane-contract --output-dir "
-      <> dir,
+  list.each(workflows, fn(workflow) {
+    let #(name, path) = workflow
+    let dir = "test/tmp/review-lane-contract-offline/" <> name
+    reset_dir(dir)
+
+    let artifact =
+      run_contract(
+        "offline --workflow "
+        <> path
+        <> " --fixtures test/fixtures/review-lane-contract --output-dir "
+        <> dir,
+      )
+
+    assert artifact.status == step_artifact.StepSucceeded
+    assert artifact.exit_code == Some(0)
+    assert string.contains(
+      artifact.stdout,
+      "REVIEW_LANE_CONTRACT_OFFLINE=passed",
     )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "REVIEW_LANE_CONTRACT_OFFLINE=passed")
-  let assert Ok(report) = simplifile.read(dir <> "/contract-report.v1.json")
-  assert string.contains(report, "\"status\": \"passed\"")
-  assert string.contains(report, "\"remote_mutations\": \"none\"")
-  assert string.contains(report, "valid-minimal.arguments.json")
-  assert string.contains(report, "unexpected-runner-metadata.arguments.json")
+    let assert Ok(report) = simplifile.read(dir <> "/contract-report.v1.json")
+    assert string.contains(report, "\"status\": \"passed\"")
+    assert string.contains(report, "\"remote_mutations\": \"none\"")
+    assert string.contains(report, "valid-minimal.arguments.json")
+    assert string.contains(report, "unexpected-runner-metadata.arguments.json")
+  })
 }
 
 pub fn review_lane_contract_live_skips_without_credentials_test() {
@@ -152,7 +173,7 @@ pub fn review_lane_contract_live_skips_without_credentials_test() {
 
   let artifact =
     run_shell(
-      "env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY scripts/scherzo-review-lane-contract live --workflow .scherzo/workflows/review-native.yml --output-dir "
+      "env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY scripts/scherzo-review-lane-contract live --workflow .scherzo/workflows/implementation.yaml --output-dir "
       <> dir
       <> " --skip-if-missing-credentials",
     )

@@ -42,11 +42,11 @@ pub fn parse_args_default_explicit_and_help_test() {
   assert main.parse_args([
       "workflow",
       "run",
-      ".scherzo/workflows/review-native.yml",
+      ".scherzo/workflows/implementation.yaml",
     ])
     == Ok(
       main.WorkflowRun(local_workflow_run.Options(
-        workflow_path: ".scherzo/workflows/review-native.yml",
+        workflow_path: ".scherzo/workflows/implementation.yaml",
         run_root: "tmp/scherzo-workflow-run",
         run_id: "local-workflow-run",
         native_review_scenario: None,
@@ -55,7 +55,7 @@ pub fn parse_args_default_explicit_and_help_test() {
   assert main.parse_args([
       "workflow",
       "run",
-      ".scherzo/workflows/review-native.yml",
+      ".scherzo/workflows/implementation.yaml",
       "--run-root",
       "tmp/native",
       "--run-id",
@@ -65,7 +65,7 @@ pub fn parse_args_default_explicit_and_help_test() {
     ])
     == Ok(
       main.WorkflowRun(local_workflow_run.Options(
-        workflow_path: ".scherzo/workflows/review-native.yml",
+        workflow_path: ".scherzo/workflows/implementation.yaml",
         run_root: "tmp/native",
         run_id: "native-pr-80",
         native_review_scenario: Some("pr-80"),

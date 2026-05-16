@@ -234,12 +234,22 @@ The local contract command is the test harness for review-lane schema, prompt, a
 
 ```sh
 scripts/scherzo-review-lane-contract offline \
-  --workflow .scherzo/workflows/review-native.yml \
+  --workflow .scherzo/workflows/implementation.yaml \
   --fixtures test/fixtures/review-lane-contract \
-  --output-dir tmp/scherzo-review-lane-contract/offline
+  --output-dir tmp/scherzo-review-lane-contract/offline/implementation
+
+scripts/scherzo-review-lane-contract offline \
+  --workflow .scherzo/workflows/execplan-implementation.yaml \
+  --fixtures test/fixtures/review-lane-contract \
+  --output-dir tmp/scherzo-review-lane-contract/offline/execplan-implementation
+
+scripts/scherzo-review-lane-contract offline \
+  --workflow .scherzo/workflows/execplan-implementation-v2.yaml \
+  --fixtures test/fixtures/review-lane-contract \
+  --output-dir tmp/scherzo-review-lane-contract/offline/execplan-implementation-v2
 ```
 
-It checks every provider schema against the recursive allowlist, verifies migrated review workflow wiring, runs all lane fixtures, materializes valid submissions into canonical drafts, runs canonical JSON Schema and semantic validation, and writes `contract-report.v1.json` with `remote_mutations: "none"`.
+It checks every provider schema against the recursive allowlist, verifies the routed implementation review workflow wiring, runs all lane fixtures, materializes valid submissions into canonical drafts, runs canonical JSON Schema and semantic validation, and writes `contract-report.v1.json` with `remote_mutations: "none"`.
 
 Operators can check one schema or one captured submission directly:
 
@@ -258,7 +268,7 @@ The optional live-provider canary is separate from required SelfCI because it ma
 
 ```sh
 scripts/scherzo-review-lane-contract live \
-  --workflow .scherzo/workflows/review-native.yml \
+  --workflow .scherzo/workflows/implementation.yaml \
   --output-dir tmp/scherzo-review-lane-contract/live \
   --skip-if-missing-credentials
 ```
@@ -269,7 +279,7 @@ When `SCHERZO_REVIEW_LANE_PREFLIGHT_MODE=required-live`, dispatcher preflight us
 
 ## Checked-in workflow integration
 
-The dogfood `implementation` and `execplan-implementation` workflows generate the brief immediately before review and store review artifacts under the run artifact directory:
+The dogfood `implementation`, `execplan-implementation`, and `execplan-implementation-v2` workflows generate the brief immediately before review and store review artifacts under the run artifact directory:
 
 ```text
 $SCHERZO_RUN_ROOT/artifacts/review/<step-id>/

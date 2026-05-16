@@ -9,13 +9,6 @@ import simplifile
 
 const submit_structured_output_tool = "submit_review_lane_draft"
 
-fn review_native_dag() -> workflow_dag.WorkflowDag {
-  let assert Ok(contents) =
-    simplifile.read(".scherzo/workflows/review-native.yml")
-  let assert Ok(dag) = workflow_dag.parse(contents)
-  dag
-}
-
 fn implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(contents) =
     simplifile.read(".scherzo/workflows/implementation.yaml")
@@ -26,6 +19,13 @@ fn implementation_dag() -> workflow_dag.WorkflowDag {
 fn execplan_implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(contents) =
     simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
+  let assert Ok(dag) = workflow_dag.parse(contents)
+  dag
+}
+
+fn execplan_implementation_v2_dag() -> workflow_dag.WorkflowDag {
+  let assert Ok(contents) =
+    simplifile.read(".scherzo/workflows/execplan-implementation-v2.yaml")
   let assert Ok(dag) = workflow_dag.parse(contents)
   dag
 }
@@ -171,9 +171,17 @@ fn provider_schema_files() -> List(String) {
 
 fn provider_review_workflow_paths() -> List(String) {
   [
-    ".scherzo/workflows/review-native.yml",
     ".scherzo/workflows/implementation.yaml",
     ".scherzo/workflows/execplan-implementation.yaml",
+    ".scherzo/workflows/execplan-implementation-v2.yaml",
+  ]
+}
+
+fn routed_review_dags() -> List(workflow_dag.WorkflowDag) {
+  [
+    implementation_dag(),
+    execplan_implementation_dag(),
+    execplan_implementation_v2_dag(),
   ]
 }
 
@@ -229,76 +237,55 @@ pub fn review_schema_files_are_packaged_with_workflows_test() {
     assert_contains(contents, ".scherzo/workflows/schemas/provider/")
     assert_not_contains(contents, "docs/schemas/")
   })
+}
 
-  let assert Ok(contract_spike) =
-    simplifile.read(".scherzo/workflows/review-native-contract-spike.yml")
-  assert_contains(
-    contract_spike,
-    ".scherzo/workflows/schemas/review-lane-draft.v1.schema.json",
+pub fn routed_review_lane_steps_use_submit_review_lane_draft_tool_source_test() {
+  list.each(routed_review_dags(), fn(dag) {
+    assert_review_tool_source(
+      lane_spec(dag, "lane_correctness"),
+      lane_schema_path("lane_correctness"),
+    )
+    assert_review_tool_source(
+      lane_spec(dag, "lane_test_quality"),
+      lane_schema_path("lane_test_quality"),
+    )
+    assert_review_tool_source(
+      lane_spec(dag, "lane_idioms_maintainability"),
+      lane_schema_path("lane_idioms_maintainability"),
+    )
+    assert_review_tool_source(
+      lane_spec(dag, "lane_security_performance"),
+      lane_schema_path("lane_security_performance"),
+    )
+  })
+}
+
+pub fn routed_review_lane_steps_use_isolated_derived_workspaces_test() {
+  list.each(
+    routed_review_dags(),
+    assert_native_review_lane_workspaces_are_isolated,
   )
 }
 
-pub fn review_native_lane_steps_use_submit_review_lane_draft_tool_source_test() {
-  let dag = review_native_dag()
-
-  assert_review_tool_source(
-    lane_spec(dag, "lane_correctness"),
-    lane_schema_path("lane_correctness"),
-  )
-  assert_review_tool_source(
-    lane_spec(dag, "lane_test_quality"),
-    lane_schema_path("lane_test_quality"),
-  )
-  assert_review_tool_source(
-    lane_spec(dag, "lane_idioms_maintainability"),
-    lane_schema_path("lane_idioms_maintainability"),
-  )
-  assert_review_tool_source(
-    lane_spec(dag, "lane_security_performance"),
-    lane_schema_path("lane_security_performance"),
-  )
-}
-
-pub fn review_native_lane_steps_use_isolated_derived_workspaces_test() {
-  assert_native_review_lane_workspaces_are_isolated(review_native_dag())
-}
-
-pub fn review_native_lane_steps_use_provider_schema_shape_validator_test() {
-  let review_dag = review_native_dag()
-  assert_review_lane_validators(
-    lane_spec(review_dag, "lane_correctness"),
-    lane_schema_path("lane_correctness"),
-  )
-  assert_review_lane_validators(
-    lane_spec(review_dag, "lane_test_quality"),
-    lane_schema_path("lane_test_quality"),
-  )
-  assert_review_lane_validators(
-    lane_spec(review_dag, "lane_idioms_maintainability"),
-    lane_schema_path("lane_idioms_maintainability"),
-  )
-  assert_review_lane_validators(
-    lane_spec(review_dag, "lane_security_performance"),
-    lane_schema_path("lane_security_performance"),
-  )
-
-  let implementation_workflow_dag = implementation_dag()
-  assert_review_lane_validators(
-    lane_spec(implementation_workflow_dag, "lane_correctness"),
-    lane_schema_path("lane_correctness"),
-  )
-  assert_review_lane_validators(
-    lane_spec(implementation_workflow_dag, "lane_test_quality"),
-    lane_schema_path("lane_test_quality"),
-  )
-  assert_review_lane_validators(
-    lane_spec(implementation_workflow_dag, "lane_idioms_maintainability"),
-    lane_schema_path("lane_idioms_maintainability"),
-  )
-  assert_review_lane_validators(
-    lane_spec(implementation_workflow_dag, "lane_security_performance"),
-    lane_schema_path("lane_security_performance"),
-  )
+pub fn routed_review_lane_steps_use_provider_schema_shape_validator_test() {
+  list.each(routed_review_dags(), fn(dag) {
+    assert_review_lane_validators(
+      lane_spec(dag, "lane_correctness"),
+      lane_schema_path("lane_correctness"),
+    )
+    assert_review_lane_validators(
+      lane_spec(dag, "lane_test_quality"),
+      lane_schema_path("lane_test_quality"),
+    )
+    assert_review_lane_validators(
+      lane_spec(dag, "lane_idioms_maintainability"),
+      lane_schema_path("lane_idioms_maintainability"),
+    )
+    assert_review_lane_validators(
+      lane_spec(dag, "lane_security_performance"),
+      lane_schema_path("lane_security_performance"),
+    )
+  })
 }
 
 pub fn native_review_prompts_and_tool_guidance_use_relative_input_ref_examples_test() {
@@ -326,9 +313,10 @@ pub fn review_lane_draft_tool_is_enabled_for_implementation_lane_steps_test() {
 
   assert_contains(extension, "\"implementation\"")
   assert_contains(extension, "\"execplan-implementation\"")
+  assert_contains(extension, "\"execplan-implementation-v2\"")
   assert_contains(extension, "SCHERZO_STEP_ID")
   assert_contains(extension, "lane_correctness")
-  assert_contains(extension, "review-native-contract-spike")
+  assert_not_contains(extension, "review-native")
 }
 
 pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
@@ -440,8 +428,8 @@ pub fn execplan_implementation_workflow_uses_native_agent_lane_steps_test() {
   )
 }
 
-pub fn review_native_rejects_final_response_only_and_accepts_tool_submission_test() {
-  let spec = lane_spec(review_native_dag(), "lane_correctness")
+pub fn routed_review_rejects_final_response_only_and_accepts_tool_submission_test() {
+  let spec = lane_spec(implementation_dag(), "lane_correctness")
   let final_response_only =
     result_artifact.from_final_response_with_tool_calls(
       Some(valid_review_lane_draft_json()),
