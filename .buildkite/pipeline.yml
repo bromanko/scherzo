@@ -1,0 +1,34 @@
+env:
+  CI: "true"
+
+steps:
+  - label: ":gleam: format + unit"
+    key: "format-unit"
+    command: |
+      set -euo pipefail
+      direnv allow .
+      direnv exec . gleam format --check src test
+      direnv exec . gleam test
+
+  - label: ":mag: production lint"
+    key: "production-lint"
+    command: |
+      set -euo pipefail
+      direnv allow .
+      direnv exec . gleam run -m glinter
+      direnv exec . gleam run -m scherzo_lint
+
+  - label: ":shell: contract tests"
+    key: "contract-tests"
+    command: |
+      set -euo pipefail
+      direnv allow .
+      direnv exec . scherzo-test-contract
+
+  - label: ":nix: flake + package"
+    key: "nix"
+    command: |
+      set -euo pipefail
+      direnv allow .
+      nix flake check
+      nix build .#scherzo
