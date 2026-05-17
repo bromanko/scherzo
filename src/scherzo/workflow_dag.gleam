@@ -1141,6 +1141,8 @@ fn validate_contract_output(
     | Some(workflow_contract.StaticGitRef(_)) -> Ok(Nil)
     Some(workflow_contract.StepField(step_id, field)) ->
       validate_contract_step_field(output.name, step_id, field, steps)
+    Some(workflow_contract.StepFile(step_id, _path)) ->
+      validate_contract_step_exists(output.name, step_id, steps)
     Some(workflow_contract.StructuredOutput(step_id, artifact_name))
     | Some(workflow_contract.InlineJson(step_id, artifact_name)) ->
       validate_contract_structured_output(
@@ -1149,6 +1151,17 @@ fn validate_contract_output(
         artifact_name,
         steps,
       )
+  }
+}
+
+fn validate_contract_step_exists(
+  output_name: String,
+  step_id: String,
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
+  case step_by_id_in_steps(steps, step_id) {
+    Error(Nil) -> contract_unknown_step_error(output_name, step_id)
+    Ok(_) -> Ok(Nil)
   }
 }
 

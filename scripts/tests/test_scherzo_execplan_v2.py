@@ -30,6 +30,32 @@ def chdir(path: Path):
         os.chdir(previous)
 
 
+class BundleContextParsingTests(unittest.TestCase):
+    def test_parse_bundle_metadata_when_linear_collapses_lines(self):
+        module = load_module()
+        text = (
+            "Implement the bundle. Bundle ref: runs/LIV-335-1778980165271-3/outputs/exec_plan_bundle.json "
+            "Bundle sha256: 688756952480882940f67d5097e83584fb34ac1be565127e4821ec2c4f442cb0"
+        )
+
+        ref, sha = module.parse_bundle_ref_and_sha(text)
+
+        self.assertEqual(ref, "runs/LIV-335-1778980165271-3/outputs/exec_plan_bundle.json")
+        self.assertEqual(sha, "688756952480882940f67d5097e83584fb34ac1be565127e4821ec2c4f442cb0")
+
+    def test_parse_bundle_metadata_accepts_markdown_backticks(self):
+        module = load_module()
+        text = (
+            "- Bundle ref: `runs/LIV-335-1778980165271-3/outputs/exec_plan_bundle.json`\n"
+            "- Bundle sha256: `688756952480882940f67d5097e83584fb34ac1be565127e4821ec2c4f442cb0`\n"
+        )
+
+        ref, sha = module.parse_bundle_ref_and_sha(text)
+
+        self.assertEqual(ref, "runs/LIV-335-1778980165271-3/outputs/exec_plan_bundle.json")
+        self.assertEqual(sha, "688756952480882940f67d5097e83584fb34ac1be565127e4821ec2c4f442cb0")
+
+
 class ResolveStructuredSubmissionTests(unittest.TestCase):
     def test_resolves_workspace_scoped_structured_output_from_run_root_fallback(self):
         module = load_module()

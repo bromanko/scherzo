@@ -15,6 +15,7 @@ import scherzo/json_value
 import scherzo/log
 import scherzo/model_config
 import scherzo/orchestrator/schedule_core
+import scherzo/path
 import scherzo/process_ext
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
@@ -1155,6 +1156,7 @@ fn record_outputs_if_contracted(
   contract_outputs_recorded: Option(workflow_checkpoint.ArtifactWritten),
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
 ) -> Result(List(String), String) {
   case dag.contract, contract_outputs_recorded {
     None, _ -> Ok([])
@@ -1163,9 +1165,11 @@ fn record_outputs_if_contracted(
       let #(values, diagnostics, missing) =
         resolve_contract_outputs(
           contract.outputs,
+          dag.steps,
           run_id,
           dependencies,
           artifacts,
+          prepared_workspaces,
           [],
           [],
           [],
@@ -1204,9 +1208,11 @@ fn record_outputs_if_contracted(
 
 fn resolve_contract_outputs(
   outputs: List(workflow_contract.OutputSpec),
+  steps: List(workflow_dag.WorkflowStep),
   run_id: String,
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   acc: List(contract_manifest.NamedManifestValue),
   diagnostics: List(String),
   missing: List(String),
@@ -1215,7 +1221,14 @@ fn resolve_contract_outputs(
     [] -> #(list.reverse(acc), list.reverse(diagnostics), missing)
     [spec, ..rest] -> {
       let #(value, output_diagnostics, output_missing) =
-        materialize_output(spec, run_id, dependencies, artifacts)
+        materialize_output(
+          spec,
+          steps,
+          run_id,
+          dependencies,
+          artifacts,
+          prepared_workspaces,
+        )
       let diagnostics =
         list.append(list.reverse(output_diagnostics), diagnostics)
       let missing = case output_missing {
@@ -1224,9 +1237,11 @@ fn resolve_contract_outputs(
       }
       resolve_contract_outputs(
         rest,
+        steps,
         run_id,
         dependencies,
         artifacts,
+        prepared_workspaces,
         [
           contract_manifest.NamedManifestValue(name: spec.name, value: value),
           ..acc
@@ -1240,9 +1255,11 @@ fn resolve_contract_outputs(
 
 fn materialize_output(
   spec: workflow_contract.OutputSpec,
+  steps: List(workflow_dag.WorkflowStep),
   run_id: String,
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
 ) -> #(contract_manifest.ManifestValue, List(String), Bool) {
   let #(value, diagnostics) = case spec.source {
     None -> #(
@@ -1252,7 +1269,15 @@ fn materialize_output(
       ],
     )
     Some(source) ->
-      output_value_from_source(spec, source, run_id, dependencies, artifacts)
+      output_value_from_source(
+        spec,
+        source,
+        steps,
+        run_id,
+        dependencies,
+        artifacts,
+        prepared_workspaces,
+      )
   }
   case
     contract_manifest.validate_value(spec.name, value, required: spec.required)
@@ -1269,9 +1294,11 @@ fn materialize_output(
 fn output_value_from_source(
   spec: workflow_contract.OutputSpec,
   source: workflow_contract.OutputSource,
+  steps: List(workflow_dag.WorkflowStep),
   run_id: String,
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
 ) -> #(contract_manifest.ManifestValue, List(String)) {
   case source {
     workflow_contract.StepField(step_id, field) ->
@@ -1282,6 +1309,17 @@ fn output_value_from_source(
         field,
         dependencies,
         artifacts,
+      )
+    workflow_contract.StepFile(step_id, path) ->
+      output_value_from_step_file(
+        spec,
+        run_id,
+        step_id,
+        path,
+        dependencies,
+        artifacts,
+        prepared_workspaces,
+        steps,
       )
     workflow_contract.StructuredOutput(step_id, artifact_name) ->
       output_value_from_structured_output(
@@ -1310,6 +1348,10 @@ fn output_value_from_source(
   }
 }
 
+type OutputText {
+  OutputText(contents: String, truncated: Bool)
+}
+
 fn output_value_from_step_field(
   spec: workflow_contract.OutputSpec,
   run_id: String,
@@ -1330,38 +1372,146 @@ fn output_value_from_step_field(
             spec,
             "workflow_output_source_field_missing:" <> spec.name,
           )
-        Some(contents) -> {
-          let #(extension, media_type) = output_extension_and_media(spec.type_)
-          let write =
-            workflow_checkpoint.WorkflowOutputBlobWrite(
-              run_id: run_id,
-              output_name: spec.name,
-              extension: extension,
-              contents: contents,
-            )
-          case dependencies.checkpoint.write_workflow_output_blob(write) {
-            Error(error) ->
+        Some(OutputText(contents: contents, truncated: truncated)) ->
+          write_contract_output_blob(
+            spec,
+            run_id,
+            contents,
+            truncated,
+            dependencies,
+            step_field_source_json(step_id, field),
+          )
+      }
+  }
+}
+
+fn output_value_from_step_file(
+  spec: workflow_contract.OutputSpec,
+  run_id: String,
+  step_id: String,
+  file_path: String,
+  dependencies: Dependencies,
+  artifacts: Dict(String, step_artifact.StepArtifact),
+  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
+  steps: List(workflow_dag.WorkflowStep),
+) -> #(contract_manifest.ManifestValue, List(String)) {
+  case dict.get(artifacts, step_id) {
+    Error(Nil) ->
+      output_absent(spec, "workflow_output_source_step_missing:" <> step_id)
+    Ok(step_artifact.StepArtifact(status: step_artifact.StepFailed, ..)) ->
+      output_absent(spec, "workflow_output_source_step_failed:" <> step_id)
+    Ok(_) ->
+      case list.find(steps, fn(step) { step.id == step_id }) {
+        Error(Nil) ->
+          output_absent(spec, "workflow_output_source_step_missing:" <> step_id)
+        Ok(step) ->
+          case dict.get(prepared_workspaces, step.workspace.name) {
+            Error(Nil) ->
               output_absent(
                 spec,
-                "workflow_output_blob_failed:"
-                  <> workflow_checkpoint.describe_error(error),
+                "workflow_output_source_workspace_missing:" <> step_id,
               )
-            Ok(written) -> #(
-              contract_manifest.present_run_artifact(
-                spec.type_,
-                contract_manifest.ArtifactWritten(
-                  ref: written.ref,
-                  sha256: written.sha256,
-                  bytes: written.bytes,
-                ),
-                media_type,
-                Some(step_field_source_json(step_id, field)),
-              ),
-              [],
-            )
+            Ok(workspace) -> {
+              let source_path = path.join(workspace.path, file_path)
+              case simplifile.read(source_path) {
+                Error(error) ->
+                  output_absent(
+                    spec,
+                    "workflow_output_source_file_missing:"
+                      <> spec.name
+                      <> ":"
+                      <> simplifile.describe_error(error),
+                  )
+                Ok(contents) ->
+                  write_contract_output_blob(
+                    spec,
+                    run_id,
+                    contents,
+                    False,
+                    dependencies,
+                    step_file_source_json(step_id, file_path),
+                  )
+              }
+            }
           }
-        }
       }
+  }
+}
+
+type OutputValidationError {
+  OutputJsonSourceTruncated(output_name: String)
+  OutputJsonInvalid(output_name: String)
+}
+
+fn write_contract_output_blob(
+  spec: workflow_contract.OutputSpec,
+  run_id: String,
+  contents: String,
+  truncated: Bool,
+  dependencies: Dependencies,
+  source: json_value.JsonValue,
+) -> #(contract_manifest.ManifestValue, List(String)) {
+  case validate_output_contents(spec, contents, truncated) {
+    Error(error) -> output_absent(spec, output_validation_diagnostic(error))
+    Ok(Nil) -> {
+      let #(extension, media_type) = output_extension_and_media(spec.type_)
+      let write =
+        workflow_checkpoint.WorkflowOutputBlobWrite(
+          run_id: run_id,
+          output_name: spec.name,
+          extension: extension,
+          contents: contents,
+        )
+      case dependencies.checkpoint.write_workflow_output_blob(write) {
+        Error(error) ->
+          output_absent(
+            spec,
+            "workflow_output_blob_failed:"
+              <> workflow_checkpoint.describe_error(error),
+          )
+        Ok(written) -> #(
+          contract_manifest.present_run_artifact(
+            spec.type_,
+            contract_manifest.ArtifactWritten(
+              ref: written.ref,
+              sha256: written.sha256,
+              bytes: written.bytes,
+            ),
+            media_type,
+            Some(source),
+          ),
+          [],
+        )
+      }
+    }
+  }
+}
+
+fn validate_output_contents(
+  spec: workflow_contract.OutputSpec,
+  contents: String,
+  truncated: Bool,
+) -> Result(Nil, OutputValidationError) {
+  case output_type_is_json(spec.type_) {
+    False -> Ok(Nil)
+    True ->
+      case truncated {
+        True -> Error(OutputJsonSourceTruncated(spec.name))
+        False ->
+          case json_value.parse(contents) {
+            Ok(_) -> Ok(Nil)
+            Error(Nil) -> Error(OutputJsonInvalid(spec.name))
+          }
+      }
+  }
+}
+
+fn output_validation_diagnostic(error: OutputValidationError) -> String {
+  case error {
+    OutputJsonSourceTruncated(output_name) ->
+      "workflow_output_json_source_truncated:" <> output_name
+    OutputJsonInvalid(output_name) ->
+      "workflow_output_json_invalid:" <> output_name
   }
 }
 
@@ -1450,10 +1600,36 @@ fn output_absent(
 fn artifact_field_text(
   artifact: step_artifact.StepArtifact,
   field: workflow_contract.OutputField,
-) -> Option(String) {
+) -> Option(OutputText) {
   case field {
-    workflow_contract.Stdout -> Some(artifact.stdout)
-    workflow_contract.FinalResponse -> artifact.final_response
+    workflow_contract.Stdout ->
+      Some(OutputText(
+        contents: artifact.stdout,
+        truncated: artifact.stdout_truncated,
+      ))
+    workflow_contract.FinalResponse ->
+      artifact.final_response
+      |> option.map(fn(contents) {
+        OutputText(
+          contents: contents,
+          truncated: artifact.final_response_truncated,
+        )
+      })
+  }
+}
+
+fn output_type_is_json(type_: workflow_contract.ContractType) -> Bool {
+  case type_ {
+    workflow_contract.CodeChange
+    | workflow_contract.ExecPlanBundle
+    | workflow_contract.ImplementationPack
+    | workflow_contract.CodeChangeBundle
+    | workflow_contract.ArtifactList -> True
+    workflow_contract.DocumentMarkdown
+    | workflow_contract.ExecPlan
+    | workflow_contract.Text
+    | workflow_contract.Url
+    | workflow_contract.GitRef -> False
   }
 }
 
@@ -1487,6 +1663,16 @@ fn step_field_source_json(
       "field",
       json_value.JString(workflow_contract.output_field_to_string(field)),
     ),
+  ])
+}
+
+fn step_file_source_json(
+  step_id: String,
+  file_path: String,
+) -> json_value.JsonValue {
+  json_value.JObject([
+    #("step_id", json_value.JString(step_id)),
+    #("path", json_value.JString(file_path)),
   ])
 }
 
@@ -1615,6 +1801,7 @@ fn loop(
           contract_outputs_recorded,
           dependencies,
           artifacts,
+          prepared_workspaces,
         )
       {
         Ok([]) -> {
@@ -1772,6 +1959,7 @@ fn loop(
           contract_outputs_recorded,
           dependencies,
           artifacts,
+          prepared_workspaces,
         )
       {
         Ok(_) -> ""
@@ -2302,6 +2490,7 @@ fn execute_prepared_steps(
             orchestrator,
             dependencies,
             artifacts,
+            prepared_workspaces,
             run_root,
             True,
             profile,
@@ -2733,6 +2922,7 @@ fn finish_fatal_batch_result(
   orchestrator: config_types.OrchestratorConfig,
   dependencies: Dependencies,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
   run_root: Option(String),
   cleanup_allowed: Bool,
   profile: config_types.WorkspaceHookProfile,
@@ -2791,6 +2981,7 @@ fn finish_fatal_batch_result(
           contract_outputs_recorded,
           dependencies,
           artifacts,
+          prepared_workspaces,
         )
       {
         Ok(_) -> ""

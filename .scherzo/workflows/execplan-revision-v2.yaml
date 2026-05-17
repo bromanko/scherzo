@@ -16,12 +16,12 @@ contract:
       type: implementation_pack
       source:
         step: materialize_pack
-        field: stdout
+        path: tmp/execplan-v2-implementation-pack.json
     exec_plan_bundle:
       type: exec_plan_bundle
       source:
         step: materialize_revision
-        field: stdout
+        path: tmp/execplan-v2-bundle.json
 steps:
   - id: prepare_revision
     kind: command

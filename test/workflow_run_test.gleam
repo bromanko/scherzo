@@ -4141,6 +4141,30 @@ pub fn contracted_execplan_v2_step_field_outputs_are_retained_as_json_test() {
       "version: 1\nid: execplan-v2\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize\n        field: stdout\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: echo '{\"schema_version\":2}'\n",
     )
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base_deps = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base_deps,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        process.send(subject, "run:" <> context.step_id)
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "{\"schema_version\":2}\n",
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      checkpoint: checkpoint,
+    )
 
   let assert Ok(_) =
     workflow_run.execute(
@@ -4150,7 +4174,7 @@ pub fn contracted_execplan_v2_step_field_outputs_are_retained_as_json_test() {
       empty_tracker(),
       [],
       "run-1",
-      workflow_run.Dependencies(..deps(subject, None), checkpoint: checkpoint),
+      dependencies,
     )
 
   let manifest = read_output_manifest(root, "run-1")
@@ -4160,6 +4184,206 @@ pub fn contracted_execplan_v2_step_field_outputs_are_retained_as_json_test() {
     == Some("runs/run-1/outputs/implementation_pack.json")
   assert output_named(manifest.outputs, "code_change_bundle").ref
     == Some("runs/run-1/outputs/code_change_bundle.json")
+}
+
+pub fn contracted_file_output_uses_output_path_not_truncated_stdout_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-file-output-json"
+  reset_dir(root)
+  reset_dir("test/tmp/workflow-run/workspaces/implementation/ABC-123")
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: execplan-v2\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        path: tmp/execplan-v2-implementation-pack.json\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+    )
+  let large_json =
+    "{\"schema_version\":2,\"payload\":\""
+    <> string.repeat("x", times: 1500)
+    <> "\"}\n"
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base_deps = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base_deps,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let output_dir = path.join(context.workspace_path, "tmp")
+        let assert Ok(Nil) = simplifile.create_directory_all(output_dir)
+        let assert Ok(Nil) =
+          simplifile.write(
+            path.join(output_dir, "execplan-v2-implementation-pack.json"),
+            large_json,
+          )
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "{not-json-from-stdout",
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let manifest = read_output_manifest(root, "run-1")
+  let pack = output_named(manifest.outputs, "implementation_pack")
+  assert pack.ref == Some("runs/run-1/outputs/implementation_pack.json")
+  assert pack.bytes == Some(string.length(large_json))
+  let assert Ok(blob) =
+    simplifile.read(
+      root
+      <> "/.scherzo-state/artifacts/runs/run-1/outputs/implementation_pack.json",
+    )
+  assert blob == large_json
+}
+
+pub fn contracted_json_stdout_output_truncation_fails_publication_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-json-stdout-truncated"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: execplan-v2\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+    )
+  let large_json =
+    "{\"schema_version\":2,\"payload\":\""
+    <> string.repeat("x", times: 1500)
+    <> "\"}\n"
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base_deps = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base_deps,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          large_json,
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason
+    == "workflow_required_output_missing:implementation_pack"
+  let manifest = read_output_manifest(root, "run-1")
+  assert output_named(manifest.outputs, "implementation_pack").status
+    == workflow_contract_manifest.Absent
+  assert string.contains(
+    string.join(manifest.diagnostics, with: "\n"),
+    "workflow_output_json_source_truncated:implementation_pack",
+  )
+  let assert Error(_) =
+    simplifile.read(
+      root
+      <> "/.scherzo-state/artifacts/runs/run-1/outputs/implementation_pack.json",
+    )
+}
+
+pub fn contracted_invalid_json_file_output_fails_publication_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-invalid-json-file-output"
+  reset_dir(root)
+  reset_dir("test/tmp/workflow-run/workspaces/implementation/ABC-123")
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: execplan-v2\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        path: tmp/execplan-v2-implementation-pack.json\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+    )
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base_deps = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base_deps,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let output_dir = path.join(context.workspace_path, "tmp")
+        let assert Ok(Nil) = simplifile.create_directory_all(output_dir)
+        let assert Ok(Nil) =
+          simplifile.write(
+            path.join(output_dir, "execplan-v2-implementation-pack.json"),
+            "{invalid-json",
+          )
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "ok\n",
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason
+    == "workflow_required_output_missing:implementation_pack"
+  let manifest = read_output_manifest(root, "run-1")
+  assert output_named(manifest.outputs, "implementation_pack").status
+    == workflow_contract_manifest.Absent
+  assert string.contains(
+    string.join(manifest.diagnostics, with: "\n"),
+    "workflow_output_json_invalid:implementation_pack",
+  )
+  let assert Error(_) =
+    simplifile.read(
+      root
+      <> "/.scherzo-state/artifacts/runs/run-1/outputs/implementation_pack.json",
+    )
 }
 
 pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {

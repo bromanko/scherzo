@@ -49,8 +49,8 @@ FORBIDDEN_REVIEW_DOC_SECTIONS = {
     "Interfaces and Dependencies",
     "Artifacts and Notes",
 }
-BUNDLE_REF_RE = re.compile(r"(?im)^\s*Bundle ref:\s*(runs/\S+)\s*$")
-BUNDLE_SHA_RE = re.compile(r"(?im)^\s*Bundle sha256:\s*([a-f0-9]{64})\s*$")
+BUNDLE_REF_RE = re.compile(r"(?i)\bBundle\s+ref:\s*`?(runs/[^\s`<>)\],;]+)`?")
+BUNDLE_SHA_RE = re.compile(r"(?i)\bBundle\s+sha256:\s*`?([a-f0-9]{64})`?")
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 LINEAR_ISSUE_URL_RE = re.compile(
     r"https://linear\.app/[^\s)>\"]+/issue/([A-Za-z][A-Za-z0-9]*-\d+)[^\s)>\"]*"
@@ -1036,7 +1036,7 @@ def parse_bundle_ref_and_sha(text: str) -> tuple[str, str]:
     sha_match = BUNDLE_SHA_RE.search(text)
     if not ref_match or not sha_match:
         fail("task context must contain `Bundle ref:` and `Bundle sha256:` lines")
-    return ref_match.group(1), sha_match.group(1)
+    return ref_match.group(1).rstrip(".,;"), sha_match.group(1)
 
 
 def load_bundle_from_context() -> tuple[dict[str, Any], dict[str, Any], Path, str, str]:

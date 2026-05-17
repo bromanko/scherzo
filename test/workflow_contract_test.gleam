@@ -136,7 +136,7 @@ pub fn rejects_invalid_input_context_sources_test() {
 pub fn parses_output_sources_test() {
   let contract =
     parse_contract(minimal_contract(
-      "  outputs:\n    stdout_doc:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft_execplan\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\n    bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        field: stdout\n    pack:\n      type: implementation_pack\n      source:\n        step: materialize_pack\n        field: stdout\n    code_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize_code_change_bundle\n        field: stdout\n    pr:\n      type: url\n      source:\n        type: url\n        value: https://example.invalid/pr/1\n    branch:\n      type: git_ref\n      source:\n        type: git_ref\n        value: feature/liv-292\n",
+      "  outputs:\n    stdout_doc:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft_execplan\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\n    bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize_bundle\n        path: tmp/execplan-v2-bundle.json\n    pack:\n      type: implementation_pack\n      source:\n        step: materialize_pack\n        path: tmp/execplan-v2-implementation-pack.json\n    code_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize_code_change_bundle\n        path: tmp/execplan-v2-code-change-bundle.json\n    pr:\n      type: url\n      source:\n        type: url\n        value: https://example.invalid/pr/1\n    branch:\n      type: git_ref\n      source:\n        type: git_ref\n        value: feature/liv-292\n",
     ))
   let assert [
     stdout_doc,
@@ -166,9 +166,21 @@ pub fn parses_output_sources_test() {
     ))
   assert inline_change.source
     == Some(workflow_contract.InlineJson("summarize_change", "code_change"))
-  assert bundle.type_ == workflow_contract.ExecPlanBundle
-  assert pack.type_ == workflow_contract.ImplementationPack
-  assert code_bundle.type_ == workflow_contract.CodeChangeBundle
+  assert bundle.source
+    == Some(workflow_contract.StepFile(
+      "materialize_bundle",
+      "tmp/execplan-v2-bundle.json",
+    ))
+  assert pack.source
+    == Some(workflow_contract.StepFile(
+      "materialize_pack",
+      "tmp/execplan-v2-implementation-pack.json",
+    ))
+  assert code_bundle.source
+    == Some(workflow_contract.StepFile(
+      "materialize_code_change_bundle",
+      "tmp/execplan-v2-code-change-bundle.json",
+    ))
   assert pr.source
     == Some(workflow_contract.StaticUrl("https://example.invalid/pr/1"))
   assert branch.source
@@ -188,6 +200,10 @@ pub fn rejects_invalid_output_sources_test() {
       "  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\n        structured_output: findings\n",
     ))
     == "invalid_contract_output_source"
+  assert error_code(minimal_contract(
+      "  outputs:\n    pack:\n      type: implementation_pack\n      source:\n        step: materialize_pack\n        path: ../implementation_pack.json\n",
+    ))
+    == "invalid_contract_output_path"
   assert error_code(minimal_contract(
       "  outputs:\n    pr:\n      type: url\n      source:\n        type: url\n        value: not-a-url\n",
     ))

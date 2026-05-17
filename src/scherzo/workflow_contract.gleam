@@ -73,6 +73,7 @@ pub type ContextSource {
 
 pub type OutputSource {
   StepField(step_id: String, field: OutputField)
+  StepFile(step_id: String, path: String)
   StructuredOutput(step_id: String, artifact_name: String)
   StaticUrl(url: String)
   StaticGitRef(ref: String)
@@ -313,6 +314,12 @@ pub fn output_source_to_canonical_json(source: OutputSource) -> json.Json {
         #("kind", json.string("field")),
         #("step", json.string(step_id)),
         #("field", json.string(output_field_to_string(field))),
+      ])
+    StepFile(step_id, path) ->
+      json.object([
+        #("kind", json.string("file")),
+        #("step", json.string(step_id)),
+        #("path", json.string(path)),
       ])
     StructuredOutput(step_id, artifact_name) ->
       json.object([
@@ -789,12 +796,19 @@ fn parse_output_source_map(
   case
     get_entry(entries, "step"),
     get_entry(entries, "field"),
+    get_entry(entries, "path"),
     get_entry(entries, "structured_output"),
     get_entry(entries, "inline_json"),
     get_entry(entries, "type"),
     get_entry(entries, "value")
   {
-    Some(yay.NodeStr(step_id)), Some(yay.NodeStr(field)), None, None, None, None
+    Some(yay.NodeStr(step_id)),
+      Some(yay.NodeStr(field)),
+      None,
+      None,
+      None,
+      None,
+      None
     -> {
       use Nil <- result.try(require_exact_keys(
         entries,
@@ -805,6 +819,31 @@ fn parse_output_source_map(
       Ok(StepField(step_id, field))
     }
     Some(yay.NodeStr(step_id)),
+      None,
+      Some(yay.NodeStr(path)),
+      None,
+      None,
+      None,
+      None
+    -> {
+      use Nil <- result.try(require_exact_keys(
+        entries,
+        ["step", "path"],
+        "contract output " <> entry_name <> " file source",
+      ))
+      case valid_output_path(path) {
+        True -> Ok(StepFile(step_id, path))
+        False ->
+          error(
+            "invalid_contract_output_path",
+            "contract output "
+              <> entry_name
+              <> " source path must be relative and contain no control characters",
+          )
+      }
+    }
+    Some(yay.NodeStr(step_id)),
+      None,
       None,
       Some(yay.NodeStr(artifact_name)),
       None,
@@ -821,6 +860,7 @@ fn parse_output_source_map(
     Some(yay.NodeStr(step_id)),
       None,
       None,
+      None,
       Some(yay.NodeStr(artifact_name)),
       None,
       None
@@ -832,7 +872,14 @@ fn parse_output_source_map(
       ))
       Ok(InlineJson(step_id, artifact_name))
     }
-    None, None, None, None, Some(yay.NodeStr("url")), Some(yay.NodeStr(url)) -> {
+    None,
+      None,
+      None,
+      None,
+      None,
+      Some(yay.NodeStr("url")),
+      Some(yay.NodeStr(url))
+    -> {
       use Nil <- result.try(require_exact_keys(
         entries,
         ["type", "value"],
@@ -849,7 +896,13 @@ fn parse_output_source_map(
           )
       }
     }
-    None, None, None, None, Some(yay.NodeStr("git_ref")), Some(yay.NodeStr(ref))
+    None,
+      None,
+      None,
+      None,
+      None,
+      Some(yay.NodeStr("git_ref")),
+      Some(yay.NodeStr(ref))
     -> {
       use Nil <- result.try(require_exact_keys(
         entries,
@@ -867,7 +920,7 @@ fn parse_output_source_map(
           )
       }
     }
-    _, _, _, _, _, _ ->
+    _, _, _, _, _, _, _ ->
       error(
         "invalid_contract_output_source",
         "contract output " <> entry_name <> " source shape is invalid",
@@ -1118,6 +1171,16 @@ fn valid_http_url(value: String) -> Bool {
 
 pub fn valid_git_ref(value: String) -> Bool {
   string.trim(value) != "" && !has_control_character(value)
+}
+
+fn valid_output_path(value: String) -> Bool {
+  string.trim(value) != ""
+  && !string.starts_with(value, "/")
+  && !string.starts_with(value, "../")
+  && !string.contains(value, "/../")
+  && !string.ends_with(value, "/..")
+  && value != ".."
+  && !has_control_character(value)
 }
 
 fn has_control_character(value: String) -> Bool {

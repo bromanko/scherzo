@@ -16,7 +16,7 @@ contract:
       type: code_change_bundle
       source:
         step: materialize_code_change_bundle
-        field: stdout
+        path: tmp/execplan-v2-code-change-bundle.json
 steps:
   - id: prepare_bundle
     kind: command
