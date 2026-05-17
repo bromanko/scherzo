@@ -54,7 +54,7 @@ pub fn issue_template_variables_are_characterized_test() {
       state: issue_state.from_string_unchecked("Todo"),
       branch_name: Some("liv-266-refresh"),
       url: Some("https://linear.app/living-systems/issue/LIV-266"),
-      labels: ["workflow:execplan", "kind:feature"],
+      labels: ["workflow:execplan-v2", "kind:feature"],
     )
   let assert Ok(rendered) =
     template.render(
@@ -64,7 +64,7 @@ pub fn issue_template_variables_are_characterized_test() {
     )
 
   assert rendered
-    == "issue-1|LIV-266|Refresh architecture|liv-266-refresh|https://linear.app/living-systems/issue/LIV-266|Todo|2||workflow:execplan;kind:feature;"
+    == "issue-1|LIV-266|Refresh architecture|liv-266-refresh|https://linear.app/living-systems/issue/LIV-266|Todo|2||workflow:execplan-v2;kind:feature;"
 }
 
 pub fn attempt_renders_empty_first_run_and_integer_on_retry_test() {

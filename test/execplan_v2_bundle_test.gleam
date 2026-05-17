@@ -359,6 +359,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
         <> shell_quote(log)
         <> "\n"
         <> "if [ \"$1 $2\" = 'issue query' ]; then printf '%s\\n' '{\"nodes\":[]}'; exit 0; fi\n"
+        <> "if [ \"$1 $2 $3\" = 'issue view LIV-314' ]; then printf '%s\\n' '{\"identifier\":\"LIV-314\",\"url\":\"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\",\"project\":{\"name\":\"Scherzo Core\"}}'; exit 0; fi\n"
         <> "if [ \"$1 $2\" = 'issue create' ]; then\n"
         <> "  for arg in \"$@\"; do if [ \"$arg\" = --json ]; then echo 'unexpected --json' >&2; exit 2; fi; done\n"
         <> "  printf '%s\\n' 'Creating issue in LIV' '' 'https://linear.app/living-systems/issue/LIV-315/implement-fixture-v2-execplan-bundle'\n"
@@ -423,6 +424,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
   )
   let assert Ok(linear_log) = simplifile.read(log)
   assert string.contains(linear_log, "issue create")
+  assert string.contains(linear_log, "--project Scherzo Core")
   assert string.contains(linear_log, "issue update LIV-315")
   let assert Ok(updated_description) = simplifile.read(update_desc)
   assert string.contains(

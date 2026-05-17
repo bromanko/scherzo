@@ -725,7 +725,7 @@ fn structured_output_dag(required: Bool) -> workflow_dag.WorkflowDag {
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      required: "
       <> required_text
-      <> "\n      schema:\n        required: [summary, findings]\n",
+      <> "\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n",
     )
   dag
 }
@@ -760,10 +760,39 @@ fn tool_call_result(
   )
 }
 
+fn review_result_tool_call(
+  arguments_json: Option(String),
+  status: Option(String),
+) -> result_artifact.ResultArtifact {
+  result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+    result_artifact.ToolCallSubmission(
+      name: "submit_review_result",
+      arguments_json: arguments_json,
+      status: status,
+      sibling_count: 1,
+      receipt_json: None,
+    ),
+  ])
+}
+
+fn native_review_tool_call_result(
+  arguments_json: Option(String),
+) -> result_artifact.ResultArtifact {
+  result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+    result_artifact.ToolCallSubmission(
+      name: "submit_review_lane_draft",
+      arguments_json: arguments_json,
+      status: Some("success"),
+      sibling_count: 1,
+      receipt_json: None,
+    ),
+  ])
+}
+
 fn native_review_lane_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    on_failure: continue\n    structured_output:\n      artifact_name: correctness_draft\n      validator: review_lane_draft\n      schema:\n        required: [schema_version, artifact_type, generated_at_utc, producer, lane, input_refs, draft_findings, review_notes, evidence_requests, self_check, remote_mutations]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    on_failure: continue\n    structured_output:\n      artifact_name: correctness_draft\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n      validator: review_lane_draft\n      schema:\n        required: [schema_version, artifact_type, generated_at_utc, producer, lane, input_refs, draft_findings, review_notes, evidence_requests, self_check, remote_mutations]\n",
     )
   dag
 }
@@ -783,7 +812,7 @@ fn native_review_lane_draft_missing_lane_category_json() -> String {
 fn structured_output_downstream_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n  - id: followup\n    kind: agent\n    depends_on: [review_json]\n    prompt: use {{ steps.review_json.structured_output.ref }} {{ steps.review_json.structured_output.path }}\n    workspace: main\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n  - id: followup\n    kind: agent\n    depends_on: [review_json]\n    prompt: use {{ steps.review_json.structured_output.ref }} {{ steps.review_json.structured_output.path }}\n    workspace: main\n",
     )
   dag
 }
@@ -813,7 +842,7 @@ fn final_message_record(content: String) -> pi_rpc.RpcRecord {
 fn over_display_limit_result(
   response: String,
 ) -> result_artifact.ResultArtifact {
-  let result =
+  let display_result =
     result_artifact.from_records([final_message_record(response)], [], 40)
   let assert result_artifact.ResultArtifact(
     final_response: Some(display_response),
@@ -822,10 +851,25 @@ fn over_display_limit_result(
     structured_response: Some(structured_response),
     structured_response_truncated: False,
     tool_calls: [],
-  ) = result
+  ) = display_result
   assert display_response == string.slice(response, 0, 40) <> "..."
   assert structured_response == response
-  result
+  result_artifact.ResultArtifact(
+    final_response: Some(display_response),
+    truncated: True,
+    source: "completed_assistant_messages",
+    structured_response: Some(structured_response),
+    structured_response_truncated: False,
+    tool_calls: [
+      result_artifact.ToolCallSubmission(
+        name: "submit_review_result",
+        arguments_json: Some(response),
+        status: Some("success"),
+        sibling_count: 1,
+        receipt_json: None,
+      ),
+    ],
+  )
 }
 
 fn command_dag_with_profile(profile: String) -> workflow_dag.WorkflowDag {
@@ -1838,10 +1882,12 @@ pub fn valid_json_final_response_becomes_retained_structured_artifact_test() {
       empty_tracker(),
       ["token-123"],
       "run-1",
-      deps_with_structured_agent_response(
+      deps_with_structured_agent_result(
         subject,
-        Some("{\"summary\":\"token-123\",\"findings\":[\"token-123\"]}"),
-        False,
+        review_result_tool_call(
+          Some("{\"summary\":\"token-123\",\"findings\":[\"token-123\"]}"),
+          Some("success"),
+        ),
         checkpoint,
       ),
     )
@@ -1946,15 +1992,21 @@ pub fn native_review_missing_generated_at_retries_and_records_diagnostics_test()
         process.send(subject, "agent:" <> context.step_id <> ":" <> prompt)
         case prompt_mode {
           workflow_attempt.StructuredOutputRetryPrompt(_) ->
-            Ok(success_agent_with_response(
-              Some(native_review_lane_draft_json()),
-              False,
-            ))
+            Ok(
+              success_agent_with_result(
+                native_review_tool_call_result(
+                  Some(native_review_lane_draft_json()),
+                ),
+              ),
+            )
           _ ->
-            Ok(success_agent_with_response(
-              Some(native_review_lane_draft_missing_generated_at_json()),
-              False,
-            ))
+            Ok(
+              success_agent_with_result(
+                native_review_tool_call_result(
+                  Some(native_review_lane_draft_missing_generated_at_json()),
+                ),
+              ),
+            )
         }
       },
       checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
@@ -2029,15 +2081,21 @@ pub fn native_review_missing_nested_lane_metadata_retries_and_records_diagnostic
         process.send(subject, "agent:" <> context.step_id <> ":" <> prompt)
         case prompt_mode {
           workflow_attempt.StructuredOutputRetryPrompt(_) ->
-            Ok(success_agent_with_response(
-              Some(native_review_lane_draft_json()),
-              False,
-            ))
+            Ok(
+              success_agent_with_result(
+                native_review_tool_call_result(
+                  Some(native_review_lane_draft_json()),
+                ),
+              ),
+            )
           _ ->
-            Ok(success_agent_with_response(
-              Some(native_review_lane_draft_missing_lane_category_json()),
-              False,
-            ))
+            Ok(
+              success_agent_with_result(
+                native_review_tool_call_result(
+                  Some(native_review_lane_draft_missing_lane_category_json()),
+                ),
+              ),
+            )
         }
       },
       checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
@@ -2101,10 +2159,13 @@ pub fn native_review_transient_pi_termination_retries_once_test() {
         process.send(subject, "agent:" <> context.step_id <> ":" <> prompt)
         case prompt_mode {
           workflow_attempt.StructuredOutputRetryPrompt(_) ->
-            Ok(success_agent_with_response(
-              Some(native_review_lane_draft_json()),
-              False,
-            ))
+            Ok(
+              success_agent_with_result(
+                native_review_tool_call_result(
+                  Some(native_review_lane_draft_json()),
+                ),
+              ),
+            )
           _ ->
             Error(agent_types.WorkerFailure(
               reason: error.PiFailed(error.PiProtocolError(
@@ -2210,11 +2271,14 @@ pub fn over_display_limit_malformed_json_reports_invalid_not_truncated_test() {
     )
 
   assert failure.failed_step_id == Some("review_json")
-  assert string.contains(failure.reason, "structured_output_invalid_json")
+  assert string.contains(
+    failure.reason,
+    "structured_output_tool_call_arguments_invalid",
+  )
   let assert Ok(step_artifact.StepArtifact(
     status: step_artifact.StepFailed,
     final_response_truncated: True,
-    failure_code: Some("structured_output_invalid_json"),
+    failure_code: Some("structured_output_tool_call_arguments_invalid"),
     structured_output: Some(step_artifact.StructuredOutputError(
       _,
       _,
@@ -2224,7 +2288,7 @@ pub fn over_display_limit_malformed_json_reports_invalid_not_truncated_test() {
     )),
     ..,
   )) = dict.get(failure.artifacts, "review_json")
-  assert string.contains(message, "required a JSON-only final response")
+  assert string.contains(message, "arguments were not valid JSON")
 }
 
 pub fn invalid_json_structured_output_fails_agent_step_clearly_test() {
@@ -2237,19 +2301,22 @@ pub fn invalid_json_structured_output_fails_agent_step_clearly_test() {
       empty_tracker(),
       [],
       "run-1",
-      deps_with_structured_agent_response(
+      deps_with_structured_agent_result(
         subject,
-        Some("not json"),
-        False,
+        review_result_tool_call(Some("not json"), Some("success")),
         workflow_checkpoint.noop_writer(),
       ),
     )
 
-  assert string.contains(failure.reason, "structured_output_invalid_json")
+  assert string.contains(
+    failure.reason,
+    "structured_output_tool_call_arguments_invalid",
+  )
   assert failure.failed_step_id == Some("review_json")
   let assert Ok(artifact) = dict.get(failure.artifacts, "review_json")
   assert artifact.status == step_artifact.StepFailed
-  assert artifact.failure_code == Some("structured_output_invalid_json")
+  assert artifact.failure_code
+    == Some("structured_output_tool_call_arguments_invalid")
   let assert Some(step_artifact.StructuredOutputError(
     _,
     _,
@@ -2261,8 +2328,10 @@ pub fn invalid_json_structured_output_fails_agent_step_clearly_test() {
   assert retry.outcome == "failed"
   assert retry.attempts == 2
   let assert [initial, retried] = retry.diagnostics
-  assert initial.failure_code == Some("structured_output_invalid_json")
-  assert retried.failure_code == Some("structured_output_invalid_json")
+  assert initial.failure_code
+    == Some("structured_output_tool_call_arguments_invalid")
+  assert retried.failure_code
+    == Some("structured_output_tool_call_arguments_invalid")
 }
 
 pub fn missing_required_structured_output_fails_agent_step_clearly_test() {
@@ -2283,9 +2352,9 @@ pub fn missing_required_structured_output_fails_agent_step_clearly_test() {
       ),
     )
 
-  assert string.contains(failure.reason, "structured_output_missing")
+  assert string.contains(failure.reason, "structured_output_tool_call_missing")
   let assert Ok(artifact) = dict.get(failure.artifacts, "review_json")
-  assert artifact.failure_code == Some("structured_output_missing")
+  assert artifact.failure_code == Some("structured_output_tool_call_missing")
 }
 
 pub fn optional_missing_structured_output_succeeds_without_artifact_test() {
@@ -2341,10 +2410,12 @@ pub fn structured_artifact_write_failure_fails_step_without_metadata_test() {
       empty_tracker(),
       [],
       "run-1",
-      deps_with_structured_agent_response(
+      deps_with_structured_agent_result(
         subject,
-        Some("{\"summary\":\"ok\",\"findings\":[]}"),
-        False,
+        review_result_tool_call(
+          Some("{\"summary\":\"ok\",\"findings\":[]}"),
+          Some("success"),
+        ),
         checkpoint,
       ),
     )
@@ -2383,10 +2454,12 @@ pub fn structured_artifact_metadata_available_to_downstream_template_test() {
         let prompt = prompt_text(prompt_mode)
         case context.step_id {
           "review_json" ->
-            Ok(success_agent_with_response(
-              Some("{\"summary\":\"ok\",\"findings\":[]}"),
-              False,
-            ))
+            Ok(
+              success_agent_with_result(review_result_tool_call(
+                Some("{\"summary\":\"ok\",\"findings\":[]}"),
+                Some("success"),
+              )),
+            )
           _ -> {
             process.send(subject, "rendered:" <> prompt)
             Ok(success_agent(prompt))
@@ -4055,7 +4128,7 @@ pub fn contracted_failed_agent_source_outputs_are_absent_test() {
   reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: draft\n        structured_output: code_change\nsteps:\n  - id: draft\n    kind: agent\n    prompt: write prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      schema:\n        required: [branch]\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    final_plan:\n      type: exec_plan\n      source:\n        step: draft\n        field: final_response\n    structured_change:\n      type: code_change\n      source:\n        step: draft\n        structured_output: code_change\nsteps:\n  - id: draft\n    kind: agent\n    prompt: write prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_code_change\n      schema:\n        required: [branch]\n",
     )
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
 
@@ -4067,15 +4140,30 @@ pub fn contracted_failed_agent_source_outputs_are_absent_test() {
       empty_tracker(),
       [],
       "run-1",
-      deps_with_structured_agent_response(
+      deps_with_structured_agent_result(
         subject,
-        Some("# Draft plan\n"),
-        False,
+        result_artifact.from_final_response_with_tool_calls(
+          Some("# Draft plan\n"),
+          False,
+          "test",
+          [
+            result_artifact.ToolCallSubmission(
+              name: "submit_code_change",
+              arguments_json: Some("not json"),
+              status: Some("success"),
+              sibling_count: 1,
+              receipt_json: None,
+            ),
+          ],
+        ),
         checkpoint,
       ),
     )
 
-  assert string.contains(failure.reason, "structured_output_invalid_json")
+  assert string.contains(
+    failure.reason,
+    "structured_output_tool_call_arguments_invalid",
+  )
   let manifest = read_output_manifest(root, "run-1")
   assert output_named(manifest.outputs, "final_plan").status
     == workflow_contract_manifest.Absent
@@ -4392,7 +4480,7 @@ pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {
   reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    artifact_change:\n      type: code_change\n      source:\n        step: review_json\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: review_json\n        inline_json: code_change\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      schema:\n        required: [branch]\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    artifact_change:\n      type: code_change\n      source:\n        step: review_json\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: review_json\n        inline_json: code_change\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [branch]\n",
     )
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
 
@@ -4404,10 +4492,12 @@ pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {
       empty_tracker(),
       [],
       "run-1",
-      deps_with_structured_agent_response(
+      deps_with_structured_agent_result(
         subject,
-        Some("{\"branch\":\"feature/liv-294\"}"),
-        False,
+        review_result_tool_call(
+          Some("{\"branch\":\"feature/liv-294\"}"),
+          Some("success"),
+        ),
         checkpoint,
       ),
     )

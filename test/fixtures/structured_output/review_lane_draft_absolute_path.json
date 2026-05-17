@@ -5,7 +5,7 @@
   "producer": {
     "name": "native-scherzo-agent",
     "version": "1",
-    "mode": "extension-schema-smoke"
+    "mode": "schema-path-fixture"
   },
   "lane": {
     "id": "correctness",

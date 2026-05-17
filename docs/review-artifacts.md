@@ -58,7 +58,7 @@ Provider schemas live with the workflow bundle at:
 - `.scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json`
 - `.scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json`
 
-These provider schemas are Pi tool parameter schemas only. They intentionally avoid provider-hostile JSON Schema keywords such as `$ref`, `$defs`, `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and union-style `type` arrays. They do not replace canonical artifact validation.
+These provider schemas are Pi tool parameter schemas only. They intentionally avoid provider-hostile JSON Schema keywords such as `$ref`, `$defs`, `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and union-style `type` arrays. They do not replace canonical artifact validation. The local gate `scripts/scherzo-structured-output-contract check-schema --schema <path>` is the source of truth for this provider-safe subset.
 
 ### `ReviewLaneDraft`
 
@@ -148,7 +148,7 @@ The validator is deliberately minimal and dependency-free. The JSON Schema remai
 
 ## Manual legacy specialist lane entrypoint
 
-`scripts/scherzo-review run-lane` remains available for local/manual artifact validation and historical fixture coverage only. It is not the production staged-review path for implementation workflows, and operators must not use `SCHERZO_STAGED_REVIEW_AGENT_BACKEND` or `--agent-backend heuristic|fixture|external` to route normal implementation review. Normal implementation and execplan-implementation runs use native Scherzo `kind: agent` lane steps with `submit_review_lane_draft` structured-output tool submissions.
+`scripts/scherzo-review run-lane` remains available for local/manual artifact validation and historical fixture coverage only. It is not the production staged-review path for implementation workflows, and operators must not use `SCHERZO_STAGED_REVIEW_AGENT_BACKEND` or `--agent-backend heuristic|fixture|external` to route normal implementation review. Normal implementation and execplan-implementation-v2 runs use native Scherzo `kind: agent` lane steps with `submit_review_lane_draft` structured-output tool submissions.
 
 When intentionally validating the legacy helper, run one specialist lane against a diff source plus an existing `ReviewBrief` and choose an explicit backend. The `heuristic` backend preserves the deterministic first-version lane behavior, `fixture` exercises deterministic local fixtures, and `external` exercises the legacy external command contract when `SCHERZO_REVIEW_AGENT_COMMAND` is configured.
 
@@ -239,17 +239,12 @@ scripts/scherzo-review-lane-contract offline \
   --output-dir tmp/scherzo-review-lane-contract/offline/implementation
 
 scripts/scherzo-review-lane-contract offline \
-  --workflow .scherzo/workflows/execplan-implementation.yaml \
-  --fixtures test/fixtures/review-lane-contract \
-  --output-dir tmp/scherzo-review-lane-contract/offline/execplan-implementation
-
-scripts/scherzo-review-lane-contract offline \
   --workflow .scherzo/workflows/execplan-implementation-v2.yaml \
   --fixtures test/fixtures/review-lane-contract \
   --output-dir tmp/scherzo-review-lane-contract/offline/execplan-implementation-v2
 ```
 
-It checks every provider schema against the recursive allowlist, verifies the routed implementation review workflow wiring, runs all lane fixtures, materializes valid submissions into canonical drafts, runs canonical JSON Schema and semantic validation, and writes `contract-report.v1.json` with `remote_mutations: "none"`.
+It first delegates generic source-policy, provider-schema, prompt/tool, and provider/downstream-alignment checks to `scripts/scherzo-structured-output-contract check-workflow`, then verifies the routed implementation review workflow wiring, runs all lane fixtures, materializes valid submissions into canonical drafts, runs canonical JSON Schema and semantic validation, and writes `contract-report.v1.json` with `remote_mutations: "none"`.
 
 Operators can check one schema or one captured submission directly:
 
@@ -279,13 +274,13 @@ When `SCHERZO_REVIEW_LANE_PREFLIGHT_MODE=required-live`, dispatcher preflight us
 
 ## Checked-in workflow integration
 
-The dogfood `implementation`, `execplan-implementation`, and `execplan-implementation-v2` workflows generate the brief immediately before review and store review artifacts under the run artifact directory:
+The dogfood `implementation` and `execplan-implementation-v2` workflows generate the brief immediately before review and store review artifacts under the run artifact directory:
 
 ```text
 $SCHERZO_RUN_ROOT/artifacts/review/<step-id>/
 ```
 
-After native preparation, the dogfood implementation workflows run the four specialist lanes as Scherzo-managed `kind: agent` steps with required structured output sourced from the `submit_review_lane_draft` Pi tool call. The cutover guard refuses fixture/scenario/heuristic override environment variables instead of silently selecting a legacy backend. Lane draft artifacts are retained by Scherzo under the run artifact store, then `scripts/scherzo-review verify-evidence`, `normalize-lane-result`, and `synthesize` produce `ReviewLaneResult`, `ReviewSynthesis`, and `FinalReviewArtifact` files under `$SCHERZO_RUN_ROOT/artifacts/review/`. Required JSON outputs retry validation failures once by default (`structured_output.validation_retries`, set to `0` to disable; values above `1` are rejected to keep recovery bounded) with a compact retry prompt that references retained run artifacts instead of replaying diffs, transcripts, or prior full responses. Native review lane `agent_pi_failed` failures caused by `stopReason=error: terminated` are treated as transient and spend the same single retry budget; other agent failures remain lane failures with retained step diagnostics. Workspace mutation checks fail closed before evidence verification. Malformed lane output and evidence-verification failures normalize into failed lane results with retained diagnostics; the native review validation gate blocks publication if the final artifact reports lane failures or execution issues. The existing code-review/review_changes agent still receives the same implementation context and change analysis, plus the native preparation, lane, normalization, synthesis, and final-artifact command outputs, then reads any referenced artifacts before producing the human review summary.
+After native preparation, the dogfood implementation workflows run the four specialist lanes as Scherzo-managed `kind: agent` steps with required structured output sourced from the generic `submit_review_lane_draft` Pi tool call registered through `.pi/extensions/scherzo-structured-output`. There is no longer a separate review-lane rollback extension shim. Lane draft artifacts are retained by Scherzo under the run artifact store, then `scripts/scherzo-review verify-evidence`, `normalize-lane-result`, and `synthesize` produce `ReviewLaneResult`, `ReviewSynthesis`, and `FinalReviewArtifact` files under `$SCHERZO_RUN_ROOT/artifacts/review/`. Required JSON outputs retry validation failures once by default (`structured_output.validation_retries`, set to `0` to disable; values above `1` are rejected to keep recovery bounded) with a compact retry prompt that references retained run artifacts instead of replaying diffs, transcripts, or prior full responses. Native review lane `agent_pi_failed` failures caused by `stopReason=error: terminated` are treated as transient and spend the same single retry budget; other agent failures remain lane failures with retained step diagnostics. Workspace mutation checks fail closed before evidence verification. Malformed lane output and evidence-verification failures normalize into failed lane results with retained diagnostics; the native review validation gate blocks publication if the final artifact reports lane failures or execution issues. The existing code-review/review_changes agent still receives the same implementation context and change analysis, plus the native preparation, lane, normalization, synthesis, and final-artifact command outputs, then reads any referenced artifacts before producing the human review summary.
 
 The brief, lane, synthesis, and final review steps write local artifacts only; they do not post PR comments, update Linear, push, rebase, check out PR branches, or alter PR state.
 

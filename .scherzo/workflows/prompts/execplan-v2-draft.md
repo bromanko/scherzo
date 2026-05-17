@@ -17,4 +17,6 @@ Create exactly one concise human-reviewable ExecPlan v2 review document under `d
 
 Do not write the canonical bundle yourself. Submit the mechanical implementation detail through the structured output tool `submit_implementation_pack_submission` using the provider schema `.scherzo/workflows/schemas/provider/implementation-pack-submission.v2.schema.json`; Scherzo will validate the captured submission against the canonical implementation-pack schema after tool capture. Use the task metadata above for the schema's `source_issue` compatibility field. Put concrete steps, tests, interfaces, dependencies, and artifact notes in `sections`, not in the review doc.
 
+After your submission, Scherzo materializes the ExecPlan v2 bundle and creates or reuses the follow-up implementation task containing `Bundle ref:` and `Bundle sha256:` lines; do not invent those values in the review document.
+
 Final response: summarize the review doc path and confirm the structured implementation-pack submission was made.

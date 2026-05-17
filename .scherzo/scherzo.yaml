@@ -83,12 +83,6 @@ handoff:
     failure_state: Triage
     partial_success_state: Triage
     workflows:
-      execplan:
-        produces_reviewable_artifacts: true
-        requires_review: true
-      execplan-revision:
-        produces_reviewable_artifacts: true
-        requires_review: true
       execplan-v2:
         produces_reviewable_artifacts: true
         requires_review: true
@@ -99,9 +93,6 @@ handoff:
         produces_reviewable_artifacts: true
         requires_review: true
       implementation:
-        produces_reviewable_artifacts: true
-        requires_review: true
-      execplan-implementation:
         produces_reviewable_artifacts: true
         requires_review: true
       merge-conflict-resolution:
@@ -122,9 +113,6 @@ routing:
   workflows:
     research: workflows/research.yaml
     implementation: workflows/implementation.yaml
-    execplan: workflows/execplan.yaml
-    execplan-revision: workflows/execplan-revision.yaml
-    execplan-implementation: workflows/execplan-implementation.yaml
     execplan-v2: workflows/execplan-v2.yaml
     execplan-revision-v2: workflows/execplan-revision-v2.yaml
     execplan-implementation-v2: workflows/execplan-implementation-v2.yaml
@@ -165,7 +153,7 @@ artifact_limits:
 linear_contract:
   enabled: true
   workflow_label_prefix: "workflow:"
-  workflow_labels: [research, implementation, execplan, execplan-revision, execplan-implementation, execplan-v2, execplan-revision-v2, execplan-implementation-v2, merge-conflict-resolution]
+  workflow_labels: [research, implementation, execplan-v2, execplan-revision-v2, execplan-implementation-v2, merge-conflict-resolution]
   support_labels: [needs-workflow, needs-clarification]
   required_states:
     todo: Todo

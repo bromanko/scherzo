@@ -94,7 +94,7 @@ scripts/scherzoctl events <session-id> --json
 scripts/scherzoctl attach --json --no-follow <session-id>
 ```
 
-A retained implementation or execplan-implementation run has a `.scherzo-keep-workspace` marker under its run root, for example `.scherzo/workspaces/<workflow>/<issue>/<run>/.scherzo-keep-workspace`. Do not remove that marker or delete the run until inspection shows that unpushed work is disposable or already published.
+A retained implementation or execplan-implementation-v2 run has a `.scherzo-keep-workspace` marker under its run root, for example `.scherzo/workspaces/<workflow>/<issue>/<run>/.scherzo-keep-workspace`. Do not remove that marker or delete the run until inspection shows that unpushed work is disposable or already published.
 
 Failed command steps publish a `workflow command <step-id>` failure event. The event `tool_output` contains bounded diagnostics; if the output was truncated, the step artifact may include `diagnostic_path`, usually below the step workspace as `.scherzo/command-step-diagnostics/<step-id>.txt`. Durable step artifacts are stored under `.scherzo/workspaces/.scherzo-state/artifacts/runs/<run-id>/<step-component>/attempt-<n>.json`.
 

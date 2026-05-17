@@ -1174,13 +1174,13 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   assert string.contains(jj_log, "describe -m feat: implement liv-65")
   assert string.contains(
     jj_log,
-    "bookmark set scherzo/execplan-implementation/liv-65-implement-plan",
+    "bookmark set scherzo/execplan-implementation-v2/liv-65-implement-plan",
   )
-  assert !string.contains(jj_log, "scherzo/execplan-implementation/liv-58")
+  assert !string.contains(jj_log, "scherzo/execplan-implementation-v2/liv-58")
   let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
   assert string.contains(
     gh_log,
-    "--head scherzo/execplan-implementation/liv-65-implement-plan",
+    "--head scherzo/execplan-implementation-v2/liv-65-implement-plan",
   )
   assert string.contains(
     gh_log,
@@ -1195,7 +1195,7 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   )
   assert string.contains(
     body,
-    "Source ExecPlan: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
+    "Source ExecPlan v2 review doc: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
   )
   assert string.contains(body, "SelfCI validation completed before publication")
   assert string.contains(
@@ -1259,230 +1259,6 @@ pub fn publish_revalidation_failure_emits_stable_failure_code_test() {
     "SCHERZO_FAILURE_CODE=publish_revalidation_failed",
   )
   assert string.contains(artifact.stderr, "command failed with exit code 1")
-}
-
-pub fn execplan_publish_fetches_rebases_and_reports_publish_base_test() {
-  let dir = "test/tmp/execplan-publish-normalize"
-  reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/docs/plans/example.md",
-      execplan_markdown_with_title("Example ExecPlan"),
-    )
-  write_fake_execplan_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-pr",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "Publish base normalization")
-  assert string.contains(
-    artifact.stdout,
-    "PLAN_MARKDOWN_PATH=docs/plans/example.md",
-  )
-  assert !string.contains(artifact.stdout, "PLAN_HTML_PATH")
-  assert string.contains(artifact.stdout, "PUBLISH_BASE=main@origin")
-  assert string.contains(
-    artifact.stdout,
-    "PR_URL=https://github.com/example/repo/pull/123",
-  )
-  assert string.contains(
-    artifact.stdout,
-    "PUBLISH_CONTEXT=tmp/scherzo-execplan-publish-context.json",
-  )
-  let assert Ok(context) =
-    simplifile.read(dir <> "/tmp/scherzo-execplan-publish-context.json")
-  assert string.contains(context, "\"plan_path\": \"docs/plans/example.md\"")
-  assert string.contains(
-    context,
-    "\"branch\": \"scherzo/execplan/example-execchange\"",
-  )
-  assert string.contains(
-    context,
-    "\"pr_url\": \"https://github.com/example/repo/pull/123\"",
-  )
-  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert string.contains(jj_log, "git fetch --remote origin --branch main")
-  assert string.contains(jj_log, "rebase -r @ -d main@origin --color=never")
-  assert string.contains(
-    jj_log,
-    "describe -m docs(plan): add execplan for example",
-  )
-  assert string.contains(
-    jj_log,
-    "git push --remote origin --bookmark scherzo/execplan/example-execchange",
-  )
-}
-
-pub fn create_implementation_issue_uses_publish_context_after_empty_diff_test() {
-  let dir = "test/tmp/execplan-publish-context-empty-diff"
-  reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/docs/plans/example.md",
-      execplan_markdown_with_title("Example ExecPlan"),
-    )
-  write_source_issue(dir)
-  write_created_issue(dir)
-  write_fake_execplan_jj(dir <> "/bin/jj")
-  write_fake_gh(dir <> "/bin/gh")
-  write_fake_execplan_handoff_linear(
-    dir <> "/bin/linear",
-    "{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
-  )
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/linear")
-
-  let publish =
-    run_helper_in(
-      dir,
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 SCHERZO_PR_REMOTE=origin SCHERZO_PR_BASE=main PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-pr",
-    )
-
-  assert publish.status == step_artifact.StepSucceeded
-  assert publish.exit_code == Some(0)
-  let assert Ok(context) =
-    simplifile.read(dir <> "/tmp/scherzo-execplan-publish-context.json")
-  assert string.contains(context, "\"plan_path\": \"docs/plans/example.md\"")
-  assert string.contains(
-    context,
-    "\"pr_url\": \"https://github.com/example/repo/pull/123\"",
-  )
-  assert string.contains(context, "\"source_issue\": \"LIV-123\"")
-  let assert Ok(Nil) = simplifile.write(dir <> "/jj.log", "")
-  let assert Ok(Nil) = simplifile.write(dir <> "/gh.log", "")
-
-  let followup =
-    run_helper_in(
-      dir,
-      "SCHERZO_ISSUE_IDENTIFIER= SCHERZO_FAKE_EXECPLAN_EMPTY_DIFF=1 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue",
-    )
-
-  assert followup.status == step_artifact.StepSucceeded
-  assert followup.exit_code == Some(0)
-  assert string.contains(followup.stdout, "IMPLEMENTATION_ISSUE_STATUS=created")
-  assert string.contains(followup.stdout, "PLAN_PATH=docs/plans/example.md")
-  assert string.contains(
-    followup.stdout,
-    "PR_URL=https://github.com/example/repo/pull/123",
-  )
-  let assert Ok(jj_log_after_followup) = simplifile.read(dir <> "/jj.log")
-  assert !string.contains(jj_log_after_followup, "diff")
-}
-
-pub fn execplan_workflow_creates_followup_issue_after_pr_test() {
-  let assert Ok(workflow) = simplifile.read(".scherzo/workflows/execplan.yaml")
-
-  assert string.contains(workflow, "- id: create_implementation_issue")
-  assert string.contains(workflow, "depends_on: [create_pr]")
-  assert string.contains(
-    workflow,
-    "\"$repo_root/scripts/scherzo-execplan\" create-pr --publish-context tmp/scherzo-execplan-publish-context.json",
-  )
-  assert string.contains(
-    workflow,
-    "\"$repo_root/scripts/scherzo-execplan\" create-implementation-issue --publish-context tmp/scherzo-execplan-publish-context.json",
-  )
-}
-
-pub fn create_implementation_issue_creates_backlog_linear_ticket_test() {
-  let dir = "test/tmp/execplan-create-implementation-issue"
-  reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  write_followup_plan(dir)
-  write_source_issue(dir)
-  write_created_issue(dir)
-  write_fake_execplan_handoff_jj(dir <> "/bin/jj")
-  write_fake_execplan_handoff_gh(dir <> "/bin/gh")
-  write_fake_execplan_handoff_linear(
-    dir <> "/bin/linear",
-    "{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
-  )
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/linear")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue --plan docs/plans/LIV-123-example.md --pr-url https://github.com/example/repo/pull/123 --branch scherzo/execplan/liv-123-example-execchange",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE_STATUS=created")
-  assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE=LIV-124")
-  assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE_STATE=Backlog")
-  assert string.contains(
-    artifact.stdout,
-    "PLAN_PATH=docs/plans/LIV-123-example.md",
-  )
-  assert string.contains(
-    artifact.stdout,
-    "PR_URL=https://github.com/example/repo/pull/123",
-  )
-
-  let assert Ok(linear_log) = simplifile.read(dir <> "/linear.log")
-  assert string.contains(linear_log, "ARG=issue\nARG=query")
-  assert string.contains(linear_log, "ARG=issue\nARG=create")
-  assert string.contains(linear_log, "ARG=Backlog")
-  assert string.contains(linear_log, "ARG=--label\nARG=Improvement")
-  assert string.contains(
-    linear_log,
-    "ARG=--label\nARG=workflow:execplan-implementation",
-  )
-  assert string.contains(linear_log, "ARG=--parent\nARG=LIV-123")
-  assert string.contains(linear_log, "docs/plans/LIV-123-example.md")
-  assert string.contains(linear_log, "ARG=issue\nARG=link")
-  assert string.contains(linear_log, "ARG=ExecPlan PR")
-}
-
-pub fn create_implementation_issue_reuses_existing_ticket_test() {
-  let dir = "test/tmp/execplan-create-implementation-issue-existing"
-  reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  write_followup_plan(dir)
-  write_source_issue(dir)
-  write_created_issue(dir)
-  write_fake_execplan_handoff_jj(dir <> "/bin/jj")
-  write_fake_execplan_handoff_gh(dir <> "/bin/gh")
-  write_fake_execplan_handoff_linear(
-    dir <> "/bin/linear",
-    "{\"nodes\":[{\"identifier\":\"LIV-200\",\"url\":\"https://linear.example/LIV-200\",\"title\":\"Implement: Add queued plan\",\"description\":\"Plan path: `docs/plans/LIV-123-example.md`\",\"labels\":{\"nodes\":[{\"name\":\"workflow:execplan-implementation\"}]}}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}",
-  )
-  chmod_executable(dir <> "/bin/jj")
-  chmod_executable(dir <> "/bin/gh")
-  chmod_executable(dir <> "/bin/linear")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-123 PATH=\"$PWD/bin:$PATH\" ../../../scripts/scherzo-execplan create-implementation-issue --plan docs/plans/LIV-123-example.md --pr-url https://github.com/example/repo/pull/123 --branch scherzo/execplan/liv-123-example-execchange",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(
-    artifact.stdout,
-    "IMPLEMENTATION_ISSUE_STATUS=existing",
-  )
-  assert string.contains(artifact.stdout, "IMPLEMENTATION_ISSUE=LIV-200")
-  let assert Ok(linear_log) = simplifile.read(dir <> "/linear.log")
-  assert !string.contains(linear_log, "ARG=create")
 }
 
 pub fn refresh_base_reports_fresh_base_test() {
@@ -1919,25 +1695,43 @@ pub fn repair_base_drift_prompt_contains_state_table_test() {
 
 pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
   let execplan_prompt_paths = [
-    ".scherzo/workflows/prompts/execplan-implementation-implement.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
-    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-review.md",
-    ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
+    ".scherzo/workflows/prompts/execplan-implementation-v2-implement.md",
+    ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion.md",
+    ".scherzo/workflows/prompts/execplan-implementation-v2-apply-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-after-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-v2-review.md",
+    ".scherzo/workflows/prompts/execplan-implementation-v2-apply-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-v2-repair-base-drift.md",
+    ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-before-final-validation.md",
   ]
 
   list.each(execplan_prompt_paths, fn(path) {
     let assert Ok(prompt) = simplifile.read(path)
     assert !string.contains(prompt, "{{ issue.description }}")
     assert string.contains(prompt, "{{ issue.url }}")
-    assert string.contains(prompt, "PLAN_PATH")
   })
+
+  list.each(
+    [
+      ".scherzo/workflows/prompts/execplan-implementation-v2-implement.md",
+      ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion.md",
+      ".scherzo/workflows/prompts/execplan-implementation-v2-apply-plan-completion-feedback.md",
+      ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-after-feedback.md",
+      ".scherzo/workflows/prompts/execplan-implementation-v2-review.md",
+      ".scherzo/workflows/prompts/execplan-implementation-v2-apply-feedback.md",
+      ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-before-final-validation.md",
+    ],
+    fn(path) {
+      let assert Ok(prompt) = simplifile.read(path)
+      assert string.contains(prompt, "tmp/execplan-v2-review-doc.md")
+      assert string.contains(prompt, "tmp/execplan-v2-implementation-pack.json")
+      assert string.contains(prompt, "tmp/execplan-v2-bundle.json")
+    },
+  )
 
   let assert Ok(final_prompt) =
     simplifile.read(
-      ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
+      ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-before-final-validation.md",
     )
   assert !string.contains(
     final_prompt,
@@ -1949,16 +1743,12 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
   )
   assert string.contains(
     final_prompt,
-    "{{ steps.validate_after_refresh.exit_code }}",
+    "{{ steps.repair_base_drift.final_response }}",
   )
+  assert string.contains(final_prompt, "plan-completion-context")
   assert string.contains(
     final_prompt,
-    "tmp/scherzo-implementation-validation.json",
-  )
-  assert string.contains(final_prompt, "failure_summary")
-  assert string.contains(
-    final_prompt,
-    ".scherzo/command-step-diagnostics/validate_after_refresh.txt",
+    "tmp/scherzo-plan-completion-verdict.json",
   )
 
   let assert Ok(repair_prompt) =
@@ -1993,33 +1783,37 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
   let assert Ok(implementation) =
     simplifile.read(".scherzo/workflows/implementation.yaml")
   let assert Ok(execplan) =
-    simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
+    simplifile.read(".scherzo/workflows/execplan-implementation-v2.yaml")
 
   assert_workflow_refresh_ordering(
     implementation,
     "prepare_context",
     "implement",
     "apply_feedback",
+    "prompts/repair-base-drift.md",
+    "repair_base_drift",
     "final_validate",
   )
   assert_workflow_refresh_ordering(
     execplan,
-    "prepare_plan",
+    "prepare_bundle",
     "implement_plan",
     "apply_review_feedback",
+    "prompts/execplan-implementation-v2-repair-base-drift.md",
+    "verify_plan_completion_before_final_validation",
     "final_plan_completion_gate",
   )
 }
 
 pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   let assert Ok(workflow) =
-    simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
+    simplifile.read(".scherzo/workflows/execplan-implementation-v2.yaml")
 
   assert string.contains(workflow, "- id: verify_plan_completion")
   assert string.contains(workflow, "depends_on: [analyze_changes]")
   assert string.contains(
     workflow,
-    "prompts/execplan-implementation-verify-completion.md",
+    "prompts/execplan-implementation-v2-verify-completion.md",
   )
   assert string.contains(workflow, "- id: apply_plan_completion_feedback")
   assert string.contains(workflow, "depends_on: [verify_plan_completion]")
@@ -2051,7 +1845,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   assert string.contains(workflow, "depends_on: [repair_base_drift]")
   assert string.contains(
     workflow,
-    "prompts/execplan-implementation-verify-completion-before-final-validation.md",
+    "prompts/execplan-implementation-v2-verify-completion-before-final-validation.md",
   )
   assert string.contains(workflow, "- id: final_validate")
   assert string.contains(
@@ -2070,6 +1864,8 @@ fn assert_workflow_refresh_ordering(
   prepare_step: String,
   implement_step: String,
   feedback_step: String,
+  repair_prompt: String,
+  final_validate_dependency: String,
   publish_dependency: String,
 ) -> Nil {
   assert string.contains(workflow, "- id: refresh_base_before_implementation")
@@ -2090,9 +1886,12 @@ fn assert_workflow_refresh_ordering(
   assert string.contains(workflow, "on_failure: continue")
   assert string.contains(workflow, "- id: repair_base_drift")
   assert string.contains(workflow, "depends_on: [validate_after_refresh]")
-  assert string.contains(workflow, "prompts/repair-base-drift.md")
+  assert string.contains(workflow, repair_prompt)
   assert string.contains(workflow, "- id: final_validate")
-  assert string.contains(workflow, "depends_on: [repair_base_drift]")
+  assert string.contains(
+    workflow,
+    "depends_on: [" <> final_validate_dependency <> "]",
+  )
   assert string.contains(workflow, "- id: publish_pr")
   assert string.contains(workflow, "depends_on: [" <> publish_dependency <> "]")
 }
@@ -2229,109 +2028,6 @@ fn html_execplan(title: String) -> String {
   <> "</article></main></div></body></html>\n"
 }
 
-fn write_followup_plan(dir: String) -> Nil {
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/docs/plans/LIV-123-example.md",
-      execplan_markdown_with_title("Add queued plan"),
-    )
-  Nil
-}
-
-fn write_source_issue(dir: String) -> Nil {
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/source-issue.json",
-      "{\n"
-        <> "  \"id\": \"source-uuid\",\n"
-        <> "  \"identifier\": \"LIV-123\",\n"
-        <> "  \"title\": \"Write ExecPlan for queued plan\",\n"
-        <> "  \"url\": \"https://linear.example/LIV-123\",\n"
-        <> "  \"priority\": 3,\n"
-        <> "  \"team\": {\"id\": \"team-uuid\", \"key\": \"LIV\", \"name\": \"Living systems\"},\n"
-        <> "  \"project\": {\"id\": \"project-uuid\", \"name\": \"Scherzo\"},\n"
-        <> "  \"labels\": [\n"
-        <> "    {\"name\": \"Improvement\"},\n"
-        <> "    {\"name\": \"workflow:execplan\"}\n"
-        <> "  ]\n"
-        <> "}\n",
-    )
-  Nil
-}
-
-fn write_created_issue(dir: String) -> Nil {
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/created-issue.json",
-      "{\"id\":\"created-uuid\",\"identifier\":\"LIV-124\",\"url\":\"https://linear.example/LIV-124\"}\n",
-    )
-  Nil
-}
-
-fn write_fake_execplan_handoff_jj(path: String) -> Nil {
-  let assert Ok(Nil) =
-    simplifile.write(
-      path,
-      "#!/bin/sh\n"
-        <> "printf '%s\\n' \"$*\" >> jj.log\n"
-        <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then echo 'origin https://github.com/example/repo.git'; exit 0; fi\n"
-        <> "if [ \"$1\" = diff ]; then\n"
-        <> "  case \" $* \" in *\" --summary \"*) echo 'A docs/plans/LIV-123-example.md';; *) echo 'docs/plans/LIV-123-example.md';; esac\n"
-        <> "  exit 0\n"
-        <> "fi\n"
-        <> "if [ \"$1\" = log ]; then\n"
-        <> "  rev=\n"
-        <> "  template=\n"
-        <> "  prev=\n"
-        <> "  for arg in \"$@\"; do\n"
-        <> "    if [ \"$prev\" = -r ]; then rev=$arg; fi\n"
-        <> "    if [ \"$prev\" = -T ]; then template=$arg; fi\n"
-        <> "    prev=$arg\n"
-        <> "  done\n"
-        <> "  case \"$rev\" in\n"
-        <> "    @) case \"$template\" in *change_id.short*) echo execchange;; *) echo currentcommit;; esac; exit 0;;\n"
-        <> "    @-) echo localparentcommit; exit 0;;\n"
-        <> "    *) exit 0;;\n"
-        <> "  esac\n"
-        <> "fi\n"
-        <> "exit 1\n",
-    )
-  Nil
-}
-
-fn write_fake_execplan_handoff_gh(path: String) -> Nil {
-  let assert Ok(Nil) =
-    simplifile.write(
-      path,
-      "#!/bin/sh\n"
-        <> "printf '%s\\n' \"$*\" >> gh.log\n"
-        <> "if [ \"$1 $2\" = 'pr view' ]; then echo 'https://github.com/example/repo/pull/123'; exit 0; fi\n"
-        <> "exit 1\n",
-    )
-  Nil
-}
-
-fn write_fake_execplan_handoff_linear(
-  path: String,
-  existing_json: String,
-) -> Nil {
-  let assert Ok(Nil) =
-    simplifile.write(
-      path,
-      "#!/bin/sh\n"
-        <> "for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\"; done >> linear.log\n"
-        <> "printf '%s\\n' '---' >> linear.log\n"
-        <> "if [ \"$1 $2\" = 'issue view' ]; then cat source-issue.json; exit 0; fi\n"
-        <> "if [ \"$1 $2\" = 'issue query' ]; then printf '%s\\n' '"
-        <> existing_json
-        <> "'; exit 0; fi\n"
-        <> "if [ \"$1 $2\" = 'issue create' ]; then printf '%s\\n' 'Creating issue in LIV' '' 'https://linear.app/living-systems/issue/LIV-124/add-queued-plan'; exit 0; fi\n"
-        <> "if [ \"$1 $2\" = 'issue link' ]; then echo '✓ Linked to LIV-124: ExecPlan PR'; exit 0; fi\n"
-        <> "exit 1\n",
-    )
-  Nil
-}
-
 fn write_failing_brief_helper(path: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
@@ -2367,47 +2063,6 @@ fn write_noisy_failing_prepare_jj(path: String) -> Nil {
         <> "  while [ $i -lt 9000 ]; do printf x >&2; i=$((i + 1)); done\n"
         <> "  printf '\\n' >&2\n"
         <> "  exit 2\n"
-        <> "fi\n"
-        <> "exit 1\n",
-    )
-  Nil
-}
-
-fn write_fake_execplan_jj(path: String) -> Nil {
-  let assert Ok(Nil) =
-    simplifile.write(
-      path,
-      "#!/bin/sh\n"
-        <> "printf '%s\\n' \"$*\" >> jj.log\n"
-        <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then echo 'origin https://github.com/example/repo.git'; exit 0; fi\n"
-        <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = diff ]; then\n"
-        <> "  if [ \"${SCHERZO_FAKE_EXECPLAN_EMPTY_DIFF:-}\" = 1 ]; then exit 0; fi\n"
-        <> "  case \" $* \" in *\" --summary \"*) echo 'A docs/plans/example.md';; *) echo 'docs/plans/example.md';; esac\n"
-        <> "  exit 0\n"
-        <> "fi\n"
-        <> "if [ \"$1\" = rebase ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = describe ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = bookmark ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = status ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = log ]; then\n"
-        <> "  rev=\n"
-        <> "  template=\n"
-        <> "  prev=\n"
-        <> "  for arg in \"$@\"; do\n"
-        <> "    if [ \"$prev\" = -r ]; then rev=$arg; fi\n"
-        <> "    if [ \"$prev\" = -T ]; then template=$arg; fi\n"
-        <> "    prev=$arg\n"
-        <> "  done\n"
-        <> "  case \"$rev\" in\n"
-        <> "    main@origin) echo remotecommit; exit 0;;\n"
-        <> "    @-) echo localparentcommit; exit 0;;\n"
-        <> "    @) case \"$template\" in *change_id.short*) echo execchange;; *) echo currentcommit;; esac; exit 0;;\n"
-        <> "    conflicts*) exit 0;;\n"
-        <> "    remote_bookmarks*) exit 0;;\n"
-        <> "    *) exit 1;;\n"
-        <> "  esac\n"
         <> "fi\n"
         <> "exit 1\n",
     )

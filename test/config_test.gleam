@@ -612,7 +612,7 @@ pub fn handoff_result_max_chars_must_be_positive_test() {
 pub fn handoff_completion_states_parse_display_names_test() {
   let front =
     minimal_front()
-    <> "linear_contract:\n  enabled: true\nhandoff:\n  enabled: true\n  completion_states:\n    default_completion_state: In Review\n    no_review_completion_state: Done\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n    cancellation_state: Canceled\n    workflows:\n      execplan:\n        produces_reviewable_artifacts: true\n        requires_review: true\n      no-review-maintenance:\n        produces_reviewable_artifacts: false\n        requires_review: false\n        success_state: Done\n"
+    <> "linear_contract:\n  enabled: true\nhandoff:\n  enabled: true\n  completion_states:\n    default_completion_state: In Review\n    no_review_completion_state: Done\n    failure_state: Needs Attention\n    partial_success_state: Needs Attention\n    cancellation_state: Canceled\n    workflows:\n      execplan-v2:\n        produces_reviewable_artifacts: true\n        requires_review: true\n      no-review-maintenance:\n        produces_reviewable_artifacts: false\n        requires_review: false\n        success_state: Done\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   let assert Some(policy) = configured.handoff.completion_states
@@ -626,9 +626,9 @@ pub fn handoff_completion_states_parse_display_names_test() {
     == workflow_completion_policy.StateByName("Needs Attention")
   assert policy.cancellation_state
     == Some(workflow_completion_policy.StateByName("Canceled"))
-  let assert Ok(execplan) = dict.get(policy.workflows, "execplan")
-  assert execplan.produces_reviewable_artifacts == Some(True)
-  assert execplan.requires_review == Some(True)
+  let assert Ok(execplan_v2) = dict.get(policy.workflows, "execplan-v2")
+  assert execplan_v2.produces_reviewable_artifacts == Some(True)
+  assert execplan_v2.requires_review == Some(True)
   let assert Ok(maintenance) =
     dict.get(policy.workflows, "no-review-maintenance")
   assert maintenance.produces_reviewable_artifacts == Some(False)
@@ -640,7 +640,7 @@ pub fn handoff_completion_states_parse_display_names_test() {
 pub fn handoff_completion_states_parse_state_ids_test() {
   let front =
     minimal_front()
-    <> "linear_contract:\n  enabled: true\nhandoff:\n  enabled: true\n  completion_states:\n    default_completion_state_id: state-review\n    failure_state_id: state-attention\n    partial_success_state_id: state-attention\n    workflows:\n      execplan:\n        success_state_id: state-custom\n"
+    <> "linear_contract:\n  enabled: true\nhandoff:\n  enabled: true\n  completion_states:\n    default_completion_state_id: state-review\n    failure_state_id: state-attention\n    partial_success_state_id: state-attention\n    workflows:\n      execplan-v2:\n        success_state_id: state-custom\n"
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   let assert Some(policy) = configured.handoff.completion_states
@@ -650,8 +650,8 @@ pub fn handoff_completion_states_parse_state_ids_test() {
     == workflow_completion_policy.StateById("state-attention")
   assert policy.partial_success_state
     == workflow_completion_policy.StateById("state-attention")
-  let assert Ok(execplan) = dict.get(policy.workflows, "execplan")
-  assert execplan.success_state
+  let assert Ok(execplan_v2) = dict.get(policy.workflows, "execplan-v2")
+  assert execplan_v2.success_state
     == Some(workflow_completion_policy.StateById("state-custom"))
 }
 

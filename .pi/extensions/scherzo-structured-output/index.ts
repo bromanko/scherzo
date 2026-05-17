@@ -19,7 +19,6 @@ export interface StructuredOutputToolSpec {
 	parameters_schema_path: string;
 	parameters_schema_sha256: string;
 	parameters_schema: JsonObject;
-	validation_schema: JsonObject;
 	require_single: true;
 	reject_sibling_tool_calls: true;
 	terminate: true;
@@ -42,9 +41,6 @@ type ToolInfo =
 
 const SPEC_ENV = "SCHERZO_STRUCTURED_OUTPUT_TOOL_SPEC_PATH";
 const SPEC_ARTIFACT_TYPE = "scherzo_structured_output_tool_spec";
-const MAX_SCHEMA_VALIDATION_ERRORS = 20;
-
-type SchemaValidationFailure = { path: string; message: string };
 
 function isJsonObject(value: unknown): value is JsonObject {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -92,322 +88,17 @@ function validSchemaPath(schemaPath: string): boolean {
 		&& !/^[A-Za-z]:[/\\]/.test(schemaPath);
 }
 
-const unsupportedProviderSchemaKeywords = new Set(["$schema", "$id", "$defs", "$ref", "oneOf", "anyOf", "allOf", "enum", "not", "const"]);
-
-function resolveLocalDefinition(ref: string, rootDefs: JsonObject): unknown {
-	const prefix = "#/$defs/";
-	if (!ref.startsWith(prefix)) return undefined;
-	return rootDefs[ref.slice(prefix.length)];
-}
-
-function inferredJsonType(value: unknown): string | undefined {
-	if (typeof value === "string") return "string";
-	if (typeof value === "boolean") return "boolean";
-	if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
-	if (Array.isArray(value)) return "array";
-	if (isJsonObject(value)) return "object";
-	return undefined;
-}
-
-function inferredTypeFromSchema(schema: JsonObject): string | undefined {
-	if ("const" in schema) return inferredJsonType(schema.const);
-	const enumValues = schema.enum;
-	if (Array.isArray(enumValues) && enumValues.length > 0) return inferredJsonType(enumValues[0]);
-	return undefined;
-}
-
-function normalizeSchemaType(typeValue: unknown): unknown {
-	if (!Array.isArray(typeValue)) return typeValue;
-	const nonNull = typeValue.find((candidate) => candidate !== "null");
-	return typeof nonNull === "string" ? nonNull : undefined;
-}
-
-function sanitizeProviderProperties(value: unknown, rootDefs: JsonObject): unknown {
-	if (!isJsonObject(value)) return value;
-	return Object.fromEntries(
-		Object.entries(value).map(([key, child]) => [key, sanitizeProviderSchemaNode(child, rootDefs)]),
-	);
-}
-
-function sanitizeProviderSchemaNode(value: unknown, rootDefs: JsonObject): unknown {
-	if (Array.isArray(value)) return value.map((child) => sanitizeProviderSchemaNode(child, rootDefs));
-	if (!isJsonObject(value)) return value;
-
-	const ref = value.$ref;
-	if (typeof ref === "string") {
-		const resolved = resolveLocalDefinition(ref, rootDefs);
-		return resolved === undefined ? {} : sanitizeProviderSchemaNode(resolved, rootDefs);
-	}
-
-	const sanitized: JsonObject = {};
-	for (const [key, child] of Object.entries(value)) {
-		if (unsupportedProviderSchemaKeywords.has(key)) continue;
-		if (key === "type") {
-			const normalizedType = normalizeSchemaType(child);
-			if (normalizedType !== undefined) sanitized.type = normalizedType;
-			continue;
-		}
-		if (key === "properties") {
-			sanitized.properties = sanitizeProviderProperties(child, rootDefs);
-			continue;
-		}
-		if (key === "items") {
-			sanitized.items = sanitizeProviderSchemaNode(child, rootDefs);
-			continue;
-		}
-		if (key === "additionalProperties" && isJsonObject(child)) {
-			sanitized.additionalProperties = sanitizeProviderSchemaNode(child, rootDefs);
-			continue;
-		}
-		sanitized[key] = sanitizeProviderSchemaNode(child, rootDefs);
-	}
-
-	if (sanitized.type === undefined) {
-		const inferred = inferredTypeFromSchema(value);
-		if (inferred !== undefined) sanitized.type = inferred;
-	}
-	return sanitized;
-}
-
-function normalizeProviderParametersSchema(schema: JsonObject): JsonObject {
-	const rootDefs = isJsonObject(schema.$defs) ? schema.$defs : {};
-	const sanitizedValue = sanitizeProviderSchemaNode(schema, rootDefs);
-	if (!isJsonObject(sanitizedValue)) throw new Error("parameters_schema must normalize to a JSON object");
-	const rootType = sanitizedValue.type;
-	if (rootType === undefined) return { ...sanitizedValue, type: "object" };
-	if (rootType === "object") return sanitizedValue;
-	throw new Error(
-		`parameters_schema top-level type must be "object" for provider tool registration; got ${JSON.stringify(rootType)}`,
-	);
-}
-
-// Codex rejects several JSON Schema keywords that Scherzo's durable schemas use.
-// The advertised provider schema is normalized above, so execute mirrors the
-// supported contract subset locally and returns a tool error the model can fix
-// within the same Pi session before Scherzo spends its retry budget.
-function pointerToken(value: string): string {
-	return value.replace(/~/g, "~0").replace(/\//g, "~1");
-}
-
-function childPath(path: string, key: string | number): string {
-	return `${path}/${pointerToken(String(key))}`;
-}
-
-function resolveJsonPointer(ref: string, rootSchema: JsonObject): unknown {
-	if (ref === "#") return rootSchema;
-	if (!ref.startsWith("#/")) return undefined;
-	let current: unknown = rootSchema;
-	for (const token of ref.slice(2).split("/")) {
-		const key = token.replace(/~1/g, "/").replace(/~0/g, "~");
-		if (!isJsonObject(current) && !Array.isArray(current)) return undefined;
-		current = (current as Record<string, unknown>)[key];
-	}
-	return current;
-}
-
-function jsonType(value: unknown): string {
-	if (value === null) return "null";
-	if (Array.isArray(value)) return "array";
-	if (Number.isInteger(value)) return "integer";
-	if (typeof value === "number") return "number";
-	return typeof value;
-}
-
-function jsonTypeMatches(value: unknown, expected: string): boolean {
-	switch (expected) {
-		case "null":
-			return value === null;
-		case "array":
-			return Array.isArray(value);
-		case "object":
-			return isJsonObject(value);
-		case "integer":
-			return typeof value === "number" && Number.isInteger(value);
-		case "number":
-			return typeof value === "number" && Number.isFinite(value);
-		case "string":
-			return typeof value === "string";
-		case "boolean":
-			return typeof value === "boolean";
-		default:
-			return true;
-	}
-}
-
-function schemaTypeList(typeValue: unknown): string[] {
-	if (typeof typeValue === "string") return [typeValue];
-	if (Array.isArray(typeValue)) return typeValue.filter((item): item is string => typeof item === "string");
-	return [];
-}
-
-function jsonEquals(left: unknown, right: unknown): boolean {
-	if (Object.is(left, right)) return true;
-	if (Array.isArray(left) && Array.isArray(right)) {
-		return left.length === right.length && left.every((item, index) => jsonEquals(item, right[index]));
-	}
-	if (isJsonObject(left) && isJsonObject(right)) {
-		const leftKeys = Object.keys(left).sort();
-		const rightKeys = Object.keys(right).sort();
-		return leftKeys.length === rightKeys.length
-			&& leftKeys.every((key, index) => key === rightKeys[index] && jsonEquals(left[key], right[key]));
-	}
-	return false;
-}
-
-function pushSchemaError(errors: SchemaValidationFailure[], path: string, message: string) {
-	if (errors.length < MAX_SCHEMA_VALIDATION_ERRORS) {
-		errors.push({ path: path || "/", message });
-	}
-}
-
-function validateSchemaNode(
-	value: unknown,
-	schemaValue: unknown,
-	rootSchema: JsonObject,
-	path: string,
-	errors: SchemaValidationFailure[],
-	seenRefs: Set<string>,
-) {
-	if (errors.length >= MAX_SCHEMA_VALIDATION_ERRORS) return;
-	if (!isJsonObject(schemaValue)) return;
-
-	const ref = schemaValue.$ref;
-	if (typeof ref === "string") {
-		const resolved = resolveJsonPointer(ref, rootSchema);
-		if (resolved === undefined) {
-			pushSchemaError(errors, path, `references unsupported schema ${ref}`);
-			return;
-		}
-		const refKey = `${path}:${ref}`;
-		if (seenRefs.has(refKey)) return;
-		const nextSeen = new Set(seenRefs);
-		nextSeen.add(refKey);
-		validateSchemaNode(value, resolved, rootSchema, path, errors, nextSeen);
-		return;
-	}
-
-	if (Array.isArray(schemaValue.allOf)) {
-		for (const child of schemaValue.allOf) {
-			validateSchemaNode(value, child, rootSchema, path, errors, seenRefs);
-		}
-	}
-
-	if (Array.isArray(schemaValue.anyOf)) {
-		const matched = schemaValue.anyOf.some((child) => {
-			const childErrors: SchemaValidationFailure[] = [];
-			validateSchemaNode(value, child, rootSchema, path, childErrors, seenRefs);
-			return childErrors.length === 0;
-		});
-		if (!matched) pushSchemaError(errors, path, "must match at least one allowed schema");
-	}
-
-	if (Array.isArray(schemaValue.oneOf)) {
-		const matches = schemaValue.oneOf.filter((child) => {
-			const childErrors: SchemaValidationFailure[] = [];
-			validateSchemaNode(value, child, rootSchema, path, childErrors, seenRefs);
-			return childErrors.length === 0;
-		}).length;
-		if (matches !== 1) pushSchemaError(errors, path, "must match exactly one allowed schema");
-	}
-
-	if ("not" in schemaValue) {
-		const childErrors: SchemaValidationFailure[] = [];
-		validateSchemaNode(value, schemaValue.not, rootSchema, path, childErrors, seenRefs);
-		if (childErrors.length === 0) pushSchemaError(errors, path, "must not match a disallowed schema");
-	}
-
-	const expectedTypes = schemaTypeList(schemaValue.type);
-	if (expectedTypes.length > 0 && !expectedTypes.some((expected) => jsonTypeMatches(value, expected))) {
-		pushSchemaError(errors, path, `must be ${expectedTypes.join(" or ")}; got ${jsonType(value)}`);
-	}
-
-	if ("const" in schemaValue && !jsonEquals(value, schemaValue.const)) {
-		pushSchemaError(errors, path, `must equal ${JSON.stringify(schemaValue.const)}`);
-	}
-
-	if (Array.isArray(schemaValue.enum) && !schemaValue.enum.some((candidate) => jsonEquals(value, candidate))) {
-		pushSchemaError(errors, path, `must be one of ${schemaValue.enum.map((item) => JSON.stringify(item)).join(", ")}`);
-	}
-
-	if (typeof value === "string") {
-		if (typeof schemaValue.minLength === "number" && value.length < schemaValue.minLength) {
-			pushSchemaError(errors, path, `must be at least ${schemaValue.minLength} characters`);
-		}
-		if (typeof schemaValue.pattern === "string") {
-			try {
-				if (!new RegExp(schemaValue.pattern).test(value)) {
-					pushSchemaError(errors, path, `must match pattern ${schemaValue.pattern}`);
-				}
-			} catch (_error) {
-				pushSchemaError(errors, path, `has invalid schema pattern ${schemaValue.pattern}`);
-			}
-		}
-	}
-
-	if (typeof value === "number" && typeof schemaValue.minimum === "number" && value < schemaValue.minimum) {
-		pushSchemaError(errors, path, `must be at least ${schemaValue.minimum}`);
-	}
-
-	if (Array.isArray(value) && isJsonObject(schemaValue.items)) {
-		for (const [index, item] of value.entries()) {
-			validateSchemaNode(item, schemaValue.items, rootSchema, childPath(path, index), errors, seenRefs);
-		}
-	}
-
-	if (isJsonObject(value)) {
-		const properties = isJsonObject(schemaValue.properties) ? schemaValue.properties : {};
-		if (Array.isArray(schemaValue.required)) {
-			for (const requiredKey of schemaValue.required) {
-				if (typeof requiredKey === "string" && !Object.prototype.hasOwnProperty.call(value, requiredKey)) {
-					pushSchemaError(errors, childPath(path, requiredKey), "is required");
-				}
-			}
-		}
-		for (const [key, child] of Object.entries(properties)) {
-			if (Object.prototype.hasOwnProperty.call(value, key)) {
-				validateSchemaNode(value[key], child, rootSchema, childPath(path, key), errors, seenRefs);
-			}
-		}
-		if (schemaValue.additionalProperties === false) {
-			for (const key of Object.keys(value)) {
-				if (!Object.prototype.hasOwnProperty.call(properties, key)) {
-					pushSchemaError(errors, childPath(path, key), "is not an allowed property");
-				}
-			}
-		} else if (isJsonObject(schemaValue.additionalProperties)) {
-			for (const key of Object.keys(value)) {
-				if (!Object.prototype.hasOwnProperty.call(properties, key)) {
-					validateSchemaNode(value[key], schemaValue.additionalProperties, rootSchema, childPath(path, key), errors, seenRefs);
-				}
-			}
-		}
-	}
-}
-
-function validateAgainstConfiguredSchema(value: unknown, schema: JsonObject): SchemaValidationFailure[] {
-	const errors: SchemaValidationFailure[] = [];
-	validateSchemaNode(value, schema, schema, "", errors, new Set());
-	return errors;
-}
-
-function formatSchemaValidationFailures(errors: SchemaValidationFailure[]): string {
-	const suffix = errors.length >= MAX_SCHEMA_VALIDATION_ERRORS ? "; additional errors omitted" : "";
-	return errors.map((error) => `${error.path}: ${error.message}`).join("; ") + suffix;
-}
-
 export function validateSpec(value: unknown): StructuredOutputToolSpec {
 	if (!isJsonObject(value)) throw new Error("spec must be a JSON object");
 	if (value.schema_version !== 1) throw new Error("schema_version must be 1");
-	if (value.artifact_type !== SPEC_ARTIFACT_TYPE) {
-		throw new Error(`artifact_type must be ${SPEC_ARTIFACT_TYPE}`);
-	}
+	if (value.artifact_type !== SPEC_ARTIFACT_TYPE) throw new Error(`artifact_type must be ${SPEC_ARTIFACT_TYPE}`);
 	const toolName = requireString(value, "tool_name");
 	if (!validToolName(toolName)) throw new Error(`tool_name is invalid: ${toolName}`);
 	const schemaPath = requireString(value, "parameters_schema_path");
 	if (!validSchemaPath(schemaPath)) throw new Error(`parameters_schema_path is invalid: ${schemaPath}`);
 	const schemaValue = value.parameters_schema;
 	if (!isJsonObject(schemaValue)) throw new Error("parameters_schema must be a JSON object");
-	const schema = normalizeProviderParametersSchema(schemaValue);
+	if (schemaValue.type !== "object") throw new Error('parameters_schema top-level type must be "object"');
 	return {
 		schema_version: 1,
 		artifact_type: SPEC_ARTIFACT_TYPE,
@@ -423,8 +114,7 @@ export function validateSpec(value: unknown): StructuredOutputToolSpec {
 		prompt_guidelines: requireStringList(value, "prompt_guidelines"),
 		parameters_schema_path: schemaPath,
 		parameters_schema_sha256: requireString(value, "parameters_schema_sha256"),
-		parameters_schema: schema,
-		validation_schema: schemaValue,
+		parameters_schema: schemaValue,
 		require_single: requireBooleanTrue(value, "require_single"),
 		reject_sibling_tool_calls: requireBooleanTrue(value, "reject_sibling_tool_calls"),
 		terminate: requireBooleanTrue(value, "terminate"),
@@ -432,8 +122,7 @@ export function validateSpec(value: unknown): StructuredOutputToolSpec {
 }
 
 export function loadSpecFromPath(specPath: string): StructuredOutputToolSpec {
-	const parsed = JSON.parse(readFileSync(specPath, "utf8"));
-	return validateSpec(parsed);
+	return validateSpec(JSON.parse(readFileSync(specPath, "utf8")));
 }
 
 export function createStructuredOutputTool(spec: StructuredOutputToolSpec) {
@@ -447,12 +136,6 @@ export function createStructuredOutputTool(spec: StructuredOutputToolSpec) {
 		async execute(_toolCallId: string, params: unknown) {
 			if (!isJsonObject(params)) {
 				throw new Error(`${spec.tool_name} arguments must be a JSON object`);
-			}
-			const schemaErrors = validateAgainstConfiguredSchema(params, spec.validation_schema);
-			if (schemaErrors.length > 0) {
-				throw new Error(
-					`${spec.tool_name} arguments failed configured JSON Schema ${spec.parameters_schema_path}: ${formatSchemaValidationFailures(schemaErrors)}`,
-				);
 			}
 			return {
 				content: [{ type: "text" as const, text: `Accepted ${spec.artifact_name} via ${spec.tool_name}` }],
@@ -481,20 +164,14 @@ function loadStartupToolInfo(): StartupToolInfo {
 	try {
 		return { status: "loaded", spec_path: specPath, spec: loadSpecFromPath(specPath) };
 	} catch (error) {
-		return {
-			status: "invalid_spec",
-			spec_path: specPath,
-			error: error instanceof Error ? error.message : String(error),
-		};
+		return { status: "invalid_spec", spec_path: specPath, error: error instanceof Error ? error.message : String(error) };
 	}
 }
 
 function startupToolInfoToCommandInfo(info: StartupToolInfo): ToolInfo {
 	switch (info.status) {
 		case "disabled_missing_spec_env":
-			return info;
 		case "missing_spec_file":
-			return info;
 		case "invalid_spec":
 			return info;
 		case "loaded":
@@ -515,37 +192,13 @@ function activeToolCount(pi: ExtensionAPI, toolName: string): number {
 
 function activeToolInfo(pi: ExtensionAPI, info: Extract<StartupToolInfo, { status: "loaded" }>): ToolInfo {
 	const activeCount = activeToolCount(pi, info.spec.tool_name);
-	const common = {
+	return {
+		status: activeCount > 0 ? "active" : "inactive",
 		spec_path: info.spec_path,
 		tool_name: info.spec.tool_name,
 		artifact_name: info.spec.artifact_name,
 		schema_sha256: info.spec.parameters_schema_sha256,
 		active_structured_output_tool_count: activeCount,
-	};
-	return {
-		...common,
-		status: activeCount > 0 ? "active" : "inactive",
-	};
-}
-
-function duplicateToolInfo(pi: ExtensionAPI, info: Extract<StartupToolInfo, { status: "loaded" }>): ToolInfo {
-	return {
-		status: "duplicate_tool_name",
-		spec_path: info.spec_path,
-		tool_name: info.spec.tool_name,
-		active_structured_output_tool_count: activeToolCount(pi, info.spec.tool_name),
-	};
-}
-
-function registrationFailedToolInfo(
-	info: Extract<StartupToolInfo, { status: "loaded" }>,
-	error: unknown,
-): ToolInfo {
-	return {
-		status: "registration_failed",
-		spec_path: info.spec_path,
-		tool_name: info.spec.tool_name,
-		error: error instanceof Error ? error.message : String(error),
 	};
 }
 
@@ -556,14 +209,24 @@ export default function scherzoStructuredOutputExtension(pi: ExtensionAPI) {
 	pi.on("session_start", () => {
 		if (startupInfo.status !== "loaded") return;
 		if (activeToolCount(pi, startupInfo.spec.tool_name) > 0) {
-			info = duplicateToolInfo(pi, startupInfo);
+			info = {
+				status: "duplicate_tool_name",
+				spec_path: startupInfo.spec_path,
+				tool_name: startupInfo.spec.tool_name,
+				active_structured_output_tool_count: activeToolCount(pi, startupInfo.spec.tool_name),
+			};
 			return;
 		}
 		try {
 			pi.registerTool(createStructuredOutputTool(startupInfo.spec));
 			info = activeToolInfo(pi, startupInfo);
 		} catch (error) {
-			info = registrationFailedToolInfo(startupInfo, error);
+			info = {
+				status: "registration_failed",
+				spec_path: startupInfo.spec_path,
+				tool_name: startupInfo.spec.tool_name,
+				error: error instanceof Error ? error.message : String(error),
+			};
 		}
 	});
 

@@ -16,13 +16,6 @@ fn implementation_dag() -> workflow_dag.WorkflowDag {
   dag
 }
 
-fn execplan_implementation_dag() -> workflow_dag.WorkflowDag {
-  let assert Ok(contents) =
-    simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
-  let assert Ok(dag) = workflow_dag.parse(contents)
-  dag
-}
-
 fn execplan_implementation_v2_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(contents) =
     simplifile.read(".scherzo/workflows/execplan-implementation-v2.yaml")
@@ -172,17 +165,12 @@ fn provider_schema_files() -> List(String) {
 fn provider_review_workflow_paths() -> List(String) {
   [
     ".scherzo/workflows/implementation.yaml",
-    ".scherzo/workflows/execplan-implementation.yaml",
     ".scherzo/workflows/execplan-implementation-v2.yaml",
   ]
 }
 
 fn routed_review_dags() -> List(workflow_dag.WorkflowDag) {
-  [
-    implementation_dag(),
-    execplan_implementation_dag(),
-    execplan_implementation_v2_dag(),
-  ]
+  [implementation_dag(), execplan_implementation_v2_dag()]
 }
 
 fn validate_result(
@@ -302,21 +290,20 @@ pub fn native_review_prompts_and_tool_guidance_use_relative_input_ref_examples_t
   })
 
   let assert Ok(extension) =
-    simplifile.read(".pi/extensions/scherzo-review-lane-draft/index.ts")
-  assert_contains(extension, "artifacts/review/prepare_review/diff.patch")
-  assert_contains(extension, "never use $SCHERZO_RUN_ROOT")
+    simplifile.read(".pi/extensions/scherzo-structured-output/index.ts")
+  assert_contains(extension, "remote_mutations: \"none\"")
+  assert_contains(extension, "arguments must be a JSON object")
 }
 
 pub fn review_lane_draft_tool_is_enabled_for_implementation_lane_steps_test() {
-  let assert Ok(extension) =
-    simplifile.read(".pi/extensions/scherzo-review-lane-draft/index.ts")
-
-  assert_contains(extension, "\"implementation\"")
-  assert_contains(extension, "\"execplan-implementation\"")
-  assert_contains(extension, "\"execplan-implementation-v2\"")
-  assert_contains(extension, "SCHERZO_STEP_ID")
-  assert_contains(extension, "lane_correctness")
-  assert_not_contains(extension, "review-native")
+  list.each(provider_review_workflow_paths(), fn(path) {
+    let assert Ok(contents) = simplifile.read(path)
+    assert_contains(contents, "tool_name: submit_review_lane_draft")
+    assert_contains(
+      contents,
+      "parameters_schema_path: .scherzo/workflows/schemas/provider/",
+    )
+  })
 }
 
 pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
@@ -369,61 +356,6 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
   let assert Ok(code_review) = workflow_dag.step_by_id(dag, "code_review")
   assert_list_contains(
     code_review.depends_on,
-    "validate_native_review_artifacts",
-  )
-}
-
-pub fn execplan_implementation_workflow_uses_native_agent_lane_steps_test() {
-  let dag = execplan_implementation_dag()
-
-  assert_review_tool_source(
-    lane_spec(dag, "lane_correctness"),
-    lane_schema_path("lane_correctness"),
-  )
-  assert_review_tool_source(
-    lane_spec(dag, "lane_test_quality"),
-    lane_schema_path("lane_test_quality"),
-  )
-  assert_review_tool_source(
-    lane_spec(dag, "lane_idioms_maintainability"),
-    lane_schema_path("lane_idioms_maintainability"),
-  )
-  assert_review_tool_source(
-    lane_spec(dag, "lane_security_performance"),
-    lane_schema_path("lane_security_performance"),
-  )
-  assert_native_review_lane_workspaces_are_isolated(dag)
-
-  let assert Ok(cutover_step) =
-    workflow_dag.step_by_id(dag, "assert_native_review_cutover")
-  assert_list_contains(cutover_step.depends_on, "gate_plan_completion")
-  let assert workflow_dag.CommandStep(cutover_run, _) = cutover_step.kind
-  assert_contains(cutover_run, "refuses fixture/scenario/heuristic")
-  assert_contains(cutover_run, "SCHERZO_STAGED_REVIEW_AGENT_BACKEND")
-
-  let assert Ok(prepare_step) = workflow_dag.step_by_id(dag, "prepare_review")
-  let assert workflow_dag.CommandStep(prepare_run, _) = prepare_step.kind
-  assert_contains(prepare_run, "prepare-native")
-  assert_not_contains(prepare_run, "--native-review-scenario")
-  assert_not_contains(prepare_run, "--agent-backend")
-
-  let assert Ok(mutation_check) =
-    workflow_dag.step_by_id(dag, "assert_clean_after_lanes")
-  assert mutation_check.on_failure == workflow_dag.FailWorkflow
-
-  let assert Ok(validate_step) =
-    workflow_dag.step_by_id(dag, "validate_native_review_artifacts")
-  let assert workflow_dag.CommandStep(validate_run, _) = validate_step.kind
-  assert_contains(
-    validate_run,
-    "native review infrastructure issue blocks publication",
-  )
-  assert_contains(validate_run, "lane_failed")
-  assert_contains(validate_run, "execution_issues")
-
-  let assert Ok(review_changes) = workflow_dag.step_by_id(dag, "review_changes")
-  assert_list_contains(
-    review_changes.depends_on,
     "validate_native_review_artifacts",
   )
 }

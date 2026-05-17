@@ -1,4 +1,4 @@
-You are revising a previously published ExecPlan v2 bundle from actionable review feedback on this task.
+You are running Scherzo's `workflow:execplan-revision-v2` workflow to revise a previously published ExecPlan v2 bundle from actionable review feedback on this task.
 
 Task:
 
@@ -17,4 +17,4 @@ Read `tmp/execplan-v2-previous-bundle.json`, `tmp/execplan-v2-previous-pack.json
 
 Submit a structured `exec_plan_revision_submission` through `submit_implementation_pack_submission` using the provider schema `.scherzo/workflows/schemas/provider/exec-plan-revision-submission.v2.schema.json`; Scherzo will validate the captured submission against the canonical revision schema after tool capture. Set `revision_status` to `unchanged` only when both the review doc and implementation mechanics remain unchanged; otherwise set it to `changed` and include updated mechanical sections.
 
-Do not write canonical bundle JSON yourself. The helper will materialize the superseding bundle.
+Do not write canonical bundle JSON yourself. The helper will materialize the superseding bundle and preserve the follow-up handoff contract that implementation tasks carry `Bundle ref:` and `Bundle sha256:` lines.
