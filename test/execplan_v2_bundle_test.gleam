@@ -344,6 +344,74 @@ pub fn publish_review_doc_writes_offline_context_test() {
   assert string.contains(context, "\"status\": \"published\"")
 }
 
+pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
+  let dir = "test/tmp/execplan-v2-online-linear-create"
+  reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let log = dir <> "/linear.log"
+  let linear = dir <> "/bin/linear"
+  let assert Ok(Nil) =
+    simplifile.write(
+      linear,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> "
+        <> shell_quote(log)
+        <> "\n"
+        <> "if [ \"$1 $2\" = 'issue query' ]; then printf '%s\\n' '{\"nodes\":[]}'; exit 0; fi\n"
+        <> "if [ \"$1 $2\" = 'issue create' ]; then\n"
+        <> "  for arg in \"$@\"; do if [ \"$arg\" = --json ]; then echo 'unexpected --json' >&2; exit 2; fi; done\n"
+        <> "  printf '%s\\n' 'Creating issue in LIV' '' 'https://linear.app/living-systems/issue/LIV-315/implement-fixture-v2-execplan-bundle'\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1 $2 $3\" = 'issue view LIV-315' ]; then printf '%s\\n' '{\"identifier\":\"LIV-315\",\"url\":\"https://linear.app/living-systems/issue/LIV-315/implement-fixture-v2-execplan-bundle\"}'; exit 0; fi\n"
+        <> "if [ \"$1 $2 $3\" = 'issue comment add' ]; then exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  let chmod = run_shell("chmod +x " <> shell_quote(linear))
+  assert chmod.status == step_artifact.StepSucceeded
+
+  let path_file = dir <> "/review.path"
+  let context_path = dir <> "/publish-context.json"
+  let output = dir <> "/bundle.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      context_path,
+      "{\n"
+        <> "  \"artifact_type\": \"execplan_v2_publish_context\",\n"
+        <> "  \"source_issue\": {\"identifier\": \"LIV-314\", \"title\": \"Fixture v2 ExecPlan bundle\", \"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"},\n"
+        <> "  \"pr\": {\"url\": \"https://github.com/living-systems/scherzo/pull/314\", \"branch\": \"execplan-v2/liv-314\"},\n"
+        <> "  \"review_surface\": {\"status\": \"published\", \"source_bundle_ref\": null}\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_shell(
+      "env PATH="
+      <> shell_quote(dir <> "/bin")
+      <> ":$PATH SCHERZO_RUN_ID=run-online scripts/scherzo-execplan-v2 materialize-bundle --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
+      <> shell_quote(context_path)
+      <> " --output "
+      <> shell_quote(output),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(bundle) = simplifile.read(output)
+  assert string.contains(bundle, "\"issue_identifier\": \"LIV-315\"")
+  assert string.contains(
+    bundle,
+    "\"issue_url\": \"https://linear.app/living-systems/issue/LIV-315/implement-fixture-v2-execplan-bundle\"",
+  )
+  let assert Ok(linear_log) = simplifile.read(log)
+  assert string.contains(linear_log, "issue create")
+}
+
 pub fn materialize_revision_reuses_unchanged_review_surface_test() {
   let dir = "test/tmp/execplan-v2-unchanged-revision"
   reset_dir(dir)
