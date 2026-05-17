@@ -124,6 +124,18 @@ pub type RecordBody {
     superseded_by_run_id: String,
     reason: String,
   )
+  WorkflowRepairRequested(
+    run_id: String,
+    workflow_id: String,
+    issue_id: String,
+    issue_identifier: String,
+    requested_target: String,
+    requested_step_id: Option(String),
+    selected_step_id: String,
+    failed_attempt_index: Int,
+    next_attempt_index: Int,
+    reason: String,
+  )
   StepAttemptPrepared(
     run_id: String,
     workflow_id: String,
@@ -470,6 +482,11 @@ type RecordFields {
     source_run_id: Option(String),
     release_policy: Option(String),
     issue_fingerprint: Option(String),
+    requested_target: Option(String),
+    requested_step_id: Option(String),
+    selected_step_id: Option(String),
+    failed_attempt_index: Option(Int),
+    next_attempt_index: Option(Int),
     backend_kind: Option(String),
     event_id: Option(String),
     comment_id: Option(String),
@@ -535,6 +552,7 @@ pub fn kind(body: RecordBody) -> String {
     WorkflowRunOutputsRecorded(..) -> "workflow_run_outputs_recorded"
     WorkflowRunInterrupted(..) -> "workflow_run_interrupted"
     WorkflowRunSuperseded(..) -> "workflow_run_superseded"
+    WorkflowRepairRequested(..) -> "workflow_repair_requested"
     StepAttemptPrepared(..) -> "step_attempt_prepared"
     StepAttemptStarted(..) -> "step_attempt_started"
     StepAttemptContinuationStarted(..) -> "step_attempt_continuation_started"
@@ -768,6 +786,29 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("workflow_id", json.string(workflow_id)),
       #("issue_id", json.string(issue_id)),
       #("superseded_by_run_id", json.string(superseded_by_run_id)),
+      #("reason", json.string(reason)),
+    ]
+    WorkflowRepairRequested(
+      run_id,
+      workflow_id,
+      issue_id,
+      issue_identifier,
+      requested_target,
+      requested_step_id,
+      selected_step_id,
+      failed_attempt_index,
+      next_attempt_index,
+      reason,
+    ) -> [
+      #("run_id", json.string(run_id)),
+      #("workflow_id", json.string(workflow_id)),
+      #("issue_id", json.string(issue_id)),
+      #("issue_identifier", json.string(issue_identifier)),
+      #("requested_target", json.string(requested_target)),
+      #("requested_step_id", option_string_to_json(requested_step_id)),
+      #("selected_step_id", json.string(selected_step_id)),
+      #("failed_attempt_index", json.int(failed_attempt_index)),
+      #("next_attempt_index", json.int(next_attempt_index)),
       #("reason", json.string(reason)),
     ]
     StepAttemptPrepared(
@@ -1471,6 +1512,47 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         workflow_id,
         issue_id,
         superseded_by_run_id,
+        reason,
+      ))
+    }
+    "workflow_repair_requested" -> {
+      use run_id <- result.try(required_string(fields.run_id, "run_id"))
+      use workflow_id <- result.try(required_string(
+        fields.workflow_id,
+        "workflow_id",
+      ))
+      use issue_id <- result.try(required_string(fields.issue_id, "issue_id"))
+      use issue_identifier <- result.try(required_string(
+        fields.issue_identifier,
+        "issue_identifier",
+      ))
+      use requested_target <- result.try(required_string(
+        fields.requested_target,
+        "requested_target",
+      ))
+      use selected_step_id <- result.try(required_string(
+        fields.selected_step_id,
+        "selected_step_id",
+      ))
+      use failed_attempt_index <- result.try(required_int(
+        fields.failed_attempt_index,
+        "failed_attempt_index",
+      ))
+      use next_attempt_index <- result.try(required_int(
+        fields.next_attempt_index,
+        "next_attempt_index",
+      ))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(WorkflowRepairRequested(
+        run_id,
+        workflow_id,
+        issue_id,
+        issue_identifier,
+        requested_target,
+        fields.requested_step_id,
+        selected_step_id,
+        failed_attempt_index,
+        next_attempt_index,
         reason,
       ))
     }
@@ -2453,6 +2535,31 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use requested_target <- decode.optional_field(
+    "requested_target",
+    None,
+    decode.optional(decode.string),
+  )
+  use requested_step_id <- decode.optional_field(
+    "requested_step_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use selected_step_id <- decode.optional_field(
+    "selected_step_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use failed_attempt_index <- decode.optional_field(
+    "failed_attempt_index",
+    None,
+    decode.optional(decode.int),
+  )
+  use next_attempt_index <- decode.optional_field(
+    "next_attempt_index",
+    None,
+    decode.optional(decode.int),
+  )
   use backend_kind <- decode.optional_field(
     "backend_kind",
     None,
@@ -2642,6 +2749,11 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     source_run_id: source_run_id,
     release_policy: release_policy,
     issue_fingerprint: issue_fingerprint,
+    requested_target: requested_target,
+    requested_step_id: requested_step_id,
+    selected_step_id: selected_step_id,
+    failed_attempt_index: failed_attempt_index,
+    next_attempt_index: next_attempt_index,
     backend_kind: backend_kind,
     event_id: event_id,
     comment_id: comment_id,

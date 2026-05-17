@@ -78,6 +78,13 @@ pub fn mutating_command_requests_roundtrip_to_operator_commands_test() {
     command.RetryIssue(command.IssueIdentifier("ABC-123")),
   )
   assert_command_roundtrip(
+    "4b",
+    command.RetryWorkflowStep(
+      command.RetryWorkflowStepAutoTarget("ABC-123"),
+      Some("build"),
+    ),
+  )
+  assert_command_roundtrip(
     "5",
     command.ParkIssue(command.IssueId("issue-123"), "manual hold"),
   )
@@ -111,6 +118,16 @@ pub fn mutating_command_aliases_decode_test() {
   let assert Ok(protocol.RetryIssue(_, _, command.IssueId("issue-1"))) =
     protocol.decode_request(
       "{\"version\":1,\"type\":\"retry_issue\",\"id\":\"2\",\"token\":\"secret\",\"issue_id\":\"issue-1\"}",
+    )
+
+  let assert Ok(protocol.RetryWorkflowStep(
+    _,
+    _,
+    command.RetryWorkflowStepRunId("run-1"),
+    Some("step-1"),
+  )) =
+    protocol.decode_request(
+      "{\"version\":1,\"type\":\"retry_step\",\"id\":\"2b\",\"token\":\"secret\",\"run_id\":\"run-1\",\"step_id\":\"step-1\"}",
     )
 
   let assert Ok(protocol.RespondUi(
@@ -164,6 +181,15 @@ pub fn invalid_mutating_commands_return_invalid_request_test() {
   )
   assert_invalid_request(
     "{\"version\":1,\"type\":\"retry\",\"id\":\"3\",\"token\":\"secret\",\"issue_identifier\":\"   \"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"retry_step\",\"id\":\"3b\",\"token\":\"secret\"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"retry_step\",\"id\":\"3c\",\"token\":\"secret\",\"target\":\"ABC-1\",\"run_id\":\"run-1\"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"retry_step\",\"id\":\"3d\",\"token\":\"secret\",\"target\":\"ABC-1\",\"step_id\":\"   \"}",
   )
   assert_invalid_request(
     "{\"version\":1,\"type\":\"park\",\"id\":\"4\",\"token\":\"secret\",\"issue_id\":\"issue-1\"}",

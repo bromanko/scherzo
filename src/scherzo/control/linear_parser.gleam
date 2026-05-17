@@ -115,6 +115,7 @@ fn parse_line(
           "",
         )
       })
+    "retry-step" -> parse_retry_step(source_issue_id, comment_id, rest)
     "park" -> parse_park(source_issue_id, comment_id, rest)
     "unpark" ->
       no_args(rest, name, fn() {
@@ -149,6 +150,43 @@ fn parse_line(
       parse_prompt(source_issue_id, comment_id, current_session_id, rest)
     "ui" -> parse_ui(source_issue_id, comment_id, current_session_id, rest)
     other -> Error(UnknownCommand(other))
+  }
+}
+
+fn parse_retry_step(
+  source_issue_id: String,
+  comment_id: String,
+  rest: String,
+) -> Result(ParsedLinearCommand, ParseError) {
+  let #(flag, value) = split_first_token(rest)
+  case flag {
+    "" ->
+      parsed(
+        source_issue_id,
+        comment_id,
+        command.RetryWorkflowStep(
+          command.RetryWorkflowStepIssueRef(command.IssueId(source_issue_id)),
+          None,
+        ),
+        "",
+      )
+    "--step" -> {
+      let step_id = string.trim(value)
+      case step_id == "" {
+        True -> Error(MissingArgument("step"))
+        False ->
+          parsed(
+            source_issue_id,
+            comment_id,
+            command.RetryWorkflowStep(
+              command.RetryWorkflowStepIssueRef(command.IssueId(source_issue_id)),
+              Some(step_id),
+            ),
+            step_id,
+          )
+      }
+    }
+    other -> Error(InvalidArgument(other))
   }
 }
 
