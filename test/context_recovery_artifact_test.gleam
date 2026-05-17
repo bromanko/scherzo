@@ -25,7 +25,7 @@ pub fn writes_redacted_bounded_context_recovery_artifacts_test() {
     context_recovery_artifact.RecoveryArtifactInput(
       store: store,
       run_id: "run 1",
-      workflow_id: "execplan-implementation",
+      workflow_id: "execplan-implementation-v2",
       step_id: "implement plan!",
       step_attempt_index: 1,
       pi_attempt: 1,

@@ -24,12 +24,6 @@
       "lane_idioms_maintainability",
       "lane_security_performance"
     ],
-    "execplan-implementation": [
-      "lane_correctness",
-      "lane_test_quality",
-      "lane_idioms_maintainability",
-      "lane_security_performance"
-    ],
     "execplan-implementation-v2": [
       "lane_correctness",
       "lane_test_quality",

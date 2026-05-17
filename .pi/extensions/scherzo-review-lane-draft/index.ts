@@ -3,7 +3,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import { Type, type Static } from "typebox";
 
 export const SUBMIT_REVIEW_LANE_DRAFT_TOOL_NAME = "submit_review_lane_draft";
-export const REVIEW_LANE_DRAFT_WORKFLOW_IDS = ["implementation", "execplan-implementation", "execplan-implementation-v2"] as const;
+export const REVIEW_LANE_DRAFT_WORKFLOW_IDS = ["implementation", "execplan-implementation-v2"] as const;
 const nativeReviewLaneStepIds = ["lane_correctness", "lane_test_quality", "lane_idioms_maintainability", "lane_security_performance"] as const;
 const allowedLaneIds = ["correctness", "test-quality", "idioms-maintainability", "security-performance"] as const;
 const allowedReviewNoteKinds = ["risk_note", "coverage_note", "review_note", "follow_up_test"] as const;
@@ -99,7 +99,6 @@ const evidenceRequestSchema = Type.Object({
 function allowedStepIdsForWorkflow(workflowId: string): readonly string[] {
 	switch (workflowId) {
 		case "implementation":
-		case "execplan-implementation":
 		case "execplan-implementation-v2":
 			return nativeReviewLaneStepIds;
 		default:

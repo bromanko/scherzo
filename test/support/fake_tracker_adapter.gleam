@@ -24,7 +24,7 @@ pub fn task() -> task.Task {
     state: task.TaskState(id: Some("todo"), name: "Todo", category: task.Ready),
     branch_hint: Some("card-1-fake-seam"),
     labels: [
-      task.TaskLabel(id: Some("label-workflow"), name: "workflow:execplan"),
+      task.TaskLabel(id: Some("label-workflow"), name: "workflow:execplan-v2"),
       task.TaskLabel(id: Some("label-kind"), name: "kind:test"),
     ],
     blockers: [],

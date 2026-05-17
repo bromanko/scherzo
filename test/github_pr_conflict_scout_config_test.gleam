@@ -84,10 +84,7 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
   assert job.catch_up == False
   assert bundle.effective.linear_contract.workflow_labels
     == [
-      "execplan",
-      "execplan-implementation",
       "execplan-implementation-v2",
-      "execplan-revision",
       "execplan-revision-v2",
       "execplan-v2",
       "implementation",
