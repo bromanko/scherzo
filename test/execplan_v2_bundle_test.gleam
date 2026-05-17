@@ -349,6 +349,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
   reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let log = dir <> "/linear.log"
+  let update_desc = dir <> "/updated-description.md"
   let linear = dir <> "/bin/linear"
   let assert Ok(Nil) =
     simplifile.write(
@@ -364,6 +365,18 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1 $2 $3\" = 'issue view LIV-315' ]; then printf '%s\\n' '{\"identifier\":\"LIV-315\",\"url\":\"https://linear.app/living-systems/issue/LIV-315/implement-fixture-v2-execplan-bundle\"}'; exit 0; fi\n"
+        <> "if [ \"$1 $2 $3\" = 'issue update LIV-315' ]; then\n"
+        <> "  desc=''\n"
+        <> "  prev=''\n"
+        <> "  for arg in \"$@\"; do if [ \"$prev\" = --description-file ]; then desc=$arg; fi; prev=$arg; done\n"
+        <> "  if [ -z \"$desc\" ]; then echo 'missing description file' >&2; exit 2; fi\n"
+        <> "  cp \"$desc\" "
+        <> shell_quote(update_desc)
+        <> "\n"
+        <> "  grep -Eq '^Bundle sha256: [a-f0-9]{64}$' \"$desc\" || { echo 'missing final bundle sha' >&2; exit 3; }\n"
+        <> "  grep -q '^Bundle sha256: pending$' \"$desc\" && { echo 'pending bundle sha' >&2; exit 4; }\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "if [ \"$1 $2 $3\" = 'issue comment add' ]; then exit 0; fi\n"
         <> "exit 1\n",
     )
@@ -410,6 +423,13 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
   )
   let assert Ok(linear_log) = simplifile.read(log)
   assert string.contains(linear_log, "issue create")
+  assert string.contains(linear_log, "issue update LIV-315")
+  let assert Ok(updated_description) = simplifile.read(update_desc)
+  assert string.contains(
+    updated_description,
+    "Bundle ref: runs/run-online/outputs/exec_plan_bundle.json",
+  )
+  assert !string.contains(updated_description, "Bundle sha256: pending")
 }
 
 pub fn materialize_revision_reuses_unchanged_review_surface_test() {

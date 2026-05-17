@@ -859,6 +859,24 @@ def view_linear_issue(identifier: str) -> dict[str, str] | None:
         return None
 
 
+def handoff_issue_description(source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> str:
+    note = (
+        "This description will be updated automatically with the final bundle hash before implementation dispatch. "
+        "If it still says `pending`, use the follow-up helper comment with the final bundle hash."
+        if bundle_sha == "pending"
+        else "This description contains the final bundle hash required by the implementation workflow."
+    )
+    return (
+        f"Implement the ExecPlan v2 bundle produced for {source_issue['identifier']}.\n\n"
+        f"Bundle ref: {bundle_ref}\n"
+        f"Bundle sha256: {bundle_sha}\n"
+        f"Review doc: {review_path}\n"
+        f"Implementation pack sha256: {pack_sha}\n\n"
+        "Use `workflow:execplan-implementation-v2` after the review doc PR is merged and a human moves this task to Todo. "
+        f"{note}\n"
+    )
+
+
 def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> dict[str, str]:
     if os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_LINEAR") or not shutil.which("linear"):
         identifier = os.environ.get("SCHERZO_EXECPLAN_V2_HANDOFF_IDENTIFIER", source_issue["identifier"] + "-IMPL")
@@ -869,15 +887,7 @@ def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str,
     if existing is not None and existing.get("issue_identifier"):
         return existing
     title = f"Implement: {source_issue['title']}"
-    description = (
-        f"Implement the ExecPlan v2 bundle produced for {source_issue['identifier']}.\n\n"
-        f"Bundle ref: {bundle_ref}\n"
-        f"Bundle sha256: {bundle_sha}\n"
-        f"Review doc: {review_path}\n"
-        f"Implementation pack sha256: {pack_sha}\n\n"
-        "Use `workflow:execplan-implementation-v2` after the review doc PR is merged and a human moves this task to Todo. "
-        "If this body says `pending`, use the follow-up helper comment with the final bundle hash.\n"
-    )
+    description = handoff_issue_description(source_issue, bundle_ref, bundle_sha, pack_sha, review_path)
     tmp = Path("tmp") / "execplan-v2-handoff-body.md"
     tmp.parent.mkdir(exist_ok=True)
     tmp.write_text(description, encoding="utf-8")
@@ -904,6 +914,23 @@ def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str,
         fail("failed to parse created Linear implementation handoff task: " + proc.stdout.strip())
     viewed = view_linear_issue(created["issue_identifier"])
     return viewed or created
+
+
+def update_handoff_issue_description(handoff: dict[str, str], source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> None:
+    if os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_LINEAR") or not shutil.which("linear"):
+        return
+    identifier = handoff.get("issue_identifier", "").strip()
+    if not identifier:
+        return
+    tmp = Path("tmp") / "execplan-v2-handoff-body-final.md"
+    tmp.parent.mkdir(exist_ok=True)
+    tmp.write_text(
+        handoff_issue_description(source_issue, bundle_ref, bundle_sha, pack_sha, review_path),
+        encoding="utf-8",
+    )
+    proc = run_proc(["linear", "issue", "update", identifier, "--description-file", str(tmp)])
+    if proc.returncode != 0:
+        fail("failed to update Linear implementation handoff task with final bundle hash: " + (proc.stderr.strip() or proc.stdout.strip()))
 
 
 def annotate_handoff_issue(handoff: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> None:
@@ -990,6 +1017,14 @@ def materialize_bundle(args: list[str]) -> None:
     write_json(Path(ns.output), bundle)
     final_text = canonical_json(bundle)
     final_sha = sha256_bytes(final_text.encode("utf-8"))
+    update_handoff_issue_description(
+        handoff,
+        bundle["source_issue"],
+        bundle_ref,
+        final_sha,
+        pack_meta["sha256"],
+        review_meta["path"],
+    )
     annotate_handoff_issue(handoff, bundle_ref, final_sha, pack_meta["sha256"], review_meta["path"])
     print(f"BUNDLE_REF={bundle_ref}", file=sys.stderr)
     print(f"BUNDLE_SHA256={final_sha}", file=sys.stderr)
