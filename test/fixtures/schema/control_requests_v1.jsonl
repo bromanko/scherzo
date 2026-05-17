@@ -7,6 +7,7 @@
 {"version":1,"id":"req-resume","token":"secret","type":"resume"}
 {"version":1,"id":"req-reload","token":"secret","type":"reload"}
 {"issue_identifier":"LIV-94","version":1,"id":"req-retry","token":"secret","type":"retry"}
+{"step_id":"build","run_id":"run-1","version":1,"id":"req-retry-step","token":"secret","type":"retry_step"}
 {"reason":"blocked on review","issue_id":"issue-1","version":1,"id":"req-park","token":"secret","type":"park"}
 {"issue_identifier":"LIV-94","version":1,"id":"req-unpark","token":"secret","type":"unpark"}
 {"session_id":"session-1","version":1,"id":"req-abort","token":"secret","type":"abort"}

@@ -151,6 +151,7 @@ type Flags {
     dry_run: Bool,
     root: Option(String),
     reason: Option(String),
+    step: Option(String),
     cancel: Bool,
     value: Option(String),
     no_follow: Bool,
@@ -195,6 +196,7 @@ fn default_flags() -> Flags {
     dry_run: False,
     root: None,
     reason: None,
+    step: None,
     cancel: False,
     value: None,
     no_follow: False,
@@ -208,7 +210,7 @@ fn default_flags() -> Flags {
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
+  "Usage: scherzo ctl <command> [options]\n       scherzoctl <command> [options]\n\nLocal Scherzo daemon inspection and operator controls. Commands:\n  ping                         Check that the daemon control API is reachable.\n  ps                           List sessions (LAST EVENT is daemon-relative age; long session names are shortened).\n  session <session-ref>        Show one session summary.\n  events <session-ref>         Replay recent compact event lines.\n  events --pretty <session-ref>\n                               Replay retained events with human-readable rendering.\n  events --pretty --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty replay.\n  attach <session-ref>         Replay retained events and follow with human-readable rendering.\n  attach --verbose <session-ref>\n                               Include pi cycle and raw diagnostic lines in pretty attach.\n  attach --raw <session-ref>   Replay and follow compact event lines.\n  attach --json <session-ref>  Replay and follow JSON stream event envelopes.\n  attach --raw --json <session-ref>\n                               Legacy alias for attach --json.\n  pause                        Pause new dispatch.\n  resume                       Resume new dispatch.\n  reload                       Reload the workflow now.\n  retry <task>                 Retry a task now.\n  retry-step <target> [--step <step-id>]\n                               Retry a failed workflow step without redispatching the whole task.\n  park <task> --reason <text> --yes\n                               Park a task until explicitly unparked.\n  unpark <task>                Unpark a task.\n  abort <session-ref> --yes    Abort a running session.\n  stop-after-turn <session-ref> --yes\n                               Stop after the current turn.\n  prompt <session-ref> <text>  Queue an operator prompt for a session.\n  ui respond <session-ref> <request-id> (--cancel | --value <text>)\n                               Respond to an operator-managed UI request.\n  cleanup                     Dry-run local retention cleanup.\n  cleanup --yes               Apply eligible local cleanup after safety checks.\n  schedules status [job]      Inspect local scheduled job status/history summary.\n  schedules history <job>     Inspect local scheduled job history summary.\n  schedules logs <job> --last Replay the latest retained scheduled session logs.\n  schedules doctor <job>      Show local scheduled job diagnostics.\n  schedules run <job> --now   Start a scheduled job immediately.\n  state status --root <workspace-root>\n                               Inspect offline local state schema.\n  state archive-old --root <workspace-root> --yes\n                               Archive unsupported old local ledger state.\n  state discard-old --root <workspace-root> --yes\n                               Irreversibly discard unsupported old local ledger state.\n  state reinitialize --root <workspace-root> --yes\n                               Create an empty current ledger layout.\n\nOptions:\n  --control-file <path>        Use an explicit control.json path.\n  --root <workspace-root>      Workspace root for cleanup or offline state commands.\n  --raw                        Compact line output for attach/events.\n  --pretty                     Human-readable output for attach/events.\n  --json                       Protocol JSON for non-streaming commands; attach prints one JSON stream object per event.\n  --color=auto|always|never    Color policy for pretty output.\n  --no-follow                  For attach, replay retained events without following live events.\n  --since-cursor <n>           Replay events after cursor n.\n  --verbose                    Include pi lifecycle and raw diagnostics in pretty attach/events output.\n  --now                        Required for schedules run <job> --now.\n  --last                       Required for schedules logs <job> --last.\n  --yes                        Confirm destructive commands.\n  --dry-run                    Force read-only cleanup inventory.\n  --reason <text>              Reason for parking a task.\n  --step <step-id>             Select a failed workflow step for retry-step.\n  --cancel                     Cancel a UI request response.\n  --value <text>               Value for a UI request response.\n  --help, -h                   Show this help."
 }
 
 fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
@@ -246,6 +248,9 @@ fn parse_flags(args: List(String), flags: Flags) -> Result(Flags, Error) {
     ["--reason", reason, ..rest] ->
       parse_flags(rest, Flags(..flags, reason: Some(reason)))
     ["--reason"] -> Error(UsageError("--reason requires text"))
+    ["--step", step, ..rest] ->
+      parse_flags(rest, Flags(..flags, step: Some(step)))
+    ["--step"] -> Error(UsageError("--step requires a step id"))
     ["--cancel", ..rest] -> parse_flags(rest, Flags(..flags, cancel: True))
     ["--value", value, ..rest] ->
       parse_flags(rest, Flags(..flags, value: Some(value)))
@@ -330,6 +335,14 @@ fn command_from(name: String, flags: Flags) -> Result(Command, Error) {
     "reload", [] -> Ok(operator(flags, control_command.ReloadWorkflow))
     "retry", [issue] ->
       Ok(operator(flags, control_command.RetryIssue(issue_ref(issue))))
+    "retry-step", [target] ->
+      Ok(operator(
+        flags,
+        control_command.RetryWorkflowStep(
+          retry_workflow_step_target(target),
+          flags.step,
+        ),
+      ))
     "park", [issue] ->
       case flags.reason, flags.yes {
         Some(reason), True ->
@@ -511,6 +524,23 @@ fn issue_ref(value: String) -> control_command.IssueRef {
   case string.starts_with(value, "id:") {
     True -> control_command.IssueId(string.drop_start(value, 3))
     False -> control_command.IssueIdentifier(value)
+  }
+}
+
+fn retry_workflow_step_target(
+  value: String,
+) -> control_command.RetryWorkflowStepTarget {
+  case string.starts_with(value, "id:") {
+    True ->
+      control_command.RetryWorkflowStepIssueRef(
+        control_command.IssueId(string.drop_start(value, 3)),
+      )
+    False ->
+      case string.starts_with(value, "run:") {
+        True ->
+          control_command.RetryWorkflowStepRunId(string.drop_start(value, 4))
+        False -> control_command.RetryWorkflowStepAutoTarget(value)
+      }
   }
 }
 

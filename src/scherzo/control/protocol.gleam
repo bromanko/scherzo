@@ -3,6 +3,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/pi_event
 import scherzo/control/command
@@ -30,6 +31,12 @@ pub type Request {
   Resume(id: String, token: String)
   ReloadWorkflow(id: String, token: String)
   RetryIssue(id: String, token: String, issue_ref: command.IssueRef)
+  RetryWorkflowStep(
+    id: String,
+    token: String,
+    target: command.RetryWorkflowStepTarget,
+    step_id: Option(String),
+  )
   ParkIssue(
     id: String,
     token: String,
@@ -78,6 +85,9 @@ type RequestFields {
     limit: Int,
     issue_id: Option(String),
     issue_identifier: Option(String),
+    target: Option(String),
+    run_id: Option(String),
+    step_id: Option(String),
     reason: Option(String),
     message: Option(String),
     request_id: Option(String),
@@ -98,6 +108,7 @@ pub fn request_id(request: Request) -> String {
     Resume(id, _) -> id
     ReloadWorkflow(id, _) -> id
     RetryIssue(id, _, _) -> id
+    RetryWorkflowStep(id, _, _, _) -> id
     ParkIssue(id, _, _, _) -> id
     UnparkIssue(id, _, _) -> id
     AbortSession(id, _, _) -> id
@@ -119,6 +130,7 @@ pub fn request_token(request: Request) -> String {
     Resume(_, token) -> token
     ReloadWorkflow(_, token) -> token
     RetryIssue(_, token, _) -> token
+    RetryWorkflowStep(_, token, _, _) -> token
     ParkIssue(_, token, _, _) -> token
     UnparkIssue(_, token, _) -> token
     AbortSession(_, token, _) -> token
@@ -168,6 +180,12 @@ pub fn request_to_json(request: Request) -> json.Json {
       list.append(
         issue_ref_entries(issue_ref),
         base_request_entries(id, token, "retry"),
+      )
+      |> json.object
+    RetryWorkflowStep(id, token, target, step_id) ->
+      list.append(
+        retry_workflow_step_entries(target, step_id),
+        base_request_entries(id, token, "retry_step"),
       )
       |> json.object
     ParkIssue(id, token, issue_ref, reason) ->
@@ -228,6 +246,23 @@ fn issue_ref_entries(
     command.IssueIdentifier(identifier) -> [
       #("issue_identifier", json.string(identifier)),
     ]
+  }
+}
+
+fn retry_workflow_step_entries(
+  target: command.RetryWorkflowStepTarget,
+  step_id: Option(String),
+) -> List(#(String, json.Json)) {
+  let base = case target {
+    command.RetryWorkflowStepAutoTarget(target) -> [
+      #("target", json.string(target)),
+    ]
+    command.RetryWorkflowStepIssueRef(issue_ref) -> issue_ref_entries(issue_ref)
+    command.RetryWorkflowStepRunId(run_id) -> [#("run_id", json.string(run_id))]
+  }
+  case step_id {
+    Some(step_id) -> [#("step_id", json.string(step_id)), ..base]
+    None -> base
   }
 }
 
@@ -325,6 +360,15 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
         Ok(issue_ref) -> Ok(RetryIssue(fields.id, fields.token, issue_ref))
         Error(err) -> Error(err)
       }
+    "retry_step" ->
+      case
+        required_retry_workflow_step_target(fields),
+        optional_step_id(fields)
+      {
+        Ok(target), Ok(step_id) ->
+          Ok(RetryWorkflowStep(fields.id, fields.token, target, step_id))
+        Error(err), _ | _, Error(err) -> Error(err)
+      }
     "park" | "park_issue" ->
       case required_issue_ref(fields), required_reason(fields) {
         Ok(issue_ref), Ok(reason) ->
@@ -412,6 +456,57 @@ fn required_issue_ref(
       }
     }
     None, None -> invalid(fields.id, "missing issue reference")
+  }
+}
+
+fn required_retry_workflow_step_target(
+  fields: RequestFields,
+) -> Result(command.RetryWorkflowStepTarget, RequestError) {
+  case fields.target, fields.run_id, fields.issue_id, fields.issue_identifier {
+    Some(_), Some(_), _, _
+    | Some(_), _, Some(_), _
+    | Some(_), _, _, Some(_)
+    | _, Some(_), Some(_), _
+    | _, Some(_), _, Some(_)
+    | _, _, Some(_), Some(_)
+    ->
+      invalid(
+        fields.id,
+        "provide exactly one of target, run_id, issue_id, or issue_identifier",
+      )
+    Some(target), None, None, None -> {
+      let target = string.trim(target)
+      case target == "" {
+        True -> invalid(fields.id, "target must not be empty")
+        False -> Ok(command.RetryWorkflowStepAutoTarget(target))
+      }
+    }
+    None, Some(run_id), None, None -> {
+      let run_id = string.trim(run_id)
+      case run_id == "" {
+        True -> invalid(fields.id, "run_id must not be empty")
+        False -> Ok(command.RetryWorkflowStepRunId(run_id))
+      }
+    }
+    None, None, Some(_), None | None, None, None, Some(_) ->
+      required_issue_ref(fields)
+      |> result.map(command.RetryWorkflowStepIssueRef)
+    None, None, None, None -> invalid(fields.id, "missing retry_step target")
+  }
+}
+
+fn optional_step_id(
+  fields: RequestFields,
+) -> Result(Option(String), RequestError) {
+  case fields.step_id {
+    Some(step_id) -> {
+      let step_id = string.trim(step_id)
+      case step_id == "" {
+        True -> invalid(fields.id, "step_id must not be empty")
+        False -> Ok(Some(step_id))
+      }
+    }
+    None -> Ok(None)
   }
 }
 
@@ -515,6 +610,21 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.string),
   )
+  use target <- decode.optional_field(
+    "target",
+    None,
+    decode.optional(decode.string),
+  )
+  use run_id <- decode.optional_field(
+    "run_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use step_id <- decode.optional_field(
+    "step_id",
+    None,
+    decode.optional(decode.string),
+  )
   use reason <- decode.optional_field(
     "reason",
     None,
@@ -555,6 +665,9 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     limit: limit,
     issue_id: issue_id,
     issue_identifier: issue_identifier,
+    target: target,
+    run_id: run_id,
+    step_id: step_id,
     reason: reason,
     message: message,
     request_id: request_id,
@@ -678,6 +791,8 @@ pub fn command_request(
     command.ResumeDispatch -> Resume(id, token)
     command.ReloadWorkflow -> ReloadWorkflow(id, token)
     command.RetryIssue(issue_ref) -> RetryIssue(id, token, issue_ref)
+    command.RetryWorkflowStep(target, step_id) ->
+      RetryWorkflowStep(id, token, target, step_id)
     command.ParkIssue(issue_ref, reason) ->
       ParkIssue(id, token, issue_ref, reason)
     command.UnparkIssue(issue_ref) -> UnparkIssue(id, token, issue_ref)
@@ -700,6 +815,8 @@ pub fn request_operator_command(
     Resume(_, _) -> Some(command.ResumeDispatch)
     ReloadWorkflow(_, _) -> Some(command.ReloadWorkflow)
     RetryIssue(_, _, issue_ref) -> Some(command.RetryIssue(issue_ref))
+    RetryWorkflowStep(_, _, target, step_id) ->
+      Some(command.RetryWorkflowStep(target, step_id))
     ParkIssue(_, _, issue_ref, reason) ->
       Some(command.ParkIssue(issue_ref, reason))
     UnparkIssue(_, _, issue_ref) -> Some(command.UnparkIssue(issue_ref))

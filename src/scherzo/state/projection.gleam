@@ -19,6 +19,7 @@ pub type Projection {
     workflow_task_refs: Dict(String, record.TaskRefFields),
     workflow_input_manifests: Dict(String, WorkflowContractManifestRef),
     workflow_output_manifests: Dict(String, WorkflowContractManifestRef),
+    workflow_repairs: Dict(String, WorkflowRepairStatus),
     step_attempts: Dict(String, StepAttemptStatus),
     retries: Dict(String, RetryStatus),
     parked_issues: Dict(String, ParkedIssue),
@@ -93,6 +94,21 @@ pub type WorkflowContractManifestRef {
     artifact_sha256: String,
     artifact_bytes: Int,
     recorded_at_ms: Int,
+  )
+}
+
+pub type WorkflowRepairStatus {
+  WorkflowRepairStatus(
+    workflow_id: String,
+    issue_id: String,
+    issue_identifier: String,
+    requested_target: String,
+    requested_step_id: Option(String),
+    selected_step_id: String,
+    failed_attempt_index: Int,
+    next_attempt_index: Int,
+    reason: String,
+    requested_at_ms: Int,
   )
 }
 
@@ -423,6 +439,10 @@ type WorkflowContractManifestSnapshot {
   )
 }
 
+type WorkflowRepairSnapshot {
+  WorkflowRepairSnapshot(run_id: String, status: WorkflowRepairStatus)
+}
+
 type SnapshotFields {
   SnapshotFields(
     runs: List(RunSnapshot),
@@ -430,6 +450,7 @@ type SnapshotFields {
     workflow_task_refs: List(WorkflowTaskRefSnapshot),
     workflow_input_manifests: List(WorkflowContractManifestSnapshot),
     workflow_output_manifests: List(WorkflowContractManifestSnapshot),
+    workflow_repairs: List(WorkflowRepairSnapshot),
     step_attempts: List(StepAttemptSnapshot),
     retries: List(RetrySnapshot),
     parked_issues: List(ParkedSnapshot),
@@ -455,6 +476,7 @@ pub fn new() -> Projection {
     workflow_task_refs: dict.new(),
     workflow_input_manifests: dict.new(),
     workflow_output_manifests: dict.new(),
+    workflow_repairs: dict.new(),
     step_attempts: dict.new(),
     retries: dict.new(),
     parked_issues: dict.new(),
@@ -684,6 +706,41 @@ pub fn apply(
             artifact_sha256,
             artifact_bytes,
             at_ms,
+          ),
+        ),
+      )
+    record.WorkflowRepairRequested(
+      run_id,
+      workflow_id,
+      issue_id,
+      issue_identifier,
+      requested_target,
+      requested_step_id,
+      selected_step_id,
+      failed_attempt_index,
+      next_attempt_index,
+      reason,
+    ) ->
+      Projection(
+        ..projection,
+        workflow_output_manifests: dict.delete(
+          projection.workflow_output_manifests,
+          run_id,
+        ),
+        workflow_repairs: dict.insert(
+          projection.workflow_repairs,
+          run_id,
+          WorkflowRepairStatus(
+            workflow_id: workflow_id,
+            issue_id: issue_id,
+            issue_identifier: issue_identifier,
+            requested_target: requested_target,
+            requested_step_id: requested_step_id,
+            selected_step_id: selected_step_id,
+            failed_attempt_index: failed_attempt_index,
+            next_attempt_index: next_attempt_index,
+            reason: reason,
+            requested_at_ms: at_ms,
           ),
         ),
       )
@@ -2540,6 +2597,16 @@ pub fn workflow_output_manifest(
   }
 }
 
+pub fn latest_workflow_repair(
+  projection: Projection,
+  run_id: String,
+) -> Option(WorkflowRepairStatus) {
+  case dict.get(projection.workflow_repairs, run_id) {
+    Ok(repair) -> Some(repair)
+    Error(Nil) -> None
+  }
+}
+
 fn latest_finished_workspace(
   statuses: List(StepAttemptStatus),
   best: Option(StepAttemptStatus),
@@ -2779,6 +2846,13 @@ pub fn to_json(projection: Projection) -> json.Json {
       ),
     ),
     #(
+      "workflow_repairs",
+      json.array(
+        dict.to_list(projection.workflow_repairs),
+        of: workflow_repair_entry_to_json,
+      ),
+    ),
+    #(
       "step_attempts",
       json.array(
         dict.to_list(projection.step_attempts),
@@ -2879,6 +2953,12 @@ fn decode_current_snapshot(contents: String) -> Result(Projection, String) {
           |> list.map(fn(entry) {
             let WorkflowContractManifestSnapshot(run_id, manifest) = entry
             #(run_id, manifest)
+          })
+          |> dict.from_list,
+        workflow_repairs: fields.workflow_repairs
+          |> list.map(fn(entry) {
+            let WorkflowRepairSnapshot(run_id, repair) = entry
+            #(run_id, repair)
           })
           |> dict.from_list,
         step_attempts: fields.step_attempts
@@ -3079,6 +3159,25 @@ fn workflow_task_ref_entry_to_json(
     #("task_remote_id", json.string(task_remote_id)),
     #("task_key", option_string_to_json(task_key)),
     #("task_url", option_string_to_json(task_url)),
+  ])
+}
+
+fn workflow_repair_entry_to_json(
+  entry: #(String, WorkflowRepairStatus),
+) -> json.Json {
+  let #(run_id, repair) = entry
+  json.object([
+    #("run_id", json.string(run_id)),
+    #("workflow_id", json.string(repair.workflow_id)),
+    #("issue_id", json.string(repair.issue_id)),
+    #("issue_identifier", json.string(repair.issue_identifier)),
+    #("requested_target", json.string(repair.requested_target)),
+    #("requested_step_id", option_string_to_json(repair.requested_step_id)),
+    #("selected_step_id", json.string(repair.selected_step_id)),
+    #("failed_attempt_index", json.int(repair.failed_attempt_index)),
+    #("next_attempt_index", json.int(repair.next_attempt_index)),
+    #("reason", json.string(repair.reason)),
+    #("requested_at_ms", json.int(repair.requested_at_ms)),
   ])
 }
 
@@ -3627,6 +3726,11 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     [],
     decode.list(of: workflow_contract_manifest_snapshot_decoder()),
   )
+  use workflow_repairs <- decode.optional_field(
+    "workflow_repairs",
+    [],
+    decode.list(of: workflow_repair_snapshot_decoder()),
+  )
   use step_attempts <- decode.optional_field(
     "step_attempts",
     [],
@@ -3678,6 +3782,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         workflow_task_refs,
         workflow_input_manifests,
         workflow_output_manifests,
+        workflow_repairs,
         step_attempts,
         retries,
         parked_issues,
@@ -3690,7 +3795,23 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
       ))
     False ->
       decode.failure(
-        SnapshotFields([], [], [], [], [], [], [], [], [], [], [], [], [], []),
+        SnapshotFields(
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+        ),
         expected: "SnapshotFields",
       )
   }
@@ -3885,6 +4006,39 @@ fn workflow_contract_manifest_snapshot_decoder() -> decode.Decoder(
       artifact_sha256,
       artifact_bytes,
       recorded_at_ms,
+    ),
+  ))
+}
+
+fn workflow_repair_snapshot_decoder() -> decode.Decoder(WorkflowRepairSnapshot) {
+  use run_id <- decode.field("run_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use issue_id <- decode.field("issue_id", decode.string)
+  use issue_identifier <- decode.field("issue_identifier", decode.string)
+  use requested_target <- decode.field("requested_target", decode.string)
+  use requested_step_id <- decode.optional_field(
+    "requested_step_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use selected_step_id <- decode.field("selected_step_id", decode.string)
+  use failed_attempt_index <- decode.field("failed_attempt_index", decode.int)
+  use next_attempt_index <- decode.field("next_attempt_index", decode.int)
+  use reason <- decode.field("reason", decode.string)
+  use requested_at_ms <- decode.field("requested_at_ms", decode.int)
+  decode.success(WorkflowRepairSnapshot(
+    run_id,
+    WorkflowRepairStatus(
+      workflow_id: workflow_id,
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      requested_target: requested_target,
+      requested_step_id: requested_step_id,
+      selected_step_id: selected_step_id,
+      failed_attempt_index: failed_attempt_index,
+      next_attempt_index: next_attempt_index,
+      reason: reason,
+      requested_at_ms: requested_at_ms,
     ),
   ))
 }

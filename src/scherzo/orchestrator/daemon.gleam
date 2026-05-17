@@ -59,6 +59,7 @@ import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
+import scherzo/workflow_repair
 import scherzo/workflow_run
 import scherzo/workspace
 import scherzo/workspace_profile
@@ -2043,6 +2044,7 @@ fn operator_issue_resolution(
     command.PauseDispatch
     | command.ResumeDispatch
     | command.ReloadWorkflow
+    | command.RetryWorkflowStep(_, _)
     | command.UnparkIssue(_)
     | command.AbortSession(_)
     | command.StopAfterCurrentTurn(_)
@@ -2071,6 +2073,7 @@ fn parked_issue_resolution(
     | command.ResumeDispatch
     | command.ReloadWorkflow
     | command.RetryIssue(_)
+    | command.RetryWorkflowStep(_, _)
     | command.ParkIssue(_, _)
     | command.AbortSession(_)
     | command.StopAfterCurrentTurn(_)
@@ -2088,6 +2091,8 @@ fn apply_shell_operator_command(
   let #(state, result) = case operator_command {
     command.ReloadWorkflow ->
       reload_workflow_for_operator(state, operator_command)
+    command.RetryWorkflowStep(target, step_id) ->
+      retry_workflow_step_for_operator(state, operator_command, target, step_id)
     command.RunScheduleNow(job_id) ->
       schedule_run_now_for_operator(state, operator_command, job_id)
     command.AbortSession(session_id) ->
@@ -2153,6 +2158,201 @@ fn apply_shell_operator_command(
       }
   }
   #(State(..state, shell_state_overrides_transition: True), result)
+}
+
+fn retry_workflow_step_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  target: command.RetryWorkflowStepTarget,
+  step_id: Option(String),
+) -> #(State, command.CommandResult) {
+  case replay_projection_for_operator(state) {
+    Error(reason) -> #(
+      state,
+      command.rejected(operator_command, "ledger_read_failed", Some(reason)),
+    )
+    Ok(projection_state) ->
+      case workflow_repair.resolve_target_run(projection_state, target) {
+        Error(error) -> #(
+          state,
+          command.rejected(
+            operator_command,
+            workflow_repair.describe_error(error),
+            workflow_repair.error_message(error),
+          ),
+        )
+        Ok(#(_run_id, issue_id, _issue_identifier)) ->
+          case issue_is_active_or_pending(state, issue_id) {
+            True -> #(
+              state,
+              command.rejected(
+                operator_command,
+                "issue_already_active",
+                Some("issue already has an active or pending workflow"),
+              ),
+            )
+            False ->
+              case issue_for_id(state, issue_id) {
+                Error(status) -> #(
+                  state,
+                  command.result_for(operator_command, status, None),
+                )
+                Ok(issue) -> {
+                  let observation =
+                    current_workflow_observation(state.workflow.bundle, issue)
+                  case
+                    workflow_repair.plan(
+                      projection_state,
+                      target,
+                      step_id,
+                      observation,
+                    )
+                  {
+                    Error(error) -> #(
+                      state,
+                      command.rejected(
+                        operator_command,
+                        workflow_repair.describe_error(error),
+                        workflow_repair.error_message(error),
+                      ),
+                    )
+                    Ok(plan) ->
+                      case
+                        recovery.finalize_workflow_candidates_with_config(
+                          projection_state,
+                          [plan.candidate],
+                          dict.from_list([#(plan.run_id, observation)]),
+                          artifact_store.new(
+                            state.workflow.effective.workspace.root,
+                          ),
+                          state.dependencies.now_ms(),
+                          state.workflow.effective,
+                        )
+                      {
+                        Error(error) -> #(
+                          state,
+                          command.rejected(
+                            operator_command,
+                            recovery.describe_error(error),
+                            Some(recovery.describe_error(error)),
+                          ),
+                        )
+                        Ok(finalization) ->
+                          case finalization.resumptions {
+                            [resumption] -> {
+                              let bodies =
+                                list.append(
+                                  plan.records_to_append,
+                                  ledger_record_bodies(
+                                    finalization.records_to_append,
+                                  ),
+                                )
+                              case
+                                append_ledger_bodies(
+                                  state,
+                                  bodies,
+                                  "retry_step_append_failed",
+                                )
+                              {
+                                False -> #(
+                                  state,
+                                  command.rejected(
+                                    operator_command,
+                                    "ledger_append_failed",
+                                    Some(
+                                      "failed to append retry-step repair records",
+                                    ),
+                                  ),
+                                )
+                                True -> {
+                                  let state =
+                                    spawn_recovered_workflow_resumption(
+                                      state,
+                                      resumption,
+                                    )
+                                  #(
+                                    state,
+                                    command.applied(
+                                      operator_command,
+                                      Some(
+                                        "retrying run "
+                                        <> plan.run_id
+                                        <> " step "
+                                        <> plan.selected_step_id
+                                        <> " at attempt "
+                                        <> int.to_string(
+                                          plan.next_attempt_index,
+                                        ),
+                                      ),
+                                    ),
+                                  )
+                                }
+                              }
+                            }
+                            _ -> #(
+                              state,
+                              command.rejected(
+                                operator_command,
+                                rejection_reason_from_finalization(finalization),
+                                Some(
+                                  "retry-step repair was rejected by recovery validation",
+                                ),
+                              ),
+                            )
+                          }
+                      }
+                  }
+                }
+              }
+          }
+      }
+  }
+}
+
+fn replay_projection_for_operator(
+  state: State,
+) -> Result(projection.Projection, String) {
+  use ledger_path <- result.try(
+    ledger.path_for_workspace_root(state.workflow.effective.workspace.root)
+    |> result.map_error(ledger_error_message),
+  )
+  use read <- result.try(
+    ledger.read_records(ledger_path) |> result.map_error(ledger_error_message),
+  )
+  Ok(projection.fold(read.records))
+}
+
+fn issue_is_active_or_pending(state: State, issue_id: String) -> Bool {
+  has_active_run(state, issue_id)
+  || dict.has_key(state.runtime.running, issue_id)
+  || dict.has_key(state.pending_claims, issue_id)
+  || dict.has_key(state.pending_dispatch_validations, issue_id)
+}
+
+fn ledger_record_bodies(
+  records: List(record.LedgerRecord),
+) -> List(record.RecordBody) {
+  records
+  |> list.map(fn(ledger_record) { ledger_record.body })
+}
+
+fn rejection_reason_from_finalization(
+  finalization: recovery.WorkflowFinalization,
+) -> String {
+  case finalization.records_to_append {
+    [
+      record.LedgerRecord(body: record.IssueParkedV2(reason: reason, ..), ..),
+      ..
+    ] -> reason
+    [
+      record.LedgerRecord(
+        body: record.WorkflowRunInterrupted(reason: reason, ..),
+        ..,
+      ),
+      ..
+    ] -> reason
+    _ -> "artifact_recovery_failed"
+  }
 }
 
 fn finish_operator_command_effect(
@@ -3039,6 +3239,7 @@ fn operator_command_targets_session(
     | command.ResumeDispatch
     | command.ReloadWorkflow
     | command.RetryIssue(_)
+    | command.RetryWorkflowStep(_, _)
     | command.ParkIssue(_, _)
     | command.UnparkIssue(_)
     | command.RunScheduleNow(_) -> False
