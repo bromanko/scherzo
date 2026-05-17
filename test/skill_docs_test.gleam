@@ -127,6 +127,10 @@ pub fn scherzo_operator_reference_documents_artifacts_and_linear_cli_test() {
   )
   assert_contains(reference, "direnv exec . linear issue comment add LIV-104")
   assert_contains(reference, "direnv exec . linear issue update LIV-104")
+  assert_contains(
+    reference,
+    "issue create` and `issue update` do not currently support `--json`",
+  )
   assert_contains(reference, "direnv exec . linear api")
   assert_contains(reference, "curl https://api.linear.app/graphql")
   assert_contains(reference, "LINEAR_API_KEY")
