@@ -302,21 +302,20 @@ pub fn native_review_prompts_and_tool_guidance_use_relative_input_ref_examples_t
   })
 
   let assert Ok(extension) =
-    simplifile.read(".pi/extensions/scherzo-review-lane-draft/index.ts")
-  assert_contains(extension, "artifacts/review/prepare_review/diff.patch")
-  assert_contains(extension, "never use $SCHERZO_RUN_ROOT")
+    simplifile.read(".pi/extensions/scherzo-structured-output/index.ts")
+  assert_contains(extension, "remote_mutations: \"none\"")
+  assert_contains(extension, "arguments must be a JSON object")
 }
 
 pub fn review_lane_draft_tool_is_enabled_for_implementation_lane_steps_test() {
-  let assert Ok(extension) =
-    simplifile.read(".pi/extensions/scherzo-review-lane-draft/index.ts")
-
-  assert_contains(extension, "\"implementation\"")
-  assert_contains(extension, "\"execplan-implementation\"")
-  assert_contains(extension, "\"execplan-implementation-v2\"")
-  assert_contains(extension, "SCHERZO_STEP_ID")
-  assert_contains(extension, "lane_correctness")
-  assert_not_contains(extension, "review-native")
+  list.each(provider_review_workflow_paths(), fn(path) {
+    let assert Ok(contents) = simplifile.read(path)
+    assert_contains(contents, "tool_name: submit_review_lane_draft")
+    assert_contains(
+      contents,
+      "parameters_schema_path: .scherzo/workflows/schemas/provider/",
+    )
+  })
 }
 
 pub fn implementation_workflow_uses_native_agent_lane_steps_test() {

@@ -220,7 +220,7 @@ pub fn structured_output_tool_spec_rejects_nested_enum_keyword_test() {
   assert_error_contains(
     build(schema_path),
     "structured_output_tool_spec_provider_incompatible_schema",
-    "properties.draft_findings.items.properties.severity.enum",
+    "/properties/draft_findings/items/properties/severity/enum",
   )
 }
 
@@ -238,7 +238,7 @@ pub fn structured_output_tool_spec_rejects_nested_const_keyword_test() {
   assert_error_contains(
     build(schema_path),
     "structured_output_tool_spec_provider_incompatible_schema",
-    "properties.self_check.properties.summary.const",
+    "/properties/self_check/properties/summary/const",
   )
 }
 
@@ -256,7 +256,7 @@ pub fn structured_output_tool_spec_rejects_nested_all_of_keyword_test() {
   assert_error_contains(
     build(schema_path),
     "structured_output_tool_spec_provider_incompatible_schema",
-    "properties.target.allOf",
+    "/properties/target/allOf",
   )
 }
 
@@ -274,7 +274,7 @@ pub fn structured_output_tool_spec_rejects_nested_ref_keyword_test() {
   assert_error_contains(
     build(schema_path),
     "structured_output_tool_spec_provider_incompatible_schema",
-    "properties.target.$ref",
+    "/properties/target/$ref",
   )
 }
 
@@ -292,7 +292,7 @@ pub fn structured_output_tool_spec_rejects_union_type_array_test() {
   assert_error_contains(
     build(schema_path),
     "structured_output_tool_spec_provider_incompatible_schema",
-    "properties.summary.type",
+    "/properties/summary/type",
   )
 }
 

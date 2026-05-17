@@ -25,20 +25,26 @@ fn structured_spec(source: String) -> workflow_dag.StructuredOutputSpec {
 }
 
 fn workflow_with_structured_output(body: String) -> String {
-  "version: 1\nid: structured_review\nsteps:\n  - id: review\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n"
+  "version: 1\nid: structured_review\nsteps:\n  - id: review\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review\n"
   <> body
 }
 
 pub fn parses_json_schema_and_command_validators_test() {
   let spec =
     structured_spec(workflow_with_structured_output(
-      "      artifact_name: review_lane_draft\n      required: true\n      source:\n        type: final_response\n      format: json\n      schema:\n        type: object\n        required:\n          - schema_version\n          - artifact_type\n          - findings\n      validators:\n        - name: review_lane_shape\n          type: json_schema\n          path: schemas/review_lane_draft.schema.json\n          draft: \"2020-12\"\n        - name: review_lane_semantics\n          type: command\n          argv:\n            - python3\n            - scripts/scherzo-review\n            - validate-structured-output\n            - --validator\n            - review_lane_draft\n          timeout_ms: 30000\n          working_directory: repository\n      validation_retries: 1\n",
+      "      artifact_name: review_lane_draft\n      required: true\n      format: json\n      schema:\n        type: object\n        required:\n          - schema_version\n          - artifact_type\n          - findings\n      validators:\n        - name: review_lane_shape\n          type: json_schema\n          path: schemas/review_lane_draft.schema.json\n          draft: \"2020-12\"\n        - name: review_lane_semantics\n          type: command\n          argv:\n            - python3\n            - scripts/scherzo-review\n            - validate-structured-output\n            - --validator\n            - review_lane_draft\n          timeout_ms: 30000\n          working_directory: repository\n      validation_retries: 1\n",
     ))
 
   assert spec.format == workflow_dag.StructuredJson
   assert spec.artifact_name == "review_lane_draft"
   assert spec.required == True
-  assert spec.source == structured_output_source.FinalResponseSource
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: "submit_review",
+      require_single: True,
+      reject_sibling_tool_calls: True,
+      parameters_schema_path: None,
+    )
   assert spec.schema
     == workflow_dag.StructuredObjectSchema([
       "schema_version",
@@ -77,7 +83,13 @@ pub fn parses_validator_defaults_test() {
 
   assert spec.artifact_name == "review"
   assert spec.required == True
-  assert spec.source == structured_output_source.FinalResponseSource
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: "submit_review",
+      require_single: True,
+      reject_sibling_tool_calls: True,
+      parameters_schema_path: None,
+    )
   assert spec.schema == workflow_dag.StructuredObjectSchema([])
   assert spec.validators
     == [

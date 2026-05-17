@@ -178,7 +178,7 @@ pub fn review_lane_draft_schema_rejects_absolute_input_ref_paths_test() {
     )
   let assert Ok(contents) =
     simplifile.read(
-      "test/fixtures/review-lane-draft-tool/absolute-path.arguments.json",
+      "test/fixtures/structured_output/review_lane_draft_absolute_path.json",
     )
   let absolute_input_ref_contents =
     contents
@@ -208,7 +208,7 @@ pub fn review_lane_draft_schema_rejects_env_placeholder_input_ref_paths_test() {
     )
   let assert Ok(contents) =
     simplifile.read(
-      "test/fixtures/review-lane-draft-tool/absolute-path.arguments.json",
+      "test/fixtures/structured_output/review_lane_draft_absolute_path.json",
     )
   let env_placeholder_contents =
     contents

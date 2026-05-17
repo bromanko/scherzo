@@ -46,22 +46,6 @@ RUNNER_METADATA_FIELDS = {
     "remote_mutations",
 }
 
-PROVIDER_SCHEMA_ALLOWED_KEYWORDS = {
-    "type",
-    "description",
-    "properties",
-    "required",
-    "additionalProperties",
-    "items",
-    "minLength",
-    "maxLength",
-    "minimum",
-    "maximum",
-    "minItems",
-    "maxItems",
-    "pattern",
-}
-
 REQUIRED_SUBMISSION_FIELDS = [
     "draft_findings",
     "review_notes",
@@ -237,12 +221,23 @@ def load_provider_schema(schema_path: Path) -> dict[str, Any]:
 
 def check_provider_schema(schema_path: Path) -> dict[str, Any]:
     schema = load_provider_schema(schema_path)
-    validate_provider_schema_keywords(schema, str(schema_path))
-    if schema.get("type") != "object":
-        raise ContractError(
-            "structured_output_tool_spec_provider_incompatible_schema",
-            f"provider schema {schema_path} must have top-level type object",
-        )
+    proc = subprocess.run(
+        [
+            "direnv",
+            "exec",
+            ".",
+            "scripts/scherzo-structured-output-contract",
+            "check-schema",
+            "--schema",
+            str(schema_path),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        message = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise ContractError("structured_output_tool_spec_provider_incompatible_schema", message)
     check_jsonschema_available()
     try:
         Draft202012Validator.check_schema(schema)  # type: ignore[union-attr]
@@ -252,38 +247,6 @@ def check_provider_schema(schema_path: Path) -> dict[str, Any]:
             f"provider schema {schema_path} is not a valid JSON Schema: {exc}",
         ) from exc
     return schema
-
-
-def validate_provider_schema_keywords(schema: Any, schema_path: str) -> None:
-    def walk_schema(value: Any, location: str) -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if key not in PROVIDER_SCHEMA_ALLOWED_KEYWORDS:
-                    raise ContractError(
-                        "structured_output_tool_spec_provider_incompatible_schema",
-                        f"provider schema {schema_path} contains disallowed keyword {key} at {join_location(location, key)}",
-                    )
-                if key == "type" and isinstance(child, list):
-                    raise ContractError(
-                        "structured_output_tool_spec_provider_incompatible_schema",
-                        f"provider schema {schema_path} contains disallowed keyword type at {join_location(location, key)}",
-                    )
-                child_location = join_location(location, key)
-                if key == "properties":
-                    if isinstance(child, dict):
-                        for property_name, property_schema in child.items():
-                            walk_schema(property_schema, join_location(child_location, property_name))
-                elif key in {"items", "additionalProperties"}:
-                    walk_schema(child, child_location)
-        elif isinstance(value, list):
-            for index, item in enumerate(value):
-                walk_schema(item, f"{location}[{index}]")
-
-    walk_schema(schema, "")
-
-
-def join_location(location: str, key: str) -> str:
-    return key if not location else f"{location}.{key}"
 
 
 def validate_submission_against_provider_schema(submission: dict[str, Any], lane_id: str) -> None:
@@ -622,8 +585,41 @@ def check_all_provider_schemas() -> dict[str, Any]:
     return {"status": "passed" if not errors else "failed", "lanes": lanes, "errors": errors}
 
 
+def generic_workflow_contract(workflow_path: Path, output_dir: Path) -> dict[str, Any]:
+    generic_dir = output_dir / "generic-structured-output-contract"
+    proc = subprocess.run(
+        [
+            "direnv",
+            "exec",
+            ".",
+            "scripts/scherzo-structured-output-contract",
+            "check-workflow",
+            "--workflow",
+            str(workflow_path),
+            "--output-dir",
+            str(generic_dir),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    report_path = generic_dir / "structured-output-contract-report.v1.json"
+    if report_path.exists():
+        report = load_json(report_path)
+        if isinstance(report, dict):
+            return report
+    message = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+    return {
+        "status": "failed",
+        "code": "structured_output_contract_failed",
+        "message": message,
+        "workflow": str(workflow_path),
+    }
+
+
 def offline_report(workflow_path: Path, fixtures_dir: Path, output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    generic_contract = generic_workflow_contract(workflow_path, output_dir)
     schema_status = check_all_provider_schemas()
     workflow_status = check_workflow_migration(workflow_path)
     fixture_outcomes = run_fixture_suite(fixtures_dir, output_dir)
@@ -636,6 +632,7 @@ def offline_report(workflow_path: Path, fixtures_dir: Path, output_dir: Path) ->
         "workflow": str(workflow_path),
         "fixtures": str(fixtures_dir),
         "remote_mutations": "none",
+        "generic_contract": generic_contract,
         "schema_status": schema_status,
         "workflow_status": workflow_status,
         "validator_status": workflow_status,
@@ -650,7 +647,7 @@ def offline_report(workflow_path: Path, fixtures_dir: Path, output_dir: Path) ->
             for lane_id in lane_ids()
         },
     }
-    report["status"] = "passed" if schema_status["status"] == "passed" and workflow_status["status"] == "passed" and fixture_status == "passed" else "failed"
+    report["status"] = "passed" if generic_contract.get("status") == "passed" and schema_status["status"] == "passed" and workflow_status["status"] == "passed" and fixture_status == "passed" else "failed"
     report_path = output_dir / "contract-report.v1.json"
     write_json(report_path, report)
     return report

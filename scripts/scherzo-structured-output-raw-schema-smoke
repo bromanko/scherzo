@@ -12,25 +12,24 @@ try:
 except Exception as exc:
     raise SystemExit(f"jsonschema_unavailable:{exc}")
 root = Path('test/fixtures/structured_output/pi_raw_schema')
-schema = json.loads(Path('.scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json').read_text())
-valid = json.loads((root / 'valid-review-lane.arguments.json').read_text())
-jsonschema.Draft202012Validator(schema).validate(valid)
+schema = json.loads(Path('.scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json').read_text())
+validator = jsonschema.Draft202012Validator(schema)
+validator.validate(json.loads((root / 'valid-review-lane.arguments.json').read_text()))
 for name in [
-    'invalid-placeholder-path.arguments.json',
     'invalid-review-note-category.arguments.json',
     'invalid-evidence-target-field.arguments.json',
-    'invalid-correctness-lane-id.arguments.json',
 ]:
     payload = json.loads((root / name).read_text())
     try:
-        jsonschema.Draft202012Validator(schema).validate(payload)
+        validator.validate(payload)
     except jsonschema.ValidationError:
         continue
     raise SystemExit(f'invalid_fixture_accepted:{name}')
 spec = json.loads((root / 'spec.correctness.json').read_text())
 assert spec['tool_name'] == 'submit_structured_output'
-assert spec['parameters_schema_path'] == '.scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json'
+assert spec['parameters_schema_path'] == '.scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json'
 assert spec['parameters_schema'].get('type') == 'object'
+assert 'validation_schema' not in spec
 assert spec['require_single'] is True
 assert spec['reject_sibling_tool_calls'] is True
 assert spec['terminate'] is True
@@ -123,13 +122,10 @@ if ! grep -q 'Validation failed for tool.*submit_structured_output' "$stdout_pat
 fi
 missing_required_transcript="$stdout_path"
 
-run_smoke_case invalid-lane-id invalid-correctness-lane-id.arguments.json
-if ! grep -q 'failed configured JSON Schema' "$stdout_path"; then
-  fail_smoke invalid_lane_id_not_rejected_by_local_schema_validation
+run_smoke_case invalid-category invalid-review-note-category.arguments.json
+if ! grep -q 'Validation failed for tool.*submit_structured_output' "$stdout_path"; then
+  fail_smoke invalid_category_not_rejected_by_provider_validation
 fi
-if ! grep -q '/lane/id: must equal' "$stdout_path"; then
-  fail_smoke invalid_lane_id_diagnostic_missing
-fi
-invalid_lane_id_transcript="$stdout_path"
+invalid_category_transcript="$stdout_path"
 
-printf 'STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=passed pi_version=%s invalid_required=rejected_before_execute invalid_lane_id=rejected_by_local_schema valid=accepted terminate=true extension=active transcripts=%s,%s\n' "$pi_version" "$missing_required_transcript" "$invalid_lane_id_transcript"
+printf 'STRUCTURED_OUTPUT_RAW_SCHEMA_SMOKE status=passed pi_version=%s invalid_required=rejected_before_execute invalid_category=rejected_before_execute valid=accepted terminate=true extension=active transcripts=%s,%s\n' "$pi_version" "$missing_required_transcript" "$invalid_category_transcript"

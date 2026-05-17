@@ -87,7 +87,7 @@ function schemaInvalidFixture(): Record<string, unknown> {
 	const configuredFixture = process.env.SCHERZO_RAW_SCHEMA_SMOKE_INVALID_FIXTURE;
 	if (configuredFixture) return fixture(configuredFixture);
 	const invalid = fixture("valid-review-lane.arguments.json");
-	delete invalid.schema_version;
+	delete invalid.draft_findings;
 	return invalid;
 }
 

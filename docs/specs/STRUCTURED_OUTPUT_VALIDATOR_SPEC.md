@@ -17,7 +17,7 @@ Structured output is the workflow contract that turns an agent step's model resp
 This specification covers:
 
 - workflow YAML structured-output declaration syntax,
-- final-response and Pi tool-call source extraction,
+- Pi tool-call source extraction for production structured output,
 - baseline JSON admission checks owned by Scherzo,
 - ordered generic validator execution,
 - command validator process contracts,
@@ -50,9 +50,9 @@ This specification does not define new workflow domains, review synthesis semant
 
 **Structured artifact**: the retained artifact written by Scherzo after a structured output passes source extraction, baseline admission, and every configured validator.
 
-**Source**: the place Scherzo extracts the candidate JSON value from. Version 1 supports `final_response` and `pi_tool_call`.
+**Source**: the place Scherzo extracts the candidate JSON value from. Production structured output requires `pi_tool_call`.
 
-**Final-response source**: a source that captures the final assistant response text and requires the entire trimmed response to be one JSON document.
+**Final-response source**: a legacy/internal source shape retained only for historical decoding and non-production helper coverage. It is not a supported production workflow declaration.
 
 **Pi tool-call source**: a source that captures object-valued JSON arguments from one successful Pi tool call with a configured name.
 
@@ -116,7 +116,7 @@ A structured-output declaration appears under an agent step:
 
 **SOV-DECL-005:** `validation_retries` MAY be omitted and defaults to `1`. Version 1 MUST accept only integer values `0` and `1`.
 
-**SOV-DECL-006:** `source` MAY be omitted and defaults to `{type: final_response}`. When present, it MUST be a map with a supported `type`.
+**SOV-DECL-006:** `source` is REQUIRED for production structured output and MUST be a map with `type: pi_tool_call`. Scherzo MUST reject omitted `source` blocks and `source.type: final_response` in parsed workflow definitions.
 
 **SOV-DECL-007:** `schema` MAY be omitted and defaults to `{type: object, required: []}`. Version 1 `schema` is baseline admission, not JSON Schema. If present, `schema.type` MUST be `object` when provided, and `schema.required` MUST be a list of string top-level keys when provided.
 
@@ -138,6 +138,8 @@ Source extraction produces a candidate JSON document for baseline admission. Sou
 
 ### 4.1 Final response
 
+`final_response` is not a production structured-output source. The semantics below document the legacy/internal shape only.
+
 **SOV-SRC-001:** For `source.type: final_response`, Scherzo MUST use the final assistant response capture for the agent attempt.
 
 **SOV-SRC-002:** If the final response capture is marked truncated, Scherzo MUST reject it before JSON parsing.
@@ -148,7 +150,7 @@ Source extraction produces a candidate JSON document for baseline admission. Sou
 
 ### 4.2 Pi tool call
 
-A Pi tool-call source has this shape:
+A production Pi tool-call source has this shape:
 
 ```yaml
 source:
