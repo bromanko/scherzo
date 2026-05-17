@@ -15,7 +15,7 @@ let
   '';
 in
 {
-  env.LINEAR_DEFAULT_PROJECT = "Scherzo";
+  env.LINEAR_DEFAULT_PROJECT = "Scherzo Core";
   env.SCHERZO_GITHUB_REPO = "scherzo-systems/scherzo";
   env.SCHERZO_LINEAR_PROJECT_SLUG = "scherzo-f6f4bc92d6d7";
 

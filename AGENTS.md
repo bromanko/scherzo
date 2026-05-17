@@ -38,7 +38,7 @@ direnv exec . linear issue query --team LIV --json
 direnv exec . linear issue comment add LIV-123 --body "Done"
 ```
 
-The wrapper uses `LINEAR_API_KEY` and falls back to `SCHERZO_AGENT_LINEAR_API_KEY` when `LINEAR_API_KEY` is unset. It also applies `LINEAR_DEFAULT_PROJECT` as the default `--project` for `linear issue create` when the command does not specify one; this repository's devenv defaults it to `Scherzo`, and `.env.local` may override it. Keep tokens out of logs. Use direct `curl https://api.linear.app/graphql` only when `linear` lacks the required operation or for low-level Scherzo transport diagnostics.
+The wrapper uses `LINEAR_API_KEY` and falls back to `SCHERZO_AGENT_LINEAR_API_KEY` when `LINEAR_API_KEY` is unset. It also applies `LINEAR_DEFAULT_PROJECT` as the default `--project` for `linear issue create` when the command does not specify one; this repository's devenv defaults it to `Scherzo Core`, and `.env.local` may override it. Keep tokens out of logs. Use direct `curl https://api.linear.app/graphql` only when `linear` lacks the required operation or for low-level Scherzo transport diagnostics.
 
 ## Async Gleam tests
 
