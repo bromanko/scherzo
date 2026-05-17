@@ -513,7 +513,32 @@ fn existing_output_record(
   workspace_root: String,
   run_id: String,
 ) -> Result(Option(ArtifactWritten), CheckpointError) {
-  existing_manifest_record(workspace_root, run_id, output_record_artifact)
+  use ledger_path <- result.try(
+    ledger.path_for_workspace_root(workspace_root)
+    |> result.map_error(fn(error) {
+      CheckpointAppendFailed(describe_ledger_error(error))
+    }),
+  )
+  use read <- result.try(
+    ledger.read_records(ledger_path)
+    |> result.map_error(fn(error) {
+      CheckpointAppendFailed(describe_ledger_error(error))
+    }),
+  )
+  Ok(
+    list.fold(read.records, None, fn(found, ledger_record) {
+      case ledger_record.body {
+        record.WorkflowRepairRequested(run_id: repaired_run_id, ..)
+          if repaired_run_id == run_id
+        -> None
+        _ ->
+          case output_record_artifact(ledger_record.body, run_id) {
+            Some(artifact) -> Some(artifact)
+            None -> found
+          }
+      }
+    }),
+  )
 }
 
 fn existing_manifest_record(

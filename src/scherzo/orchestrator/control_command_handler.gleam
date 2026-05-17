@@ -78,6 +78,16 @@ pub fn apply(
         context,
         context.retry_issue(context.state, operator_command, issue_ref),
       )
+    command.RetryWorkflowStep(_, _) -> {
+      let result =
+        command.rejected(
+          operator_command,
+          "retry_step_requires_daemon_shell",
+          Some("retry-step must be handled by the daemon shell path"),
+        )
+      log_context_result(context, context.state, result, [])
+      #(context.state, result)
+    }
     command.ParkIssue(issue_ref, reason) ->
       log_transition(
         context,

@@ -289,6 +289,21 @@ pub fn parse_operator_commands_test() {
       False,
       command.RetryIssue(command.IssueIdentifier("ABC-123")),
     ))
+  assert ctl.parse(["retry-step", "ABC-123", "--step", "build"])
+    == Ok(ctl.Operator(
+      None,
+      False,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepAutoTarget("ABC-123"),
+        Some("build"),
+      ),
+    ))
+  assert ctl.parse(["retry-step", "run:run-1"])
+    == Ok(ctl.Operator(
+      None,
+      False,
+      command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
+    ))
   assert ctl.parse(["park", "ABC-123", "--reason", "manual", "--yes"])
     == Ok(ctl.Operator(
       None,
@@ -361,6 +376,7 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "attach --raw <session-ref>")
   assert string.contains(usage, "attach --raw --json <session-ref>")
   assert string.contains(usage, "pause")
+  assert string.contains(usage, "retry-step <target>")
   assert string.contains(usage, "abort <session-ref> --yes")
   assert string.contains(usage, "ui respond")
   assert string.contains(usage, "cleanup")
@@ -375,6 +391,7 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "--verbose")
   assert string.contains(usage, "--since-cursor <n>")
   assert string.contains(usage, "--dry-run")
+  assert string.contains(usage, "--step <step-id>")
 }
 
 pub fn schedules_logs_last_replays_retained_session_events_test() {

@@ -5,6 +5,12 @@ pub type IssueRef {
   IssueIdentifier(String)
 }
 
+pub type RetryWorkflowStepTarget {
+  RetryWorkflowStepAutoTarget(String)
+  RetryWorkflowStepIssueRef(IssueRef)
+  RetryWorkflowStepRunId(String)
+}
+
 pub type UiResponse {
   UiCancel
   UiValue(String)
@@ -15,6 +21,7 @@ pub type OperatorCommand {
   ResumeDispatch
   ReloadWorkflow
   RetryIssue(IssueRef)
+  RetryWorkflowStep(target: RetryWorkflowStepTarget, step_id: Option(String))
   ParkIssue(IssueRef, reason: String)
   UnparkIssue(IssueRef)
   AbortSession(session_id: String)
@@ -47,6 +54,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     ResumeDispatch -> "resume"
     ReloadWorkflow -> "reload"
     RetryIssue(_) -> "retry"
+    RetryWorkflowStep(_, _) -> "retry_step"
     ParkIssue(_, _) -> "park"
     UnparkIssue(_) -> "unpark"
     AbortSession(_) -> "abort"
@@ -62,6 +70,8 @@ pub fn command_target(command: OperatorCommand) -> Option(String) {
     PauseDispatch | ResumeDispatch | ReloadWorkflow -> None
     RetryIssue(issue_ref) | ParkIssue(issue_ref, _) | UnparkIssue(issue_ref) ->
       Some(issue_ref_to_string(issue_ref))
+    RetryWorkflowStep(target, _) ->
+      Some(retry_workflow_step_target_to_string(target))
     AbortSession(session_id)
     | StopAfterCurrentTurn(session_id)
     | PromptSession(session_id, _)
@@ -74,6 +84,16 @@ pub fn issue_ref_to_string(issue_ref: IssueRef) -> String {
   case issue_ref {
     IssueId(id) -> id
     IssueIdentifier(identifier) -> identifier
+  }
+}
+
+pub fn retry_workflow_step_target_to_string(
+  target: RetryWorkflowStepTarget,
+) -> String {
+  case target {
+    RetryWorkflowStepAutoTarget(target) -> target
+    RetryWorkflowStepIssueRef(issue_ref) -> issue_ref_to_string(issue_ref)
+    RetryWorkflowStepRunId(run_id) -> run_id
   }
 }
 

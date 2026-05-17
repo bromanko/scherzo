@@ -12,6 +12,16 @@ pub fn command_names_and_targets_are_stable_test() {
   assert command.command_name(command.RetryIssue(issue_ref)) == "retry"
   assert command.command_target(command.RetryIssue(issue_ref))
     == Some("ABC-123")
+  assert command.command_name(command.RetryWorkflowStep(
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("step-1"),
+    ))
+    == "retry_step"
+  assert command.command_target(command.RetryWorkflowStep(
+      command.RetryWorkflowStepAutoTarget("ABC-123"),
+      None,
+    ))
+    == Some("ABC-123")
   assert command.command_name(command.ParkIssue(issue_ref, "manual")) == "park"
   assert command.command_target(command.ParkIssue(issue_ref, "manual"))
     == Some("ABC-123")

@@ -215,6 +215,8 @@ fn authenticate(
       protocol.ReloadWorkflow(id, control_file.token)
     protocol.RetryIssue(id, _, issue_ref) ->
       protocol.RetryIssue(id, control_file.token, issue_ref)
+    protocol.RetryWorkflowStep(id, _, target, step_id) ->
+      protocol.RetryWorkflowStep(id, control_file.token, target, step_id)
     protocol.ParkIssue(id, _, issue_ref, reason) ->
       protocol.ParkIssue(id, control_file.token, issue_ref, reason)
     protocol.UnparkIssue(id, _, issue_ref) ->

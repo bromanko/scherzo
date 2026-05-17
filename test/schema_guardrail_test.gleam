@@ -497,6 +497,26 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "WorkflowRepairRequested",
+      "workflow_repair_requested",
+      record.with_id(
+        "record-workflow-repair-requested",
+        1006,
+        record.WorkflowRepairRequested(
+          run_id: "workflow-run-3",
+          workflow_id: "implementation",
+          issue_id: "issue-3",
+          issue_identifier: "LIV-3",
+          requested_target: "workflow-run-3",
+          requested_step_id: Some("implement"),
+          selected_step_id: "implement",
+          failed_attempt_index: 1,
+          next_attempt_index: 2,
+          reason: "retry-step",
+        ),
+      ),
+    ),
+    LedgerExample(
       "StepAttemptPrepared",
       "step_attempt_prepared",
       record.with_id(
@@ -1165,6 +1185,15 @@ fn request_examples() -> List(RequestExample) {
       ),
     ),
     RequestExample(
+      "RetryWorkflowStep",
+      protocol.RetryWorkflowStep(
+        "req-retry-step",
+        "secret",
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("build"),
+      ),
+    ),
+    RequestExample(
       "ParkIssue",
       protocol.ParkIssue(
         "req-park",
@@ -1256,6 +1285,7 @@ fn projection_fixture_projection() -> projection.Projection {
     ]),
     workflow_input_manifests: dict.new(),
     workflow_output_manifests: dict.new(),
+    workflow_repairs: dict.new(),
     step_attempts: dict.from_list([
       #(
         "workflow-run-1:implement:1",

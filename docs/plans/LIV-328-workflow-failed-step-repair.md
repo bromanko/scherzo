@@ -63,8 +63,8 @@ Fifth, harden the behavior with sequential, parallel, drift, corruption, ambigui
 ## Progress
 
 - [x] (2026-05-16 00:00Z) Drafted the human-reviewable ExecPlan v2 review document for LIV-328.
-- [ ] Implementation pack to be consumed by Scherzo's canonical bundle generator.
-- [ ] Code implementation and validation not yet started.
+- [x] (2026-05-17 00:00Z) Consumed the implementation pack and added the `retry-step` command, protocol, CLI, and Linear parsing surface with request/schema coverage.
+- [x] (2026-05-17 00:00Z) Added `WorkflowRepairRequested`, repair-aware projection/output-manifest handling, a pure repair planner, and daemon wiring that reopens a failed run and resumes it through the recovered workflow path.
 
 ## Decision Log
 
@@ -83,6 +83,14 @@ Fifth, harden the behavior with sequential, parallel, drift, corruption, ambigui
 - Decision: Treat `retry-step` itself as sufficient command-step confirmation for the MVP.
   Rationale: The command is already explicit operator intent, while startup recovery and other non-operator paths remain unable to retry command steps automatically.
   Date: 2026-05-16
+
+- Decision: Land the operator-facing `retry-step` command surface before the durable repair planner.
+  Rationale: This keeps the first implementation slice small and testable while preserving full `retry` semantics and leaving the actual repair path fail-closed until the planner and ledger work land.
+  Date: 2026-05-17
+
+- Decision: Make pre-repair output manifests stale as soon as a repair request is recorded for the same run id.
+  Rationale: Same-run repair reuses the original run id, so the old failed output manifest must not block writing the repaired workflow outputs after the resumed attempt completes.
+  Date: 2026-05-17
 
 ## Validation and Acceptance
 

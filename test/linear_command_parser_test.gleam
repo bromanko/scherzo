@@ -40,6 +40,14 @@ pub fn parses_issue_targeted_commands_test() {
   assert retry.source_comment_id == comment_id
   assert retry.command == command.RetryIssue(command.IssueId(issue_id))
 
+  let assert Ok(Some(retry_step)) = parse("/scherzo retry-step --step build")
+  assert retry_step.command
+    == command.RetryWorkflowStep(
+      command.RetryWorkflowStepIssueRef(command.IssueId(issue_id)),
+      Some("build"),
+    )
+  assert retry_step.excerpt == "build"
+
   let assert Ok(Some(park)) = parse("  /scherzo park --reason waiting")
   assert park.command == command.ParkIssue(command.IssueId(issue_id), "waiting")
   assert park.excerpt == "waiting"
@@ -97,6 +105,8 @@ pub fn rejects_malformed_explicit_commands_test() {
     parse("/scherzo continue")
   let assert Error(linear_parser.MissingArgument("prompt")) =
     parse("/scherzo prompt")
+  let assert Error(linear_parser.MissingArgument("step")) =
+    parse("/scherzo retry-step --step")
   let assert Error(linear_parser.MissingArgument("reason")) =
     parse("/scherzo park --reason")
   let assert Error(linear_parser.MissingArgument("value")) =
