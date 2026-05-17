@@ -148,7 +148,7 @@ The validator is deliberately minimal and dependency-free. The JSON Schema remai
 
 ## Manual legacy specialist lane entrypoint
 
-`scripts/scherzo-review run-lane` remains available for local/manual artifact validation and historical fixture coverage only. It is not the production staged-review path for implementation workflows, and operators must not use `SCHERZO_STAGED_REVIEW_AGENT_BACKEND` or `--agent-backend heuristic|fixture|external` to route normal implementation review. Normal implementation and execplan-implementation-v2 runs use native Scherzo `kind: agent` lane steps with `submit_review_lane_draft` structured-output tool submissions.
+`scripts/scherzo-review run-lane` remains available for local/manual artifact validation and historical fixture coverage only. It is not the production staged-review path for implementation workflows, and operators must not use `SCHERZO_STAGED_REVIEW_AGENT_BACKEND` or `--agent-backend heuristic|fixture|external` to route normal implementation review. Normal implementation and execplan-implementation runs use native Scherzo `kind: agent` lane steps with `submit_review_lane_draft` structured-output tool submissions.
 
 When intentionally validating the legacy helper, run one specialist lane against a diff source plus an existing `ReviewBrief` and choose an explicit backend. The `heuristic` backend preserves the deterministic first-version lane behavior, `fixture` exercises deterministic local fixtures, and `external` exercises the legacy external command contract when `SCHERZO_REVIEW_AGENT_COMMAND` is configured.
 
@@ -239,9 +239,9 @@ scripts/scherzo-review-lane-contract offline \
   --output-dir tmp/scherzo-review-lane-contract/offline/implementation
 
 scripts/scherzo-review-lane-contract offline \
-  --workflow .scherzo/workflows/execplan-implementation-v2.yaml \
+  --workflow .scherzo/workflows/execplan-implementation.yaml \
   --fixtures test/fixtures/review-lane-contract \
-  --output-dir tmp/scherzo-review-lane-contract/offline/execplan-implementation-v2
+  --output-dir tmp/scherzo-review-lane-contract/offline/execplan-implementation
 ```
 
 It first delegates generic source-policy, provider-schema, prompt/tool, and provider/downstream-alignment checks to `scripts/scherzo-structured-output-contract check-workflow`, then verifies the routed implementation review workflow wiring, runs all lane fixtures, materializes valid submissions into canonical drafts, runs canonical JSON Schema and semantic validation, and writes `contract-report.v1.json` with `remote_mutations: "none"`.
@@ -274,7 +274,7 @@ When `SCHERZO_REVIEW_LANE_PREFLIGHT_MODE=required-live`, dispatcher preflight us
 
 ## Checked-in workflow integration
 
-The dogfood `implementation` and `execplan-implementation-v2` workflows generate the brief immediately before review and store review artifacts under the run artifact directory:
+The dogfood `implementation` and `execplan-implementation` workflows generate the brief immediately before review and store review artifacts under the run artifact directory:
 
 ```text
 $SCHERZO_RUN_ROOT/artifacts/review/<step-id>/

@@ -216,7 +216,7 @@ pub fn tracker_adapter_runbook_documents_capability_matrix_test() {
   assert_contains(path, runbook, "Linear issue")
   assert_contains(path, runbook, "tracker-smoke")
   assert_contains(path, runbook, "linear-smoke")
-  assert_contains(path, runbook, "scripts/scherzo-execplan-v2")
+  assert_contains(path, runbook, "scripts/scherzo-execplan")
   assert_contains(path, runbook, "scheduled_failures")
   assert_contains(path, runbook, "remote_commands")
   assert_contains(path, runbook, "| Linear | Production |")
@@ -281,16 +281,16 @@ pub fn getting_started_prefers_tracker_doctor_aliases_test() {
 pub fn execplan_v2_workflows_use_task_operator_language_test() {
   let dogfood_readme_path = ".scherzo/README.md"
   let dogfood_readme = read_file(dogfood_readme_path)
-  assert_contains(dogfood_readme_path, dogfood_readme, "workflow:execplan-v2")
+  assert_contains(dogfood_readme_path, dogfood_readme, "workflow:execplan")
   assert_contains(
     dogfood_readme_path,
     dogfood_readme,
-    "workflow:execplan-revision-v2",
+    "workflow:execplan-revision",
   )
   assert_contains(
     dogfood_readme_path,
     dogfood_readme,
-    "workflow:execplan-implementation-v2",
+    "workflow:execplan-implementation",
   )
   assert_contains(
     dogfood_readme_path,
@@ -298,7 +298,7 @@ pub fn execplan_v2_workflows_use_task_operator_language_test() {
     "Linear-backed implementation task",
   )
 
-  let draft_prompt_path = ".scherzo/workflows/prompts/execplan-v2-draft.md"
+  let draft_prompt_path = ".scherzo/workflows/prompts/execplan-draft.md"
   let draft_prompt = read_file(draft_prompt_path)
   assert_contains(draft_prompt_path, draft_prompt, "for this task")
   assert_contains(draft_prompt_path, draft_prompt, "Task:")
@@ -309,16 +309,16 @@ pub fn execplan_v2_workflows_use_task_operator_language_test() {
   )
 
   let implementation_workflow_path =
-    ".scherzo/workflows/execplan-implementation-v2.yaml"
+    ".scherzo/workflows/execplan-implementation.yaml"
   assert_contains(
     implementation_workflow_path,
     read_file(implementation_workflow_path),
-    "execplan-implementation-v2-verify-completion.md",
+    "execplan-implementation-verify-completion.md",
   )
 
   let pi_wrapper_path = "scripts/scherzo-pi"
   let pi_wrapper = read_file(pi_wrapper_path)
-  assert_contains(pi_wrapper_path, pi_wrapper, "execplan-v2")
-  assert_contains(pi_wrapper_path, pi_wrapper, "execplan-revision-v2")
-  assert_contains(pi_wrapper_path, pi_wrapper, "execplan-implementation-v2")
+  assert_contains(pi_wrapper_path, pi_wrapper, "execplan")
+  assert_contains(pi_wrapper_path, pi_wrapper, "execplan-revision")
+  assert_contains(pi_wrapper_path, pi_wrapper, "execplan-implementation")
 }

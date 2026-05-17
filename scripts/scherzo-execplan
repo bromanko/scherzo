@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic helpers for Scherzo ExecPlan v2 bundle workflows."""
+"""Deterministic helpers for Scherzo ExecPlan bundle workflows."""
 
 from __future__ import annotations
 
@@ -57,11 +57,13 @@ LINEAR_ISSUE_URL_RE = re.compile(
 )
 LINEAR_ISSUE_IDENTIFIER_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
 FAILURE_PREFIX = "SCHERZO_FAILURE_CODE="
+CANONICAL_IMPLEMENTATION_WORKFLOW_LABEL = "workflow:execplan-implementation"
+LEGACY_IMPLEMENTATION_WORKFLOW_LABEL = "workflow:execplan-implementation-v2"
 
 
 def usage() -> None:
     print(
-        """Usage: scherzo-execplan-v2 <command> [options]
+        """Usage: scherzo-execplan <command> [options]
 
 Commands:
   validate-review-doc --path PATH
@@ -84,8 +86,23 @@ Commands:
 def fail(message: str, *, code: str | None = None, exit_code: int = 2) -> None:
     if code:
         print(f"{FAILURE_PREFIX}{code}", file=sys.stderr)
-    print(f"scherzo-execplan-v2: {message}", file=sys.stderr)
+    print(f"scherzo-execplan: {message}", file=sys.stderr)
     raise SystemExit(exit_code)
+
+
+def env_value(name: str, default: str = "", *, legacy: str | None = None) -> str:
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    if legacy:
+        value = os.environ.get(legacy, "").strip()
+        if value:
+            return value
+    return default
+
+
+def env_enabled(name: str, *, legacy: str | None = None) -> bool:
+    return bool(env_value(name, legacy=legacy))
 
 
 def canonical_json(value: Any) -> str:
@@ -299,7 +316,7 @@ def discover_changed_review_doc(write_path: Path) -> dict[str, Any]:
 
 
 def command_validate_review_doc(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan-v2 validate-review-doc")
+    parser = argparse.ArgumentParser(prog="scherzo-execplan validate-review-doc")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--path")
     group.add_argument("--discover-changed-review-doc", action="store_true")
@@ -460,7 +477,7 @@ def submission_payload(path: Path) -> dict[str, Any]:
 
 
 def now_iso() -> str:
-    fixed = os.environ.get("SCHERZO_EXECPLAN_V2_FIXED_TIME", "").strip()
+    fixed = env_value("SCHERZO_EXECPLAN_FIXED_TIME", legacy="SCHERZO_EXECPLAN_V2_FIXED_TIME")
     if fixed:
         return fixed
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -501,7 +518,7 @@ def materialize_pack(review_doc: Path, submission: Path, output: Path) -> dict[s
             "review_doc_sha256": review_meta["sha256"],
         },
         "provenance": {
-            "workflow_id": os.environ.get("SCHERZO_WORKFLOW_ID", "execplan-v2"),
+            "workflow_id": os.environ.get("SCHERZO_WORKFLOW_ID", "execplan"),
             "run_id": os.environ.get("SCHERZO_RUN_ID", "local-run"),
             "step_id": os.environ.get("SCHERZO_STEP_ID", "materialize_pack"),
             "created_at": now_iso(),
@@ -516,7 +533,7 @@ def materialize_pack(review_doc: Path, submission: Path, output: Path) -> dict[s
 
 
 def command_materialize_pack(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan-v2 materialize-pack")
+    parser = argparse.ArgumentParser(prog="scherzo-execplan materialize-pack")
     parser.add_argument("--review-doc")
     parser.add_argument("--review-doc-path-file")
     parser.add_argument("--submission")
@@ -546,6 +563,15 @@ def reject_bundle_self_hash(bundle: dict[str, Any]) -> None:
         fail("exec_plan_bundle must not store its own SHA-256 inside the bundle body: " + ", ".join(present))
 
 
+def canonicalize_execplan_bundle(bundle: Any) -> Any:
+    if not isinstance(bundle, dict):
+        return bundle
+    handoff = bundle.get("implementation_handoff")
+    if isinstance(handoff, dict) and handoff.get("workflow_label") == LEGACY_IMPLEMENTATION_WORKFLOW_LABEL:
+        handoff["workflow_label"] = CANONICAL_IMPLEMENTATION_WORKFLOW_LABEL
+    return bundle
+
+
 def load_and_validate_bundle(bundle_path: Path, *, bundle_sha256: str | None = None, artifact_root: str | None = None, repo_root_arg: str | None = None) -> tuple[dict[str, Any], dict[str, Any], Path]:
     bundle_data = path_bytes(bundle_path, code="execplan_v2_bundle_missing")
     actual_bundle_sha = sha256_bytes(bundle_data)
@@ -558,6 +584,7 @@ def load_and_validate_bundle(bundle_path: Path, *, bundle_sha256: str | None = N
     if not isinstance(bundle, dict):
         fail("bundle JSON must be an object", code="execplan_v2_bundle_missing")
     reject_bundle_self_hash(bundle)
+    canonicalize_execplan_bundle(bundle)
     validate_schema(bundle, EXEC_PLAN_BUNDLE_SCHEMA, root=repo_root(repo_root_arg))
     review_doc = bundle["review_doc"]
     review_path = review_doc_filesystem_path(review_doc["path"], repo_root(repo_root_arg))
@@ -591,7 +618,7 @@ def load_and_validate_bundle(bundle_path: Path, *, bundle_sha256: str | None = N
 
 
 def command_validate_bundle(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan-v2 validate-bundle")
+    parser = argparse.ArgumentParser(prog="scherzo-execplan validate-bundle")
     parser.add_argument("--bundle", required=True)
     parser.add_argument("--bundle-sha256")
     parser.add_argument("--artifact-root")
@@ -665,7 +692,7 @@ def write_publish_context(path: Path, *, review_meta: dict[str, Any], source_iss
 
 
 def publish_review_doc(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan-v2 publish-review-doc")
+    parser = argparse.ArgumentParser(prog="scherzo-execplan publish-review-doc")
     parser.add_argument("--review-doc-path-file", required=True)
     parser.add_argument("--publish-context", required=True)
     parser.add_argument("--previous-bundle")
@@ -705,27 +732,27 @@ def publish_review_doc(args: list[str]) -> None:
         unexpected = [record["path"] for record in records if record["path"] != str(review_path)]
         if unexpected:
             fail("refusing to publish review doc with unrelated checked-in changes: " + ", ".join(unexpected))
-    elif not os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_PUBLISH"):
-        fail("SCHERZO_WORKSPACE_DRIVER is required for publish-review-doc unless SCHERZO_EXECPLAN_V2_OFFLINE_PUBLISH=1")
+    elif not env_enabled("SCHERZO_EXECPLAN_OFFLINE_PUBLISH", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_PUBLISH"):
+        fail("SCHERZO_WORKSPACE_DRIVER is required for publish-review-doc unless SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1")
     source_issue = source_issue_from_context_or_env(previous.get("source_issue") if previous else None)
-    branch = "execplan-v2/" + slug(source_issue["identifier"] + "-" + source_issue["title"])[:80]
-    title_text = f"ExecPlan v2: {source_issue['identifier']} {source_issue['title']}"
+    branch = "execplan/" + slug(source_issue["identifier"] + "-" + source_issue["title"])[:80]
+    title_text = f"ExecPlan: {source_issue['identifier']} {source_issue['title']}"
     body_text = (
-        f"Adds a concise ExecPlan v2 review document.\n\nReview doc: `{review_meta['path']}`\n\n"
+        f"Adds a concise ExecPlan review document.\n\nReview doc: `{review_meta['path']}`\n\n"
         f"Source task: {source_issue['url']}\n\n"
         "Implementation details are retained in Scherzo artifacts rather than checked in.\n"
     )
     tmp = Path("tmp")
     tmp.mkdir(exist_ok=True)
-    title_file = tmp / "execplan-v2-pr-title.txt"
-    body_file = tmp / "execplan-v2-pr-body.md"
+    title_file = tmp / "execplan-pr-title.txt"
+    body_file = tmp / "execplan-pr-body.md"
     title_file.write_text(title_text + "\n", encoding="utf-8")
     body_file.write_text(body_text, encoding="utf-8")
     if workspace_driver_command():
         payload = workspace_driver_json([
             "publish-change",
             "--kind",
-            "execplan-v2",
+            "execplan",
             "--title-file",
             str(title_file),
             "--body-file",
@@ -741,10 +768,10 @@ def publish_review_doc(args: list[str]) -> None:
         pr = payload
     else:
         pr = {
-            "url": os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_PR_URL", "https://github.com/living-systems/scherzo/pull/0"),
+            "url": env_value("SCHERZO_EXECPLAN_OFFLINE_PR_URL", "https://github.com/living-systems/scherzo/pull/0", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_PR_URL"),
             "branch": branch,
-            "base_revision": os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_BASE", "offline-base"),
-            "head_revision": os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_HEAD", "offline-head"),
+            "base_revision": env_value("SCHERZO_EXECPLAN_OFFLINE_BASE", "offline-base", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_BASE"),
+            "head_revision": env_value("SCHERZO_EXECPLAN_OFFLINE_HEAD", "offline-head", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_HEAD"),
         }
     context = write_publish_context(
         Path(ns.publish_context),
@@ -802,7 +829,7 @@ def find_existing_handoff_issue(team: str, bundle_ref: str) -> dict[str, str] | 
         if not isinstance(item, dict):
             continue
         text = str(item.get("title") or "") + "\n" + str(item.get("description") or "")
-        if bundle_ref in text and issue_has_workflow_label(item, "workflow:execplan-implementation-v2"):
+        if bundle_ref in text and issue_has_workflow_label(item, "workflow:execplan-implementation"):
             return issue_result_from_json(item)
     return None
 
@@ -891,12 +918,12 @@ def handoff_issue_description(
         else "This description contains the final bundle hash required by the implementation workflow."
     )
     return (
-        f"Implement the ExecPlan v2 bundle produced for {source_issue['identifier']}.\n\n"
+        f"Implement the ExecPlan bundle produced for {source_issue['identifier']}.\n\n"
         f"Bundle ref: {bundle_ref}\n"
         f"Bundle sha256: {bundle_sha}\n"
         f"Review doc: {review_path}\n"
         f"Implementation pack sha256: {pack_sha}\n\n"
-        "Use `workflow:execplan-implementation-v2` after the review doc PR is merged and a human moves this task to Todo. "
+        "Use `workflow:execplan-implementation` after the review doc PR is merged and a human moves this task to Todo. "
         f"{note}\n"
     )
 
@@ -904,9 +931,9 @@ def handoff_issue_description(
 def create_or_reuse_handoff_issue(
     source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str
 ) -> dict[str, str]:
-    if os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_LINEAR") or not shutil.which("linear"):
-        identifier = os.environ.get("SCHERZO_EXECPLAN_V2_HANDOFF_IDENTIFIER", source_issue["identifier"] + "-IMPL")
-        url = os.environ.get("SCHERZO_EXECPLAN_V2_HANDOFF_URL", f"https://linear.app/living-systems/issue/{identifier}")
+    if env_enabled("SCHERZO_EXECPLAN_OFFLINE_LINEAR", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_LINEAR") or not shutil.which("linear"):
+        identifier = env_value("SCHERZO_EXECPLAN_HANDOFF_IDENTIFIER", source_issue["identifier"] + "-IMPL", legacy="SCHERZO_EXECPLAN_V2_HANDOFF_IDENTIFIER")
+        url = env_value("SCHERZO_EXECPLAN_HANDOFF_URL", f"https://linear.app/living-systems/issue/{identifier}", legacy="SCHERZO_EXECPLAN_V2_HANDOFF_URL")
         return {"issue_identifier": identifier, "issue_url": url}
     team = source_issue["identifier"].split("-", 1)[0]
     existing = find_existing_handoff_issue(team, bundle_ref)
@@ -914,7 +941,7 @@ def create_or_reuse_handoff_issue(
         return existing
     title = f"Implement: {source_issue['title']}"
     description = handoff_issue_description(source_issue, bundle_ref, bundle_sha, pack_sha, review_path)
-    tmp = Path("tmp") / "execplan-v2-handoff-body.md"
+    tmp = Path("tmp") / "execplan-handoff-body.md"
     tmp.parent.mkdir(exist_ok=True)
     tmp.write_text(description, encoding="utf-8")
     create_args = [
@@ -928,12 +955,12 @@ def create_or_reuse_handoff_issue(
         "--description-file",
         str(tmp),
         "--label",
-        "workflow:execplan-implementation-v2",
+        "workflow:execplan-implementation",
         "--state",
         "Backlog",
         "--no-interactive",
     ]
-    project = os.environ.get("SCHERZO_EXECPLAN_V2_HANDOFF_PROJECT", "").strip() or linear_issue_project_name(
+    project = env_value("SCHERZO_EXECPLAN_HANDOFF_PROJECT", legacy="SCHERZO_EXECPLAN_V2_HANDOFF_PROJECT") or linear_issue_project_name(
         source_issue["identifier"]
     )
     if project:
@@ -949,12 +976,12 @@ def create_or_reuse_handoff_issue(
 
 
 def update_handoff_issue_description(handoff: dict[str, str], source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> None:
-    if os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_LINEAR") or not shutil.which("linear"):
+    if env_enabled("SCHERZO_EXECPLAN_OFFLINE_LINEAR", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_LINEAR") or not shutil.which("linear"):
         return
     identifier = handoff.get("issue_identifier", "").strip()
     if not identifier:
         return
-    tmp = Path("tmp") / "execplan-v2-handoff-body-final.md"
+    tmp = Path("tmp") / "execplan-handoff-body-final.md"
     tmp.parent.mkdir(exist_ok=True)
     tmp.write_text(
         handoff_issue_description(source_issue, bundle_ref, bundle_sha, pack_sha, review_path),
@@ -966,13 +993,13 @@ def update_handoff_issue_description(handoff: dict[str, str], source_issue: dict
 
 
 def annotate_handoff_issue(handoff: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> None:
-    if os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_LINEAR") or not shutil.which("linear"):
+    if env_enabled("SCHERZO_EXECPLAN_OFFLINE_LINEAR", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_LINEAR") or not shutil.which("linear"):
         return
     identifier = handoff.get("issue_identifier", "").strip()
     if not identifier:
         return
     body = (
-        "ExecPlan v2 bundle materialized.\n\n"
+        "ExecPlan bundle materialized.\n\n"
         f"Bundle ref: {bundle_ref}\n"
         f"Bundle sha256: {bundle_sha}\n"
         f"Review doc: {review_path}\n"
@@ -984,7 +1011,7 @@ def annotate_handoff_issue(handoff: dict[str, str], bundle_ref: str, bundle_sha:
 
 
 def materialize_bundle(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan-v2 materialize-bundle")
+    parser = argparse.ArgumentParser(prog="scherzo-execplan materialize-bundle")
     parser.add_argument("--review-doc-path-file", required=True)
     parser.add_argument("--pack", required=True)
     parser.add_argument("--publish-context", required=True)
@@ -1008,7 +1035,7 @@ def materialize_bundle(args: list[str]) -> None:
         "bundle_id": f"bundle-{publish_context['source_issue']['identifier'].lower()}-{run_id}",
         "source_issue": publish_context["source_issue"],
         "workflow": {
-            "workflow_id": os.environ.get("SCHERZO_WORKFLOW_ID", "execplan-v2"),
+            "workflow_id": os.environ.get("SCHERZO_WORKFLOW_ID", "execplan"),
             "run_id": run_id,
             "workflow_fingerprint": os.environ.get("SCHERZO_WORKFLOW_FINGERPRINT", "unknown"),
         },
@@ -1030,7 +1057,7 @@ def materialize_bundle(args: list[str]) -> None:
         "implementation_handoff": {
             "issue_identifier": "pending",
             "issue_url": "https://linear.app/living-systems/issue/pending",
-            "workflow_label": "workflow:execplan-implementation-v2",
+            "workflow_label": "workflow:execplan-implementation",
             "bundle_ref": bundle_ref,
         },
         "validation": [{"name": "materialize-bundle", "status": "passed"}],
@@ -1079,7 +1106,7 @@ def load_bundle_from_context() -> tuple[dict[str, Any], dict[str, Any], Path, st
 
 
 def command_prepare_revision(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan-v2 prepare-revision")
+    parser = argparse.ArgumentParser(prog="scherzo-execplan prepare-revision")
     parser.add_argument("--from-issue-context", action="store_true", required=True)
     parser.add_argument("--write-bundle", required=True)
     parser.add_argument("--write-review-doc-path", required=True)
@@ -1095,7 +1122,7 @@ def command_prepare_revision(args: list[str]) -> None:
 
 
 def materialize_revision(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan-v2 materialize-revision")
+    parser = argparse.ArgumentParser(prog="scherzo-execplan materialize-revision")
     parser.add_argument("--previous-bundle", required=True)
     parser.add_argument("--review-doc-path-file", required=True)
     parser.add_argument("--pack", required=True)
@@ -1103,7 +1130,7 @@ def materialize_revision(args: list[str]) -> None:
     parser.add_argument("--status", choices=["auto", "changed", "unchanged"], default="auto")
     parser.add_argument("--output", required=True)
     ns = parser.parse_args(args)
-    previous = load_json(Path(ns.previous_bundle))
+    previous = canonicalize_execplan_bundle(load_json(Path(ns.previous_bundle)))
     review_path = read_review_doc_path_file(Path(ns.review_doc_path_file))
     review_meta = validate_review_doc_path(review_path)
     pack_path = Path(ns.pack)
@@ -1122,7 +1149,7 @@ def materialize_revision(args: list[str]) -> None:
         **previous,
         "bundle_id": f"bundle-{previous['source_issue']['identifier'].lower()}-{run_id}",
         "workflow": {
-            "workflow_id": os.environ.get("SCHERZO_WORKFLOW_ID", "execplan-revision-v2"),
+            "workflow_id": os.environ.get("SCHERZO_WORKFLOW_ID", "execplan-revision"),
             "run_id": run_id,
             "workflow_fingerprint": os.environ.get("SCHERZO_WORKFLOW_FINGERPRINT", previous.get("workflow", {}).get("workflow_fingerprint", "unknown")),
         },
@@ -1157,7 +1184,7 @@ def materialize_revision(args: list[str]) -> None:
 
 
 def command_implementation_prepare(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan-v2 implementation-prepare")
+    parser = argparse.ArgumentParser(prog="scherzo-execplan implementation-prepare")
     parser.add_argument("--from-issue-context", action="store_true", required=True)
     parser.parse_args(args)
     bundle, _pack, pack_path, _ref, _sha = load_bundle_from_context()
@@ -1167,9 +1194,9 @@ def command_implementation_prepare(args: list[str]) -> None:
         fail("checked-in review doc hash does not match bundle", code="execplan_v2_review_doc_hash_mismatch")
     tmp = Path("tmp")
     tmp.mkdir(exist_ok=True)
-    shutil.copyfile(review_path, tmp / "execplan-v2-review-doc.md")
-    shutil.copyfile(pack_path, tmp / "execplan-v2-implementation-pack.json")
-    write_json(tmp / "execplan-v2-bundle.json", bundle)
+    shutil.copyfile(review_path, tmp / "execplan-review-doc.md")
+    shutil.copyfile(pack_path, tmp / "execplan-implementation-pack.json")
+    write_json(tmp / "execplan-bundle.json", bundle)
     base_change_id = "unknown-base"
     if workspace_driver_command():
         try:
@@ -1184,22 +1211,22 @@ def command_implementation_prepare(args: list[str]) -> None:
         "issue_url": bundle["implementation_handoff"].get("issue_url", ""),
         "plan_path": bundle["review_doc"]["path"],
         "base_change_id": base_change_id,
-        "execplan_v2_bundle_path": "tmp/execplan-v2-bundle.json",
-        "execplan_v2_implementation_pack_path": "tmp/execplan-v2-implementation-pack.json",
+        "execplan_v2_bundle_path": "tmp/execplan-bundle.json",
+        "execplan_v2_implementation_pack_path": "tmp/execplan-implementation-pack.json",
     }
     write_json(tmp / "scherzo-implementation.json", metadata)
     print("IMPLEMENTATION_PREPARE_STATUS=ok")
-    print("REVIEW_DOC=tmp/execplan-v2-review-doc.md")
-    print("IMPLEMENTATION_PACK=tmp/execplan-v2-implementation-pack.json")
-    print("BUNDLE=tmp/execplan-v2-bundle.json")
+    print("REVIEW_DOC=tmp/execplan-review-doc.md")
+    print("IMPLEMENTATION_PACK=tmp/execplan-implementation-pack.json")
+    print("BUNDLE=tmp/execplan-bundle.json")
 
 
 def command_gate_no_conflict(args: list[str]) -> None:
     if args:
         fail("gate-no-conflict takes no arguments")
-    path = Path("tmp/execplan-v2-conflict.md")
+    path = Path("tmp/execplan-conflict.md")
     if path.exists() and path.read_text(encoding="utf-8").strip():
-        fail("implementation agent reported a review-doc / implementation-pack conflict; see tmp/execplan-v2-conflict.md", code="execplan_v2_conflict")
+        fail("implementation agent reported a review-doc / implementation-pack conflict; see tmp/execplan-conflict.md", code="execplan_v2_conflict")
     print("EXECPLAN_V2_CONFLICT=none")
 
 
@@ -1239,12 +1266,12 @@ def normalize_changed_files(value: Any) -> list[dict[str, str]]:
 
 
 def materialize_code_change_bundle(args: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="scherzo-execplan-v2 materialize-code-change-bundle")
+    parser = argparse.ArgumentParser(prog="scherzo-execplan materialize-code-change-bundle")
     parser.add_argument("--bundle", required=True)
     parser.add_argument("--output", required=True)
     ns = parser.parse_args(args)
     bundle_path = Path(ns.bundle)
-    bundle = load_json(bundle_path)
+    bundle = canonicalize_execplan_bundle(load_json(bundle_path))
     validate_schema(bundle, EXEC_PLAN_BUNDLE_SCHEMA)
     bundle_meta = file_meta(bundle_path)
     publish = load_json(Path("tmp/scherzo-implementation-publish.json")) if Path("tmp/scherzo-implementation-publish.json").exists() else {}
@@ -1252,9 +1279,10 @@ def materialize_code_change_bundle(args: list[str]) -> None:
     plan_completion_path = Path("tmp/scherzo-plan-completion-verdict.json")
     run_id = os.environ.get("SCHERZO_RUN_ID", "local-run")
     run_dir = run_artifact_dir() or (Path(".scherzo-state") / "artifacts" / "runs" / run_id)
-    code_dir = run_dir / "execplan-v2" / "code-change"
+    code_dir = run_dir / "execplan" / "code-change"
+    diff_path = env_value("SCHERZO_EXECPLAN_DIFF_PATH", legacy="SCHERZO_EXECPLAN_V2_DIFF_PATH")
     diff_src = source_file_candidates([
-        Path(os.environ.get("SCHERZO_EXECPLAN_V2_DIFF_PATH", "")) if os.environ.get("SCHERZO_EXECPLAN_V2_DIFF_PATH") else Path("__missing__"),
+        Path(diff_path) if diff_path else Path("__missing__"),
         Path(os.environ.get("SCHERZO_RUN_ROOT", "")) / "input.diff" if os.environ.get("SCHERZO_RUN_ROOT") else Path("__missing__"),
         Path("tmp/scherzo-implementation.diff"),
     ])

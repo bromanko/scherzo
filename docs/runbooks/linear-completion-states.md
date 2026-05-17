@@ -2,7 +2,7 @@
 
 Scherzo can choose a Linear state from the workflow outcome instead of treating every successful run as `Done`.
 
-Use `handoff.completion_states` for artifact-producing workflows such as `workflow:execplan-v2` or implementation workflows. The standard policy is:
+Use `handoff.completion_states` for artifact-producing workflows such as `workflow:execplan` or implementation workflows. The standard policy is:
 
 - successful runs with reviewable artifacts move to `In Review`;
 - successful no-review maintenance runs may move to `Done` when `no_review_completion_state` or a workflow `success_state` is configured;
@@ -23,7 +23,7 @@ handoff:
     failure_state: Needs Attention
     partial_success_state: Needs Attention
     workflows:
-      execplan-v2:
+      execplan:
         produces_reviewable_artifacts: true
         requires_review: true
 ```

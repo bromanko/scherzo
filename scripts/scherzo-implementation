@@ -4,8 +4,8 @@
 The checked-in dogfood workflows have two implementation contracts:
 
 * workflow:implementation implements directly from task context fetched from Linear.
-* workflow:execplan-implementation-v2 implements a retained ExecPlan v2 bundle
-  prepared by scripts/scherzo-execplan-v2.
+* workflow:execplan-implementation implements a retained ExecPlan bundle
+  prepared by scripts/scherzo-execplan.
 
 The legacy `prepare --source execplan` plan-path mode is retained only for
 historical retained-run recovery and local helper tests; it is no longer a
@@ -2264,7 +2264,7 @@ def execplan_implementation_slug(metadata: dict[str, Any]) -> str:
     title = sanitize_ref_part(metadata.get("issue_title") or "")
     value = "-".join(part for part in [identifier, title] if part)
     if value:
-        return value[:60].strip("-") or "execplan-implementation-v2"
+        return value[:60].strip("-") or "execplan-implementation"
     plan_path = metadata["plan_path"]
     return sanitize_ref_part(Path(plan_path).stem)[:60] or "plan"
 
@@ -2329,7 +2329,7 @@ def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, st
     issue_title = metadata.get("issue_title") or plan_title(plan_path)
     issue_url = metadata.get("issue_url") or ""
     slug = execplan_implementation_slug(metadata)
-    branch_prefix = "scherzo/execplan-implementation-v2"
+    branch_prefix = "scherzo/execplan-implementation"
     description = f"feat: implement {sanitize_ref_part(issue_identifier) or slug}"
     subject = implementation_subject(issue_title, plan_title(plan_path))
     pr_title = (
@@ -2339,9 +2339,9 @@ def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, st
         else "Implement: " + subject
     )
     body = (
-        "Implements a task through Scherzo's `workflow:execplan-implementation-v2` dogfood workflow. The source task is fetched from Linear today.\n\n"
+        "Implements a task through Scherzo's `workflow:execplan-implementation` dogfood workflow. The source task is fetched from Linear today.\n\n"
         f"{format_issue_line(issue_identifier, issue_title, issue_url)}\n\n"
-        f"Source ExecPlan v2 review doc: `{plan_path}`\n\n"
+        f"Source ExecPlan review doc: `{plan_path}`\n\n"
         + validation_body_section()
         + "This PR is ready for human acceptance.\n"
     )

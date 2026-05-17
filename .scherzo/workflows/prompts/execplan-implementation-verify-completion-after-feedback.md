@@ -1,4 +1,4 @@
-Verify ExecPlan v2 completion after the plan-feedback repair chance for Scherzo's `workflow:execplan-implementation-v2` workflow on task {{ issue.identifier }}: {{ issue.title }}.
+Verify ExecPlan completion after the plan-feedback repair chance for Scherzo's `workflow:execplan-implementation` workflow on task {{ issue.identifier }}: {{ issue.title }}.
 
 Task URL:
 {{ issue.url }}
@@ -21,9 +21,9 @@ Post-feedback change analysis output:
 Verification contract:
 
 - This is a plan-completion verification, not a code review. Do not critique style, formatting, architecture, or optional polish unless it blocks promised behavior.
-- Do not edit tracked source, tests, workflows, docs, or the ExecPlan v2 review doc. Your only allowed write is replacing the verdict artifact at `tmp/scherzo-plan-completion-verdict.json`.
-- Read `tmp/scherzo-implementation.json`, `tmp/execplan-v2-bundle.json`, `tmp/execplan-v2-review-doc.md`, and `tmp/execplan-v2-implementation-pack.json`.
-- Determine the checked-in review doc path from `tmp/scherzo-implementation.json` field `plan_path`, falling back to `review_doc.path` in `tmp/execplan-v2-bundle.json`, and read that file. Treat the checked-in review doc as authoritative for current intent, scope, risks, milestones, progress, and acceptance. Treat `tmp/execplan-v2-review-doc.md` as the prepared bundle baseline.
+- Do not edit tracked source, tests, workflows, docs, or the ExecPlan review doc. Your only allowed write is replacing the verdict artifact at `tmp/scherzo-plan-completion-verdict.json`.
+- Read `tmp/scherzo-implementation.json`, `tmp/execplan-bundle.json`, `tmp/execplan-review-doc.md`, and `tmp/execplan-implementation-pack.json`.
+- Determine the checked-in review doc path from `tmp/scherzo-implementation.json` field `plan_path`, falling back to `review_doc.path` in `tmp/execplan-bundle.json`, and read that file. Treat the checked-in review doc as authoritative for current intent, scope, risks, milestones, progress, and acceptance. Treat `tmp/execplan-review-doc.md` as the prepared bundle baseline.
 - Treat the implementation pack as the authoritative mechanical handoff only when it does not conflict with review-doc intent, scope, acceptance, or safety.
 - Inspect the checked-in review doc's Progress, Validation and Acceptance, Milestones, Scope Boundaries, Open Questions, and any explicit non-goals/deferred/stretch sections.
 - Compare the post-feedback implementation summary and changed files/tests against the checked-in review doc and implementation pack. Inspect the smallest useful set of changed files and tests when the summaries are not enough.
@@ -55,7 +55,7 @@ Use `"verdict": "fail"` when promised behavior is still incomplete after the sin
 
 Process:
 
-1. Read `tmp/scherzo-implementation.json`, the checked-in review doc, `tmp/execplan-v2-review-doc.md`, `tmp/execplan-v2-implementation-pack.json`, and `tmp/execplan-v2-bundle.json`.
+1. Read `tmp/scherzo-implementation.json`, the checked-in review doc, `tmp/execplan-review-doc.md`, `tmp/execplan-implementation-pack.json`, and `tmp/execplan-bundle.json`.
 2. Read the verifier/feedback responses and post-feedback change analysis above.
 3. Inspect changed files/tests only as needed to verify promised behavior and acceptance criteria.
 4. Run `repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" plan-completion-context` and copy the context values exactly.

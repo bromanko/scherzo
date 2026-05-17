@@ -1174,13 +1174,13 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   assert string.contains(jj_log, "describe -m feat: implement liv-65")
   assert string.contains(
     jj_log,
-    "bookmark set scherzo/execplan-implementation-v2/liv-65-implement-plan",
+    "bookmark set scherzo/execplan-implementation/liv-65-implement-plan",
   )
-  assert !string.contains(jj_log, "scherzo/execplan-implementation-v2/liv-58")
+  assert !string.contains(jj_log, "scherzo/execplan-implementation/liv-58")
   let assert Ok(gh_log) = simplifile.read(dir <> "/gh.log")
   assert string.contains(
     gh_log,
-    "--head scherzo/execplan-implementation-v2/liv-65-implement-plan",
+    "--head scherzo/execplan-implementation/liv-65-implement-plan",
   )
   assert string.contains(
     gh_log,
@@ -1195,7 +1195,7 @@ pub fn execplan_implementation_publish_mentions_linear_issue_in_pr_metadata_test
   )
   assert string.contains(
     body,
-    "Source ExecPlan v2 review doc: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
+    "Source ExecPlan review doc: `docs/plans/LIV-58-workflow-recovery-operator-ux-retention.md`",
   )
   assert string.contains(body, "SelfCI validation completed before publication")
   assert string.contains(
@@ -1695,14 +1695,14 @@ pub fn repair_base_drift_prompt_contains_state_table_test() {
 
 pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
   let execplan_prompt_paths = [
-    ".scherzo/workflows/prompts/execplan-implementation-v2-implement.md",
-    ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion.md",
-    ".scherzo/workflows/prompts/execplan-implementation-v2-apply-plan-completion-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-after-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-v2-review.md",
-    ".scherzo/workflows/prompts/execplan-implementation-v2-apply-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-v2-repair-base-drift.md",
-    ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-before-final-validation.md",
+    ".scherzo/workflows/prompts/execplan-implementation-implement.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-review.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-repair-base-drift.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
   ]
 
   list.each(execplan_prompt_paths, fn(path) {
@@ -1713,25 +1713,25 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
 
   list.each(
     [
-      ".scherzo/workflows/prompts/execplan-implementation-v2-implement.md",
-      ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion.md",
-      ".scherzo/workflows/prompts/execplan-implementation-v2-apply-plan-completion-feedback.md",
-      ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-after-feedback.md",
-      ".scherzo/workflows/prompts/execplan-implementation-v2-review.md",
-      ".scherzo/workflows/prompts/execplan-implementation-v2-apply-feedback.md",
-      ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-before-final-validation.md",
+      ".scherzo/workflows/prompts/execplan-implementation-implement.md",
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+      ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
+      ".scherzo/workflows/prompts/execplan-implementation-review.md",
+      ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
     ],
     fn(path) {
       let assert Ok(prompt) = simplifile.read(path)
-      assert string.contains(prompt, "tmp/execplan-v2-review-doc.md")
-      assert string.contains(prompt, "tmp/execplan-v2-implementation-pack.json")
-      assert string.contains(prompt, "tmp/execplan-v2-bundle.json")
+      assert string.contains(prompt, "tmp/execplan-review-doc.md")
+      assert string.contains(prompt, "tmp/execplan-implementation-pack.json")
+      assert string.contains(prompt, "tmp/execplan-bundle.json")
     },
   )
 
   let assert Ok(final_prompt) =
     simplifile.read(
-      ".scherzo/workflows/prompts/execplan-implementation-v2-verify-completion-before-final-validation.md",
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
     )
   assert !string.contains(
     final_prompt,
@@ -1783,7 +1783,7 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
   let assert Ok(implementation) =
     simplifile.read(".scherzo/workflows/implementation.yaml")
   let assert Ok(execplan) =
-    simplifile.read(".scherzo/workflows/execplan-implementation-v2.yaml")
+    simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
 
   assert_workflow_refresh_ordering(
     implementation,
@@ -1799,7 +1799,7 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
     "prepare_bundle",
     "implement_plan",
     "apply_review_feedback",
-    "prompts/execplan-implementation-v2-repair-base-drift.md",
+    "prompts/execplan-implementation-repair-base-drift.md",
     "verify_plan_completion_before_final_validation",
     "final_plan_completion_gate",
   )
@@ -1807,13 +1807,13 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
 
 pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   let assert Ok(workflow) =
-    simplifile.read(".scherzo/workflows/execplan-implementation-v2.yaml")
+    simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
 
   assert string.contains(workflow, "- id: verify_plan_completion")
   assert string.contains(workflow, "depends_on: [analyze_changes]")
   assert string.contains(
     workflow,
-    "prompts/execplan-implementation-v2-verify-completion.md",
+    "prompts/execplan-implementation-verify-completion.md",
   )
   assert string.contains(workflow, "- id: apply_plan_completion_feedback")
   assert string.contains(workflow, "depends_on: [verify_plan_completion]")
@@ -1845,7 +1845,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   assert string.contains(workflow, "depends_on: [repair_base_drift]")
   assert string.contains(
     workflow,
-    "prompts/execplan-implementation-v2-verify-completion-before-final-validation.md",
+    "prompts/execplan-implementation-verify-completion-before-final-validation.md",
   )
   assert string.contains(workflow, "- id: final_validate")
   assert string.contains(

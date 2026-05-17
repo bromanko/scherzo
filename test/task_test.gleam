@@ -13,7 +13,7 @@ fn legacy_issue() -> tracker_issue.Issue {
     state: issue_state.from_string_unchecked("Todo"),
     branch_name: Some("liv-266-refresh"),
     url: Some("https://linear.app/living-systems/issue/LIV-266"),
-    labels: ["workflow:execplan-v2", "kind:feature"],
+    labels: ["workflow:execplan", "kind:feature"],
     blocked_by: [],
     blocked_by_complete: True,
     created_at: None,
@@ -91,7 +91,7 @@ pub fn issue_to_task_preserves_linear_fields_test() {
   assert converted.state
     == task.TaskState(id: None, name: "Todo", category: task.Unknown)
   assert converted.branch_hint == Some("liv-266-refresh")
-  assert task.label_names(converted) == ["workflow:execplan-v2", "kind:feature"]
+  assert task.label_names(converted) == ["workflow:execplan", "kind:feature"]
   assert converted.blockers == []
   assert converted.blockers_complete == True
   assert converted.created_at == None
@@ -110,7 +110,7 @@ pub fn linear_task_converts_to_legacy_issue_test() {
   assert issue.state == issue_state.from_string_unchecked("Todo")
   assert issue.branch_name == Some("liv-266-refresh")
   assert issue.url == Some("https://linear.app/living-systems/issue/LIV-266")
-  assert issue.labels == ["workflow:execplan-v2", "kind:feature"]
+  assert issue.labels == ["workflow:execplan", "kind:feature"]
   assert issue.blocked_by == []
   assert issue.blocked_by_complete == True
   assert issue.created_at == None

@@ -396,9 +396,9 @@ pub fn dogfood_workflows_select_existing_driver_profile_test() {
     [
       "research",
       "implementation",
-      "execplan-v2",
-      "execplan-revision-v2",
-      "execplan-implementation-v2",
+      "execplan",
+      "execplan-revision",
+      "execplan-implementation",
       "merge-conflict-resolution",
       "github-pr-conflict-scout",
     ],
@@ -416,7 +416,7 @@ fn assert_dogfood_workflows_select_profile(
       let assert Ok(dag) = dict.get(workflows, id)
       assert dag.workspace_profile == Some("dogfood-jj")
       let expected_capabilities = case id {
-        "implementation" | "execplan-implementation-v2" -> [
+        "implementation" | "execplan-implementation" -> [
           config_types.WorkspaceStatus,
           config_types.WorkspaceDiff,
           config_types.WorkspaceChangedFiles,
@@ -424,13 +424,13 @@ fn assert_dogfood_workflows_select_profile(
           config_types.WorkspaceRefreshBase,
           config_types.WorkspacePublishChange,
         ]
-        "execplan-v2" -> [
+        "execplan" -> [
           config_types.WorkspaceStatus,
           config_types.WorkspaceDiff,
           config_types.WorkspaceChangedFiles,
           config_types.WorkspacePublishChange,
         ]
-        "execplan-revision-v2" -> [
+        "execplan-revision" -> [
           config_types.WorkspaceStatus,
           config_types.WorkspaceDiff,
           config_types.WorkspaceChangedFiles,
@@ -605,17 +605,17 @@ pub fn selects_yaml_workflow_from_issue_label_test() {
   assert dag.id == "implementation"
 }
 
-pub fn loads_checked_in_execplan_v2_implementation_workflow_test() {
+pub fn loads_checked_in_execplan_implementation_workflow_test() {
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(".scherzo/scherzo.yaml"), env)
-  assert !dict.has_key(bundle.workflows, "execplan-implementation")
-  assert dict.has_key(bundle.workflows, "execplan-implementation-v2")
-  let assert Ok(#("execplan-implementation-v2", dag)) =
+  assert !dict.has_key(bundle.workflows, "execplan-implementation-v2")
+  assert dict.has_key(bundle.workflows, "execplan-implementation")
+  let assert Ok(#("execplan-implementation", dag)) =
     runtime_bundle.select_workflow(
       bundle,
-      issue(["workflow:execplan-implementation-v2"]),
+      issue(["workflow:execplan-implementation"]),
     )
-  assert dag.id == "execplan-implementation-v2"
+  assert dag.id == "execplan-implementation"
   let assert Some(terminal) = workflow_dag.terminal_step(dag)
   assert terminal.id == "materialize_code_change_bundle"
 }
@@ -658,9 +658,9 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
     [
       "research",
       "implementation",
-      "execplan-v2",
-      "execplan-revision-v2",
-      "execplan-implementation-v2",
+      "execplan",
+      "execplan-revision",
+      "execplan-implementation",
       "merge-conflict-resolution",
       "github-pr-conflict-scout",
     ],

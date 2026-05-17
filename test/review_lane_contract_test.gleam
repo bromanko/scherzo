@@ -130,7 +130,7 @@ pub fn review_lane_contract_still_rejects_metadata_inside_payload_test() {
 pub fn review_lane_contract_offline_accepts_routed_review_workflows_test() {
   let workflows = [
     ".scherzo/workflows/implementation.yaml",
-    ".scherzo/workflows/execplan-implementation-v2.yaml",
+    ".scherzo/workflows/execplan-implementation.yaml",
   ]
 
   list.each(workflows, fn(path) {

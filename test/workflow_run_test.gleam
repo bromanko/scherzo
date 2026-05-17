@@ -4292,11 +4292,11 @@ pub fn contracted_final_response_output_is_retained_as_markdown_test() {
 
 pub fn contracted_execplan_v2_step_field_outputs_are_retained_as_json_test() {
   let subject = process.new_subject()
-  let root = "test/tmp/workflow-run/contract-execplan-v2-json-outputs"
+  let root = "test/tmp/workflow-run/contract-execplan-json-outputs"
   reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: execplan-v2\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize\n        field: stdout\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: echo '{\"schema_version\":2}'\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: materialize\n        field: stdout\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\n    code_change_bundle:\n      type: code_change_bundle\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: echo '{\"schema_version\":2}'\n",
     )
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let base_deps = deps(subject, None)
@@ -4351,7 +4351,7 @@ pub fn contracted_file_output_uses_output_path_not_truncated_stdout_test() {
   reset_dir("test/tmp/workflow-run/workspaces/implementation/ABC-123")
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: execplan-v2\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        path: tmp/execplan-v2-implementation-pack.json\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        path: tmp/execplan-implementation-pack.json\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
     )
   let large_json =
     "{\"schema_version\":2,\"payload\":\""
@@ -4373,7 +4373,7 @@ pub fn contracted_file_output_uses_output_path_not_truncated_stdout_test() {
         let assert Ok(Nil) = simplifile.create_directory_all(output_dir)
         let assert Ok(Nil) =
           simplifile.write(
-            path.join(output_dir, "execplan-v2-implementation-pack.json"),
+            path.join(output_dir, "execplan-implementation-pack.json"),
             large_json,
           )
         step_artifact.from_command_result(
@@ -4418,7 +4418,7 @@ pub fn contracted_json_stdout_output_truncation_fails_publication_test() {
   reset_dir(root)
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: execplan-v2\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        field: stdout\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
     )
   let large_json =
     "{\"schema_version\":2,\"payload\":\""
@@ -4483,7 +4483,7 @@ pub fn contracted_invalid_json_file_output_fails_publication_test() {
   reset_dir("test/tmp/workflow-run/workspaces/implementation/ABC-123")
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: execplan-v2\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        path: tmp/execplan-v2-implementation-pack.json\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        path: tmp/execplan-implementation-pack.json\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
     )
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
   let base_deps = deps(subject, None)
@@ -4501,7 +4501,7 @@ pub fn contracted_invalid_json_file_output_fails_publication_test() {
         let assert Ok(Nil) = simplifile.create_directory_all(output_dir)
         let assert Ok(Nil) =
           simplifile.write(
-            path.join(output_dir, "execplan-v2-implementation-pack.json"),
+            path.join(output_dir, "execplan-implementation-pack.json"),
             "{invalid-json",
           )
         step_artifact.from_command_result(

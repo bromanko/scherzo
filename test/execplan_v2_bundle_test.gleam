@@ -18,7 +18,7 @@ fn run_helper(command: String) -> step_artifact.StepArtifact {
   command_step.run(
     "execplan_v2_helper",
     workflow_context_test_support.without_workflow_context(
-      "scripts/scherzo-execplan-v2 " <> command,
+      "scripts/scherzo-execplan " <> command,
     ),
     ".",
     30_000,
@@ -76,7 +76,7 @@ fn pack_submission(title: String) -> String {
   <> "      \"verified_facts\": [{\"fact\": \"Fact\", \"evidence\": \"Evidence\"}],\n"
   <> "      \"concrete_steps\": [{\"title\": \"Step\", \"instructions\": \"Do it.\", \"files\": [\"docs/plans/example.md\"], \"commands\": [\"gleam test\"], \"expected_result\": \"Passes.\"}],\n"
   <> "      \"testing_and_falsifiability\": \"Run the helper tests.\",\n"
-  <> "      \"interfaces_and_dependencies\": \"Use scripts/scherzo-execplan-v2.\",\n"
+  <> "      \"interfaces_and_dependencies\": \"Use scripts/scherzo-execplan.\",\n"
   <> "      \"artifacts_and_notes\": \"No extra artifacts.\"\n"
   <> "    },\n"
   <> "    \"conflict_policy\": \"Stop on review doc and pack conflicts.\"\n"
@@ -112,9 +112,9 @@ pub fn validate_bundle_rejects_stale_pack_fixture_test() {
 pub fn validate_bundle_rejects_missing_review_doc_test() {
   let path =
     mutated_bundle(
-      "test/tmp/execplan-v2-missing-review-doc",
+      "test/tmp/execplan-missing-review-doc",
       each: "test/fixtures/execplan_v2/review-doc.valid.md",
-      with: "test/tmp/execplan-v2-missing-review-doc/missing.md",
+      with: "test/tmp/execplan-missing-review-doc/missing.md",
     )
 
   let artifact =
@@ -131,8 +131,8 @@ pub fn validate_bundle_rejects_missing_review_doc_test() {
 pub fn validate_bundle_rejects_review_doc_hash_mismatch_test() {
   let path =
     mutated_bundle(
-      "test/tmp/execplan-v2-review-hash-mismatch",
-      each: "482a8c94bd2d5e5ba027ef6dc77799e595d614aebd59ded45ad152375aae6e26",
+      "test/tmp/execplan-review-hash-mismatch",
+      each: "64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4",
       with: "0000000000000000000000000000000000000000000000000000000000000000",
     )
 
@@ -150,7 +150,7 @@ pub fn validate_bundle_rejects_review_doc_hash_mismatch_test() {
 pub fn validate_bundle_rejects_missing_implementation_pack_test() {
   let path =
     mutated_bundle(
-      "test/tmp/execplan-v2-missing-pack",
+      "test/tmp/execplan-missing-pack",
       each: "runs/run-1/outputs/implementation_pack.json",
       with: "runs/run-missing/outputs/implementation_pack.json",
     )
@@ -169,8 +169,8 @@ pub fn validate_bundle_rejects_missing_implementation_pack_test() {
 pub fn validate_bundle_rejects_implementation_pack_hash_mismatch_test() {
   let path =
     mutated_bundle(
-      "test/tmp/execplan-v2-pack-hash-mismatch",
-      each: "5e3a24e5f6f33f1c79919c31e16ddc5601dcfe4a8b842f118b9d15ca87c4f173",
+      "test/tmp/execplan-pack-hash-mismatch",
+      each: "dbcb84d078e47839e8da760b1208e6b5606bce45ab3228a24a92e0b5afd21545",
       with: "0000000000000000000000000000000000000000000000000000000000000000",
     )
 
@@ -197,7 +197,7 @@ pub fn validate_bundle_rejects_absolute_review_doc_path_test() {
 }
 
 pub fn validate_bundle_rejects_bundle_self_hash_test() {
-  let dir = "test/tmp/execplan-v2-self-hash"
+  let dir = "test/tmp/execplan-self-hash"
   reset_dir(dir)
   let assert Ok(source) =
     simplifile.read("test/fixtures/execplan_v2/exec-plan-bundle.valid.json")
@@ -218,7 +218,7 @@ pub fn validate_bundle_rejects_bundle_self_hash_test() {
 }
 
 pub fn validate_review_doc_rejects_mechanical_sections_test() {
-  let dir = "test/tmp/execplan-v2-review-doc"
+  let dir = "test/tmp/execplan-review-doc"
   reset_dir(dir)
   let path = dir <> "/review.md"
   let assert Ok(valid) =
@@ -236,14 +236,14 @@ pub fn validate_review_doc_rejects_mechanical_sections_test() {
 }
 
 pub fn discover_changed_review_doc_rejects_zero_candidates_test() {
-  let dir = "test/tmp/execplan-v2-discovery-zero"
+  let dir = "test/tmp/execplan-discovery-zero"
   reset_dir(dir)
 
   let artifact =
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-noop SCHERZO_WORKSPACE_PATH="
       <> shell_quote(dir)
-      <> " scripts/scherzo-execplan-v2 validate-review-doc --discover-changed-review-doc --write-path "
+      <> " scripts/scherzo-execplan validate-review-doc --discover-changed-review-doc --write-path "
       <> shell_quote(dir <> "/review.path"),
     )
 
@@ -252,7 +252,7 @@ pub fn discover_changed_review_doc_rejects_zero_candidates_test() {
 }
 
 pub fn discover_changed_review_doc_rejects_multiple_candidates_test() {
-  let dir = "test/tmp/execplan-v2-discovery-multiple"
+  let dir = "test/tmp/execplan-discovery-multiple"
   reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
   let assert Ok(Nil) = simplifile.write(dir <> "/docs/plans/a.md", "# A\n")
@@ -262,7 +262,7 @@ pub fn discover_changed_review_doc_rejects_multiple_candidates_test() {
     run_shell(
       "env SCHERZO_WORKSPACE_DRIVER=scripts/scherzo-workspace-noop SCHERZO_WORKSPACE_PATH="
       <> shell_quote(dir)
-      <> " scripts/scherzo-execplan-v2 validate-review-doc --discover-changed-review-doc --write-path "
+      <> " scripts/scherzo-execplan validate-review-doc --discover-changed-review-doc --write-path "
       <> shell_quote(dir <> "/review.path"),
     )
 
@@ -272,7 +272,7 @@ pub fn discover_changed_review_doc_rejects_multiple_candidates_test() {
 }
 
 pub fn materialize_pack_discovers_latest_structured_submission_test() {
-  let dir = "test/tmp/execplan-v2-structured-latest"
+  let dir = "test/tmp/execplan-structured-latest"
   reset_dir(dir)
   let run_dir = dir <> "/artifacts/runs/run-structured"
   let attempt_1 =
@@ -298,7 +298,7 @@ pub fn materialize_pack_discovers_latest_structured_submission_test() {
     run_shell(
       "env SCHERZO_RUN_ID=run-structured SCHERZO_RUN_ARTIFACT_DIR="
       <> shell_quote(run_dir)
-      <> " scripts/scherzo-execplan-v2 materialize-pack --review-doc test/fixtures/execplan_v2/review-doc.valid.md --submission-step incorporate_review --submission-artifact implementation_pack_submission --output "
+      <> " scripts/scherzo-execplan materialize-pack --review-doc test/fixtures/execplan_v2/review-doc.valid.md --submission-step incorporate_review --submission-artifact implementation_pack_submission --output "
       <> shell_quote(output),
     )
 
@@ -309,7 +309,7 @@ pub fn materialize_pack_discovers_latest_structured_submission_test() {
 }
 
 pub fn publish_review_doc_writes_offline_context_test() {
-  let dir = "test/tmp/execplan-v2-publish-context"
+  let dir = "test/tmp/execplan-publish-context"
   reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
@@ -321,9 +321,9 @@ pub fn publish_review_doc_writes_offline_context_test() {
 
   let artifact =
     run_shell(
-      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_V2_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_V2_FIXED_TIME=2026-05-15T00:00:00Z SCHERZO_ISSUE_IDENTIFIER=LIV-900 SCHERZO_ISSUE_TITLE="
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z SCHERZO_ISSUE_IDENTIFIER=LIV-900 SCHERZO_ISSUE_TITLE="
       <> shell_quote("Offline publish fixture")
-      <> " SCHERZO_ISSUE_URL=https://linear.app/living-systems/issue/LIV-900/offline-publish-fixture scripts/scherzo-execplan-v2 publish-review-doc --review-doc-path-file "
+      <> " SCHERZO_ISSUE_URL=https://linear.app/living-systems/issue/LIV-900/offline-publish-fixture scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path),
@@ -345,7 +345,7 @@ pub fn publish_review_doc_writes_offline_context_test() {
 }
 
 pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
-  let dir = "test/tmp/execplan-v2-online-linear-create"
+  let dir = "test/tmp/execplan-online-linear-create"
   reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let log = dir <> "/linear.log"
@@ -398,7 +398,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
       "{\n"
         <> "  \"artifact_type\": \"execplan_v2_publish_context\",\n"
         <> "  \"source_issue\": {\"identifier\": \"LIV-314\", \"title\": \"Fixture v2 ExecPlan bundle\", \"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"},\n"
-        <> "  \"pr\": {\"url\": \"https://github.com/living-systems/scherzo/pull/314\", \"branch\": \"execplan-v2/liv-314\"},\n"
+        <> "  \"pr\": {\"url\": \"https://github.com/living-systems/scherzo/pull/314\", \"branch\": \"execplan/liv-314\"},\n"
         <> "  \"review_surface\": {\"status\": \"published\", \"source_bundle_ref\": null}\n"
         <> "}\n",
     )
@@ -407,7 +407,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
     run_shell(
       "env PATH="
       <> shell_quote(dir <> "/bin")
-      <> ":$PATH SCHERZO_RUN_ID=run-online scripts/scherzo-execplan-v2 materialize-bundle --review-doc-path-file "
+      <> ":$PATH SCHERZO_RUN_ID=run-online scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
       <> shell_quote(context_path)
@@ -435,7 +435,7 @@ pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
 }
 
 pub fn materialize_revision_reuses_unchanged_review_surface_test() {
-  let dir = "test/tmp/execplan-v2-unchanged-revision"
+  let dir = "test/tmp/execplan-unchanged-revision"
   reset_dir(dir)
   let path_file = dir <> "/review.path"
   let context_path = dir <> "/publish-context.json"
@@ -448,7 +448,7 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
 
   let publish =
     run_shell(
-      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_V2_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_V2_FIXED_TIME=2026-05-15T00:00:00Z scripts/scherzo-execplan-v2 publish-review-doc --review-doc-path-file "
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --publish-context "
       <> shell_quote(context_path)
@@ -459,7 +459,7 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
 
   let revision =
     run_shell(
-      "env SCHERZO_RUN_ID=run-revision scripts/scherzo-execplan-v2 materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
+      "env SCHERZO_RUN_ID=run-revision scripts/scherzo-execplan materialize-revision --previous-bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --review-doc-path-file "
       <> shell_quote(path_file)
       <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
       <> shell_quote(context_path)
@@ -480,12 +480,12 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
   )
   assert string.contains(
     bundle,
-    "\"sha256\": \"5e3a24e5f6f33f1c79919c31e16ddc5601dcfe4a8b842f118b9d15ca87c4f173\"",
+    "\"sha256\": \"e4117164704e943de716797a83f98cd4927833dc0f3b4a179c78c657b25334ec\"",
   )
 }
 
 pub fn materialize_code_change_bundle_emits_retained_refs_test() {
-  let dir = "test/tmp/execplan-v2-code-change"
+  let dir = "test/tmp/execplan-code-change"
   reset_dir(dir)
   let artifact_root = dir <> "/artifacts/runs/run-2"
   let assert Ok(Nil) = simplifile.create_directory_all(artifact_root)
@@ -517,7 +517,7 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
     run_shell(
       "env SCHERZO_RUN_ID=run-2 SCHERZO_RUN_ARTIFACT_DIR="
       <> shell_quote(artifact_root)
-      <> " SCHERZO_EXECPLAN_V2_DIFF_PATH=test/fixtures/execplan_v2/artifacts/runs/run-2/execplan-v2/code-change/diff.patch scripts/scherzo-execplan-v2 materialize-code-change-bundle --bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
+      <> " SCHERZO_EXECPLAN_DIFF_PATH=test/fixtures/execplan_v2/artifacts/runs/run-2/execplan/code-change/diff.patch scripts/scherzo-execplan materialize-code-change-bundle --bundle test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
       <> shell_quote(output),
     )
 
@@ -525,9 +525,6 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
   assert artifact.exit_code == Some(0)
   let assert Ok(bundle) = simplifile.read(output)
   assert string.contains(bundle, "\"artifact_type\": \"code_change_bundle\"")
-  assert string.contains(
-    bundle,
-    "runs/run-2/execplan-v2/code-change/diff.patch",
-  )
+  assert string.contains(bundle, "runs/run-2/execplan/code-change/diff.patch")
   assert string.contains(bundle, "\"verdict\": \"complete\"")
 }
