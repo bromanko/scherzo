@@ -20,7 +20,7 @@ These Linear names remain compatibility aliases or Linear-only surfaces:
 - `linear-contract` and `--linear-contract-check` are compatibility aliases for tracker contract checks.
 - `linear_contract` and `linear_commands` are current config sections for Linear board validation and Linear comment commands.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_ID`, `SCHERZO_ISSUE_IDENTIFIER`, and issue-shaped ledger fields remain compatibility aliases until the runtime task context is fully migrated.
-- `--linear-attach-comment-file`, `scripts/scherzo-execplan create-implementation-issue`, `scripts/scherzo-execplan-v2`, `scripts/scherzo-merge-conflict`, and `scripts/scherzo-execplan-revision` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today.
+- `--linear-attach-comment-file`, `scripts/scherzo-execplan-v2`, and `scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today.
 
 ## Preferred Linear tracker config
 

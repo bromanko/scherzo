@@ -4016,8 +4016,7 @@ def run_native_contract_spike(output_dir: Path) -> dict[str, Any]:
     raise ReviewError(
         "standalone native review contract spike has been retired; "
         "run scripts/scherzo-review-lane-contract offline against the routed "
-        "implementation, execplan-implementation, and "
-        "execplan-implementation-v2 workflows instead"
+        "implementation and execplan-implementation-v2 workflows instead"
     )
 
 
@@ -4253,8 +4252,7 @@ def native_preflight_command(args: argparse.Namespace) -> None:
     raise ReviewError(
         "native-preflight is retired because the standalone native review workflows "
         "were removed; run scripts/scherzo-review-lane-contract offline for "
-        ".scherzo/workflows/implementation.yaml, "
-        ".scherzo/workflows/execplan-implementation.yaml, and "
+        ".scherzo/workflows/implementation.yaml and "
         ".scherzo/workflows/execplan-implementation-v2.yaml instead"
     )
 
@@ -4834,9 +4832,8 @@ def legacy_pr_smoke_command(args: argparse.Namespace) -> None:
     require_legacy_pr_smoke_safe_environment()
     raise ReviewError(
         "legacy-pr-smoke is retired with the standalone native review workflow; "
-        "validate routed implementation, execplan-implementation, and "
-        "execplan-implementation-v2 review contracts with "
-        "scripts/scherzo-review-lane-contract offline instead"
+        "validate routed implementation and execplan-implementation-v2 review "
+        "contracts with scripts/scherzo-review-lane-contract offline instead"
     )
     workflow_provenance = inspect_native_review_workflow_lanes(Path(LEGACY_PR_SMOKE_WORKFLOW_PATH))
     output_dir = Path(args.output_dir)

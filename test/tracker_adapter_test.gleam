@@ -20,7 +20,7 @@ fn fake_task() -> task.Task {
     priority: None,
     state: task.TaskState(id: None, name: "Todo", category: task.Unknown),
     branch_hint: None,
-    labels: [task.TaskLabel(id: None, name: "workflow:execplan")],
+    labels: [task.TaskLabel(id: None, name: "workflow:execplan-v2")],
     blockers: [],
     blockers_complete: True,
     created_at: None,

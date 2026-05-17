@@ -6,7 +6,7 @@ pub fn recovery_prompt_is_bounded_and_points_to_artifacts_test() {
   let large = string.repeat("x", times: 1_000_000)
   let prompt =
     context_recovery_prompt.build(context_recovery_prompt.RecoveryPromptInput(
-      workflow_id: "execplan-implementation",
+      workflow_id: "execplan-implementation-v2",
       run_id: "run-1",
       step_id: "implement_plan",
       step_attempt_index: 1,
@@ -25,7 +25,7 @@ pub fn recovery_prompt_is_bounded_and_points_to_artifacts_test() {
     ))
 
   assert string.length(prompt) <= 40_000
-  assert string.contains(prompt, "execplan-implementation")
+  assert string.contains(prompt, "execplan-implementation-v2")
   assert string.contains(prompt, "implement_plan")
   assert string.contains(prompt, "LIV-214")
   assert string.contains(prompt, "jj status --color=never")

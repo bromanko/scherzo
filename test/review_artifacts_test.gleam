@@ -846,7 +846,7 @@ pub fn heuristic_preflight_is_not_cutover_ready_test() {
 pub fn implementation_workflows_native_cutover_removes_legacy_backend_default_test() {
   let workflow_paths = [
     ".scherzo/workflows/implementation.yaml",
-    ".scherzo/workflows/execplan-implementation.yaml",
+    ".scherzo/workflows/execplan-implementation-v2.yaml",
   ]
 
   list.each(workflow_paths, fn(path) {
@@ -1745,7 +1745,6 @@ pub fn legacy_pr_smoke_reports_retired_standalone_workflow_test() {
   assert artifact.exit_code == Some(1)
   assert string.contains(artifact.stderr, "legacy-pr-smoke is retired")
   assert string.contains(artifact.stderr, "implementation")
-  assert string.contains(artifact.stderr, "execplan-implementation")
   assert string.contains(artifact.stderr, "execplan-implementation-v2")
   assert string.contains(
     artifact.stderr,
@@ -1767,10 +1766,6 @@ pub fn native_preflight_reports_retired_standalone_workflow_test() {
   assert string.contains(
     artifact.stderr,
     ".scherzo/workflows/implementation.yaml",
-  )
-  assert string.contains(
-    artifact.stderr,
-    ".scherzo/workflows/execplan-implementation.yaml",
   )
   assert string.contains(
     artifact.stderr,

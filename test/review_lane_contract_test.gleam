@@ -131,10 +131,6 @@ pub fn review_lane_contract_offline_accepts_routed_review_workflows_test() {
   let workflows = [
     #("implementation", ".scherzo/workflows/implementation.yaml"),
     #(
-      "execplan-implementation",
-      ".scherzo/workflows/execplan-implementation.yaml",
-    ),
-    #(
       "execplan-implementation-v2",
       ".scherzo/workflows/execplan-implementation-v2.yaml",
     ),
