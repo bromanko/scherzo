@@ -158,6 +158,6 @@ direnv exec . linear issue update LIV-104 --state "Triage"
 direnv exec . linear issue update LIV-104 --label needs-clarification
 ```
 
-Current `linear-cli` v2 uses `issue view` for issue reads and `issue comment list/add` for comments. If you see older notes saying `linear issue get` or `linear comment list/add`, translate them to `direnv exec . linear issue view ... --json` and `direnv exec . linear issue comment list/add ...`. Do not assume stale forms such as top-level `linear comment ...` or `linear issue get ...` exist; check `direnv exec . linear issue --help` if unsure.
+Current `linear-cli` v2 uses `issue view` for issue reads and `issue comment list/add` for comments. `issue create` and `issue update` do not currently support `--json`; use `--no-interactive`, summarize their text output, and run `issue view <id> --json --no-download` afterward if machine-readable fields are required. If you see older notes saying `linear issue get` or `linear comment list/add`, translate them to `direnv exec . linear issue view ... --json` and `direnv exec . linear issue comment list/add ...`. Do not assume stale forms such as top-level `linear comment ...` or `linear issue get ...` exist; check `direnv exec . linear issue --help` if unsure.
 
 Use `direnv exec . linear api ...` or direct `curl https://api.linear.app/graphql` only when the CLI lacks the needed operation. Prefer `linear api` over hand-written `curl`, keep GraphQL variables in files when practical, and keep API keys out of logs.

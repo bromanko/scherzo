@@ -51,6 +51,11 @@ FORBIDDEN_REVIEW_DOC_SECTIONS = {
 }
 BUNDLE_REF_RE = re.compile(r"(?im)^\s*Bundle ref:\s*(runs/\S+)\s*$")
 BUNDLE_SHA_RE = re.compile(r"(?im)^\s*Bundle sha256:\s*([a-f0-9]{64})\s*$")
+ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+LINEAR_ISSUE_URL_RE = re.compile(
+    r"https://linear\.app/[^\s)>\"]+/issue/([A-Za-z][A-Za-z0-9]*-\d+)[^\s)>\"]*"
+)
+LINEAR_ISSUE_IDENTIFIER_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
 FAILURE_PREFIX = "SCHERZO_FAILURE_CODE="
 
 
@@ -615,7 +620,7 @@ def issue_context_text() -> str:
         return env
     identifier = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
     if identifier and shutil.which("linear"):
-        proc = run_proc(["linear", "issue", "view", identifier, "--json"])
+        proc = run_proc(["linear", "issue", "view", identifier, "--json", "--no-download"])
         if proc.returncode == 0:
             try:
                 data = json.loads(proc.stdout)
@@ -764,6 +769,8 @@ def linear_issue_nodes(payload: Any) -> list[Any]:
 
 def issue_has_workflow_label(issue: dict[str, Any], label: str) -> bool:
     raw_labels = issue.get("labels")
+    if isinstance(raw_labels, dict):
+        raw_labels = raw_labels.get("nodes")
     if not isinstance(raw_labels, list):
         return False
     for item in raw_labels:
@@ -772,6 +779,15 @@ def issue_has_workflow_label(issue: dict[str, Any], label: str) -> bool:
         if isinstance(item, dict) and str(item.get("name") or "").lower() == label.lower():
             return True
     return False
+
+
+def strip_ansi(value: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", value)
+
+
+def linear_issue_identifier(value: str) -> str:
+    match = LINEAR_ISSUE_IDENTIFIER_RE.search(strip_ansi(value))
+    return match.group(1).upper() if match else ""
 
 
 def find_existing_handoff_issue(team: str, bundle_ref: str) -> dict[str, str] | None:
@@ -787,11 +803,60 @@ def find_existing_handoff_issue(team: str, bundle_ref: str) -> dict[str, str] | 
             continue
         text = str(item.get("title") or "") + "\n" + str(item.get("description") or "")
         if bundle_ref in text and issue_has_workflow_label(item, "workflow:execplan-implementation-v2"):
-            return {
-                "issue_identifier": str(item.get("identifier") or item.get("id") or ""),
-                "issue_url": str(item.get("url") or ""),
-            }
+            return issue_result_from_json(item)
     return None
+
+
+def issue_result_from_json(data: Any) -> dict[str, str] | None:
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("issue"), dict):
+        data = data["issue"]
+    elif isinstance(data.get("data"), dict):
+        nested = data["data"]
+        if isinstance(nested.get("issue"), dict):
+            data = nested["issue"]
+        elif isinstance(nested.get("issueCreate"), dict) and isinstance(nested["issueCreate"].get("issue"), dict):
+            data = nested["issueCreate"]["issue"]
+    identifier = linear_issue_identifier(str(data.get("identifier") or data.get("id") or ""))
+    url = strip_ansi(str(data.get("url") or "")).strip()
+    if not identifier and url:
+        identifier = linear_issue_identifier(url)
+    if not identifier:
+        return None
+    if not url:
+        url = f"https://linear.app/living-systems/issue/{identifier}"
+    return {"issue_identifier": identifier, "issue_url": url}
+
+
+def issue_result_from_create_output(output: str) -> dict[str, str] | None:
+    cleaned = strip_ansi(output)
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        parsed = None
+    from_json = issue_result_from_json(parsed)
+    if from_json is not None:
+        return from_json
+
+    url_match = LINEAR_ISSUE_URL_RE.search(cleaned)
+    if url_match:
+        return {"issue_identifier": url_match.group(1).upper(), "issue_url": url_match.group(0).rstrip(".,;")}
+
+    identifier = linear_issue_identifier(cleaned)
+    if identifier:
+        return {"issue_identifier": identifier, "issue_url": f"https://linear.app/living-systems/issue/{identifier}"}
+    return None
+
+
+def view_linear_issue(identifier: str) -> dict[str, str] | None:
+    proc = run_proc(["linear", "issue", "view", identifier, "--json", "--no-download"])
+    if proc.returncode != 0:
+        return None
+    try:
+        return issue_result_from_json(json.loads(proc.stdout))
+    except Exception:
+        return None
 
 
 def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> dict[str, str]:
@@ -830,15 +895,15 @@ def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str,
         "workflow:execplan-implementation-v2",
         "--state",
         "Backlog",
-        "--json",
+        "--no-interactive",
     ])
     if proc.returncode != 0:
         fail("failed to create Linear implementation handoff task: " + (proc.stderr.strip() or proc.stdout.strip()))
-    data = json.loads(proc.stdout)
-    return {
-        "issue_identifier": str(data.get("identifier") or data.get("id") or source_issue["identifier"] + "-IMPL"),
-        "issue_url": str(data.get("url") or f"https://linear.app/living-systems/issue/{source_issue['identifier']}-IMPL"),
-    }
+    created = issue_result_from_create_output(proc.stdout)
+    if created is None:
+        fail("failed to parse created Linear implementation handoff task: " + proc.stdout.strip())
+    viewed = view_linear_issue(created["issue_identifier"])
+    return viewed or created
 
 
 def annotate_handoff_issue(handoff: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> None:
