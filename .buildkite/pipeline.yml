@@ -4,6 +4,8 @@ env:
 steps:
   - label: ":gleam: format + unit"
     key: "format-unit"
+    agents:
+      queue: "hcloud"
     command: |
       set -euo pipefail
       direnv allow .
@@ -12,6 +14,8 @@ steps:
 
   - label: ":mag: production lint"
     key: "production-lint"
+    agents:
+      queue: "hcloud"
     command: |
       set -euo pipefail
       direnv allow .
@@ -20,6 +24,8 @@ steps:
 
   - label: ":shell: contract tests"
     key: "contract-tests"
+    agents:
+      queue: "hcloud"
     command: |
       set -euo pipefail
       direnv allow .
@@ -27,6 +33,8 @@ steps:
 
   - label: ":nix: flake + package"
     key: "nix"
+    agents:
+      queue: "hcloud"
     command: |
       set -euo pipefail
       direnv allow .
