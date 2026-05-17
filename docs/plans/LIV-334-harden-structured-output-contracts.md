@@ -68,14 +68,28 @@ Sixth, update operator documentation and SelfCI so the new generic contract gate
 
 - [x] (2026-05-16) Drafted the human-reviewable ExecPlan v2 review document for LIV-334.
 - [x] (2026-05-16) Incorporated review feedback; no Markdown intent changes were required.
-- [ ] Implementation pack to be consumed by Scherzo's canonical bundle generator.
-- [ ] Code implementation and validation not yet started.
+- [x] (2026-05-17) Landed milestone 1 source-policy strictness: parsed workflows now require explicit `structured_output.source` and reject `source.type: final_response` for production workflow parsing.
+- [x] (2026-05-17) Updated parser, fingerprint, DAG, and workflow-run tests to use explicit `pi_tool_call` fixtures where the production contract now requires them.
+- [x] (2026-05-17) Added the shared provider-schema policy module, generic `scripts/scherzo-structured-output-contract` CLI, and focused command coverage for schema/workflow checks.
+- [x] (2026-05-17) Moved runtime tool-spec and review-lane provider checks onto the shared generic contract policy.
+- [x] (2026-05-17) Simplified `.pi/extensions/scherzo-structured-output` to exact provider-schema registration plus receipt emission and removed extension-side schema sanitization/execute-time validation.
+- [x] (2026-05-17) Removed the legacy review-lane extension shim, updated native review tests/fixtures, and wired the generic contract gate into SelfCI and operator docs.
+
+## Surprises & Discoveries
+
+- Tightening parser source requirements immediately surfaced a second layer of stale assumptions in tests: several DAG, fingerprint, and workflow-run fixtures were still relying on omitted-source parsing even when the underlying scenario was already meant to exercise `pi_tool_call` behavior.
+- Keeping `FinalResponseSource` unit helpers in place while removing it from workflow parsing was enough to land milestone 1 cleanly without yet mixing in the later contract-policy and extension work.
+- The raw-schema Pi smoke fixture had to stop using canonical review-lane draft payloads and instead use the provider-facing submission schema directly once the generic extension stopped carrying a second local JSON Schema validator.
 
 ## Decision Log
 
 - Decision: Production structured outputs must use explicit `source.type: pi_tool_call`; omitted source and `source.type: final_response` are rejected.
   Rationale: The hardening work should remove prompt-only final-response JSON extraction as a production contract, not preserve it as a fallback.
   Date: 2026-05-16
+
+- Decision: Keep `FinalResponseSource` runtime helpers and unit-level validation coverage for now, but remove it from production workflow parsing immediately.
+  Rationale: The strictness milestone is about the production contract surface. Retaining internal helpers during the migration keeps targeted validation coverage and avoids mixing parser hardening with the later contract-policy and documentation milestones.
+  Date: 2026-05-17
 
 - Decision: Keep exactly-one matching structured-output tool-call behavior as the production default.
   Rationale: The existing single-call contract is easy to reason about and prevents ambiguous structured artifacts.
@@ -88,6 +102,10 @@ Sixth, update operator documentation and SelfCI so the new generic contract gate
 - Decision: Simplify the generic Pi extension rather than making it a canonical validator.
   Rationale: Scherzo owns canonical validation, artifacts, retries, and semantic checks; the extension should adapt provider tool calls and emit receipts.
   Date: 2026-05-16
+
+- Decision: The generic contract CLI should own provider-schema and prompt/tool drift checks for both production workflows and review-lane offline validation.
+  Rationale: One local-only report format and one shared provider-schema policy are easier to audit than parallel Gleam and Python allowlists.
+  Date: 2026-05-17
 
 - Decision: Retire the legacy review-lane extension shim after current workflows pass the generic contract gate.
   Rationale: Keeping a rollback-only extension after the generic path is established increases maintenance and audit surface.
@@ -106,6 +124,10 @@ The rollout is additive until the parser strictness lands. Add the generic contr
 Recovery is straightforward because the change does not mutate remote systems. If a workflow fails after strictness lands, operators can inspect the contract report and either add the missing `pi_tool_call` source fields or fix the provider schema/prompt/materialization mismatch. Generated reports and smoke transcripts are written under `tmp/` and can be deleted safely.
 
 The contract command should be idempotent: repeated runs over the same tree write equivalent reports. Extension receipts should remain deterministic for the same run, step, attempt, artifact, and schema metadata, and must continue to state that no remote mutations occurred.
+
+## Outcomes & Retrospective
+
+Milestones 1 through 6 are now complete. The production contract is explicit at parse time, provider-schema safety lives in one shared policy, the generic structured-output contract gate is available as a local CLI and SelfCI step, review-lane offline checks delegate generic source/schema/prompt alignment to that gate, the generic Pi extension now registers the exact provider-safe schema without a second validation engine, and the legacy review-lane rollback extension shim is gone. This leaves Scherzo with one auditable production structured-output path and one obvious local validation command.
 
 ## Open Questions and Clarifications Needed
 

@@ -67,14 +67,14 @@ pub fn linear_wrapper_adds_default_project_to_issue_create_test() {
   let artifact =
     run_wrapper("issue create --team LIV --title Example --no-interactive", [
       #("SCHERZO_LINEAR_CLI", fake),
-      #("LINEAR_DEFAULT_PROJECT", "Scherzo"),
+      #("LINEAR_DEFAULT_PROJECT", "Scherzo Core"),
       #("LINEAR_API_KEY", ""),
       #("SCHERZO_AGENT_LINEAR_API_KEY", "agent-key"),
     ])
 
   assert_success(artifact)
   assert string.contains(artifact.stdout, "LINEAR_API_KEY=agent-key\n")
-  assert string.contains(artifact.stdout, "ARG:--project\nARG:Scherzo\n")
+  assert string.contains(artifact.stdout, "ARG:--project\nARG:Scherzo Core\n")
 }
 
 pub fn linear_wrapper_respects_explicit_project_test() {
@@ -84,7 +84,7 @@ pub fn linear_wrapper_respects_explicit_project_test() {
       "issue create --team LIV --project 'Other Project' --title Example --no-interactive",
       [
         #("SCHERZO_LINEAR_CLI", fake),
-        #("LINEAR_DEFAULT_PROJECT", "Scherzo"),
+        #("LINEAR_DEFAULT_PROJECT", "Scherzo Core"),
         #("LINEAR_API_KEY", "operator-key"),
         #("SCHERZO_AGENT_LINEAR_API_KEY", "agent-key"),
       ],
@@ -93,7 +93,7 @@ pub fn linear_wrapper_respects_explicit_project_test() {
   assert_success(artifact)
   assert string.contains(artifact.stdout, "LINEAR_API_KEY=operator-key\n")
   assert string.contains(artifact.stdout, "ARG:--project\nARG:Other Project\n")
-  assert !string.contains(artifact.stdout, "ARG:Scherzo\n")
+  assert !string.contains(artifact.stdout, "ARG:Scherzo Core\n")
 }
 
 pub fn linear_wrapper_does_not_add_project_to_other_commands_test() {
@@ -101,11 +101,11 @@ pub fn linear_wrapper_does_not_add_project_to_other_commands_test() {
   let artifact =
     run_wrapper("issue view LIV-123 --json", [
       #("SCHERZO_LINEAR_CLI", fake),
-      #("LINEAR_DEFAULT_PROJECT", "Scherzo"),
+      #("LINEAR_DEFAULT_PROJECT", "Scherzo Core"),
       #("LINEAR_API_KEY", "operator-key"),
     ])
 
   assert_success(artifact)
   assert !string.contains(artifact.stdout, "ARG:--project\n")
-  assert !string.contains(artifact.stdout, "ARG:Scherzo\n")
+  assert !string.contains(artifact.stdout, "ARG:Scherzo Core\n")
 }

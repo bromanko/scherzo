@@ -1,5 +1,4 @@
 {
-  "artifact_type": "review_lane_draft",
   "draft_findings": [],
   "evidence_requests": [
     {
@@ -13,25 +12,6 @@
       }
     }
   ],
-  "generated_at_utc": "2026-05-13T00:00:00Z",
-  "input_refs": [
-    {
-      "artifact_type": "diff",
-      "path": "artifacts/review/prepare_review/diff.patch"
-    }
-  ],
-  "lane": {
-    "category": "correctness",
-    "id": "correctness",
-    "name": "Correctness reviewer",
-    "version": "1"
-  },
-  "producer": {
-    "mode": "pi_raw_schema",
-    "name": "raw-schema-smoke",
-    "version": "1"
-  },
-  "remote_mutations": "none",
   "review_notes": [
     {
       "category": "correctness",
@@ -44,9 +24,7 @@
       "summary": "No issue"
     }
   ],
-  "schema_version": 1,
   "self_check": {
-    "inspected_diff": true,
-    "used_repository_relative_paths": true
+    "summary": "Inspected the diff."
   }
 }

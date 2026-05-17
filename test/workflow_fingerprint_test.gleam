@@ -231,7 +231,7 @@ pub fn workflow_fingerprint_changes_for_structured_output_contract_test() {
     )
   let structured =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      required: true\n      schema:\n        required: [summary, findings]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n",
     )
 
   assert workflow_fingerprint.for_dag("implementation", unstructured)
@@ -243,19 +243,19 @@ pub fn workflow_fingerprint_changes_for_structured_output_contract_test() {
 }
 
 pub fn workflow_fingerprint_changes_for_structured_output_source_test() {
-  let final_response =
-    parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    workspace: main\n    structured_output:\n      artifact_name: example_artifact\n      schema:\n        required: [schema_version, artifact_type]\n",
-    )
-  let tool_call =
+  let first_tool_call =
     parse(
       "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    workspace: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
+  let second_tool_call =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    workspace: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_other_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+    )
 
-  assert workflow_fingerprint.for_dag("implementation", final_response)
-    != workflow_fingerprint.for_dag("implementation", tool_call)
+  assert workflow_fingerprint.for_dag("implementation", first_tool_call)
+    != workflow_fingerprint.for_dag("implementation", second_tool_call)
   assert string.contains(
-    workflow_fingerprint.canonical_input(tool_call),
+    workflow_fingerprint.canonical_input(first_tool_call),
     "submit_example_artifact",
   )
 }
@@ -263,19 +263,19 @@ pub fn workflow_fingerprint_changes_for_structured_output_source_test() {
 pub fn workflow_fingerprint_changes_for_structured_output_validators_test() {
   let without_validator =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n",
     )
   let with_schema_validator =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
     )
   let with_command_validator =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout_ms: 30000\n          env:\n            CHECK_MODE: strict\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout_ms: 30000\n          env:\n            CHECK_MODE: strict\n",
     )
   let with_changed_env =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout_ms: 30000\n          env:\n            CHECK_MODE: relaxed\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [summary, findings]\n      validators:\n        - name: semantics\n          type: command\n          argv: [python3, scripts/validate]\n          timeout_ms: 30000\n          env:\n            CHECK_MODE: relaxed\n",
     )
 
   let base = workflow_fingerprint.for_dag("implementation", without_validator)
@@ -299,7 +299,7 @@ pub fn execution_fingerprint_changes_for_json_schema_content_hash_test() {
   let schema_path = dir <> "/schemas/review.schema.json"
   let dag =
     parse(
-      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
+      "version: 1\nid: implementation\nworkspace_profile: noop\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    workspace: main\n    structured_output:\n      artifact_name: review_result\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      validators:\n        - name: shape\n          type: json_schema\n          path: schemas/review.schema.json\n",
     )
   let orchestrator =
     orchestrator_with_profiles([#("noop", profile("noop", hooks(None)))])

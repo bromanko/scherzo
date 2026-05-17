@@ -41,7 +41,7 @@ pub fn parses_minimal_workflow_dag_test() {
 pub fn parses_agent_structured_output_defaults_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output: {}\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n",
     )
   let assert [step] = dag.steps
   let assert workflow_dag.AgentStep(
@@ -51,7 +51,13 @@ pub fn parses_agent_structured_output_defaults_test() {
   assert spec.format == workflow_dag.StructuredJson
   assert spec.artifact_name == "review_json"
   assert spec.required == True
-  assert spec.source == structured_output_source.FinalResponseSource
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: "submit_review_json",
+      require_single: True,
+      reject_sibling_tool_calls: True,
+      parameters_schema_path: None,
+    )
   assert spec.schema == workflow_dag.StructuredObjectSchema([])
   assert spec.validators == []
   assert spec.validation_retries == 1
@@ -60,7 +66,7 @@ pub fn parses_agent_structured_output_defaults_test() {
 pub fn parses_agent_structured_output_json_contract_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: json\n      artifact_name: review_result\n      required: true\n      validator: review_lane_draft\n      validation_retries: 0\n      schema:\n        type: object\n        required:\n          - summary\n          - findings\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: json\n      artifact_name: review_result\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      validator: review_lane_draft\n      validation_retries: 0\n      schema:\n        type: object\n        required:\n          - summary\n          - findings\n",
     )
   let assert [step] = dag.steps
   let assert workflow_dag.AgentStep(
@@ -70,7 +76,13 @@ pub fn parses_agent_structured_output_json_contract_test() {
   assert spec.format == workflow_dag.StructuredJson
   assert spec.artifact_name == "review_result"
   assert spec.required == True
-  assert spec.source == structured_output_source.FinalResponseSource
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: "submit_review_result",
+      require_single: True,
+      reject_sibling_tool_calls: True,
+      parameters_schema_path: None,
+    )
   assert spec.schema
     == workflow_dag.StructuredObjectSchema(["summary", "findings"])
   assert spec.validators
@@ -110,17 +122,17 @@ pub fn parses_agent_structured_output_pi_tool_call_source_test() {
 
 pub fn rejects_invalid_structured_output_source_contracts_test() {
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source: final_response\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output: {}\n",
     )
-    == "structured_output_source_not_map"
+    == "missing_structured_output_source"
   assert error_code(
       "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: unknown\n",
     )
     == "unsupported_structured_output_source_type"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: final_response\n        tool_name: submit_example_artifact\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: final_response\n",
     )
-    == "structured_output_source_conflicting_field"
+    == "unsupported_structured_output_source_type"
   assert error_code(
       "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n",
     )
@@ -145,39 +157,39 @@ pub fn rejects_invalid_structured_output_contracts_test() {
     )
     == "structured_output_on_command_step"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: yaml\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      format: yaml\n",
     )
     == "unsupported_structured_output_format"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      artifact_name: bad-name\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      artifact_name: bad-name\n",
     )
     == "invalid_structured_artifact_name"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        type: array\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      schema:\n        type: array\n",
     )
     == "unsupported_structured_output_schema_type"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        required: summary\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      schema:\n        required: summary\n",
     )
     == "structured_output_schema_required_not_list"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      schema:\n        required:\n          - 123\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      schema:\n        required:\n          - 123\n",
     )
     == "structured_output_schema_required_entry_not_string"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validator: unknown_contract\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      validator: unknown_contract\n",
     )
     == "unknown_structured_output_validator"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validator: 123\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      validator: 123\n",
     )
     == "structured_output_validator_not_string"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validation_retries: 2\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      validation_retries: 2\n",
     )
     == "invalid_structured_output_validation_retries"
   assert error_code(
-      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      validation_retries: once\n",
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      validation_retries: once\n",
     )
     == "structured_output_validation_retries_not_int"
 }
@@ -453,7 +465,7 @@ pub fn rejects_contract_final_response_on_command_test() {
 pub fn validates_contract_structured_output_sources_test() {
   let dag =
     parse_ok(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\nsteps:\n  - id: summarize_change\n    kind: agent\n    prompt: prompts/summarize.md\n    structured_output:\n      artifact_name: code_change\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\nsteps:\n  - id: summarize_change\n    kind: agent\n    prompt: prompts/summarize.md\n    structured_output:\n      artifact_name: code_change\n      source:\n        type: pi_tool_call\n        tool_name: submit_code_change\n",
     )
   let assert Some(contract) = dag.contract
   let assert [structured, inline] = contract.outputs
@@ -468,7 +480,7 @@ pub fn validates_contract_structured_output_sources_test() {
 
 pub fn rejects_contract_structured_output_missing_artifact_test() {
   assert error_code(
-      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\nsteps:\n  - id: summarize_change\n    kind: agent\n    prompt: prompts/summarize.md\n    structured_output:\n      artifact_name: other_change\n",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\nsteps:\n  - id: summarize_change\n    kind: agent\n    prompt: prompts/summarize.md\n    structured_output:\n      artifact_name: other_change\n      source:\n        type: pi_tool_call\n        tool_name: submit_code_change\n",
     )
     == "contract_output_structured_artifact_missing"
 }

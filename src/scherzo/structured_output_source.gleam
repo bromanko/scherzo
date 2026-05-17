@@ -48,7 +48,11 @@ pub fn parameters_schema_path(
 
 pub fn parse(node: yay.Node) -> Result(StructuredOutputSource, SourceError) {
   case get_node(node, "source") {
-    None -> Ok(default())
+    None ->
+      error(
+        "missing_structured_output_source",
+        "structured_output.source is required",
+      )
     Some(source_node) ->
       case source_node {
         yay.NodeMap(_) -> parse_source_map(source_node)
@@ -66,7 +70,6 @@ fn parse_source_map(
 ) -> Result(StructuredOutputSource, SourceError) {
   use source_type <- result.try(read_source_type(node))
   case source_type {
-    "final_response" -> read_final_response_source(node)
     "pi_tool_call" -> read_pi_tool_call_source(node)
     other ->
       error(
@@ -89,40 +92,6 @@ fn read_source_type(node: yay.Node) -> Result(String, SourceError) {
         "structured_output_source_type_not_string",
         "structured_output.source.type must be a string",
       )
-  }
-}
-
-fn read_final_response_source(
-  node: yay.Node,
-) -> Result(StructuredOutputSource, SourceError) {
-  case first_present_pi_field(node) {
-    None -> Ok(FinalResponseSource)
-    Some(field) ->
-      error(
-        "structured_output_source_conflicting_field",
-        "structured_output.source."
-          <> field
-          <> " is only valid for type pi_tool_call",
-      )
-  }
-}
-
-fn first_present_pi_field(node: yay.Node) -> Option(String) {
-  case get_node(node, "tool_name") {
-    Some(_) -> Some("tool_name")
-    None ->
-      case get_node(node, "require_single") {
-        Some(_) -> Some("require_single")
-        None ->
-          case get_node(node, "reject_sibling_tool_calls") {
-            Some(_) -> Some("reject_sibling_tool_calls")
-            None ->
-              case get_node(node, "parameters_schema_path") {
-                Some(_) -> Some("parameters_schema_path")
-                None -> None
-              }
-          }
-      }
   }
 }
 

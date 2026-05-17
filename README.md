@@ -151,7 +151,7 @@ direnv exec . scherzo-test-contract
 
 Run the contract suite when changing helper scripts such as `scripts/scherzo-review` or `scripts/scherzo-implementation`, ExecPlan HTML rendering, workspace driver scripts, or before relying on repository confidence from the final gate.
 
-The explicit integration suites are opt-in because they have required dependencies outside the normal unit and contract loops: `scherzo-test-local-integration` exercises local jj/workspace behavior, and `scherzo-test-real-pi-validation` requires `pi` on `PATH` plus working model/provider credentials.
+The explicit integration suites are opt-in because they have required dependencies outside the normal unit and contract loops: `scherzo-test-local-integration` exercises local jj/workspace behavior, and `scherzo-test-real-pi-validation` uses the devenv-provided `pi` plus working model/provider credentials.
 
 For the full local gate used by dogfood implementation workflows, run SelfCI against the configured pull-request base. SelfCI runs the unit and contract suites; local-integration and real-pi-validation remain explicit because of their external dependency requirements.
 

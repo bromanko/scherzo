@@ -37,7 +37,7 @@ See the [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md) for the n
 
 ### `pi` and model/provider credentials
 
-Scherzo executes agent steps through `pi`. Install `pi`, choose a model/provider, and make provider credentials available in the environment that will run Scherzo. A safe first config uses non-persistent pi RPC:
+Scherzo executes agent steps through `pi`. In a source checkout, the direnv/devenv shell provides `pi` from `numtide/llm-agents.nix`; external deployments should install `pi` or otherwise put it on `PATH`. Choose a model/provider, and make provider credentials available in the environment that will run Scherzo. A safe first config uses non-persistent pi RPC:
 
 ```yaml
 pi:
@@ -287,7 +287,7 @@ handoff:
 
 For long-running daemon operation, use some handoff or manual board process that prevents successful tasks from remaining eligible for dispatch forever.
 
-Artifact-producing workflows should use completion-state policy instead of a blanket `success_state_id`. A successful implementation or ExecPlan run usually produces work that a human should review, so the standard policy moves those tasks to `In Review`, not `Done`. Failure and partial-success outcomes, including a workflow that was expected to produce an artifact but did not, should move to an attention state such as `Needs Attention`. A cancellation leaves the Linear state unchanged unless `cancellation_state` is configured.
+Artifact-producing workflows should use completion-state policy instead of a blanket `success_state_id`. A successful implementation or ExecPlan v2 run usually produces work that a human should review, so the standard policy moves those tasks to `In Review`, not `Done`. Failure and partial-success outcomes, including a workflow that was expected to produce an artifact but did not, should move to an attention state such as `Needs Attention`. A cancellation leaves the Linear state unchanged unless `cancellation_state` is configured.
 
 ```yaml
 linear_contract:
@@ -301,7 +301,7 @@ handoff:
     failure_state: Needs Attention
     partial_success_state: Needs Attention
     workflows:
-      execplan:
+      execplan-v2:
         produces_reviewable_artifacts: true
         requires_review: true
       no-review-maintenance:

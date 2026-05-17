@@ -849,17 +849,41 @@ def issue_result_from_create_output(output: str) -> dict[str, str] | None:
     return None
 
 
-def view_linear_issue(identifier: str) -> dict[str, str] | None:
+def view_linear_issue_json(identifier: str) -> Any | None:
     proc = run_proc(["linear", "issue", "view", identifier, "--json", "--no-download"])
     if proc.returncode != 0:
         return None
     try:
-        return issue_result_from_json(json.loads(proc.stdout))
+        return json.loads(proc.stdout)
     except Exception:
         return None
 
 
-def handoff_issue_description(source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> str:
+def view_linear_issue(identifier: str) -> dict[str, str] | None:
+    data = view_linear_issue_json(identifier)
+    if data is None:
+        return None
+    return issue_result_from_json(data)
+
+
+def linear_issue_project_name(identifier: str) -> str:
+    data = view_linear_issue_json(identifier)
+    if not isinstance(data, dict):
+        return ""
+    issue = data
+    if isinstance(data.get("issue"), dict):
+        issue = data["issue"]
+    elif isinstance(data.get("data"), dict) and isinstance(data["data"].get("issue"), dict):
+        issue = data["data"]["issue"]
+    project = issue.get("project")
+    if not isinstance(project, dict):
+        return ""
+    return str(project.get("name") or "").strip()
+
+
+def handoff_issue_description(
+    source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str
+) -> str:
     note = (
         "This description will be updated automatically with the final bundle hash before implementation dispatch. "
         "If it still says `pending`, use the follow-up helper comment with the final bundle hash."
@@ -877,7 +901,9 @@ def handoff_issue_description(source_issue: dict[str, str], bundle_ref: str, bun
     )
 
 
-def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str) -> dict[str, str]:
+def create_or_reuse_handoff_issue(
+    source_issue: dict[str, str], bundle_ref: str, bundle_sha: str, pack_sha: str, review_path: str
+) -> dict[str, str]:
     if os.environ.get("SCHERZO_EXECPLAN_V2_OFFLINE_LINEAR") or not shutil.which("linear"):
         identifier = os.environ.get("SCHERZO_EXECPLAN_V2_HANDOFF_IDENTIFIER", source_issue["identifier"] + "-IMPL")
         url = os.environ.get("SCHERZO_EXECPLAN_V2_HANDOFF_URL", f"https://linear.app/living-systems/issue/{identifier}")
@@ -891,7 +917,7 @@ def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str,
     tmp = Path("tmp") / "execplan-v2-handoff-body.md"
     tmp.parent.mkdir(exist_ok=True)
     tmp.write_text(description, encoding="utf-8")
-    proc = run_proc([
+    create_args = [
         "linear",
         "issue",
         "create",
@@ -906,7 +932,13 @@ def create_or_reuse_handoff_issue(source_issue: dict[str, str], bundle_ref: str,
         "--state",
         "Backlog",
         "--no-interactive",
-    ])
+    ]
+    project = os.environ.get("SCHERZO_EXECPLAN_V2_HANDOFF_PROJECT", "").strip() or linear_issue_project_name(
+        source_issue["identifier"]
+    )
+    if project:
+        create_args.extend(["--project", project])
+    proc = run_proc(create_args)
     if proc.returncode != 0:
         fail("failed to create Linear implementation handoff task: " + (proc.stderr.strip() or proc.stdout.strip()))
     created = issue_result_from_create_output(proc.stdout)

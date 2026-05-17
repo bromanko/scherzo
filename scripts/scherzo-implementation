@@ -4,8 +4,12 @@
 The checked-in dogfood workflows have two implementation contracts:
 
 * workflow:implementation implements directly from task context fetched from Linear.
-* workflow:execplan-implementation implements a checked-in ExecPlan referenced by
-  the source task.
+* workflow:execplan-implementation-v2 implements a retained ExecPlan v2 bundle
+  prepared by scripts/scherzo-execplan-v2.
+
+The legacy `prepare --source execplan` plan-path mode is retained only for
+historical retained-run recovery and local helper tests; it is no longer a
+routed workflow path.
 
 This helper keeps the common mechanics in one place: fetching source context,
 recording the starting jj parent, retaining failed run workspaces until a PR is
@@ -68,10 +72,11 @@ def usage() -> None:
 Run from a Scherzo jj workflow workspace root.
 
 prepare --source execplan
-              Fetch the Linear-backed source task, prefer an explicit Plan/Plan
-              path field, otherwise find exactly one docs/plans/*.md or legacy
-              docs/plans/*.html path, record the starting jj parent, and mark
-              the run for retention until a PR is safely published.
+              Legacy plan-path recovery helper only; not used by any routed
+              workflow. Fetch the Linear-backed source task, prefer an explicit
+              Plan/Plan path field, otherwise find exactly one docs/plans/*.md
+              or legacy docs/plans/*.html path, record the starting jj parent,
+              and mark the run for retention until a PR is safely published.
 prepare --source ticket
               Fetch the Linear-backed source task, write a task-context brief
               under tmp/, record the starting jj parent, and mark the run for
@@ -2252,14 +2257,14 @@ def ticket_slug(metadata: dict[str, Any]) -> str:
 
 def execplan_implementation_slug(metadata: dict[str, Any]) -> str:
     # Linear's GitHub integration is most reliable when the implementation
-    # issue key appears in the branch name. Avoid deriving execplan-
+    # issue key appears in the branch name. Avoid deriving ExecPlan
     # implementation branches from the source plan filename because those
     # filenames often contain the planning ticket key instead.
     identifier = sanitize_ref_part(metadata.get("issue_identifier") or "")
     title = sanitize_ref_part(metadata.get("issue_title") or "")
     value = "-".join(part for part in [identifier, title] if part)
     if value:
-        return value[:60].strip("-") or "execplan-implementation"
+        return value[:60].strip("-") or "execplan-implementation-v2"
     plan_path = metadata["plan_path"]
     return sanitize_ref_part(Path(plan_path).stem)[:60] or "plan"
 
@@ -2324,7 +2329,7 @@ def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, st
     issue_title = metadata.get("issue_title") or plan_title(plan_path)
     issue_url = metadata.get("issue_url") or ""
     slug = execplan_implementation_slug(metadata)
-    branch_prefix = "scherzo/execplan-implementation"
+    branch_prefix = "scherzo/execplan-implementation-v2"
     description = f"feat: implement {sanitize_ref_part(issue_identifier) or slug}"
     subject = implementation_subject(issue_title, plan_title(plan_path))
     pr_title = (
@@ -2334,9 +2339,9 @@ def execplan_publish_values(metadata: dict[str, Any]) -> tuple[str, str, str, st
         else "Implement: " + subject
     )
     body = (
-        "Implements a task through Scherzo's `workflow:execplan-implementation` dogfood workflow. The source task is fetched from Linear today.\n\n"
+        "Implements a task through Scherzo's `workflow:execplan-implementation-v2` dogfood workflow. The source task is fetched from Linear today.\n\n"
         f"{format_issue_line(issue_identifier, issue_title, issue_url)}\n\n"
-        f"Source ExecPlan: `{plan_path}`\n\n"
+        f"Source ExecPlan v2 review doc: `{plan_path}`\n\n"
         + validation_body_section()
         + "This PR is ready for human acceptance.\n"
     )

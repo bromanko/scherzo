@@ -1,6 +1,8 @@
-{ pkgs, ... }:
+{ inputs, pkgs, ... }:
 
 let
+  llmAgentsPackages = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
+
   linearCli = pkgs.callPackage ./nix/linear-cli.nix { };
 
   linearCommand =
@@ -15,7 +17,7 @@ let
   '';
 in
 {
-  env.LINEAR_DEFAULT_PROJECT = "Scherzo";
+  env.LINEAR_DEFAULT_PROJECT = "Scherzo Core";
   env.SCHERZO_GITHUB_REPO = "scherzo-systems/scherzo";
   env.SCHERZO_LINEAR_PROJECT_SLUG = "scherzo-f6f4bc92d6d7";
 
@@ -28,6 +30,7 @@ in
     pkgs.git
     pkgs.jq
     pkgs.selfci
+    llmAgentsPackages.pi
     (linearCommand "linear")
     (linearCommand "lc")
   ];

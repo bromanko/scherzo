@@ -396,7 +396,7 @@ Required arguments:
 
 | Argument | Contract |
 | --- | --- |
-| `--kind` | Workflow publication kind. The bundled jj driver accepts lowercase workflow kind tokens made from letters, numbers, and hyphens, for example `implementation`, `execplan`, `execplan-revision`, `execplan-v2`, and `merge-conflict`. |
+| `--kind` | Workflow publication kind. The bundled jj driver accepts lowercase workflow kind tokens made from letters, numbers, and hyphens, for example `implementation`, `execplan-v2`, `execplan-revision-v2`, `execplan-implementation-v2`, and `merge-conflict`. |
 | `--title-file` | Workspace-root-relative file path containing the hosted-review title. |
 | `--body-file` | Workspace-root-relative file path containing the hosted-review body. |
 | `--branch-prefix` | Prefix the driver may use when creating a publication branch/bookmark. |

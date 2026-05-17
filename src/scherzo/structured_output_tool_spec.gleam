@@ -1,12 +1,12 @@
 import gleam/int
 import gleam/json
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/hash
 import scherzo/json_value
 import scherzo/path
+import scherzo/structured_output_contract_policy
 import scherzo/structured_output_source
 import scherzo/workflow_dag
 import simplifile
@@ -141,15 +141,8 @@ fn validate_supported_policy(
 }
 
 pub fn validate_schema_path(schema_path: String) -> Result(Nil, ToolSpecError) {
-  case structured_output_source.valid_parameters_schema_path(schema_path) {
-    True -> Ok(Nil)
-    False ->
-      Error(ToolSpecError(
-        "structured_output_parameters_schema_path_invalid",
-        "parameters_schema_path must be repository-relative and confined to the repository: "
-          <> schema_path,
-      ))
-  }
+  structured_output_contract_policy.validate_schema_path(schema_path)
+  |> result.map_error(contract_policy_error_to_tool_spec_error)
 }
 
 type LoadedSchema {
@@ -196,227 +189,41 @@ fn provider_compatible_parameters_schema(
   schema: json_value.JsonValue,
   schema_path: String,
 ) -> Result(json_value.JsonValue, ToolSpecError) {
-  case schema {
-    json_value.JObject(entries) -> {
-      use Nil <- result.try(validate_provider_schema_keywords(
-        schema,
-        schema_path,
-      ))
-      case object_field(entries, "type") {
-        Some(json_value.JString("object")) -> Ok(schema)
-        None ->
-          Ok(
-            json_value.JObject([
-              #("type", json_value.JString("object")),
-              ..entries
-            ]),
-          )
-        Some(_) ->
-          Error(ToolSpecError(
-            "structured_output_tool_spec_provider_incompatible_schema",
-            "parameters schema used for Pi tool registration must have top-level type \"object\": "
-              <> schema_path,
-          ))
-      }
-    }
-    _ ->
-      Error(ToolSpecError(
-        "structured_output_tool_spec_schema_not_object",
-        "parameters schema must be a JSON object: " <> schema_path,
-      ))
-  }
+  structured_output_contract_policy.validate_provider_schema(
+    schema,
+    schema_path,
+  )
+  |> result.map(fn(_) { schema })
+  |> result.map_error(contract_policy_error_to_tool_spec_error)
 }
 
 pub fn validate_provider_schema_keywords(
   schema: json_value.JsonValue,
   schema_path: String,
 ) -> Result(Nil, ToolSpecError) {
-  validate_schema_value(schema, schema_path, "")
+  structured_output_contract_policy.validate_provider_schema(
+    schema,
+    schema_path,
+  )
+  |> result.map_error(contract_policy_error_to_tool_spec_error)
 }
 
-fn validate_schema_value(
-  value: json_value.JsonValue,
-  schema_path: String,
-  location: String,
-) -> Result(Nil, ToolSpecError) {
-  case value {
-    json_value.JObject(entries) ->
-      validate_schema_entries(entries, schema_path, location)
-    json_value.JArray(values) ->
-      validate_schema_array(values, schema_path, location, 0)
-    _ -> Ok(Nil)
+fn contract_policy_error_to_tool_spec_error(
+  error: structured_output_contract_policy.ContractPolicyError,
+) -> ToolSpecError {
+  case error {
+    structured_output_contract_policy.ContractPolicyError(code, message) ->
+      ToolSpecError(map_contract_policy_error_code(code), message)
   }
 }
 
-fn validate_schema_entries(
-  entries: List(#(String, json_value.JsonValue)),
-  schema_path: String,
-  location: String,
-) -> Result(Nil, ToolSpecError) {
-  case entries {
-    [] -> Ok(Nil)
-    [#(key, value), ..rest] -> {
-      use Nil <- result.try(validate_schema_keyword(
-        key,
-        value,
-        schema_path,
-        location,
-      ))
-      use Nil <- result.try(validate_schema_keyword_value(
-        key,
-        value,
-        schema_path,
-        keyword_location(location, key),
-      ))
-      validate_schema_entries(rest, schema_path, location)
-    }
-  }
-}
-
-fn validate_schema_keyword(
-  key: String,
-  value: json_value.JsonValue,
-  schema_path: String,
-  location: String,
-) -> Result(Nil, ToolSpecError) {
-  case list.contains(provider_schema_allowed_keywords(), key) {
-    True ->
-      case key == "type" {
-        True -> validate_schema_type_keyword(value, schema_path, location)
-        False -> Ok(Nil)
-      }
-    False -> provider_schema_keyword_error(schema_path, location, key)
-  }
-}
-
-fn validate_schema_type_keyword(
-  value: json_value.JsonValue,
-  schema_path: String,
-  location: String,
-) -> Result(Nil, ToolSpecError) {
-  case value {
-    json_value.JArray(_) ->
-      provider_schema_keyword_error(schema_path, location, "type")
-    _ -> Ok(Nil)
-  }
-}
-
-fn validate_schema_keyword_value(
-  key: String,
-  value: json_value.JsonValue,
-  schema_path: String,
-  location: String,
-) -> Result(Nil, ToolSpecError) {
-  case key {
-    "properties" -> validate_schema_properties(value, schema_path, location)
-    "items" -> validate_schema_value(value, schema_path, location)
-    "additionalProperties" ->
-      validate_schema_value(value, schema_path, location)
-    _ -> Ok(Nil)
-  }
-}
-
-fn validate_schema_properties(
-  value: json_value.JsonValue,
-  schema_path: String,
-  location: String,
-) -> Result(Nil, ToolSpecError) {
-  case value {
-    json_value.JObject(entries) ->
-      validate_schema_property_entries(entries, schema_path, location)
-    _ -> Ok(Nil)
-  }
-}
-
-fn validate_schema_property_entries(
-  entries: List(#(String, json_value.JsonValue)),
-  schema_path: String,
-  location: String,
-) -> Result(Nil, ToolSpecError) {
-  case entries {
-    [] -> Ok(Nil)
-    [#(property_name, value), ..rest] -> {
-      use Nil <- result.try(validate_schema_value(
-        value,
-        schema_path,
-        keyword_location(location, property_name),
-      ))
-      validate_schema_property_entries(rest, schema_path, location)
-    }
-  }
-}
-
-fn validate_schema_array(
-  values: List(json_value.JsonValue),
-  schema_path: String,
-  location: String,
-  index: Int,
-) -> Result(Nil, ToolSpecError) {
-  case values {
-    [] -> Ok(Nil)
-    [value, ..rest] -> {
-      use Nil <- result.try(validate_schema_value(
-        value,
-        schema_path,
-        location <> "[" <> int.to_string(index) <> "]",
-      ))
-      validate_schema_array(rest, schema_path, location, index + 1)
-    }
-  }
-}
-
-fn provider_schema_allowed_keywords() -> List(String) {
-  [
-    "type",
-    "description",
-    "properties",
-    "required",
-    "additionalProperties",
-    "items",
-    "minLength",
-    "maxLength",
-    "minimum",
-    "maximum",
-    "minItems",
-    "maxItems",
-    "pattern",
-  ]
-}
-
-fn provider_schema_keyword_error(
-  schema_path: String,
-  location: String,
-  keyword: String,
-) -> Result(Nil, ToolSpecError) {
-  Error(ToolSpecError(
-    "structured_output_tool_spec_provider_incompatible_schema",
-    "provider schema "
-      <> schema_path
-      <> " contains disallowed keyword "
-      <> keyword
-      <> " at "
-      <> keyword_location(location, keyword),
-  ))
-}
-
-fn keyword_location(location: String, key: String) -> String {
-  case location == "" {
-    True -> key
-    False -> location <> "." <> key
-  }
-}
-
-fn object_field(
-  entries: List(#(String, json_value.JsonValue)),
-  key: String,
-) -> Option(json_value.JsonValue) {
-  case entries {
-    [] -> None
-    [#(current, value), ..rest] ->
-      case current == key {
-        True -> Some(value)
-        False -> object_field(rest, key)
-      }
+fn map_contract_policy_error_code(code: String) -> String {
+  case code {
+    "structured_output_provider_incompatible_schema" ->
+      "structured_output_tool_spec_provider_incompatible_schema"
+    "structured_output_provider_schema_not_object" ->
+      "structured_output_tool_spec_provider_incompatible_schema"
+    other -> other
   }
 }
 
