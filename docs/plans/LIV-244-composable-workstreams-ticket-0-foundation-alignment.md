@@ -69,6 +69,12 @@ The fourth milestone is the stop gate. The implementer runs the targeted tests p
 - [x] (2026-05-17 00:00Z) Drafted this LIV-244 Ticket 0 review document as a concise human-reviewable plan surface.
 - [x] (2026-05-17 00:00Z) Prepared the structured implementation-pack content with detailed steps, tests, interfaces, dependencies, and verified facts for Scherzo tool capture.
 - [x] (2026-05-17 00:00Z) Validated this review document with `scripts/scherzo-execplan-v2 validate-review-doc --path docs/plans/LIV-244-composable-workstreams-ticket-0-foundation-alignment.md`.
+- [x] (2026-05-17 23:00Z) Reconfirmed during LIV-360 implementation that the repository still uses `workflow_dag.StructuredOutputValidator`, `structured_output.default_validator_runner`, top-level workflow `contract`, `workflow_run.execute_with_contract_values`, and `workflow_contract_inputs` manifests; no drift required plan changes.
+- [x] (2026-05-17 23:00Z) Added `src/scherzo/workstream/foundation.gleam`, handoff JSON Schema fixtures, and `test/workstream_foundation_test.gleam` to prove valid and invalid workstream-adjacent artifacts reuse the existing JSON Schema validator path and fail closed when validators are unconfigured.
+- [x] (2026-05-17 23:00Z) Added `handoff_derived_contract_values_are_recorded_in_input_manifest_test` in `test/workflow_run_test.gleam` to prove handoff-derived supplied values appear in the retained `workflow_contract_inputs` manifest without any `phase_contract` system.
+- [x] (2026-05-17 23:00Z) Ran `direnv exec . gleam test` successfully (1342 passed) and re-ran formatting and lint gates, observing only the repository's pre-existing warning inventory and no new lint errors.
+- [x] (2026-05-17 23:20Z) Review follow-up added focused coverage proving `ArtifactValidationSpec.required_keys` is forwarded to the existing `StructuredObjectSchema` baseline schema before configured validators.
+- [x] (2026-05-17 23:30Z) Re-ran `direnv exec . gleam format --check src/scherzo/workstream/foundation.gleam test/workstream_foundation_test.gleam test/workflow_run_test.gleam` and `direnv exec . gleam test`; formatting stayed clean and the suite passed with 1343 tests.
 
 ## Decision Log
 
@@ -87,6 +93,14 @@ The fourth milestone is the stop gate. The implementer runs the targeted tests p
 - Decision: The later implementer must stop before Ticket 1+.
   Rationale: LIV-244 is intentionally a bounded foundation-alignment slice replacing a broad implementation handoff.
   Date: 2026-05-17.
+
+- Decision: The Ticket 0 proof uses a tiny `src/scherzo/workstream/foundation.gleam` seam instead of editing future runtime modules that do not exist yet.
+  Rationale: A small wrapper around `structured_output.validate_final_response` makes validator reuse explicit, gives the fail-closed case a stable workstream-specific error code, and avoids introducing any ledger, snapshot, handoff-runtime, or start-tooling behavior.
+  Date: 2026-05-17.
+
+## Outcomes & Retrospective
+
+Ticket 0 stayed bounded after review. The added foundation seam still only wraps existing structured-output and workflow-contract machinery, and the follow-up test closed the main medium finding by proving `required_keys` is enforced before the configured validator runs. A fresh post-review test pass kept the slice green without pulling in any Ticket 1 runtime behavior.
 
 ## Validation and Acceptance
 

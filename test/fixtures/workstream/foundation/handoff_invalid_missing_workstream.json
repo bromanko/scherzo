@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "artifact_type": "scherzo.handoff.v1",
+  "summary": "This fixture intentionally omits workstream_id."
+}

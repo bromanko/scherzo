@@ -3938,6 +3938,76 @@ pub fn contracted_mapped_input_can_be_supplied_test() {
   assert receive_event(subject) == "prepare:implement:main:"
 }
 
+pub fn handoff_derived_contract_values_are_recorded_in_input_manifest_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-handoff-derived-input"
+  reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    reviewed_plan:\n      type: exec_plan\n      source: mapped_output\nsteps:\n  - id: implement\n    kind: command\n    run: echo runs\n",
+    )
+  let assert Ok(source_json) =
+    json_value.parse(
+      "{\"source_handoff_ref\":\"runs/upstream/outputs/handoff.json\",\"workstream_id\":\"linear:LIV-244\"}",
+    )
+  let supplied =
+    workflow_run.ContractRunValues(
+      inputs: dict.from_list([
+        #(
+          "reviewed_plan",
+          workflow_contract_manifest.present_run_artifact(
+            workflow_contract.ExecPlan,
+            workflow_contract_manifest.ArtifactWritten(
+              ref: "runs/upstream/outputs/reviewed_plan.md",
+              sha256: "abc",
+              bytes: 12,
+            ),
+            "text/markdown",
+            Some(source_json),
+          ),
+        ),
+      ]),
+      context: dict.new(),
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute_with_contract_values(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      supplied,
+      dependencies,
+    )
+
+  let assert Ok(input_manifest_text) =
+    simplifile.read(
+      root <> "/.scherzo-state/artifacts/runs/run-1/inputs.v1.json",
+    )
+  assert string.contains(
+    input_manifest_text,
+    "\"artifact_type\":\"workflow_contract_inputs\"",
+  )
+
+  let manifest = read_input_manifest(root, "run-1")
+  let assert [reviewed_plan] = manifest.inputs
+  assert reviewed_plan.name == "reviewed_plan"
+  assert reviewed_plan.value.status == workflow_contract_manifest.Present
+  assert reviewed_plan.value.ref
+    == Some("runs/upstream/outputs/reviewed_plan.md")
+  let assert Some(source) = reviewed_plan.value.source
+  let source_text = json.to_string(json_value.to_json(source))
+  assert string.contains(source_text, "runs/upstream/outputs/handoff.json")
+  assert string.contains(source_text, "linear:LIV-244")
+}
+
 pub fn contracted_scheduled_context_records_metadata_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-scheduled-context"
