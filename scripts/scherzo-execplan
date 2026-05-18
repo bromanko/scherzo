@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import glob
 import hashlib
+import io
 import json
 import os
 import re
@@ -51,6 +53,12 @@ FORBIDDEN_REVIEW_DOC_SECTIONS = {
 }
 BUNDLE_REF_RE = re.compile(r"(?i)\bBundle\s+ref:\s*`?(runs/[^\s`<>)\],;]+)`?")
 BUNDLE_SHA_RE = re.compile(r"(?i)\bBundle\s+sha256:\s*`?([a-f0-9]{64})`?")
+RUN_ARTIFACT_REF_RE = re.compile(r"\bruns/[A-Za-z0-9._~/-]+")
+URL_RE = re.compile(r"https?://[^\s`<>)\]\"']+")
+GITHUB_PR_URL_RE = re.compile(r"https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)", re.IGNORECASE)
+GITHUB_PR_TEXT_RE = re.compile(r"\b(?:PR|pull request)\s*#?\s*(\d+)\b", re.IGNORECASE)
+REVIEW_DOC_PATH_RE = re.compile(r"\b(?:docs/plans|test/fixtures/execplan_v2)/[^\s`<>)\],;]+\.md\b")
+SHA256_TEXT_RE = re.compile(r"\b[a-f0-9]{64}\b", re.IGNORECASE)
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 LINEAR_ISSUE_URL_RE = re.compile(
     r"https://linear\.app/[^\s)>\"]+/issue/([A-Za-z][A-Za-z0-9]*-\d+)[^\s)>\"]*"
@@ -612,10 +620,13 @@ def canonicalize_execplan_bundle(bundle: Any) -> Any:
     return bundle
 
 
-def load_bundle_json(bundle_path: Path, *, bundle_sha256: str | None = None, repo_root_arg: str | None = None) -> dict[str, Any]:
+def load_execplan_bundle_payload(
+    bundle_path: Path, *, bundle_sha256: str | None = None, repo_root_arg: str | None = None
+) -> tuple[dict[str, Any], str]:
     bundle_data = path_bytes(bundle_path, code="execplan_v2_bundle_missing")
     actual_bundle_sha = sha256_bytes(bundle_data)
-    if bundle_sha256 and actual_bundle_sha != bundle_sha256:
+    expected_bundle_sha = bundle_sha256.lower() if bundle_sha256 else None
+    if expected_bundle_sha and actual_bundle_sha != expected_bundle_sha:
         fail("bundle file SHA-256 does not match supplied --bundle-sha256", code="execplan_v2_bundle_hash_mismatch")
     try:
         bundle = json.loads(bundle_data.decode("utf-8"))
@@ -626,10 +637,24 @@ def load_bundle_json(bundle_path: Path, *, bundle_sha256: str | None = None, rep
     reject_bundle_self_hash(bundle)
     canonicalize_execplan_bundle(bundle)
     validate_schema(bundle, EXEC_PLAN_BUNDLE_SCHEMA, root=repo_root(repo_root_arg))
+    return bundle, actual_bundle_sha
+
+
+def load_bundle_json(bundle_path: Path, *, bundle_sha256: str | None = None, repo_root_arg: str | None = None) -> dict[str, Any]:
+    bundle, _actual_bundle_sha = load_execplan_bundle_payload(
+        bundle_path,
+        bundle_sha256=bundle_sha256,
+        repo_root_arg=repo_root_arg,
+    )
     return bundle
 
 
-def review_doc_meta_for_bundle(bundle: dict[str, Any], *, repo_root_arg: str | None = None, missing_code: str = "execplan_v2_review_doc_missing") -> dict[str, Any]:
+def validate_bundle_review_doc(
+    bundle: dict[str, Any],
+    *,
+    repo_root_arg: str | None = None,
+    missing_code: str = "execplan_v2_review_doc_missing",
+) -> dict[str, Any]:
     review_doc = bundle["review_doc"]
     review_path = review_doc_filesystem_path(review_doc["path"], repo_root(repo_root_arg))
     review_meta = file_meta(review_path, code=missing_code)
@@ -638,7 +663,18 @@ def review_doc_meta_for_bundle(bundle: dict[str, Any], *, repo_root_arg: str | N
     return review_meta
 
 
-def load_bundle_pack(bundle: dict[str, Any], *, artifact_root: str | None = None, repo_root_arg: str | None = None) -> tuple[dict[str, Any], Path]:
+def review_doc_meta_for_bundle(
+    bundle: dict[str, Any],
+    *,
+    repo_root_arg: str | None = None,
+    missing_code: str = "execplan_v2_review_doc_missing",
+) -> dict[str, Any]:
+    return validate_bundle_review_doc(bundle, repo_root_arg=repo_root_arg, missing_code=missing_code)
+
+
+def validate_bundle_implementation_pack(
+    bundle: dict[str, Any], *, artifact_root: str | None = None, repo_root_arg: str | None = None
+) -> tuple[dict[str, Any], Path]:
     review_doc = bundle["review_doc"]
     pack_ref = bundle["implementation_pack"]["ref"]
     pack_path = resolve_artifact_ref(
@@ -666,11 +702,43 @@ def load_bundle_pack(bundle: dict[str, Any], *, artifact_root: str | None = None
     return pack, pack_path
 
 
-def load_and_validate_bundle(bundle_path: Path, *, bundle_sha256: str | None = None, artifact_root: str | None = None, repo_root_arg: str | None = None) -> tuple[dict[str, Any], dict[str, Any], Path]:
-    bundle = load_bundle_json(bundle_path, bundle_sha256=bundle_sha256, repo_root_arg=repo_root_arg)
-    review_doc_meta_for_bundle(bundle, repo_root_arg=repo_root_arg)
-    pack, pack_path = load_bundle_pack(bundle, artifact_root=artifact_root, repo_root_arg=repo_root_arg)
+def load_bundle_pack(
+    bundle: dict[str, Any], *, artifact_root: str | None = None, repo_root_arg: str | None = None
+) -> tuple[dict[str, Any], Path]:
+    return validate_bundle_implementation_pack(bundle, artifact_root=artifact_root, repo_root_arg=repo_root_arg)
+
+
+def load_and_validate_bundle(
+    bundle_path: Path, *, bundle_sha256: str | None = None, artifact_root: str | None = None, repo_root_arg: str | None = None
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    bundle, _actual_bundle_sha = load_execplan_bundle_payload(
+        bundle_path,
+        bundle_sha256=bundle_sha256,
+        repo_root_arg=repo_root_arg,
+    )
+    validate_bundle_review_doc(bundle, repo_root_arg=repo_root_arg)
+    pack, pack_path = validate_bundle_implementation_pack(
+        bundle,
+        artifact_root=artifact_root,
+        repo_root_arg=repo_root_arg,
+    )
     return bundle, pack, pack_path
+
+
+def load_and_validate_retained_bundle(
+    bundle_path: Path, *, bundle_sha256: str | None = None, artifact_root: str | None = None, repo_root_arg: str | None = None
+) -> tuple[dict[str, Any], dict[str, Any], Path, str]:
+    bundle, actual_bundle_sha = load_execplan_bundle_payload(
+        bundle_path,
+        bundle_sha256=bundle_sha256,
+        repo_root_arg=repo_root_arg,
+    )
+    pack, pack_path = validate_bundle_implementation_pack(
+        bundle,
+        artifact_root=artifact_root,
+        repo_root_arg=repo_root_arg,
+    )
+    return bundle, pack, pack_path, actual_bundle_sha
 
 
 def command_validate_bundle(args: list[str]) -> None:
@@ -1197,26 +1265,365 @@ def materialize_bundle(args: list[str]) -> None:
     sys.stdout.write(final_text)
 
 
-def parse_bundle_ref_and_sha(text: str) -> tuple[str, str]:
+def explicit_bundle_ref_and_sha(text: str) -> tuple[str, str] | None:
     ref_match = BUNDLE_REF_RE.search(text)
     sha_match = BUNDLE_SHA_RE.search(text)
     if not ref_match or not sha_match:
-        fail("task context must contain `Bundle ref:` and `Bundle sha256:` lines")
+        return None
     return ref_match.group(1).rstrip(".,;"), sha_match.group(1)
+
+
+def parse_bundle_ref_and_sha(text: str) -> tuple[str, str]:
+    parsed = explicit_bundle_ref_and_sha(text)
+    if parsed is None:
+        fail("task context must contain `Bundle ref:` and `Bundle sha256:` lines")
+    return parsed
 
 
 def load_bundle_payload_from_context() -> tuple[dict[str, Any], Path, str, str]:
     ref, sha = parse_bundle_ref_and_sha(issue_context_text())
     bundle_path = resolve_artifact_ref(ref, code="execplan_v2_bundle_missing")
-    bundle = load_bundle_json(bundle_path, bundle_sha256=sha, repo_root_arg=str(Path.cwd()))
-    return bundle, bundle_path, ref, sha
+    bundle, actual_sha = load_execplan_bundle_payload(
+        bundle_path,
+        bundle_sha256=sha,
+        repo_root_arg=str(Path.cwd()),
+    )
+    return bundle, bundle_path, ref, actual_sha
 
 
-def load_bundle_from_context() -> tuple[dict[str, Any], dict[str, Any], Path, str, str]:
-    bundle, _bundle_path, ref, sha = load_bundle_payload_from_context()
-    review_doc_meta_for_bundle(bundle, repo_root_arg=str(Path.cwd()))
-    pack, pack_path = load_bundle_pack(bundle, artifact_root=None, repo_root_arg=str(Path.cwd()))
-    return bundle, pack, pack_path, ref, sha
+def trim_reference(value: str) -> str:
+    return value.strip().strip("`'\"<>").rstrip(".,;:")
+
+
+def normalize_url(value: str) -> str:
+    return trim_reference(value).rstrip("/").lower()
+
+
+def github_pr_key(value: str) -> str:
+    match = GITHUB_PR_URL_RE.search(trim_reference(value))
+    if not match:
+        return ""
+    return f"{match.group(1).lower()}/{match.group(2).lower()}#{match.group(3)}"
+
+
+def github_pr_number(value: str) -> str:
+    match = GITHUB_PR_URL_RE.search(trim_reference(value))
+    return match.group(3) if match else ""
+
+
+def bundle_discovery_anchors(text: str) -> dict[str, set[str]]:
+    urls = {normalize_url(match.group(0)) for match in URL_RE.finditer(text)}
+    issue_identifiers = {match.group(1).upper() for match in LINEAR_ISSUE_IDENTIFIER_RE.finditer(strip_ansi(text))}
+    current_issue_identifier = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip().upper()
+    if current_issue_identifier:
+        issue_identifiers.discard(current_issue_identifier)
+        urls = {url for url in urls if f"/issue/{current_issue_identifier.lower()}" not in url}
+    pr_keys = {key for key in (github_pr_key(url) for url in urls) if key}
+    pr_numbers = {match.group(1) for match in GITHUB_PR_TEXT_RE.finditer(text)}
+    pr_numbers.update(number for number in (github_pr_number(url) for url in urls) if number)
+    return {
+        "artifact_refs": {trim_reference(match.group(0)) for match in RUN_ARTIFACT_REF_RE.finditer(text)},
+        "issue_identifiers": issue_identifiers,
+        "pr_keys": pr_keys,
+        "pr_numbers": pr_numbers,
+        "review_doc_paths": {trim_reference(match.group(0)) for match in REVIEW_DOC_PATH_RE.finditer(text)},
+        "sha256s": {match.group(0).lower() for match in SHA256_TEXT_RE.finditer(text)},
+        "urls": urls,
+    }
+
+
+def has_bundle_discovery_anchors(anchors: dict[str, set[str]]) -> bool:
+    return any(anchors.get(key) for key in ["artifact_refs", "issue_identifiers", "pr_keys", "pr_numbers", "review_doc_paths", "sha256s", "urls"])
+
+
+def output_manifest_bundle_entries(root: Path, manifest_path: Path) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    outputs = payload.get("outputs") if isinstance(payload, dict) else None
+    if not isinstance(outputs, list):
+        return []
+    entries: list[dict[str, Any]] = []
+    for output in outputs:
+        if not isinstance(output, dict):
+            continue
+        value = output.get("value")
+        if not isinstance(value, dict):
+            continue
+        if value.get("type") != "exec_plan_bundle" or value.get("status") != "present":
+            continue
+        if value.get("ref_kind") != "run_artifact":
+            continue
+        ref = value.get("ref")
+        if not isinstance(ref, str) or not ref.startswith("runs/"):
+            continue
+        sha = value.get("sha256")
+        if isinstance(sha, str):
+            sha = sha.lower()
+        else:
+            sha = None
+        entries.append({"root": root, "ref": ref, "sha256": sha, "source": str(manifest_path)})
+    return entries
+
+
+def retained_bundle_entries() -> list[dict[str, Any]]:
+    roots = [root for root in artifact_roots() if root.exists()]
+    entries: list[dict[str, Any]] = []
+    manifest_refs: set[tuple[str, str]] = set()
+    for root in roots:
+        for manifest_path in sorted(root.glob("runs/*/outputs.v1.json")):
+            for entry in output_manifest_bundle_entries(root, manifest_path):
+                entries.append(entry)
+                manifest_refs.add((str(root.resolve()), str(entry["ref"])))
+    for root in roots:
+        for bundle_path in sorted(root.glob("runs/*/outputs/exec_plan_bundle.json")):
+            try:
+                ref = str(bundle_path.relative_to(root)).replace(os.sep, "/")
+            except ValueError:
+                continue
+            if (str(root.resolve()), ref) in manifest_refs:
+                continue
+            entries.append({"root": root, "ref": ref, "sha256": None, "source": str(bundle_path)})
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        key = (str(Path(entry["root"]).resolve()), str(entry["ref"]), str(entry.get("sha256") or ""))
+        if key not in seen:
+            deduped.append(entry)
+            seen.add(key)
+    return deduped
+
+
+def retained_bundle_path(root: Path, ref: str) -> Path:
+    validate_artifact_ref(ref)
+    candidate = root / ref
+    try:
+        candidate.resolve().relative_to(root.resolve())
+    except Exception:
+        fail(f"artifact ref escapes artifact root: {ref!r}", code="execplan_v2_bundle_missing")
+    return candidate
+
+
+def load_retained_bundle_metadata(entry: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    root = Path(entry["root"])
+    ref = str(entry["ref"])
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(stderr):
+            bundle_path = retained_bundle_path(root, ref)
+            bundle, actual_sha = load_execplan_bundle_payload(
+                bundle_path,
+                bundle_sha256=entry.get("sha256"),
+                repo_root_arg=str(Path.cwd()),
+            )
+        return {
+            "bundle": bundle,
+            "ref": ref,
+            "sha256": actual_sha,
+            "root": root,
+            "source": entry.get("source"),
+        }, None
+    except SystemExit:
+        detail = stderr.getvalue().strip() or "candidate failed retained bundle metadata validation"
+        return None, f"{ref} ({detail})"
+
+
+def load_retained_bundle_candidate(entry: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    root = Path(entry["root"])
+    ref = str(entry["ref"])
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(stderr):
+            bundle_path = retained_bundle_path(root, ref)
+            bundle, pack, pack_path, actual_sha = load_and_validate_retained_bundle(
+                bundle_path,
+                bundle_sha256=entry.get("sha256"),
+                artifact_root=str(root),
+                repo_root_arg=str(Path.cwd()),
+            )
+        return {
+            "bundle": bundle,
+            "pack": pack,
+            "pack_path": pack_path,
+            "ref": ref,
+            "sha256": actual_sha,
+            "root": root,
+            "source": entry.get("source"),
+        }, None
+    except SystemExit:
+        detail = stderr.getvalue().strip() or "candidate failed retained bundle validation"
+        return None, f"{ref} ({detail})"
+
+
+def bundle_url_matches(label: str, value: Any, anchors: dict[str, set[str]], reasons: list[str]) -> None:
+    if not isinstance(value, str) or not value.strip():
+        return
+    normalized = normalize_url(value)
+    if normalized in anchors["urls"]:
+        reasons.append(f"{label}:{value}")
+
+
+def bundle_match_reasons(candidate: dict[str, Any], anchors: dict[str, set[str]]) -> list[str]:
+    bundle = candidate["bundle"]
+    ref = str(candidate["ref"])
+    sha = str(candidate["sha256"])
+    reasons: list[str] = []
+    handoff = bundle.get("implementation_handoff") if isinstance(bundle.get("implementation_handoff"), dict) else {}
+    source_issue = bundle.get("source_issue") if isinstance(bundle.get("source_issue"), dict) else {}
+    review_surface = bundle.get("review_surface") if isinstance(bundle.get("review_surface"), dict) else {}
+    review_doc = bundle.get("review_doc") if isinstance(bundle.get("review_doc"), dict) else {}
+    implementation_pack = bundle.get("implementation_pack") if isinstance(bundle.get("implementation_pack"), dict) else {}
+
+    for candidate_ref, label in [
+        (ref, "bundle_ref"),
+        (handoff.get("bundle_ref"), "handoff_bundle_ref"),
+        (review_surface.get("source_bundle_ref"), "source_bundle_ref"),
+    ]:
+        if isinstance(candidate_ref, str) and candidate_ref in anchors["artifact_refs"]:
+            reasons.append(f"{label}:{candidate_ref}")
+
+    for issue, label in [(source_issue, "source_issue"), (handoff, "handoff_issue")]:
+        identifier = str(issue.get("identifier") or issue.get("issue_identifier") or "").upper()
+        if identifier and identifier in anchors["issue_identifiers"]:
+            reasons.append(f"{label}:{identifier}")
+        bundle_url_matches(label, issue.get("url") or issue.get("issue_url"), anchors, reasons)
+
+    pr_url = review_surface.get("pr_url")
+    bundle_url_matches("pr_url", pr_url, anchors, reasons)
+    if isinstance(pr_url, str):
+        pr_key = github_pr_key(pr_url)
+        pr_number = github_pr_number(pr_url)
+        if pr_key and pr_key in anchors["pr_keys"]:
+            reasons.append(f"pr:{pr_key}")
+        if pr_number and pr_number in anchors["pr_numbers"]:
+            reasons.append(f"pr_number:{pr_number}")
+
+    review_path = str(review_doc.get("path") or "")
+    if review_path and review_path in anchors["review_doc_paths"]:
+        reasons.append(f"review_doc:{review_path}")
+    pack_sha = str(implementation_pack.get("sha256") or "").lower()
+    if sha in anchors["sha256s"]:
+        reasons.append("bundle_sha256")
+    if pack_sha and pack_sha in anchors["sha256s"]:
+        reasons.append("implementation_pack_sha256")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        if reason not in seen:
+            deduped.append(reason)
+            seen.add(reason)
+    return deduped
+
+
+def bundle_candidate_summary(candidate: dict[str, Any]) -> str:
+    bundle = candidate["bundle"]
+    source_issue = bundle.get("source_issue") if isinstance(bundle.get("source_issue"), dict) else {}
+    review_surface = bundle.get("review_surface") if isinstance(bundle.get("review_surface"), dict) else {}
+    handoff = bundle.get("implementation_handoff") if isinstance(bundle.get("implementation_handoff"), dict) else {}
+    return (
+        f"ref={candidate['ref']} sha256={candidate['sha256']} "
+        f"source_issue={source_issue.get('identifier') or '-'} "
+        f"pr={review_surface.get('pr_url') or '-'} "
+        f"handoff={handoff.get('issue_identifier') or '-'} "
+        f"matched_on={','.join(candidate.get('matches') or [])}"
+    )
+
+
+def missing_bundle_discovery_message(anchors: dict[str, set[str]], skipped: list[str]) -> str:
+    anchor_hint = ""
+    if not has_bundle_discovery_anchors(anchors):
+        anchor_hint = " No PR URL, source issue identifier, review doc path, handoff issue, bundle ref, or hash anchor was found in the issue context."
+    skipped_hint = ""
+    if skipped:
+        skipped_hint = " Skipped invalid retained bundle candidates: " + "; ".join(skipped[:5])
+    return (
+        "missing-bundle-discovery: could not discover a retained exec_plan_bundle for this revision issue."
+        + anchor_hint
+        + skipped_hint
+        + " Include a PR URL/number, source Linear issue URL or identifier, implementation handoff issue, review doc path, or explicit `Bundle ref:` and `Bundle sha256:` lines. If the matching artifacts were pruned, rerun or recover the source execplan workflow, or paste the bundle lines from trusted Scherzo output."
+    )
+
+
+def discover_bundle_from_issue_context(text: str) -> tuple[dict[str, Any], dict[str, Any], Path, str, str, dict[str, Any]]:
+    anchors = bundle_discovery_anchors(text)
+    if not has_bundle_discovery_anchors(anchors):
+        fail(missing_bundle_discovery_message(anchors, []), code="execplan_v2_missing_bundle_discovery")
+    matches: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    for entry in retained_bundle_entries():
+        metadata, error = load_retained_bundle_metadata(entry)
+        if metadata is None:
+            if error:
+                skipped.append(error)
+            continue
+        reasons = bundle_match_reasons(metadata, anchors)
+        if not reasons:
+            continue
+        candidate, error = load_retained_bundle_candidate(entry)
+        if candidate is None:
+            if error:
+                skipped.append(error)
+            continue
+        candidate["matches"] = reasons
+        matches.append(candidate)
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for candidate in matches:
+        key = (str(candidate["ref"]), str(candidate["sha256"]))
+        if key in seen:
+            continue
+        deduped.append(candidate)
+        seen.add(key)
+    if len(deduped) == 1:
+        candidate = deduped[0]
+        return (
+            candidate["bundle"],
+            candidate["pack"],
+            candidate["pack_path"],
+            str(candidate["ref"]),
+            str(candidate["sha256"]),
+            {"source": "discovered", "matches": candidate.get("matches") or []},
+        )
+    if len(deduped) > 1:
+        detail = "\n- ".join(bundle_candidate_summary(candidate) for candidate in deduped)
+        fail(
+            "ambiguous-bundle-discovery: multiple retained exec_plan_bundle artifacts match this revision issue. Add explicit `Bundle ref:` and `Bundle sha256:` lines to disambiguate. Candidates:\n- "
+            + detail,
+            code="execplan_v2_ambiguous_bundle_discovery",
+        )
+    fail(missing_bundle_discovery_message(anchors, skipped), code="execplan_v2_missing_bundle_discovery")
+
+
+def load_bundle_from_context(
+    *, allow_discovery: bool = False, validate_review_doc: bool = True
+) -> tuple[dict[str, Any], dict[str, Any], Path, str, str, dict[str, Any]]:
+    text = issue_context_text()
+    explicit = explicit_bundle_ref_and_sha(text)
+    if explicit is not None:
+        ref, sha = explicit
+        bundle_path = resolve_artifact_ref(ref, code="execplan_v2_bundle_missing")
+        bundle, actual_sha = load_execplan_bundle_payload(
+            bundle_path,
+            bundle_sha256=sha,
+            repo_root_arg=str(Path.cwd()),
+        )
+        if validate_review_doc:
+            validate_bundle_review_doc(bundle, repo_root_arg=str(Path.cwd()))
+        pack, pack_path = validate_bundle_implementation_pack(
+            bundle,
+            artifact_root=None,
+            repo_root_arg=str(Path.cwd()),
+        )
+        return bundle, pack, pack_path, ref, actual_sha, {"source": "explicit", "matches": []}
+    if not allow_discovery:
+        parse_bundle_ref_and_sha(text)
+    bundle, pack, pack_path, ref, sha, diagnostics = discover_bundle_from_issue_context(text)
+    if validate_review_doc:
+        validate_bundle_review_doc(bundle, repo_root_arg=str(Path.cwd()))
+    return bundle, pack, pack_path, ref, sha, diagnostics
+
 
 
 def review_doc_state_for_bundle(bundle: dict[str, Any], *, repo_root_arg: str | None = None) -> tuple[str, dict[str, Any] | None, str]:
@@ -1405,15 +1812,26 @@ def command_prepare_revision(args: list[str]) -> None:
     parser.add_argument("--write-review-doc-path", required=True)
     parser.add_argument("--write-pack", required=True)
     ns = parser.parse_args(args)
-    bundle, _bundle_path, _ref, _sha = load_bundle_payload_from_context()
+    bundle, _pack, pack_path, ref, sha, diagnostics = load_bundle_from_context(
+        allow_discovery=True,
+        validate_review_doc=False,
+    )
     ensure_revision_review_doc_available(bundle, repo_root_arg=str(Path.cwd()))
-    review_doc_meta_for_bundle(bundle, repo_root_arg=str(Path.cwd()), missing_code="execplan_revision_base_missing")
-    _pack, pack_path = load_bundle_pack(bundle, artifact_root=None, repo_root_arg=str(Path.cwd()))
+    validate_bundle_review_doc(
+        bundle,
+        repo_root_arg=str(Path.cwd()),
+        missing_code="execplan_revision_base_missing",
+    )
     write_json(Path(ns.write_bundle), bundle)
     shutil.copyfile(pack_path, ns.write_pack)
     Path(ns.write_review_doc_path).parent.mkdir(parents=True, exist_ok=True)
     Path(ns.write_review_doc_path).write_text(bundle["review_doc"]["path"] + "\n", encoding="utf-8")
     print("PREPARE_REVISION_STATUS=ok")
+    print(f"BUNDLE_DISCOVERY_STATUS={diagnostics['source']}")
+    if diagnostics.get("matches"):
+        print("BUNDLE_DISCOVERY_MATCHES=" + ",".join(diagnostics["matches"]))
+    print(f"BUNDLE_REF={ref}")
+    print(f"BUNDLE_SHA256={sha}")
     print(f"REVIEW_DOC_PATH={bundle['review_doc']['path']}")
 
 
@@ -1499,7 +1917,7 @@ def command_implementation_prepare(args: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="scherzo-execplan implementation-prepare")
     parser.add_argument("--from-issue-context", action="store_true", required=True)
     parser.parse_args(args)
-    bundle, _pack, pack_path, _ref, _sha = load_bundle_from_context()
+    bundle, _pack, pack_path, _ref, _sha, _diagnostics = load_bundle_from_context()
     review_path = review_doc_filesystem_path(bundle["review_doc"]["path"], Path.cwd())
     review_meta = file_meta(review_path, code="execplan_v2_review_doc_missing")
     if review_meta["sha256"] != bundle["review_doc"]["sha256"]:
