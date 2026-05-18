@@ -3461,6 +3461,20 @@ def write_native_agent_metadata(
     return metadata_path
 
 
+def workflow_runner_command() -> list[str]:
+    value = os.environ.get("SCHERZO_WORKFLOW_RUNNER", "").strip()
+    if not value:
+        return ["scherzo"]
+    try:
+        args = shlex.split(value)
+    except ValueError as exc:
+        raise ReviewError(f"invalid SCHERZO_WORKFLOW_RUNNER: {exc}") from exc
+    if not args:
+        raise ReviewError("SCHERZO_WORKFLOW_RUNNER must not be empty")
+    return args
+
+
+
 def native_runner_args(
     *,
     workflow_path: str,
@@ -3468,12 +3482,8 @@ def native_runner_args(
     run_id: str,
     scenario_id: str,
 ) -> list[str]:
-    prefix = ["direnv", "exec", "."] if shutil.which("direnv") else []
     return [
-        *prefix,
-        "gleam",
-        "run",
-        "--",
+        *workflow_runner_command(),
         "workflow",
         "run",
         workflow_path,
@@ -3790,9 +3800,9 @@ def evaluate_native_cutover_readiness(manifest: dict[str, Any]) -> dict[str, Any
     if manifest.get("failed_scenario_count") != 0:
         reasons.append("failed_scenario_count must be 0")
     runner_command = str(manifest.get("native_runner_command") or "")
-    if "gleam run -- workflow run " + LEGACY_PR_SMOKE_WORKFLOW_PATH not in runner_command:
+    if "scherzo workflow run " + LEGACY_PR_SMOKE_WORKFLOW_PATH not in runner_command:
         reasons.append(
-            "native_runner_command must invoke Scherzo workflow run for "
+            "native_runner_command must invoke scherzo workflow run for "
             + LEGACY_PR_SMOKE_WORKFLOW_PATH
         )
     if "not exposed" in runner_command or "simulated" in runner_command:
@@ -3826,7 +3836,7 @@ def evaluate_native_cutover_readiness(manifest: dict[str, Any]) -> dict[str, Any
                 reasons.append(f"scenario {sid} lane {lane_id} source_tool_name was not submit_structured_output or submit_review_lane_draft")
             if not isinstance(item.get("review_local_validation"), dict):
                 reasons.append(f"scenario {sid} lane {lane_id} missing review-local validation record")
-            if "gleam run -- workflow run " + LEGACY_PR_SMOKE_WORKFLOW_PATH not in str(item.get("runner_invocation") or ""):
+            if "scherzo workflow run " + LEGACY_PR_SMOKE_WORKFLOW_PATH not in str(item.get("runner_invocation") or ""):
                 reasons.append(f"scenario {sid} lane {lane_id} missing native runner invocation")
             if not item.get("run_summary_path"):
                 reasons.append(f"scenario {sid} lane {lane_id} missing native runner summary path")
@@ -3936,16 +3946,12 @@ def inspect_native_review_workflow_lanes(workflow_path: Path) -> dict[str, Any]:
 
 
 def legacy_pr_runner_args(*, run_root: Path, run_id: str) -> list[str]:
-    prefix = ["direnv", "exec", "."] if shutil.which("direnv") else []
     unset_env: list[str] = ["env"]
     for name in LEGACY_PR_SMOKE_FORBIDDEN_ENV_VARS:
         unset_env.extend(["-u", name])
     return [
-        *prefix,
         *unset_env,
-        "gleam",
-        "run",
-        "--",
+        *workflow_runner_command(),
         "workflow",
         "run",
         LEGACY_PR_SMOKE_WORKFLOW_PATH,
@@ -4254,7 +4260,7 @@ def summarize_successful_legacy_pr_run(
         "diff": diff_ref,
         "provenance": {
             "semantic_reviewer": "native Scherzo workflow kind: agent lanes",
-            "workflow_runner": "gleam workflow run",
+            "workflow_runner": "scherzo workflow run",
             "runner_command": command_text,
             "native_review_scenario_arg_used": False,
             "native_review_scenario_summary_value": runner_summary.get("native_review_scenario"),

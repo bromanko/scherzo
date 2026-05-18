@@ -30,12 +30,15 @@ repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
 "$repo_root/scripts/scherzo-execplan" validate-review-doc --path docs/plans/example.md
 ```
 
-When updating `workflow:execplan` guidance or helper invocations, run the workflow portability validation:
+When updating workflow-packaged guidance or helper invocations, run the workflow portability validation through the packaged CLI and positive runtime environment:
 
 ```sh
-LINEAR_API_KEY=dummy SCHERZO_REPO_ROOT=$(pwd) direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
-direnv exec . gleam test -- --suite unit
+nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).workflow-portability --print-build-logs
+nix develop .#workflow-portability
+python3 scripts/scherzo-workflow-portability check --repo-root . --scherzo scherzo --output-dir tmp/scherzo-workflow-portability/manual
 ```
+
+The check writes `workflow-portability-report.v1.json` under the chosen output directory, stages the checked-in `.scherzo/workflows` bundle into a temporary runtime root, validates it with packaged `scherzo doctor --check workflow-config`, and records every checked-in workflow as either fake-executed or explicit `load-only` coverage with an expansion path. Keep nested workflow execution on packaged `scherzo workflow run`; do not restore `gleam run -- workflow run` to an active workflow path.
 
 The implementation review workflows now use repo-local staged review artifacts from `scripts/scherzo-review` instead of local `/review` pi commands or language-specific local skills. There is no remaining routed-workflow dependency on local language-specific pi review skills; LIV-115 remains the tracking issue for the broader staged code review workflow cutover, so do not add language-specific review skills as required dogfood configuration.
 

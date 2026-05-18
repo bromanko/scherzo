@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+WORKSPACE_DRIVER_CAPABILITIES = {
+    "scherzo-workspace-noop": ["status", "changed-files", "assert-only"],
+    "scherzo-workspace-jj": [
+        "status",
+        "diff",
+        "changed-files",
+        "assert-only",
+        "baseline",
+        "refresh-base",
+        "publish-change",
+    ],
+}
+
+FAKE_HELPERS = [
+    "gh",
+    "pi",
+    "scherzo-execplan",
+    "scherzo-github-pr-conflict-scout",
+    "scherzo-implementation",
+    "scherzo-jj-origin-sync",
+    "scherzo-merge-conflict",
+    "scherzo-review",
+    "scherzo-review-lane-contract",
+    "scherzo-workspace-jj",
+    "scherzo-workspace-noop",
+]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Validate Scherzo workflow portability")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    check = subparsers.add_parser("check", help="run the portability check")
+    check.add_argument("--repo-root", required=True)
+    check.add_argument("--scherzo", required=True)
+    check.add_argument("--output-dir", required=True)
+    return parser.parse_args()
+
+
+def workflow_id_from_path(path: Path) -> str:
+    return path.stem
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def discover_workflows(repo_root: Path) -> list[Path]:
+    return sorted((repo_root / ".scherzo" / "workflows").glob("*.yaml"))
+
+
+def helper_names(contents: str) -> list[str]:
+    found = sorted(set(re.findall(r"scripts/(scherzo-[A-Za-z0-9_-]+)", contents)))
+    return found
+
+
+def needs_agent_fixture(contents: str) -> bool:
+    return "kind: agent" in contents or "structured_output:" in contents
+
+
+def workspace_profile(contents: str) -> str | None:
+    match = re.search(r"^workspace_profile:\s*([^\s]+)", contents, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def rewrite_config(repo_root: Path, stage_root: Path) -> Path:
+    source = read_text(repo_root / ".scherzo" / "scherzo.yaml")
+    replacements = [
+        (
+            'command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj"',
+            'command: scherzo-workspace-jj',
+        ),
+        (
+            'command: "$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-noop"',
+            'command: scherzo-workspace-noop',
+        ),
+        (
+            '  command: \'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi"\'',
+            "  command: 'exec pi'",
+        ),
+        (
+            '    - \'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi" "$@"\'',
+            '    - \'exec pi "$@"\'',
+        ),
+    ]
+    for old, new in replacements:
+        if old not in source:
+            raise RuntimeError(
+                f"expected .scherzo/scherzo.yaml entry for portability rewrite: {old}"
+            )
+        source = source.replace(old, new, 1)
+    config_path = stage_root / ".scherzo" / "scherzo.yaml"
+    write_text(config_path, source)
+    return config_path
+
+
+def install_fake_command(path: Path, content: str) -> None:
+    write_text(path, content)
+    path.chmod(0o755)
+
+
+def resolve_command_path(command: str) -> str:
+    resolved = shutil.which(command)
+    if not resolved:
+        raise RuntimeError(f"required runtime command not found on PATH: {command}")
+    return resolved
+
+
+def runtime_path_entries(*, fake_bin: Path, scherzo_command: str) -> list[str]:
+    commands = ["bash", "gh", "git", "jq", "jj", "python3"]
+    if os.sep in scherzo_command or (os.altsep and os.altsep in scherzo_command):
+        resolved_scherzo = scherzo_command
+    else:
+        resolved_scherzo = resolve_command_path(scherzo_command)
+    entries = [str(fake_bin), str(Path(resolved_scherzo).parent)]
+    for command in commands:
+        entries.append(str(Path(resolve_command_path(command)).parent))
+    return list(dict.fromkeys(entries))
+
+
+def install_fake_runtime(stage_root: Path, output_dir: Path) -> dict[str, str]:
+    fake_bin = stage_root / "bin"
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    log_dir = output_dir / "fake-command-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    generic = """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+log_dir = os.environ.get(\"SCHERZO_PORTABILITY_LOG_DIR\")
+if log_dir:
+    log_path = Path(log_dir) / f\"{Path(sys.argv[0]).name}.jsonl\"
+    with log_path.open(\"a\", encoding=\"utf-8\") as handle:
+        handle.write(json.dumps({\"argv\": sys.argv[1:], \"cwd\": os.getcwd()}) + \"\\n\")
+print(f\"{Path(sys.argv[0]).name}: fake portability helper\")
+"""
+
+    gh = """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+argv = sys.argv[1:]
+log_dir = os.environ.get(\"SCHERZO_PORTABILITY_LOG_DIR\")
+if log_dir:
+    log_path = Path(log_dir) / \"gh.jsonl\"
+    with log_path.open(\"a\", encoding=\"utf-8\") as handle:
+        handle.write(json.dumps({\"argv\": argv, \"cwd\": os.getcwd()}) + \"\\n\")
+mutating = {\"pr\", \"issue\", \"api\", \"release\"}
+if argv and argv[0] in mutating:
+    print(\"fake gh blocked possible network mutation\", file=sys.stderr)
+    sys.exit(64)
+print(\"gh: fake portability helper\")
+"""
+
+    for name in [
+        "pi",
+        "scherzo-execplan",
+        "scherzo-github-pr-conflict-scout",
+        "scherzo-implementation",
+        "scherzo-jj-origin-sync",
+        "scherzo-merge-conflict",
+        "scherzo-review",
+        "scherzo-review-lane-contract",
+    ]:
+        install_fake_command(fake_bin / name, generic)
+
+    install_fake_command(fake_bin / "gh", gh)
+
+    for name, capabilities in WORKSPACE_DRIVER_CAPABILITIES.items():
+        driver = f'''#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+argv = sys.argv[1:]
+log_dir = os.environ.get("SCHERZO_PORTABILITY_LOG_DIR")
+if log_dir:
+    log_path = Path(log_dir) / "{name}.jsonl"
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({{"argv": argv, "cwd": os.getcwd()}}) + "\\n")
+if argv == ["describe", "--json"]:
+    print(json.dumps({{"version": 1, "capabilities": {json.dumps(capabilities)}}}))
+    sys.exit(0)
+if argv[:1] == ["status"]:
+    print("portable fake workspace status")
+    sys.exit(0)
+if argv == ["changed-files", "--json"]:
+    print('{{"version":1,"files":[]}}')
+    sys.exit(0)
+if argv[:1] in (["assert-only"], ["diff"], ["baseline"], ["refresh-base"], ["publish-change"]):
+    sys.exit(0)
+if argv[:2] == ["lifecycle", "create"]:
+    workspace = os.environ.get("SCHERZO_WORKSPACE_PATH")
+    if workspace:
+        Path(workspace).mkdir(parents=True, exist_ok=True)
+    sys.exit(0)
+if argv[:2] == ["lifecycle", "remove"]:
+    sys.exit(0)
+print("unsupported fake workspace command", file=sys.stderr)
+sys.exit(2)
+'''
+        install_fake_command(fake_bin / name, driver)
+
+    return {"bin_dir": str(fake_bin), "log_dir": str(log_dir)}
+
+
+def run_subprocess(argv: list[str], env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, cwd=str(cwd), env=env, text=True, capture_output=True)
+
+
+def driver_checks(fake_bin: Path, env: dict[str, str], stage_root: Path) -> list[dict[str, object]]:
+    checks = []
+    for name, expected in WORKSPACE_DRIVER_CAPABILITIES.items():
+        result = run_subprocess([str(fake_bin / name), "describe", "--json"], env, stage_root)
+        entry: dict[str, object] = {
+            "driver": name,
+            "status": "passed" if result.returncode == 0 else "failed",
+            "command": [name, "describe", "--json"],
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+        }
+        if result.returncode == 0:
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                entry["status"] = "failed"
+                entry["error"] = f"invalid describe json: {error}"
+            else:
+                entry["capabilities"] = payload.get("capabilities", [])
+                if payload.get("capabilities") != expected:
+                    entry["status"] = "failed"
+                    entry["error"] = "capabilities mismatch"
+        checks.append(entry)
+    return checks
+
+
+def workflow_entries(workflows: list[Path], repo_root: Path) -> list[dict[str, object]]:
+    entries = []
+    for workflow in workflows:
+        relative = workflow.relative_to(repo_root)
+        contents = read_text(workflow)
+        expansion = [f"exercise helper {name}" for name in helper_names(contents)]
+        if needs_agent_fixture(contents):
+            expansion.append("add fake structured-output and agent artifact fixtures")
+        if not expansion:
+            expansion.append("promote this workflow from config-only coverage to full fake execution")
+        entries.append(
+            {
+                "workflow_id": workflow_id_from_path(workflow),
+                "path": str(relative),
+                "workspace_profile": workspace_profile(contents),
+                "mode": "load-only",
+                "status": "passed",
+                "reason": "initial portability gate stages the packaged workflow bundle, validates config through the packaged CLI, and records explicit expansion work for future fake execution",
+                "expansion_path": expansion,
+            }
+        )
+    return entries
+
+
+def write_report(path: Path, report: dict[str, object]) -> None:
+    write_text(path, json.dumps(report, indent=2, sort_keys=True) + "\n")
+
+
+def main() -> int:
+    args = parse_args()
+    if args.command != "check":
+        print(f"unsupported command: {args.command}", file=sys.stderr)
+        return 2
+
+    repo_root = Path(args.repo_root).resolve()
+    output_dir = Path(args.output_dir).resolve()
+    scherzo_command = args.scherzo
+    scherzo_path = Path(args.scherzo)
+    if os.sep in args.scherzo or (os.altsep and os.altsep in args.scherzo):
+        if not scherzo_path.exists():
+            print(f"scherzo executable not found: {args.scherzo}", file=sys.stderr)
+            return 1
+        scherzo_command = str(scherzo_path.resolve())
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stage_root = output_dir / "stage"
+    if stage_root.exists():
+        shutil.rmtree(stage_root)
+    stage_root.mkdir(parents=True)
+
+    workflows = discover_workflows(repo_root)
+    if not workflows:
+        print("no workflows found under .scherzo/workflows", file=sys.stderr)
+        return 1
+
+    shutil.copytree(repo_root / ".scherzo" / "workflows", stage_root / ".scherzo" / "workflows", dirs_exist_ok=True)
+    config_path = rewrite_config(repo_root, stage_root)
+    runtime = install_fake_runtime(stage_root, output_dir)
+    fake_bin = Path(runtime["bin_dir"])
+
+    child_env = {
+        "HOME": str(output_dir / "home"),
+        "LINEAR_API_KEY": "dummy",
+        "PATH": os.pathsep.join(
+            runtime_path_entries(fake_bin=fake_bin, scherzo_command=scherzo_command)
+        ),
+        "SCHERZO_GITHUB_REPO": "example/repo",
+        "SCHERZO_LINEAR_PROJECT_SLUG": "PORTABILITY",
+        "SCHERZO_PORTABILITY_LOG_DIR": runtime["log_dir"],
+        "SCHERZO_REPO_ROOT": str(stage_root),
+        "TMPDIR": str(output_dir / "tmp"),
+    }
+    Path(child_env["HOME"]).mkdir(parents=True, exist_ok=True)
+    Path(child_env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
+
+    doctor = run_subprocess(
+        [scherzo_command, "doctor", "--check", "workflow-config", str(config_path)],
+        child_env,
+        stage_root,
+    )
+    checks = driver_checks(fake_bin, child_env, stage_root)
+    workflow_report = workflow_entries(workflows, repo_root)
+
+    failures = []
+    if doctor.returncode != 0:
+        failures.append(
+            {
+                "phase": "workflow-config",
+                "command": [scherzo_command, "doctor", "--check", "workflow-config", str(config_path)],
+                "exit_code": doctor.returncode,
+                "stdout": doctor.stdout,
+                "stderr": doctor.stderr,
+            }
+        )
+    failures.extend([check for check in checks if check.get("status") != "passed"])
+
+    report = {
+        "schema_version": 1,
+        "artifact_type": "workflow_portability_report",
+        "status": "passed" if not failures else "failed",
+        "packaged_cli": True,
+        "repo_root": str(repo_root),
+        "staged_config": str(config_path.relative_to(output_dir)),
+        "tool_resolution": {
+            "scherzo": scherzo_command,
+            "fake_bin": runtime["bin_dir"],
+            "runtime_path": child_env["PATH"],
+            "helpers": sorted(FAKE_HELPERS),
+        },
+        "workflow_config": {
+            "command": [scherzo_command, "doctor", "--check", "workflow-config", str(config_path)],
+            "exit_code": doctor.returncode,
+            "stdout": doctor.stdout,
+            "stderr": doctor.stderr,
+        },
+        "driver_checks": checks,
+        "workflows": workflow_report,
+        "remote_mutations": "none",
+        "failures": failures,
+    }
+    report_path = output_dir / "workflow-portability-report.v1.json"
+    write_report(report_path, report)
+
+    if failures:
+        print(f"WORKFLOW_PORTABILITY=failed\nWORKFLOW_PORTABILITY_REPORT={report_path}")
+        return 1
+
+    print("WORKFLOW_PORTABILITY=ok")
+    print(f"WORKFLOW_PORTABILITY_REPORT={report_path}")
+    print(f"WORKFLOW_PORTABILITY_WORKFLOWS={len(workflow_report)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

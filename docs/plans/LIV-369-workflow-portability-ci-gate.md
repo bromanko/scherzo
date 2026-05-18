@@ -31,8 +31,20 @@ First, establish the minimal runtime package and prove that `scherzo doctor --ch
 ## Progress
 
 - [x] (2026-05-17) Drafted this human-reviewable plan surface for LIV-369.
-- [ ] Materialize the implementation pack and follow-up implementation task through the workflow bundle process.
-- [ ] Implement and validate the portability CI gate.
+- [x] (2026-05-18) Materialized the implementation pack and follow-up implementation task through the workflow bundle process.
+- [x] (2026-05-18) Retired the active `gleam run -- workflow run` helper path in `scripts/scherzo-review` and added a portability regression test for packaged `scherzo workflow run`.
+- [x] (2026-05-18) Added `scripts/scherzo-workflow-portability`, `nix/workflow-portability.nix`, flake wiring, and documentation for a separate packaged-CLI portability check that writes a per-workflow coverage report.
+- [x] (2026-05-18) Validated the harness with a fake packaged `scherzo` test double and recorded every checked-in workflow as explicit staged `load-only` coverage with expansion paths.
+- [x] (2026-05-18) Review pass tightened the staged config rewrite to preserve the checked-in `pi` launch fields while redirecting only command targets to fake runtime commands, corrected debug-shell docs to use PATH-resolved packaged `scherzo`, and constrained the harness/runtime build inputs so local `path:$PWD` Nix validation no longer absorbs `test/tmp` artifacts.
+
+## Surprises & Discoveries
+
+- Observation: Full fake execution for every checked-in workflow is larger than this repair window because the current workflow set mixes agent structured-output lanes, retained bundle materialization, and GitHub/Linear-mutating helpers.
+  Evidence: The new portability harness can stage the packaged workflow bundle and prove packaged `doctor --check workflow-config` succeeds in a positive runtime, but the generated report still needs explicit `load-only` entries and helper-specific expansion paths for all eight workflows.
+- Observation: A portability gate can become too synthetic if it rewrites away the checked-in `pi` launch shape.
+  Evidence: The review update now preserves `argv`, `argv_env`, and `session_persistence` in the staged config and adds test assertions over the staged `.scherzo/scherzo.yaml`.
+- Observation: Local `path:$PWD` Nix validation will happily ingest generated `test/tmp` symlink fixtures unless the flake source is filtered.
+  Evidence: After `direnv exec . gleam test`, `nix build path:$PWD#checks.$(nix eval --raw --impure --expr builtins.currentSystem).workflow-portability --print-build-logs` failed in package build canonicalization until the flake source excluded `test/tmp` and the affected schema tests cleaned up their temporary fixtures.
 
 ## Decision Log
 
@@ -42,6 +54,19 @@ First, establish the minimal runtime package and prove that `scherzo doctor --ch
 - Decision: Exercise workflows through packaged `scherzo workflow run`.
   Rationale: The portability claim is about copied or packaged workflows, so the source checkout `gleam run` path must not be part of the proof.
   Date: 2026-05-17.
+- Decision: Let helper-driven nested workflow execution honor `SCHERZO_WORKFLOW_RUNNER` but default to `scherzo`.
+  Rationale: The portability gate needs packaged-CLI execution by default, while the explicit override keeps local debugging flexible without reintroducing a repo-shell dependency into the active path.
+  Date: 2026-05-18.
+- Decision: Ship the first CI repair as config-backed packaged validation plus explicit `load-only` coverage reporting for every checked-in workflow.
+  Rationale: The verifier required an observable portability harness, separate flake check, and report coverage for every workflow. Delivering the packaged-CLI stage, fake runtime commands, and explicit expansion paths retires the missing gate without broadening this repair into a full fake execution framework for all workflows.
+  Date: 2026-05-18.
+- Decision: Build the harness child PATH from resolved runtime tool directories and filter `test/tmp` out of the flake source used for `path:$PWD` validation.
+  Rationale: The gate should prove a positive runtime rather than inherit the developer shell, and local Nix validation must stay reproducible even after the Gleam suite materializes temporary fixtures under `test/tmp`.
+  Date: 2026-05-18.
+
+## Outcomes & Retrospective
+
+The repository now has a dedicated `workflow-portability` flake check and matching debug shell that run `scripts/scherzo-workflow-portability` against the packaged `scherzo` CLI. The generated report covers every checked-in workflow, records `remote_mutations: none`, and makes the current staged boundary explicit by listing `load-only` workflows with concrete expansion paths instead of silently omitting them. The harness now resolves its own positive PATH instead of inheriting the ambient shell, and `path:$PWD` Nix builds stay green after the Gleam suite because the flake source excludes generated `test/tmp` artifacts.
 
 ## Validation and Acceptance
 
