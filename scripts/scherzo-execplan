@@ -71,7 +71,7 @@ Commands:
   materialize-pack --review-doc PATH --submission PATH --output PATH
   materialize-pack --review-doc-path-file PATH --submission-step STEP --submission-artifact NAME --output PATH
   validate-bundle --bundle PATH [--bundle-sha256 SHA] [--artifact-root PATH] --repo-root PATH
-  publish-review-doc --review-doc-path-file PATH --publish-context PATH [--previous-bundle PATH --skip-if-unchanged]
+  publish-review-doc --review-doc-path-file PATH --publish-context PATH [--pack PATH] [--previous-bundle PATH --skip-if-unchanged]
   materialize-bundle --review-doc-path-file PATH --pack PATH --publish-context PATH --output PATH
   prepare-revision --from-issue-context --write-bundle PATH --write-review-doc-path PATH --write-pack PATH
   materialize-revision --previous-bundle PATH --review-doc-path-file PATH --pack PATH --publish-context PATH --status auto --output PATH
@@ -672,6 +672,33 @@ def source_issue_from_context_or_env(default: dict[str, Any] | None = None) -> d
     return source_issue_from_submission_or_env({})
 
 
+def load_pack_for_review(pack_path: Path, review_meta: dict[str, Any]) -> dict[str, Any]:
+    pack = load_json(pack_path)
+    validate_schema(pack, IMPLEMENTATION_PACK_SCHEMA)
+    expected_sha = review_meta["sha256"]
+    if pack.get("derived_from", {}).get("review_doc_sha256") != expected_sha:
+        fail("implementation pack is stale for current review doc", code="execplan_v2_stale_implementation_pack")
+    if pack.get("review_doc", {}).get("sha256") != expected_sha:
+        fail("implementation pack review_doc hash does not match current review doc", code="execplan_v2_stale_implementation_pack")
+    return pack
+
+
+def pack_source_issue(pack_path: Path, review_meta: dict[str, Any]) -> dict[str, str]:
+    return source_issue_from_submission_or_env(load_pack_for_review(pack_path, review_meta))
+
+
+def ensure_source_issue_identifier_matches(source_issue: dict[str, str], expected_identifier: str | None, context: str) -> None:
+    expected = str(expected_identifier or "").strip()
+    if not expected or expected == "LIV-UNKNOWN":
+        return
+    actual = source_issue["identifier"].strip()
+    if actual != expected:
+        fail(
+            f"implementation pack source issue identifier {actual!r} does not match {context} {expected!r}",
+            code="execplan_v2_source_issue_mismatch",
+        )
+
+
 def write_publish_context(path: Path, *, review_meta: dict[str, Any], source_issue: dict[str, str], pr: dict[str, Any], review_surface: dict[str, Any]) -> dict[str, Any]:
     context = {
         "schema_version": 1,
@@ -696,6 +723,7 @@ def publish_review_doc(args: list[str]) -> None:
     parser.add_argument("--review-doc-path-file", required=True)
     parser.add_argument("--publish-context", required=True)
     parser.add_argument("--previous-bundle")
+    parser.add_argument("--pack")
     parser.add_argument("--skip-if-unchanged", action="store_true")
     ns = parser.parse_args(args)
     review_path = read_review_doc_path_file(Path(ns.review_doc_path_file))
@@ -703,8 +731,23 @@ def publish_review_doc(args: list[str]) -> None:
     previous: dict[str, Any] | None = None
     if ns.previous_bundle:
         previous = load_json(Path(ns.previous_bundle))
+    pack_issue = pack_source_issue(Path(ns.pack), review_meta) if ns.pack else None
+    if pack_issue:
+        previous_issue = previous.get("source_issue") if previous else None
+        if isinstance(previous_issue, dict):
+            ensure_source_issue_identifier_matches(
+                pack_issue,
+                str(previous_issue.get("identifier") or ""),
+                "previous bundle source_issue.identifier",
+            )
+        else:
+            ensure_source_issue_identifier_matches(
+                pack_issue,
+                os.environ.get("SCHERZO_ISSUE_IDENTIFIER"),
+                "SCHERZO_ISSUE_IDENTIFIER",
+            )
     if ns.skip_if_unchanged and previous and previous.get("review_doc", {}).get("sha256") == review_meta["sha256"]:
-        source_issue = source_issue_from_context_or_env(previous.get("source_issue"))
+        source_issue = source_issue_from_context_or_env(pack_issue or previous.get("source_issue"))
         surface = previous.get("review_surface", {}) if isinstance(previous.get("review_surface"), dict) else {}
         pr = {
             "url": surface.get("pr_url"),
@@ -734,7 +777,7 @@ def publish_review_doc(args: list[str]) -> None:
             fail("refusing to publish review doc with unrelated checked-in changes: " + ", ".join(unexpected))
     elif not env_enabled("SCHERZO_EXECPLAN_OFFLINE_PUBLISH", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_PUBLISH"):
         fail("SCHERZO_WORKSPACE_DRIVER is required for publish-review-doc unless SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1")
-    source_issue = source_issue_from_context_or_env(previous.get("source_issue") if previous else None)
+    source_issue = source_issue_from_context_or_env(pack_issue or (previous.get("source_issue") if previous else None))
     branch = "execplan/" + slug(source_issue["identifier"] + "-" + source_issue["title"])[:80]
     title_text = f"ExecPlan: {source_issue['identifier']} {source_issue['title']}"
     body_text = (
@@ -1020,20 +1063,26 @@ def materialize_bundle(args: list[str]) -> None:
     review_path = read_review_doc_path_file(Path(ns.review_doc_path_file))
     review_meta = validate_review_doc_path(review_path)
     pack_path = Path(ns.pack)
-    pack = load_json(pack_path)
-    validate_schema(pack, IMPLEMENTATION_PACK_SCHEMA)
+    pack = load_pack_for_review(pack_path, review_meta)
     pack_meta = file_meta(pack_path)
-    if pack.get("derived_from", {}).get("review_doc_sha256") != review_meta["sha256"]:
-        fail("implementation pack is stale for current review doc", code="execplan_v2_stale_implementation_pack")
+    source_issue = source_issue_from_submission_or_env(pack)
+    ensure_source_issue_identifier_matches(source_issue, os.environ.get("SCHERZO_ISSUE_IDENTIFIER"), "SCHERZO_ISSUE_IDENTIFIER")
     publish_context = load_json(Path(ns.publish_context))
+    publish_source_issue = publish_context.get("source_issue")
+    if isinstance(publish_source_issue, dict):
+        ensure_source_issue_identifier_matches(
+            source_issue,
+            str(publish_source_issue.get("identifier") or ""),
+            "publish context source_issue.identifier",
+        )
     run_id = os.environ.get("SCHERZO_RUN_ID", "local-run")
     pack_ref = f"runs/{run_id}/outputs/implementation_pack.json"
     bundle_ref = f"runs/{run_id}/outputs/exec_plan_bundle.json"
     bundle = {
         "schema_version": 2,
         "artifact_type": "exec_plan_bundle",
-        "bundle_id": f"bundle-{publish_context['source_issue']['identifier'].lower()}-{run_id}",
-        "source_issue": publish_context["source_issue"],
+        "bundle_id": f"bundle-{source_issue['identifier'].lower()}-{run_id}",
+        "source_issue": source_issue,
         "workflow": {
             "workflow_id": os.environ.get("SCHERZO_WORKFLOW_ID", "execplan"),
             "run_id": run_id,
@@ -1134,10 +1183,24 @@ def materialize_revision(args: list[str]) -> None:
     review_path = read_review_doc_path_file(Path(ns.review_doc_path_file))
     review_meta = validate_review_doc_path(review_path)
     pack_path = Path(ns.pack)
-    pack = load_json(pack_path)
-    validate_schema(pack, IMPLEMENTATION_PACK_SCHEMA)
+    pack = load_pack_for_review(pack_path, review_meta)
     pack_meta = file_meta(pack_path)
+    source_issue = source_issue_from_submission_or_env(pack)
+    previous_source_issue = previous.get("source_issue")
+    if isinstance(previous_source_issue, dict):
+        ensure_source_issue_identifier_matches(
+            source_issue,
+            str(previous_source_issue.get("identifier") or ""),
+            "previous bundle source_issue.identifier",
+        )
     publish_context = load_json(Path(ns.publish_context))
+    publish_source_issue = publish_context.get("source_issue")
+    if isinstance(publish_source_issue, dict):
+        ensure_source_issue_identifier_matches(
+            source_issue,
+            str(publish_source_issue.get("identifier") or ""),
+            "publish context source_issue.identifier",
+        )
     previous_ref = previous.get("implementation_handoff", {}).get("bundle_ref") or "runs/unknown/outputs/exec_plan_bundle.json"
     previous_sha = sha256_bytes(canonical_json(previous).encode("utf-8"))
     status = ns.status
@@ -1147,7 +1210,8 @@ def materialize_revision(args: list[str]) -> None:
     bundle_ref = f"runs/{run_id}/outputs/exec_plan_bundle.json"
     bundle = {
         **previous,
-        "bundle_id": f"bundle-{previous['source_issue']['identifier'].lower()}-{run_id}",
+        "bundle_id": f"bundle-{source_issue['identifier'].lower()}-{run_id}",
+        "source_issue": source_issue,
         "workflow": {
             "workflow_id": os.environ.get("SCHERZO_WORKFLOW_ID", "execplan-revision"),
             "run_id": run_id,

@@ -69,7 +69,7 @@ steps:
   - id: publish_review_doc
     kind: command
     depends_on: [materialize_pack]
-    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan" publish-review-doc --review-doc-path-file tmp/execplan-review-doc.path --publish-context tmp/scherzo-execplan-publish-context.json --previous-bundle tmp/execplan-previous-bundle.json --skip-if-unchanged'
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-execplan" publish-review-doc --review-doc-path-file tmp/execplan-review-doc.path --publish-context tmp/scherzo-execplan-publish-context.json --pack tmp/execplan-implementation-pack.json --previous-bundle tmp/execplan-previous-bundle.json --skip-if-unchanged'
     timeout_ms: 300000
     workspace: main
 

@@ -58,6 +58,16 @@ fn mutated_bundle(dir: String, each old: String, with new: String) -> String {
   path
 }
 
+fn mutated_pack(dir: String, each old: String, with new: String) -> String {
+  reset_dir(dir)
+  let assert Ok(source) =
+    simplifile.read("test/fixtures/execplan_v2/implementation-pack.valid.json")
+  let path = dir <> "/pack.json"
+  let assert Ok(Nil) =
+    simplifile.write(path, string.replace(source, each: old, with: new))
+  path
+}
+
 fn pack_submission(title: String) -> String {
   "{\n"
   <> "  \"artifact_name\": \"implementation_pack_submission\",\n"
@@ -344,6 +354,194 @@ pub fn publish_review_doc_writes_offline_context_test() {
   assert string.contains(context, "\"status\": \"published\"")
 }
 
+pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
+  let dir = "test/tmp/execplan-v2-publish-pack-source"
+  reset_dir(dir)
+  let path_file = dir <> "/review.path"
+  let context_path = dir <> "/publish-context.json"
+  let title_file = "tmp/execplan-pr-title.txt"
+  let _ = simplifile.delete(title_file)
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z SCHERZO_ISSUE_IDENTIFIER=LIV-314 scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --publish-context "
+      <> shell_quote(context_path)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(title) = simplifile.read(title_file)
+  assert string.contains(title, "ExecPlan: LIV-314 Fixture v2 ExecPlan bundle")
+  assert !string.contains(title, "Untitled source task")
+  let assert Ok(context) = simplifile.read(context_path)
+  assert string.contains(context, "\"identifier\": \"LIV-314\"")
+  assert string.contains(context, "\"title\": \"Fixture v2 ExecPlan bundle\"")
+  assert string.contains(
+    context,
+    "\"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"",
+  )
+}
+
+pub fn publish_review_doc_rejects_pack_review_doc_hash_mismatch_test() {
+  let dir = "test/tmp/execplan-v2-publish-stale-pack"
+  reset_dir(dir)
+  let path_file = dir <> "/review.path"
+  let context_path = dir <> "/publish-context.json"
+  let pack_path =
+    mutated_pack(
+      dir <> "/pack",
+      each: "\"review_doc_sha256\": \"64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4\"",
+      with: "\"review_doc_sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --publish-context "
+      <> shell_quote(context_path)
+      <> " --pack "
+      <> shell_quote(pack_path),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_v2_stale_implementation_pack",
+  )
+  let assert Error(_) = simplifile.read(context_path)
+}
+
+pub fn publish_review_doc_rejects_pack_source_issue_identifier_mismatch_test() {
+  let dir = "test/tmp/execplan-v2-publish-pack-source-mismatch"
+  reset_dir(dir)
+  let path_file = dir <> "/review.path"
+  let context_path = dir <> "/publish-context.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_ISSUE_IDENTIFIER=LIV-999 scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --publish-context "
+      <> shell_quote(context_path)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_v2_source_issue_mismatch",
+  )
+  let assert Error(_) = simplifile.read(context_path)
+}
+
+pub fn materialize_bundle_prefers_pack_source_issue_over_publish_context_test() {
+  let dir = "test/tmp/execplan-v2-materialize-pack-source"
+  reset_dir(dir)
+  let path_file = dir <> "/review.path"
+  let context_path = dir <> "/publish-context.json"
+  let output = dir <> "/bundle.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      context_path,
+      "{\n"
+        <> "  \"artifact_type\": \"execplan_v2_publish_context\",\n"
+        <> "  \"source_issue\": {\"identifier\": \"LIV-314\", \"title\": \"Untitled source task\", \"url\": \"https://linear.app/living-systems/issue/LIV-314\"},\n"
+        <> "  \"pr\": {\"url\": \"https://github.com/living-systems/scherzo/pull/314\", \"branch\": \"execplan-v2/liv-314\"},\n"
+        <> "  \"review_surface\": {\"status\": \"published\", \"source_bundle_ref\": null}\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-pack-source scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
+      <> shell_quote(context_path)
+      <> " --output "
+      <> shell_quote(output),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Ok(bundle) = simplifile.read(output)
+  assert string.contains(
+    bundle,
+    "\"bundle_id\": \"bundle-liv-314-run-pack-source\"",
+  )
+  assert string.contains(bundle, "\"identifier\": \"LIV-314\"")
+  assert string.contains(bundle, "\"title\": \"Fixture v2 ExecPlan bundle\"")
+  assert string.contains(
+    bundle,
+    "\"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"",
+  )
+  assert !string.contains(bundle, "Untitled source task")
+}
+
+pub fn materialize_bundle_rejects_publish_context_source_issue_identifier_mismatch_test() {
+  let dir = "test/tmp/execplan-v2-materialize-pack-source-mismatch"
+  reset_dir(dir)
+  let path_file = dir <> "/review.path"
+  let context_path = dir <> "/publish-context.json"
+  let output = dir <> "/bundle.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      context_path,
+      "{\n"
+        <> "  \"artifact_type\": \"execplan_v2_publish_context\",\n"
+        <> "  \"source_issue\": {\"identifier\": \"LIV-999\", \"title\": \"Other source task\", \"url\": \"https://linear.app/living-systems/issue/LIV-999\"},\n"
+        <> "  \"pr\": {\"url\": \"https://github.com/living-systems/scherzo/pull/314\", \"branch\": \"execplan-v2/liv-314\"},\n"
+        <> "  \"review_surface\": {\"status\": \"published\", \"source_bundle_ref\": null}\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_EXECPLAN_OFFLINE_LINEAR=1 SCHERZO_RUN_ID=run-pack-source scripts/scherzo-execplan materialize-bundle --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
+      <> shell_quote(context_path)
+      <> " --output "
+      <> shell_quote(output),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_v2_source_issue_mismatch",
+  )
+  let assert Error(_) = simplifile.read(output)
+}
+
 pub fn materialize_bundle_creates_handoff_with_non_json_linear_create_test() {
   let dir = "test/tmp/execplan-online-linear-create"
   reset_dir(dir)
@@ -482,6 +680,73 @@ pub fn materialize_revision_reuses_unchanged_review_surface_test() {
     bundle,
     "\"sha256\": \"e4117164704e943de716797a83f98cd4927833dc0f3b4a179c78c657b25334ec\"",
   )
+}
+
+pub fn materialize_revision_prefers_pack_source_issue_title_and_url_test() {
+  let dir = "test/tmp/execplan-v2-revision-pack-source"
+  reset_dir(dir)
+  let previous_bundle =
+    mutated_bundle(
+      dir <> "/previous",
+      each: "  \"source_issue\": {\n    \"identifier\": \"LIV-314\",\n    \"title\": \"Fixture v2 ExecPlan bundle\",\n    \"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"\n  },",
+      with: "  \"source_issue\": {\n    \"identifier\": \"LIV-314\",\n    \"title\": \"Untitled source task\",\n    \"url\": \"https://linear.app/living-systems/issue/LIV-314\"\n  },",
+    )
+  let path_file = dir <> "/review.path"
+  let context_path = dir <> "/publish-context.json"
+  let output = dir <> "/bundle.json"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+
+  let publish =
+    run_shell(
+      "env SCHERZO_WORKSPACE_DRIVER= SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1 SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --publish-context "
+      <> shell_quote(context_path)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --previous-bundle "
+      <> shell_quote(previous_bundle)
+      <> " --skip-if-unchanged",
+    )
+  assert publish.status == step_artifact.StepSucceeded
+  assert string.contains(publish.stdout, "PUBLISH_REVIEW_DOC_STATUS=reused")
+  let assert Ok(context) = simplifile.read(context_path)
+  assert string.contains(context, "\"identifier\": \"LIV-314\"")
+  assert string.contains(context, "\"title\": \"Fixture v2 ExecPlan bundle\"")
+  assert string.contains(
+    context,
+    "\"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"",
+  )
+  assert !string.contains(context, "Untitled source task")
+
+  let revision =
+    run_shell(
+      "env SCHERZO_RUN_ID=run-revision-pack-source scripts/scherzo-execplan materialize-revision --previous-bundle "
+      <> shell_quote(previous_bundle)
+      <> " --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --pack test/fixtures/execplan_v2/implementation-pack.valid.json --publish-context "
+      <> shell_quote(context_path)
+      <> " --status auto --output "
+      <> shell_quote(output),
+    )
+
+  assert revision.status == step_artifact.StepSucceeded
+  let assert Ok(bundle) = simplifile.read(output)
+  assert string.contains(bundle, "\"status\": \"unchanged\"")
+  assert string.contains(
+    bundle,
+    "\"bundle_id\": \"bundle-liv-314-run-revision-pack-source\"",
+  )
+  assert string.contains(bundle, "\"identifier\": \"LIV-314\"")
+  assert string.contains(bundle, "\"title\": \"Fixture v2 ExecPlan bundle\"")
+  assert string.contains(
+    bundle,
+    "\"url\": \"https://linear.app/living-systems/issue/LIV-314/fixture-v2-execplan-bundle\"",
+  )
+  assert !string.contains(bundle, "Untitled source task")
 }
 
 pub fn materialize_code_change_bundle_emits_retained_refs_test() {
