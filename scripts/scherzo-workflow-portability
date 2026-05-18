@@ -122,7 +122,7 @@ def resolve_command_path(command: str) -> str:
 
 
 def runtime_path_entries(*, fake_bin: Path, scherzo_command: str) -> list[str]:
-    commands = ["bash", "gh", "git", "jq", "jj", "python3"]
+    commands = ["bash", "git", "jq", "python3"]
     if os.sep in scherzo_command or (os.altsep and os.altsep in scherzo_command):
         resolved_scherzo = scherzo_command
     else:
@@ -139,8 +139,9 @@ def install_fake_runtime(stage_root: Path, output_dir: Path) -> dict[str, str]:
     log_dir = output_dir / "fake-command-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    generic = """#!/usr/bin/env python3
-import json
+    python_shebang = f"#!{Path(sys.executable).resolve()}\n"
+
+    generic = python_shebang + """import json
 import os
 import sys
 from pathlib import Path
@@ -152,8 +153,7 @@ if log_dir:
 print(f\"{Path(sys.argv[0]).name}: fake portability helper\")
 """
 
-    gh = """#!/usr/bin/env python3
-import json
+    gh = python_shebang + """import json
 import os
 import sys
 from pathlib import Path
@@ -185,8 +185,7 @@ print(\"gh: fake portability helper\")
     install_fake_command(fake_bin / "gh", gh)
 
     for name, capabilities in WORKSPACE_DRIVER_CAPABILITIES.items():
-        driver = f'''#!/usr/bin/env python3
-import json
+        driver = python_shebang + f'''import json
 import os
 import sys
 from pathlib import Path

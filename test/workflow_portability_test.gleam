@@ -395,7 +395,7 @@ pub fn workflow_portability_harness_writes_report_test() {
   let assert Ok(Nil) =
     simplifile.write(
       fake_scherzo,
-      "#!/usr/bin/env sh\n"
+      "#!/bin/sh\n"
         <> "printf '%s' \"$*\" > '"
         <> call_log
         <> "'\n"
