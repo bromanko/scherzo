@@ -193,8 +193,7 @@ pub fn port_start_argv_waits_until_launch_wrapper_records_child_pid_test() {
   let cwd = "test/tmp/port-start-argv-ready"
   reset_dir(cwd)
 
-  let assert Ok(process) =
-    port.start_argv("/bin/sh", ["-c", "sleep 60"], cwd, [])
+  let assert Ok(process) = port.start_argv("sh", ["-c", "sleep 60"], cwd, [])
   assert_launch_wrapper_records_child_pid(process)
 }
 
@@ -203,7 +202,7 @@ pub fn port_start_argv_with_input_waits_until_launch_wrapper_records_child_pid_t
   reset_dir(cwd)
 
   let assert Ok(process) =
-    port.start_argv_with_input("/bin/sh", ["-c", "sleep 60"], cwd, [], "")
+    port.start_argv_with_input("sh", ["-c", "sleep 60"], cwd, [], "")
   assert_launch_wrapper_records_child_pid(process)
 }
 

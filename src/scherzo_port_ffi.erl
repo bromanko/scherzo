@@ -604,24 +604,24 @@ signal_pids(Signal, [Pid | Rest]) ->
     signal_pids(Signal, Rest).
 
 safe_kill_pid(Signal, Pid) when is_integer(Pid), Pid > 1 ->
-    _ = os:cmd("/bin/kill -" ++ Signal ++ " " ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 || true"),
+    _ = os:cmd("kill -" ++ Signal ++ " " ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 || true"),
     ok;
 safe_kill_pid(_Signal, _Pid) -> ok.
 
 safe_kill_group(Signal, Pid) when is_integer(Pid), Pid > 1 ->
-    _ = os:cmd("/bin/kill -" ++ Signal ++ " -" ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 || true"),
+    _ = os:cmd("kill -" ++ Signal ++ " -" ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 || true"),
     ok;
 safe_kill_group(_Signal, _Pid) -> ok.
 
 pid_alive(Pid) when is_integer(Pid), Pid > 1 ->
-    case os:cmd("/bin/kill -0 " ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 && printf alive || true") of
+    case os:cmd("kill -0 " ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 && printf alive || true") of
         "alive" -> true;
         _ -> false
     end;
 pid_alive(_Pid) -> false.
 
 process_group_alive(Pid) when is_integer(Pid), Pid > 1 ->
-    case os:cmd("/bin/kill -0 -" ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 && printf alive || true") of
+    case os:cmd("kill -0 -" ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 && printf alive || true") of
         "alive" -> true;
         _ -> false
     end;

@@ -46,7 +46,7 @@ pi:
   # workflow-specific model selection and omits --no-session only when this
   # dogfood config opts into persistence.
   argv:
-    - /bin/sh
+    - sh
     - "-c"
     - 'repo_root=${SCHERZO_REPO_ROOT:-$(pwd -P | sed "s#/.scherzo/workspaces/.*##")}; exec "$repo_root/scripts/scherzo-pi" "$@"'
     - scherzo-pi
