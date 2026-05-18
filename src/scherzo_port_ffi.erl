@@ -86,15 +86,27 @@ validate_argv_start(Executable, Args, Cwd, Env) ->
         {error, Error} -> {error, Error}
     end.
 
+resolve_bash() ->
+    case os:find_executable("bash") of
+        false -> {error, tagged_error(spawn_failed, <<"bash executable not found on PATH">>)};
+        BashPath -> {ok, BashPath}
+    end.
+
 start_shell(Cmd, Dir, Env) ->
+    case resolve_bash() of
+        {ok, BashPath} -> start_shell(Cmd, Dir, Env, BashPath);
+        {error, Error} -> {error, Error}
+    end.
+
+start_shell(Cmd, Dir, Env, BashPath) ->
     case new_temp_storage() of
         {ok, TmpDir, ErrPath, ChildPidPath} ->
             try
-                Port = open_port({spawn_executable, "/bin/bash"}, [
+                Port = open_port({spawn_executable, BashPath}, [
                     binary,
                     exit_status,
                     use_stdio,
-                    {args, ["-c", shell_launch_wrapper(), "scherzo-shell", ErrPath, ChildPidPath, Cmd]},
+                    {args, ["-c", shell_launch_wrapper(), "scherzo-shell", ErrPath, ChildPidPath, BashPath, Cmd]},
                     {cd, Dir},
                     {env, Env}
                 ]),
@@ -110,10 +122,16 @@ start_shell(Cmd, Dir, Env) ->
     end.
 
 start_argv_checked(Exe, ArgList, Dir, Env) ->
+    case resolve_bash() of
+        {ok, BashPath} -> start_argv_checked(Exe, ArgList, Dir, Env, BashPath);
+        {error, Error} -> {error, Error}
+    end.
+
+start_argv_checked(Exe, ArgList, Dir, Env, BashPath) ->
     case new_temp_storage() of
         {ok, TmpDir, ErrPath, ChildPidPath} ->
             try
-                Port = open_port({spawn_executable, "/bin/bash"}, [
+                Port = open_port({spawn_executable, BashPath}, [
                     binary,
                     exit_status,
                     use_stdio,
@@ -133,6 +151,12 @@ start_argv_checked(Exe, ArgList, Dir, Env) ->
     end.
 
 start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes) ->
+    case resolve_bash() of
+        {ok, BashPath} -> start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes, BashPath);
+        {error, Error} -> {error, Error}
+    end.
+
+start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes, BashPath) ->
     case new_temp_storage() of
         {ok, TmpDir, ErrPath, ChildPidPath} ->
             InputPath = filename:join(TmpDir, "stdin.json"),
@@ -141,7 +165,7 @@ start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes) ->
                     try
                         EnvAssignments = env_assignments(Env),
                         EnvCount = integer_to_list(length(EnvAssignments)),
-                        Port = open_port({spawn_executable, "/bin/bash"}, [
+                        Port = open_port({spawn_executable, BashPath}, [
                             binary,
                             exit_status,
                             use_stdio,
@@ -167,9 +191,10 @@ start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes) ->
 shell_launch_wrapper() ->
     "exec 2> \"$1\"\n"
     "child_pid_path=\"$2\"\n"
-    "shift 2\n"
+    "bash_path=\"$3\"\n"
+    "shift 3\n"
     "if set -m 2>/dev/null; then :; fi\n"
-    "/bin/bash -lc \"$1\" <&0 &\n"
+    "\"$bash_path\" -lc \"$1\" <&0 &\n"
     "child_pid=$!\n"
     "set +m 2>/dev/null || true\n"
     "printf '%s\\n' \"$child_pid\" > \"$child_pid_path\"\n"
