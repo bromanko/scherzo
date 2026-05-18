@@ -1,6 +1,9 @@
 import gleam/erlang/process
 import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/path as scherzo_path
 import scherzo/port
 import simplifile
 
@@ -56,6 +59,118 @@ pub fn port_start_with_env_applies_environment_test() {
   assert stdout == "hello from env"
   let assert Error(port.ProcessExited(0)) = port.read_stdout_line(process, 1000)
   let _ = port.terminate(process)
+}
+
+pub fn port_launchers_resolve_bash_from_path_test() {
+  let cwd = "test/tmp/port-path-bash"
+  let fake_bin = cwd <> "/bin"
+  let fake_bash = fake_bin <> "/bash"
+  let bash_log = cwd <> "/bash.log"
+  reset_dir(cwd)
+  let assert Ok(Nil) = simplifile.create_directory_all(fake_bin)
+  let assert Ok(Nil) = simplifile.write(fake_bash, fake_bash_script())
+  chmod_executable(fake_bash)
+  let assert Ok(fake_bin_path) = scherzo_path.absolute(fake_bin)
+  let assert Ok(bash_log_path) = scherzo_path.absolute(bash_log)
+
+  let original_path = scherzo_path.env("PATH")
+  let original_test_original_path =
+    scherzo_path.env("SCHERZO_TEST_ORIGINAL_PATH")
+  let original_test_bash_log = scherzo_path.env("SCHERZO_TEST_FAKE_BASH_LOG")
+  let original_path_value = optional_env_value(original_path)
+  let fake_env = [
+    #("PATH", original_path_value),
+    #("SCHERZO_TEST_ORIGINAL_PATH", original_path_value),
+    #("SCHERZO_TEST_FAKE_BASH_LOG", bash_log_path),
+  ]
+  let _ =
+    scherzo_path.set_env("SCHERZO_TEST_ORIGINAL_PATH", original_path_value)
+  let _ = scherzo_path.set_env("SCHERZO_TEST_FAKE_BASH_LOG", bash_log_path)
+  let _ =
+    scherzo_path.set_env("PATH", prepend_path(fake_bin_path, original_path))
+
+  let shell_result =
+    port.start_with_env("printf '%s\n' shell-ok", cwd, fake_env)
+  let argv_result =
+    port.start_argv("bash", ["-c", "printf '%s\n' argv-ok"], cwd, fake_env)
+  let argv_input_result =
+    port.start_argv_with_input(
+      "bash",
+      ["-c", "cat"],
+      cwd,
+      fake_env,
+      "input-ok\n",
+    )
+
+  restore_env_var("PATH", original_path)
+  restore_env_var("SCHERZO_TEST_ORIGINAL_PATH", original_test_original_path)
+  restore_env_var("SCHERZO_TEST_FAKE_BASH_LOG", original_test_bash_log)
+
+  let assert Ok(shell_process) = shell_result
+  assert_process_output(shell_process, "shell-ok")
+  let assert Ok(argv_process) = argv_result
+  assert_process_output(argv_process, "argv-ok")
+  let assert Ok(argv_input_process) = argv_input_result
+  assert_process_output(argv_input_process, "input-ok")
+
+  let assert Ok(log) = simplifile.read(bash_log_path)
+  assert fake_bash_call_count(log) >= 4
+}
+
+fn fake_bash_script() -> String {
+  "#!/bin/sh\n"
+  <> "printf 'called\\n' >> \"$SCHERZO_TEST_FAKE_BASH_LOG\"\n"
+  <> "PATH=\"$SCHERZO_TEST_ORIGINAL_PATH\"\n"
+  <> "export PATH\n"
+  <> "exec bash \"$@\"\n"
+}
+
+fn chmod_executable(path: String) -> Nil {
+  let assert Ok(process) = port.start_argv("chmod", ["+x", path], ".", [])
+  let assert Ok(0) = port.await_exit(process, 1000)
+  Nil
+}
+
+fn prepend_path(path: String, original_path: Option(String)) -> String {
+  case original_path {
+    Some(original_path) -> path <> ":" <> original_path
+    None -> path
+  }
+}
+
+fn optional_env_value(value: Option(String)) -> String {
+  case value {
+    Some(value) -> value
+    None -> ""
+  }
+}
+
+fn restore_env_var(name: String, original_value: Option(String)) -> Nil {
+  case original_value {
+    Some(value) -> {
+      let _ = scherzo_path.set_env(name, value)
+      Nil
+    }
+    None -> {
+      let _ = scherzo_path.unset_env(name)
+      Nil
+    }
+  }
+}
+
+fn assert_process_output(process: port.Process, expected: String) -> Nil {
+  let assert Ok(stdout) = port.read_stdout_line(process, 1000)
+  assert stdout == expected
+  let assert Ok(0) = port.await_exit(process, 1000)
+  Nil
+}
+
+fn fake_bash_call_count(log: String) -> Int {
+  let trimmed = string.trim(log)
+  case trimmed == "" {
+    True -> 0
+    False -> string.split(trimmed, on: "\n") |> list.length
+  }
 }
 
 fn assert_launch_wrapper_records_child_pid(process: port.Process) -> Nil {

@@ -6,6 +6,7 @@
   rebar3,
   cacert,
   coreutils,
+  bash,
   python3,
   jujutsu,
   gh,
@@ -25,6 +26,7 @@ let
   runtimePath = lib.makeBinPath [
     erlang
     coreutils
+    bash
     jsonSchemaPython
   ];
   noopDriverRuntimePath = lib.makeBinPath [
