@@ -1196,6 +1196,10 @@ fn run_recovery_prompt(
         Ok(result_artifact) -> Some(result_artifact.ref)
         Error(_) -> None
       }
+      let result_display_path = case result_write {
+        Ok(result_artifact) -> Some(result_artifact.display_path)
+        Error(_) -> None
+      }
       case recovery_exhausted {
         True -> {
           let _ =
@@ -1225,7 +1229,7 @@ fn run_recovery_prompt(
           Some(context_recovery_failed_message(
             method,
             recovery_exhausted,
-            result_ref,
+            result_display_path,
           )),
         ),
       )
@@ -1281,7 +1285,7 @@ fn context_failure_reason(reason: error.AgentRunnerError) -> Bool {
 fn context_recovery_failed_message(
   method: context_recovery_prompt.RecoveryMethod,
   recovery_exhausted: Bool,
-  result_ref: Option(String),
+  result_display_path: Option(String),
 ) -> String {
   let method_text = context_recovery_prompt.recovery_method_to_string(method)
   let base = case recovery_exhausted {
@@ -1292,14 +1296,12 @@ fn context_recovery_failed_message(
       "context recovery failed; outcome=failed recovery_exhausted=false recovery_method="
       <> method_text
   }
-  base <> recovery_result_suffix(result_ref)
+  base <> recovery_result_suffix(result_display_path)
 }
 
-fn recovery_result_suffix(result_ref: Option(String)) -> String {
-  case result_ref {
-    Some(result_ref) ->
-      " terminal_diagnostics="
-      <> artifact_store.context_recovery_display_path(result_ref)
+fn recovery_result_suffix(result_display_path: Option(String)) -> String {
+  case result_display_path {
+    Some(result_display_path) -> " terminal_diagnostics=" <> result_display_path
     None -> ""
   }
 }

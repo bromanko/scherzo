@@ -82,6 +82,9 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
       format: "json",
       ref: "runs/run-1/review_json/attempt-0/structured/review_result.json",
       path: "test/tmp/artifact.json",
+      uri: "artifact://test/review_result.json",
+      display_path: ".scherzo-state/artifacts/runs/run-1/review_json/attempt-0/structured/review_result.json",
+      local_path: Some("test/tmp/artifact.json"),
       sha256: "abc123",
       bytes: 42,
       schema_status: "valid",
@@ -128,6 +131,14 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
     )
   assert lookup(locals, "steps.review_json.structured_output.path")
     == template.VString("test/tmp/artifact.json")
+  assert lookup(locals, "steps.review_json.structured_output.uri")
+    == template.VString("artifact://test/review_result.json")
+  assert lookup(locals, "steps.review_json.structured_output.display_path")
+    == template.VString(
+      ".scherzo-state/artifacts/runs/run-1/review_json/attempt-0/structured/review_result.json",
+    )
+  assert lookup(locals, "steps.review_json.structured_output.local_path")
+    == template.VString("test/tmp/artifact.json")
   assert lookup(locals, "steps.review_json.structured_output.sha256")
     == template.VString("abc123")
   assert lookup(locals, "steps.review_json.structured_output.bytes")
@@ -138,6 +149,28 @@ pub fn structured_output_metadata_encodes_decodes_and_exposes_template_locals_te
     == template.VNil
   assert lookup(locals, "steps.review_json.structured_output.retry_outcome")
     == template.VNil
+}
+
+pub fn legacy_structured_output_metadata_decodes_location_fallbacks_test() {
+  let legacy_json =
+    "{\"step_id\":\"review_json\",\"status\":\"success\","
+    <> "\"stdout\":\"\",\"stderr\":\"\",\"timed_out\":false,"
+    <> "\"final_response_truncated\":false,\"stdout_truncated\":false,"
+    <> "\"stderr_truncated\":false,\"summary_text\":\"\","
+    <> "\"structured_output\":{\"status\":\"valid\","
+    <> "\"artifact_name\":\"review_result\",\"format\":\"json\","
+    <> "\"ref\":\"runs/run-1/review_json/attempt-0/structured/review_result.json\","
+    <> "\"path\":\"test/tmp/legacy-artifact.json\","
+    <> "\"sha256\":\"abc123\",\"bytes\":42,"
+    <> "\"schema_status\":\"valid\"}}"
+
+  let assert Ok(decoded) = step_artifact.decode_string(legacy_json)
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    decoded.structured_output
+  assert metadata.path == "test/tmp/legacy-artifact.json"
+  assert metadata.uri == "test/tmp/legacy-artifact.json"
+  assert metadata.display_path == "test/tmp/legacy-artifact.json"
+  assert metadata.local_path == Some("test/tmp/legacy-artifact.json")
 }
 
 pub fn optional_absent_structured_output_exposes_absent_status_test() {
@@ -165,6 +198,12 @@ pub fn optional_absent_structured_output_exposes_absent_status_test() {
   assert lookup(locals, "steps.review_json.structured_output.ref")
     == template.VNil
   assert lookup(locals, "steps.review_json.structured_output.path")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.uri")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.display_path")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.local_path")
     == template.VNil
   assert lookup(locals, "steps.review_json.structured_output.sha256")
     == template.VNil
@@ -200,6 +239,12 @@ pub fn structured_output_error_exposes_error_status_test() {
   assert lookup(locals, "steps.review_json.structured_output.error")
     == template.VString("step review_json required a JSON-only final response")
   assert lookup(locals, "steps.review_json.structured_output.path")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.uri")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.display_path")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.local_path")
     == template.VNil
 }
 
@@ -312,6 +357,12 @@ pub fn step_without_structured_output_exposes_not_configured_status_test() {
   assert lookup(locals, "steps.review_json.structured_output.status")
     == template.VString("not_configured")
   assert lookup(locals, "steps.review_json.structured_output.path")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.uri")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.display_path")
+    == template.VNil
+  assert lookup(locals, "steps.review_json.structured_output.local_path")
     == template.VNil
   assert lookup(locals, "steps.review_json.structured_output.ref")
     == template.VNil

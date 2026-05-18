@@ -59,13 +59,20 @@ Fifth, update developer documentation so a future service-backed store has a cle
 ## Progress
 
 - [x] (2026-05-18 00:00Z) Drafted the human-reviewable ExecPlan v2 review document for LIV-382.
-- [ ] Implementation pack materialized into a follow-up implementation task.
-- [ ] Artifact store seam implemented and validated.
+- [x] (2026-05-18 20:37Z) Materialized the implementation pack and retained bundle for follow-up task LIV-388.
+- [x] (2026-05-18 21:45Z) Implemented the artifact store seam, migrated inline structured-output reads to ref-based store access, added no-local-path contract coverage, and validated with `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, `direnv exec . gleam run -m scherzo_lint`, and the `metadata.path` grep guard.
+- [x] (2026-05-18 22:05Z) Delivered the required developer documentation for the artifact-store seam in `docs/runbooks/artifact-store.md` and updated architecture/getting-started docs to describe the default filesystem store plus `uri`/`display_path`/`local_path` compatibility.
+- [x] (2026-05-18 23:45Z) Review follow-up added legacy structured-output decode coverage, context-recovery display-path coverage for a no-local-path store, percent-encoded filesystem `file://` URIs, and explicit docs steering new consumers away from the legacy `path` field.
+- [x] (2026-05-18 23:55Z) Re-ran the full implementation validation gates after review follow-up: `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, `direnv exec . gleam run -m scherzo_lint`, and the `metadata.path` grep guard.
 
 ## Decision Log
 
 - Decision: Preserve `src/scherzo/state/artifact_store.gleam` as the public artifact-store module while turning `Store` into a port-backed value.
   Rationale: Existing producers and consumers already import this module, so keeping the module stable minimizes churn while still creating the abstraction seam.
+  Date: 2026-05-18
+
+- Decision: Update the checked-in source-guardrail baselines for `src/scherzo/step_artifact.gleam` and `src/scherzo/workflow_run.gleam` in the same change.
+  Rationale: The seam intentionally adds durable artifact location metadata and ref-based inline output reads inside already baselined oversized modules; tests now prove the growth is intentional and reviewable until a later extraction shrinks those modules again.
   Date: 2026-05-18
 
 - Decision: Keep filesystem storage as the default implementation and preserve the `.scherzo-state/artifacts/runs/...` layout.
@@ -80,11 +87,20 @@ Fifth, update developer documentation so a future service-backed store has a cle
   Rationale: A fake or test store is enough to prove the contract; the production acceptance criteria require a seam and filesystem implementation, not a service rollout.
   Date: 2026-05-18
 
+## Surprises & Discoveries
+
+- Observation: The repository source-size guardrail failed once the new metadata fields and ref-based inline output path landed.
+  Evidence: `src/scherzo/step_artifact.gleam grew beyond its line baseline: 1542 > 1476` and `src/scherzo/workflow_run.gleam grew beyond its line baseline: 4643 > 4630` during `direnv exec . gleam test`.
+
+## Outcomes & Retrospective
+
+The seam now exists as a real port. `artifact_store.Store` is callback-backed, the default filesystem implementation still writes under `.scherzo-state/artifacts`, structured-output metadata carries URI/display/local-path fields, and inline contract outputs no longer depend on `metadata.path`. A fake store that withholds `local_path` still satisfies retained structured-output publication, inline JSON extraction, and context-recovery display-path publication, which retires the main abstraction risk called out in the plan. The final repair also delivered the missing developer-documentation milestone so future service-backed work has a checked-in compatibility checklist instead of only code-level examples. Review follow-up tightened legacy decode coverage, now emits percent-encoded filesystem URIs for paths with spaces or other reserved bytes, documents that new backend-neutral consumers should avoid the legacy `path` field, and re-established the full formatting/test/lint/guard validation evidence after those repairs.
+
 ## Validation and Acceptance
 
 Acceptance is behavioral. A normal workflow run should continue to create retained artifacts at the same filesystem paths and record the same artifact refs, hashes, and byte counts as before. Recovery should still read completed step artifacts by ref and checksum. Structured-output and workflow-contract paths that need content should obtain it through the store API, not by assuming a local path.
 
-The abstraction claim is falsified if a test store without a local path cannot satisfy core artifact reads, if any existing retained filesystem path changes unexpectedly, or if operator-facing context-recovery diagnostics stop pointing to an inspectable retained artifact location.
+The abstraction claim is falsified if a test store without a local path cannot satisfy core artifact reads, if any existing retained filesystem path changes unexpectedly, if operator-facing context-recovery diagnostics stop pointing to an inspectable retained artifact location, or if developer docs stop documenting the default filesystem compatibility contract for future stores.
 
 ## Rollout, Recovery, and Idempotence
 

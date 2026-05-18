@@ -121,12 +121,8 @@ pub fn write_initial(
     manifest_ref: manifest_ref.ref,
     prompt_excerpt_ref: prompt_ref.ref,
     error_ref: error_ref.ref,
-    prompt_excerpt_display_path: artifact_store.context_recovery_display_path(
-      prompt_ref.ref,
-    ),
-    error_display_path: artifact_store.context_recovery_display_path(
-      error_ref.ref,
-    ),
+    prompt_excerpt_display_path: prompt_ref.display_path,
+    error_display_path: error_ref.display_path,
     prompt_excerpt: excerpt,
     prompt_truncated: truncated,
   ))

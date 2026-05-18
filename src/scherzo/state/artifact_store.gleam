@@ -13,8 +13,25 @@ import scherzo/structured_output_metadata
 import scherzo/workflow_identity
 import simplifile
 
-pub type Store {
-  Store(workspace_root: String)
+pub opaque type Store {
+  Store(kind: String, callbacks: StoreCallbacks)
+}
+
+pub type StoreCallbacks {
+  StoreCallbacks(
+    write: fn(String, String) -> Result(Nil, ArtifactError),
+    read: fn(String) -> Result(String, ArtifactError),
+    locate: fn(String) -> Result(ArtifactLocation, ArtifactError),
+  )
+}
+
+pub type ArtifactLocation {
+  ArtifactLocation(
+    ref: String,
+    uri: String,
+    display_path: String,
+    local_path: Option(String),
+  )
 }
 
 pub type ArtifactRef {
@@ -22,7 +39,15 @@ pub type ArtifactRef {
 }
 
 pub type StructuredArtifactRef {
-  StructuredArtifactRef(ref: String, path: String, sha256: String, bytes: Int)
+  StructuredArtifactRef(
+    ref: String,
+    path: String,
+    uri: String,
+    display_path: String,
+    local_path: Option(String),
+    sha256: String,
+    bytes: Int,
+  )
 }
 
 pub type StructuredOutputArtifact {
@@ -73,8 +98,40 @@ type StoredArtifact {
   )
 }
 
+pub fn custom(kind: String, callbacks: StoreCallbacks) -> Store {
+  Store(kind: kind, callbacks: callbacks)
+}
+
+pub fn filesystem(workspace_root: String) -> Store {
+  let root = artifact_root(workspace_root)
+  custom(
+    "filesystem",
+    StoreCallbacks(
+      write: fn(ref, contents) { filesystem_write(root, ref, contents) },
+      read: fn(ref) { filesystem_read(root, ref) },
+      locate: fn(ref) { Ok(filesystem_location(root, ref)) },
+    ),
+  )
+}
+
 pub fn new(workspace_root: String) -> Store {
-  Store(workspace_root: workspace_root)
+  filesystem(workspace_root)
+}
+
+pub fn location(
+  store: Store,
+  ref: String,
+) -> Result(ArtifactLocation, ArtifactError) {
+  use valid_ref <- result.try(validated_ref(ref))
+  store.callbacks.locate(valid_ref)
+}
+
+pub fn read_artifact_unverified(
+  store: Store,
+  ref: String,
+) -> Result(String, ArtifactError) {
+  use valid_ref <- result.try(validated_ref(ref))
+  store.callbacks.read(valid_ref)
 }
 
 pub fn write_step_artifact(
@@ -86,8 +143,6 @@ pub fn write_step_artifact(
   artifact: step_artifact.StepArtifact,
 ) -> Result(ArtifactRef, ArtifactError) {
   let ref = artifact_ref(run_id, step_id, attempt_index)
-  use final_path <- result.try(resolve_ref_for_write(store, ref))
-  use Nil <- result.try(ensure_parent(final_path))
   let bytes =
     stored_to_string(StoredArtifact(
       run_id: run_id,
@@ -96,24 +151,7 @@ pub fn write_step_artifact(
       attempt_index: attempt_index,
       artifact: artifact,
     ))
-  use Nil <- result.try(
-    write_atomic(final_path, bytes)
-    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
-  )
-  use final <- result.try(
-    simplifile.read(final_path)
-    |> result.replace_error(MissingStepArtifact(ref)),
-  )
-  let sha = hash.sha256_hex(final)
-  case final == bytes {
-    True ->
-      Ok(ArtifactRef(
-        ref: ref,
-        sha256: sha,
-        bytes: bit_array.byte_size(bit_array.from_string(final)),
-      ))
-    False -> Error(CorruptStepArtifact(ref))
-  }
+  write_ref(store, ref, bytes)
 }
 
 pub fn write_structured_output_artifact(
@@ -135,8 +173,6 @@ pub fn write_structured_output_artifact(
       attempt_index,
       artifact_name,
     )
-  use final_path <- result.try(resolve_ref_for_write(store, ref))
-  use Nil <- result.try(ensure_parent(final_path))
   use payload <- result.try(parse_structured_payload_json(payload_json))
   let bytes =
     structured_output_to_string(StructuredOutputArtifact(
@@ -152,25 +188,9 @@ pub fn write_structured_output_artifact(
       validation: validation,
       payload: payload,
     ))
-  use Nil <- result.try(
-    write_atomic(final_path, bytes)
-    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
-  )
-  use final <- result.try(
-    simplifile.read(final_path)
-    |> result.replace_error(MissingStepArtifact(ref)),
-  )
-  let sha = hash.sha256_hex(final)
-  case final == bytes {
-    True ->
-      Ok(StructuredArtifactRef(
-        ref: ref,
-        path: final_path,
-        sha256: sha,
-        bytes: bit_array.byte_size(bit_array.from_string(final)),
-      ))
-    False -> Error(CorruptStepArtifact(ref))
-  }
+  use written <- result.try(write_ref(store, ref, bytes))
+  use artifact_location <- result.try(location(store, written.ref))
+  Ok(structured_ref_from_artifact(written, artifact_location))
 }
 
 fn parse_structured_payload_json(
@@ -187,7 +207,7 @@ pub fn read_structured_output_artifact(
   ref: String,
   expected_sha256: String,
 ) -> Result(StructuredOutputArtifact, ArtifactError) {
-  use contents <- result.try(read_artifact_contents(store, ref))
+  use contents <- result.try(read_artifact_unverified(store, ref))
   let actual_sha = hash.sha256_hex(contents)
   case actual_sha == expected_sha256 {
     False -> Error(CorruptStepArtifact(ref))
@@ -200,7 +220,7 @@ pub fn read_step_artifact(
   ref: String,
   expected_sha256: String,
 ) -> Result(step_artifact.StepArtifact, ArtifactError) {
-  use contents <- result.try(read_step_artifact_contents(store, ref))
+  use contents <- result.try(read_artifact_unverified(store, ref))
   let actual_sha = hash.sha256_hex(contents)
   case actual_sha == expected_sha256 {
     False -> Error(CorruptStepArtifact(ref))
@@ -212,29 +232,8 @@ pub fn read_step_artifact_unverified(
   store: Store,
   ref: String,
 ) -> Result(step_artifact.StepArtifact, ArtifactError) {
-  use contents <- result.try(read_step_artifact_contents(store, ref))
+  use contents <- result.try(read_artifact_unverified(store, ref))
   decode_step_artifact_contents(contents)
-}
-
-fn read_step_artifact_contents(
-  store: Store,
-  ref: String,
-) -> Result(String, ArtifactError) {
-  read_artifact_contents(store, ref)
-}
-
-fn read_artifact_contents(
-  store: Store,
-  ref: String,
-) -> Result(String, ArtifactError) {
-  use final_path <- result.try(resolve_ref_for_read(store, ref))
-  simplifile.read(final_path)
-  |> result.map_error(fn(error) {
-    case error {
-      simplifile.Enoent -> MissingStepArtifact(ref)
-      _ -> ArtifactIo("read artifact: " <> simplifile.describe_error(error))
-    }
-  })
 }
 
 fn decode_step_artifact_contents(
@@ -363,34 +362,9 @@ pub fn write_context_recovery_artifact(
       step_attempt_index,
       artifact_name,
     )
-  use final_path <- result.try(resolve_ref_for_write(store, ref))
-  use Nil <- result.try(ensure_parent(final_path))
-  use Nil <- result.try(
-    write_atomic(final_path, contents)
-    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
-  )
-  use final <- result.try(
-    simplifile.read(final_path)
-    |> result.replace_error(MissingStepArtifact(ref)),
-  )
-  let sha = hash.sha256_hex(final)
-  case final == contents {
-    True ->
-      Ok(StructuredArtifactRef(
-        ref: ref,
-        path: final_path,
-        sha256: sha,
-        bytes: bit_array.byte_size(bit_array.from_string(final)),
-      ))
-    False -> Error(CorruptStepArtifact(ref))
-  }
-}
-
-pub fn read_artifact_unverified(
-  store: Store,
-  ref: String,
-) -> Result(String, ArtifactError) {
-  read_artifact_contents(store, ref)
+  use written <- result.try(write_ref(store, ref, contents))
+  use artifact_location <- result.try(location(store, written.ref))
+  Ok(structured_ref_from_artifact(written, artifact_location))
 }
 
 fn write_ref(
@@ -398,25 +372,40 @@ fn write_ref(
   ref: String,
   contents: String,
 ) -> Result(ArtifactRef, ArtifactError) {
-  use final_path <- result.try(resolve_ref_for_write(store, ref))
-  use Nil <- result.try(ensure_parent(final_path))
-  use Nil <- result.try(
-    write_atomic(final_path, contents)
-    |> result.map_error(fn(error) { ArtifactWriteFailed(error) }),
-  )
-  use final <- result.try(
-    simplifile.read(final_path)
-    |> result.replace_error(MissingStepArtifact(ref)),
-  )
+  use valid_ref <- result.try(validated_ref(ref))
+  use Nil <- result.try(store.callbacks.write(valid_ref, contents))
+  use final <- result.try(store.callbacks.read(valid_ref))
   let sha = hash.sha256_hex(final)
   case final == contents {
     True ->
       Ok(ArtifactRef(
-        ref: ref,
+        ref: valid_ref,
         sha256: sha,
         bytes: bit_array.byte_size(bit_array.from_string(final)),
       ))
-    False -> Error(CorruptStepArtifact(ref))
+    False -> Error(CorruptStepArtifact(valid_ref))
+  }
+}
+
+fn structured_ref_from_artifact(
+  artifact: ArtifactRef,
+  artifact_location: ArtifactLocation,
+) -> StructuredArtifactRef {
+  StructuredArtifactRef(
+    ref: artifact.ref,
+    path: legacy_path_for_location(artifact_location),
+    uri: artifact_location.uri,
+    display_path: artifact_location.display_path,
+    local_path: artifact_location.local_path,
+    sha256: artifact.sha256,
+    bytes: artifact.bytes,
+  )
+}
+
+fn legacy_path_for_location(location: ArtifactLocation) -> String {
+  case location.local_path {
+    Some(local_path) -> local_path
+    None -> location.display_path
   }
 }
 
@@ -627,25 +616,111 @@ fn empty_artifact() -> step_artifact.StepArtifact {
   )
 }
 
-fn resolve_ref_for_write(
-  store: Store,
-  ref: String,
-) -> Result(String, ArtifactError) {
+fn validated_ref(ref: String) -> Result(String, ArtifactError) {
   use Nil <- result.try(validate_ref(ref))
-  let root = artifact_root(store)
-  Ok(path.join(root, ref))
+  Ok(string.trim(ref))
 }
 
-fn resolve_ref_for_read(
-  store: Store,
-  ref: String,
-) -> Result(String, ArtifactError) {
-  use Nil <- result.try(validate_ref(ref))
-  Ok(path.join(artifact_root(store), ref))
+fn artifact_root(workspace_root: String) -> String {
+  path.join(path.join(workspace_root, ".scherzo-state"), "artifacts")
 }
 
-fn artifact_root(store: Store) -> String {
-  path.join(path.join(store.workspace_root, ".scherzo-state"), "artifacts")
+fn filesystem_write(
+  root: String,
+  ref: String,
+  contents: String,
+) -> Result(Nil, ArtifactError) {
+  let final_path = path.join(root, ref)
+  use Nil <- result.try(ensure_parent(final_path))
+  write_atomic(final_path, contents)
+  |> result.map_error(fn(error) { ArtifactWriteFailed(error) })
+}
+
+fn filesystem_read(root: String, ref: String) -> Result(String, ArtifactError) {
+  let final_path = path.join(root, ref)
+  simplifile.read(final_path)
+  |> result.map_error(fn(error) {
+    case error {
+      simplifile.Enoent -> MissingStepArtifact(ref)
+      _ -> ArtifactIo("read artifact: " <> simplifile.describe_error(error))
+    }
+  })
+}
+
+fn filesystem_location(root: String, ref: String) -> ArtifactLocation {
+  let final_path = path.join(root, ref)
+  ArtifactLocation(
+    ref: ref,
+    uri: filesystem_uri(final_path, ref),
+    display_path: context_recovery_display_path(ref),
+    local_path: Some(final_path),
+  )
+}
+
+fn filesystem_uri(final_path: String, ref: String) -> String {
+  case path.absolute(final_path) {
+    Ok(absolute_path) -> "file://" <> uri_path_encode(absolute_path)
+    Error(Nil) -> "artifact://filesystem/" <> ref
+  }
+}
+
+fn uri_path_encode(path: String) -> String {
+  uri_path_encode_bytes(bit_array.from_string(path), "")
+}
+
+fn uri_path_encode_bytes(bytes: BitArray, accumulator: String) -> String {
+  case bytes {
+    <<>> -> accumulator
+    <<byte, rest:bytes>> ->
+      uri_path_encode_bytes(rest, accumulator <> uri_path_encode_byte(byte))
+    _ -> accumulator
+  }
+}
+
+fn uri_path_encode_byte(byte: Int) -> String {
+  case uri_path_safe_byte(byte) {
+    True -> ascii_byte_to_string(byte)
+    False -> "%" <> hex_digit(byte / 16) <> hex_digit(byte % 16)
+  }
+}
+
+fn uri_path_safe_byte(byte: Int) -> Bool {
+  byte == 47
+  || byte == 45
+  || byte == 46
+  || byte == 95
+  || byte == 126
+  || { byte >= 48 && byte <= 57 }
+  || { byte >= 65 && byte <= 90 }
+  || { byte >= 97 && byte <= 122 }
+}
+
+fn ascii_byte_to_string(byte: Int) -> String {
+  case string.utf_codepoint(byte) {
+    Ok(codepoint) -> string.from_utf_codepoints([codepoint])
+    Error(Nil) -> ""
+  }
+}
+
+fn hex_digit(value: Int) -> String {
+  case value {
+    0 -> "0"
+    1 -> "1"
+    2 -> "2"
+    3 -> "3"
+    4 -> "4"
+    5 -> "5"
+    6 -> "6"
+    7 -> "7"
+    8 -> "8"
+    9 -> "9"
+    10 -> "A"
+    11 -> "B"
+    12 -> "C"
+    13 -> "D"
+    14 -> "E"
+    _ -> "F"
+  }
 }
 
 fn validate_ref(ref: String) -> Result(Nil, ArtifactError) {

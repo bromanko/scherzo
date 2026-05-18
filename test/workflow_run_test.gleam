@@ -4,6 +4,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/pi_rpc
 import scherzo/agent/types as agent_types
@@ -18,6 +19,7 @@ import scherzo/path
 import scherzo/result_artifact
 import scherzo/session/event as session_event
 import scherzo/session/tokens as session_tokens
+import scherzo/state/artifact_store
 import scherzo/state/record
 import scherzo/step_artifact
 import scherzo/template
@@ -241,6 +243,58 @@ fn reset_dir(path: String) -> Nil {
   let _ = simplifile.delete(path)
   let assert Ok(Nil) = simplifile.create_directory_all(path)
   Nil
+}
+
+fn artifact_root(root: String) -> String {
+  root <> "/.scherzo-state/artifacts"
+}
+
+fn hidden_local_path_store(root: String) -> artifact_store.Store {
+  let store_root = artifact_root(root)
+  artifact_store.custom(
+    "hidden-local-path",
+    artifact_store.StoreCallbacks(
+      write: fn(ref, contents) {
+        let final_path = store_root <> "/" <> ref
+        let assert Ok(parent) = path.dirname(final_path)
+        use Nil <- result.try(
+          simplifile.create_directory_all(parent)
+          |> result.map_error(fn(error) {
+            artifact_store.ArtifactIo(simplifile.describe_error(error))
+          }),
+        )
+        artifact_store.write_atomic(final_path, contents)
+        |> result.map_error(fn(error) {
+          artifact_store.ArtifactWriteFailed(error)
+        })
+      },
+      read: fn(ref) {
+        simplifile.read(store_root <> "/" <> ref)
+        |> result.map_error(fn(error) {
+          case error {
+            simplifile.Enoent -> artifact_store.MissingStepArtifact(ref)
+            _ -> artifact_store.ArtifactIo(simplifile.describe_error(error))
+          }
+        })
+      },
+      locate: fn(ref) {
+        Ok(artifact_store.ArtifactLocation(
+          ref: ref,
+          uri: "artifact://hidden-local-path/" <> ref,
+          display_path: "artifacts://" <> ref,
+          local_path: None,
+        ))
+      },
+    ),
+  )
+}
+
+fn hidden_local_path_checkpoint(root: String) -> workflow_checkpoint.Writer {
+  workflow_checkpoint.ledger_writer_with_artifact_store(
+    root,
+    fn() { 123 },
+    hidden_local_path_store(root),
+  )
 }
 
 fn ledger_records(root: String) -> List(record.LedgerRecord) {
@@ -4614,9 +4668,9 @@ pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {
     workflow_dag.parse(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    artifact_change:\n      type: code_change\n      source:\n        step: review_json\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: review_json\n        inline_json: code_change\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: review prompt\n    workspace: main\n    structured_output:\n      artifact_name: code_change\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      schema:\n        required: [branch]\n",
     )
-  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let checkpoint = hidden_local_path_checkpoint(root)
 
-  let assert Ok(_) =
+  let assert Ok(success) =
     workflow_run.execute(
       issue(),
       dag,
@@ -4633,6 +4687,13 @@ pub fn contracted_structured_and_inline_json_outputs_are_recorded_test() {
         checkpoint,
       ),
     )
+
+  let assert Ok(artifact) = dict.get(success.artifacts, "review_json")
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    artifact.structured_output
+  assert metadata.local_path == None
+  assert metadata.display_path
+    == "artifacts://runs/run-1/review_json/attempt-1/structured/code_change.json"
 
   let manifest = read_output_manifest(root, "run-1")
   let artifact_change = output_named(manifest.outputs, "artifact_change")

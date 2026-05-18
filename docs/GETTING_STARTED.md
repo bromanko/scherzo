@@ -465,6 +465,10 @@ Important workflow rules:
 - Different logical workspaces may run concurrently up to `max_parallel_steps` and `agent.max_concurrent_agents`.
 - Agent steps inherit project-level `pi` settings unless the step overrides `model` or `thinking`.
 - Command steps run shell commands in the prepared workspace.
+- Retained artifacts use the default filesystem artifact store unless you add a
+  different backend in code. Existing workflow commands that read retained
+  files still rely on `SCHERZO_RUN_ARTIFACT_DIR`, which points at the run's
+  `.scherzo-state/artifacts/...` directory for that default store.
 
 ## 8. Add prompt templates
 
@@ -520,7 +524,7 @@ structured_output:
       path: schemas/implementation_plan.schema.json
 ```
 
-JSON Schema validators are built into Scherzo. A workflow author declares only `name`, `type: json_schema`, a repository-relative `path`, and optional `draft: "2020-12"`; Scherzo runs local draft 2020-12 validation, rejects schema paths that are blank, absolute, parent-traversing, or symlink outside the repository, and records schema path, schema SHA-256, draft, validator summary, and source type in retained artifacts. A schema mismatch is treated as retryable agent output when the artifact is required. Missing schema files, invalid schemas, unsupported drafts, helper failures, and path escapes are non-retryable configuration errors.
+JSON Schema validators are built into Scherzo. A workflow author declares only `name`, `type: json_schema`, a repository-relative `path`, and optional `draft: "2020-12"`; Scherzo runs local draft 2020-12 validation, rejects schema paths that are blank, absolute, parent-traversing, or symlink outside the repository, and records schema path, schema SHA-256, draft, validator summary, and source type in retained artifacts. Structured-output metadata also carries the artifact `ref`, store-neutral `uri`, human-facing `display_path`, and optional `local_path`; the legacy `path` field remains for compatibility with existing filesystem-oriented consumers, but new code should read by `ref` and use `local_path` only when it is present. A schema mismatch is treated as retryable agent output when the artifact is required. Missing schema files, invalid schemas, unsupported drafts, helper failures, and path escapes are non-retryable configuration errors.
 
 With `source.type: final_response`, the final assistant response must be exactly one JSON document. Do not wrap it in Markdown fences or add commentary. Your prompt should say that explicitly:
 

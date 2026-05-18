@@ -1327,6 +1327,7 @@ fn output_value_from_source(
         step_id,
         artifact_name,
         artifacts,
+        dependencies.checkpoint,
         False,
       )
     workflow_contract.InlineJson(step_id, artifact_name) ->
@@ -1335,6 +1336,7 @@ fn output_value_from_source(
         step_id,
         artifact_name,
         artifacts,
+        dependencies.checkpoint,
         True,
       )
     workflow_contract.StaticUrl(url) -> #(
@@ -1520,6 +1522,7 @@ fn output_value_from_structured_output(
   step_id: String,
   artifact_name: String,
   artifacts: Dict(String, step_artifact.StepArtifact),
+  checkpoint: workflow_checkpoint.Writer,
   inline inline: Bool,
 ) -> #(contract_manifest.ManifestValue, List(String)) {
   let missing_diagnostic =
@@ -1535,7 +1538,13 @@ fn output_value_from_structured_output(
           case metadata.artifact_name == artifact_name {
             True ->
               case inline {
-                True -> inline_structured_output_value(spec, step_id, metadata)
+                True ->
+                  inline_structured_output_value(
+                    spec,
+                    step_id,
+                    metadata,
+                    checkpoint,
+                  )
                 False -> #(
                   contract_manifest.present_run_artifact(
                     spec.type_,
@@ -1561,8 +1570,9 @@ fn inline_structured_output_value(
   spec: workflow_contract.OutputSpec,
   step_id: String,
   metadata: step_artifact.StructuredOutputMetadata,
+  checkpoint: workflow_checkpoint.Writer,
 ) -> #(contract_manifest.ManifestValue, List(String)) {
-  case simplifile.read(metadata.path) {
+  case checkpoint.read_artifact(metadata.ref) {
     Error(_error) ->
       output_absent(
         spec,
@@ -4142,6 +4152,9 @@ fn write_structured_output_artifact(
           format: format,
           ref: written.ref,
           path: written.path,
+          uri: written.uri,
+          display_path: written.display_path,
+          local_path: written.local_path,
           sha256: written.sha256,
           bytes: written.bytes,
           schema_status: "valid",
