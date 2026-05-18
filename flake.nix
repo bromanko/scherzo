@@ -57,13 +57,30 @@
         else
           "unknown";
 
+      sourceFor =
+        system:
+        let
+          pkgs = pkgsFor system;
+          root = toString self;
+        in
+        pkgs.lib.cleanSourceWith {
+          src = self;
+          filter =
+            path: type:
+            let
+              fullPath = toString path;
+              relative = pkgs.lib.removePrefix (root + "/") fullPath;
+            in
+            relative != "test/tmp" && !(pkgs.lib.hasPrefix "test/tmp/" relative);
+        };
+
       scherzoFor =
         system:
         let
           pkgs = pkgsFor system;
         in
         pkgs.callPackage ./nix/scherzo.nix {
-          src = self;
+          src = sourceFor system;
           inherit sourceRevision sourceDate sourceDirty;
         };
 
@@ -73,6 +90,17 @@
           pkgs = pkgsFor system;
         in
         pkgs.callPackage ./nix/linear-cli.nix { };
+
+      workflowPortabilityFor =
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        import ./nix/workflow-portability.nix {
+          inherit pkgs;
+          repoRoot = sourceFor system;
+          scherzo = self.packages.${system}.scherzo;
+        };
     in
     {
       packages = forAllSystems (
@@ -109,6 +137,11 @@
       checks = forAllSystems (system: {
         default = self.packages.${system}.scherzo;
         scherzo = self.packages.${system}.scherzo;
+        workflow-portability = (workflowPortabilityFor system).check;
+      });
+
+      devShells = forAllSystems (system: {
+        workflow-portability = (workflowPortabilityFor system).devShell;
       });
 
       overlays.default = final: _prev: {

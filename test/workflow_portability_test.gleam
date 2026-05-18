@@ -1,5 +1,9 @@
 import gleam/list
+import gleam/option.{Some}
 import gleam/string
+import scherzo/command_step
+import scherzo/config/types as config_types
+import scherzo/step_artifact
 import simplifile
 
 fn read_file(path: String) -> String {
@@ -29,6 +33,50 @@ fn assert_not_contains(contents: String, unexpected: String) -> Nil {
 
 fn assert_not_contains_any(contents: String, unexpected_terms: List(String)) {
   list.each(unexpected_terms, fn(term) { assert_not_contains(contents, term) })
+}
+
+fn limits() -> config_types.ArtifactLimits {
+  config_types.ArtifactLimits(
+    command_stream_max_chars: 4000,
+    template_field_max_chars: 4000,
+    workflow_summary_max_chars: 4000,
+  )
+}
+
+fn reset_dir(path: String) -> Nil {
+  let _ = simplifile.delete(path)
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+  Nil
+}
+
+fn run_command(command: String) -> step_artifact.StepArtifact {
+  command_step.run("workflow-portability", command, ".", 120_000, [], limits())
+}
+
+fn run_command_with_env(
+  command: String,
+  env: List(#(String, String)),
+) -> step_artifact.StepArtifact {
+  command_step.run_with_env(
+    "workflow-portability",
+    command,
+    ".",
+    120_000,
+    env,
+    [],
+    limits(),
+  )
+}
+
+fn workflow_runner_probe_command() -> String {
+  "python3 -c '"
+  <> "import json,sys; "
+  <> "from importlib.machinery import SourceFileLoader; "
+  <> "sys.path.insert(0,\"scripts\"); "
+  <> "mod=SourceFileLoader("
+  <> "\"scherzo_review_script\",\"scripts/scherzo-review\").load_module(); "
+  <> "print(json.dumps(mod.workflow_runner_command()))"
+  <> "'"
 }
 
 fn local_pi_config_terms() -> List(String) {
@@ -93,6 +141,41 @@ pub fn execplan_v2_suffix_workflow_files_are_retired_test() {
   list.each(retired_v2_suffix_paths(), fn(path) {
     let assert Ok(False) = simplifile.is_file(path)
   })
+}
+
+pub fn review_runner_uses_packaged_scherzo_cli_test() {
+  let script = read_file("scripts/scherzo-review")
+
+  assert_contains(script, "SCHERZO_WORKFLOW_RUNNER")
+  assert_contains(script, "return [\"scherzo\"]")
+  assert_contains(script, "\"workflow\",\n        \"run\",")
+  assert_not_contains(
+    script,
+    "\"gleam\",\n        \"run\",\n        \"--\",\n        \"workflow\",\n        \"run\",",
+  )
+}
+
+pub fn review_runner_command_behavior_test() {
+  let command = workflow_runner_probe_command()
+  let default =
+    run_command_with_env(command, [#("SCHERZO_WORKFLOW_RUNNER", "")])
+  assert default.status == step_artifact.StepSucceeded
+  assert default.exit_code == Some(0)
+  assert_contains(default.stdout, "[\"scherzo\"]")
+
+  let override =
+    run_command_with_env(command, [
+      #("SCHERZO_WORKFLOW_RUNNER", "custom --flag 'two words'"),
+    ])
+  assert override.status == step_artifact.StepSucceeded
+  assert override.exit_code == Some(0)
+  assert_contains(override.stdout, "[\"custom\", \"--flag\", \"two words\"]")
+
+  let invalid =
+    run_command_with_env(command, [
+      #("SCHERZO_WORKFLOW_RUNNER", "'unterminated"),
+    ])
+  assert invalid.status == step_artifact.StepFailed
 }
 
 pub fn execplan_workflows_resolve_helpers_from_repo_root_test() {
@@ -300,4 +383,99 @@ pub fn active_operator_guidance_uses_canonical_execplan_names_test() {
     read_file("docs/review-artifacts.md"),
     "--workflow .scherzo/workflows/execplan-implementation.yaml",
   )
+}
+
+pub fn workflow_portability_harness_writes_report_test() {
+  let dir = "test/tmp/workflow-portability-harness"
+  reset_dir(dir)
+  let fake_scherzo = dir <> "/fake-scherzo.sh"
+  let output_dir = dir <> "/out"
+  let assert Ok(cwd) = simplifile.current_directory()
+  let call_log = cwd <> "/" <> dir <> "/fake-scherzo-call.txt"
+  let assert Ok(Nil) =
+    simplifile.write(
+      fake_scherzo,
+      "#!/bin/sh\n"
+        <> "printf '%s' \"$*\" > '"
+        <> call_log
+        <> "'\n"
+        <> "echo 'workflow-config: OK'\n",
+    )
+  let chmod = run_command("chmod +x " <> fake_scherzo)
+  assert chmod.status == step_artifact.StepSucceeded
+  assert chmod.exit_code == Some(0)
+
+  let artifact =
+    run_command(
+      "python3 scripts/scherzo-workflow-portability check --repo-root . --scherzo "
+      <> fake_scherzo
+      <> " --output-dir "
+      <> output_dir,
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "WORKFLOW_PORTABILITY=ok")
+  assert string.contains(artifact.stdout, "WORKFLOW_PORTABILITY_WORKFLOWS=8")
+
+  let report = read_file(output_dir <> "/workflow-portability-report.v1.json")
+  let invocation = read_file(call_log)
+  let staged_config = read_file(output_dir <> "/stage/.scherzo/scherzo.yaml")
+  assert_contains(report, "\"artifact_type\": \"workflow_portability_report\"")
+  assert_contains(report, "\"packaged_cli\": true")
+  assert_contains(report, "\"remote_mutations\": \"none\"")
+  assert_contains(report, "\"mode\": \"load-only\"")
+  assert_contains(report, ".scherzo/workflows/execplan.yaml")
+  assert_contains(report, ".scherzo/workflows/execplan-revision.yaml")
+  assert_contains(report, ".scherzo/workflows/execplan-implementation.yaml")
+  assert_contains(report, ".scherzo/workflows/implementation.yaml")
+  assert_contains(report, ".scherzo/workflows/research.yaml")
+  assert_contains(report, ".scherzo/workflows/github-pr-conflict-scout.yaml")
+  assert_contains(report, ".scherzo/workflows/merge-conflict-resolution.yaml")
+  assert_contains(report, ".scherzo/workflows/origin-sync.yaml")
+  assert_contains(report, "exercise helper scherzo-review")
+  assert_contains(
+    report,
+    "add fake structured-output and agent artifact fixtures",
+  )
+  assert_contains(invocation, "doctor --check workflow-config")
+  assert_contains(staged_config, "command: scherzo-workspace-jj")
+  assert_contains(staged_config, "command: scherzo-workspace-noop")
+  assert_contains(staged_config, "command: 'exec pi'")
+  assert_contains(staged_config, "argv:")
+  assert_contains(staged_config, "exec pi \"$@\"")
+  assert_contains(staged_config, "argv_env:")
+  assert_contains(staged_config, "SCHERZO_PI_SESSION_PERSISTENCE")
+  assert_contains(staged_config, "session_persistence:")
+  assert_contains(staged_config, "enabled: true")
+  assert_not_contains(staged_config, "$repo_root/scripts/scherzo-pi")
+  let _ = simplifile.delete(dir)
+}
+
+pub fn workflow_portability_gate_is_wired_into_flake_test() {
+  let flake = read_file("flake.nix")
+  let nix_file = read_file("nix/workflow-portability.nix")
+  let docs = read_file(".scherzo/README.md")
+
+  assert_contains(
+    flake,
+    "workflow-portability = (workflowPortabilityFor system).check",
+  )
+  assert_contains(
+    flake,
+    "workflow-portability = (workflowPortabilityFor system).devShell",
+  )
+  assert_contains(nix_file, "scripts/scherzo-workflow-portability")
+  assert_contains(nix_file, "workflow-portability-report.v1.json")
+  assert_contains(nix_file, "workflow portability debug shell")
+  assert_contains(
+    docs,
+    "nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).workflow-portability",
+  )
+  assert_contains(docs, "nix develop .#workflow-portability")
+  assert_contains(
+    docs,
+    "scripts/scherzo-workflow-portability check --repo-root .",
+  )
+  assert_contains(docs, "do not restore `gleam run -- workflow run`")
 }

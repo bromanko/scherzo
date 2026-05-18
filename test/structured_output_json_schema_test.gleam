@@ -284,10 +284,8 @@ pub fn json_schema_rejects_absolute_or_traversal_paths_test() {
 }
 
 pub fn json_schema_accepts_repo_local_symlinked_workflow_schema_test() {
-  let #(repo, schema_path, _) =
-    setup_symlinked_workflow_schema_fixture(
-      "test/tmp/structured-output-json-schema-workflow-symlink-validator",
-    )
+  let root = "test/tmp/structured-output-json-schema-workflow-symlink-validator"
+  let #(repo, schema_path, _) = setup_symlinked_workflow_schema_fixture(root)
   let assert Ok(helper_path) =
     scherzo_path.absolute("scripts/scherzo-json-schema-validate")
   let validator = schema_validator(schema_path)
@@ -312,13 +310,13 @@ pub fn json_schema_accepts_repo_local_symlinked_workflow_schema_test() {
   assert valid_result == Ok(structured_output_validator.ValidatorPass)
   let assert Error(error) = missing_required_result
   assert error.code == "structured_output_json_schema_rejected"
+  let _ = simplifile.delete(root)
 }
 
 pub fn json_schema_hashes_repo_local_symlinked_workflow_schema_contents_test() {
+  let root = "test/tmp/structured-output-json-schema-workflow-symlink-metadata"
   let #(repo, schema_path, schema_contents) =
-    setup_symlinked_workflow_schema_fixture(
-      "test/tmp/structured-output-json-schema-workflow-symlink-metadata",
-    )
+    setup_symlinked_workflow_schema_fixture(root)
   let validator = schema_validator(schema_path)
 
   let metadata =
@@ -341,6 +339,7 @@ pub fn json_schema_hashes_repo_local_symlinked_workflow_schema_contents_test() {
     ),
   ] = metadata.validators
   assert schema_sha256 == hash.sha256_hex(schema_contents)
+  let _ = simplifile.delete(root)
 }
 
 pub fn json_schema_rejects_non_workflow_schema_symlink_escape_before_helper_test() {
@@ -373,6 +372,7 @@ pub fn json_schema_rejects_non_workflow_schema_symlink_escape_before_helper_test
   assert error.code == "structured_output_json_schema_config_error"
   assert !error.retryable
   assert string.contains(error.message, "outside the repository")
+  let _ = simplifile.delete(root)
 }
 
 fn setup_symlinked_workflow_schema_fixture(
@@ -433,6 +433,7 @@ pub fn json_schema_redacts_secret_in_diagnostics_test() {
   assert error.code == "structured_output_json_schema_rejected"
   assert !string.contains(error.message, secret)
   assert !string.contains(error.diagnostic_summary, secret)
+  let _ = simplifile.delete(dir)
 }
 
 pub fn json_schema_helper_start_failure_is_non_retryable_config_error_test() {
