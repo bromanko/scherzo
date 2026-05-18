@@ -12,8 +12,14 @@ Implementation step response:
 Post-plan-feedback change analysis output:
 {{ steps.analyze_changes_after_plan_feedback.stdout }}
 
+Post-late-repair change analysis output:
+{{ steps.analyze_changes_after_late_plan_feedback.stdout }}
+
 Plan-completion gate output:
 {{ steps.gate_plan_completion.stdout }}
+
+Late recovery finalizer output:
+{{ steps.finalize_plan_completion_gate_recovery.stdout }}
 
 Native review cutover contract output:
 {{ steps.assert_native_review_cutover.stdout }}

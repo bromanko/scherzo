@@ -2579,6 +2579,68 @@ pub fn workflow_run_on_failure_continue_makes_artifact_available_test() {
   assert string.contains(text, "response:apply response:code review prompt 1")
 }
 
+pub fn failed_recovery_finalizer_blocks_downstream_steps_test() {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: gate\n    kind: command\n    run: gate\n    workspace: main\n    on_failure: continue\n  - id: classify\n    kind: command\n    depends_on: [gate]\n    run: classify\n    workspace: main\n  - id: finalize\n    kind: command\n    depends_on: [classify]\n    run: finalize\n    workspace: main\n  - id: review\n    kind: command\n    depends_on: [finalize]\n    run: review\n    workspace: main\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        process.send(subject, "run:" <> context.step_id)
+        let exit_code = case
+          context.step_id == "gate" || context.step_id == "finalize"
+        {
+          True -> 1
+          False -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> context.step_id,
+          "stderr:" <> context.step_id,
+          False,
+          secrets,
+          limits,
+        )
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.failed_step_id == Some("finalize")
+  assert receive_event(subject) == "prepare:gate:main:"
+  assert receive_event(subject) == "run:gate"
+  assert receive_event(subject) == "after:gate"
+  assert receive_event(subject) == "prepare:classify:main:"
+  assert receive_event(subject) == "run:classify"
+  assert receive_event(subject) == "after:classify"
+  assert receive_event(subject) == "prepare:finalize:main:"
+  assert receive_event(subject) == "run:finalize"
+  assert receive_event(subject) == "after:finalize"
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
+}
+
 pub fn recovered_completed_upstream_step_is_not_rerun_test() {
   let assert Ok(dag) =
     workflow_dag.parse(

@@ -370,6 +370,63 @@ pub fn workflow_command_failure_handoff_renders_revalidation_action_test() {
   assert !string.contains(failure_comment, "pi_protocol_error")
 }
 
+pub fn workflow_command_failure_handoff_renders_plan_completion_recovery_action_test() {
+  let relative_workspace =
+    "test/tmp/handoff-plan-completion/.scherzo/workspaces/implementation/ABC-1/run-1"
+  let _ = simplifile.delete("test/tmp/handoff-plan-completion")
+  let assert Ok(Nil) = simplifile.create_directory_all(relative_workspace)
+  let assert Ok(Nil) =
+    simplifile.write(
+      relative_workspace <> "/.scherzo-keep-workspace",
+      "retained\n",
+    )
+  let assert Ok(absolute_workspace) = path.absolute(relative_workspace)
+  let detail =
+    "workflow_command_failed:plan_completion_recovery_exhausted\n"
+    <> "blocking finding: Acceptance criterion remains unchecked.\n"
+    <> "artifact: tmp/scherzo-plan-completion-recovery.md\n"
+    <> "verdict: tmp/scherzo-plan-completion-verdict.json"
+  let failure =
+    worker_failure(
+      error.WorkflowCommandFailed(
+        code: "plan_completion_recovery_exhausted",
+        step_id: "finalize_plan_completion_gate_recovery",
+        detail: detail,
+      ),
+      Some(absolute_workspace),
+    )
+
+  let failure_comment =
+    capture_failure_comment(failure, "run-plan-completion-recovery")
+
+  assert string.contains(
+    failure_comment,
+    "| Error | `plan_completion_recovery_exhausted` |",
+  )
+  assert string.contains(
+    failure_comment,
+    "| Step | `finalize_plan_completion_gate_recovery` |",
+  )
+  assert string.contains(failure_comment, "| Retained workspace | `yes` |")
+  assert string.contains(
+    failure_comment,
+    "Acceptance criterion remains unchecked.",
+  )
+  assert string.contains(
+    failure_comment,
+    "tmp/scherzo-plan-completion-recovery.md",
+  )
+  assert string.contains(
+    failure_comment,
+    "tmp/scherzo-plan-completion-verdict.json",
+  )
+  assert string.contains(
+    failure_comment,
+    "inspect or salvage the retained work",
+  )
+  assert string.contains(failure_comment, "scherzoctl retry <issue>")
+}
+
 pub fn success_handoff_posts_single_structured_result_comment_test() {
   let subject = process.new_subject()
   let transport = fn(request: linear.Request) {

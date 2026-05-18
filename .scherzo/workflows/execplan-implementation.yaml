@@ -81,11 +81,51 @@ steps:
     kind: command
     depends_on: [verify_plan_completion_after_feedback]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" gate-plan-completion'
+    on_failure: continue
+    workspace: main
+
+  - id: classify_plan_completion_gate
+    kind: command
+    depends_on: [gate_plan_completion]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 2'
+    workspace: main
+
+  - id: apply_late_plan_completion_feedback
+    kind: agent
+    depends_on: [classify_plan_completion_gate]
+    prompt: prompts/execplan-implementation-apply-late-plan-completion-feedback.md
+    model: openai-codex/gpt-5.4
+    thinking: medium
+    workspace: main
+
+  - id: analyze_changes_after_late_plan_feedback
+    kind: command
+    depends_on: [apply_late_plan_completion_feedback]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" analyze'
+    workspace: main
+
+  - id: verify_plan_completion_after_late_repair
+    kind: agent
+    depends_on: [analyze_changes_after_late_plan_feedback]
+    prompt: prompts/execplan-implementation-verify-completion-after-late-repair.md
+    workspace: main
+
+  - id: gate_plan_completion_after_late_repair
+    kind: command
+    depends_on: [verify_plan_completion_after_late_repair]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" gate-plan-completion'
+    on_failure: continue
+    workspace: main
+
+  - id: finalize_plan_completion_gate_recovery
+    kind: command
+    depends_on: [gate_plan_completion_after_late_repair]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" plan-completion-recovery --phase after-late-repair --attempt 2 --max-attempts 2'
     workspace: main
 
   - id: assert_native_review_cutover
     kind: command
-    depends_on: [gate_plan_completion]
+    depends_on: [finalize_plan_completion_gate_recovery]
     run: 'output_dir="$SCHERZO_RUN_ROOT/artifacts/review/cutover_contract"; mkdir -p "$output_dir"; forbidden=""; if [ -n "${SCHERZO_NATIVE_REVIEW_SCENARIO:-}" ]; then forbidden="$forbidden SCHERZO_NATIVE_REVIEW_SCENARIO"; fi; if [ -n "${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_STAGED_REVIEW_AGENT_BACKEND"; fi; if [ -n "${SCHERZO_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_REVIEW_AGENT_BACKEND"; fi; if [ -n "$forbidden" ]; then printf "native implementation review cutover refuses fixture/scenario/heuristic override environment variables:%s\n" "$forbidden" | tee "$output_dir/cutover-contract.txt"; exit 1; fi; printf "native_review_cutover=enabled\nsemantic_review=kind_agent\nstructured_output_source=pi_tool_call/submit_review_lane_draft\nlegacy_backend_env=refused\nnative_review_scenario=refused\nremote_mutations=none\n" > "$output_dir/cutover-contract.txt"; cat "$output_dir/cutover-contract.txt"'
     workspace: main
 
@@ -406,11 +446,18 @@ steps:
     kind: command
     depends_on: [final_validate]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" gate-plan-completion --final'
+    on_failure: continue
+    workspace: main
+
+  - id: finalize_final_plan_completion_gate
+    kind: command
+    depends_on: [final_plan_completion_gate]
+    run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" plan-completion-recovery --phase final --attempt 2 --max-attempts 2'
     workspace: main
 
   - id: publish_pr
     kind: command
-    depends_on: [final_plan_completion_gate]
+    depends_on: [finalize_final_plan_completion_gate]
     run: 'repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$repo_root/scripts/scherzo-implementation" publish'
     timeout_ms: 300000
     workspace: main
