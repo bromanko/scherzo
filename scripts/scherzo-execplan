@@ -65,6 +65,7 @@ LINEAR_ISSUE_URL_RE = re.compile(
 )
 LINEAR_ISSUE_IDENTIFIER_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
 FAILURE_PREFIX = "SCHERZO_FAILURE_CODE="
+RETENTION_MARKER = ".scherzo-keep-workspace"
 CANONICAL_IMPLEMENTATION_WORKFLOW_LABEL = "workflow:execplan-implementation"
 LEGACY_IMPLEMENTATION_WORKFLOW_LABEL = "workflow:execplan-implementation-v2"
 REVISION_HEAD_RE = re.compile(r"^[a-f0-9]{12,64}$")
@@ -397,6 +398,35 @@ def read_review_doc_path_file(path: Path) -> Path:
 def run_root() -> Path | None:
     value = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
     return Path(value) if value else None
+
+
+def implementation_run_root() -> Path | None:
+    root = run_root()
+    if root is not None:
+        return root
+    cwd = Path.cwd().resolve()
+    if cwd.parent.name == "workspaces":
+        return cwd.parent.parent
+    return None
+
+
+def implementation_retention_marker_path() -> Path | None:
+    root = implementation_run_root()
+    return root / RETENTION_MARKER if root is not None else None
+
+
+def write_implementation_retention_marker(source_kind: str, source_ref: str) -> Path | None:
+    marker = implementation_retention_marker_path()
+    if marker is None:
+        return None
+    marker.write_text(
+        "Scherzo retained this run because an implementation workflow "
+        "has not published a PR yet.\n"
+        f"Source kind: {source_kind}\n"
+        f"Source: {source_ref}\n",
+        encoding="utf-8",
+    )
+    return marker
 
 
 def run_artifact_dir() -> Path | None:
@@ -842,6 +872,24 @@ def write_publish_context(path: Path, *, review_meta: dict[str, Any], source_iss
     return context
 
 
+def revision_publish_target(previous: dict[str, Any]) -> tuple[str, str]:
+    surface = previous.get("review_surface") if isinstance(previous.get("review_surface"), dict) else {}
+    branch = str(surface.get("branch") or "").strip()
+    if not branch or not safe_revision_branch(branch):
+        fail(
+            "previous exec_plan_bundle review_surface.branch must identify the existing ExecPlan PR branch for revisions",
+            code="execplan_revision_review_surface_missing",
+        )
+    pr_url = str(surface.get("pr_url") or "").strip()
+    match = GITHUB_PR_URL_RE.search(pr_url)
+    if not match:
+        fail(
+            "previous exec_plan_bundle review_surface.pr_url must be a GitHub pull request URL for revisions",
+            code="execplan_revision_review_surface_missing",
+        )
+    return branch, match.group(3)
+
+
 def publish_review_doc(args: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="scherzo-execplan publish-review-doc")
     parser.add_argument("--review-doc-path-file", required=True)
@@ -903,6 +951,7 @@ def publish_review_doc(args: list[str]) -> None:
     elif not env_enabled("SCHERZO_EXECPLAN_OFFLINE_PUBLISH", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_PUBLISH"):
         fail("SCHERZO_WORKSPACE_DRIVER is required for publish-review-doc unless SCHERZO_EXECPLAN_OFFLINE_PUBLISH=1")
     source_issue = source_issue_from_context_or_env(pack_issue or (previous.get("source_issue") if previous else None))
+    revision_target = revision_publish_target(previous) if previous else None
     branch = "execplan/" + slug(source_issue["identifier"] + "-" + source_issue["title"])[:80]
     title_text = f"ExecPlan: {source_issue['identifier']} {source_issue['title']}"
     body_text = (
@@ -917,10 +966,10 @@ def publish_review_doc(args: list[str]) -> None:
     title_file.write_text(title_text + "\n", encoding="utf-8")
     body_file.write_text(body_text, encoding="utf-8")
     if workspace_driver_command():
-        payload = workspace_driver_json([
+        driver_args = [
             "publish-change",
             "--kind",
-            "execplan",
+            "execplan-revision" if revision_target else "execplan",
             "--title-file",
             str(title_file),
             "--body-file",
@@ -929,18 +978,40 @@ def publish_review_doc(args: list[str]) -> None:
             branch,
             "--base",
             os.environ.get("SCHERZO_PR_BASE", "main"),
-            "--json",
-        ])
+        ]
+        if revision_target:
+            target_branch, target_pr = revision_target
+            driver_args.extend([
+                "--target-branch",
+                target_branch,
+                "--target-pr",
+                target_pr,
+                "--allow-no-changes",
+                "true",
+            ])
+        driver_args.append("--json")
+        payload = workspace_driver_json(driver_args)
         if payload.get("status") not in {"published", "updated", "unchanged"}:
             fail(f"workspace driver publish-change returned status {payload.get('status')!r}")
         pr = payload
     else:
-        pr = {
-            "url": env_value("SCHERZO_EXECPLAN_OFFLINE_PR_URL", "https://github.com/living-systems/scherzo/pull/0", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_PR_URL"),
-            "branch": branch,
-            "base_revision": env_value("SCHERZO_EXECPLAN_OFFLINE_BASE", "offline-base", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_BASE"),
-            "head_revision": env_value("SCHERZO_EXECPLAN_OFFLINE_HEAD", "offline-head", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_HEAD"),
-        }
+        base_revision = env_value("SCHERZO_EXECPLAN_OFFLINE_BASE", "offline-base", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_BASE")
+        head_revision = env_value("SCHERZO_EXECPLAN_OFFLINE_HEAD", "offline-head", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_HEAD")
+        if revision_target and previous:
+            surface = previous.get("review_surface", {}) if isinstance(previous.get("review_surface"), dict) else {}
+            pr = {
+                "url": surface.get("pr_url"),
+                "branch": revision_target[0],
+                "base_revision": base_revision,
+                "head_revision": head_revision,
+            }
+        else:
+            pr = {
+                "url": env_value("SCHERZO_EXECPLAN_OFFLINE_PR_URL", "https://github.com/living-systems/scherzo/pull/0", legacy="SCHERZO_EXECPLAN_V2_OFFLINE_PR_URL"),
+                "branch": branch,
+                "base_revision": base_revision,
+                "head_revision": head_revision,
+            }
     context = write_publish_context(
         Path(ns.publish_context),
         review_meta=review_meta,
@@ -1910,13 +1981,29 @@ def materialize_revision(args: list[str]) -> None:
     }
     validate_schema(bundle, EXEC_PLAN_BUNDLE_SCHEMA)
     write_json(Path(ns.output), bundle)
-    sys.stdout.write(canonical_json(bundle))
+    final_text = canonical_json(bundle)
+    final_sha = sha256_bytes(final_text.encode("utf-8"))
+    handoff = bundle["implementation_handoff"]
+    update_handoff_issue_description(
+        handoff,
+        bundle["source_issue"],
+        bundle_ref,
+        final_sha,
+        pack_meta["sha256"],
+        review_meta["path"],
+    )
+    annotate_handoff_issue(handoff, bundle_ref, final_sha, pack_meta["sha256"], review_meta["path"])
+    sys.stdout.write(final_text)
 
 
 def command_implementation_prepare(args: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="scherzo-execplan implementation-prepare")
     parser.add_argument("--from-issue-context", action="store_true", required=True)
     parser.parse_args(args)
+    marker = write_implementation_retention_marker(
+        "execplan",
+        os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "unknown-issue").strip() or "unknown-issue",
+    )
     bundle, _pack, pack_path, _ref, _sha, _diagnostics = load_bundle_from_context()
     review_path = review_doc_filesystem_path(bundle["review_doc"]["path"], Path.cwd())
     review_meta = file_meta(review_path, code="execplan_v2_review_doc_missing")
@@ -1944,11 +2031,14 @@ def command_implementation_prepare(args: list[str]) -> None:
         "execplan_v2_bundle_path": "tmp/execplan-bundle.json",
         "execplan_v2_implementation_pack_path": "tmp/execplan-implementation-pack.json",
     }
+    marker = write_implementation_retention_marker("execplan", bundle["review_doc"]["path"])
     write_json(tmp / "scherzo-implementation.json", metadata)
     print("IMPLEMENTATION_PREPARE_STATUS=ok")
     print("REVIEW_DOC=tmp/execplan-review-doc.md")
     print("IMPLEMENTATION_PACK=tmp/execplan-implementation-pack.json")
     print("BUNDLE=tmp/execplan-bundle.json")
+    if marker is not None:
+        print(f"RETENTION_MARKER={marker}")
 
 
 def command_gate_no_conflict(args: list[str]) -> None:
