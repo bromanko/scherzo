@@ -610,6 +610,69 @@ pub fn publish_review_doc_writes_offline_context_test() {
   assert string.contains(context, "\"status\": \"published\"")
 }
 
+pub fn publish_review_doc_revision_targets_existing_pr_test() {
+  let dir = "test/tmp/execplan-v2-revision-publish-target"
+  reset_dir(dir)
+  let path_file = dir <> "/review.path"
+  let context_path = dir <> "/publish-context.json"
+  let previous_bundle =
+    mutated_bundle(
+      dir <> "/previous",
+      each: "  \"review_doc\": {\n    \"bytes\": 1767,\n    \"path\": \"test/fixtures/execplan_v2/review-doc.valid.md\",\n    \"sha256\": \"64288f367d31d10a48decbb7f5b19ec4975e1a3a2991be2a4bc1007d8a61dcf4\"\n  },",
+      with: "  \"review_doc\": {\n    \"bytes\": 1767,\n    \"path\": \"test/fixtures/execplan_v2/review-doc.valid.md\",\n    \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n  },",
+    )
+  let driver = dir <> "/workspace-driver"
+  let log = dir <> "/workspace-driver.log"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path_file,
+      "test/fixtures/execplan_v2/review-doc.valid.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      driver,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> "
+        <> shell_quote(log)
+        <> "\n"
+        <> "if [ \"$1\" = changed-files ]; then printf '%s\\n' '{\"version\":1,\"files\":[{\"path\":\"test/fixtures/execplan_v2/review-doc.valid.md\",\"status\":\"modified\"}]}'; exit 0; fi\n"
+        <> "if [ \"$1\" = publish-change ]; then printf '%s\\n' '{\"version\":1,\"status\":\"updated\",\"url\":\"https://github.com/living-systems/scherzo/pull/314\",\"branch\":\"execplan/liv-314\",\"base_ref\":\"main\",\"base_revision\":\"main\",\"head_revision\":\"abcdef123456\",\"change_id\":\"chg\",\"created\":false,\"updated\":true}'; exit 0; fi\n"
+        <> "echo unexpected driver command >&2\n"
+        <> "exit 1\n",
+    )
+  let chmod = run_shell("chmod +x " <> shell_quote(driver))
+  assert chmod.status == step_artifact.StepSucceeded
+
+  let artifact =
+    run_shell(
+      "env SCHERZO_WORKSPACE_DRIVER="
+      <> shell_quote(driver)
+      <> " SCHERZO_EXECPLAN_FIXED_TIME=2026-05-15T00:00:00Z scripts/scherzo-execplan publish-review-doc --review-doc-path-file "
+      <> shell_quote(path_file)
+      <> " --publish-context "
+      <> shell_quote(context_path)
+      <> " --previous-bundle "
+      <> shell_quote(previous_bundle)
+      <> " --skip-if-unchanged",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(artifact.stdout, "PUBLISH_REVIEW_DOC_STATUS=published")
+  let assert Ok(driver_log) = simplifile.read(log)
+  assert string.contains(driver_log, "changed-files --json")
+  assert string.contains(
+    driver_log,
+    "publish-change --kind execplan-revision --title-file tmp/execplan-pr-title.txt --body-file tmp/execplan-pr-body.md --branch-prefix execplan/liv-314-fixture-v2-execplan-bundle --base main --target-branch execplan/liv-314 --target-pr 314 --allow-no-changes true --json",
+  )
+  let assert Ok(context) = simplifile.read(context_path)
+  assert string.contains(
+    context,
+    "\"url\": \"https://github.com/living-systems/scherzo/pull/314\"",
+  )
+  assert string.contains(context, "\"branch\": \"execplan/liv-314\"")
+  assert string.contains(context, "\"head_revision\": \"abcdef123456\"")
+}
+
 pub fn publish_review_doc_prefers_pack_source_issue_for_pr_title_test() {
   let dir = "test/tmp/execplan-v2-publish-pack-source"
   reset_dir(dir)
