@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cache_url="https://cache.numtide.com"
+cache_key="niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
+
+has_cache_url() {
+  nix config show substituters 2>/dev/null | tr ' ' '\n' | grep -Fxq "$cache_url"
+}
+
+has_cache_key() {
+  nix config show trusted-public-keys 2>/dev/null | tr ' ' '\n' | grep -Fxq "$cache_key"
+}
+
+append_system_nix_conf() {
+  if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true >/dev/null 2>&1; then
+    return 1
+  fi
+
+  sudo mkdir -p /etc/nix
+  if sudo test -f /etc/nix/nix.conf && sudo grep -Fq "$cache_url" /etc/nix/nix.conf && sudo grep -Fq "$cache_key" /etc/nix/nix.conf; then
+    return 0
+  fi
+
+  {
+    printf '\n'
+    printf '# Scherzo CI: pi is provided by numtide/llm-agents.nix.\n'
+    printf '# Trust Numtide cache to avoid source-building the pi package.\n'
+    printf 'extra-substituters = %s\n' "$cache_url"
+    printf 'extra-trusted-public-keys = %s\n' "$cache_key"
+  } | sudo tee -a /etc/nix/nix.conf >/dev/null
+
+  if command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl try-reload-or-restart nix-daemon.service >/dev/null 2>&1 \
+      || sudo systemctl restart nix-daemon.service >/dev/null 2>&1 \
+      || true
+  fi
+}
+
+if has_cache_url && has_cache_key; then
+  exit 0
+fi
+
+append_system_nix_conf || true
+
+if has_cache_url && has_cache_key; then
+  exit 0
+fi
+
+cat >&2 <<EOF
+Scherzo CI requires Numtide's Nix cache for pi from numtide/llm-agents.nix.
+
+Nix is not currently configured to trust:
+  substituter: $cache_url
+  public key:  $cache_key
+
+Repository-level NIX_CONFIG/nixConfig is not sufficient when the Buildkite
+agent user is not a trusted Nix user; Nix ignores extra trusted public keys in
+that case and source-builds pi. Configure the hcloud agent's system nix.conf:
+
+  extra-substituters = $cache_url
+  extra-trusted-public-keys = $cache_key
+
+or make the Buildkite agent a trusted Nix user.
+EOF
+exit 1

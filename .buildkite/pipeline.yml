@@ -14,6 +14,7 @@ steps:
       queue: "hcloud"
     command: |
       set -euo pipefail
+      scripts/scherzo-ci-nix-cache
       direnv allow .
       direnv exec . gleam format --check src test
       direnv exec . gleam test
@@ -24,6 +25,7 @@ steps:
       queue: "hcloud"
     command: |
       set -euo pipefail
+      scripts/scherzo-ci-nix-cache
       direnv allow .
       direnv exec . gleam run -m glinter
       direnv exec . gleam run -m scherzo_lint
@@ -34,6 +36,7 @@ steps:
       queue: "hcloud"
     command: |
       set -euo pipefail
+      scripts/scherzo-ci-nix-cache
       direnv allow .
       direnv exec . scherzo-test-contract
 
@@ -43,6 +46,7 @@ steps:
       queue: "hcloud"
     command: |
       set -euo pipefail
+      scripts/scherzo-ci-nix-cache
       direnv allow .
       nix flake check
       nix build .#scherzo

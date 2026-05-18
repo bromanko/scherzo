@@ -4,11 +4,15 @@
 //// The wrapper keeps child stderr out of the stdout JSONL stream by redirecting
 //// stderr to private per-process diagnostics storage. `read_diagnostics` reads
 //// the current file before cleanup and cached diagnostics after `await_exit` or
-//// `terminate` removes the private temp directory.
+//// `terminate` removes the private temp directory. Shell commands re-export the
+//// caller's PATH after Bash startup files run so Nix/devenv tools remain
+//// available even when a login shell rewrites PATH.
 
 import gleam/int
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/path
 
 pub const max_stdout_line_length = 10_000_000
 
@@ -32,8 +36,7 @@ pub type PortError {
 }
 
 pub fn start(command: String, cwd: String) -> Result(Process, PortError) {
-  ffi_start(command, cwd)
-  |> result.map_error(fn(error) { raw_error("start", error) })
+  start_with_env(command, cwd, [])
 }
 
 pub fn start_with_env(
@@ -41,6 +44,11 @@ pub fn start_with_env(
   cwd: String,
   env: List(#(String, String)),
 ) -> Result(Process, PortError) {
+  let env = env_with_current_path(env)
+  let command = case string.trim(command) == "" {
+    True -> command
+    False -> shell_command_with_path_export(command, env)
+  }
   ffi_start_with_env(command, cwd, env)
   |> result.map_error(fn(error) { raw_error("start_with_env", error) })
 }
@@ -156,8 +164,43 @@ fn parse_int_or_default(value: String, default: Int) -> Int {
   }
 }
 
-@external(erlang, "scherzo_port_ffi", "start")
-fn ffi_start(command: String, cwd: String) -> Result(Process, String)
+fn env_with_current_path(
+  env: List(#(String, String)),
+) -> List(#(String, String)) {
+  case env_value(env, "PATH") {
+    Some(_) -> env
+    None ->
+      case path.env("PATH") {
+        Some(value) -> [#("PATH", value), ..env]
+        None -> env
+      }
+  }
+}
+
+fn shell_command_with_path_export(
+  command: String,
+  env: List(#(String, String)),
+) -> String {
+  case env_value(env, "PATH") {
+    Some(value) -> "export PATH=" <> shell_quote(value) <> "\n" <> command
+    None -> command
+  }
+}
+
+fn env_value(env: List(#(String, String)), key: String) -> Option(String) {
+  case env {
+    [] -> None
+    [#(current, value), ..rest] ->
+      case current == key {
+        True -> Some(value)
+        False -> env_value(rest, key)
+      }
+  }
+}
+
+fn shell_quote(value: String) -> String {
+  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
+}
 
 @external(erlang, "scherzo_port_ffi", "start_with_env")
 fn ffi_start_with_env(

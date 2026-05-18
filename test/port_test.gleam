@@ -61,6 +61,48 @@ pub fn port_start_with_env_applies_environment_test() {
   let _ = port.terminate(process)
 }
 
+pub fn port_start_preserves_current_path_across_shell_rewrites_test() {
+  let cwd = "test/tmp/port-shell-path-preserved"
+  let fake_bin = cwd <> "/fake-bin"
+  let tool_bin = cwd <> "/tool-bin"
+  let fake_bash = fake_bin <> "/bash"
+  let fake_tool = tool_bin <> "/path-sensitive-tool"
+  let bash_log = cwd <> "/bash.log"
+  let real_bash = real_bash_path()
+  reset_dir(cwd)
+  let assert Ok(Nil) = simplifile.create_directory_all(fake_bin)
+  let assert Ok(Nil) = simplifile.create_directory_all(tool_bin)
+  let assert Ok(Nil) =
+    simplifile.write(fake_bash, fake_bash_that_resets_path_script(real_bash))
+  let assert Ok(Nil) =
+    simplifile.write(fake_tool, path_sensitive_tool_script(real_bash))
+  chmod_executable(fake_bash)
+  chmod_executable(fake_tool)
+  let assert Ok(fake_bin_path) = scherzo_path.absolute(fake_bin)
+  let assert Ok(tool_bin_path) = scherzo_path.absolute(tool_bin)
+  let assert Ok(bash_log_path) = scherzo_path.absolute(bash_log)
+
+  let original_path = scherzo_path.env("PATH")
+  let original_real_bash = scherzo_path.env("SCHERZO_TEST_REAL_BASH")
+  let original_bash_log = scherzo_path.env("SCHERZO_TEST_FAKE_BASH_LOG")
+  let test_path =
+    fake_bin_path <> ":" <> prepend_path(tool_bin_path, original_path)
+  let _ = scherzo_path.set_env("PATH", test_path)
+  let _ = scherzo_path.set_env("SCHERZO_TEST_REAL_BASH", real_bash)
+  let _ = scherzo_path.set_env("SCHERZO_TEST_FAKE_BASH_LOG", bash_log_path)
+
+  let start_result = port.start("path-sensitive-tool", cwd)
+
+  restore_env_var("PATH", original_path)
+  restore_env_var("SCHERZO_TEST_REAL_BASH", original_real_bash)
+  restore_env_var("SCHERZO_TEST_FAKE_BASH_LOG", original_bash_log)
+
+  let assert Ok(process) = start_result
+  assert_process_output(process, "tool-ok")
+  let assert Ok(log) = simplifile.read(bash_log_path)
+  assert fake_bash_call_count(log) >= 2
+}
+
 pub fn port_launchers_resolve_bash_from_path_test() {
   let cwd = "test/tmp/port-path-bash"
   let fake_bin = cwd <> "/bin"
@@ -123,6 +165,28 @@ fn fake_bash_script() -> String {
   <> "PATH=\"$SCHERZO_TEST_ORIGINAL_PATH\"\n"
   <> "export PATH\n"
   <> "exec bash \"$@\"\n"
+}
+
+fn fake_bash_that_resets_path_script(real_bash: String) -> String {
+  "#!"
+  <> real_bash
+  <> "\n"
+  <> "printf 'called %s\\n' \"$1\" >> \"$SCHERZO_TEST_FAKE_BASH_LOG\"\n"
+  <> "PATH=/definitely-not-a-real-scherzo-test-path\n"
+  <> "export PATH\n"
+  <> "exec \"$SCHERZO_TEST_REAL_BASH\" \"$@\"\n"
+}
+
+fn path_sensitive_tool_script(real_bash: String) -> String {
+  "#!" <> real_bash <> "\n" <> "printf 'tool-ok\\n'\n"
+}
+
+fn real_bash_path() -> String {
+  let assert Ok(process) =
+    port.start_argv("sh", ["-c", "command -v bash"], ".", [])
+  let assert Ok(real_bash) = port.read_stdout_line(process, 1000)
+  let assert Ok(0) = port.await_exit(process, 1000)
+  real_bash
 }
 
 fn chmod_executable(path: String) -> Nil {

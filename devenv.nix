@@ -30,6 +30,7 @@ in
     pkgs.git
     pkgs.jq
     pkgs.selfci
+    pkgs.buildkite-cli
     llmAgentsPackages.pi
     (linearCommand "linear")
     (linearCommand "lc")

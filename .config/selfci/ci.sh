@@ -23,6 +23,7 @@ run_step() {
   "$@"
 }
 
+run_step "nix cache config" scripts/scherzo-ci-nix-cache
 run_step "direnv allow" direnv allow .
 run_step "gleam format" direnv exec . gleam format --check src test
 run_step "glinter" direnv exec . gleam run -m glinter
