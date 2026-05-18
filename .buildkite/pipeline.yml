@@ -1,5 +1,11 @@
 env:
   CI: "true"
+  # The devenv shell includes pi from numtide/llm-agents.nix. Buildkite needs
+  # Numtide's binary cache or it may source-build the pi package before tests run.
+  NIX_CONFIG: |
+    accept-flake-config = true
+    extra-substituters = https://cache.numtide.com
+    extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
 
 steps:
   - label: ":gleam: format + unit"

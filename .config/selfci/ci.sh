@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The devenv shell includes pi from numtide/llm-agents.nix; make SelfCI use
+# Numtide's binary cache instead of source-building the pi package.
+numtide_nix_config="$(cat <<'NIX_CONFIG'
+accept-flake-config = true
+extra-substituters = https://cache.numtide.com
+extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
+NIX_CONFIG
+)"
+if [ -n "${NIX_CONFIG:-}" ]; then
+  export NIX_CONFIG="${NIX_CONFIG}"$'\n'"${numtide_nix_config}"
+else
+  export NIX_CONFIG="${numtide_nix_config}"
+fi
+
 run_step() {
   local name="$1"
   shift
