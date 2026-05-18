@@ -22,7 +22,7 @@ unsetenv(Name) ->
     nil.
 
 pid_alive(Pid) when is_integer(Pid), Pid > 1 ->
-    case os:cmd("/bin/kill -0 " ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 && printf alive || true") of
+    case os:cmd("kill -0 " ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 && printf alive || true") of
         "alive" -> true;
         _ -> false
     end;
